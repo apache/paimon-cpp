@@ -148,6 +148,49 @@ TEST_F(SnapshotTest, TestJsonizable) {
     ASSERT_EQ(ReplaceAll(json_str), ReplaceAll(new_json_str));
 }
 
+TEST_F(SnapshotTest, TestGenerateUuid) {
+    ASSERT_OK_AND_ASSIGN(std::string first, Snapshot::GenerateUuid());
+    ASSERT_OK_AND_ASSIGN(std::string second, Snapshot::GenerateUuid());
+    ASSERT_EQ(first.size(), 36u);
+    ASSERT_NE(first, second);
+}
+
+TEST_F(SnapshotTest, TestUuid) {
+    std::string json_str = R"({
+        "version" : 3,
+        "uuid" : "snapshot-uuid-1",
+        "id" : 1,
+        "schemaId" : 0,
+        "baseManifestList" : "manifest-list-d96fcc30-99e8-4f45-962b-a1157c56f378-0",
+        "baseManifestListSize" : 20,
+        "deltaManifestList" : "manifest-list-d96fcc30-99e8-4f45-962b-a1157c56f378-1",
+        "deltaManifestListSize" : 50,
+        "commitUser" : "0e4d92f7-53b0-40d6-a7c0-102bf3801e6a",
+        "commitIdentifier" : 9223372036854775807,
+        "commitKind" : "APPEND",
+        "timeMillis" : 1711692199281,
+        "totalRecordCount" : 3,
+        "deltaRecordCount" : 3,
+        "changelogRecordCount" : 0
+    })";
+
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, Snapshot::FromJsonString(json_str));
+    ASSERT_EQ(snapshot.Uuid(), std::optional<std::string>("snapshot-uuid-1"));
+    ASSERT_OK_AND_ASSIGN(std::string new_json_str, snapshot.ToJsonString());
+    ASSERT_EQ(ReplaceAll(json_str), ReplaceAll(new_json_str));
+
+    Snapshot without_uuid(3, 1, 0, "manifest-list-d96fcc30-99e8-4f45-962b-a1157c56f378-0", 20,
+                          "manifest-list-d96fcc30-99e8-4f45-962b-a1157c56f378-1", 50, std::nullopt,
+                          std::nullopt, std::nullopt, "0e4d92f7-53b0-40d6-a7c0-102bf3801e6a",
+                          9223372036854775807ll, Snapshot::CommitKind::Append(), 1711692199281ll, 3,
+                          3, 0, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+    ASSERT_EQ(without_uuid.Uuid(), std::nullopt);
+    ASSERT_FALSE(without_uuid == snapshot);
+    ASSERT_TRUE(without_uuid.TEST_Equal(snapshot));
+    ASSERT_OK_AND_ASSIGN(std::string no_uuid_json_str, without_uuid.ToJsonString());
+    ASSERT_EQ(no_uuid_json_str.find("uuid"), std::string::npos);
+}
+
 TEST_F(SnapshotTest, TestSerializeAndDeserialize) {
     auto se_and_de = [&](const std::string& data_path) {
         auto fs = std::make_shared<LocalFileSystem>();

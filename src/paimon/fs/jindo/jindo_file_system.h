@@ -41,6 +41,7 @@ class JindoFileSystem : public FileSystem {
     using FileSystem::Open;
 
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override;
+    Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override;
     Result<std::unique_ptr<OutputStream>> Create(const std::string& path,
                                                  bool overwrite) const override;
     Status Mkdirs(const std::string& path) const override;

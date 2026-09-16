@@ -118,8 +118,8 @@ Result<std::vector<ManifestEntry>> CommitScanner::ReadIncrementalEntries(
     std::vector<ManifestEntry> incremental_entries;
     for (const ManifestFileMeta& manifest_meta : delta_manifests) {
         std::vector<ManifestEntry> manifest_entries;
-        PAIMON_RETURN_NOT_OK(
-            manifest_file_->Read(manifest_meta.FileName(), /*filter=*/nullptr, &manifest_entries));
+        PAIMON_RETURN_NOT_OK(manifest_file_->Read(manifest_meta.FileName(), /*filter=*/nullptr,
+                                                  /*file_size=*/std::nullopt, &manifest_entries));
         for (const ManifestEntry& entry : manifest_entries) {
             if (changed_partition_set.find(entry.Partition()) != changed_partition_set.end()) {
                 const bool drop_stats = core_options_.ManifestDeleteFileDropStats() &&
@@ -194,8 +194,8 @@ Result<std::vector<IndexManifestEntry>> CommitScanner::ReadAllIndexEntriesFromPa
         return false;
     };
 
-    PAIMON_RETURN_NOT_OK(
-        index_manifest_file_->Read(snapshot.IndexManifest().value(), filter, &index_entries));
+    PAIMON_RETURN_NOT_OK(index_manifest_file_->Read(snapshot.IndexManifest().value(), filter,
+                                                    /*file_size=*/std::nullopt, &index_entries));
     return index_entries;
 }
 

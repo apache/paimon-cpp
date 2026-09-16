@@ -19,14 +19,18 @@
 #include "paimon/rest/rest_api.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "fmt/format.h"
 #include "paimon/catalog_options.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/sensitive_config_utils.h"
+#include "paimon/core/catalog/commit_table_request.h"
 #include "paimon/logging.h"
 #include "paimon/rest/rest_util.h"
 
@@ -131,6 +135,7 @@ Status RestApi::ErrorToStatus(const RestHttpClient::Response& response, bool fol
     int64_t code = response.code;
     std::string message;
     std::string resource_info;
+    std::string resource_type;
     bool body_parsed = false;
     if (!response.body.empty()) {
         ErrorResponse error;
@@ -139,6 +144,7 @@ Status RestApi::ErrorToStatus(const RestHttpClient::Response& response, bool fol
             // The message may embed secrets (e.g. "password=..."), so it is redacted.
             message = SensitiveConfigUtils::RedactText(error.GetMessage());
             if (!error.GetResourceType().empty()) {
+                resource_type = error.GetResourceType();
                 resource_info = fmt::format(" (resource type: {}, resource name: {})",
                                             error.GetResourceType(), error.GetResourceName());
             }
@@ -190,12 +196,13 @@ Status RestApi::ErrorToStatus(const RestHttpClient::Response& response, bool fol
                 Status::IOError(fmt::format("rest request failed with code {}: {}", code, message));
             break;
     }
-    return status.WithDetail(std::make_shared<RestErrorDetail>(code));
+    return status.WithDetail(std::make_shared<RestErrorDetail>(code, resource_type));
 }
 
 Result<RestHttpClient::Response> RestApi::Execute(
     const std::string& method, const std::string& path,
-    const std::map<std::string, std::string>& query_params, const std::string& body) const {
+    const std::map<std::string, std::string>& query_params, const std::string& body,
+    bool retry_safe) const {
     RestAuthParameter auth_parameter = RestAuthParameter::Create(method, path, query_params, body);
     StringMap request_headers = base_headers_;
     if (!body.empty()) {
@@ -207,7 +214,7 @@ Result<RestHttpClient::Response> RestApi::Execute(
     bool follow_redirects = auth_provider_->AllowsRedirects();
     PAIMON_ASSIGN_OR_RAISE(
         RestHttpClient::Response response,
-        client_->Execute(method, path, query_params, headers, body, follow_redirects));
+        client_->Execute(method, path, query_params, headers, body, follow_redirects, retry_safe));
     if (!response.IsSuccessful()) {
         return ErrorToStatus(response, follow_redirects);
     }
@@ -293,6 +300,43 @@ Status RestApi::RenameTable(const Identifier& from_table, const Identifier& to_t
 Result<std::vector<Snapshot>> RestApi::ListSnapshots(const Identifier& identifier) const {
     return ListAllPages<ListSnapshotsResponse>(
         resource_paths_.Snapshots(identifier.GetDatabaseName(), identifier.GetTableName()));
+}
+
+Result<std::optional<Snapshot>> RestApi::LoadSnapshot(const Identifier& identifier) const {
+    std::string path =
+        resource_paths_.TableSnapshot(identifier.GetDatabaseName(), identifier.GetTableName());
+    Result<GetTableSnapshotResponse> response =
+        GetEntity<GetTableSnapshotResponse>(path, /*query_params=*/{});
+    if (response.ok()) {
+        return response.value().GetSnapshot();
+    }
+    // A snapshot-specific 404 means no snapshot yet; a missing table remains an error.
+    const std::shared_ptr<StatusDetail>& detail = response.status().detail();
+    if (response.status().IsNotExist() && detail != nullptr &&
+        std::string(detail->type_id()) == RestErrorDetail::kTypeId &&
+        checked_cast<const RestErrorDetail*>(detail.get())->GetResourceType() ==
+            ErrorResponse::kResourceTypeSnapshot) {
+        return std::optional<Snapshot>();
+    }
+    return response.status();
+}
+
+Result<bool> RestApi::CommitSnapshot(const Identifier& identifier,
+                                     const std::optional<std::string>& table_uuid,
+                                     const std::optional<std::string>& base_snapshot_uuid,
+                                     const Snapshot& snapshot,
+                                     const std::vector<PartitionStatistics>& statistics) const {
+    CommitTableRequest request(table_uuid, base_snapshot_uuid, snapshot, statistics);
+    PAIMON_ASSIGN_OR_RAISE(std::string body, request.ToJsonString());
+    std::string path =
+        resource_paths_.CommitTable(identifier.GetDatabaseName(), identifier.GetTableName());
+    // Replaying an accepted commit can report a conflict and trigger manifest deletion.
+    // Send once and let FilterAndCommit() recover an unknown outcome.
+    PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
+                           Execute("POST", path, {}, body, /*retry_safe=*/false));
+    CommitTableResponse entity;
+    PAIMON_RETURN_NOT_OK(ParseResponseBody(response.body, path, &entity));
+    return entity.IsSuccess();
 }
 
 }  // namespace paimon

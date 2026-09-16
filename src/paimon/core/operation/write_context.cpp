@@ -21,9 +21,11 @@
 #include <utility>
 
 #include "arrow/util/thread_pool.h"
+#include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
@@ -32,19 +34,18 @@
 
 namespace paimon {
 
-WriteContext::WriteContext(const std::string& root_path, const std::string& commit_user,
-                           bool is_streaming_mode, bool ignore_num_bucket_check,
-                           bool ignore_previous_files, bool enable_multi_thread_spill,
-                           const std::optional<int32_t>& write_id, const std::string& branch,
-                           const std::vector<std::string>& write_schema,
-                           const std::shared_ptr<MemoryPool>& memory_pool,
-                           const std::shared_ptr<Executor>& executor,
-                           const std::string& temp_directory,
-                           const std::shared_ptr<FileSystem>& specific_file_system,
-                           const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-                           const std::shared_ptr<RealtimeContext>& realtime_context,
-                           const std::map<std::string, std::string>& options,
-                           const std::shared_ptr<FormatTable>& format_table)
+WriteContext::WriteContext(
+    const std::string& root_path, const std::string& commit_user, bool is_streaming_mode,
+    bool ignore_num_bucket_check, bool ignore_previous_files, bool enable_multi_thread_spill,
+    const std::optional<int32_t>& write_id, const std::string& branch,
+    const std::vector<std::string>& write_schema, const std::shared_ptr<MemoryPool>& memory_pool,
+    const std::shared_ptr<Executor>& executor, const std::string& temp_directory,
+    const std::shared_ptr<FileSystem>& specific_file_system,
+    const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
+    const std::shared_ptr<RealtimeContext>& realtime_context,
+    const std::map<std::string, std::string>& options,
+    const std::shared_ptr<FormatTable>& format_table, const std::shared_ptr<Catalog>& catalog,
+    const std::optional<Identifier>& identifier)
     : root_path_(root_path),
       commit_user_(commit_user),
       branch_(branch),
@@ -61,7 +62,9 @@ WriteContext::WriteContext(const std::string& root_path, const std::string& comm
       fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
       realtime_context_(realtime_context),
       options_(options),
-      format_table_(format_table) {}
+      format_table_(format_table),
+      catalog_(catalog),
+      identifier_(identifier) {}
 
 WriteContext::~WriteContext() = default;
 
@@ -83,6 +86,8 @@ class WriteContextBuilder::Impl {
         fs_scheme_to_identifier_map_.clear();
         specific_file_system_.reset();
         realtime_context_.reset();
+        catalog_.reset();
+        identifier_.reset();
         options_.clear();
     }
 
@@ -106,6 +111,8 @@ class WriteContextBuilder::Impl {
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<FileSystem> specific_file_system_;
     std::shared_ptr<RealtimeContext> realtime_context_;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
     std::map<std::string, std::string> options_;
 };
 
@@ -209,11 +216,21 @@ WriteContextBuilder& WriteContextBuilder::WithRealtimeContext(
     return *this;
 }
 
+WriteContextBuilder& WriteContextBuilder::WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                                      const Identifier& identifier) {
+    impl_->catalog_ = catalog;
+    impl_->identifier_.emplace(identifier);
+    return *this;
+}
+
 Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
     if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
         return Status::Invalid("cannot write with null format table");
     }
     if (impl_->format_table_ != nullptr) {
+        if (impl_->catalog_ != nullptr) {
+            return Status::Invalid("WithCatalog() requires a native table");
+        }
         // The table already answers each of these, and from a source this cannot see behind, so a
         // second answer is refused rather than silently dropped.
         if (impl_->specific_file_system_ != nullptr ||
@@ -233,6 +250,27 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
     }
     // The branch names a directory under the root path, so it must stay a single path component.
     PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(impl_->branch_));
+    if (impl_->catalog_ == nullptr && impl_->identifier_) {
+        return Status::Invalid("cannot write through a null catalog");
+    }
+    if (impl_->catalog_ != nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
+                               impl_->identifier_->GetBranchName());
+        auto branch_option = impl_->options_.find(Options::BRANCH);
+        std::optional<std::string> option_branch =
+            branch_option == impl_->options_.end()
+                ? std::nullopt
+                : std::optional<std::string>(branch_option->second);
+        for (const std::optional<std::string>& branch :
+             {identifier_branch, option_branch, std::optional<std::string>(impl_->branch_)}) {
+            if (branch &&
+                !BranchManager::IsMainBranch(BranchManager::NormalizeBranch(branch.value()))) {
+                return Status::Invalid(
+                    fmt::format("a write through a catalog requires the main branch, but got '{}'",
+                                branch.value()));
+            }
+        }
+    }
     bool enable_multi_thread_spill = impl_->spill_thread_number_ > 0;
     if (enable_multi_thread_spill) {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
@@ -244,7 +282,7 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         impl_->write_id_, impl_->branch_, impl_->write_schema_, impl_->memory_pool_,
         impl_->executor_, impl_->temp_directory_, impl_->specific_file_system_,
         impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
-        impl_->format_table_);
+        impl_->format_table_, impl_->catalog_, impl_->identifier_);
     impl_->Reset();
     return ctx;
 }

@@ -22,10 +22,10 @@ set(PAIMON_GLOBAL_INDEX_SRC
     btree/btree_global_indexer.cpp
     btree/btree_global_index_reader.cpp
     btree/btree_global_index_writer.cpp
-    btree/btree_file_meta_selector.cpp
-    btree/btree_index_meta.cpp
+    sorted_file_meta_selector.cpp
+    sorted_index_file_meta.cpp
     btree/lazy_filtered_btree_reader.cpp
-    btree/key_serializer.cpp
+    key_serializer.cpp
     rangebitmap/range_bitmap_global_index.cpp
     rangebitmap/range_bitmap_global_index_factory.cpp
     offset_global_index_reader.cpp

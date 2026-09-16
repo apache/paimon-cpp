@@ -91,11 +91,12 @@ class BlobViewResolvingBatchReaderTest : public ::testing::Test {
         bool exhausted_ = false;
     };
 
-    std::string MakeBlobViewStructBytes(const std::string& database, const std::string& table,
-                                        int32_t field_id, int64_t row_id) const {
+    Result<std::string> MakeBlobViewStructBytes(const std::string& database,
+                                                const std::string& table, int32_t field_id,
+                                                int64_t row_id) const {
         Identifier identifier(database, table);
         BlobViewStruct view_struct(identifier, field_id, row_id);
-        auto bytes = view_struct.Serialize(pool_);
+        PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> bytes, view_struct.Serialize(pool_));
         return std::string(bytes->data(), bytes->size());
     }
 
@@ -145,7 +146,8 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestEofBatch) {
 }
 
 TEST_F(BlobViewResolvingBatchReaderTest, TestEmptyReadBlobViewFields) {
-    std::string view_bytes = MakeBlobViewStructBytes("db", "table", /*field_id=*/1, /*row_id=*/7);
+    ASSERT_OK_AND_ASSIGN(std::string view_bytes,
+                         MakeBlobViewStructBytes("db", "table", /*field_id=*/1, /*row_id=*/7));
     std::shared_ptr<arrow::StructArray> struct_array = BuildStructArray({view_bytes}, {true});
 
     bool resolver_called = false;
@@ -166,8 +168,10 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestEmptyReadBlobViewFields) {
 }
 
 TEST_F(BlobViewResolvingBatchReaderTest, TestResolvesBlobViewColumn) {
-    auto row0_view = MakeBlobViewStructBytes("db", "tbl", /*field_id=*/3, /*row_id=*/100);
-    auto row1_view = MakeBlobViewStructBytes("db", "tbl", /*field_id=*/3, /*row_id=*/200);
+    ASSERT_OK_AND_ASSIGN(std::string row0_view,
+                         MakeBlobViewStructBytes("db", "tbl", /*field_id=*/3, /*row_id=*/100));
+    ASSERT_OK_AND_ASSIGN(std::string row1_view,
+                         MakeBlobViewStructBytes("db", "tbl", /*field_id=*/3, /*row_id=*/200));
     std::shared_ptr<arrow::StructArray> src_struct =
         BuildStructArray({row0_view, row1_view}, {true, true});
 
@@ -203,7 +207,8 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestResolvesBlobViewColumn) {
 }
 
 TEST_F(BlobViewResolvingBatchReaderTest, TestResolverError) {
-    auto view_bytes = MakeBlobViewStructBytes("db", "tbl", /*field_id=*/1, /*row_id=*/5);
+    ASSERT_OK_AND_ASSIGN(std::string view_bytes,
+                         MakeBlobViewStructBytes("db", "tbl", /*field_id=*/1, /*row_id=*/5));
     std::shared_ptr<arrow::StructArray> src_struct = BuildStructArray({view_bytes}, {true});
     auto resolver = BlobViewResolver([](const BlobViewStruct&) -> Result<std::shared_ptr<Bytes>> {
         return Status::Invalid("cache miss");

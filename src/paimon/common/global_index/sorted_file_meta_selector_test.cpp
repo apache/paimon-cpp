@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/common/global_index/btree/btree_file_meta_selector.h"
+#include "paimon/common/global_index/sorted_file_meta_selector.h"
 
 #include <algorithm>
 #include <set>
@@ -25,31 +25,37 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/common/global_index/btree/btree_index_meta.h"
-#include "paimon/common/global_index/btree/key_serializer.h"
+#include "paimon/common/global_index/key_serializer.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 
-class BTreeFileMetaSelectorTest : public ::testing::Test {
+class SortedFileMetaSelectorTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
         key_type_ = arrow::int32();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                             KeySerializer::Create(key_type_, pool_));
+        key_serializer_ = std::move(key_serializer);
 
         // file1: keys [1, 10], has_nulls=true
         // file2: keys [15, 20], has_nulls=false
         // file3: keys [21, 30], has_nulls=true
         // file4: keys [1, 5], has_nulls=false
         // file5: keys [19, 25], has_nulls=true
-        auto meta1 = std::make_shared<BTreeIndexMeta>(SerializeInt(1), SerializeInt(10), true);
-        auto meta2 = std::make_shared<BTreeIndexMeta>(SerializeInt(15), SerializeInt(20), false);
-        auto meta3 = std::make_shared<BTreeIndexMeta>(SerializeInt(21), SerializeInt(30), true);
-        auto meta4 = std::make_shared<BTreeIndexMeta>(SerializeInt(1), SerializeInt(5), false);
-        auto meta5 = std::make_shared<BTreeIndexMeta>(SerializeInt(19), SerializeInt(25), true);
+        auto meta1 = std::make_shared<SortedIndexFileMeta>(SerializeInt(1), SerializeInt(10), true);
+        auto meta2 =
+            std::make_shared<SortedIndexFileMeta>(SerializeInt(15), SerializeInt(20), false);
+        auto meta3 =
+            std::make_shared<SortedIndexFileMeta>(SerializeInt(21), SerializeInt(30), true);
+        auto meta4 = std::make_shared<SortedIndexFileMeta>(SerializeInt(1), SerializeInt(5), false);
+        auto meta5 =
+            std::make_shared<SortedIndexFileMeta>(SerializeInt(19), SerializeInt(25), true);
 
         // file6: only-nulls file (no keys, has_nulls=true)
-        auto meta6 = std::make_shared<BTreeIndexMeta>(nullptr, nullptr, true);
+        auto meta6 = std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, true);
         files_ = {
             GlobalIndexIOMeta("file1", 1, meta1->Serialize(pool_.get())),
             GlobalIndexIOMeta("file2", 1, meta2->Serialize(pool_.get())),
@@ -62,8 +68,7 @@ class BTreeFileMetaSelectorTest : public ::testing::Test {
 
     std::shared_ptr<Bytes> SerializeInt(int32_t value) const {
         Literal literal(value);
-        EXPECT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result,
-                             KeySerializer::SerializeKey(literal, key_type_, pool_.get()));
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, key_serializer_->Serialize(literal));
         return result;
     }
 
@@ -83,12 +88,13 @@ class BTreeFileMetaSelectorTest : public ::testing::Test {
  private:
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::DataType> key_type_;
+    std::shared_ptr<KeySerializer> key_serializer_;
     std::vector<GlobalIndexIOMeta> files_;
 };
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitLessThan) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitLessThan) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // minKey < 8: file1(1), file4(1)
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitLessThan(Literal(8)));
@@ -103,9 +109,9 @@ TEST_F(BTreeFileMetaSelectorTest, TestVisitLessThan) {
     ASSERT_TRUE(result.empty());
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitLessOrEqual) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitLessOrEqual) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // minKey <= 20: file1(1), file2(15), file4(1), file5(19)
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitLessOrEqual(Literal(20)));
@@ -116,9 +122,9 @@ TEST_F(BTreeFileMetaSelectorTest, TestVisitLessOrEqual) {
     CheckResult(result, {"file1", "file2", "file4"});
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitGreaterThan) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitGreaterThan) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // maxKey > 20: file3(30), file5(25)
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitGreaterThan(Literal(20)));
@@ -129,9 +135,9 @@ TEST_F(BTreeFileMetaSelectorTest, TestVisitGreaterThan) {
     ASSERT_TRUE(result.empty());
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitGreaterOrEqual) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitGreaterOrEqual) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // maxKey >= 5: all non-null files (file1..file5)
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitGreaterOrEqual(Literal(5)));
@@ -142,9 +148,9 @@ TEST_F(BTreeFileMetaSelectorTest, TestVisitGreaterOrEqual) {
     CheckResult(result, {"file2", "file3", "file5"});
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitEqual) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitEqual) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // 22 in [21,30] and [19,25]
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitEqual(Literal(22)));
@@ -162,36 +168,36 @@ TEST_F(BTreeFileMetaSelectorTest, TestVisitEqual) {
     ASSERT_NOK(selector->VisitEqual(Literal(static_cast<int8_t>(1))));
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitNotEqual) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitNotEqual) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // NotEqual cannot prune any file, returns all
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitNotEqual(Literal(22)));
     CheckResult(result, {"file1", "file2", "file3", "file4", "file5", "file6"});
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitIsNull) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitIsNull) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // has_nulls: file1, file3, file5, file6
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitIsNull());
     CheckResult(result, {"file1", "file3", "file5", "file6"});
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitIsNotNull) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitIsNotNull) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // !onlyNulls: file1..file5 (file6 is only-nulls)
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitIsNotNull());
     CheckResult(result, {"file1", "file2", "file3", "file4", "file5"});
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitIn) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitIn) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // IN(1, 2, 3, 26, 27, 28):
     //   1 in [1,10]=file1, [1,5]=file4
@@ -209,9 +215,9 @@ TEST_F(BTreeFileMetaSelectorTest, TestVisitIn) {
     ASSERT_TRUE(result.empty());
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestVisitNotIn) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestVisitNotIn) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // NotIn cannot prune any file
     ASSERT_OK_AND_ASSIGN(auto result,
@@ -219,9 +225,9 @@ TEST_F(BTreeFileMetaSelectorTest, TestVisitNotIn) {
     CheckResult(result, {"file1", "file2", "file3", "file4", "file5", "file6"});
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestOnlyNullsFileExcludedFromRangeQueries) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
+TEST_F(SortedFileMetaSelectorTest, TestOnlyNullsFileExcludedFromRangeQueries) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files_, key_serializer_));
 
     // file6 is only-nulls, should be excluded from all range/equality queries
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitEqual(Literal(1)));
@@ -242,29 +248,30 @@ TEST_F(BTreeFileMetaSelectorTest, TestOnlyNullsFileExcludedFromRangeQueries) {
     ASSERT_EQ(names.count("file6"), 1u);
 }
 
-TEST_F(BTreeFileMetaSelectorTest, TestEmptyStringKeyDoesNotCrash) {
+TEST_F(SortedFileMetaSelectorTest, TestEmptyStringKeyDoesNotCrash) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     std::shared_ptr<arrow::DataType> key_type = arrow::utf8();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                         KeySerializer::Create(key_type, pool));
     auto serialize = [&](const char* value, size_t size) {
         Literal literal(FieldType::STRING, value, size);
-        EXPECT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result,
-                             KeySerializer::SerializeKey(literal, key_type, pool.get()));
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, key_serializer->Serialize(literal));
         return result;
     };
 
-    auto empty_meta =
-        std::make_shared<BTreeIndexMeta>(serialize("", 0), serialize("www.example.com", 15), false);
-    auto normal_meta =
-        std::make_shared<BTreeIndexMeta>(serialize("aaa.com", 7), serialize("zzz.com", 7), false);
-    auto null_meta = std::make_shared<BTreeIndexMeta>(nullptr, nullptr, true);
+    auto empty_meta = std::make_shared<SortedIndexFileMeta>(
+        serialize("", 0), serialize("www.example.com", 15), false);
+    auto normal_meta = std::make_shared<SortedIndexFileMeta>(serialize("aaa.com", 7),
+                                                             serialize("zzz.com", 7), false);
+    auto null_meta = std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, true);
     std::vector<GlobalIndexIOMeta> files = {
         GlobalIndexIOMeta("file_empty", 1, empty_meta->Serialize(pool.get())),
         GlobalIndexIOMeta("file_normal", 1, normal_meta->Serialize(pool.get())),
         GlobalIndexIOMeta("file_nulls", 1, null_meta->Serialize(pool.get())),
     };
 
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
-                         BTreeFileMetaSelector::Create(files, key_type, pool));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files, key_serializer));
 
     ASSERT_OK_AND_ASSIGN(std::vector<GlobalIndexIOMeta> result,
                          selector->VisitEqual(Literal(FieldType::STRING, "www.example.com", 15)));
@@ -282,38 +289,41 @@ TEST_F(BTreeFileMetaSelectorTest, TestEmptyStringKeyDoesNotCrash) {
     CheckResult(result, {"file_empty", "file_normal"});
 }
 
-TEST_F(BTreeFileMetaSelectorTest, RejectsMalformedFileMetadata) {
+TEST_F(SortedFileMetaSelectorTest, RejectsMalformedFileMetadata) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                         KeySerializer::Create(arrow::int32(), pool));
     std::vector<GlobalIndexIOMeta> files = {GlobalIndexIOMeta("missing", 1, /*metadata=*/nullptr)};
-    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+    ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto truncated = std::make_shared<Bytes>(std::string(4, '\0'), pool.get());
     files = {GlobalIndexIOMeta("truncated", 1, truncated)};
-    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+    ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto short_key = std::make_shared<Bytes>(std::string(1, '\0'), pool.get());
-    auto invalid_key_meta = std::make_shared<BTreeIndexMeta>(short_key, short_key, false);
+    auto invalid_key_meta = std::make_shared<SortedIndexFileMeta>(short_key, short_key, false);
     files = {GlobalIndexIOMeta("invalid-key", 1, invalid_key_meta->Serialize(pool.get()))};
-    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+    ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
-    auto reversed_meta = std::make_shared<BTreeIndexMeta>(SerializeInt(10), SerializeInt(1), false);
+    auto reversed_meta =
+        std::make_shared<SortedIndexFileMeta>(SerializeInt(10), SerializeInt(1), false);
     files = {GlobalIndexIOMeta("reversed-range", 1, reversed_meta->Serialize(pool.get()))};
-    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+    ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto only_first_meta =
-        std::make_shared<BTreeIndexMeta>(SerializeInt(1), /*last_key=*/nullptr, false);
+        std::make_shared<SortedIndexFileMeta>(SerializeInt(1), /*last_key=*/nullptr, false);
     files = {GlobalIndexIOMeta("only-first-key", 1, only_first_meta->Serialize(pool.get()))};
-    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+    ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto only_last_meta =
-        std::make_shared<BTreeIndexMeta>(/*first_key=*/nullptr, SerializeInt(1), false);
+        std::make_shared<SortedIndexFileMeta>(/*first_key=*/nullptr, SerializeInt(1), false);
     files = {GlobalIndexIOMeta("only-last-key", 1, only_last_meta->Serialize(pool.get()))};
-    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+    ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto empty_nonnull_meta =
-        std::make_shared<BTreeIndexMeta>(/*first_key=*/nullptr, /*last_key=*/nullptr, false);
+        std::make_shared<SortedIndexFileMeta>(/*first_key=*/nullptr, /*last_key=*/nullptr, false);
     files = {GlobalIndexIOMeta("empty-nonnull", 1, empty_nonnull_meta->Serialize(pool.get()))};
-    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+    ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 }
 
 }  // namespace paimon::test

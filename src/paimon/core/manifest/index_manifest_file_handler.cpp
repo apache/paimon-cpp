@@ -18,6 +18,7 @@
 
 #include "paimon/core/manifest/index_manifest_file_handler.h"
 
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -201,7 +202,8 @@ Result<std::string> IndexManifestFileHandler::Write(
     std::vector<IndexManifestEntry> entries;
     if (previous_index_manifest != std::nullopt) {
         PAIMON_RETURN_NOT_OK(index_manifest_file->Read(previous_index_manifest.value(),
-                                                       /*filter=*/nullptr, &entries));
+                                                       /*filter=*/nullptr,
+                                                       /*file_size=*/std::nullopt, &entries));
     }
     for (const auto& entry : entries) {
         if (!(entry.kind == FileKind::Add())) {

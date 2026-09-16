@@ -88,6 +88,18 @@ Result<std::unique_ptr<InputStream>> JindoFileSystem::Open(const std::string& pa
     return std::make_unique<JindoInputStream>(impl_, std::move(reader));
 }
 
+Result<std::unique_ptr<InputStream>> JindoFileSystem::Open(const FileStatus& file_status) const {
+    const int64_t file_length = file_status.GetLen();
+    PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(file_length, "file size"));
+    // The trusted length lets the store skip the getFileStatus it otherwise issues on open.
+    // The status is not re-validated here; a stale or incorrect length surfaces as a read
+    // error later rather than at open time.
+    std::unique_ptr<JdoReader> reader;
+    PAIMON_RETURN_NOT_OK_FROM_JINDO(
+        impl_->GetFileSystem()->openReader(file_status.GetPath(), file_length, &reader));
+    return std::make_unique<JindoInputStream>(impl_, std::move(reader));
+}
+
 Result<std::unique_ptr<OutputStream>> JindoFileSystem::Create(const std::string& path,
                                                               bool overwrite) const {
     PAIMON_ASSIGN_OR_RAISE(bool exist, Exists(path));
@@ -161,11 +173,18 @@ Result<FileStatus> JindoFileSystem::GetFileStatus(const std::string& path) const
 
 Status JindoFileSystem::ListDir(const std::string& directory,
                                 std::vector<BasicFileStatus>* file_status_list) const {
-    PAIMON_ASSIGN_OR_RAISE(bool exist, Exists(directory));
-    if (!exist) {
-        return Status::OK();
+    // One status call answers what Exists() followed by GetFileStatus() asked the store twice:
+    // whether the path is there at all, and whether it is a directory. PAIMON_RETURN_NOT_OK_FROM_
+    // JINDO maps the SDK's not-found to Status::NotExist, which is what tells a missing directory
+    // (listed as empty, as the other file systems do) from a call that genuinely failed.
+    Result<FileStatus> dir_status = GetFileStatus(directory);
+    if (!dir_status.ok()) {
+        if (dir_status.status().IsNotExist()) {
+            return Status::OK();
+        }
+        return dir_status.status();
     }
-    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, GetFileStatus(directory));
+    const FileStatus& file_status = dir_status.value();
     if (!file_status.IsDir()) {
         return Status::Invalid(
             fmt::format("file {} already exists and is not a directory", file_status.GetPath()));

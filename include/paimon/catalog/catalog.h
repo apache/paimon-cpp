@@ -44,8 +44,6 @@ class FormatTable;
 class Table;
 class View;
 class Schema;
-class Snapshot;
-class PartitionStatistics;
 class Tag;
 class Identifier;
 /// This interface is responsible for reading and writing metadata such as database/table from a
@@ -210,6 +208,11 @@ class PAIMON_EXPORT Catalog {
     ///         snapshot id ascending, or an error status.
     virtual Result<std::vector<SnapshotInfo>> ListSnapshots(
         const Identifier& identifier, const std::string& branch = "") const = 0;
+
+    /// Returns whether this catalog publishes snapshots through catalog commits. Defaults to false.
+    /// @note Implementations returning true must also implement the internal
+    /// `VersionManagedCatalog`.
+    virtual bool SupportsVersionManagement() const;
 
     /// Gets a format table: a directory of data files laid out like a standard Hive table.
     ///

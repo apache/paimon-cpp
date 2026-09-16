@@ -188,6 +188,9 @@ std::vector<std::string> GetTestValuesForAppendCompactionInteTest() {
 #ifdef PAIMON_ENABLE_MOSAIC
     values.emplace_back("mosaic");
 #endif
+#ifdef PAIMON_ENABLE_LANCE
+    values.emplace_back("lance");
+#endif
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
 #endif
@@ -287,7 +290,7 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompaction) {
 
 TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompactionWithMapSharedShredding) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
 

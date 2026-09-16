@@ -19,6 +19,7 @@
 
 #include "paimon/file_store_commit.h"
 
+#include <optional>
 #include <utility>
 
 #include "arrow/c/abi.h"
@@ -41,7 +42,9 @@
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
+#include "paimon/executor.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
@@ -83,6 +86,21 @@ TEST(FileStoreCommitTest, TestCreate) {
     ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
+}
+
+TEST(FileStoreCommitTest, TestCreateWithCatalogRequiresIdentifier) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog, Catalog::Create(dir->Str(), options));
+    auto commit_context = std::make_unique<CommitContext>(
+        dir->Str(), "commit_user", /*ignore_empty_commit=*/true,
+        /*use_rest_catalog_commit=*/false, catalog, /*identifier=*/std::nullopt,
+        /*table_id=*/std::nullopt, /*append_commit_check_conflict=*/false, GetDefaultPool(),
+        CreateDefaultExecutor(), /*specific_file_system=*/nullptr, options,
+        /*format_table=*/nullptr);
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)),
+                        "a catalog commit requires a table identifier");
 }
 
 TEST(FileStoreCommitTest, TestAppendDvIndexShouldUseOverwriteCommitKind) {

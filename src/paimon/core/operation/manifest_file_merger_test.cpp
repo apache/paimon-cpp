@@ -23,6 +23,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -158,7 +159,8 @@ class ManifestFileMergerTest : public testing::Test {
         const std::vector<std::pair<std::string, FileKind>>& entry_file_name_expected) {
         std::vector<ManifestEntry> entries;
         for (const auto& meta : metas) {
-            ASSERT_OK(manifest_file_->Read(meta.FileName(), /*filter=*/nullptr, &entries));
+            ASSERT_OK(manifest_file_->Read(meta.FileName(), /*filter=*/nullptr,
+                                           /*file_size=*/std::nullopt, &entries));
         }
         std::vector<std::pair<std::string, FileKind>> entry_file_name_actual;
         for (const auto& entry : entries) {

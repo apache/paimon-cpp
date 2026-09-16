@@ -28,6 +28,7 @@ set(PAIMON_COMMON_SRCS
     common/data/binary_string.cpp
     common/data/blob.cpp
     common/data/blob_descriptor.cpp
+    common/data/blob_view.cpp
     common/data/blob_view_struct.cpp
     common/data/blob_utils.cpp
     common/data/columnar/columnar_array.cpp
@@ -63,6 +64,7 @@ set(PAIMON_COMMON_SRCS
     common/data/variant/variant_type_utils.cpp
     common/defs.cpp
     common/executor/executor.cpp
+    common/executor/reader_build_executor.cpp
     common/factories/singleton.cpp
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
@@ -211,6 +213,7 @@ endif()
 
 set(PAIMON_CORE_SRCS
     core/disk/file_io_channel.cpp
+    core/io/arrow_ipc_file.cpp
     core/mergetree/spill_reader.cpp
     core/mergetree/spill_writer.cpp
     core/append/append_only_writer.cpp
@@ -564,6 +567,7 @@ if(PAIMON_BUILD_TESTS)
                     common/data/timestamp_test.cpp
                     common/data/blob_test.cpp
                     common/data/blob_descriptor_test.cpp
+                    common/data/blob_view_test.cpp
                     common/data/blob_view_struct_test.cpp
                     common/data/blob_utils_test.cpp
                     common/data/variant/generic_variant_test.cpp
@@ -606,12 +610,12 @@ if(PAIMON_BUILD_TESTS)
                     common/global_index/bitmap_global_index_result_test.cpp
                     common/global_index/bitmap_scored_global_index_result_test.cpp
                     common/global_index/bitmap/bitmap_global_index_test.cpp
-                    common/global_index/btree/btree_index_meta_test.cpp
+                    common/global_index/sorted_index_file_meta_test.cpp
                     common/global_index/btree/btree_file_footer_test.cpp
-                    common/global_index/btree/key_serializer_test.cpp
+                    common/global_index/key_serializer_test.cpp
                     common/global_index/btree/btree_global_index_integration_test.cpp
                     common/global_index/btree/btree_compatibility_test.cpp
-                    common/global_index/btree/btree_file_meta_selector_test.cpp
+                    common/global_index/sorted_file_meta_selector_test.cpp
                     common/global_index/btree/lazy_filtered_btree_reader_test.cpp
                     common/global_index/rangebitmap/range_bitmap_global_index_test.cpp
                     common/global_index/wrap/file_index_reader_wrapper_test.cpp
@@ -762,6 +766,7 @@ if(PAIMON_BUILD_TESTS)
                     core/casting/cast_executor_test.cpp
                     core/casting/casted_row_test.cpp
                     core/casting/casting_utils_test.cpp
+                    core/catalog/catalog_snapshot_commit_test.cpp
                     core/catalog/commit_table_request_test.cpp
                     core/catalog/renaming_snapshot_commit_test.cpp
                     core/catalog/file_system_catalog_test.cpp

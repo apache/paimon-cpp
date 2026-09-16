@@ -733,12 +733,11 @@ std::shared_ptr<arrow::DataType> NormalizeLeafRepresentation(
 Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::AlignArrayToReadType(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& read_type,
     arrow::MemoryPool* pool) {
-    PAIMON_ASSIGN_OR_RAISE(bool same, EqualWithFieldIds(array->type(), read_type));
-    if (same) {
+    if (array->type()->Equals(read_type, /*check_metadata=*/true)) {
         return array;
     }
     // Produce exactly `read_type` so every file yields the same output type: rebuild
-    // STRUCT/LIST/MAP with read-side types/nullability and cast a leaf (decodes dict).
+    // nested arrays with read-side fields/nullability and cast a leaf (decodes dict).
     const auto& data = array->data();
     switch (read_type->id()) {
         case arrow::Type::STRUCT: {
@@ -785,16 +784,21 @@ Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::AlignArrayToReadTyp
             new_data->child_data = std::move(children);
             return arrow::MakeArray(new_data);
         }
-        case arrow::Type::LIST: {
-            if (array->type()->id() != arrow::Type::LIST) {
+        case arrow::Type::LIST:
+        case arrow::Type::FIXED_SIZE_LIST: {
+            if (array->type()->id() != read_type->id()) {
                 return Status::Invalid(fmt::format("AlignArrayToReadType cannot reconcile {} to {}",
                                                    array->type()->ToString(),
                                                    read_type->ToString()));
             }
-            auto read_list = checked_pointer_cast<arrow::ListType>(read_type);
+            if (read_type->id() == arrow::Type::FIXED_SIZE_LIST &&
+                checked_cast<const arrow::FixedSizeListType&>(*array->type()).list_size() !=
+                    checked_cast<const arrow::FixedSizeListType&>(*read_type).list_size()) {
+                return Status::Invalid("AlignArrayToReadType cannot change fixed-size list size");
+            }
             auto values = arrow::MakeArray(data->child_data[0]);
             PAIMON_ASSIGN_OR_RAISE(values,
-                                   AlignArrayToReadType(values, read_list->value_type(), pool));
+                                   AlignArrayToReadType(values, read_type->field(0)->type(), pool));
             auto new_data = data->Copy();
             new_data->type = read_type;
             new_data->child_data = {values->data()};

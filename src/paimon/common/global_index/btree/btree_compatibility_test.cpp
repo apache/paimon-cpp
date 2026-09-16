@@ -25,8 +25,8 @@
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
 #include "paimon/common/global_index/btree/btree_global_indexer.h"
-#include "paimon/common/global_index/btree/btree_index_meta.h"
-#include "paimon/common/global_index/btree/key_serializer.h"
+#include "paimon/common/global_index/key_serializer.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/fs/file_system.h"
@@ -779,12 +779,14 @@ TEST_F(BTreeCompatibilityTest, DuplicateKeys) {
 TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
     // Test int_50 meta
     {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                             KeySerializer::Create(arrow::int32(), pool_));
         std::string meta_path = data_dir_ + "/btree_test_int_50.bin.meta";
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
-                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> meta,
+                             SortedIndexFileMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->HasNulls());
@@ -792,25 +794,25 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
 
         ASSERT_TRUE(meta->FirstKey());
         ASSERT_OK_AND_ASSIGN(auto min_key,
-                             KeySerializer::DeserializeKey(MemorySlice::Wrap(meta->FirstKey()),
-                                                           arrow::int32(), pool_.get()));
+                             key_serializer->Deserialize(MemorySlice::Wrap(meta->FirstKey())));
         ASSERT_EQ(min_key, Literal(3));
 
         ASSERT_TRUE(meta->LastKey());
         ASSERT_OK_AND_ASSIGN(auto max_key,
-                             KeySerializer::DeserializeKey(MemorySlice::Wrap(meta->LastKey()),
-                                                           arrow::int32(), pool_.get()));
+                             key_serializer->Deserialize(MemorySlice::Wrap(meta->LastKey())));
         ASSERT_EQ(max_key, Literal(143));
     }
 
     // Test float_50 meta
     {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                             KeySerializer::Create(arrow::float32(), pool_));
         std::string meta_path = data_dir_ + "/btree_test_float_50.bin.meta";
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
-                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> meta,
+                             SortedIndexFileMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->HasNulls());
@@ -818,14 +820,12 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
 
         ASSERT_TRUE(meta->FirstKey());
         ASSERT_OK_AND_ASSIGN(auto min_key,
-                             KeySerializer::DeserializeKey(MemorySlice::Wrap(meta->FirstKey()),
-                                                           arrow::float32(), pool_.get()));
+                             key_serializer->Deserialize(MemorySlice::Wrap(meta->FirstKey())));
         ASSERT_EQ(min_key, Literal(static_cast<float>(-INFINITY)));
 
         ASSERT_TRUE(meta->LastKey());
         ASSERT_OK_AND_ASSIGN(auto max_key,
-                             KeySerializer::DeserializeKey(MemorySlice::Wrap(meta->LastKey()),
-                                                           arrow::float32(), pool_.get()));
+                             key_serializer->Deserialize(MemorySlice::Wrap(meta->LastKey())));
         ASSERT_EQ(max_key, Literal(static_cast<float>(std::nan(""))));
     }
 
@@ -835,8 +835,8 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
-                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> meta,
+                             SortedIndexFileMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->HasNulls());
@@ -847,35 +847,37 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
 
     // Test no_nulls meta
     {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                             KeySerializer::Create(arrow::int32(), pool_));
         std::string meta_path = data_dir_ + "/btree_test_int_no_nulls.bin.meta";
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
-                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> meta,
+                             SortedIndexFileMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->FirstKey());
         ASSERT_OK_AND_ASSIGN(auto min_key,
-                             KeySerializer::DeserializeKey(MemorySlice::Wrap(meta->FirstKey()),
-                                                           arrow::int32(), pool_.get()));
+                             key_serializer->Deserialize(MemorySlice::Wrap(meta->FirstKey())));
         ASSERT_EQ(min_key, Literal(4));
 
         ASSERT_TRUE(meta->LastKey());
         ASSERT_OK_AND_ASSIGN(auto max_key,
-                             KeySerializer::DeserializeKey(MemorySlice::Wrap(meta->LastKey()),
-                                                           arrow::int32(), pool_.get()));
+                             key_serializer->Deserialize(MemorySlice::Wrap(meta->LastKey())));
         ASSERT_EQ(max_key, Literal(158));
     }
 
     // Test string_50 meta
     {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                             KeySerializer::Create(arrow::utf8(), pool_));
         std::string meta_path = data_dir_ + "/btree_test_string_50.bin.meta";
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
-                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> meta,
+                             SortedIndexFileMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->HasNulls());
@@ -883,15 +885,13 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
 
         ASSERT_TRUE(meta->FirstKey());
         ASSERT_OK_AND_ASSIGN(auto min_key,
-                             KeySerializer::DeserializeKey(MemorySlice::Wrap(meta->FirstKey()),
-                                                           arrow::utf8(), pool_.get()));
+                             key_serializer->Deserialize(MemorySlice::Wrap(meta->FirstKey())));
         std::string min_key_str = "test_00000";
         ASSERT_EQ(min_key, Literal(FieldType::STRING, min_key_str.data(), min_key_str.size()));
 
         ASSERT_TRUE(meta->LastKey());
         ASSERT_OK_AND_ASSIGN(auto max_key,
-                             KeySerializer::DeserializeKey(MemorySlice::Wrap(meta->LastKey()),
-                                                           arrow::utf8(), pool_.get()));
+                             key_serializer->Deserialize(MemorySlice::Wrap(meta->LastKey())));
         std::string max_key_str = "test_00049";
         ASSERT_EQ(max_key, Literal(FieldType::STRING, max_key_str.data(), max_key_str.size()));
     }

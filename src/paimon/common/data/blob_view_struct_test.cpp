@@ -46,7 +46,7 @@ TEST_F(BlobViewStructTest, TestConstructorAndGetters) {
 }
 
 TEST_F(BlobViewStructTest, TestSerializeDeserializeRoundTrip) {
-    auto serialized = view_struct_.Serialize(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct_.Serialize(pool_));
     ASSERT_NE(serialized, nullptr);
     ASSERT_GT(serialized->size(), 0u);
 
@@ -59,14 +59,14 @@ TEST_F(BlobViewStructTest, TestSerializeDeserializeRoundTrip) {
 }
 
 TEST_F(BlobViewStructTest, TestDeserializeWithInvalidVersion) {
-    auto serialized = view_struct_.Serialize(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct_.Serialize(pool_));
     (*serialized)[0] = '\x02';  // invalid version (current is 1).
     ASSERT_NOK_WITH_MSG(BlobViewStruct::Deserialize(serialized->data(), serialized->size()),
                         "Expecting BlobViewStruct version to be 1, but found 2");
 }
 
 TEST_F(BlobViewStructTest, TestDeserializeWithInvalidMagic) {
-    auto serialized = view_struct_.Serialize(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct_.Serialize(pool_));
     (*serialized)[1] = '\x00';
     ASSERT_NOK_WITH_MSG(BlobViewStruct::Deserialize(serialized->data(), serialized->size()),
                         "missing magic header");
@@ -75,6 +75,12 @@ TEST_F(BlobViewStructTest, TestDeserializeWithInvalidMagic) {
 TEST_F(BlobViewStructTest, TestToString) {
     std::string debug_str = view_struct_.ToString();
     ASSERT_EQ(debug_str, "BlobViewStruct{identifier=test_db.test_table, fieldId=7, rowId=1024}");
+}
+
+TEST_F(BlobViewStructTest, TestSerializeRejectsUnknownDatabase) {
+    BlobViewStruct view_struct(Identifier("test_table"), /*field_id=*/7, /*row_id=*/1024);
+    ASSERT_NOK_WITH_MSG(view_struct.Serialize(pool_),
+                        "upstream table identifier must include database name");
 }
 
 TEST_F(BlobViewStructTest, TestEqual) {
@@ -110,7 +116,7 @@ TEST_F(BlobViewStructTest, TestEqual) {
 }
 
 TEST_F(BlobViewStructTest, TestIsBlobViewStructValid) {
-    auto serialized = view_struct_.Serialize(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct_.Serialize(pool_));
     ASSERT_OK_AND_ASSIGN(bool result,
                          BlobViewStruct::IsBlobViewStruct(serialized->data(), serialized->size()));
     ASSERT_TRUE(result);
@@ -130,7 +136,7 @@ TEST_F(BlobViewStructTest, TestIsBlobViewStructWithTooShortBuffer) {
 
 TEST_F(BlobViewStructTest, TestIsBlobViewStructWithFutureVersion) {
     // Version > CURRENT_VERSION should return false (not an error)
-    auto serialized = view_struct_.Serialize(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct_.Serialize(pool_));
     (*serialized)[0] = '\x02';  // set version to 2 (> CURRENT_VERSION)
     ASSERT_OK_AND_ASSIGN(bool result,
                          BlobViewStruct::IsBlobViewStruct(serialized->data(), serialized->size()));
@@ -139,7 +145,7 @@ TEST_F(BlobViewStructTest, TestIsBlobViewStructWithFutureVersion) {
 
 TEST_F(BlobViewStructTest, TestIsBlobViewStructWithWrongMagic) {
     // Wrong magic number should return false
-    auto serialized = view_struct_.Serialize(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct_.Serialize(pool_));
     // Corrupt the magic bytes (bytes 1-8)
     (*serialized)[1] = '\x00';
     (*serialized)[2] = '\x00';

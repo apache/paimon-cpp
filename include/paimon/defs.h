@@ -612,6 +612,10 @@ struct PAIMON_EXPORT Options {
     /// Default value is "false".
     static const char REALTIME_ENABLED[];
 
+    /// "realtime.spill-enabled" - Whether the default real-time store spills sealed segments to
+    /// the local temporary directory. Default value is "false".
+    static const char REALTIME_SPILL_ENABLED[];
+
     /// "realtime.read-view-ttl" - Lifetime of a real-time memory view pinned by scan planning
     /// before reader creation. Default value is "5 min".
     static const char REALTIME_READ_VIEW_TTL[];

@@ -26,8 +26,8 @@
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/global_index/btree/btree_global_index_writer.h"
 #include "paimon/common/global_index/btree/btree_global_indexer.h"
-#include "paimon/common/global_index/btree/btree_index_meta.h"
 #include "paimon/common/global_index/btree/lazy_filtered_btree_reader.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/data/decimal.h"
@@ -490,8 +490,8 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteEmptyStringKeyMetadata) {
     ASSERT_OK_AND_ASSIGN(auto metas, writer->Finish());
     ASSERT_EQ(metas.size(), 1);
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
-                         BTreeIndexMeta::Deserialize(metas[0].metadata, pool_.get()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> meta,
+                         SortedIndexFileMeta::Deserialize(metas[0].metadata, pool_.get()));
     ASSERT_TRUE(meta->FirstKey());
     ASSERT_EQ(meta->FirstKey()->size(), 0);
     ASSERT_TRUE(meta->LastKey());
@@ -1940,7 +1940,7 @@ TEST_P(BTreeGlobalIndexIntegrationTest, TestIOException) {
     ASSERT_TRUE(run_complete);
 }
 
-// Multiple files with BTreeFileMetaSelector filtering
+// Multiple files with SortedFileMetaSelector filtering
 TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadMultiFilesWithMetaSelector) {
     auto file_writer = std::make_shared<FakeGlobalIndexFileWriter>(fs_, base_path_);
     auto field = arrow::field("int_field", arrow::int32());
@@ -1982,7 +1982,7 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadMultiFilesWithMetaSelector) 
     ASSERT_EQ(all_metas.size(), 3);
 
     // Create reader over all 3 files (internally uses LazyFilteredBTreeReader +
-    // BTreeFileMetaSelector)
+    // SortedFileMetaSelector)
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     auto c_schema = CreateArrowSchema(field);
     ASSERT_OK_AND_ASSIGN(auto reader,

@@ -25,8 +25,8 @@
 #include "paimon/common/executor/future.h"
 #include "paimon/common/global_index/btree/btree_file_footer.h"
 #include "paimon/common/global_index/btree/btree_global_index_reader.h"
-#include "paimon/common/global_index/btree/btree_index_meta.h"
-#include "paimon/common/global_index/btree/key_serializer.h"
+#include "paimon/common/global_index/key_serializer.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/common/global_index/union_global_index_reader.h"
 #include "paimon/common/memory/memory_slice.h"
 #include "paimon/common/memory/memory_slice_input.h"
@@ -44,22 +44,24 @@ Result<std::shared_ptr<LazyFilteredBTreeReader>> LazyFilteredBTreeReader::Create
     const std::shared_ptr<GlobalIndexFileReader>& file_reader,
     const std::shared_ptr<CacheManager>& cache_manager, const std::shared_ptr<MemoryPool>& pool,
     const std::shared_ptr<Executor>& executor) {
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BTreeFileMetaSelector> file_selector,
-                           BTreeFileMetaSelector::Create(files, key_type, pool));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeySerializer> key_serializer,
+                           KeySerializer::Create(key_type, pool));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<SortedFileMetaSelector> file_selector,
+                           SortedFileMetaSelector::Create(files, key_serializer));
     return std::shared_ptr<LazyFilteredBTreeReader>(
-        new LazyFilteredBTreeReader(read_buffer_size, std::move(file_selector), key_type,
+        new LazyFilteredBTreeReader(read_buffer_size, std::move(file_selector), key_serializer,
                                     file_reader, cache_manager, pool, executor));
 }
 
 LazyFilteredBTreeReader::LazyFilteredBTreeReader(
-    std::optional<int32_t> read_buffer_size, std::unique_ptr<BTreeFileMetaSelector> file_selector,
-    std::shared_ptr<arrow::DataType> key_type, std::shared_ptr<GlobalIndexFileReader> file_reader,
-    std::shared_ptr<CacheManager> cache_manager, std::shared_ptr<MemoryPool> pool,
-    std::shared_ptr<Executor> executor)
+    std::optional<int32_t> read_buffer_size, std::unique_ptr<SortedFileMetaSelector> file_selector,
+    std::shared_ptr<KeySerializer> key_serializer,
+    std::shared_ptr<GlobalIndexFileReader> file_reader, std::shared_ptr<CacheManager> cache_manager,
+    std::shared_ptr<MemoryPool> pool, std::shared_ptr<Executor> executor)
     : read_buffer_size_(read_buffer_size),
       pool_(std::move(pool)),
       file_selector_(std::move(file_selector)),
-      key_type_(std::move(key_type)),
+      key_serializer_(std::move(key_serializer)),
       file_reader_(std::move(file_reader)),
       cache_manager_(std::move(cache_manager)),
       executor_(std::move(executor)) {}
@@ -224,11 +226,11 @@ Result<std::shared_ptr<GlobalIndexReader>> LazyFilteredBTreeReader::GetOrCreateR
 Result<std::shared_ptr<GlobalIndexReader>> LazyFilteredBTreeReader::CreateSingleReader(
     const GlobalIndexIOMeta& meta) {
     // Create comparator based on field type
-    auto comparator = KeySerializer::CreateComparator(key_type_, pool_);
+    auto comparator = key_serializer_->CreateComparator();
 
     // Get min/max key slices from meta data (keep as slices; Create() will deserialize)
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BTreeIndexMeta> index_meta,
-                           BTreeIndexMeta::Deserialize(meta.metadata, pool_.get()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SortedIndexFileMeta> index_meta,
+                           SortedIndexFileMeta::Deserialize(meta.metadata, pool_.get()));
     std::optional<MemorySlice> min_key_slice;
     std::optional<MemorySlice> max_key_slice;
     if (index_meta->FirstKey()) {
@@ -270,7 +272,7 @@ Result<std::shared_ptr<GlobalIndexReader>> LazyFilteredBTreeReader::CreateSingle
                               comparator, block_cache, pool_));
 
     return BTreeGlobalIndexReader::Create(sst_file_reader, std::move(null_bitmap), min_key_slice,
-                                          max_key_slice, key_type_, pool_);
+                                          max_key_slice, key_serializer_);
 }
 
 Result<RoaringBitmap64> LazyFilteredBTreeReader::ReadNullBitmap(

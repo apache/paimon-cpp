@@ -662,9 +662,9 @@ Result<RowRanges> FileReaderWrapper::CalculateFilteredRowRanges(
                                     {/*column_index=*/true, /*offset_index=*/true});
         // Keep this restricted reader separate: projected payload columns still need
         // their offset indexes when the data reader is initialized later.
-        return ColumnIndexFilter::CalculateRowRanges(predicate,
-                                                     page_index_reader->RowGroup(row_group_index),
-                                                     column_name_to_index, row_count);
+        return ColumnIndexFilter::CalculateRowRanges(
+            predicate, page_index_reader->RowGroup(row_group_index), column_name_to_index,
+            meta_data->schema(), row_count);
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::CalculateFilteredRowRanges")
 }

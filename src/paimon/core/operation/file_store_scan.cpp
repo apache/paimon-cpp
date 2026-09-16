@@ -276,8 +276,33 @@ Status FileStoreScan::ReadManifests(std::optional<Snapshot>* snapshot_ptr,
 Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
                                                 std::vector<ManifestFileMeta>* manifests) const {
     switch (scan_mode_) {
-        case ScanMode::ALL:
-            return manifest_list_->ReadDataManifests(snapshot, manifests);
+        case ScanMode::ALL: {
+            // The base and the delta manifest list are two independent files and neither read
+            // depends on the other, so issue both together instead of paying the two metadata
+            // round trips one after the other. The result keeps the base-then-delta order that
+            // ReadDataManifests produced.
+            auto read_list = [this, &snapshot](bool base) -> Result<std::vector<ManifestFileMeta>> {
+                std::vector<ManifestFileMeta> metas;
+                PAIMON_RETURN_NOT_OK(base ? manifest_list_->ReadBaseManifests(snapshot, &metas)
+                                          : manifest_list_->ReadDeltaManifests(snapshot, &metas));
+                return metas;
+            };
+            std::vector<std::future<Result<std::vector<ManifestFileMeta>>>> futures;
+            futures.reserve(2);
+            futures.push_back(
+                Via(executor_.get(), [read_list]() { return read_list(/*base=*/true); }));
+            futures.push_back(
+                Via(executor_.get(), [read_list]() { return read_list(/*base=*/false); }));
+            for (auto& metas : CollectAll(futures)) {
+                if (!metas.ok()) {
+                    return metas.status();
+                }
+                for (auto& meta : metas.value()) {
+                    manifests->emplace_back(std::move(meta));
+                }
+            }
+            return Status::OK();
+        }
         case ScanMode::DELTA:
             return manifest_list_->ReadDeltaManifests(snapshot, manifests);
         case ScanMode::CHANGELOG:
@@ -299,8 +324,8 @@ Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manif
             if (apply_scan_filter) {
                 PAIMON_RETURN_NOT_OK(ReadManifestFileMeta(meta, &tmp_entries));
             } else {
-                PAIMON_RETURN_NOT_OK(
-                    manifest_file_->Read(meta.FileName(), /*filter=*/nullptr, &tmp_entries));
+                PAIMON_RETURN_NOT_OK(manifest_file_->Read(meta.FileName(), /*filter=*/nullptr,
+                                                          meta.FileSize(), &tmp_entries));
             }
             return tmp_entries;
         };
@@ -331,7 +356,7 @@ Status FileStoreScan::ReadManifestEntries(const std::vector<ManifestFileMeta>& m
 
 // Cache merged live manifest entries for one bucket before applying scan filters. Each cache value
 // keeps bounded snapshot results for a table/branch/bucket. Inferred entries also include other
-// bucket counts and schema IDs, with the current count and schema in the cache key. Exact hits
+// bucket counts, with the current count and schema in the cache key. Exact hits
 // can be returned directly; cache misses rebuild the target snapshot bucket from the target
 // snapshot's data manifests.
 Status FileStoreScan::ReadManifestEntriesWithCache(
@@ -422,15 +447,26 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
     const std::vector<ManifestFileMeta>& manifest_metas, int32_t bucket,
     std::vector<ManifestEntry>* merged_entries) const {
     const bool inferred_bucket = !bucket_filter_ && bucket_selector_ != nullptr;
-    // Explicit-bucket lazy decoding cannot retain entries with a different layout.
-    if (!inferred_bucket && core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+    if (core_options_.ScanManifestEntryLazyDecodeEnabled()) {
         std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
         futures.reserve(manifest_metas.size());
         for (const auto& meta : manifest_metas) {
-            auto read_meta_task = [this, meta, bucket]() -> Result<std::vector<ManifestEntry>> {
+            auto read_meta_task = [this, meta, bucket,
+                                   inferred_bucket]() -> Result<std::vector<ManifestEntry>> {
                 std::vector<ManifestEntry> bucket_entries;
-                PAIMON_RETURN_NOT_OK(
-                    manifest_file_->ReadBucketEntries(meta.FileName(), bucket, &bucket_entries));
+                if (meta.MinBucket() && meta.MaxBucket() && meta.MinBucket().value() == bucket &&
+                    meta.MaxBucket().value() == bucket) {
+                    // Every entry belongs to this bucket; a projection pass cannot prune rows.
+                    PAIMON_RETURN_NOT_OK(manifest_file_->Read(meta.FileName(), /*filter=*/nullptr,
+                                                              meta.FileSize(), &bucket_entries));
+                } else if (inferred_bucket) {
+                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
+                        meta.FileName(), bucket, core_options_.GetBucket(), meta.FileSize(),
+                        &bucket_entries));
+                } else {
+                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
+                        meta.FileName(), bucket, std::nullopt, meta.FileSize(), &bucket_entries));
+                }
                 return bucket_entries;
             };
             futures.push_back(Via(executor_.get(), read_meta_task));
@@ -456,8 +492,7 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
     unmerged_entries.reserve(entries.size());
     for (auto& entry : entries) {
         if (entry.Bucket() == bucket ||
-            (inferred_bucket && (entry.TotalBuckets() != core_options_.GetBucket() ||
-                                 entry.File()->schema_id != table_schema_->Id()))) {
+            (inferred_bucket && entry.TotalBuckets() != core_options_.GetBucket())) {
             unmerged_entries.emplace_back(std::move(entry));
         }
     }
@@ -551,7 +586,7 @@ Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
     PAIMON_RETURN_NOT_OK(manifest_file_->Read(
         manifest.FileName(),
         [this](const ManifestEntry& entry) -> Result<bool> { return FilterManifestEntry(entry); },
-        &unfiltered_entries));
+        manifest.FileSize(), &unfiltered_entries));
     entries->reserve(entries->size() + unfiltered_entries.size());
     for (auto& entry : unfiltered_entries) {
         entries->emplace_back(std::move(entry));
@@ -573,41 +608,14 @@ Result<bool> FileStoreScan::FilterManifestEntry(const ManifestEntry& entry) cons
     if (bucket_filter_ != std::nullopt && entry.Bucket() != bucket_filter_.value()) {
         return false;
     }
-    if (bucket_selector_ && entry.TotalBuckets() > 0) {
-        PAIMON_ASSIGN_OR_RAISE(bool compatible, HasCompatibleBucketKeys(entry.File()->schema_id));
-        if (compatible && entry.Bucket() != bucket_selector_->Bucket(entry.TotalBuckets())) {
-            return false;
-        }
+    if (bucket_selector_ && entry.TotalBuckets() > 0 &&
+        entry.Bucket() != bucket_selector_->Bucket(entry.TotalBuckets())) {
+        return false;
     }
     if (level_filter_ != nullptr && !level_filter_(entry.Level())) {
         return false;
     }
     return FilterByStats(entry);
-}
-
-Result<bool> FileStoreScan::HasCompatibleBucketKeys(int64_t data_schema_id) const {
-    if (data_schema_id == table_schema_->Id()) {
-        return true;
-    }
-    auto cached = bucket_schema_compatibility_.Find(data_schema_id);
-    if (cached) {
-        return cached.value();
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> data_schema,
-                           schema_manager_->ReadSchema(data_schema_id));
-    const auto& current_keys = table_schema_->BucketKeys();
-    const auto& data_keys = data_schema->BucketKeys();
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions data_options, CoreOptions::FromMap(data_schema->Options()));
-    bool compatible = current_keys.size() == data_keys.size() &&
-                      core_options_.GetBucketFunctionType() == data_options.GetBucketFunctionType();
-    for (size_t i = 0; compatible && i < current_keys.size(); ++i) {
-        PAIMON_ASSIGN_OR_RAISE(DataField current_field, table_schema_->GetField(current_keys[i]));
-        PAIMON_ASSIGN_OR_RAISE(DataField data_field, data_schema->GetField(data_keys[i]));
-        compatible = current_field.Id() == data_field.Id() &&
-                     current_field.Type()->Equals(data_field.Type());
-    }
-    bucket_schema_compatibility_.Insert(data_schema_id, compatible);
-    return compatible;
 }
 
 Status FileStoreScan::SplitAndSetFilter(const std::vector<std::string>& partition_keys,

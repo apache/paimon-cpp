@@ -193,8 +193,19 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
         // Compact the payload superset down to the matched rows (ascending file row order).
         PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector payload_slices,
                                ReaderUtils::GenerateFilteredArrayVector(payload_array, valid));
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_compacted,
-                                          arrow::Concatenate(payload_slices, arrow_pool_.get()));
+        std::shared_ptr<arrow::Array> payload_compacted;
+        if (payload_slices.size() == 1) {
+            // A single run has nothing to merge, and `AssembleFullBatch` normalizes each column
+            // anyway, so hand the slice over rather than let `Concatenate` copy the payload a
+            // second time. A run at the batch head then stays zero-copy; a mid-batch run is still
+            // copied once by that normalization, so this is never worse. Where it stays zero-copy
+            // the slice keeps the batch's buffers alive until the consumer releases the assembled
+            // batch, bounded by the batch size times the prefetch queue depth.
+            payload_compacted = std::move(payload_slices.front());
+        } else {
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                payload_compacted, arrow::Concatenate(payload_slices, arrow_pool_.get()));
+        }
 
         auto card = static_cast<int64_t>(valid.Cardinality());
         if (probe_cursor_ + card > probe_data_->length()) {

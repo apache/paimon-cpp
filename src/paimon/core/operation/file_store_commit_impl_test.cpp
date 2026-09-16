@@ -23,13 +23,16 @@
 #include <cstddef>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <set>
+#include <tuple>
 #include <utility>
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/status.h"
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
@@ -68,6 +71,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
+#include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/file_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -80,8 +84,10 @@
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/io_exception_helper.h"
+#include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
 
@@ -157,6 +163,7 @@ class FileStoreCommitImplTest : public testing::Test {
                                        /*primary_keys=*/{}, {},
                                        /*ignore_if_exists=*/false));
         table_path_ = PathUtil::JoinPath(test_root_, "foo.db/bar");
+        ASSERT_OK_AND_ASSIGN(table_schema_, catalog->LoadTableSchema(Identifier("foo", "bar")));
     }
     void TearDown() override {
         auto factory_creator = paimon::FactoryCreator::GetInstance();
@@ -236,6 +243,167 @@ class FileStoreCommitImplTest : public testing::Test {
         return result;
     }
 
+    std::set<std::string> NewFileNames(const std::vector<std::shared_ptr<CommitMessage>>& msgs) {
+        std::set<std::string> names;
+        for (const std::shared_ptr<CommitMessage>& msg : msgs) {
+            std::shared_ptr<CommitMessageImpl> impl =
+                std::dynamic_pointer_cast<CommitMessageImpl>(msg);
+            if (impl == nullptr) {
+                ADD_FAILURE() << "commit message is not a CommitMessageImpl";
+                continue;
+            }
+            for (const std::shared_ptr<DataFileMeta>& file :
+                 impl->GetNewFilesIncrement().NewFiles()) {
+                names.insert(file->file_name);
+            }
+        }
+        EXPECT_FALSE(names.empty()) << "these commit messages add no data file";
+        return names;
+    }
+
+    std::shared_ptr<MockVersionManagedCatalog> CreateCatalog(
+        Result<bool> answer = true, const std::string& table_uuid = "mock-table-uuid") const {
+        auto catalog = std::make_shared<MockVersionManagedCatalog>(std::move(answer), table_uuid);
+        catalog->SetTableSchema(table_schema_);
+        return catalog;
+    }
+
+    std::shared_ptr<Schema> TableSchemaWithId(int64_t schema_id) const {
+        EXPECT_OK_AND_ASSIGN(
+            std::unique_ptr<TableSchema> evolved,
+            TableSchema::Create(schema_id, arrow::schema(fields_), {"f1"}, {}, {}));
+        return std::shared_ptr<Schema>(std::move(evolved));
+    }
+
+    std::shared_ptr<MockVersionManagedCatalog> CreateCatalogServingSchemaId(
+        int64_t schema_id) const {
+        std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalog();
+        catalog->SetTableSchema(TableSchemaWithId(schema_id));
+        return catalog;
+    }
+
+    Status PrepareFirstCommitMessageFiles() {
+        return PrepareFakeFiles(
+            {"/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc",
+             "/f1=10/bucket-1/data-6828284c-e707-49b5-af6b-69be79af120c-0.orc",
+             "/f1=20/bucket-0/data-8dc7f04c-3c98-48b2-9d56-834d746c4a40-0.orc",
+             "/f1=10/bucket-1/data-fd1d2255-43f2-4534-b4cc-08b29e662940-0.orc",
+             "/f1=20/bucket-0/data-7b3f4cc7-116b-4d2f-9c62-5dadc1f11bcb-0.orc"});
+    }
+
+    void PublishAcceptedSnapshots(const std::shared_ptr<MockVersionManagedCatalog>& catalog) {
+        MockVersionManagedCatalog* raw = catalog.get();
+        std::shared_ptr<FileSystem> fs = file_system_;
+        std::string table_path = table_path_;
+        catalog->SetOnCommit([raw, fs, table_path]() {
+            if (raw->AcceptedSnapshots().empty()) {
+                return;
+            }
+            const Snapshot& taken = raw->AcceptedSnapshots().back();
+            SnapshotManager manager(fs, table_path);
+            ASSERT_OK(fs->Mkdirs(manager.SnapshotDirectory()));
+            ASSERT_OK_AND_ASSIGN(std::string json, taken.ToJsonString());
+            ASSERT_OK(fs->WriteFile(manager.SnapshotPath(taken.Id()), json, true));
+        });
+    }
+
+    std::vector<std::shared_ptr<CommitMessage>> CommitMessagesOfRound(int32_t round) const {
+        std::vector<std::shared_ptr<CommitMessage>> msgs = GetCommitMessages(
+            paimon::test::GetDataDir() + "/orc/append_09.db/append_09/commit_messages/" +
+                "commit_messages-0" + std::to_string(round),
+            3);
+        EXPECT_GT(msgs.size(), 0u) << "no commit messages in fixture commit_messages-0" << round;
+        return msgs;
+    }
+
+    void CommitAsCompetitor(int32_t round, int64_t commit_identifier) {
+        CommitContextBuilder builder(table_path_, "competitor");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                             builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> competitor,
+                             FileStoreCommit::Create(std::move(context)));
+        ASSERT_OK(competitor->Commit(CommitMessagesOfRound(round), commit_identifier));
+    }
+
+    struct CatalogCommitSpec {
+        std::shared_ptr<Catalog> catalog;
+        std::string commit_user = "commit_user_1";
+        std::string root_path;
+        Identifier identifier{"db", "tbl"};
+        std::optional<std::string> table_id;
+        bool append_commit_check_conflict = false;
+        std::map<std::string, std::string> options;
+    };
+
+    Result<std::unique_ptr<FileStoreCommit>> CreateCatalogCommit(
+        const CatalogCommitSpec& spec) const {
+        CommitContextBuilder builder(spec.root_path.empty() ? table_path_ : spec.root_path,
+                                     spec.commit_user);
+        builder.AddOption(Options::FILE_SYSTEM, "local")
+            .WithCatalog(spec.catalog, spec.identifier)
+            .AppendCommitCheckConflict(spec.append_commit_check_conflict);
+        if (spec.table_id) {
+            builder.WithTableId(spec.table_id.value());
+        }
+        for (const auto& [key, value] : spec.options) {
+            builder.AddOption(key, value);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
+        return FileStoreCommit::Create(std::move(context));
+    }
+
+    Result<std::unique_ptr<FileStoreCommit>> CreateCatalogCommit(
+        const std::shared_ptr<Catalog>& catalog) const {
+        CatalogCommitSpec spec;
+        spec.catalog = catalog;
+        return CreateCatalogCommit(spec);
+    }
+
+    void BuildRealtimeProgress(FileStoreCommitImpl* commit_impl,
+                               const std::vector<std::shared_ptr<CommitMessage>>& msgs,
+                               std::vector<RealtimeCommitProgress>* progress) {
+        for (const std::shared_ptr<CommitMessage>& message : msgs) {
+            std::shared_ptr<CommitMessageImpl> message_impl =
+                std::dynamic_pointer_cast<CommitMessageImpl>(message);
+            ASSERT_NE(nullptr, message_impl);
+            std::map<std::string, std::string> partition;
+            ASSERT_OK_AND_ASSIGN(partition, commit_impl->PartitionToMap(message_impl->Partition()));
+            progress->push_back(RealtimeCommitProgress{
+                message, RealtimePartitionBucket(std::move(partition), message_impl->Bucket()),
+                OffsetRange(0, 1)});
+        }
+    }
+
+    struct TwoWriterRecovery {
+        std::shared_ptr<MockVersionManagedCatalog> catalog;
+        std::unique_ptr<FileStoreCommit> first_commit;
+        std::map<int64_t, std::vector<std::shared_ptr<CommitMessage>>> inputs;
+    };
+
+    void SetUpTwoWriterRecovery(bool publish_snapshots, TwoWriterRecovery* recovery) {
+        recovery->catalog = CreateCatalog();
+        recovery->catalog->CheckBaseSnapshotUuid();
+        if (publish_snapshots) {
+            PublishAcceptedSnapshots(recovery->catalog);
+        }
+
+        ASSERT_OK_AND_ASSIGN(recovery->first_commit, CreateCatalogCommit(recovery->catalog));
+        ASSERT_OK(PrepareFirstCommitMessageFiles());
+        recovery->inputs[7] = CommitMessagesOfRound(1);
+        ASSERT_OK_AND_ASSIGN(int32_t committed,
+                             recovery->first_commit->FilterAndCommit(recovery->inputs, 5));
+        ASSERT_EQ(1, committed);
+
+        CatalogCommitSpec other_spec;
+        other_spec.catalog = recovery->catalog;
+        other_spec.commit_user = "commit_user_2";
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> other_commit,
+                             CreateCatalogCommit(other_spec));
+        ASSERT_OK(other_commit->Commit(CommitMessagesOfRound(2), 1));
+        ASSERT_EQ(recovery->catalog->AcceptedSnapshots().size(), 2u);
+        ASSERT_EQ(recovery->catalog->AcceptedSnapshots().back().CommitUser(), "commit_user_2");
+    }
+
     size_t CountFiles(const std::string& dir) const {
         size_t count = 0;
         std::error_code ec;
@@ -296,6 +464,18 @@ class FileStoreCommitImplTest : public testing::Test {
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
             /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
+    }
+
+    std::shared_ptr<CommitMessage> CreateRowIdCommitMessage(const std::string& file_name,
+                                                            std::optional<int64_t> first_row_id,
+                                                            int64_t schema_id = 0) {
+        auto file = CreateAppendDataFileMeta(file_name, 10);
+        file->schema_id = schema_id;
+        if (first_row_id) {
+            file->AssignFirstRowId(first_row_id.value());
+        }
+        return std::make_shared<CommitMessageImpl>(
+            CreateIntRow(10), 0, 2, DataIncrement({file}, {}, {}), CompactIncrement({}, {}, {}));
     }
 
     bool IsStringInSet(const std::set<std::string>& strSet, const std::string& target) {
@@ -373,6 +553,7 @@ class FileStoreCommitImplTest : public testing::Test {
     std::unique_ptr<UniqueTestDirectory> dir_;
     std::string test_root_;
     std::string table_path_;
+    std::shared_ptr<Schema> table_schema_;
     std::shared_ptr<FileSystem> file_system_;
     arrow::FieldVector fields_;
 };
@@ -411,15 +592,12 @@ TEST_F(FileStoreCommitImplTest, TestRESTCatalogCommit) {
                          context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
                              .AddOption(Options::FILE_SYSTEM, "local")
                              .UseRESTCatalogCommit(true)
+                             .WithTableId("table-uuid")
                              .Finish());
 
     ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
 
-    std::vector<std::shared_ptr<CommitMessage>> msgs =
-        GetCommitMessages(paimon::test::GetDataDir() +
-                              "/orc/append_09.db/append_09/commit_messages/commit_messages-01",
-                          /*version=*/3);
-    ASSERT_GT(msgs.size(), 0);
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
     ASSERT_NOK_WITH_MSG(commit->GetLastCommitTableRequest(),
                         "Should call Commit first before GetLastCommitTableRequest.");
     ASSERT_OK(commit->Commit(msgs));
@@ -448,9 +626,11 @@ TEST_F(FileStoreCommitImplTest, TestRESTCatalogCommit) {
                             /*file_size_in_bytes=*/1118, /*file_count=*/2,
                             /*last_file_creation_time=*/1724090888727l - 28800000l,
                             /*total_buckets=*/-1)};
-    CommitTableRequest expected_commit_table_request(expected_snapshot,
+    CommitTableRequest expected_commit_table_request("table-uuid", std::nullopt, expected_snapshot,
                                                      expected_partition_statistics);
     ASSERT_TRUE(commit_table_request.TEST_Equal(expected_commit_table_request));
+    ASSERT_TRUE(commit_table_request.GetSnapshot().Uuid().has_value());
+    ASSERT_EQ(commit_table_request.GetSnapshot().Uuid().value().size(), 36u);
 
     std::shared_ptr<Metrics> metrics = commit->GetCommitMetrics();
     ASSERT_TRUE(metrics);
@@ -460,6 +640,760 @@ TEST_F(FileStoreCommitImplTest, TestRESTCatalogCommit) {
     ASSERT_OK_AND_ASSIGN(
         bool exist, file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/snapshot-1")));
     ASSERT_FALSE(exist);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCommitCarriesBaseSnapshotUuid) {
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+
+    CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
+                         base_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
+    ASSERT_OK_AND_ASSIGN(auto base_commit, FileStoreCommit::Create(std::move(base_context)));
+    ASSERT_OK(base_commit->Commit(msgs, 1));
+
+    std::string snapshot_path = PathUtil::JoinPath(table_path_, "snapshot/snapshot-1");
+    ASSERT_OK_AND_ASSIGN(Snapshot base_snapshot, Snapshot::FromPath(file_system_, snapshot_path));
+    ASSERT_TRUE(base_snapshot.Uuid().has_value());
+    const std::string base_uuid = base_snapshot.Uuid().value();
+
+    CommitContextBuilder rest_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> rest_context,
+                         rest_builder.AddOption(Options::FILE_SYSTEM, "local")
+                             .UseRESTCatalogCommit(true)
+                             .WithTableId("table-uuid")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(auto rest_commit, FileStoreCommit::Create(std::move(rest_context)));
+    ASSERT_OK(rest_commit->Commit(msgs, 2));
+
+    ASSERT_OK_AND_ASSIGN(std::string request_str, rest_commit->GetLastCommitTableRequest());
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest request,
+                         CommitTableRequest::FromJsonString(request_str));
+    ASSERT_EQ(request.GetTableId(), std::optional<std::string>("table-uuid"));
+    ASSERT_EQ(request.GetBaseSnapshotUuid(), std::optional<std::string>(base_uuid));
+    ASSERT_EQ(request.GetSnapshot().Id(), 2);
+    ASSERT_TRUE(request.GetSnapshot().Uuid().has_value());
+    ASSERT_EQ(request.GetSnapshot().Uuid().value().size(), 36u);
+    ASSERT_NE(request.GetSnapshot().Uuid(), request.GetBaseSnapshotUuid());
+
+    auto catalog = CreateCatalog();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> catalog_commit,
+                         CreateCatalogCommit(catalog));
+    ASSERT_OK(catalog_commit->Commit(msgs, 3));
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_EQ(catalog->CommitCalls().front().base_snapshot_uuid,
+              std::optional<std::string>(base_uuid));
+    ASSERT_EQ(catalog->CommitCalls().front().snapshot.Id(), 2);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitTakesTheSnapshot) {
+    auto catalog = CreateCatalog();
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.table_id = "table-uuid-1";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    ASSERT_OK(commit->Commit(msgs));
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    const MockVersionManagedCatalog::CommitCall& call = catalog->CommitCalls().front();
+    ASSERT_EQ(call.identifier, Identifier("db", "tbl"));
+    ASSERT_EQ(call.table_uuid, std::optional<std::string>("table-uuid-1"));
+    ASSERT_EQ(call.base_snapshot_uuid, std::nullopt);
+    ASSERT_EQ(call.snapshot.Id(), 1);
+    ASSERT_EQ(catalog->GetTableCalls(), 0u);
+    ASSERT_GT(catalog->LoadTableSchemaCalls(), 0u);
+
+    ASSERT_OK_AND_ASSIGN(std::string request_str, commit->GetLastCommitTableRequest());
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest request,
+                         CommitTableRequest::FromJsonString(request_str));
+    ASSERT_EQ(request.GetTableId(), std::optional<std::string>("table-uuid-1"));
+    ASSERT_EQ(request.GetBaseSnapshotUuid(), std::nullopt);
+    ASSERT_EQ(request.GetSnapshot().Id(), 1);
+
+    ASSERT_OK_AND_ASSIGN(
+        bool exist, file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/snapshot-1")));
+    ASSERT_FALSE(exist);
+    ASSERT_OK_AND_ASSIGN(bool hint_exist,
+                         file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/LATEST")));
+    ASSERT_FALSE(hint_exist);
+    ASSERT_GT(CountFiles(PathUtil::JoinPath(table_path_, "manifest")), 0u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCommitIsRefusedForATableRecreatedUnderTheSameName) {
+    auto catalog = CreateCatalog(true, "table-uuid-of-the-new-table");
+    catalog->CheckTableUuid();
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.table_id = "table-uuid-of-the-dropped-table";
+    spec.options = {{Options::COMMIT_MAX_RETRIES, "2"}, {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    ASSERT_NOK_WITH_MSG(commit->Commit(msgs), "no table with id table-uuid-of-the-dropped-table");
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_EQ(catalog->CommitCalls().front().table_uuid,
+              std::optional<std::string>("table-uuid-of-the-dropped-table"));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> unchecked_commit,
+                         CreateCatalogCommit(catalog));
+    ASSERT_OK(unchecked_commit->Commit(msgs, 2));
+    ASSERT_EQ(catalog->CommitCalls().size(), 2u);
+    ASSERT_EQ(catalog->CommitCalls().back().table_uuid, std::nullopt);
+    ASSERT_EQ(catalog->GetTableCalls(), 0u);
+    ASSERT_OK_AND_ASSIGN(std::string request_str, unchecked_commit->GetLastCommitTableRequest());
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest request,
+                         CommitTableRequest::FromJsonString(request_str));
+    ASSERT_EQ(request.GetTableId(), std::nullopt);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogServesTheSchemaOfTheTableItNames) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.root_path = dir->Str();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    ASSERT_GT(catalog->LoadTableSchemaCalls(), 0u);
+
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    ASSERT_OK(commit->Commit(msgs));
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_EQ(catalog->CommitCalls().front().snapshot.Id(), 1);
+    ASSERT_EQ(catalog->CommitCalls().front().snapshot.SchemaId(), 7);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogWhichDoesNotKnowTheTableFailsCreate) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto empty_catalog = std::make_shared<MockVersionManagedCatalog>();
+    CatalogCommitSpec spec;
+    spec.catalog = empty_catalog;
+    spec.root_path = dir->Str();
+    ASSERT_NOK_WITH_MSG(CreateCatalogCommit(spec), "not exist");
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogSchemaWinsOverTheOneUnderTheTablePath) {
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    ASSERT_OK(commit->Commit(msgs));
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_EQ(catalog->CommitCalls().front().snapshot.SchemaId(), 7);
+
+    CommitContextBuilder path_builder(table_path_, "commit_user_2");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> path_context,
+                         path_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
+    ASSERT_OK_AND_ASSIGN(auto path_commit, FileStoreCommit::Create(std::move(path_context)));
+    std::vector<std::shared_ptr<CommitMessage>> other_msgs = CommitMessagesOfRound(2);
+    ASSERT_OK(path_commit->Commit(other_msgs, 2));
+    ASSERT_OK_AND_ASSIGN(
+        Snapshot written,
+        Snapshot::FromPath(file_system_, PathUtil::JoinPath(table_path_, "snapshot/snapshot-1")));
+    ASSERT_EQ(written.SchemaId(), 0);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogSchemaIsRereadOnEveryCommit) {
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    catalog->CheckBaseSnapshotUuid();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+    for (int32_t round : {1, 2}) {
+        SCOPED_TRACE(round);
+        catalog->SetTableSchema(TableSchemaWithId(7 + round));
+        ASSERT_OK(commit->Commit(CommitMessagesOfRound(round), round));
+        ASSERT_EQ(catalog->AcceptedSnapshots().size(), static_cast<size_t>(round));
+        ASSERT_EQ(catalog->AcceptedSnapshots().back().Id(), round);
+        ASSERT_EQ(catalog->AcceptedSnapshots().back().SchemaId(), 7 + round);
+    }
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogSchemaWhichIsNotADataTableSchemaIsRefused) {
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+
+    catalog->SetTableSchema(std::make_shared<SystemTableSchema>(arrow::schema(fields_)));
+    ASSERT_NOK_WITH_MSG(commit->Commit(CommitMessagesOfRound(1)),
+                        "did not hand back a data table schema");
+    ASSERT_TRUE(catalog->CommitCalls().empty());
+}
+
+TEST_F(FileStoreCommitImplTest, TestTableIdWithNothingToSendItInIsRefused) {
+    CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                         context_builder.AddOption(Options::FILE_SYSTEM, "local")
+                             .WithTableId("table-uuid")
+                             .Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)),
+                        "publishes the snapshot by writing it to the table directory");
+
+    auto catalog = CreateCatalog();
+    catalog->SetSupportsVersionManagement(false);
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.table_id = "table-uuid";
+    ASSERT_OK(CreateCatalogCommit(spec));
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogWithoutVersionManagementWritesTheSnapshot) {
+    auto catalog = CreateCatalog();
+    catalog->SetSupportsVersionManagement(false);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    ASSERT_OK(commit->Commit(msgs));
+
+    ASSERT_TRUE(catalog->CommitCalls().empty());
+    ASSERT_EQ(catalog->LoadSnapshotCalls(), 0u);
+    ASSERT_OK_AND_ASSIGN(
+        bool exist, file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/snapshot-1")));
+    ASSERT_TRUE(exist);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitRetriesWhenRefused) {
+    for (int32_t max_retries : {0, 2}) {
+        SCOPED_TRACE(max_retries);
+        auto catalog = CreateCatalog(false);
+        CatalogCommitSpec spec;
+        spec.catalog = catalog;
+        spec.table_id = "table-uuid-2";
+        spec.options = {{Options::COMMIT_MAX_RETRIES, fmt::format("{}", max_retries)},
+                        {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+
+        Status failed = commit->Commit(CommitMessagesOfRound(1));
+        ASSERT_NOK_WITH_MSG(failed, "commit conflicts");
+        ASSERT_NE(failed.ToString().find(table_path_), std::string::npos) << failed.ToString();
+        ASSERT_NE(failed.ToString().find("through catalog"), std::string::npos)
+            << failed.ToString();
+        ASSERT_NE(failed.ToString().find("table='tbl'"), std::string::npos) << failed.ToString();
+        ASSERT_NOK_WITH_MSG(failed, fmt::format("{} retries", max_retries));
+
+        ASSERT_EQ(catalog->CommitCalls().size(), static_cast<size_t>(max_retries + 1));
+        std::set<std::string> attempted_uuids;
+        for (const auto& call : catalog->CommitCalls()) {
+            ASSERT_EQ(call.table_uuid, std::optional<std::string>("table-uuid-2"));
+            ASSERT_EQ(call.base_snapshot_uuid, std::nullopt);
+            ASSERT_EQ(call.snapshot.Id(), 1);
+            ASSERT_TRUE(call.snapshot.Uuid().has_value());
+            ASSERT_TRUE(attempted_uuids.insert(call.snapshot.Uuid().value()).second);
+        }
+        std::vector<BasicFileStatus> manifests;
+        ASSERT_OK(file_system_->ListDir(PathUtil::JoinPath(table_path_, "manifest"), &manifests));
+        ASSERT_TRUE(manifests.empty());
+        ASSERT_OK_AND_ASSIGN(bool published, file_system_->Exists(PathUtil::JoinPath(
+                                                 table_path_, "snapshot/snapshot-1")));
+        ASSERT_FALSE(published);
+    }
+}
+
+TEST_F(FileStoreCommitImplTest, TestUnknownCatalogOutcomeKeepsTheManifests) {
+    auto catalog = CreateCatalog(Status::IOError("catalog unreachable"));
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.table_id = "table-uuid";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    Status failed = commit->Commit(msgs);
+    ASSERT_NOK_WITH_MSG(failed, "catalog unreachable");
+    ASSERT_NE(failed.ToString().find(table_path_), std::string::npos) << failed.ToString();
+    ASSERT_NE(failed.ToString().find("through catalog"), std::string::npos) << failed.ToString();
+    ASSERT_NE(failed.ToString().find("table='tbl'"), std::string::npos) << failed.ToString();
+    ASSERT_NE(failed.ToString().find("snapshot uuid none"), std::string::npos) << failed.ToString();
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+
+    ASSERT_OK_AND_ASSIGN(std::string request_str, commit->GetLastCommitTableRequest());
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest request,
+                         CommitTableRequest::FromJsonString(request_str));
+    const Snapshot& attempted = request.GetSnapshot();
+    for (const std::string& manifest_list :
+         {attempted.BaseManifestList(), attempted.DeltaManifestList()}) {
+        ASSERT_OK_AND_ASSIGN(bool exist, file_system_->Exists(PathUtil::JoinPath(
+                                             table_path_, "manifest/" + manifest_list)));
+        ASSERT_TRUE(exist) << manifest_list;
+    }
+    auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> entries,
+                         commit_impl->ReadAddManifestEntries(attempted));
+    ASSERT_GT(entries.size(), 0u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitRebasesOnTheWinnerOfEachRace) {
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+
+    auto catalog = CreateCatalog(false);
+    int32_t competitor_round = 0;
+    catalog->SetOnCommit([&]() {
+        ++competitor_round;
+        CommitAsCompetitor(competitor_round + 1, competitor_round);
+    });
+
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.table_id = "table-uuid-3";
+    spec.options = {{Options::COMMIT_MAX_RETRIES, "1"}, {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    ASSERT_NOK_WITH_MSG(commit->Commit(msgs), "commit conflicts");
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 2u);
+    const std::vector<MockVersionManagedCatalog::CommitCall>& calls = catalog->CommitCalls();
+    ASSERT_EQ(calls[0].base_snapshot_uuid, std::nullopt);
+    ASSERT_EQ(calls[0].snapshot.Id(), 1);
+    for (size_t i = 1; i < calls.size(); ++i) {
+        ASSERT_EQ(calls[i].snapshot.Id(), calls[i - 1].snapshot.Id() + 1);
+        ASSERT_OK_AND_ASSIGN(
+            Snapshot base,
+            Snapshot::FromPath(
+                file_system_,
+                PathUtil::JoinPath(table_path_, "snapshot/snapshot-" +
+                                                    std::to_string(calls[i].snapshot.Id() - 1))));
+        ASSERT_EQ(calls[i].base_snapshot_uuid, base.Uuid());
+        ASSERT_NE(calls[i].snapshot.BaseManifestList(), calls[i - 1].snapshot.BaseManifestList());
+    }
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitSucceedsAfterLosingOneRace) {
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    std::set<std::string> own_files = NewFileNames(msgs);
+
+    auto catalog = CreateCatalog(false);
+    const std::set<std::string> competitor_files = NewFileNames(CommitMessagesOfRound(2));
+    bool competitor_ran = false;
+    catalog->SetOnCommit([&]() {
+        if (competitor_ran) {
+            return;
+        }
+        competitor_ran = true;
+        CommitAsCompetitor(2, 1);
+        catalog->SetTableSchema(TableSchemaWithId(7));
+        catalog->SetAnswer(true);
+    });
+
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.options = {{Options::COMMIT_MAX_RETRIES, "3"}, {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    ASSERT_OK(commit->Commit(msgs));
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 2u);
+    ASSERT_EQ(catalog->CommitCalls()[0].snapshot.Id(), 1);
+    ASSERT_EQ(catalog->CommitCalls()[0].base_snapshot_uuid, std::nullopt);
+    ASSERT_EQ(catalog->CommitCalls()[0].snapshot.SchemaId(), 0);
+    ASSERT_OK_AND_ASSIGN(
+        Snapshot competitor_snapshot,
+        Snapshot::FromPath(file_system_, PathUtil::JoinPath(table_path_, "snapshot/snapshot-1")));
+    ASSERT_EQ(catalog->CommitCalls()[1].snapshot.Id(), 2);
+    ASSERT_EQ(catalog->CommitCalls()[1].base_snapshot_uuid, competitor_snapshot.Uuid());
+    ASSERT_EQ(catalog->CommitCalls()[1].snapshot.SchemaId(), 7);
+    ASSERT_NE(catalog->CommitCalls()[1].snapshot.Uuid(), catalog->CommitCalls()[0].snapshot.Uuid());
+
+    for (const std::string& manifest_list :
+         {catalog->CommitCalls()[0].snapshot.BaseManifestList(),
+          catalog->CommitCalls()[0].snapshot.DeltaManifestList()}) {
+        ASSERT_OK_AND_ASSIGN(bool exist, file_system_->Exists(PathUtil::JoinPath(
+                                             table_path_, "manifest/" + manifest_list)));
+        ASSERT_FALSE(exist) << manifest_list;
+    }
+
+    auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> candidate_entries,
+                         commit_impl->ReadAddManifestEntries(catalog->CommitCalls()[1].snapshot));
+    std::set<std::string> candidate_files = CollectFileNames(candidate_entries);
+    ASSERT_FALSE(own_files.empty());
+    ASSERT_FALSE(competitor_files.empty());
+    std::set<std::string> expected_files = own_files;
+    expected_files.insert(competitor_files.begin(), competitor_files.end());
+    ASSERT_EQ(candidate_files, expected_files);
+    ASSERT_EQ(candidate_entries.size(), expected_files.size());
+
+    ASSERT_OK_AND_ASSIGN(
+        bool exist, file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/snapshot-2")));
+    ASSERT_FALSE(exist);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitReadsItsBaseFromTheCatalog) {
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+
+    std::set<std::string> first_round_files;
+    for (int32_t round = 1; round <= 2; ++round) {
+        std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(round);
+        if (round == 1) {
+            first_round_files = NewFileNames(msgs);
+        }
+        ASSERT_OK(commit->Commit(msgs, round));
+    }
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 2u);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 2u);
+    ASSERT_GT(catalog->LoadSnapshotCalls(), 0u);
+    for (const Identifier& asked : catalog->LoadSnapshotIdentifiers()) {
+        ASSERT_EQ(asked, Identifier("db", "tbl"));
+    }
+    ASSERT_EQ(catalog->CommitCalls()[0].base_snapshot_uuid, std::nullopt);
+    ASSERT_EQ(catalog->CommitCalls()[0].snapshot.Id(), 1);
+    ASSERT_EQ(catalog->CommitCalls()[1].base_snapshot_uuid, catalog->AcceptedSnapshots()[0].Uuid());
+    ASSERT_EQ(catalog->CommitCalls()[1].snapshot.Id(), 2);
+    ASSERT_OK_AND_ASSIGN(
+        bool exist, file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/snapshot-1")));
+    ASSERT_FALSE(exist);
+
+    auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> entries,
+                         commit_impl->ReadAddManifestEntries(catalog->CommitCalls()[1].snapshot));
+    std::set<std::string> files = CollectFileNames(entries);
+    ASSERT_FALSE(first_round_files.empty());
+    for (const std::string& first_file : first_round_files) {
+        ASSERT_GT(files.count(first_file), 0u) << first_file;
+    }
+}
+
+TEST_F(FileStoreCommitImplTest, TestFilterAndCommitDedupesAgainstTheCatalogsSnapshot) {
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    std::map<int64_t, std::vector<std::shared_ptr<CommitMessage>>> inputs;
+    inputs[7] = CommitMessagesOfRound(1);
+
+    ASSERT_OK_AND_ASSIGN(int32_t committed, commit->FilterAndCommit(inputs, 5));
+    ASSERT_EQ(1, committed);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+    ASSERT_OK_AND_ASSIGN(
+        bool exist, file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/snapshot-1")));
+    ASSERT_FALSE(exist);
+
+    ASSERT_OK_AND_ASSIGN(int32_t again, commit->FilterAndCommit(inputs, 10));
+    ASSERT_EQ(0, again);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestRecoveryAfterAnAnswerLostOnTheWayBack) {
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+    catalog->SetLostAnswer(Status::IOError("service unavailable"));
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+
+    std::map<int64_t, std::vector<std::shared_ptr<CommitMessage>>> inputs;
+    inputs[7] = CommitMessagesOfRound(1);
+    ASSERT_NOK_WITH_MSG(commit->FilterAndCommit(inputs, 5), "service unavailable");
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+
+    const Snapshot& taken = catalog->AcceptedSnapshots().front();
+    auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> entries,
+                         commit_impl->ReadAddManifestEntries(taken));
+    ASSERT_GT(entries.size(), 0u);
+
+    catalog->SetLostAnswer(Status::OK());
+    ASSERT_OK_AND_ASSIGN(int32_t again, commit->FilterAndCommit(inputs, 10));
+    ASSERT_EQ(0, again);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestFilterAndCommitDedupesBehindAnotherWriter) {
+    TwoWriterRecovery recovery;
+    ASSERT_NO_FATAL_FAILURE(SetUpTwoWriterRecovery(true, &recovery));
+
+    ASSERT_OK_AND_ASSIGN(int32_t again,
+                         recovery.first_commit->FilterAndCommit(recovery.inputs, 10));
+    ASSERT_EQ(0, again);
+    ASSERT_EQ(recovery.catalog->AcceptedSnapshots().size(), 2u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestFilterAndCommitRefusesWhenTheHistoryIsNotPublished) {
+    TwoWriterRecovery recovery;
+    ASSERT_NO_FATAL_FAILURE(SetUpTwoWriterRecovery(false, &recovery));
+
+    ASSERT_NOK_WITH_MSG(recovery.first_commit->FilterAndCommit(recovery.inputs, 10),
+                        "cannot tell which snapshot of table");
+    ASSERT_EQ(recovery.catalog->AcceptedSnapshots().size(), 2u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestFilterAndCommitRefusesWhenOnlyPartOfTheHistoryIsPublished) {
+    TwoWriterRecovery recovery;
+    ASSERT_NO_FATAL_FAILURE(SetUpTwoWriterRecovery(true, &recovery));
+
+    ASSERT_OK(file_system_->Delete(PathUtil::JoinPath(table_path_, "snapshot/snapshot-1"), false));
+    ASSERT_OK_AND_ASSIGN(bool second_exist, file_system_->Exists(PathUtil::JoinPath(
+                                                table_path_, "snapshot/snapshot-2")));
+    ASSERT_TRUE(second_exist);
+
+    ASSERT_NOK_WITH_MSG(recovery.first_commit->FilterAndCommit(recovery.inputs, 10),
+                        "cannot tell which snapshot of table");
+    ASSERT_EQ(recovery.catalog->AcceptedSnapshots().size(), 2u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestFilterAndCommitStopsAtTheEarliestRetainedSnapshot) {
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+    PublishAcceptedSnapshots(catalog);
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+    std::map<int64_t, std::vector<std::shared_ptr<CommitMessage>>> first_inputs;
+    first_inputs[7] = CommitMessagesOfRound(1);
+    ASSERT_OK_AND_ASSIGN(int32_t first_committed, commit->FilterAndCommit(first_inputs, 5));
+    ASSERT_EQ(1, first_committed);
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(2), 8));
+
+    CatalogCommitSpec other_spec;
+    other_spec.catalog = catalog;
+    other_spec.commit_user = "commit_user_2";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> other_commit,
+                         CreateCatalogCommit(other_spec));
+    ASSERT_OK(other_commit->Commit(CommitMessagesOfRound(3), 1));
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 3u);
+
+    SnapshotManager manager(file_system_, table_path_);
+    ASSERT_OK(file_system_->Delete(manager.SnapshotPath(1), false));
+    ASSERT_OK(manager.CommitEarliestHint(2));
+
+    std::map<int64_t, std::vector<std::shared_ptr<CommitMessage>>> again_inputs;
+    again_inputs[8] = CommitMessagesOfRound(2);
+    ASSERT_OK_AND_ASSIGN(int32_t again, commit->FilterAndCommit(again_inputs, 10));
+    ASSERT_EQ(0, again);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 3u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCommitReadsThroughTheCatalogsFileSystem) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
+                         FileSystemFactory::Get("gmock_fs", table_path_, {}));
+    auto* mock_fs = dynamic_cast<GmockFileSystem*>(fs.get());
+    ASSERT_NE(nullptr, mock_fs);
+    int32_t exists_calls = 0;
+    EXPECT_CALL(*mock_fs, Exists(testing::_))
+        .WillRepeatedly(testing::Invoke([&](const std::string& path) {
+            ++exists_calls;
+            return mock_fs->LocalFileSystem::Exists(path);
+        }));
+
+    auto catalog = CreateCatalog();
+    catalog->SetFileSystem(fs);
+    CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                         context_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1)));
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_GT(CountFiles(PathUtil::JoinPath(table_path_, "manifest")), 0u);
+    ASSERT_GT(exists_calls, 0);
+}
+
+TEST_F(FileStoreCommitImplTest, TestAGivenFileSystemWinsOverTheCatalogs) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> catalog_fs,
+                         FileSystemFactory::Get("gmock_fs", table_path_, {}));
+    auto* mock_catalog_fs = dynamic_cast<GmockFileSystem*>(catalog_fs.get());
+    ASSERT_NE(nullptr, mock_catalog_fs);
+    int32_t catalog_fs_calls = 0;
+    EXPECT_CALL(*mock_catalog_fs, Exists(testing::_))
+        .WillRepeatedly(testing::Invoke([&](const std::string& path) {
+            ++catalog_fs_calls;
+            return mock_catalog_fs->LocalFileSystem::Exists(path);
+        }));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> given_fs,
+                         FileSystemFactory::Get("gmock_fs", table_path_, {}));
+    auto* mock_given_fs = dynamic_cast<GmockFileSystem*>(given_fs.get());
+    ASSERT_NE(nullptr, mock_given_fs);
+    int32_t given_fs_calls = 0;
+    EXPECT_CALL(*mock_given_fs, Exists(testing::_))
+        .WillRepeatedly(testing::Invoke([&](const std::string& path) {
+            ++given_fs_calls;
+            return mock_given_fs->LocalFileSystem::Exists(path);
+        }));
+
+    auto catalog = CreateCatalog();
+    catalog->SetFileSystem(catalog_fs);
+    CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                         context_builder.WithCatalog(catalog, Identifier("db", "tbl"))
+                             .WithFileSystem(given_fs)
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1)));
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_GT(given_fs_calls, 0);
+    ASSERT_EQ(0, catalog_fs_calls);
+}
+
+TEST_F(FileStoreCommitImplTest, TestRealtimeCommitIsIdempotentThroughTheCatalog) {
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.commit_user = "realtime_commit_user";
+    spec.options = {{Options::REALTIME_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
+        std::shared_ptr<FileStoreCommit>(std::move(commit)));
+    ASSERT_NE(nullptr, commit_impl);
+
+    std::vector<RealtimeCommitProgress> progress;
+    ASSERT_NO_FATAL_FAILURE(
+        BuildRealtimeProgress(commit_impl.get(), CommitMessagesOfRound(1), &progress));
+
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id,
+                         commit_impl->CommitWithProgress(progress, 1, std::nullopt));
+    ASSERT_EQ(1, snapshot_id);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+
+    ASSERT_OK_AND_ASSIGN(int64_t again, commit_impl->CommitWithProgress(progress, 1, std::nullopt));
+    ASSERT_EQ(1, again);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestRealtimeCommitReportsAnUnpublishedHistory) {
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    auto catalog = CreateCatalog();
+    catalog->SetHeldSnapshot(BuildTestSnapshot(7, "snapshot-uuid-7"));
+
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.commit_user = "realtime_commit_user";
+    spec.options = {{Options::REALTIME_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
+        std::shared_ptr<FileStoreCommit>(std::move(commit)));
+    ASSERT_NE(nullptr, commit_impl);
+
+    std::vector<RealtimeCommitProgress> progress;
+    ASSERT_NO_FATAL_FAILURE(
+        BuildRealtimeProgress(commit_impl.get(), CommitMessagesOfRound(1), &progress));
+
+    ASSERT_NOK_WITH_MSG(commit_impl->CommitWithProgress(progress, 1, std::nullopt),
+                        "is not under the table directory");
+    ASSERT_TRUE(catalog->CommitCalls().empty());
+}
+
+TEST_F(FileStoreCommitImplTest, TestRowIdSchemaPreCheckOnlyNeedsWhatTheCheckReads) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.root_path = dir->Str();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+
+    std::shared_ptr<DataFileMeta> without_row_id = CreateAppendDataFileMeta("no-row-id", 10);
+    ASSERT_FALSE(without_row_id->first_row_id.has_value());
+    ASSERT_OK(commit_impl->CheckRowIdSchemasArePublished({without_row_id, nullptr}));
+
+    std::shared_ptr<DataFileMeta> with_row_id = CreateAppendDataFileMeta("row-id", 10);
+    with_row_id->AssignFirstRowId(0);
+    ASSERT_NOK_WITH_MSG(commit_impl->CheckRowIdSchemasArePublished({with_row_id}),
+                        "schema 1 is not there");
+}
+
+TEST_F(FileStoreCommitImplTest, TestRowIdSchemaPreCheckPassesOnAPublishedSchema) {
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+    auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+
+    std::shared_ptr<DataFileMeta> with_row_id = CreateAppendDataFileMeta("row-id", 10);
+    with_row_id->AssignFirstRowId(0);
+    with_row_id->schema_id = 0;
+    ASSERT_OK(commit_impl->CheckRowIdSchemasArePublished({with_row_id}));
+
+    std::shared_ptr<DataFileMeta> other_schema =
+        CreateAppendDataFileMeta("row-id-other-schema", 10);
+    other_schema->AssignFirstRowId(10);
+    ASSERT_NOK_WITH_MSG(commit_impl->CheckRowIdSchemasArePublished({with_row_id, other_schema}),
+                        "schema 1 is not there");
+}
+
+TEST_F(FileStoreCommitImplTest, TestCommitRefusesARowIdCheckMissingItsSchema) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    catalog->CheckBaseSnapshotUuid();
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.root_path = dir->Str();
+    spec.options = {{Options::DATA_EVOLUTION_ENABLED, "true"},
+                    {Options::ROW_TRACKING_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> first_commit, CreateCatalogCommit(spec));
+    ASSERT_OK(first_commit->Commit({CreateRowIdCommitMessage("base-data", std::nullopt)}, 1));
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+
+    spec.append_commit_check_conflict = true;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> second_commit, CreateCatalogCommit(spec));
+    second_commit->RowIdCheckConflict(1);
+    ASSERT_NOK_WITH_MSG(second_commit->Commit({CreateRowIdCommitMessage("row-id-data", 0, 1)}, 2),
+                        "schema 1 is not there");
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestRowIdChecksUseCatalogLatestAndPublishedHistory) {
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    catalog->CheckBaseSnapshotUuid();
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.options = {{Options::DATA_EVOLUTION_ENABLED, "true"},
+                    {Options::ROW_TRACKING_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> first_commit, CreateCatalogCommit(spec));
+    ASSERT_OK(first_commit->Commit({CreateRowIdCommitMessage("base-data", std::nullopt)}, 1));
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+    ASSERT_EQ(catalog->AcceptedSnapshots().front().NextRowId(), std::optional<int64_t>(10));
+    SnapshotManager manager(file_system_, table_path_);
+    ASSERT_OK_AND_ASSIGN(bool published, manager.SnapshotExists(1));
+    ASSERT_FALSE(published);
+
+    spec.append_commit_check_conflict = true;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> second_commit, CreateCatalogCommit(spec));
+    second_commit->RowIdCheckConflict(1);
+    ASSERT_OK(second_commit->Commit({CreateRowIdCommitMessage("first-update", 0)}, 2));
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 2u);
+    ASSERT_EQ(catalog->AcceptedSnapshots().back().SchemaId(), 7);
+
+    spec.commit_user = "concurrent-writer";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> concurrent_commit,
+                         CreateCatalogCommit(spec));
+    concurrent_commit->RowIdCheckConflict(1);
+    auto concurrent_message = CreateRowIdCommitMessage("concurrent-update", 0);
+    ASSERT_NOK_WITH_MSG(concurrent_commit->Commit({concurrent_message}, 3), "snapshot-1");
+    ASSERT_OK_AND_ASSIGN(std::string first_snapshot_json,
+                         catalog->AcceptedSnapshots().front().ToJsonString());
+    ASSERT_OK(file_system_->AtomicStore(manager.SnapshotPath(1), first_snapshot_json));
+    ASSERT_OK_AND_ASSIGN(published, manager.SnapshotExists(2));
+    ASSERT_FALSE(published);
+
+    ASSERT_NOK_WITH_MSG(concurrent_commit->Commit({concurrent_message}, 3),
+                        "updating the same file");
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 2u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogSnapshotLoaderFailurePropagates) {
+    auto catalog = CreateCatalog();
+    catalog->SetLoadSnapshotStatus(
+        Status::IOError("catalog unreachable while loading the snapshot"));
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.table_id = "table-uuid";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    ASSERT_NOK_WITH_MSG(commit->Commit(msgs), "catalog unreachable while loading the snapshot");
+    ASSERT_TRUE(catalog->CommitCalls().empty());
 }
 
 TEST_F(FileStoreCommitImplTest, TestSnapshotSequenceMaxPropertyMergedOnCommit) {
@@ -938,6 +1872,50 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatest) {
     ASSERT_EQ(CollectFileNames(snapshot5_entries), CollectFileNames(snapshot3_entries));
 }
 
+TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestThroughCatalog) {
+    CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
+                         base_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
+    ASSERT_OK_AND_ASSIGN(auto base_commit, FileStoreCommit::Create(std::move(base_context)));
+    for (int32_t round = 1; round <= 2; ++round) {
+        ASSERT_OK(base_commit->Commit(CommitMessagesOfRound(round), round));
+    }
+
+    const std::string latest_path = PathUtil::JoinPath(table_path_, "snapshot/snapshot-2");
+    ASSERT_OK_AND_ASSIGN(Snapshot latest, Snapshot::FromPath(file_system_, latest_path));
+    ASSERT_TRUE(latest.Uuid().has_value());
+
+    auto catalog = CreateCatalog();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+
+    ASSERT_OK_AND_ASSIGN(bool rolled_back, commit->RollbackToAsLatest(1));
+    ASSERT_TRUE(rolled_back);
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_EQ(catalog->CommitCalls().front().base_snapshot_uuid, latest.Uuid());
+    ASSERT_EQ(catalog->CommitCalls().front().snapshot.Id(), 3);
+    ASSERT_OK_AND_ASSIGN(
+        bool exist, file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/snapshot-3")));
+    ASSERT_FALSE(exist);
+}
+
+TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestNeedsTheTargetUnderTheTablePath) {
+    CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
+                         base_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
+    ASSERT_OK_AND_ASSIGN(auto base_commit, FileStoreCommit::Create(std::move(base_context)));
+    for (int32_t round = 1; round <= 2; ++round) {
+        ASSERT_OK(base_commit->Commit(CommitMessagesOfRound(round), round));
+    }
+
+    ASSERT_OK(file_system_->Delete(PathUtil::JoinPath(table_path_, "snapshot/snapshot-1"), false));
+
+    auto catalog = CreateCatalog();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+    ASSERT_NOK(commit->RollbackToAsLatest(1));
+    ASSERT_TRUE(catalog->CommitCalls().empty());
+}
+
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestNoLatestSnapshotReturnsError) {
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
@@ -988,6 +1966,8 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestDeletionVectorOnlyChange) 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
                          context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
                              .AddOption(Options::FILE_SYSTEM, "local")
+                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MIN, "1")
+                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MAX, "1")
                              .Finish());
     ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
@@ -1020,6 +2000,13 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestDeletionVectorOnlyChange) 
     ASSERT_OK(commit->Commit({dv_msg}, /*commit_identifier=*/2));
     ASSERT_OK_AND_ASSIGN(Snapshot latest_snapshot, commit_impl->snapshot_manager_->LoadSnapshot(2));
     ASSERT_TRUE(latest_snapshot.IndexManifest().has_value());
+
+    // Unsupported expiration must leave the rollback target and its manifests intact.
+    Result<int32_t> expired = commit->Expire();
+    ASSERT_FALSE(expired.ok());
+    ASSERT_TRUE(expired.status().IsNotImplemented()) << expired.status().ToString();
+    ASSERT_OK_AND_ASSIGN(bool exists, commit_impl->snapshot_manager_->SnapshotExists(1));
+    ASSERT_TRUE(exists);
 
     // Roll back to snapshot 1: the data files are identical, so the delta carries no data change
     // and the new snapshot inherits the target's (empty) index manifest, dropping the deletion
@@ -1471,6 +2458,287 @@ TEST_F(FileStoreCommitImplTest, TestTryOverwriteThenCommit) {
     ASSERT_EQ(1u, entries2.size());
     ASSERT_EQ("new_file_2", entries2[0].FileName());
     ASSERT_EQ(FileKind::Add(), entries2[0].Kind());
+}
+
+class FileStoreRollbackExpireTest
+    : public FileStoreCommitImplTest,
+      public ::testing::WithParamInterface<std::tuple<bool, int32_t>> {};
+
+TEST_P(FileStoreRollbackExpireTest, TestRetainedRollbackKeepsRestoredFiles) {
+    const auto [use_catalog, commits_after_rollback] = GetParam();
+    auto catalog = CreateCatalog();
+    if (use_catalog) {
+        catalog->CheckBaseSnapshotUuid();
+        PublishAcceptedSnapshots(catalog);
+    } else {
+        catalog->SetSupportsVersionManagement(false);
+    }
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.options = {{Options::SNAPSHOT_NUM_RETAINED_MIN, "2"},
+                    {Options::SNAPSHOT_NUM_RETAINED_MAX, "2"}};
+    ASSERT_OK_AND_ASSIGN(auto commit, CreateCatalogCommit(spec));
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), 0));
+    ASSERT_OK(commit->DropPartition({{{"f1", "10"}}}, 1));
+    ASSERT_OK(commit->DropPartition({{{"f1", "20"}}}, 2));
+    ASSERT_OK_AND_ASSIGN(bool rolled_back, commit->RollbackToAsLatest(1));
+    ASSERT_TRUE(rolled_back);
+    for (int32_t i = 0; i < commits_after_rollback; ++i) {
+        ASSERT_OK(commit->Commit(CommitMessagesOfRound(i + 2), i + 3));
+    }
+
+    SnapshotManager manager(file_system_, table_path_);
+    ASSERT_OK(manager.CommitEarliestHint(1));
+    ASSERT_OK(manager.CommitLatestHint(4 + commits_after_rollback));
+    ASSERT_OK_AND_ASSIGN(int32_t expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 2 + commits_after_rollback);
+    const std::string restored_data_path =
+        table_path_ + "/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc";
+    ASSERT_OK_AND_ASSIGN(bool exists, file_system_->Exists(restored_data_path));
+    ASSERT_TRUE(exists);
+
+    // Once no retained snapshot references the restored file, it can be deleted normally.
+    ASSERT_OK(commit->DropPartition({{{"f1", "10"}}}, 10));
+    ASSERT_OK(commit->DropPartition({{{"f1", "20"}}}, 11));
+    ASSERT_OK(manager.CommitLatestHint(6 + commits_after_rollback));
+    ASSERT_OK_AND_ASSIGN(expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 2);
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(restored_data_path));
+    ASSERT_FALSE(exists);
+}
+
+INSTANTIATE_TEST_SUITE_P(RollbackPosition, FileStoreRollbackExpireTest,
+                         ::testing::Combine(::testing::Bool(), ::testing::Values(0, 1, 2)),
+                         [](const ::testing::TestParamInfo<std::tuple<bool, int32_t>>& info) {
+                             return fmt::format("{}_{}",
+                                                std::get<0>(info.param) ? "Catalog" : "FileSystem",
+                                                std::get<1>(info.param));
+                         });
+
+TEST_F(FileStoreCommitImplTest, TestCatalogExpireWaitsForRollbackPublication) {
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+    PublishAcceptedSnapshots(catalog);
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.options = {{Options::SNAPSHOT_NUM_RETAINED_MIN, "2"},
+                    {Options::SNAPSHOT_NUM_RETAINED_MAX, "2"}};
+    ASSERT_OK_AND_ASSIGN(auto commit, CreateCatalogCommit(spec));
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), 0));
+    ASSERT_OK(commit->DropPartition({{{"f1", "10"}}}, 1));
+    ASSERT_OK(commit->DropPartition({{{"f1", "20"}}}, 2));
+
+    SnapshotManager manager(file_system_, table_path_);
+    ASSERT_OK(manager.CommitEarliestHint(1));
+    ASSERT_OK(manager.CommitLatestHint(3));
+    catalog->SetOnCommit({});
+    ASSERT_OK_AND_ASSIGN(bool rolled_back, commit->RollbackToAsLatest(1));
+    ASSERT_TRUE(rolled_back);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 4u);
+    ASSERT_OK_AND_ASSIGN(bool exists, manager.SnapshotExists(4));
+    ASSERT_FALSE(exists);
+    const std::string restored_data_path =
+        table_path_ + "/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc";
+    ASSERT_OK_AND_ASSIGN(int32_t expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 0);
+    ASSERT_OK_AND_ASSIGN(exists, manager.SnapshotExists(1));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(restored_data_path));
+    ASSERT_TRUE(exists);
+
+    for (const Status& status : {Status::IOError("catalog unavailable"),
+                                 Status::NotImplemented("snapshot loading unsupported")}) {
+        SCOPED_TRACE(status.ToString());
+        catalog->SetLoadSnapshotStatus(status);
+        ASSERT_NOK(commit->Expire());
+        ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(restored_data_path));
+        ASSERT_TRUE(exists);
+        ASSERT_OK_AND_ASSIGN(exists, manager.SnapshotExists(1));
+        ASSERT_TRUE(exists);
+    }
+    catalog->SetLoadSnapshotStatus(Status::OK());
+
+    // Matching IDs alone do not prove that the catalog snapshot has been published.
+    ASSERT_OK_AND_ASSIGN(std::string different_snapshot_json,
+                         BuildTestSnapshot(4, "other-uuid").ToJsonString());
+    ASSERT_OK(file_system_->AtomicStore(manager.SnapshotPath(4), different_snapshot_json));
+    ASSERT_OK(manager.CommitLatestHint(4));
+    ASSERT_OK_AND_ASSIGN(expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 0);
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(restored_data_path));
+    ASSERT_TRUE(exists);
+    std::string earliest_hint;
+    ASSERT_OK(file_system_->ReadFile(table_path_ + "/snapshot/EARLIEST", &earliest_hint));
+    ASSERT_EQ(earliest_hint, "1");
+
+    ASSERT_OK_AND_ASSIGN(std::string snapshot_json,
+                         catalog->AcceptedSnapshots().back().ToJsonString());
+    ASSERT_OK(file_system_->Delete(manager.SnapshotPath(4), false));
+    ASSERT_OK(file_system_->AtomicStore(manager.SnapshotPath(4), snapshot_json));
+    ASSERT_OK_AND_ASSIGN(expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 2);
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(restored_data_path));
+    ASSERT_TRUE(exists);
+    ASSERT_OK(file_system_->ReadFile(table_path_ + "/snapshot/EARLIEST", &earliest_hint));
+    ASSERT_EQ(earliest_hint, "3");
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogExpireUsesPublishedSnapshots) {
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+    PublishAcceptedSnapshots(catalog);
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.options = {{Options::SNAPSHOT_NUM_RETAINED_MIN, "2"},
+                    {Options::SNAPSHOT_NUM_RETAINED_MAX, "2"}};
+    ASSERT_OK_AND_ASSIGN(auto commit, CreateCatalogCommit(spec));
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), 0));
+    ASSERT_OK(commit->DropPartition({{{"f1", "10"}}}, 1));
+    catalog->SetOnCommit({});
+    ASSERT_OK(commit->DropPartition({{{"f1", "20"}}}, 2));
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 3u);
+
+    SnapshotManager manager(file_system_, table_path_);
+    ASSERT_OK(manager.CommitEarliestHint(1));
+    ASSERT_OK(manager.CommitLatestHint(2));
+    const std::string expired_data_path =
+        table_path_ + "/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc";
+    const std::string retained_data_path =
+        table_path_ + "/f1=20/bucket-0/data-8dc7f04c-3c98-48b2-9d56-834d746c4a40-0.orc";
+    catalog->SetLoadSnapshotStatus(Status::IOError("catalog unavailable"));
+    ASSERT_OK_AND_ASSIGN(int32_t expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 0);
+    for (int64_t snapshot_id : {1, 2}) {
+        ASSERT_OK_AND_ASSIGN(bool exists, manager.SnapshotExists(snapshot_id));
+        ASSERT_TRUE(exists);
+    }
+    ASSERT_OK_AND_ASSIGN(bool exists, manager.SnapshotExists(3));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(expired_data_path));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(retained_data_path));
+    ASSERT_TRUE(exists);
+    std::string earliest_hint;
+    ASSERT_OK(file_system_->ReadFile(table_path_ + "/snapshot/EARLIEST", &earliest_hint));
+    ASSERT_EQ(earliest_hint, "1");
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> latest_id, manager.LatestSnapshotId());
+    ASSERT_EQ(latest_id, std::optional<int64_t>(2));
+
+    ASSERT_OK_AND_ASSIGN(std::string snapshot_json,
+                         catalog->AcceptedSnapshots().back().ToJsonString());
+    ASSERT_OK(file_system_->AtomicStore(manager.SnapshotPath(3), snapshot_json));
+    ASSERT_OK(manager.CommitLatestHint(3));
+    ASSERT_NOK_WITH_MSG(commit->Expire(), "catalog unavailable");
+    ASSERT_OK_AND_ASSIGN(exists, manager.SnapshotExists(1));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(expired_data_path));
+    ASSERT_TRUE(exists);
+    ASSERT_OK(file_system_->ReadFile(table_path_ + "/snapshot/EARLIEST", &earliest_hint));
+    ASSERT_EQ(earliest_hint, "1");
+
+    catalog->SetLoadSnapshotStatus(Status::OK());
+    ASSERT_OK_AND_ASSIGN(expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 1);
+    ASSERT_OK_AND_ASSIGN(exists, manager.SnapshotExists(1));
+    ASSERT_FALSE(exists);
+    for (int64_t snapshot_id : {2, 3}) {
+        ASSERT_OK_AND_ASSIGN(exists, manager.SnapshotExists(snapshot_id));
+        ASSERT_TRUE(exists);
+    }
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(expired_data_path));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(retained_data_path));
+    ASSERT_TRUE(exists);
+    ASSERT_OK(file_system_->ReadFile(table_path_ + "/snapshot/EARLIEST", &earliest_hint));
+    ASSERT_EQ(earliest_hint, "2");
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 3u);
+    ASSERT_OK_AND_ASSIGN(expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 0);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogExpireValidatesRetainedMetadataBeforeDeletingFiles) {
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+    PublishAcceptedSnapshots(catalog);
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.options = {{Options::SNAPSHOT_NUM_RETAINED_MIN, "2"},
+                    {Options::SNAPSHOT_NUM_RETAINED_MAX, "2"}};
+    ASSERT_OK_AND_ASSIGN(auto commit, CreateCatalogCommit(spec));
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), 0));
+    ASSERT_OK(commit->DropPartition({{{"f1", "10"}}}, 1));
+    ASSERT_OK(commit->DropPartition({{{"f1", "20"}}}, 2));
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(2), 3));
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 4u);
+
+    SnapshotManager manager(file_system_, table_path_);
+    ASSERT_OK(manager.CommitEarliestHint(1));
+    ASSERT_OK(manager.CommitLatestHint(4));
+    ASSERT_OK_AND_ASSIGN(Snapshot retained_snapshot, manager.LoadSnapshot(3));
+    const std::string expired_data_path =
+        table_path_ + "/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc";
+    auto* commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_NE(commit_impl, nullptr);
+    std::vector<ManifestFileMeta> retained_manifests;
+    ASSERT_OK(
+        commit_impl->manifest_list_->ReadDeltaManifests(retained_snapshot, &retained_manifests));
+    ASSERT_FALSE(retained_manifests.empty());
+    const std::vector<std::string> retained_metadata_paths = {
+        manager.SnapshotPath(3),
+        PathUtil::JoinPath(table_path_, "manifest/" + retained_snapshot.DeltaManifestList()),
+        PathUtil::JoinPath(table_path_, "manifest/" + retained_manifests.front().FileName())};
+    for (const std::string& path : retained_metadata_paths) {
+        SCOPED_TRACE(path);
+        std::string content;
+        ASSERT_OK(file_system_->ReadFile(path, &content));
+        ASSERT_OK(file_system_->Delete(path));
+        if (path == manager.SnapshotPath(3)) {
+            ASSERT_OK_AND_ASSIGN(int32_t expired_count, commit->Expire());
+            ASSERT_EQ(expired_count, 0);
+        } else {
+            ASSERT_NOK(commit->Expire());
+        }
+        ASSERT_OK_AND_ASSIGN(bool exists, file_system_->Exists(expired_data_path));
+        ASSERT_TRUE(exists);
+        for (int64_t snapshot_id : {1, 2}) {
+            ASSERT_OK_AND_ASSIGN(exists, manager.SnapshotExists(snapshot_id));
+            ASSERT_TRUE(exists);
+        }
+        std::string earliest_hint;
+        ASSERT_OK(file_system_->ReadFile(table_path_ + "/snapshot/EARLIEST", &earliest_hint));
+        ASSERT_EQ(earliest_hint, "1");
+        ASSERT_OK(file_system_->AtomicStore(path, content));
+    }
+    ASSERT_OK_AND_ASSIGN(int32_t expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 2);
+    ASSERT_OK_AND_ASSIGN(bool exists, file_system_->Exists(expired_data_path));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> earliest_id, manager.EarliestSnapshotId());
+    ASSERT_EQ(earliest_id, std::optional<int64_t>(3));
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogExpireWithoutPublishedSnapshots) {
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+    ASSERT_OK_AND_ASSIGN(auto commit, CreateCatalogCommit(catalog));
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), 0));
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+    catalog->SetLoadSnapshotStatus(Status::IOError("catalog unavailable"));
+    ASSERT_OK_AND_ASSIGN(int32_t expired_count, commit->Expire());
+    ASSERT_EQ(expired_count, 0);
+    ASSERT_OK_AND_ASSIGN(bool exists, file_system_->Exists(table_path_ + "/snapshot"));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(
+        exists,
+        file_system_->Exists(table_path_ +
+                             "/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc"));
+    ASSERT_TRUE(exists);
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
 }
 
 TEST_F(FileStoreCommitImplTest, TestDropPartitionAndExpireSnapshot) {
@@ -2105,7 +3373,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_EQ(1u, index_entries.size());
     ASSERT_EQ("bitmap-index-commit-1", index_entries[0].index_file->FileName());
 }
@@ -2169,7 +3438,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithCompactIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_EQ(1u, index_entries.size());
     ASSERT_EQ("bitmap-index-commit-compact-1", index_entries[0].index_file->FileName());
 }
@@ -2207,7 +3477,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithDeletedIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_TRUE(index_entries.empty());
 }
 
@@ -2246,7 +3517,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithCompactDeletedIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_TRUE(index_entries.empty());
 }
 
@@ -2278,7 +3550,8 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteWithCompactIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(compact_snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_EQ(1u, index_entries.size());
     ASSERT_EQ("bitmap-index-compact-1", index_entries[0].index_file->FileName());
 }
@@ -2371,7 +3644,8 @@ TEST_F(FileStoreCommitImplTest, TestFilterAndOverwriteWithCompactIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(compact_snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_EQ(1u, index_entries.size());
     ASSERT_EQ("bitmap-index-filter-compact-1", index_entries[0].index_file->FileName());
 }
@@ -2538,14 +3812,34 @@ TEST_F(FileStoreCommitImplTest, TestObjectStoreAllowedWithRESTCatalogCommit) {
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.UseRESTCatalogCommit(true).Finish());
     ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(ctx)));
 
-    auto msgs =
-        GetCommitMessages(paimon::test::GetDataDir() +
-                              "/orc/append_09.db/append_09/commit_messages/commit_messages-01",
-                          3);
-    ASSERT_GT(msgs.size(), 0);
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
     ASSERT_OK(commit->Commit(msgs));
     ASSERT_OK_AND_ASSIGN(auto json, commit->GetLastCommitTableRequest());
     ASSERT_FALSE(json.empty());
+
+    auto catalog = CreateCatalog();
+    CommitContextBuilder catalog_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(auto catalog_ctx,
+                         catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish());
+    ASSERT_OK_AND_ASSIGN(auto catalog_commit, FileStoreCommit::Create(std::move(catalog_ctx)));
+    ASSERT_OK(catalog_commit->Commit(msgs));
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+
+    const std::string object_store_path = "oss://bucket/db.db/tbl";
+    ASSERT_OK_AND_ASSIGN(bool path_is_object_store, FileSystem::IsObjectStore(object_store_path));
+    ASSERT_TRUE(path_is_object_store);
+    auto object_store_catalog = CreateCatalog();
+    object_store_catalog->SetFileSystem(file_system_);
+    CommitContextBuilder object_store_builder(object_store_path, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(
+        auto object_store_ctx,
+        object_store_builder.WithCatalog(object_store_catalog, Identifier("db", "tbl")).Finish());
+    ASSERT_OK(FileStoreCommit::Create(std::move(object_store_ctx)));
+
+    CommitContextBuilder plain_builder(object_store_path, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(auto plain_ctx, plain_builder.WithFileSystem(file_system_).Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(plain_ctx)),
+                        "invalid scheme oss for local file system");
 }
 
 TEST_F(FileStoreCommitImplTest, TestFixedBucketPKTableCommitAllowed) {
@@ -2659,7 +3953,7 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteDropsDeleteFileStats) {
     std::vector<ManifestEntry> delta_entries;
     for (const ManifestFileMeta& manifest : delta_manifests) {
         ASSERT_OK(commit_impl->manifest_file_->Read(manifest.FileName(), /*filter=*/nullptr,
-                                                    &delta_entries));
+                                                    /*file_size=*/std::nullopt, &delta_entries));
     }
 
     int32_t add_count = 0;

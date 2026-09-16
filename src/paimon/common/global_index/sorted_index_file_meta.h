@@ -24,21 +24,22 @@
 
 #include "paimon/common/memory/memory_slice_input.h"
 #include "paimon/memory/bytes.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 
 namespace paimon {
-/// Index metadata for each BTree index file.
+/// Manifest-level min/max metadata for one global index file.
 ///
 /// Empty serialized keys are valid, so null boundary keys are encoded separately with flags.
-class BTreeIndexMeta {
+class SortedIndexFileMeta {
  public:
-    static Result<std::shared_ptr<BTreeIndexMeta>> Deserialize(const std::shared_ptr<Bytes>& meta,
-                                                               paimon::MemoryPool* pool);
+    static Result<std::shared_ptr<SortedIndexFileMeta>> Deserialize(
+        const std::shared_ptr<Bytes>& meta, paimon::MemoryPool* pool);
     std::shared_ptr<Bytes> Serialize(paimon::MemoryPool* pool) const;
 
  public:
-    BTreeIndexMeta(const std::shared_ptr<Bytes>& first_key, const std::shared_ptr<Bytes>& last_key,
-                   bool has_nulls)
+    SortedIndexFileMeta(const std::shared_ptr<Bytes>& first_key,
+                        const std::shared_ptr<Bytes>& last_key, bool has_nulls)
         : first_key_(first_key), last_key_(last_key), has_nulls_(has_nulls) {}
 
     const std::shared_ptr<Bytes>& FirstKey() const {
@@ -58,7 +59,7 @@ class BTreeIndexMeta {
     }
 
  private:
-    int32_t Size() const {
+    int32_t MemorySize() const {
         // 11 bytes => key lengths (8) + has_nulls (1) + format version (1) + null flags (1).
         return (first_key_ ? first_key_->size() : 0) + (last_key_ ? last_key_->size() : 0) + 11;
     }

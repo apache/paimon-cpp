@@ -178,6 +178,12 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
                 "the RealtimeContext",
                 PartitionToString(partition_bucket.partition), partition_bucket.bucket));
         }
+        if (iter->second.temp_directory != request.temp_directory) {
+            return Status::Invalid(fmt::format(
+                "real-time store temporary directory mismatch for partition {}, bucket {}; "
+                "recreate the RealtimeContext",
+                PartitionToString(partition_bucket.partition), partition_bucket.bucket));
+        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
                                iter->second.store->AcquireReadView());
         if (!read_view) {
@@ -202,12 +208,14 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportSchema(*requested_schema, request.write_schema.get()));
     RealtimeStoreMode mode = request.mode;
+    std::string temp_directory = request.temp_directory;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeStore> store,
                            factory_->Create(std::move(request)));
     if (!store) {
         return Status::Invalid("real-time store factory returned a null store");
     }
-    stores_.emplace(partition_bucket, StoreEntry{store, requested_schema, mode});
+    stores_.emplace(partition_bucket,
+                    StoreEntry{store, requested_schema, mode, std::move(temp_directory)});
     if (offset_iter != committed_offsets_.end()) {
         reclaimed_offsets_.emplace(partition_bucket, offset_iter->second);
     }

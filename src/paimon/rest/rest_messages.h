@@ -41,6 +41,7 @@ class ErrorResponse : public Jsonizable<ErrorResponse> {
  public:
     static constexpr const char* kResourceTypeDatabase = "DATABASE";
     static constexpr const char* kResourceTypeTable = "TABLE";
+    static constexpr const char* kResourceTypeSnapshot = "SNAPSHOT";
 
     ErrorResponse(const std::string& resource_type, const std::string& resource_name,
                   const std::string& message, int32_t code)
@@ -386,6 +387,46 @@ class RenameTableRequest : public Jsonizable<RenameTableRequest> {
     std::string source_table_;
     std::string destination_database_;
     std::string destination_table_;
+};
+
+/// Reads the current snapshot from `snapshot.snapshot`, ignoring aggregate totals.
+/// An outer null `snapshot` means the table has no snapshot yet.
+class GetTableSnapshotResponse : public Jsonizable<GetTableSnapshotResponse> {
+ public:
+    explicit GetTableSnapshotResponse(const std::optional<Snapshot>& snapshot)
+        : snapshot_(snapshot) {}
+
+    rapidjson::Value ToJson(rapidjson::Document::AllocatorType* allocator) const
+        noexcept(false) override;
+    void FromJson(const rapidjson::Value& obj) noexcept(false) override;
+
+    const std::optional<Snapshot>& GetSnapshot() const {
+        return snapshot_;
+    }
+
+    GetTableSnapshotResponse() = default;
+
+ private:
+    std::optional<Snapshot> snapshot_;
+};
+
+/// Commit outcome: `success=false` indicates a concurrent commit conflict.
+class CommitTableResponse : public Jsonizable<CommitTableResponse> {
+ public:
+    explicit CommitTableResponse(bool success) : success_(success) {}
+
+    rapidjson::Value ToJson(rapidjson::Document::AllocatorType* allocator) const
+        noexcept(false) override;
+    void FromJson(const rapidjson::Value& obj) noexcept(false) override;
+
+    bool IsSuccess() const {
+        return success_;
+    }
+
+    CommitTableResponse() = default;
+
+ private:
+    bool success_ = false;
 };
 
 }  // namespace paimon

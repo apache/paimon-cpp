@@ -25,11 +25,13 @@
 #include <string>
 #include <vector>
 
+#include "paimon/catalog/identifier.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
+class Catalog;
 class Executor;
 class FormatTable;
 class MemoryPool;
@@ -51,7 +53,9 @@ class PAIMON_EXPORT WriteContext {
                  const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
                  const std::shared_ptr<RealtimeContext>& realtime_context,
                  const std::map<std::string, std::string>& options,
-                 const std::shared_ptr<FormatTable>& format_table);
+                 const std::shared_ptr<FormatTable>& format_table,
+                 const std::shared_ptr<Catalog>& catalog = nullptr,
+                 const std::optional<Identifier>& identifier = std::nullopt);
 
     ~WriteContext();
 
@@ -126,6 +130,16 @@ class PAIMON_EXPORT WriteContext {
         return format_table_;
     }
 
+    /// Returns the catalog supplying table metadata, or null if unset.
+    const std::shared_ptr<Catalog>& GetCatalog() const {
+        return catalog_;
+    }
+
+    /// Returns the table identifier supplied with the catalog.
+    const std::optional<Identifier>& GetIdentifier() const {
+        return identifier_;
+    }
+
  private:
     std::string root_path_;
     std::string commit_user_;
@@ -144,6 +158,8 @@ class PAIMON_EXPORT WriteContext {
     std::shared_ptr<RealtimeContext> realtime_context_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<FormatTable> format_table_;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
 };
 
 /// `WriteContextBuilder` used to build a `WriteContext`, has input validation.
@@ -157,8 +173,8 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// Constructs a `WriteContextBuilder` for a format table that is already loaded: the only way
     /// to write one whose schema lives in a metastore rather than under its location, such as a
     /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()` and a branch are refused here
-    /// rather than ignored.
+    /// `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()`, `WithCatalog()` and a branch
+    /// are refused here rather than ignored.
     ///
     /// There is no commit user: a format table keeps no snapshot to record one in.
     ///
@@ -206,7 +222,8 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithExecutor(const std::shared_ptr<Executor>& executor);
 
-    /// Set the temporary directory path for IO operations (lookup and external disk spill).
+    /// Set the temporary directory path for IO operations (lookup, external disk spill, and
+    /// real-time spill).
     /// @param temp_dir The temporary directory path.
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithTempDirectory(const std::string& temp_dir);
@@ -236,6 +253,19 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     WriteContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Loads a native table's schema and, for catalogs with version management, its latest
+    /// snapshot. Use the same catalog and identifier as `CommitContextBuilder` to restore and
+    /// refresh real-time progress.
+    ///
+    /// Only the main branch is supported. Data, manifests and historical metadata remain on the
+    /// file system. The catalog supplies that file system unless overridden
+    /// by `WithFileSystem()` or `WithFileSystemSchemeToIdentifierMap()`.
+    /// @param catalog Non-null catalog, kept alive while the writer uses its snapshot loader.
+    /// @param identifier The native table to write to.
+    /// @return Reference to this builder for method chaining.
+    WriteContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                     const Identifier& identifier);
 
     /// Enables the real-time write path with the provided shared context.
     /// @param realtime_context Non-null context that owns the real-time stores.
