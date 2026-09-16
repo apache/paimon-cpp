@@ -144,7 +144,7 @@ class VarLengthIntUtils {
             if (input->Available() == 0) {
                 return Status::Invalid("Truncated varint32 input.");
             }
-            uint8_t value = static_cast<uint8_t>(input->ReadByte());
+            auto value = static_cast<uint8_t>(input->ReadByte());
             result |= static_cast<uint32_t>(value & 0x7F) << shift;
             if ((value & 0x80) == 0) {
                 PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(result, "varint32"));
@@ -162,7 +162,7 @@ class VarLengthIntUtils {
             if (input->Available() == 0) {
                 return Status::Invalid("Truncated varint64 input.");
             }
-            uint8_t value = static_cast<uint8_t>(input->ReadByte());
+            auto value = static_cast<uint8_t>(input->ReadByte());
             result |= static_cast<uint64_t>(value & 0x7F) << shift;
             if ((value & 0x80) == 0) {
                 PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(result, "varint64"));

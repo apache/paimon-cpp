@@ -319,7 +319,7 @@ Result<BitmapGlobalIndexFormat::BlockEncoding> BitmapGlobalIndexFormat::EncodeBl
     }
     PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(uncompressed->size(),
                                                        "uncompressed bitmap index block size"));
-    int32_t uncompressed_length = static_cast<int32_t>(uncompressed->size());
+    auto uncompressed_length = static_cast<int32_t>(uncompressed->size());
     BlockEncoding result{uncompressed, uncompressed_length, BlockCompressionType::NONE};
     if (compression_factory == nullptr ||
         compression_factory->GetCompressionType() == BlockCompressionType::NONE) {
@@ -495,7 +495,7 @@ Result<std::shared_ptr<Bytes>> BitmapGlobalIndexFormat::ReadCompressibleBlock(
     PAIMON_ASSIGN_OR_RAISE(BlockCompressionType compression_type,
                            SstFileUtils::From(trailer->CompressionType()));
     uint32_t crc = CRC32C::calculate(block_slice.Data(), block_slice.Length());
-    char compression_value = static_cast<char>(static_cast<int32_t>(compression_type) & 0xFF);
+    auto compression_value = static_cast<char>(static_cast<int32_t>(compression_type) & 0xFF);
     crc = CRC32C::calculate(&compression_value, 1, crc);
     if (trailer->Crc32c() != static_cast<int32_t>(crc)) {
         return Status::Invalid(

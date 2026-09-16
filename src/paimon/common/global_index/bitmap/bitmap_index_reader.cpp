@@ -377,7 +377,7 @@ Result<RoaringBitmap64> BitmapIndexReader::Like(const Literal& literal) {
     if (literal.GetType() != FieldType::STRING) {
         return Status::Invalid("LIKE requires a string literal in BitmapIndexReader.");
     }
-    std::string pattern = literal.GetValue<std::string>();
+    auto pattern = literal.GetValue<std::string>();
     return ScanDictionary([pattern = std::move(pattern)](const Literal& key) -> Result<bool> {
         if (key.GetType() != FieldType::STRING) {
             return false;
@@ -504,7 +504,7 @@ Result<int32_t> BitmapIndexReader::FindLogicalDictionaryBlockIndex(
     const std::vector<BitmapGlobalIndexFormat::DictionaryBlockMeta>& blocks,
     const Literal& literal) {
     int32_t low = 0;
-    int32_t high = static_cast<int32_t>(blocks.size()) - 1;
+    auto high = static_cast<int32_t>(blocks.size()) - 1;
     while (low <= high) {
         int32_t middle = low + ((high - low) / 2);
         PAIMON_ASSIGN_OR_RAISE(
@@ -524,7 +524,7 @@ int32_t BitmapIndexReader::FindSerializedDictionaryBlockIndex(
     const std::vector<BitmapGlobalIndexFormat::DictionaryBlockMeta>& blocks,
     const BitmapGlobalIndexFormat::SerializedKey& key) {
     int32_t low = 0;
-    int32_t high = static_cast<int32_t>(blocks.size()) - 1;
+    auto high = static_cast<int32_t>(blocks.size()) - 1;
     while (low <= high) {
         int32_t middle = low + ((high - low) / 2);
         int32_t comparison = blocks[middle].FirstKey().CompareTo(key);
@@ -564,8 +564,8 @@ bool BitmapIndexReader::Contains(const BitmapGlobalIndexFormat::SerializedKey& k
 std::optional<BitmapGlobalIndexFormat::SerializedKey> BitmapIndexReader::PrefixUpperBound(
     const BitmapGlobalIndexFormat::SerializedKey& prefix, MemoryPool* pool) {
     const std::shared_ptr<Bytes>& prefix_bytes = prefix.GetBytes();
-    for (int64_t i = static_cast<int64_t>(prefix_bytes->size()) - 1; i >= 0; --i) {
-        uint8_t value = static_cast<uint8_t>(prefix_bytes->data()[i]);
+    for (auto i = static_cast<int64_t>(prefix_bytes->size()) - 1; i >= 0; --i) {
+        auto value = static_cast<uint8_t>(prefix_bytes->data()[i]);
         if (value != 0xFF) {
             std::shared_ptr<Bytes> upper_bound = Bytes::AllocateBytes(i + 1, pool);
             std::memcpy(upper_bound->data(), prefix_bytes->data(), i + 1);
