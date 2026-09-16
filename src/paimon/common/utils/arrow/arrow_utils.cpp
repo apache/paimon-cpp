@@ -39,7 +39,6 @@
 #include "arrow/util/compression.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/casting/casting_utils.h"
@@ -95,6 +94,153 @@ bool HasUndeclaredDictionaryChild(const std::shared_ptr<arrow::DataType>& type,
         }
     }
     return false;
+}
+
+// Positions in the current array which remain visible through every nullable ancestor.
+struct VisibleRange {
+    int64_t offset;
+    int64_t length;
+};
+
+using VisibleRanges = std::vector<VisibleRange>;
+
+void AppendVisibleRange(int64_t offset, int64_t length, VisibleRanges* ranges) {
+    if (length == 0) {
+        return;
+    }
+    if (!ranges->empty()) {
+        VisibleRange& last = ranges->back();
+        if (last.offset + last.length == offset) {
+            last.length += length;
+            return;
+        }
+    }
+    ranges->push_back({offset, length});
+}
+
+Status NullabilityMismatch(const arrow::Field& field) {
+    return Status::Invalid(fmt::format(
+        "CheckNullabilityMatch failed, field {} not nullable while data have null value",
+        field.name()));
+}
+
+Result<VisibleRanges> IntersectWithValidity(const arrow::Array& array,
+                                            const VisibleRanges& visible_ranges,
+                                            const arrow::Field& field) {
+    const bool nullable = field.nullable();
+    if (visible_ranges.empty()) {
+        return VisibleRanges{};
+    }
+
+    const int64_t null_count = array.null_count();
+    if (null_count == 0) {
+        return visible_ranges;
+    }
+    if (null_count == array.length()) {
+        if (!nullable) {
+            return NullabilityMismatch(field);
+        }
+        return VisibleRanges{};
+    }
+
+    VisibleRanges valid_ranges;
+    for (const VisibleRange& range : visible_ranges) {
+        int64_t run_start = -1;
+        const int64_t range_end = range.offset + range.length;
+        for (int64_t i = range.offset; i < range_end; ++i) {
+            if (array.IsValid(i)) {
+                if (run_start == -1) {
+                    run_start = i;
+                }
+            } else {
+                if (!nullable) {
+                    return NullabilityMismatch(field);
+                }
+                if (run_start != -1) {
+                    AppendVisibleRange(run_start, i - run_start, &valid_ranges);
+                    run_start = -1;
+                }
+            }
+        }
+        if (run_start != -1) {
+            AppendVisibleRange(run_start, range_end - run_start, &valid_ranges);
+        }
+    }
+    return valid_ranges;
+}
+
+template <typename ListArray>
+VisibleRanges GetVisibleValueRanges(const ListArray& array,
+                                    const VisibleRanges& visible_parent_ranges) {
+    VisibleRanges value_ranges;
+    for (const VisibleRange& range : visible_parent_ranges) {
+        int64_t value_offset = array.value_offset(range.offset);
+        int64_t value_end = array.value_offset(range.offset + range.length);
+        AppendVisibleRange(value_offset, value_end - value_offset, &value_ranges);
+    }
+    return value_ranges;
+}
+
+Status CheckFieldNullability(const std::shared_ptr<arrow::Field>& field,
+                             const std::shared_ptr<arrow::Array>& data,
+                             const VisibleRanges& visible_ranges) {
+    const std::shared_ptr<arrow::DataType>& type = field->type();
+    const bool needs_child_validation =
+        type->id() == arrow::Type::STRUCT || type->id() == arrow::Type::LIST ||
+        type->id() == arrow::Type::FIXED_SIZE_LIST || type->id() == arrow::Type::MAP;
+    if (!needs_child_validation &&
+        (field->nullable() || visible_ranges.empty() || data->null_count() == 0)) {
+        return Status::OK();
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(VisibleRanges valid_ranges,
+                           IntersectWithValidity(*data, visible_ranges, *field));
+
+    if (type->id() == arrow::Type::STRUCT) {
+        auto struct_type = checked_pointer_cast<arrow::StructType>(type);
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(data);
+        for (int32_t i = 0; i < struct_type->num_fields(); ++i) {
+            PAIMON_RETURN_NOT_OK(
+                CheckFieldNullability(struct_type->field(i), struct_array->field(i), valid_ranges));
+        }
+    } else if (type->id() == arrow::Type::LIST) {
+        auto list_type = checked_pointer_cast<arrow::ListType>(type);
+        auto list_array = checked_pointer_cast<arrow::ListArray>(data);
+        VisibleRanges value_ranges = GetVisibleValueRanges(*list_array, valid_ranges);
+        PAIMON_RETURN_NOT_OK(
+            CheckFieldNullability(list_type->value_field(), list_array->values(), value_ranges));
+    } else if (type->id() == arrow::Type::FIXED_SIZE_LIST) {
+        auto vector_type = checked_pointer_cast<arrow::FixedSizeListType>(type);
+        auto vector_array = checked_pointer_cast<arrow::FixedSizeListArray>(data);
+        int32_t vector_length = vector_type->list_size();
+        int64_t required_values = (vector_array->offset() + vector_array->length()) * vector_length;
+        if (vector_array->values()->length() < required_values) {
+            return Status::Invalid(fmt::format(
+                "VECTOR field {} is invalid: VECTOR holds {} elements while {} rows of dimension "
+                "{} require {}",
+                field->name(), vector_array->values()->length(), vector_array->length(),
+                vector_length, required_values));
+        }
+
+        VisibleRanges value_ranges = GetVisibleValueRanges(*vector_array, valid_ranges);
+        // Paimon VECTOR values cannot contain null elements, irrespective of the Arrow child
+        // field's declared nullability.
+        std::shared_ptr<arrow::Field> value_field = vector_type->value_field()->WithNullable(false);
+        Status status = CheckFieldNullability(value_field, vector_array->values(), value_ranges);
+        if (!status.ok()) {
+            return Status::Invalid(
+                fmt::format("VECTOR field {} is invalid: {}", field->name(), status.message()));
+        }
+    } else if (type->id() == arrow::Type::MAP) {
+        auto map_type = checked_pointer_cast<arrow::MapType>(type);
+        auto map_array = checked_pointer_cast<arrow::MapArray>(data);
+        VisibleRanges value_ranges = GetVisibleValueRanges(*map_array, valid_ranges);
+        PAIMON_RETURN_NOT_OK(
+            CheckFieldNullability(map_type->key_field(), map_array->keys(), value_ranges));
+        PAIMON_RETURN_NOT_OK(
+            CheckFieldNullability(map_type->item_field(), map_array->items(), value_ranges));
+    }
+    return Status::OK();
 }
 
 bool NeedsNormalization(const std::shared_ptr<arrow::ArrayData>& data) {
@@ -407,7 +553,9 @@ Status ArrowUtils::CheckNullabilityMatch(const std::shared_ptr<arrow::Schema>& s
             struct_array->num_fields(), schema->num_fields()));
     }
     for (int32_t i = 0; i < schema->num_fields(); i++) {
-        PAIMON_RETURN_NOT_OK(InnerCheckNullabilityMatch(schema->field(i), struct_array->field(i)));
+        const std::shared_ptr<arrow::Array>& field_array = struct_array->field(i);
+        PAIMON_RETURN_NOT_OK(
+            CheckFieldNullability(schema->field(i), field_array, {{0, field_array->length()}}));
     }
     return Status::OK();
 }
@@ -531,42 +679,6 @@ bool ArrowUtils::EqualsIgnoreNullable(const std::shared_ptr<arrow::DataType>& ty
         }
     }
     return true;
-}
-
-Status ArrowUtils::InnerCheckNullabilityMatch(const std::shared_ptr<arrow::Field>& field,
-                                              const std::shared_ptr<arrow::Array>& data) {
-    if (PAIMON_UNLIKELY(!field->nullable() && data->null_count() != 0)) {
-        return Status::Invalid(fmt::format(
-            "CheckNullabilityMatch failed, field {} not nullable while data have null value",
-            field->name()));
-    }
-    auto type = field->type();
-    if (type->id() == arrow::Type::STRUCT) {
-        auto struct_type = checked_pointer_cast<arrow::StructType>(field->type());
-        auto struct_array = checked_pointer_cast<arrow::StructArray>(data);
-        for (int32_t i = 0; i < struct_type->num_fields(); ++i) {
-            PAIMON_RETURN_NOT_OK(
-                InnerCheckNullabilityMatch(struct_type->field(i), struct_array->field(i)));
-        }
-    } else if (type->id() == arrow::Type::LIST) {
-        auto list_type = checked_pointer_cast<arrow::ListType>(field->type());
-        auto list_array = checked_pointer_cast<arrow::ListArray>(data);
-        PAIMON_RETURN_NOT_OK(
-            InnerCheckNullabilityMatch(list_type->value_field(), list_array->values()));
-    } else if (type->id() == arrow::Type::FIXED_SIZE_LIST) {
-        Status status = VectorUtils::ValidateVectorElements(*data);
-        if (!status.ok()) {
-            return Status::Invalid(
-                fmt::format("VECTOR field {} is invalid: {}", field->name(), status.message()));
-        }
-    } else if (type->id() == arrow::Type::MAP) {
-        auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
-        auto map_array = checked_pointer_cast<arrow::MapArray>(data);
-        PAIMON_RETURN_NOT_OK(InnerCheckNullabilityMatch(map_type->key_field(), map_array->keys()));
-        PAIMON_RETURN_NOT_OK(
-            InnerCheckNullabilityMatch(map_type->item_field(), map_array->items()));
-    }
-    return Status::OK();
 }
 
 Result<std::shared_ptr<arrow::StructArray>> ArrowUtils::RemoveFieldFromStructArray(
