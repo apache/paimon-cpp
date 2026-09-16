@@ -47,6 +47,44 @@ TEST(SchemaManagerTest, ConcurrentHistoricalSchemaReads) {
     ASSERT_EQ(manager.schema_cache_.Size(), 2);
 }
 
+TEST(SchemaManagerTest, RetainsMoreThan64SchemasAndRetriesFailures) {
+    auto directory = UniqueTestDirectory::Create();
+    ASSERT_TRUE(directory);
+    auto fs = std::make_shared<LocalFileSystem>();
+    SchemaManager manager(fs, directory->Str());
+    ASSERT_OK(fs->Mkdirs(manager.SchemaDirectory()));
+    auto write_schema = [&](int64_t id) -> Status {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<TableSchema> schema,
+            TableSchema::Create(id, arrow::schema({arrow::field("value", arrow::int32())}), {}, {},
+                                {}));
+        PAIMON_ASSIGN_OR_RAISE(std::string json, schema->GetJsonSchema());
+        return fs->WriteFile(manager.ToSchemaPath(id), json, true);
+    };
+    constexpr int64_t kSchemaCount = 65;
+    std::vector<std::shared_ptr<TableSchema>> schemas;
+    for (int64_t id = 0; id < kSchemaCount; ++id) {
+        ASSERT_OK(write_schema(id));
+        ASSERT_OK_AND_ASSIGN(auto schema, manager.ReadSchema(id));
+        schemas.push_back(schema);
+        // Loaded schemas remain cached after their files are removed.
+        ASSERT_OK(fs->Delete(manager.ToSchemaPath(id)));
+    }
+    for (int32_t round = 0; round < 3; ++round) {
+        for (int64_t id = 0; id < kSchemaCount; ++id) {
+            ASSERT_OK_AND_ASSIGN(auto cached, manager.ReadSchema(id));
+            ASSERT_EQ(cached, schemas[id]);
+        }
+    }
+
+    ASSERT_NOK(manager.ReadSchema(kSchemaCount));
+    ASSERT_OK(fs->WriteFile(manager.ToSchemaPath(kSchemaCount), "invalid JSON", true));
+    ASSERT_NOK(manager.ReadSchema(kSchemaCount));
+    ASSERT_OK(write_schema(kSchemaCount));
+    ASSERT_OK_AND_ASSIGN(auto reloaded, manager.ReadSchema(kSchemaCount));
+    ASSERT_EQ(reloaded->Id(), kSchemaCount);
+}
+
 TEST(SchemaManagerTest, TestSimple) {
     auto fs = std::make_shared<LocalFileSystem>();
     std::string table_root =

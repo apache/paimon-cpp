@@ -278,8 +278,9 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
 TEST(SystemTableTest, TestGlobalSystemTableWithoutCatalogReturnsNotImplemented) {
     ASSERT_OK_AND_ASSIGN(auto fs, FileSystemFactory::Get("local", "/tmp", {}));
     std::shared_ptr<FileSystem> shared_fs(std::move(fs));
-    ASSERT_NOK_WITH_MSG(SystemTableLoader::LoadFromPath(shared_fs, "/tmp/warehouse/sys/tables", {}),
-                        "global system table requires catalog context: tables");
+    ASSERT_NOK_WITH_MSG(
+        SystemTableLoader::LoadFromPath(shared_fs, "/tmp/warehouse/sys/tables", {}, nullptr),
+        "global system table requires catalog context: tables");
 }
 
 TEST(SystemTableTest, TestScanMetricsAreSnapshots) {

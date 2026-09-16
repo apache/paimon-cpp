@@ -26,6 +26,7 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/status.h"
+#include "paimon/table/source/table_scan_resources.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -124,6 +125,92 @@ TEST(ScanContextTest, TestDefaultExecutorIsCreatedPerContext) {
     ASSERT_OK_AND_ASSIGN(auto reset_ctx, first_builder.Finish());
     ASSERT_TRUE(reset_ctx->GetExecutor());
     ASSERT_NE(executor, reset_ctx->GetExecutor());
+}
+
+TEST(ScanContextTest, TestTableResourcesValidationAndReset) {
+    auto fs = std::make_shared<MockFileSystem>();
+    ASSERT_OK_AND_ASSIGN(auto resources, TableScanResources::Create("table/", fs, "dev"));
+    ScanContextBuilder builder("table");
+    builder.WithTableResources(resources);
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_EQ(context->GetTableResources(), resources);
+    ASSERT_EQ(context->GetSpecificFileSystem(), fs);
+    ASSERT_EQ(context->GetOptions().at(Options::BRANCH), "dev");
+    ASSERT_OK_AND_ASSIGN(auto reset_context, builder.Finish());
+    ASSERT_FALSE(reset_context->GetTableResources());
+    ASSERT_FALSE(reset_context->GetSpecificFileSystem());
+    ASSERT_TRUE(reset_context->GetOptions().empty());
+
+    builder.WithTableResources(resources).WithTableResources(nullptr);
+    ASSERT_OK_AND_ASSIGN(auto disabled_context, builder.Finish());
+    ASSERT_FALSE(disabled_context->GetTableResources());
+    ASSERT_FALSE(disabled_context->GetSpecificFileSystem());
+    ASSERT_TRUE(disabled_context->GetOptions().empty());
+
+    builder.WithTableResources(resources).WithFileSystem(fs);
+    ASSERT_OK(builder.Finish());
+    builder.WithTableResources(resources).WithFileSystem(std::make_shared<MockFileSystem>());
+    ASSERT_NOK_WITH_MSG(builder.Finish(), "file system does not match");
+    builder.WithFileSystem(nullptr).AddOption(Options::BRANCH, "main");
+    ASSERT_NOK_WITH_MSG(builder.Finish(), "branch does not match");
+
+    ScanContextBuilder other("other_table");
+    other.WithTableResources(resources);
+    ASSERT_NOK_WITH_MSG(other.Finish(), "path does not match");
+    ScanContextBuilder system("table$branch_dev$ro");
+    system.WithTableResources(resources);
+    ASSERT_OK(system.Finish());
+    ScanContextBuilder wrong_branch("table$branch_other$ro");
+    wrong_branch.WithTableResources(resources);
+    ASSERT_NOK_WITH_MSG(wrong_branch.Finish(), "branch does not match system table path");
+    ScanContextBuilder global("warehouse/sys/catalog_options");
+    global.WithTableResources(resources);
+    ASSERT_NOK_WITH_MSG(global.Finish(), "global system table");
+}
+
+TEST(ScanContextTest, TestTableResourcesFileSystemBindingIsOrderIndependent) {
+    auto fs = std::make_shared<MockFileSystem>();
+    auto other_fs = std::make_shared<MockFileSystem>();
+    ASSERT_OK_AND_ASSIGN(auto resources, TableScanResources::Create("table", fs, "main"));
+    for (bool resources_first : {false, true}) {
+        for (const auto& explicit_fs : {fs, other_fs}) {
+            ScanContextBuilder builder("table");
+            if (resources_first) {
+                builder.WithTableResources(resources).WithFileSystem(explicit_fs);
+            } else {
+                builder.WithFileSystem(explicit_fs).WithTableResources(resources);
+            }
+            if (explicit_fs != fs) {
+                ASSERT_NOK_WITH_MSG(builder.Finish(), "file system does not match");
+                // A failed build must allow correcting the explicit file system and retrying.
+                builder.WithFileSystem(fs);
+            }
+            ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+            ASSERT_EQ(context->GetSpecificFileSystem(), fs);
+            ASSERT_EQ(context->GetTableResources(), resources);
+        }
+    }
+
+    // Clearing an explicit override lets Finish() use the resources' instance.
+    ScanContextBuilder builder("table");
+    builder.WithFileSystem(other_fs).WithTableResources(resources).WithFileSystem(nullptr);
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_EQ(context->GetSpecificFileSystem(), fs);
+    ASSERT_OK_AND_ASSIGN(auto reset_context, builder.Finish());
+    ASSERT_FALSE(reset_context->GetSpecificFileSystem());
+    ASSERT_FALSE(reset_context->GetTableResources());
+}
+
+TEST(ScanContextTest, TestInvalidTableResources) {
+    auto fs = std::make_shared<MockFileSystem>();
+    ASSERT_NOK(TableScanResources::Create("", fs, "main"));
+    ASSERT_NOK(TableScanResources::Create("table", nullptr, "main"));
+    ASSERT_NOK(TableScanResources::Create("table", fs, "../other"));
+    ASSERT_NOK_WITH_MSG(TableScanResources::Create("table$ro", fs, "main"), "physical table path");
+    ASSERT_OK_AND_ASSIGN(auto resources, TableScanResources::Create("table", fs, ""));
+    ScanContextBuilder builder("table");
+    builder.WithTableResources(resources).AddOption(Options::BRANCH, "main");
+    ASSERT_OK(builder.Finish());
 }
 
 }  // namespace paimon::test

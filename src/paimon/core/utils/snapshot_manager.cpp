@@ -35,13 +35,52 @@
 
 namespace paimon {
 
+SnapshotManager::SnapshotCache::SnapshotCache() : SnapshotCache(std::chrono::steady_clock::now) {}
+
+SnapshotManager::SnapshotCache::SnapshotCache(Clock clock) : clock_(std::move(clock)) {}
+
+std::shared_ptr<SnapshotManager::SnapshotCache::Cache> SnapshotManager::SnapshotCache::GetCache() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto now = clock_();
+    if (!cache_ || now - created_at_ >= std::chrono::minutes(30)) {
+        cache_ = std::make_shared<Cache>(Cache::Options{/*max_weight=*/20});
+        created_at_ = now;
+    }
+    return cache_;
+}
+
+Result<Snapshot> SnapshotManager::SnapshotCache::Get(
+    const std::string& path, std::function<Result<Snapshot>(const std::string&)> supplier) {
+    // Hold this cache through the I/O. Invalidation replaces it instead of allowing an
+    // overlapping load to repopulate the cache used by subsequent callers.
+    auto cache = GetCache();
+    return cache->Get(path, std::move(supplier));
+}
+
+Status SnapshotManager::SnapshotCache::Put(const std::string& path, const Snapshot& snapshot) {
+    return GetCache()->Put(path, snapshot);
+}
+
+void SnapshotManager::SnapshotCache::InvalidateAll() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cache_.reset();
+}
+
 SnapshotManager::SnapshotManager(const std::shared_ptr<FileSystem>& fs,
                                  const std::string& root_path)
     : SnapshotManager(fs, root_path, BranchManager::DEFAULT_MAIN_BRANCH) {}
 
 SnapshotManager::SnapshotManager(const std::shared_ptr<FileSystem>& fs,
                                  const std::string& root_path, const std::string& branch)
-    : fs_(fs), root_path_(root_path), branch_(BranchManager::NormalizeBranch(branch)) {}
+    : SnapshotManager(fs, root_path, branch, nullptr) {}
+
+SnapshotManager::SnapshotManager(const std::shared_ptr<FileSystem>& fs,
+                                 const std::string& root_path, const std::string& branch,
+                                 const std::shared_ptr<SnapshotCache>& snapshot_cache)
+    : fs_(fs),
+      root_path_(root_path),
+      branch_(BranchManager::NormalizeBranch(branch)),
+      snapshot_cache_(snapshot_cache) {}
 
 SnapshotManager::~SnapshotManager() = default;
 
@@ -60,6 +99,9 @@ const std::string& SnapshotManager::Branch() const {
 Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshotOfUser(const std::string& user) {
     // Catalog snapshots may have no corresponding file in the table directory.
     PAIMON_ASSIGN_OR_RAISE(LatestSnapshotResult latest, LatestSnapshotWithSource());
+    if (snapshot_cache_ && !latest.from_catalog && latest.snapshot) {
+        PAIMON_ASSIGN_OR_RAISE(latest.snapshot, LoadSnapshotFromFileSystem(latest.snapshot->Id()));
+    }
     return LatestSnapshotOfUserAtOrBefore(user, latest.snapshot, latest.from_catalog);
 }
 
@@ -84,7 +126,7 @@ Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshotOfUserAtOrBefore(
     }
     search_end = std::max(search_end, Snapshot::FIRST_SNAPSHOT_ID);
     for (int64_t id = latest.value().Id() - 1; id >= search_end; id--) {
-        Result<Snapshot> snapshot = LoadSnapshot(id);
+        Result<Snapshot> snapshot = LoadSnapshotFromFileSystem(id);
         if (!snapshot.ok()) {
             if (snapshot.status().IsNotExist()) {
                 if (latest_from_catalog) {
@@ -124,7 +166,36 @@ bool SnapshotManager::ExpiredSinceBoundaryWasRead(int64_t id) const {
 }
 
 Result<Snapshot> SnapshotManager::LoadSnapshot(int64_t snapshot_id) const {
+    if (!snapshot_cache_) {
+        return LoadSnapshotFromFileSystem(snapshot_id);
+    }
+    return snapshot_cache_->Get(SnapshotPath(snapshot_id), [this](const std::string& path) {
+        return Snapshot::FromPath(fs_, path);
+    });
+}
+
+Result<Snapshot> SnapshotManager::LoadSnapshotFromFileSystem(int64_t snapshot_id) const {
     return Snapshot::FromPath(fs_, SnapshotPath(snapshot_id));
+}
+
+Status SnapshotManager::DeleteSnapshot(int64_t snapshot_id) {
+    const std::string path = SnapshotPath(snapshot_id);
+    if (snapshot_cache_) {
+        snapshot_cache_->InvalidateAll();
+    }
+    Status status = fs_->Delete(path);
+    // A read may start between the first invalidation and deletion. Invalidate again even on
+    // failure so neither cached entries nor in-flight loads from that window survive the call.
+    if (snapshot_cache_) {
+        snapshot_cache_->InvalidateAll();
+    }
+    return status;
+}
+
+void SnapshotManager::InvalidateCache() {
+    if (snapshot_cache_) {
+        snapshot_cache_->InvalidateAll();
+    }
 }
 
 void SnapshotManager::SetSnapshotLoader(SnapshotLoader loader) {
@@ -140,6 +211,10 @@ Result<SnapshotManager::LatestSnapshotResult> SnapshotManager::LatestSnapshotWit
     if (snapshot_loader_) {
         Result<std::optional<Snapshot>> loaded = snapshot_loader_();
         if (loaded.ok()) {
+            if (snapshot_cache_ && loaded.value()) {
+                // Cache admission must not turn a successful catalog read into an error.
+                (void)snapshot_cache_->Put(SnapshotPath(loaded.value()->Id()), *loaded.value());
+            }
             return LatestSnapshotResult{loaded.value(), /*from_catalog=*/true};
         }
         if (!loaded.status().IsNotImplemented()) {
@@ -347,7 +422,8 @@ Result<std::optional<Snapshot>> SnapshotManager::FindSnapshotBeforeTimestamp(
         return std::optional<Snapshot>();
     }
 
-    PAIMON_ASSIGN_OR_RAISE(Snapshot earliest_snapshot, LoadSnapshot(earliest_id.value()));
+    PAIMON_ASSIGN_OR_RAISE(Snapshot earliest_snapshot,
+                           LoadSnapshotFromFileSystem(earliest_id.value()));
     if (!compare(earliest_snapshot.TimeMillis(), timestamp_millis)) {
         return std::optional<Snapshot>();
     }
@@ -358,7 +434,7 @@ Result<std::optional<Snapshot>> SnapshotManager::FindSnapshotBeforeTimestamp(
 
     while (lo <= hi) {
         int64_t mid = lo + (hi - lo) / 2;
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(mid));
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshotFromFileSystem(mid));
         if (compare(snapshot.TimeMillis(), timestamp_millis)) {
             lo = mid + 1;
             result = std::move(snapshot);

@@ -51,11 +51,10 @@ Result<std::shared_ptr<FormatTable>> FormatTableLoader::TryLoad(
     } else {
         // Through the caller's manager when it has one, so that the read warms the cache it goes
         // on to use rather than a cache that dies with this call.
-        SchemaManager own_schema_manager(file_system, table_path, branch);
-        const SchemaManager& reader =
-            schema_manager != nullptr ? *schema_manager : own_schema_manager;
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                               reader.Latest());
+                               schema_manager
+                                   ? schema_manager->Latest()
+                                   : SchemaManager(file_system, table_path, branch).Latest());
         if (!latest_schema) {
             return std::shared_ptr<FormatTable>();
         }

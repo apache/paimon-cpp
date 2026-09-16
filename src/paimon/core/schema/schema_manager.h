@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-#include "paimon/common/utils/concurrent_hash_map.h"
+#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
@@ -46,7 +46,7 @@ class SchemaManager {
     SchemaManager(const std::shared_ptr<FileSystem>& file_system, const std::string& table_root,
                   const std::string& branch);
 
-    /// Read schema for schema id. Find schema in cache first.
+    /// Read schema by ID, retaining loaded versions for the lifetime of this manager.
     /// Safe to call concurrently.
     Result<std::shared_ptr<TableSchema>> ReadSchema(int64_t schema_id) const;
     Result<std::optional<std::shared_ptr<TableSchema>>> Latest() const;
@@ -71,7 +71,8 @@ class SchemaManager {
     std::shared_ptr<FileSystem> file_system_;
     std::string table_root_;
     const std::string branch_;
-    mutable ConcurrentHashMap<int64_t, std::shared_ptr<TableSchema>> schema_cache_;
+    using SchemaCache = GenericLruCache<int64_t, std::shared_ptr<TableSchema>>;
+    mutable SchemaCache schema_cache_{SchemaCache::Options{}};
 };
 
 }  // namespace paimon

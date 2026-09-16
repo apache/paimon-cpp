@@ -394,7 +394,8 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
         .WithFileSystem(context->GetSpecificFileSystem())
-        .WithCache(context->GetCache());
+        .WithCache(context->GetCache())
+        .WithTableResources(context->GetTableResources());
     if (scan_filter) {
         if (scan_filter->GetBucketFilter()) {
             builder.SetBucketFilter(scan_filter->GetBucketFilter().value());
