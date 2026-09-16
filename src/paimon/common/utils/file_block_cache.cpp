@@ -20,6 +20,8 @@
 #include "paimon/common/utils/file_block_cache.h"
 
 #include <cstring>
+#include <mutex>
+#include <shared_mutex>
 
 #include "paimon/common/memory/bytes_utils.h"
 
@@ -37,7 +39,7 @@ FileBlockCache::FileBlockCache(const std::shared_ptr<InputStream>& stream, uint6
 FileBlockCache::~FileBlockCache() {
     // The fetches write into the block buffers, so they must not outlive the
     // stream they read from.
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::shared_mutex> lock(mutex_);
     for (auto& block : blocks_) {
         block.second->future.wait();
     }
@@ -50,11 +52,22 @@ bool FileBlockCache::Read(const ByteRange& range, char* dest) {
     const uint64_t index = IndexOf(range.offset);
     std::shared_ptr<Block> block;
     bool dispatch = false;
+    // Hit fast path under the read lock: concurrent reads of already-cached blocks
+    // proceed in parallel instead of serializing on an exclusive lock.
     {
-        // Publishing the promise-backed block under the lock before its fetch is
-        // dispatched is what makes concurrent readers of the same block wait for
-        // that one fetch instead of issuing their own.
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> read_lock(mutex_);
+        auto it = blocks_.find(index);
+        if (it != blocks_.end()) {
+            block = it->second;
+        }
+    }
+    if (!block) {
+        // Miss: take the write lock and re-check, since another reader may have
+        // inserted the block while the read lock was dropped. Publishing the
+        // promise-backed block under the lock before its fetch is dispatched is what
+        // makes concurrent readers of the same block wait for that one fetch instead
+        // of issuing their own.
+        std::unique_lock<std::shared_mutex> write_lock(mutex_);
         auto it = blocks_.find(index);
         if (it != blocks_.end()) {
             block = it->second;
@@ -95,32 +108,38 @@ bool FileBlockCache::Read(const ByteRange& range, char* dest) {
         return false;
     }
     std::memcpy(dest, block->buffer->data() + (range.offset - block->range.offset), range.length);
-    hits_.Add(range.length);
+    hit_metrics_.Record(range.length);
     return true;
 }
 
 void FileBlockCache::Release() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    // Blocks are never evicted, so waiting on blocks_ covers every dispatched
-    // fetch before the buffers they write into go away.
-    for (auto& block : blocks_) {
+    std::unordered_map<uint64_t, std::shared_ptr<Block>> to_release;
+    {
+        std::lock_guard<std::shared_mutex> lock(mutex_);
+        // Swap the blocks out under the lock instead of waiting on them in place: an
+        // in-flight fetch may take arbitrarily long, and holding the lock while
+        // waiting would stall concurrent readers.
+        to_release.swap(blocks_);
+        cached_bytes_ = 0;
+    }
+    // Wait OUTSIDE the lock. Blocks are never evicted, so this covers every
+    // dispatched fetch before the buffers they write into go away.
+    for (auto& block : to_release) {
         block.second->future.wait();
     }
-    blocks_.clear();
-    cached_bytes_ = 0;
 }
 
 void FileBlockCache::ResetCounters() {
-    hits_.Reset();
-    fetches_.Reset();
+    hit_metrics_.Reset();
+    fetch_metrics_.Reset();
 }
 
 FileBlockCache::Counters FileBlockCache::GetCounters() const {
     Counters counters;
-    counters.hits = hits_.Count();
-    counters.hit_bytes = hits_.Bytes();
-    counters.fetches = fetches_.Count();
-    counters.fetch_bytes = fetches_.Bytes();
+    counters.hits = hit_metrics_.Count();
+    counters.hit_bytes = hit_metrics_.Bytes();
+    counters.fetches = fetch_metrics_.Count();
+    counters.fetch_bytes = fetch_metrics_.Bytes();
     return counters;
 }
 
@@ -153,7 +172,7 @@ ByteRange FileBlockCache::RangeOf(uint64_t index) const {
 }
 
 void FileBlockCache::Fetch(const std::shared_ptr<Block>& block) {
-    fetches_.Add(block->range.length);
+    fetch_metrics_.Record(block->range.length);
     auto promise = block->promise;
     auto buffer = block->buffer;
     // The buffer and the promise are captured, so the async read keeps its

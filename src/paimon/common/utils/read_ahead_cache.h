@@ -23,10 +23,14 @@
 #pragma once
 
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <optional>
+#include <shared_mutex>
+#include <utility>
 #include <vector>
 
+#include "paimon/common/metrics/atomic_counter_pair.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
@@ -37,6 +41,9 @@
 namespace paimon {
 
 class Metrics;
+class FileBlockCache;
+class Bytes;
+struct PendingFetch;
 
 /// Metric names for the read-ahead cache.
 class PAIMON_EXPORT ReadAheadCacheMetrics {
@@ -96,6 +103,32 @@ struct PAIMON_EXPORT ByteRange {
     /// @return true if this range contains the other range
     bool Contains(const ByteRange& other) const {
         return (offset <= other.offset && offset + length >= other.offset + other.length);
+    }
+};
+
+/// A registered range of the cache. `buffer` is null until the prefetch for the
+/// range is published (dispatched); once published it holds the destination the
+/// async IO writes into and `future` resolves when that IO completes. So
+/// `Published()` distinguishes "registered, not fetched yet" from "fetched".
+struct RangeCacheEntry {
+    ByteRange range;
+    std::shared_ptr<Bytes> buffer;
+    std::shared_future<Status> future;  // use shared_future in case of multiple get calls
+
+    RangeCacheEntry() = default;
+    /// Register a range without publishing it: no buffer, no fetch yet.
+    explicit RangeCacheEntry(const ByteRange& range) : range(range) {}
+    RangeCacheEntry(const ByteRange& range, std::shared_ptr<Bytes> buffer,
+                    std::future<Status> future)
+        : range(range), buffer(std::move(buffer)), future(std::move(future).share()) {}
+
+    /// True once the prefetch for this range has been published (buffer assigned).
+    bool Published() const {
+        return buffer != nullptr;
+    }
+
+    friend bool operator<(const RangeCacheEntry& left, const RangeCacheEntry& right) {
+        return left.range.offset < right.range.offset;
     }
 };
 
@@ -201,8 +234,59 @@ class PAIMON_EXPORT ReadAheadCache {
     void ReleaseBuffers();
 
  private:
-    class Impl;
-    std::unique_ptr<Impl> impl_;
+    /// Merge coalesced, validated `new_ranges` into the disjoint, offset-ordered ranges_, moving
+    /// the already registered entries (and thus their published buffer/future) over as-is, and
+    /// return the offset of the first newly registered range (nullopt when nothing was added).
+    /// The caller holds the write lock.
+    std::optional<uint64_t> MergeRangesLocked(std::vector<ByteRange>&& new_ranges);
+
+    /// Dispatch the prefetch IOs for entries that have already been published into ranges_.
+    void DispatchFetches(const std::vector<PendingFetch>& fetches);
+
+    /// Find the published entries fully covering the given range under the read lock.
+    /// Returns an empty vector on miss. Entries are copied (shared buffers)
+    /// so the caller may use them after releasing the lock.
+    std::vector<RangeCacheEntry> FindCoveringEntries(const ByteRange& range);
+
+    /// True when the prefetch window starting at `offset` still holds an entry whose fetch has not
+    /// been published. The caller holds either lock; PreBuffer() uses it under the read lock to
+    /// skip the write lock entirely when there is nothing left to fetch.
+    bool WindowHasUnpublishedLocked(uint64_t offset) const;
+
+    /// Publish and fetch the registered ranges from the given offset forward, bounded by the
+    /// pre-buffer limit.
+    ///
+    /// Selecting the ranges and publishing them (filling buffer/future in place in ranges_) all
+    /// happen under the write lock, before any IO is dispatched: AddRanges() rewrites ranges_
+    /// from another thread, and a reader racing the prefetch must observe an entry published only
+    /// once it is already visible in ranges_, so it waits on the in-flight entry instead of
+    /// re-fetching the same bytes.
+    void PreBuffer(uint64_t offset);
+
+    /// Clear the prefetch state, waiting for the fetches still writing into the
+    /// entry buffers. Leaves the block cache untouched.
+    void ReleasePrefetchBuffers();
+
+    std::shared_ptr<InputStream> stream_;
+    CacheConfig config_;
+    // Every registered range, ordered by offset and disjoint (so a matching
+    // region is found by binary search). An entry whose buffer is still null is
+    // registered but not fetched yet; publishing fills buffer/future in place.
+    std::vector<RangeCacheEntry> ranges_;
+    std::shared_ptr<MemoryPool> memory_pool_;
+    mutable std::shared_mutex rw_mutex_;
+    // Caches the reads that no registered range covers, or null when the block
+    // cache is disabled. Owns its own locking and counters.
+    std::unique_ptr<FileBlockCache> block_cache_;
+    // The Read() requests issued to the cache and how they were served,
+    // aggregated over all the streams sharing this cache. A read is counted
+    // either as a hit, a block cache hit or a miss.
+    AtomicCounterPair read_metrics_;
+    AtomicCounterPair hit_metrics_;
+    AtomicCounterPair miss_metrics_;
+    // The prefetch IO actually issued to the underlying stream. The block cache
+    // counts its own fetches, which CollectMetrics() adds to these.
+    AtomicCounterPair io_metrics_;
 };
 
 }  // namespace paimon
