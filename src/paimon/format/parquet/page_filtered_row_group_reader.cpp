@@ -53,7 +53,7 @@ namespace {
 /// factor of it is bounded by bytes that physically exist. A leaf decompressing within the factor
 /// is reserved in full; a more compressible one is capped and left to the builder's amortized
 /// doubling, which is cheap against the I/O and decode of a read that large.
-constexpr int64_t kMaxReservationDecompressionFactor = 8;
+constexpr int64_t kMaxReservationDecompressionFactor = 20;
 
 struct DataPageLayout {
     int64_t column_chunk_offset;
