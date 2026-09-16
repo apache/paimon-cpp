@@ -20,6 +20,7 @@
 #include "paimon/core/mergetree/compact/aggregate/field_merge_map_agg.h"
 
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -52,6 +53,15 @@ int32_t FindValue(const VariantType& value, int32_t key) {
     return -1;
 }
 
+std::vector<int32_t> Keys(const VariantType& value) {
+    auto map = DataDefine::GetVariantValue<std::shared_ptr<InternalMap>>(value);
+    std::vector<int32_t> keys;
+    for (int32_t i = 0; i < map->Size(); ++i) {
+        keys.push_back(map->KeyArray()->GetInt(i));
+    }
+    return keys;
+}
+
 }  // namespace
 
 TEST(FieldMergeMapAggTest, InputOverwritesAndRetractUsesKeys) {
@@ -80,6 +90,72 @@ TEST(FieldMergeMapAggTest, InputOverwritesAndRetractUsesKeys) {
     ASSERT_EQ(-1, FindValue(retracted, 2));
 }
 
+TEST(FieldMergeMapAggTest, HashPathDeduplicatesAccumulatorAndPreservesOrder) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldMergeMapAgg> agg,
+                         FieldMergeMapAgg::Create(arrow::map(arrow::int32(), arrow::int32()), "f",
+                                                  GetDefaultPool()));
+    std::vector<VariantType> accumulator_keys;
+    std::vector<VariantType> accumulator_values;
+    for (int32_t i = 0; i <= 100; ++i) {
+        accumulator_keys.emplace_back(i);
+        accumulator_values.emplace_back(100 + i);
+    }
+    accumulator_keys.emplace_back(10);
+    accumulator_values.emplace_back(1010);
+
+    std::vector<VariantType> input_keys;
+    std::vector<VariantType> input_values;
+    for (int32_t i = 50; i <= 140; ++i) {
+        input_keys.emplace_back(i);
+        input_values.emplace_back(2000 + i);
+    }
+    input_keys.emplace_back(60);
+    input_values.emplace_back(2060);
+
+    ASSERT_OK_AND_ASSIGN(
+        VariantType result,
+        agg->Agg(IntMap(std::move(accumulator_keys), std::move(accumulator_values)),
+                 IntMap(std::move(input_keys), std::move(input_values))));
+    std::vector<int32_t> expected_keys;
+    for (int32_t i = 0; i <= 140; ++i) {
+        expected_keys.push_back(i);
+    }
+    ASSERT_EQ(expected_keys, Keys(result));
+    ASSERT_EQ(1010, FindValue(result, 10));
+    ASSERT_EQ(2050, FindValue(result, 50));
+    ASSERT_EQ(2060, FindValue(result, 60));
+    ASSERT_EQ(2140, FindValue(result, 140));
+}
+
+TEST(FieldMergeMapAggTest, HashPathUsesStringContentAndOverwrites) {
+    std::vector<std::shared_ptr<arrow::DataType>> key_types{arrow::utf8(), arrow::binary()};
+    for (const auto& key_type : key_types) {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<FieldMergeMapAgg> agg,
+            FieldMergeMapAgg::Create(arrow::map(key_type, arrow::int32()), "f", GetDefaultPool()));
+        std::vector<std::string> left(100, "same-content-with-a-longer-buffer");
+        std::vector<std::string> right(100, "same-content-with-a-longer-buffer");
+        std::vector<VariantType> left_keys;
+        std::vector<VariantType> right_keys;
+        std::vector<VariantType> left_values(100, VariantType(int32_t{10}));
+        std::vector<VariantType> right_values(100, VariantType(int32_t{20}));
+        for (const auto& value : left) {
+            left_keys.emplace_back(std::string_view(value));
+        }
+        for (const auto& value : right) {
+            right_keys.emplace_back(std::string_view(value));
+        }
+
+        ASSERT_OK_AND_ASSIGN(VariantType result,
+                             agg->Agg(IntMap(std::move(left_keys), std::move(left_values)),
+                                      IntMap(std::move(right_keys), std::move(right_values))));
+        auto result_map = DataDefine::GetVariantValue<std::shared_ptr<InternalMap>>(result);
+        ASSERT_EQ(1, result_map->Size());
+        ASSERT_EQ("same-content-with-a-longer-buffer", result_map->KeyArray()->GetStringView(0));
+        ASSERT_EQ(20, result_map->ValueArray()->GetInt(0));
+    }
+}
+
 TEST(FieldMergeMapAggTest, NullAndTypeValidation) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldMergeMapAgg> agg,
                          FieldMergeMapAgg::Create(arrow::map(arrow::int32(), arrow::int32()), "f",
@@ -87,6 +163,11 @@ TEST(FieldMergeMapAggTest, NullAndTypeValidation) {
     VariantType map = IntMap({int32_t{1}}, {int32_t{10}});
     ASSERT_OK_AND_ASSIGN(VariantType result, agg->Agg(VariantType(NullType()), map));
     ASSERT_EQ(10, FindValue(result, 1));
+    ASSERT_OK_AND_ASSIGN(VariantType accumulator_result, agg->Agg(map, VariantType(NullType())));
+    ASSERT_EQ(10, FindValue(accumulator_result, 1));
+    ASSERT_OK_AND_ASSIGN(VariantType null_result,
+                         agg->Agg(VariantType(NullType()), VariantType(NullType())));
+    ASSERT_TRUE(DataDefine::IsVariantNull(null_result));
     ASSERT_NOK(FieldMergeMapAgg::Create(arrow::int32(), "f", GetDefaultPool()));
 }
 

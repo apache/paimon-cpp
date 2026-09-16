@@ -19,6 +19,7 @@
 
 #include "paimon/core/mergetree/compact/aggregate/field_merge_map_agg.h"
 
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -32,6 +33,10 @@
 
 namespace paimon {
 namespace {
+
+constexpr int32_t kHashThreshold = 192;
+using detail::SemanticEqual;
+using detail::SemanticHash;
 
 struct MapEntry {
     VariantType key;
@@ -64,6 +69,29 @@ Status PutMap(const std::shared_ptr<InternalMap>& map,
             (*entries)[existing].value = std::move(value);
         } else {
             entries->push_back(MapEntry{std::move(key), std::move(value)});
+        }
+    }
+    return Status::OK();
+}
+
+Status PutMapWithHash(
+    const std::shared_ptr<InternalMap>& map, const std::shared_ptr<arrow::DataType>& key_type,
+    const std::shared_ptr<arrow::DataType>& value_type,
+    std::unordered_map<VariantType, int32_t, SemanticHash, SemanticEqual>* key_index,
+    std::vector<MapEntry>* entries) {
+    std::shared_ptr<InternalArray> keys = map->KeyArray();
+    std::shared_ptr<InternalArray> values = map->ValueArray();
+    for (int32_t i = 0; i < map->Size(); ++i) {
+        PAIMON_ASSIGN_OR_RAISE(VariantType key, FieldAggregateUtils::GetValue(*keys, i, key_type));
+        PAIMON_ASSIGN_OR_RAISE(VariantType value,
+                               FieldAggregateUtils::GetValue(*values, i, value_type));
+        auto iter = key_index->find(key);
+        if (iter != key_index->end()) {
+            entries->at(iter->second).value = std::move(value);
+        } else {
+            int32_t new_index = static_cast<int32_t>(entries->size());
+            entries->push_back(MapEntry{std::move(key), std::move(value)});
+            key_index->emplace(entries->back().key, new_index);
         }
     }
     return Status::OK();
@@ -119,8 +147,21 @@ Result<VariantType> FieldMergeMapAgg::AggImpl(const VariantType& accumulator,
     auto input_map = DataDefine::GetVariantValue<std::shared_ptr<InternalMap>>(input_field);
     std::vector<MapEntry> entries;
     entries.reserve(accumulator_map->Size() + input_map->Size());
-    PAIMON_RETURN_NOT_OK(PutMap(accumulator_map, key_type_, value_type_, &entries));
-    PAIMON_RETURN_NOT_OK(PutMap(input_map, key_type_, value_type_, &entries));
+    int32_t total_size = accumulator_map->Size() + input_map->Size();
+    if (total_size >= kHashThreshold && FieldAggregateUtils::IsHashableType(key_type_)) {
+        SemanticHash hasher{key_type_};
+        SemanticEqual equal{key_type_};
+        std::unordered_map<VariantType, int32_t, SemanticHash, SemanticEqual> key_index(0, hasher,
+                                                                                        equal);
+        key_index.reserve(total_size);
+        PAIMON_RETURN_NOT_OK(
+            PutMapWithHash(accumulator_map, key_type_, value_type_, &key_index, &entries));
+        PAIMON_RETURN_NOT_OK(
+            PutMapWithHash(input_map, key_type_, value_type_, &key_index, &entries));
+    } else {
+        PAIMON_RETURN_NOT_OK(PutMap(accumulator_map, key_type_, value_type_, &entries));
+        PAIMON_RETURN_NOT_OK(PutMap(input_map, key_type_, value_type_, &entries));
+    }
     return MakeMap(std::move(entries), {accumulator_map->KeyArray(), input_map->KeyArray()},
                    {accumulator_map->ValueArray(), input_map->ValueArray()});
 }

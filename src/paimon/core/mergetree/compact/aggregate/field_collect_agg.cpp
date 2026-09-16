@@ -19,6 +19,7 @@
 
 #include "paimon/core/mergetree/compact/aggregate/field_collect_agg.h"
 
+#include <unordered_set>
 #include <vector>
 
 #include "arrow/api.h"
@@ -33,9 +34,12 @@
 namespace paimon {
 namespace {
 
-// TODO(liangjie.liang): Hash VariantType by its type so that this scan, the key lookup in
-// FieldMergeMapAgg and the keyed upsert in FieldNestedUpdateAgg stop being O(n^2). Java only pays
-// that cost for constructed element types and uses HashSet/HashMap for the rest.
+constexpr int32_t kHashThreshold = 192;
+using detail::SemanticEqual;
+using detail::SemanticHash;
+
+// Constructed element types stay on the linear path because their equality semantics are not
+// covered by FieldAggregateUtils::Hash.
 Result<bool> Contains(const std::vector<VariantType>& values, const VariantType& candidate,
                       const std::shared_ptr<arrow::DataType>& element_type) {
     for (const VariantType& value : values) {
@@ -64,6 +68,23 @@ Status AppendArray(const std::shared_ptr<InternalArray>& array,
             }
         }
         values->push_back(std::move(value));
+    }
+    return Status::OK();
+}
+
+Status AppendArrayWithHash(const std::shared_ptr<InternalArray>& array,
+                           const std::shared_ptr<arrow::DataType>& element_type,
+                           std::unordered_set<VariantType, SemanticHash, SemanticEqual>* seen,
+                           std::vector<VariantType>* values) {
+    if (!array) {
+        return Status::OK();
+    }
+    for (int32_t i = 0; i < array->Size(); ++i) {
+        PAIMON_ASSIGN_OR_RAISE(VariantType value,
+                               FieldAggregateUtils::GetValue(*array, i, element_type));
+        if (seen->insert(value).second) {
+            values->push_back(std::move(value));
+        }
     }
     return Status::OK();
 }
@@ -111,12 +132,22 @@ Result<VariantType> FieldCollectAgg::AggImpl(const VariantType& accumulator,
     std::shared_ptr<InternalArray> input_array =
         input_null ? nullptr
                    : DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(input_field);
+    int32_t total_size = (accumulator_array ? accumulator_array->Size() : 0) +
+                         (input_array ? input_array->Size() : 0);
     std::vector<VariantType> values;
-    if (accumulator_array) {
-        values.reserve(accumulator_array->Size() + (input_array ? input_array->Size() : 0));
+    values.reserve(total_size);
+    if (distinct_ && total_size >= kHashThreshold &&
+        FieldAggregateUtils::IsHashableType(element_type_)) {
+        SemanticHash hasher{element_type_};
+        SemanticEqual equal{element_type_};
+        std::unordered_set<VariantType, SemanticHash, SemanticEqual> seen(0, hasher, equal);
+        seen.reserve(total_size);
+        PAIMON_RETURN_NOT_OK(AppendArrayWithHash(accumulator_array, element_type_, &seen, &values));
+        PAIMON_RETURN_NOT_OK(AppendArrayWithHash(input_array, element_type_, &seen, &values));
+    } else {
+        PAIMON_RETURN_NOT_OK(AppendArray(accumulator_array, element_type_, distinct_, &values));
+        PAIMON_RETURN_NOT_OK(AppendArray(input_array, element_type_, distinct_, &values));
     }
-    PAIMON_RETURN_NOT_OK(AppendArray(accumulator_array, element_type_, distinct_, &values));
-    PAIMON_RETURN_NOT_OK(AppendArray(input_array, element_type_, distinct_, &values));
     std::vector<std::shared_ptr<InternalArray>> holders;
     if (accumulator_array) {
         holders.push_back(accumulator_array);

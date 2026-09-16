@@ -19,8 +19,13 @@
 
 #include "paimon/core/mergetree/compact/aggregate/field_aggregate_utils.h"
 
+#include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <functional>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -121,6 +126,25 @@ Result<bool> EqualMaps(const std::shared_ptr<InternalMap>& lhs,
         }
     }
     return true;
+}
+
+size_t CombineHash(size_t lhs, size_t rhs) {
+    return lhs ^ (rhs + static_cast<size_t>(0x9e3779b97f4a7c15ULL) + (lhs << 6) + (lhs >> 2));
+}
+
+template <typename T>
+size_t HashFloatingPoint(T value) {
+    using Bits = std::conditional_t<sizeof(T) == sizeof(uint32_t), uint32_t, uint64_t>;
+    Bits bits;
+    std::memcpy(&bits, &value, sizeof(value));
+    if (std::isnan(value)) {
+        if constexpr (sizeof(T) == sizeof(uint32_t)) {
+            bits = static_cast<Bits>(0x7fc00000U);
+        } else {
+            bits = static_cast<Bits>(0x7ff8000000000000ULL);
+        }
+    }
+    return std::hash<Bits>{}(bits);
 }
 
 }  // namespace
@@ -241,6 +265,69 @@ Result<bool> FieldAggregateUtils::Equals(const VariantType& lhs, const VariantTy
         default:
             return Status::Invalid(
                 fmt::format("type {} is not supported by field aggregation", type->ToString()));
+    }
+}
+
+bool FieldAggregateUtils::IsHashableType(const std::shared_ptr<arrow::DataType>& type) {
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::DATE32:
+        case arrow::Type::INT64:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+        case arrow::Type::TIMESTAMP:
+            return true;
+        default:
+            return false;
+    }
+}
+
+size_t FieldAggregateUtils::Hash(const VariantType& value,
+                                 const std::shared_ptr<arrow::DataType>& type) {
+    assert(IsHashableType(type));
+    size_t result = std::hash<int>{}(static_cast<int>(type->id()));
+    if (DataDefine::IsVariantNull(value)) {
+        return result;
+    }
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+            return CombineHash(result, std::hash<bool>{}(DataDefine::GetVariantValue<bool>(value)));
+        case arrow::Type::INT8:
+            return CombineHash(result, std::hash<char>{}(DataDefine::GetVariantValue<char>(value)));
+        case arrow::Type::INT16:
+            return CombineHash(result,
+                               std::hash<int16_t>{}(DataDefine::GetVariantValue<int16_t>(value)));
+        case arrow::Type::INT32:
+        case arrow::Type::DATE32:
+            return CombineHash(result,
+                               std::hash<int32_t>{}(DataDefine::GetVariantValue<int32_t>(value)));
+        case arrow::Type::INT64:
+            return CombineHash(result,
+                               std::hash<int64_t>{}(DataDefine::GetVariantValue<int64_t>(value)));
+        case arrow::Type::FLOAT:
+            return CombineHash(result,
+                               HashFloatingPoint(DataDefine::GetVariantValue<float>(value)));
+        case arrow::Type::DOUBLE:
+            return CombineHash(result,
+                               HashFloatingPoint(DataDefine::GetVariantValue<double>(value)));
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+            return CombineHash(result,
+                               std::hash<std::string_view>{}(DataDefine::GetStringView(value)));
+        case arrow::Type::TIMESTAMP: {
+            const auto& timestamp = DataDefine::GetVariantValue<Timestamp>(value);
+            return CombineHash(result,
+                               CombineHash(std::hash<int64_t>{}(timestamp.GetMillisecond()),
+                                           std::hash<int32_t>{}(timestamp.GetNanoOfMillisecond())));
+        }
+        default:
+            assert(false);
+            return 0;
     }
 }
 
