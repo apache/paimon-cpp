@@ -173,11 +173,18 @@ Result<FileStatus> JindoFileSystem::GetFileStatus(const std::string& path) const
 
 Status JindoFileSystem::ListDir(const std::string& directory,
                                 std::vector<BasicFileStatus>* file_status_list) const {
-    PAIMON_ASSIGN_OR_RAISE(bool exist, Exists(directory));
-    if (!exist) {
-        return Status::OK();
+    // One status call answers what Exists() followed by GetFileStatus() asked the store twice:
+    // whether the path is there at all, and whether it is a directory. PAIMON_RETURN_NOT_OK_FROM_
+    // JINDO maps the SDK's not-found to Status::NotExist, which is what tells a missing directory
+    // (listed as empty, as the other file systems do) from a call that genuinely failed.
+    Result<FileStatus> dir_status = GetFileStatus(directory);
+    if (!dir_status.ok()) {
+        if (dir_status.status().IsNotExist()) {
+            return Status::OK();
+        }
+        return dir_status.status();
     }
-    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, GetFileStatus(directory));
+    const FileStatus& file_status = dir_status.value();
     if (!file_status.IsDir()) {
         return Status::Invalid(
             fmt::format("file {} already exists and is not a directory", file_status.GetPath()));

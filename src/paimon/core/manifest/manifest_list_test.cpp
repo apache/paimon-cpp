@@ -19,6 +19,7 @@
 #include "paimon/core/manifest/manifest_list.h"
 
 #include <map>
+#include <optional>
 #include <variant>
 
 #include "arrow/type.h"
@@ -36,12 +37,67 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+namespace {
+
+/// Records which `Open` overload a read took. A length that planning already knows should reach
+/// the file system instead of being rediscovered on open, which on a remote store costs a round
+/// trip of its own before a single byte is read. `Open(FileStatus)` has to be overridden here:
+/// the base implementation forwards to `Open(path)`, which would leave the two paths
+/// indistinguishable.
+class OpenRecordingFileSystem : public LocalFileSystem {
+ public:
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        ++open_without_length_count;
+        return LocalFileSystem::Open(path);
+    }
+
+    Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override {
+        opened_lengths.push_back(file_status.GetLen());
+        return LocalFileSystem::Open(file_status.GetPath());
+    }
+
+    mutable int open_without_length_count = 0;
+    mutable std::vector<int64_t> opened_lengths;
+};
+
+/// Builds a snapshot carrying manifest list sizes the way a commit records them, or leaving them
+/// unset the way a snapshot written before those fields existed would.
+Snapshot MakeSnapshot(const std::string& base_list, const std::optional<int64_t>& base_size,
+                      const std::string& delta_list, const std::optional<int64_t>& delta_size) {
+    return Snapshot(
+        /*id=*/1, /*schema_id=*/0, /*base_manifest_list=*/base_list,
+        /*base_manifest_list_size=*/base_size, /*delta_manifest_list=*/delta_list,
+        /*delta_manifest_list_size=*/delta_size, /*changelog_manifest_list=*/std::nullopt,
+        /*changelog_manifest_list_size=*/std::nullopt, /*index_manifest=*/std::nullopt,
+        /*commit_user=*/"user", /*commit_identifier=*/1, Snapshot::CommitKind::Append(),
+        /*time_millis=*/0, /*total_record_count=*/1, /*delta_record_count=*/1,
+        /*changelog_record_count=*/1, /*watermark=*/std::nullopt, /*statistics=*/std::nullopt,
+        /*properties=*/std::nullopt, /*next_row_id=*/std::nullopt);
+}
+
+ManifestFileMeta MakeMeta(const std::string& name, int64_t file_size, int64_t num_added_files,
+                          int64_t num_deleted_files) {
+    return ManifestFileMeta(name, file_size, num_added_files, num_deleted_files,
+                            SimpleStats::EmptyStats(), /*schema_id=*/0, /*min_bucket=*/0,
+                            /*max_bucket=*/0, /*min_level=*/0, /*max_level=*/0,
+                            /*min_row_id=*/std::nullopt, /*max_row_id=*/std::nullopt);
+}
+
+}  // namespace
+
 class ManifestListTest : public testing::Test {
  public:
     std::unique_ptr<ManifestList> CreateManifestList(
         const std::string& file_format_str, const std::string& root_path,
         const std::shared_ptr<MemoryPool>& pool) const {
-        std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
+        return CreateManifestList(std::make_shared<LocalFileSystem>(), file_format_str, root_path,
+                                  pool);
+    }
+
+    std::unique_ptr<ManifestList> CreateManifestList(
+        const std::shared_ptr<FileSystem>& file_system, const std::string& file_format_str,
+        const std::string& root_path, const std::shared_ptr<MemoryPool>& pool) const {
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
                              FileFormatFactory::Get(file_format_str, {}));
         auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
@@ -65,7 +121,8 @@ class ManifestListTest : public testing::Test {
         const std::string& file_name, const std::shared_ptr<MemoryPool>& pool) const {
         auto manifest_list = CreateManifestList(file_format_str, root_path, pool);
         std::vector<ManifestFileMeta> manifest_file_metas;
-        EXPECT_OK(manifest_list->Read(file_name, /*filter=*/nullptr, &manifest_file_metas));
+        EXPECT_OK(manifest_list->Read(file_name, /*filter=*/nullptr, /*file_size=*/std::nullopt,
+                                      &manifest_file_metas));
         return manifest_file_metas;
     }
 };
@@ -176,6 +233,60 @@ TEST_F(ManifestListTest, TestReadChangelogManifests) {
     std::vector<ManifestFileMeta> actual_metas;
     ASSERT_OK(manifest_list->ReadChangelogManifests(snapshot, &actual_metas));
     ASSERT_EQ(std::vector<ManifestFileMeta>({expected_meta}), actual_metas);
+}
+
+TEST_F(ManifestListTest, TestReadDataManifestsOpensWithSizeFromSnapshot) {
+    auto pool = GetDefaultPool();
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = std::make_shared<OpenRecordingFileSystem>();
+    auto manifest_list = CreateManifestList(fs, "avro", dir->Str(), pool);
+    ManifestFileMeta base_meta = MakeMeta("manifest-base", /*file_size=*/100, /*num_added_files=*/1,
+                                          /*num_deleted_files=*/0);
+    ManifestFileMeta delta_meta =
+        MakeMeta("manifest-delta", /*file_size=*/200, /*num_added_files=*/2,
+                 /*num_deleted_files=*/1);
+    ASSERT_OK_AND_ASSIGN(auto base_list, manifest_list->Write({base_meta}));
+    ASSERT_OK_AND_ASSIGN(auto delta_list, manifest_list->Write({base_meta, delta_meta}));
+    // Writing only creates files, so everything recorded from here on comes from the reads.
+    ASSERT_EQ(fs->open_without_length_count, 0);
+    ASSERT_TRUE(fs->opened_lengths.empty());
+
+    Snapshot snapshot =
+        MakeSnapshot(base_list.first, base_list.second, delta_list.first, delta_list.second);
+    std::vector<ManifestFileMeta> actual_metas;
+    ASSERT_OK(manifest_list->ReadDataManifests(snapshot, &actual_metas));
+    ASSERT_EQ(std::vector<ManifestFileMeta>({base_meta, base_meta, delta_meta}), actual_metas);
+    // Each list was opened with the length the snapshot carried for it, so neither read had to ask
+    // the store how long the file is.
+    ASSERT_EQ(std::vector<int64_t>({base_list.second, delta_list.second}), fs->opened_lengths);
+    ASSERT_EQ(fs->open_without_length_count, 0);
+}
+
+// The sizes are optional in the snapshot format, so a snapshot written before they were recorded
+// has to keep reading. This is what makes handing the size over an optimization rather than a new
+// requirement on the metadata.
+TEST_F(ManifestListTest, TestReadDataManifestsWithoutSizesStillReads) {
+    auto pool = GetDefaultPool();
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = std::make_shared<OpenRecordingFileSystem>();
+    auto manifest_list = CreateManifestList(fs, "avro", dir->Str(), pool);
+    ManifestFileMeta base_meta = MakeMeta("manifest-base", /*file_size=*/100, /*num_added_files=*/1,
+                                          /*num_deleted_files=*/0);
+    ManifestFileMeta delta_meta =
+        MakeMeta("manifest-delta", /*file_size=*/200, /*num_added_files=*/2,
+                 /*num_deleted_files=*/1);
+    ASSERT_OK_AND_ASSIGN(auto base_list, manifest_list->Write({base_meta}));
+    ASSERT_OK_AND_ASSIGN(auto delta_list, manifest_list->Write({base_meta, delta_meta}));
+
+    Snapshot snapshot = MakeSnapshot(base_list.first, /*base_size=*/std::nullopt, delta_list.first,
+                                     /*delta_size=*/std::nullopt);
+    std::vector<ManifestFileMeta> actual_metas;
+    ASSERT_OK(manifest_list->ReadDataManifests(snapshot, &actual_metas));
+    ASSERT_EQ(std::vector<ManifestFileMeta>({base_meta, base_meta, delta_meta}), actual_metas);
+    ASSERT_TRUE(fs->opened_lengths.empty());
+    ASSERT_EQ(fs->open_without_length_count, 2);
 }
 
 TEST_F(ManifestListTest, TestManifestListCompatibleWithJavaPaimon09) {

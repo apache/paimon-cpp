@@ -319,15 +319,19 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFilesBySnapshot(
     }
     std::vector<ManifestFileMeta> manifests;
     PAIMON_RETURN_NOT_OK(manifest_list_->ReadIfFileExist(snapshot.BaseManifestList(),
-                                                         /*filter=*/nullptr, &manifests));
+                                                         /*filter=*/nullptr,
+                                                         /*file_size=*/std::nullopt, &manifests));
     PAIMON_RETURN_NOT_OK(manifest_list_->ReadIfFileExist(snapshot.DeltaManifestList(),
-                                                         /*filter=*/nullptr, &manifests));
+                                                         /*filter=*/nullptr,
+                                                         /*file_size=*/std::nullopt, &manifests));
 
     for (const auto& manifest : manifests) {
         used_files.insert(manifest.FileName());
         std::vector<ManifestEntry> manifest_entries;
-        PAIMON_RETURN_NOT_OK(manifest_file_->ReadIfFileExist(
-            manifest.FileName(), /*filter=*/nullptr, &manifest_entries));
+        PAIMON_RETURN_NOT_OK(manifest_file_->ReadIfFileExist(manifest.FileName(),
+                                                             /*filter=*/nullptr,
+                                                             /*file_size=*/std::nullopt,
+                                                             &manifest_entries));
         for (const auto& manifest_entry : manifest_entries) {
             used_files.insert(manifest_entry.FileName());
             for (const std::optional<std::string>& extra_file :

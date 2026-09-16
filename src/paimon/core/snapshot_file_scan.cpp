@@ -182,12 +182,15 @@ class SnapshotFileCollector {
             }
             futures.push_back(Via(executor_.get(), [this, meta]() -> Result<ManifestReadResult> {
                 std::vector<ManifestEntry> entries;
-                if (bucket_id_) {
-                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
-                        meta.FileName(), bucket_id_.value(), &entries));
-                } else {
+                const bool all_in_bucket =
+                    bucket_id_ && meta.MinBucket() == bucket_id_ && meta.MaxBucket() == bucket_id_;
+                if (bucket_id_ && !all_in_bucket) {
                     PAIMON_RETURN_NOT_OK(
-                        manifest_file_->Read(meta.FileName(), /*filter=*/nullptr, &entries));
+                        manifest_file_->ReadBucketEntries(meta.FileName(), bucket_id_.value(),
+                                                          std::nullopt, meta.FileSize(), &entries));
+                } else {
+                    PAIMON_RETURN_NOT_OK(manifest_file_->Read(meta.FileName(), /*filter=*/nullptr,
+                                                              meta.FileSize(), &entries));
                 }
                 PAIMON_RETURN_NOT_OK(ApplyPartitionFilter(&entries));
                 return ManifestReadResult{meta, std::move(entries)};

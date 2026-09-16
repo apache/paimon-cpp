@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -230,8 +231,8 @@ Result<AggregatedFileStats> AggregateFileStats(const std::shared_ptr<FileSystem>
 
     std::vector<ManifestEntry> entries;
     for (const auto& manifest : manifests) {
-        PAIMON_RETURN_NOT_OK(
-            manifest_file->Read(manifest.FileName(), /*filter=*/nullptr, &entries));
+        PAIMON_RETURN_NOT_OK(manifest_file->Read(manifest.FileName(), /*filter=*/nullptr,
+                                                 /*file_size=*/std::nullopt, &entries));
     }
 
     std::vector<ManifestEntry> merged_entries;

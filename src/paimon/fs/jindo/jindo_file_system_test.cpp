@@ -83,6 +83,22 @@ TEST_F(JindoFileSystemTest, TestRename) {
     ASSERT_TRUE(is_exist);
 }
 
+// Pins the contract the planning optimizations lean on: the SDK answers a target that is not
+// there with its file-not-found error, the mapping surfaces that as Paimon's NotExist (so callers
+// can tell "absent" apart from "the call failed"), and listing a missing directory yields an empty
+// result instead of an error.
+TEST_F(JindoFileSystemTest, TestMissingPathReportsNotExistAndMissingDirListsEmpty) {
+    const std::string missing_file = test_dir_ + "no_such_dir/no_such_file.data";
+    Result<FileStatus> missing_status = fs_->GetFileStatus(missing_file);
+    ASSERT_FALSE(missing_status.ok());
+    ASSERT_TRUE(missing_status.status().IsNotExist()) << missing_status.status().ToString();
+
+    const std::string missing_dir = test_dir_ + "no_such_dir/";
+    std::vector<BasicFileStatus> file_statuses;
+    ASSERT_OK(fs_->ListDir(missing_dir, &file_statuses));
+    ASSERT_TRUE(file_statuses.empty());
+}
+
 TEST_F(JindoFileSystemTest, TestSeek) {
     std::string content = "abcdefghijk";
     std::string file_path = test_dir_ + "file.data";

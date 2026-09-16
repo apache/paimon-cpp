@@ -53,7 +53,7 @@ class BlobViewStruct {
 
     static Result<std::unique_ptr<BlobViewStruct>> Deserialize(const char* buffer, uint64_t size);
     static Result<bool> IsBlobViewStruct(const char* buffer, uint64_t size);
-    PAIMON_UNIQUE_PTR<Bytes> Serialize(const std::shared_ptr<MemoryPool>& pool) const;
+    Result<PAIMON_UNIQUE_PTR<Bytes>> Serialize(const std::shared_ptr<MemoryPool>& pool) const;
     std::string ToString() const;
     int32_t HashCode() const;
 

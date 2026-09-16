@@ -921,11 +921,13 @@ TEST_F(AppendOnlyWriterTest, TestWriteValidBlobViewField) {
     // Build view column with valid BlobViewStruct values
     arrow::LargeBinaryBuilder view_builder;
     BlobViewStruct view_struct_0(Identifier("db", "tbl"), /*field_id=*/1, /*row_id=*/0);
-    auto view_bytes_0 = view_struct_0.Serialize(memory_pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> view_bytes_0,
+                         view_struct_0.Serialize(memory_pool_));
     ASSERT_TRUE(view_builder.Append(view_bytes_0->data(), view_bytes_0->size()).ok());
 
     BlobViewStruct view_struct_1(Identifier("db", "tbl"), /*field_id=*/1, /*row_id=*/1);
-    auto view_bytes_1 = view_struct_1.Serialize(memory_pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> view_bytes_1,
+                         view_struct_1.Serialize(memory_pool_));
     ASSERT_TRUE(view_builder.Append(view_bytes_1->data(), view_bytes_1->size()).ok());
 
     auto view_array = view_builder.Finish().ValueOrDie();

@@ -130,11 +130,12 @@ Result<RealtimeStoreState> GetOrCreateAppendStore(
     const std::map<std::string, std::string>& partition, int32_t bucket,
     std::unique_ptr<ArrowSchema> write_schema, const std::map<std::string, std::string>& options,
     const std::shared_ptr<MemoryPool>& memory_pool,
-    StatisticsMode statistics_mode = StatisticsMode::NONE) {
-    return context->GetOrCreateRealtimeStore(
-        RealtimeStoreCreateRequest{std::move(write_schema), options, memory_pool,
-                                   RealtimeStoreMode::APPEND_ONLY, statistics_mode},
-        RealtimePartitionBucket(partition, bucket));
+    StatisticsMode statistics_mode = StatisticsMode::NONE, const std::string& temp_directory = "") {
+    RealtimeStoreCreateRequest request{std::move(write_schema), options, memory_pool,
+                                       RealtimeStoreMode::APPEND_ONLY, statistics_mode};
+    request.temp_directory = temp_directory;
+    return context->GetOrCreateRealtimeStore(std::move(request),
+                                             RealtimePartitionBucket(partition, bucket));
 }
 
 TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
@@ -223,6 +224,21 @@ TEST(RealtimeContextTest, TestRejectsMismatchedModeOnStoreReuse) {
             RealtimePartitionBucket(partition, 0)),
         "schema or mode mismatch for partition {dt=2026-08-02}, bucket 0; recreate the "
         "RealtimeContext");
+    ASSERT_EQ(1, factory->stores.size());
+}
+
+TEST(RealtimeContextTest, TestRejectsMismatchedTempDirectoryOnStoreReuse) {
+    auto factory = std::make_shared<TestingRealtimeStoreFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+    const std::map<std::string, std::string> partition = {{"dt", "2026-08-02"}};
+    ASSERT_OK(GetOrCreateAppendStore(context, partition, 0, MakeWriteSchema(), {}, GetDefaultPool(),
+                                     StatisticsMode::NONE, "first"));
+
+    ASSERT_NOK_WITH_MSG(
+        GetOrCreateAppendStore(context, partition, 0, MakeWriteSchema(), {}, GetDefaultPool(),
+                               StatisticsMode::NONE, "second"),
+        "real-time store temporary directory mismatch for partition {dt=2026-08-02}, bucket 0; "
+        "recreate the RealtimeContext");
     ASSERT_EQ(1, factory->stores.size());
 }
 
