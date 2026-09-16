@@ -610,6 +610,8 @@ if(PAIMON_BUILD_TESTS)
                     common/global_index/bitmap_global_index_result_test.cpp
                     common/global_index/bitmap_scored_global_index_result_test.cpp
                     common/global_index/bitmap/bitmap_global_index_test.cpp
+                    common/global_index/bitmap/bitmap_global_index_format_test.cpp
+                    common/global_index/bitmap/bitmap_index_reader_test.cpp
                     common/global_index/sorted_index_file_meta_test.cpp
                     common/global_index/btree/btree_file_footer_test.cpp
                     common/global_index/key_serializer_test.cpp

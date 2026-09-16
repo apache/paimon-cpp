@@ -22,6 +22,7 @@
 #include <cstring>
 
 #include "fmt/format.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/macros.h"
 #include "paimon/result.h"
 namespace paimon {
@@ -133,6 +134,42 @@ class VarLengthIntUtils {
             }
         }
         return Status::Invalid("Malformed varint64: too many continuation bytes");
+    }
+
+    /// Reads a non-negative varint32 from a bounded input.
+    template <typename Input>
+    static Result<int32_t> ReadVarLenInt(Input* input) {
+        uint32_t result = 0;
+        for (int32_t shift = 0; shift < 32; shift += 7) {
+            if (input->Available() == 0) {
+                return Status::Invalid("Truncated varint32 input.");
+            }
+            uint8_t value = static_cast<uint8_t>(input->ReadByte());
+            result |= static_cast<uint32_t>(value & 0x7F) << shift;
+            if ((value & 0x80) == 0) {
+                PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(result, "varint32"));
+                return static_cast<int32_t>(result);
+            }
+        }
+        return Status::Invalid("Malformed varint32 input.");
+    }
+
+    /// Reads a non-negative varint64 from a bounded input.
+    template <typename Input>
+    static Result<int64_t> ReadVarLenLong(Input* input) {
+        uint64_t result = 0;
+        for (int32_t shift = 0; shift <= 56; shift += 7) {
+            if (input->Available() == 0) {
+                return Status::Invalid("Truncated varint64 input.");
+            }
+            uint8_t value = static_cast<uint8_t>(input->ReadByte());
+            result |= static_cast<uint64_t>(value & 0x7F) << shift;
+            if ((value & 0x80) == 0) {
+                PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(result, "varint64"));
+                return static_cast<int64_t>(result);
+            }
+        }
+        return Status::Invalid("Malformed varint64 input.");
     }
 };
 
