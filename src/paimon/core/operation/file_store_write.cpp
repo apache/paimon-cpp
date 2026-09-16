@@ -157,7 +157,13 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
     if (specific_fs == nullptr && ctx->GetFileSystemSchemeToIdentifierMap().empty() &&
         ctx->GetCatalog() != nullptr) {
-        specific_fs = ctx->GetCatalog()->GetFileSystem();
+        if (!ctx->GetIdentifier()) {
+            return Status::Invalid("a catalog write requires a table identifier");
+        }
+        // A catalog issuing per-table temporary credentials only hands them out through
+        // GetTableFileSystem, so the write uses the credentials of this table.
+        PAIMON_ASSIGN_OR_RAISE(specific_fs,
+                               ctx->GetCatalog()->GetTableFileSystem(ctx->GetIdentifier().value()));
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs,

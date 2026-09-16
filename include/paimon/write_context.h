@@ -263,11 +263,10 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// snapshot. Use the same catalog and identifier as `CommitContextBuilder` to restore and
     /// refresh real-time progress.
     ///
-    /// A branch is addressed by the identifier, as `tbl$branch_dev`, so that the catalog answers
-    /// for that branch. Its schema is read from the branch directory rather than from the catalog,
-    /// just as a read of that branch reads it.
-    /// Data, manifests and historical metadata remain on the file system. The catalog supplies
-    /// that file system unless overridden by `WithFileSystem()` or
+    /// Only the main branch is supported. Data, manifests and historical metadata remain on the
+    /// file system. The catalog supplies that table's file system - including the per-table
+    /// temporary credentials a catalog that issues them hands out through
+    /// `Catalog::GetTableFileSystem` - unless overridden by `WithFileSystem()` or
     /// `WithFileSystemSchemeToIdentifierMap()`.
     /// @param catalog Non-null catalog, kept alive while the writer uses its snapshot loader.
     /// @param identifier The native table to write to.

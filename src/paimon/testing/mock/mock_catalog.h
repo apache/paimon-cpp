@@ -227,6 +227,27 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     std::shared_ptr<FileSystem> GetFileSystem() const override {
         return file_system_;
     }
+
+    /// Records what was asked and serves the per-table file system when one was set, so a
+    /// test can tell it apart from the catalog-wide one; falls back to `GetFileSystem()`,
+    /// matching the base default, when none was set.
+    Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
+        const Identifier& identifier) const override {
+        table_file_system_requests_.push_back(identifier);
+        if (table_file_system_ != nullptr) {
+            return table_file_system_;
+        }
+        return GetFileSystem();
+    }
+
+    void SetTableFileSystem(const std::shared_ptr<FileSystem>& file_system) {
+        table_file_system_ = file_system;
+    }
+
+    const std::vector<Identifier>& TableFileSystemRequests() const {
+        return table_file_system_requests_;
+    }
+
     const std::map<std::string, std::string>& GetOptions() const override {
         return options_;
     }
@@ -244,6 +265,8 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     std::string table_uuid_;
     std::shared_ptr<Schema> table_schema_;
     std::shared_ptr<FileSystem> file_system_;
+    std::shared_ptr<FileSystem> table_file_system_;
+    mutable std::vector<Identifier> table_file_system_requests_;
     bool supports_version_management_ = true;
     std::function<void()> on_commit_;
     bool check_table_uuid_ = false;

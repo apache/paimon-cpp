@@ -195,7 +195,13 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     // Use catalog credentials unless the caller supplied a file system.
     std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
     if (specific_fs == nullptr && ctx->GetCatalog() != nullptr) {
-        specific_fs = ctx->GetCatalog()->GetFileSystem();
+        if (!ctx->GetIdentifier()) {
+            return Status::Invalid("a catalog commit requires a table identifier");
+        }
+        // Use the credentials of this table, which a catalog issuing per-table temporary
+        // ones only hands out through GetTableFileSystem.
+        PAIMON_ASSIGN_OR_RAISE(specific_fs,
+                               ctx->GetCatalog()->GetTableFileSystem(ctx->GetIdentifier().value()));
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs));
