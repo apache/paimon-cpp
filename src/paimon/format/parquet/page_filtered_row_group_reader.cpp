@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <optional>
 
@@ -401,6 +402,10 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
                      static_cast<double>(chunk_compressed_bytes) *
                      static_cast<double>(kMaxReservationDecompressionFactor))});
         }
+
+        std::cerr << "[reserve_value_bytes] col_idx=" << col_idx
+                  << " reserve_values=" << reserve_values
+                  << " reserve_value_bytes=" << reserve_value_bytes << std::endl;
 
         PAIMON_RETURN_NOT_OK(ExecuteSkipReadPattern(col_idx, effective_ranges, effective_total,
                                                     reserve_values, reserve_value_bytes,
