@@ -80,7 +80,7 @@ CommitScanner::ScanSupplier CreateAppendScanSupplier(
             std::unique_ptr<AppendOnlyFileStoreScan> scan,
             AppendOnlyFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,
                                             manifest_file, table_schema, arrow_schema, scan_filter,
-                                            options, executor, pool));
+                                            options, executor, nullptr, pool));
         return std::unique_ptr<FileStoreScan>(std::move(scan));
     };
 }
@@ -100,7 +100,7 @@ CommitScanner::ScanSupplier CreatePkScanSupplier(
             std::unique_ptr<KeyValueFileStoreScan> scan,
             KeyValueFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,
                                           manifest_file, table_schema, arrow_schema, scan_filter,
-                                          options, executor, pool));
+                                          options, executor, nullptr, pool));
         return std::unique_ptr<FileStoreScan>(std::move(scan));
     };
 }

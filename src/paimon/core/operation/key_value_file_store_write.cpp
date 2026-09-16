@@ -106,10 +106,11 @@ Result<std::unique_ptr<FileStoreScan>> KeyValueFileStoreWrite::CreateFileStoreSc
                              options_.GetManifestCompression(), file_store_path_factory_,
                              options_.GetManifestTargetFileSize(), pool_, options_,
                              partition_schema_));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreScan> scan,
-                           KeyValueFileStoreScan::Create(
-                               snapshot_manager_, schema_manager_, manifest_list, manifest_file,
-                               table_schema_, schema_, scan_filter, options_, executor_, pool_));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<FileStoreScan> scan,
+        KeyValueFileStoreScan::Create(snapshot_manager_, schema_manager_, manifest_list,
+                                      manifest_file, table_schema_, schema_, scan_filter, options_,
+                                      executor_, nullptr, pool_));
     return scan;
 }
 

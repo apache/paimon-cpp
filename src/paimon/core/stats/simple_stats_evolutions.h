@@ -19,9 +19,10 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
-#include "paimon/common/utils/concurrent_hash_map.h"
+#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
 
@@ -32,24 +33,23 @@ class SimpleStatsEvolutions {
                           const std::shared_ptr<MemoryPool>& pool)
         : pool_(pool), table_schema_(table_schema) {}
 
-    std::shared_ptr<SimpleStatsEvolution> GetOrCreate(
+    Result<std::shared_ptr<SimpleStatsEvolution>> GetOrCreate(
         const std::shared_ptr<TableSchema>& data_schema) {
-        auto data_schema_id = data_schema->Id();
-        auto cached_evolution = evolutions_.Find(data_schema_id);
-        if (cached_evolution != std::nullopt) {
-            return cached_evolution.value();
-        }
-        bool need_mapping = data_schema_id != table_schema_->Id();
-        auto evolution = std::make_shared<SimpleStatsEvolution>(
-            data_schema->Fields(), table_schema_->Fields(), need_mapping, pool_);
-        evolutions_.Insert(data_schema_id, evolution);
-        return evolution;
+        return evolutions_.Get(
+            data_schema->Id(),
+            [this,
+             &data_schema](const int64_t& id) -> Result<std::shared_ptr<SimpleStatsEvolution>> {
+                return std::make_shared<SimpleStatsEvolution>(data_schema->Fields(),
+                                                              table_schema_->Fields(),
+                                                              id != table_schema_->Id(), pool_);
+            });
     }
 
  private:
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<TableSchema> table_schema_;
-    // scheme_id -> evolution
-    ConcurrentHashMap<int64_t, std::shared_ptr<SimpleStatsEvolution>> evolutions_;
+    static constexpr int64_t kEvolutionCacheCapacity = 64;
+    using EvolutionCache = GenericLruCache<int64_t, std::shared_ptr<SimpleStatsEvolution>>;
+    EvolutionCache evolutions_{EvolutionCache::Options{/*max_weight=*/kEvolutionCacheCapacity}};
 };
 }  // namespace paimon

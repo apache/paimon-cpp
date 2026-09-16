@@ -41,7 +41,10 @@ SnapshotManager::SnapshotManager(const std::shared_ptr<FileSystem>& fs,
 
 SnapshotManager::SnapshotManager(const std::shared_ptr<FileSystem>& fs,
                                  const std::string& root_path, const std::string& branch)
-    : fs_(fs), root_path_(root_path), branch_(BranchManager::NormalizeBranch(branch)) {}
+    : fs_(fs),
+      root_path_(root_path),
+      branch_(BranchManager::NormalizeBranch(branch)),
+      snapshot_cache_(SnapshotCache::Options{/*max_weight=*/kSnapshotCacheCapacity}) {}
 
 SnapshotManager::~SnapshotManager() = default;
 
@@ -124,7 +127,9 @@ bool SnapshotManager::ExpiredSinceBoundaryWasRead(int64_t id) const {
 }
 
 Result<Snapshot> SnapshotManager::LoadSnapshot(int64_t snapshot_id) const {
-    return Snapshot::FromPath(fs_, SnapshotPath(snapshot_id));
+    return snapshot_cache_.Get(snapshot_id, [this](const int64_t& id) -> Result<Snapshot> {
+        return Snapshot::FromPath(fs_, SnapshotPath(id));
+    });
 }
 
 void SnapshotManager::SetSnapshotLoader(SnapshotLoader loader) {

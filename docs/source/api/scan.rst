@@ -47,12 +47,70 @@ Decimal literals are rescaled to the bucket field's type only when the conversio
 is exact. NaN literals and decimals that cannot be represented exactly disable
 inferred bucket pruning.
 
+Sharing table metadata
+======================
+
+``TableScanResources`` retains schema metadata across scans of the same managed table and
+branch. Create it once with a file system and pass it to each ``ScanContextBuilder``:
+
+.. code-block:: cpp
+
+   PAIMON_ASSIGN_OR_RAISE(
+       std::shared_ptr<paimon::TableScanResources> resources,
+       paimon::TableScanResources::Create(table_path, file_system, "main", paimon::GetDefaultPool()));
+
+   // Repeat for each query, reusing resources.
+   paimon::ScanContextBuilder builder(table_path);
+   builder.WithTableResources(resources).SetPredicate(predicate);
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> context, builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
+                          paimon::TableScan::Create(std::move(context)));
+
+Include ``paimon/table/source/table_scan_resources.h`` to create the resource object.
+The resources supply the file system and the default branch; conflicting explicit settings
+are rejected. The physical table path must match, including when scanning its ``$ro`` or
+``$audit_log`` system table. Format tables and global system tables do not use these resources.
+``Finish()`` resets the builder's resource setting, like ``WithCache()`` and ``WithExecutor()``.
+
+Every new scan still checks for the latest schema ID. Previously loaded schema versions, Arrow
+schemas, partition and primary-key field information, and statistics evolution objects are
+reused. Existing scans retain their original schema. Snapshot selection, filters, streaming
+progress, executors and scan metrics remain independent. ``SetTableSchema()`` keeps its existing
+behavior: on main it bypasses the shared schema cache; on other branches it is ignored.
+
+Successfully loaded snapshots are also cached by ID, with an LRU limit of 64 entries per
+``SnapshotManager``. Latest and earliest snapshot IDs and snapshot existence are still queried from
+the file system. Read or parse failures are not cached. A cached snapshot can remain available after
+its metadata file expires; a cache hit does not establish that the snapshot or its data is still
+readable. Snapshot expiration re-reads retained snapshot files to validate publication before
+deleting files.
+
+The resources can be shared by concurrent scans when the supplied file system and metadata
+memory pool support concurrent use. The resource object retains its metadata pool independently
+of each scan's memory pool. Schema versions and schema-derived resources each use a separate LRU
+cache with a fixed limit of 64 entries. Each derived resource caches at most 64 statistics evolution
+objects, each of which caches at most 64 dense-field mappings. Eviction releases the cache's
+references; active scans retain the metadata they need. These limits bound entry counts, not bytes
+or metadata held by active scans. There is no background refresh. The caller must recreate the
+resources after fast-forward, deleting and recreating a table or branch, or changing file system
+access configuration.
+Fast-forward can replace schema and snapshot contents under existing IDs; discovering the latest ID
+does not refresh their cached contents. After fast-forward completes, create a new
+``TableScanResources`` and use it for subsequent scans; cache hits in existing resources may still
+return the old contents, and existing scans retain their original metadata. This follows
+Paimon's `fast-forward cache refresh requirement
+<https://paimon.apache.org/docs/1.3/maintenance/manage-branches/#fast-forward>`_.
+A metadata cache does not pin snapshots or prevent their data files from expiring.
+
 Interface
 =========
 
 .. doxygenclass:: paimon::TableScan
    :members:
    :undoc-members:
+
+.. doxygenclass:: paimon::TableScanResources
+   :members:
 
 .. doxygenclass:: paimon::ScanContextBuilder
    :members:

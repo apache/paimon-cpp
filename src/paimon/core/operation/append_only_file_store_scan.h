@@ -58,7 +58,9 @@ class AppendOnlyFileStoreScan : public FileStoreScan {
         const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<arrow::Schema>& arrow_schema,
         const std::shared_ptr<ScanFilter>& scan_filters, const CoreOptions& core_options,
-        const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<Executor>& executor,
+        const std::shared_ptr<SimpleStatsEvolutions>& evolutions,
+        const std::shared_ptr<MemoryPool>& pool);
 
     /// @note Keep this thread-safe.
     Result<bool> FilterByStats(const ManifestEntry& entry) const override;
@@ -76,6 +78,7 @@ class AppendOnlyFileStoreScan : public FileStoreScan {
                             const std::shared_ptr<arrow::Schema>& schema,
                             const CoreOptions& core_options,
                             const std::shared_ptr<Executor>& executor,
+                            const std::shared_ptr<SimpleStatsEvolutions>& evolutions,
                             const std::shared_ptr<MemoryPool>& pool);
 
  private:

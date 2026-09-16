@@ -84,7 +84,7 @@ class AppendBucketPruningTest : public testing::Test {
             predicate, std::vector<std::map<std::string, std::string>>(), bucket);
         return AppendOnlyFileStoreScan::Create(nullptr, schema_manager_, nullptr, nullptr, schema,
                                                arrow_schema, filters, options,
-                                               CreateDefaultExecutor(), pool_);
+                                               CreateDefaultExecutor(), nullptr, pool_);
     }
 
     void CheckBuckets(const std::shared_ptr<Predicate>& predicate,
