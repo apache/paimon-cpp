@@ -1,16 +1,13 @@
 # Parquet append type compatibility data
 
 This database contains equivalent unpartitioned append-only tables written by three Paimon
-implementations. Every table uses `bucket = -1`, `file.format = parquet`, and Avro manifests.
+implementations. Every table uses `bucket = -1` and `file.format = parquet`.
 
 Writers:
 
 - `python_*`: PyPaimon 2.0.0 with PyArrow 19.0.1.
 - `rust_*`: Paimon Rust 0.4.0 at commit `ced0c86b4db76265b5b2aedcbc9909a208f2c130`,
   with parquet-rs 58.4.0.
-- `java_*`: Java batch writer from `paimon-bundle-2.2-20260915.220657-5.jar`, with parquet-mr
-  1.16.0.
-
 The Python and Rust Parquet files contain `ARROW:schema` metadata. The Java files do not.
 
 ## `<writer>_types`
@@ -115,9 +112,15 @@ BLOB map by Java and C++.
 
 ## `<writer>_time_types`
 
-The schema is `id INT NOT NULL` plus `TIME(0)`, `TIME(3)`, `TIME(6)`, and `TIME(9)` columns. The
-three rows exercise a daytime value, nulls, and zero/empty values. Paimon C++ is expected to reject
-the table while `TIME` is unsupported.
+The schema is `id INT NOT NULL` plus `TIME(0)`, `TIME(3)`, `TIME(6)`, and `TIME(9)` columns. It has
+two rows:
+
+```text
+(1, 12:34:56, 12:34:56.123, 12:34:56.123000, 12:34:56.123000000)
+(2, null, null, null, null)
+```
+
+Paimon C++ is expected to reject the table while `TIME` is unsupported.
 
 The tables are separate because VECTOR cannot be combined with data evolution, BLOB requires data
 evolution, and an unsupported table-level type must not prevent compatible columns from being read.

@@ -229,7 +229,6 @@
     "blob-field" : "f_blob,f_blob_descriptor",
     "row-tracking.enabled" : "true",
     "data-evolution.enabled" : "true",
-    "manifest.format" : "avro",
     "file.format" : "avro",
     "blob-descriptor-field" : "f_blob_descriptor"
   },

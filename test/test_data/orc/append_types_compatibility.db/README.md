@@ -1,8 +1,7 @@
 # Java ORC append type compatibility data
 
-These unpartitioned append-only tables were written by the Java batch API from
-`paimon-bundle-2.2-20260915.220657-5.jar`. They use `bucket = -1`, `file.format = orc`, Avro
-manifests, and `orc.timestamp-ltz.legacy.type = false`.
+These unpartitioned append-only tables were written by the Java batch API. They use
+`bucket = -1`, `file.format = orc`, and `orc.timestamp-ltz.legacy.type = false`.
 
 ## `java_types`
 

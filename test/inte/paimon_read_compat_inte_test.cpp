@@ -421,7 +421,7 @@ TEST_P(PaimonReadCompatInteTest, ReadsBlobValues) {
     std::shared_ptr<arrow::StructArray> rows = GetOnlyStructChunk(result);
     ASSERT_TRUE(rows);
     ASSERT_EQ(rows->length(), 3);
-    ASSERT_EQ(rows->num_fields(), static_cast<int>(blob_fields.size() + 1));
+    ASSERT_EQ(rows->num_fields(), 3);
 
     // External BLOB descriptors, including a non-empty and an empty blob range.
     std::shared_ptr<arrow::LargeBinaryArray> blobs =

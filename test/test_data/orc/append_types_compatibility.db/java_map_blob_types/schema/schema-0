@@ -22,7 +22,6 @@
     "blob-field" : "f_map_blob",
     "row-tracking.enabled" : "true",
     "data-evolution.enabled" : "true",
-    "manifest.format" : "avro",
     "file.format" : "orc",
     "orc.timestamp-ltz.legacy.type" : "false"
   },

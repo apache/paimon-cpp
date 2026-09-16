@@ -21,7 +21,6 @@
     "blob-field" : "f_array_blob",
     "row-tracking.enabled" : "true",
     "data-evolution.enabled" : "true",
-    "manifest.format" : "avro",
     "file.format" : "avro"
   },
   "timeMillis" : 1789549988349

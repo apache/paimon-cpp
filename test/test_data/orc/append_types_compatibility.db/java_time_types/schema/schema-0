@@ -27,7 +27,6 @@
   "primaryKeys" : [ ],
   "options" : {
     "bucket" : "-1",
-    "manifest.format" : "avro",
     "file.format" : "orc",
     "orc.timestamp-ltz.legacy.type" : "false"
   },
