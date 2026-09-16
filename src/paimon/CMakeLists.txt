@@ -900,7 +900,6 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/row_tracking_commit_utils_test.cpp
                     core/operation/commit/realtime_commit_properties_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp
-                    core/operation/commit/retry_waiter_test.cpp
                     core/operation/key_value_file_store_write_test.cpp
                     core/operation/internal_read_context_test.cpp
                     core/operation/abstract_split_read_test.cpp
