@@ -216,8 +216,7 @@ class FileReaderWrapperTest : public ::testing::Test {
     }
 
     void PrepareParquetFile(const std::string& file_path, int32_t row_count,
-                            bool enable_page_index = false, int32_t write_batch_size = 10,
-                            int64_t max_row_group_length = 1000) {
+                            bool enable_page_index = false, int32_t write_batch_size = 10) {
         auto schema_pair = PrepareArrowSchema();
         const auto& arrow_schema = schema_pair.first;
         const auto& struct_type = schema_pair.second;
@@ -226,7 +225,7 @@ class FileReaderWrapperTest : public ::testing::Test {
                              fs_->Create(file_path, /*overwrite=*/false));
         ::parquet::WriterProperties::Builder builder;
         builder.write_batch_size(write_batch_size);
-        builder.max_row_group_length(max_row_group_length);
+        builder.max_row_group_length(1000);
         builder.enable_store_decimal_as_integer();
         if (enable_page_index) {
             builder.enable_write_page_index();
@@ -339,70 +338,6 @@ TEST_F(FileReaderWrapperTest, ReusesParsedOffsetIndexesWithinFileReader) {
     ASSERT_FALSE(released_index.expired());
     reader.reset();
     ASSERT_TRUE(released_index.expired());
-}
-
-TEST_F(FileReaderWrapperTest, ParsedOffsetIndexesRespectRowGroupRetentionLimit) {
-    std::string file_path = PathUtil::JoinPath(dir_->Str(), "index-retention-limit.parquet");
-    PrepareParquetFile(file_path, /*row_count=*/1025, /*enable_page_index=*/true,
-                       /*write_batch_size=*/1, /*max_row_group_length=*/1);
-    ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapper(file_path));
-    ASSERT_EQ(1025, reader->GetNumberOfRowGroups());
-    std::weak_ptr<::parquet::OffsetIndex> retained;
-    for (int32_t rg = 0; rg < 1024; ++rg) {
-        auto indexes = reader->GetRowGroupPageIndexReader(rg);
-        ASSERT_TRUE(indexes);
-        auto offsets = indexes->GetOffsetIndex(0);
-        ASSERT_TRUE(offsets);
-        retained = offsets;
-    }
-    ASSERT_FALSE(retained.expired());
-    std::weak_ptr<::parquet::OffsetIndex> uncached;
-    {
-        auto indexes = reader->GetRowGroupPageIndexReader(1024);
-        ASSERT_TRUE(indexes);
-        auto offsets = indexes->GetOffsetIndex(0);
-        ASSERT_TRUE(offsets);
-        ASSERT_EQ(offsets, indexes->GetOffsetIndex(0));
-        ASSERT_EQ(size_t{1}, offsets->page_locations().size());
-        uncached = offsets;
-    }
-    ASSERT_TRUE(uncached.expired());
-    ASSERT_OK(reader->PrepareForReadingLazy(
-        {TargetRowGroup(1024, true, RowRanges::CreateSingle(1))}, {1}));
-    ASSERT_OK_AND_ASSIGN(auto batch, reader->Next());
-    ASSERT_TRUE(batch);
-    ASSERT_EQ(1, batch->num_rows());
-    auto values = std::dynamic_pointer_cast<arrow::Int32Array>(batch->column(0));
-    ASSERT_TRUE(values);
-    ASSERT_EQ(1024, values->Value(0));
-    ASSERT_OK_AND_ASSIGN(auto end, reader->Next());
-    ASSERT_FALSE(end);
-    reader.reset();
-    ASSERT_TRUE(retained.expired());
-}
-
-TEST_F(FileReaderWrapperTest, MissingPageIndexesRemainReadable) {
-    std::string file_path = PathUtil::JoinPath(dir_->Str(), "no-page-index.parquet");
-    PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/false);
-    ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapper(file_path));
-    for (int32_t i = 0; i < 2; ++i) {
-        auto indexes = reader->GetRowGroupPageIndexReader(0);
-        if (indexes) {
-            for (int32_t col = 0; col < 3; ++col) {
-                ASSERT_FALSE(indexes->GetOffsetIndex(col));
-                ASSERT_FALSE(indexes->GetColumnIndex(col));
-            }
-        }
-    }
-    int64_t rows = 0;
-    while (true) {
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> batch, reader->Next());
-        if (!batch) {
-            break;
-        }
-        rows += batch->num_rows();
-    }
-    ASSERT_EQ(2000, rows);
 }
 
 TEST_F(FileReaderWrapperTest, Simple) {

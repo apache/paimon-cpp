@@ -112,6 +112,13 @@ row-group readers is a count limit, not a parsed-index byte budget. Restricted
 predicate index readers remain separate so their column hints do not restrict
 later projected-column reads.
 
+Parsed page locations require approximately
+``retained row groups x accessed columns x pages per column x sizeof(PageLocation)``
+bytes, plus vector/map/object overhead, in addition to serialized index buffers.
+For example, with a 24-byte ``PageLocation``, 1,024 retained row groups, 10 accessed
+columns and 1,000 pages per column require about 234 MiB for page locations alone.
+There is no fixed byte upper bound; memory scales with the file's index sizes.
+
 This is independent of ``ReadAheadCache`` and its per-file ``FileBlockCache``,
 which reuse bytes rather than parsed objects. That block cache survives resets
 of the prefetch plan, but does not provide reuse across independent file-cache

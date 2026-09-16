@@ -100,38 +100,6 @@ std::optional<DataPageLayout> GetDataPageLayout(
     return DataPageLayout{column_chunk_offset, first_data_page_offset};
 }
 
-// Call only after GetDataPageLayout has validated the ordered page row offsets.
-template <typename Visitor>
-void VisitSelectedPages(const RowRanges& row_ranges,
-                        const std::vector<::parquet::PageLocation>& pages, int64_t row_count,
-                        Visitor&& visit) {
-    size_t next_page = 0;
-    for (const auto& range : row_ranges.GetRanges()) {
-        if (next_page == pages.size()) {
-            break;
-        }
-        if (range.to < 0 || range.from >= row_count) {
-            continue;
-        }
-        // Several disjoint row ranges can select the same page.
-        if (range.to < pages[next_page].first_row_index) {
-            continue;
-        }
-        size_t first = next_page;
-        if (first + 1 < pages.size() && range.from >= pages[first + 1].first_row_index) {
-            auto end = std::upper_bound(pages.begin() + first, pages.end(), range.from,
-                                        [](int64_t row, const ::parquet::PageLocation& page) {
-                                            return row < page.first_row_index;
-                                        });
-            first = static_cast<size_t>(end - pages.begin() - 1);
-        }
-        for (; first < pages.size() && pages[first].first_row_index <= range.to; ++first) {
-            visit(static_cast<int32_t>(first));
-        }
-        next_page = first;
-    }
-}
-
 /// Wraps an arrow::Table + TableBatchReader as a RecordBatchReader so the caller can
 /// stream batches while ensuring every returned array offset is zero. The Table is held
 /// to keep its ChunkedArrays alive for the inner TableBatchReader.
@@ -221,12 +189,18 @@ PageFilteredRowGroupReader::MakeDataPageReadPlan(
     }
 
     const auto& page_locations = offset_index->page_locations();
+    auto num_pages = static_cast<int32_t>(page_locations.size());
     std::vector<::parquet::DataPageReadPlanEntry> data_pages;
-    VisitSelectedPages(row_ranges, page_locations, row_group_row_count, [&](int32_t page_idx) {
-        const auto& page = page_locations[page_idx];
-        data_pages.push_back(
-            {page_idx, page.offset - layout->column_chunk_offset, page.compressed_page_size});
-    });
+    data_pages.reserve(page_locations.size());
+
+    for (int32_t page_idx = 0; page_idx < num_pages; ++page_idx) {
+        auto [first_row, last_row] = GetPageRowRange(page_locations, page_idx, row_group_row_count);
+        if (row_ranges.IsOverlapping(first_row, last_row)) {
+            const auto& page = page_locations[page_idx];
+            data_pages.push_back(
+                {page_idx, page.offset - layout->column_chunk_offset, page.compressed_page_size});
+        }
+    }
 
     return DataPageReadPlan{layout->first_data_page_offset - layout->column_chunk_offset,
                             std::move(data_pages)};
@@ -541,10 +515,19 @@ std::vector<::arrow::io::ReadRange> PageFilteredRowGroupReader::ComputePageRange
         }
 
         const auto& page_locations = offset_index->page_locations();
-        VisitSelectedPages(row_ranges, page_locations, row_group_row_count, [&](int32_t page_idx) {
+        auto num_pages = static_cast<int32_t>(page_locations.size());
+
+        for (int32_t page_idx = 0; page_idx < num_pages; ++page_idx) {
+            auto [first_row, last_row] =
+                GetPageRowRange(page_locations, page_idx, row_group_row_count);
+
+            if (!row_ranges.IsOverlapping(first_row, last_row)) {
+                continue;
+            }
+
             const auto& page = page_locations[page_idx];
             ranges.push_back({page.offset, page.compressed_page_size});
-        });
+        }
     }
 
     return ranges;
