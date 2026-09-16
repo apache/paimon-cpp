@@ -18,6 +18,7 @@
  */
 #include "paimon/common/data/blob_view_struct.h"
 
+#include <limits>
 #include <utility>
 
 #include "fmt/format.h"
@@ -31,7 +32,13 @@
 #include "paimon/status.h"
 
 namespace paimon {
-PAIMON_UNIQUE_PTR<Bytes> BlobViewStruct::Serialize(const std::shared_ptr<MemoryPool>& pool) const {
+Result<PAIMON_UNIQUE_PTR<Bytes>> BlobViewStruct::Serialize(
+    const std::shared_ptr<MemoryPool>& pool) const {
+    if (identifier_.GetDatabaseName() == Identifier::kUnknownDatabase) {
+        return Status::Invalid(
+            fmt::format("Blob view upstream table identifier must include database name: {}",
+                        identifier_.GetFullName()));
+    }
     MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
     out.SetOrder(ByteOrder::PAIMON_LITTLE_ENDIAN);
 
@@ -74,7 +81,7 @@ Result<std::unique_ptr<BlobViewStruct>> BlobViewStruct::Deserialize(const char* 
 }
 
 Result<bool> BlobViewStruct::IsBlobViewStruct(const char* buffer, uint64_t size) {
-    if (size < kMinViewLength) {
+    if (buffer == nullptr || size < kMinViewLength) {
         return false;
     }
     auto input_stream = std::make_shared<ByteArrayInputStream>(buffer, size);

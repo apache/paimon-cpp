@@ -20,6 +20,7 @@
 #include "paimon/snapshot/snapshot_file_scan.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -31,12 +32,15 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/factories/io_hook.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/scan_context.h"
+#include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -149,6 +153,37 @@ TEST(SnapshotFileScanTest, TestLatestSnapshotAndBucketFilter) {
                                    "manifest/manifest-list-f2d59cb8-3ec6-4860-b34b-050b1a533416-3",
                                    "schema/schema-0", "snapshot/snapshot-5"}),
         bucket_one_files);
+}
+
+TEST(SnapshotFileScanTest, TestSingleBucketManifestAvoidsExtraIO) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema = arrow::schema({arrow::field("value", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(
+            dir->Str(), schema, {}, {},
+            {{Options::FILE_FORMAT, "orc"}, {Options::BUCKET, "1"}, {Options::BUCKET_KEY, "value"}},
+            false));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()), R"([["value"]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    helper.reset();
+    const std::string table_path = dir->Str() + "/foo.db/bar";
+
+    auto* io_hook = IOHook::GetInstance();
+    ScopeGuard guard([io_hook]() { io_hook->Clear(); });
+    io_hook->Reset(-1, IOHook::Mode::SILENT);
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> all_files, ListFiles(table_path));
+    const int64_t full_read_io_count = io_hook->IOCount();
+    ASSERT_GT(full_read_io_count, 0);
+
+    io_hook->Reset(-1, IOHook::Mode::SILENT);
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> bucket_files,
+                         ListFiles(table_path, std::nullopt, CreateFilter({}, 0)));
+    ASSERT_EQ(bucket_files, all_files);
+    ASSERT_EQ(io_hook->IOCount(), full_read_io_count);
 }
 
 TEST(SnapshotFileScanTest, TestExplicitSnapshot) {

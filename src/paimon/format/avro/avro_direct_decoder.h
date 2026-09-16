@@ -82,6 +82,9 @@ class AvroDirectDecoder {
                                       ::avro::Decoder* decoder, arrow::ArrayBuilder* array_builder,
                                       DecodeContext* ctx);
 
+    /// Skip one value without materializing it in an Arrow builder.
+    static Status SkipValue(const ::avro::NodePtr& avro_node, ::avro::Decoder* decoder);
+
     /// Reserve slots for a builder and any struct children with the same cardinality.
     /// @param capacity Number of additional values to append.
     /// @param array_builder Builder to reserve.

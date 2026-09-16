@@ -28,7 +28,7 @@
 
 #include "arrow/api.h"
 #include "paimon/common/global_index/btree/btree_defs.h"
-#include "paimon/common/global_index/btree/btree_file_meta_selector.h"
+#include "paimon/common/global_index/sorted_file_meta_selector.h"
 #include "paimon/common/io/cache/cache_manager.h"
 #include "paimon/common/sst/block_cache.h"
 #include "paimon/common/sst/block_handle.h"
@@ -80,8 +80,8 @@ class LazyFilteredBTreeReader : public GlobalIndexReader {
 
  private:
     LazyFilteredBTreeReader(std::optional<int32_t> read_buffer_size,
-                            std::unique_ptr<BTreeFileMetaSelector> file_selector,
-                            std::shared_ptr<arrow::DataType> key_type,
+                            std::unique_ptr<SortedFileMetaSelector> file_selector,
+                            std::shared_ptr<KeySerializer> key_serializer,
                             std::shared_ptr<GlobalIndexFileReader> file_reader,
                             std::shared_ptr<CacheManager> cache_manager,
                             std::shared_ptr<MemoryPool> pool, std::shared_ptr<Executor> executor);
@@ -102,8 +102,8 @@ class LazyFilteredBTreeReader : public GlobalIndexReader {
  private:
     std::optional<int32_t> read_buffer_size_;
     std::shared_ptr<MemoryPool> pool_;
-    std::unique_ptr<BTreeFileMetaSelector> file_selector_;
-    std::shared_ptr<arrow::DataType> key_type_;
+    std::unique_ptr<SortedFileMetaSelector> file_selector_;
+    std::shared_ptr<KeySerializer> key_serializer_;
     std::shared_ptr<GlobalIndexFileReader> file_reader_;
     std::shared_ptr<CacheManager> cache_manager_;
     std::map<std::string, std::shared_ptr<GlobalIndexReader>> reader_cache_;

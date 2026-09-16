@@ -359,7 +359,7 @@ TEST_F(BlobUtilsTest, ValidateBlobViewFieldsFieldNotPresent) {
 TEST_F(BlobUtilsTest, ValidateBlobViewFieldsWithValidViewStruct) {
     // A BlobViewStruct value is accepted for a view field.
     BlobViewStruct view_struct(Identifier("db", "tbl"), /*field_id=*/2, /*row_id=*/5);
-    auto serialized = view_struct.Serialize(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct.Serialize(pool_));
 
     arrow::LargeBinaryBuilder builder;
     ASSERT_TRUE(builder.Append(serialized->data(), serialized->size()).ok());

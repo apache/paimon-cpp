@@ -29,8 +29,8 @@
 #include "arrow/api.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
-#include "paimon/common/global_index/btree/btree_index_meta.h"
-#include "paimon/common/global_index/btree/key_serializer.h"
+#include "paimon/common/global_index/key_serializer.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
@@ -735,19 +735,21 @@ TEST_F(PrimaryKeySortedIndexScanTest, InvalidRowRangePayloadFallsBack) {
 TEST_F(PrimaryKeySortedIndexScanTest, MalformedBTreeMetadataFallsBack) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload, BuildPayload());
     const GlobalIndexMeta& meta = payload->GetGlobalIndexMeta().value();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                         KeySerializer::Create(arrow::int64(), pool_));
     auto short_key = std::make_shared<Bytes>(std::string(1, '\0'), pool_.get());
-    auto invalid_key_meta = std::make_shared<BTreeIndexMeta>(short_key, short_key, false);
+    auto invalid_key_meta = std::make_shared<SortedIndexFileMeta>(short_key, short_key, false);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> first_key,
-                         KeySerializer::SerializeKey(Literal(static_cast<int64_t>(10)),
-                                                     arrow::int64(), pool_.get()));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Bytes> last_key,
-        KeySerializer::SerializeKey(Literal(static_cast<int64_t>(1)), arrow::int64(), pool_.get()));
-    auto reversed_meta = std::make_shared<BTreeIndexMeta>(first_key, last_key, false);
-    auto only_first_meta = std::make_shared<BTreeIndexMeta>(first_key, /*last_key=*/nullptr, false);
-    auto only_last_meta = std::make_shared<BTreeIndexMeta>(/*first_key=*/nullptr, last_key, false);
+                         key_serializer->Serialize(Literal(static_cast<int64_t>(10))));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> last_key,
+                         key_serializer->Serialize(Literal(static_cast<int64_t>(1))));
+    auto reversed_meta = std::make_shared<SortedIndexFileMeta>(first_key, last_key, false);
+    auto only_first_meta =
+        std::make_shared<SortedIndexFileMeta>(first_key, /*last_key=*/nullptr, false);
+    auto only_last_meta =
+        std::make_shared<SortedIndexFileMeta>(/*first_key=*/nullptr, last_key, false);
     auto empty_nonnull_meta =
-        std::make_shared<BTreeIndexMeta>(/*first_key=*/nullptr, /*last_key=*/nullptr, false);
+        std::make_shared<SortedIndexFileMeta>(/*first_key=*/nullptr, /*last_key=*/nullptr, false);
     std::vector<std::shared_ptr<Bytes>> malformed_metadata = {
         nullptr,
         std::make_shared<Bytes>(std::string(4, '\0'), pool_.get()),

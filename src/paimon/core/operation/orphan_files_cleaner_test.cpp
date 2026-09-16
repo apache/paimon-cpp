@@ -33,6 +33,10 @@
 namespace paimon::test {
 
 TEST(OrphanFilesCleanerTest, TestSupportToClean) {
+    ASSERT_TRUE(OrphanFilesCleanerImpl::SupportToClean("data-example.lance"));
+    ASSERT_TRUE(OrphanFilesCleanerImpl::SupportToClean("data-example.mosaic"));
+    ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean("unrelated.lance"));
+    ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean("unrelated.mosaic"));
     ASSERT_TRUE(
         OrphanFilesCleanerImpl::SupportToClean("data-2d5ea1ea-77c1-47ff-bb87-19a509962a37-0.orc"));
     ASSERT_TRUE(OrphanFilesCleanerImpl::SupportToClean(

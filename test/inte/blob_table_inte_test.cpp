@@ -235,7 +235,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         const std::optional<int64_t>& first_row_id = std::nullopt) const {
         Identifier upstream_identifier("nonexistent_db", "nonexistent_table");
         BlobViewStruct view_struct(upstream_identifier, /*field_id=*/2, /*row_id=*/0);
-        auto serialized = view_struct.Serialize(pool_);
+        PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct.Serialize(pool_));
         arrow::LargeBinaryBuilder view_builder;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(view_builder.Append(
             reinterpret_cast<const uint8_t*>(serialized->data()), serialized->size()));
@@ -3521,7 +3521,7 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamTable) {
         if (i < 6) {
             BlobViewStruct view_struct(upstream_identifier, /*field_id=*/6,
                                        /*row_id=*/static_cast<int64_t>(i));
-            auto serialized = view_struct.Serialize(pool_);
+            ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct.Serialize(pool_));
             ASSERT_TRUE(view_builder
                             .Append(reinterpret_cast<const uint8_t*>(serialized->data()),
                                     serialized->size())
@@ -3698,7 +3698,7 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
         if (i < 6) {
             BlobViewStruct view_struct(upstream_identifier, /*field_id=*/6,
                                        /*row_id=*/static_cast<int64_t>(i));
-            auto serialized = view_struct.Serialize(pool_);
+            ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct.Serialize(pool_));
             ASSERT_TRUE(view_builder
                             .Append(reinterpret_cast<const uint8_t*>(serialized->data()),
                                     serialized->size())
@@ -3876,7 +3876,7 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamDescriptorBlob) {
     Identifier upstream_identifier(upstream_db_name, upstream_table_name);
     auto append_view = [&](int32_t field_id, int64_t row_id, arrow::LargeBinaryBuilder* builder) {
         BlobViewStruct view_struct(upstream_identifier, field_id, row_id);
-        auto serialized = view_struct.Serialize(pool_);
+        ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct.Serialize(pool_));
         ASSERT_TRUE(
             builder
                 ->Append(reinterpret_cast<const uint8_t*>(serialized->data()), serialized->size())
@@ -3979,7 +3979,7 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
     auto append_view = [&](const Identifier& identifier, int32_t field_id, int64_t row_id,
                            arrow::LargeBinaryBuilder* builder) {
         BlobViewStruct view_struct(identifier, field_id, row_id);
-        auto serialized = view_struct.Serialize(pool_);
+        ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct.Serialize(pool_));
         ASSERT_TRUE(
             builder
                 ->Append(reinterpret_cast<const uint8_t*>(serialized->data()), serialized->size())
@@ -4298,7 +4298,7 @@ TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {
     arrow::LargeBinaryBuilder view_builder;
     for (int64_t row = 0; row < 2; ++row) {
         BlobViewStruct view_struct(upstream_identifier, /*field_id=*/1, /*row_id=*/row);
-        auto serialized = view_struct.Serialize(pool_);
+        ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct.Serialize(pool_));
         ASSERT_TRUE(
             view_builder
                 .Append(reinterpret_cast<const uint8_t*>(serialized->data()), serialized->size())

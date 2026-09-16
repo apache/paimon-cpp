@@ -125,6 +125,10 @@ class SchemaValidation {
 
     static Status ValidateMosaicDataField(const std::shared_ptr<arrow::Field>& field);
 
+    static Status ValidateLanceDataFields(const TableSchema& schema, const CoreOptions& options);
+
+    static Status ValidateLanceDataField(const std::shared_ptr<arrow::Field>& field);
+
     static Status ValidateMapStorageLayout(const TableSchema& schema, const CoreOptions& options);
 
     static Status ValidateVectorFields(const TableSchema& schema, const CoreOptions& options);

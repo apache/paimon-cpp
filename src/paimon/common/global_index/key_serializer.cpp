@@ -17,7 +17,13 @@
  * under the License.
  */
 
-#include "paimon/common/global_index/btree/key_serializer.h"
+#include "paimon/common/global_index/key_serializer.h"
+
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "fmt/format.h"
 #include "paimon/common/memory/memory_slice_input.h"
@@ -124,8 +130,36 @@ Status ValidateDecimal(const MemorySlice& slice,
 
 }  // namespace
 
-Result<std::shared_ptr<Bytes>> KeySerializer::SerializeKey(
-    const Literal& literal, const std::shared_ptr<arrow::DataType>& type, MemoryPool* pool) {
+Result<std::shared_ptr<KeySerializer>> KeySerializer::Create(
+    const std::shared_ptr<arrow::DataType>& type, const std::shared_ptr<MemoryPool>& pool) {
+    if (type == nullptr) {
+        return Status::Invalid("Cannot create KeySerializer without a key type.");
+    }
+    if (pool == nullptr) {
+        return Status::Invalid("Cannot create KeySerializer without a memory pool.");
+    }
+    switch (type->id()) {
+        case arrow::Type::type::BOOL:
+        case arrow::Type::type::INT8:
+        case arrow::Type::type::INT16:
+        case arrow::Type::type::INT32:
+        case arrow::Type::type::INT64:
+        case arrow::Type::type::DATE32:
+        case arrow::Type::type::FLOAT:
+        case arrow::Type::type::DOUBLE:
+        case arrow::Type::type::STRING:
+        case arrow::Type::type::TIMESTAMP:
+        case arrow::Type::type::DECIMAL128:
+            return std::shared_ptr<KeySerializer>(new KeySerializer(type, pool));
+        default:
+            return Status::Invalid(fmt::format("Data type {} is not supported by global index now.",
+                                               type->ToString()));
+    }
+}
+
+Result<std::shared_ptr<Bytes>> KeySerializer::Serialize(const Literal& literal) const {
+    const std::shared_ptr<arrow::DataType>& type = type_;
+    MemoryPool* pool = pool_.get();
     if (literal.IsNull()) {
         return Status::Invalid("cannot serialize null in KeySerializer");
     }
@@ -182,7 +216,7 @@ Result<std::shared_ptr<Bytes>> KeySerializer::SerializeKey(
         case FieldType::TIMESTAMP: {
             if (!type || type->id() != arrow::Type::TIMESTAMP) {
                 return Status::Invalid(
-                    "ts type cannot cast to arrow::TimestampType in BTreeGlobalIndex");
+                    "timestamp type cannot cast to arrow::TimestampType in KeySerializer");
             }
             auto ts_type = checked_pointer_cast<arrow::TimestampType>(type);
             MemorySliceOutput output(8, pool);
@@ -199,7 +233,7 @@ Result<std::shared_ptr<Bytes>> KeySerializer::SerializeKey(
         case FieldType::DECIMAL: {
             if (!type || type->id() != arrow::Type::DECIMAL128) {
                 return Status::Invalid(
-                    "decimal type cannot cast to arrow::Decimal128Type in BTreeGlobalIndex");
+                    "decimal type cannot cast to arrow::Decimal128Type in KeySerializer");
             }
             auto decimal_type = checked_pointer_cast<arrow::Decimal128Type>(type);
 
@@ -218,15 +252,15 @@ Result<std::shared_ptr<Bytes>> KeySerializer::SerializeKey(
         }
         default:
             return Status::Invalid(
-                fmt::format("Not support serialize {} type in BTreeGlobalIndex",
+                fmt::format("Not support serialize {} type in KeySerializer",
                             FieldTypeUtils::FieldTypeToString(literal.GetType())));
     }
 }
 
-Result<Literal> KeySerializer::DeserializeKey(const MemorySlice& slice,
-                                              const std::shared_ptr<arrow::DataType>& type,
-                                              MemoryPool* pool) {
-    PAIMON_RETURN_NOT_OK(ValidateSerializedKey(slice, type));
+Result<Literal> KeySerializer::Deserialize(const MemorySlice& slice) const {
+    const std::shared_ptr<arrow::DataType>& type = type_;
+    MemoryPool* pool = pool_.get();
+    PAIMON_RETURN_NOT_OK(ValidateSerializedKey(slice));
     switch (type->id()) {
         case arrow::Type::type::BOOL:
             return Literal(slice.ReadByte(0) == 1 ? true : false);
@@ -279,16 +313,13 @@ Result<Literal> KeySerializer::DeserializeKey(const MemorySlice& slice,
             }
         }
         default:
-            return Status::Invalid(fmt::format(
-                "Not support deserialize {} type in BTreeGlobalIndex", type->ToString()));
+            return Status::Invalid(
+                fmt::format("Not support deserialize {} type in KeySerializer", type->ToString()));
     }
 }
 
-Status KeySerializer::ValidateSerializedKey(const MemorySlice& slice,
-                                            const std::shared_ptr<arrow::DataType>& type) {
-    if (type == nullptr) {
-        return Status::Invalid("Cannot validate a serialized BTree key without a key type.");
-    }
+Status KeySerializer::ValidateSerializedKey(const MemorySlice& slice) const {
+    const std::shared_ptr<arrow::DataType>& type = type_;
     switch (type->id()) {
         case arrow::Type::type::BOOL: {
             PAIMON_RETURN_NOT_OK(ValidateExactLength(slice, type, sizeof(int8_t)));
@@ -325,12 +356,13 @@ Status KeySerializer::ValidateSerializedKey(const MemorySlice& slice,
         }
         default:
             return Status::Invalid(fmt::format(
-                "Not support validate serialized {} type in BTreeGlobalIndex", type->ToString()));
+                "Not support validate serialized {} type in KeySerializer", type->ToString()));
     }
 }
 
-MemorySlice::SliceComparator KeySerializer::CreateComparator(
-    const std::shared_ptr<arrow::DataType>& type, const std::shared_ptr<MemoryPool>& pool) {
+MemorySlice::SliceComparator KeySerializer::CreateComparator() const {
+    const std::shared_ptr<arrow::DataType>& type = type_;
+    const std::shared_ptr<MemoryPool>& pool = pool_;
     // Fast paths for integer and string types: direct value comparison without Literal
     // deserialization, avoiding heap allocations entirely.
     switch (type->id()) {
@@ -393,8 +425,9 @@ MemorySlice::SliceComparator KeySerializer::CreateComparator(
     // deserialize to Literal and compare.
     return
         [pool = pool, type = type](const MemorySlice& a, const MemorySlice& b) -> Result<int32_t> {
-            PAIMON_ASSIGN_OR_RAISE(Literal la, DeserializeKey(a, type, pool.get()));
-            PAIMON_ASSIGN_OR_RAISE(Literal lb, DeserializeKey(b, type, pool.get()));
+            KeySerializer serializer(type, pool);
+            PAIMON_ASSIGN_OR_RAISE(Literal la, serializer.Deserialize(a));
+            PAIMON_ASSIGN_OR_RAISE(Literal lb, serializer.Deserialize(b));
             return la.CompareTo(lb);
         };
 }

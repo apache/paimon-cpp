@@ -63,16 +63,23 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     /// @note This method is atomic.
     Result<std::vector<ManifestFileMeta>> Write(const std::vector<ManifestEntry>& entries);
 
-    /// Read a manifest file and deserialize only entries for the specified bucket.
+    /// Read entries for a bucket. An inferred total bucket count also retains entries with
+    /// different or unknown bucket counts for per-entry bucket filtering.
+    /// Bucket pruning assumes stable bucket-key hashing across schema versions.
+    /// Serialization versions are validated for all entries before bucket filtering.
     ///
     /// @param file_size Length of the manifest when the caller already has it from the manifest
     ///                  list, which saves the read a metadata request on a remote store. Pass
     ///                  std::nullopt when the length is not known.
     Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
+                             const std::optional<int32_t>& expected_total_buckets,
                              std::optional<int64_t> file_size,
                              std::vector<ManifestEntry>* entries) const;
 
  private:
+    Status PrepareBucketRead(int32_t bucket, const std::optional<int32_t>& expected_total_buckets,
+                             std::unique_ptr<FileBatchReader>* reader) const;
+
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                  const std::shared_ptr<ReaderBuilder>& reader_builder,
                  const std::shared_ptr<WriterBuilder>& writer_builder,

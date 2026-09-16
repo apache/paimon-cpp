@@ -19,24 +19,27 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
 
-#include "paimon/common/global_index/btree/btree_index_meta.h"
-#include "paimon/common/global_index/btree/key_serializer.h"
+#include "paimon/common/global_index/key_serializer.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/common/memory/memory_slice.h"
 #include "paimon/global_index/global_index_io_meta.h"
 #include "paimon/predicate/function_visitor.h"
 
 namespace paimon {
 
-/// Selects candidate BTree index files based on filter predicates.
-class BTreeFileMetaSelector : public FunctionVisitor<std::vector<GlobalIndexIOMeta>> {
+/// Selects candidate global index files by per-index-file min/max metadata.
+///
+/// All files are expected to belong to the same field.
+class SortedFileMetaSelector : public FunctionVisitor<std::vector<GlobalIndexIOMeta>> {
  public:
-    static Result<std::unique_ptr<BTreeFileMetaSelector>> Create(
+    static Result<std::unique_ptr<SortedFileMetaSelector>> Create(
         const std::vector<GlobalIndexIOMeta>& files,
-        const std::shared_ptr<arrow::DataType>& key_type, const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<KeySerializer>& key_serializer);
 
     Result<std::vector<GlobalIndexIOMeta>> VisitIsNotNull() override;
     Result<std::vector<GlobalIndexIOMeta>> VisitIsNull() override;
@@ -55,20 +58,22 @@ class BTreeFileMetaSelector : public FunctionVisitor<std::vector<GlobalIndexIOMe
     Result<std::vector<GlobalIndexIOMeta>> VisitLike(const Literal& literal) override;
 
  private:
-    BTreeFileMetaSelector(
-        std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<BTreeIndexMeta>>> files,
-        std::shared_ptr<arrow::DataType> key_type, std::shared_ptr<MemoryPool> pool);
+    SortedFileMetaSelector(
+        std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<SortedIndexFileMeta>>> files,
+        std::shared_ptr<KeySerializer> key_serializer);
 
-    using MetaPredicate = std::function<Result<bool>(const BTreeIndexMeta&)>;
+    using MetaPredicate = std::function<Result<bool>(const SortedIndexFileMeta&)>;
 
     Result<std::vector<GlobalIndexIOMeta>> Filter(const MetaPredicate& predicate) const;
 
-    Result<bool> Overlaps(const BTreeIndexMeta& meta, const MemorySlice& from,
+    Result<bool> Overlaps(const SortedIndexFileMeta& meta, const MemorySlice& from,
                           const MemorySlice& to) const;
 
-    Result<int32_t> CompareFirstKey(const BTreeIndexMeta& meta, const MemorySlice& literal) const;
+    Result<int32_t> CompareFirstKey(const SortedIndexFileMeta& meta,
+                                    const MemorySlice& literal) const;
 
-    Result<int32_t> CompareLastKey(const BTreeIndexMeta& meta, const MemorySlice& literal) const;
+    Result<int32_t> CompareLastKey(const SortedIndexFileMeta& meta,
+                                   const MemorySlice& literal) const;
 
     Result<MemorySlice> SerializeLiteral(const Literal& literal) const;
 
@@ -76,9 +81,8 @@ class BTreeFileMetaSelector : public FunctionVisitor<std::vector<GlobalIndexIOMe
     /// avoiding shared_ptr reference-count overhead.
     static MemorySlice WrapKeySlice(const std::shared_ptr<Bytes>& key);
 
-    std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<BTreeIndexMeta>>> files_;
-    std::shared_ptr<arrow::DataType> key_type_;
-    std::shared_ptr<MemoryPool> pool_;
+    std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<SortedIndexFileMeta>>> files_;
+    std::shared_ptr<KeySerializer> key_serializer_;
     MemorySlice::SliceComparator comparator_;
 };
 

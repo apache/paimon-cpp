@@ -92,10 +92,12 @@ class ObjectsFile {
         return Status::OK();
     }
 
+    // Optional preparation may wrap the reader and reread the file, using either cached bytes
+    // or the underlying file stream.
     Status ReadArrowBatches(
-        const std::string& file_name,
+        const std::string& file_name, std::optional<int64_t> file_size,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-        std::optional<int64_t> file_size) const;
+        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
 
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
@@ -158,7 +160,7 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
                             const std::function<Result<bool>(const T&)>& filter,
                             std::optional<int64_t> file_size, std::vector<T>* result) const {
     return ReadArrowBatches(
-        file_name,
+        file_name, file_size,
         [this, &filter, result](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {
             result->reserve(result->size() + struct_array->length());
             const arrow::ArrayVector& fields = struct_array->fields();
@@ -177,14 +179,14 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
             }
             return Status::OK();
         },
-        file_size);
+        /*prepare_reader=*/nullptr);
 }
 
 template <typename T>
 Status ObjectsFile<T>::ReadArrowBatches(
-    const std::string& file_name,
+    const std::string& file_name, std::optional<int64_t> file_size,
     const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-    std::optional<int64_t> file_size) const {
+    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const {
     std::string file_path = path_factory_->ToPath(file_name);
     std::shared_ptr<InputStream> file_input_stream;
     std::shared_ptr<Bytes> cached_bytes;
@@ -215,6 +217,9 @@ Status ObjectsFile<T>::ReadArrowBatches(
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> batch_reader,
                            reader_builder_->Build(file_input_stream));
+    if (prepare_reader) {
+        PAIMON_RETURN_NOT_OK(prepare_reader(&batch_reader));
+    }
     auto reader = std::make_unique<ManifestMetaReader>(std::move(batch_reader),
                                                        serializer_->GetDataType(), arrow_pool_);
     while (true) {
