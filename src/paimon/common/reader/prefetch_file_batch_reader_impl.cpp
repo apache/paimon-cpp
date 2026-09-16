@@ -327,7 +327,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         // late-materialization payload pass) report them here instead of through PreBufferRange(),
         // which is asked once per read-range generation before any read. Capturing the impl raw is
         // safe: it owns readers_, and CleanUp() joins the background thread before it goes away.
-        sub_reader->SetPreBufferSink(
+        sub_reader->SetPreBufferRangeCallback(
             [impl = reader.get()](std::vector<std::pair<uint64_t, uint64_t>>&& ranges) {
                 impl->RegisterLatePreBufferRanges(std::move(ranges));
             });
@@ -366,7 +366,7 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
 
 PrefetchFileBatchReaderImpl::~PrefetchFileBatchReaderImpl() {
     (void)CleanUp();
-    ClearPreBufferSinks();
+    ClearPreBufferRangeCallbacks();
 }
 
 Status PrefetchFileBatchReaderImpl::SetReadSchema(
@@ -834,11 +834,11 @@ void PrefetchFileBatchReaderImpl::RegisterLatePreBufferRanges(
     cache_->Warmup(first_added.value().value());
 }
 
-void PrefetchFileBatchReaderImpl::ClearPreBufferSinks() {
-    // Belt and braces: the sinks capture this, and by now CleanUp() has joined the background
+void PrefetchFileBatchReaderImpl::ClearPreBufferRangeCallbacks() {
+    // Belt and braces: the callbacks capture this, and by now CleanUp() has joined the background
     // thread, so no sub-reader can report a range any more.
     for (const auto& sub_reader : readers_) {
-        sub_reader->SetPreBufferSink(nullptr);
+        sub_reader->SetPreBufferRangeCallback(nullptr);
     }
 }
 
@@ -1082,7 +1082,7 @@ void PrefetchFileBatchReaderImpl::Close() {
     for (const auto& reader : readers_) {
         reader->Close();
     }
-    ClearPreBufferSinks();
+    ClearPreBufferRangeCallbacks();
 }
 
 }  // namespace paimon

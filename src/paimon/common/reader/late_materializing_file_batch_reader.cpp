@@ -268,7 +268,7 @@ Status LateMaterializingFileBatchReader::ReportPayloadPreBufferRanges() {
     // reader's target row groups down to the pages holding the matched rows. Reporting them
     // here lets the shared read-ahead cache fetch them while this pass is still assembling
     // its first batch, instead of every payload read waiting for its own IO.
-    if (!pre_buffer_sink_ || prefetch_inner_ == nullptr) {
+    if (!pre_buffer_range_callback_ || prefetch_inner_ == nullptr) {
         return Status::OK();
     }
     // The error is propagated rather than swallowed: the ranges come from the file metadata, so a
@@ -278,7 +278,7 @@ Status LateMaterializingFileBatchReader::ReportPayloadPreBufferRanges() {
     if (ranges.empty()) {
         return Status::OK();
     }
-    pre_buffer_sink_(std::move(ranges));
+    pre_buffer_range_callback_(std::move(ranges));
     return Status::OK();
 }
 

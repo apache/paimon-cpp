@@ -95,7 +95,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
         // Deliberately only the probe ranges: this is asked once before any read, when the payload
         // pass still has no idea which pages hold the matched rows. The payload ranges are
-        // reported through pre_buffer_sink_ once the probe pass has run, see
+        // reported through pre_buffer_range_callback_ once the probe pass has run, see
         // ReportPayloadPreBufferRanges().
         if (prefetch_inner_ == nullptr) {
             return std::vector<std::pair<uint64_t, uint64_t>>{};
@@ -103,10 +103,10 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
         return prefetch_inner_->PreBufferRange();
     }
 
-    void SetPreBufferSink(PreBufferSink sink) override {
+    void SetPreBufferRangeCallback(PreBufferRangeCallback callback) override {
         // Not forwarded to prefetch_inner_: a format reader has no late ranges of its own, and
         // forwarding would report the same ranges twice.
-        pre_buffer_sink_ = std::move(sink);
+        pre_buffer_range_callback_ = std::move(callback);
     }
 
  private:
@@ -149,9 +149,9 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
                               const std::shared_ptr<Predicate>& predicate,
                               const std::optional<RoaringBitmap32>& selection);
 
-    /// Report the byte ranges the payload pass is about to read to pre_buffer_sink_, so that the
-    /// prefetch layer can fetch them ahead of the pass. A no-op without a sink or without a
-    /// prefetch-capable inner reader.
+    /// Report the byte ranges the payload pass is about to read to pre_buffer_range_callback_, so
+    /// that the prefetch layer can fetch them ahead of the pass. A no-op without a callback or
+    /// without a prefetch-capable inner reader.
     Status ReportPayloadPreBufferRanges();
 
     /// Returns the inner reader's prefetch interface, or an error when the format reader does not
@@ -178,7 +178,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     /// Where the payload byte ranges are reported. Part of how this reader is wired into the
     /// prefetch layer rather than of a read generation, so Reset() leaves it alone.
-    PreBufferSink pre_buffer_sink_;
+    PreBufferRangeCallback pre_buffer_range_callback_;
     LatMatState state_ = kInit;
     std::shared_ptr<arrow::Schema> full_schema_;
     // projection holding only the predicate fields; nullptr when probing is not applicable

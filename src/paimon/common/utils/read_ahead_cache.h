@@ -132,11 +132,10 @@ struct RangeCacheEntry {
     }
 };
 
-/// A read cache designed to hide IO latencies when reading.
-/// Prefetching strategy: When a range is read, the cache will prefetch up to
-/// `pre_buffer_range_count` additional adjacent ranges ahead of the requested offset. This helps
-/// hide I/O latency for sequential access. Example: If you read range [0, 100), and
-/// pre_buffer_range_count=2, the next two configured ranges will also be prefetched.
+/// A read cache designed to hide IO latency when reading.
+/// Prefetching strategy: a Read() (or Warmup()) at an offset publishes and fetches the registered
+/// ranges from that offset forward until their cumulative size exceeds `pre_buffer_limit`, so a
+/// sequential read runs ahead of the caller instead of fetching one range at a time.
 ///
 /// The cache never evicts: every published range stays cached until
 /// ReleaseBuffers() or Reset(). It is meant to hold the prefetched ranges of
@@ -163,19 +162,15 @@ class PAIMON_EXPORT ReadAheadCache {
 
     /// Register byte ranges to prefetch, merging them into the ranges already registered.
     ///
-    /// This is the cache's only registration entry point, and it may be called repeatedly and
-    /// concurrently with Read(): the ranges known up front - a read plan's whole extent - are
-    /// registered before any Read(), and the ranges that only become known WHILE reading - a
-    /// late-materialization payload pass learns which pages it needs only after the probe pass has
-    /// evaluated the predicate - are registered as they are discovered. Read() finds its covering
-    /// entries by walking a disjoint, offset-ordered list, so of a new range only the part no
-    /// registered range covers is added; the overlapping part is dropped, as those bytes are
-    /// already being fetched. A registration is cut into ranges of at most `range_size_limit`
-    /// bytes, one prefetch IO each, so a large pass is fetched concurrently instead of in one long
-    /// request.
-    ///
-    /// Deciding WHICH ranges to register - and in particular not reporting the ranges of a read
-    /// that has already ended - is the caller's concern; the cache registers whatever it is given.
+    /// The cache's only registration entry point; safe to call repeatedly and concurrently with
+    /// Read(). Ranges known up front are registered before any Read(); ranges that only become
+    /// known while reading (a late-materialization payload pass learns its pages after the probe
+    /// pass) are registered as they are discovered. The list stays disjoint and offset-ordered, so
+    /// only the part of a new range that no registered range covers is added - the overlap is
+    /// dropped, as those bytes are already being fetched - and each registration is cut into ranges
+    /// of at most `range_size_limit` bytes (one prefetch IO each) so a large pass is fetched
+    /// concurrently. Which ranges to register, and not reporting those of an ended read, is the
+    /// caller's concern.
     ///
     /// @param ranges The byte ranges to register.
     /// @return The offset of the first newly registered range, or nullopt when nothing was added.
@@ -195,9 +190,9 @@ class PAIMON_EXPORT ReadAheadCache {
     /// filled; false on cache miss (`dest` is left untouched).
     Result<bool> Read(const ByteRange& range, char* dest);
 
-    /// Start fetching the first batch of pending ranges immediately.
-    /// AddRanges() only registers the ranges; without Warmup() the first fetch starts
-    /// when the first Read() arrives, racing the caller's own miss fetch.
+    /// Start fetching from the first registered range forward immediately. AddRanges() only
+    /// registers the ranges; without Warmup() the first fetch starts when the first Read() arrives,
+    /// racing the caller's own miss fetch.
     void Warmup();
 
     /// Start fetching the registered ranges from `from_offset` forward, bounded by the
@@ -205,26 +200,23 @@ class PAIMON_EXPORT ReadAheadCache {
     /// @param from_offset The offset to start fetching from, typically one AddRanges() returned.
     void Warmup(uint64_t from_offset);
 
-    /// Collect the counters of the Read() calls, of the block cache, of the IOs
-    /// and of the late registrations into the given metrics as counters named
-    /// after `ReadAheadCacheMetrics`. Only reads issued through Read() are
-    /// counted as hits, block hits or misses; the fetches the cache dispatches
-    /// are counted in the io counters instead.
+    /// Collect the counters of the Read() calls, of the block cache and of the IOs into the given
+    /// metrics as counters named after `ReadAheadCacheMetrics`. Only reads issued through Read()
+    /// are counted as hits, block hits or misses; the fetches the cache dispatches are counted in
+    /// the io counters instead.
     /// @param metrics The metrics to write the counters into. A null
     /// pointer or a null shared pointer is a no-op.
     void CollectMetrics(std::shared_ptr<Metrics>* metrics) const;
 
-    /// Reset the cache to its initial state, clearing all cached data and configuration.
+    /// Drop the prefetched entries and zero all counters, so a fresh set of ranges can be
+    /// registered with AddRanges(). Waits for the in-flight fetches before their buffers go away.
     ///
-    /// This method waits for all ongoing asynchronous read operations to complete,
-    /// clears all cached entries, and resets the internal state so a fresh set of ranges can be
-    /// registered again with AddRanges().
-    ///
-    /// The block cache is kept: it caches the file rather than the registered
-    /// ranges, and a reader reusing the cache reads the same file again.
+    /// The block cache is kept - it caches the file rather than the registered ranges, and a reader
+    /// reusing the cache reads the same file again - but its counters are zeroed too. Unlike
+    /// ReleaseBuffers(), the counters do not survive.
     void Reset();
 
-    /// Release all cached buffers and pending ranges while keeping the hit/miss
+    /// Release all cached buffers and registered ranges while keeping the hit/miss
     /// counters intact.
     ///
     /// Unlike Reset(), the counters recorded by Read() remain readable through

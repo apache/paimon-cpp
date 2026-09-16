@@ -766,9 +766,9 @@ TEST_F(LateMaterializingFileBatchReaderTest, FailsOnPredicateTypeMismatch) {
 }
 
 // The payload byte ranges are only known once the probe pass has run, so they are reported through
-// the sink rather than through PreBufferRange(), and early enough to still be prefetched: before
-// the first payload batch leaves the reader.
-TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangesReportedToSink) {
+// the callback rather than through PreBufferRange(), and early enough to still be prefetched:
+// before the first payload batch leaves the reader.
+TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangesReportedToCallback) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/3);
     // Aliased because a type carrying a comma cannot be passed to the ASSERT_OK_AND_ASSIGN macro.
@@ -781,7 +781,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangesReportedToSin
     int32_t batches = 0;
     std::vector<ByteRanges> reported;
     std::vector<int32_t> batches_when_reported;
-    reader->SetPreBufferSink([&](ByteRanges&& ranges) {
+    reader->SetPreBufferRangeCallback([&](ByteRanges&& ranges) {
         reported.push_back(std::move(ranges));
         batches_when_reported.push_back(batches);
     });
@@ -811,14 +811,15 @@ TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangesReportedToSin
 }
 
 // Without a predicate there is no payload pass, so there is no late range to report.
-TEST_F(LateMaterializingFileBatchReaderTest, NoSinkReportWithoutLateMaterialization) {
+TEST_F(LateMaterializingFileBatchReaderTest, NoCallbackReportWithoutLateMaterialization) {
     auto data = BuildData({0, 1, 2, 3, 4});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     mock->SetPreBufferRangesPerSchema({{{0, 1024}}, {{100000, 2048}}});
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     int32_t calls = 0;
-    reader->SetPreBufferSink([&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
+    reader->SetPreBufferRangeCallback(
+        [&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), /*predicate=*/nullptr,
                             std::nullopt));
 
@@ -835,7 +836,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, EmptyMatchDoesNotReportPayloadRange
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     int32_t calls = 0;
-    reader->SetPreBufferSink([&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
+    reader->SetPreBufferRangeCallback(
+        [&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
     auto predicate =
         PredicateBuilder::GreaterThan(/*field_index=*/0, "k", FieldType::BIGINT, Literal(100l));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
@@ -854,7 +856,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangeErrorFailsRead
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     int32_t calls = 0;
-    reader->SetPreBufferSink([&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
+    reader->SetPreBufferRangeCallback(
+        [&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
     auto predicate =
         PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(2l));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));

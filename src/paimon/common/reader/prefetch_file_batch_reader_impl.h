@@ -151,9 +151,9 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     /// as in WarmCacheOnce().
     void RegisterLatePreBufferRanges(std::vector<std::pair<uint64_t, uint64_t>>&& read_ranges);
 
-    /// Detaches the sinks installed on the sub-readers, so that a sub-reader outliving this reader
-    /// cannot call back into it. Called once the background thread has been joined.
-    void ClearPreBufferSinks();
+    /// Detaches the callbacks installed on the sub-readers, so that a sub-reader outliving this
+    /// reader cannot call back into it. Called once the background thread has been joined.
+    void ClearPreBufferRangeCallbacks();
     void SetReadStatus(const Status& status);
     Status GetReadStatus() const;
     Result<bool> IsEofRange(const std::pair<uint64_t, uint64_t>& read_range) const;
