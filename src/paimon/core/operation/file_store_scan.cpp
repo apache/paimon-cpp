@@ -38,6 +38,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/manifest/file_entry.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/manifest_file.h"
@@ -45,12 +46,14 @@
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/manifest/snapshot_live_manifest_entries.h"
 #include "paimon/core/partition/partition_info.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_segment.h"
 #include "paimon/predicate/literal.h"
@@ -88,6 +91,34 @@ Result<std::shared_ptr<Predicate>> FileStoreScan::ReconstructPredicateWithNonCas
         }
     }
     return PredicateUtils::ExcludePredicateWithFields(predicate, excluded_field_names);
+}
+
+Result<bool> FileStoreScan::TestFileIndex(const std::shared_ptr<Predicate>& predicate,
+                                          const std::shared_ptr<DataFileMeta>& meta,
+                                          const std::shared_ptr<SimpleStatsEvolution>& evolution,
+                                          const std::shared_ptr<TableSchema>& data_schema) const {
+    if (!core_options_.FileIndexReadEnabled() || meta->embedded_index == nullptr) {
+        return true;
+    }
+
+    std::shared_ptr<Predicate> data_predicate = predicate;
+    if (data_schema->Id() != table_schema_->Id()) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<Predicate>> reconstructed_predicate,
+                               FieldMappingBuilder::ReconstructPredicateWithDataFields(
+                                   predicate, evolution->GetFieldNameToTableField(),
+                                   evolution->GetFieldIdToDataField()));
+        if (!reconstructed_predicate) {
+            return true;
+        }
+        data_predicate = reconstructed_predicate.value();
+    }
+    assert(data_predicate);
+    std::shared_ptr<arrow::Schema> data_arrow_schema =
+        DataField::ConvertDataFieldsToArrowSchema(data_schema->Fields());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileIndexResult> index_result,
+        FileIndexEvaluator::Evaluate(data_arrow_schema, data_predicate, meta, pool_));
+    return index_result->IsRemain();
 }
 
 std::vector<ManifestEntry> FileStoreScan::RawPlan::Files(const FileKind& kind) {

@@ -3123,6 +3123,167 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
+TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(nullptr, dir);
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                       arrow::field("indexed_value", arrow::int32()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    const std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::COMMIT_FORCE_COMPACT, "true"},
+        {Options::FILE_INDEX_READ_ENABLED, "true"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"},
+        {"file-index.bitmap.columns", "indexed_value"},
+    };
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                           options, /*is_streaming_mode=*/true, /*ignore_if_exists=*/false,
+                           PathUtil::JoinPath(dir->Str(), "tmp")));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([[1, 10, "one"], [2, 20, "two"], [3, 30, "three"]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, /*row_kinds=*/{}));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> commit_messages,
+        helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0, std::nullopt));
+    ASSERT_FALSE(commit_messages.empty());
+
+    // 15 falls inside the file's [10, 30] min/max range, so statistics alone must retain the
+    // file. Disabling file-index reads verifies that baseline explicitly.
+    const std::shared_ptr<Predicate> absent_predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"indexed_value", FieldType::INT, Literal(15));
+    ScanContextBuilder stats_only_scan_builder(table_path);
+    stats_only_scan_builder.SetOptions(options)
+        .AddOption(Options::FILE_INDEX_READ_ENABLED, "false")
+        .SetPredicate(absent_predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> stats_only_scan_context,
+                         stats_only_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> stats_only_scan,
+                         TableScan::Create(std::move(stats_only_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> stats_only_plan, stats_only_scan->CreatePlan());
+    ASSERT_FALSE(stats_only_plan->Splits().empty());
+
+    // The embedded bitmap knows that 15 is absent and eliminates the file during scan planning.
+    ScanContextBuilder indexed_scan_builder(table_path);
+    indexed_scan_builder.SetOptions(options).SetPredicate(absent_predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> indexed_scan_context,
+                         indexed_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> indexed_scan,
+                         TableScan::Create(std::move(indexed_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> indexed_plan, indexed_scan->CreatePlan());
+    ASSERT_TRUE(indexed_plan->Splits().empty());
+
+    // For a present value, scan retains the embedded-index file and read applies its precise
+    // bitmap. Residual predicate filtering stays disabled so only file-index selection can remove
+    // the other rows.
+    const std::shared_ptr<Predicate> present_predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"indexed_value", FieldType::INT, Literal(20));
+    ScanContextBuilder retained_scan_builder(table_path);
+    retained_scan_builder.SetOptions(options).SetPredicate(present_predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> retained_scan_context,
+                         retained_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> retained_scan,
+                         TableScan::Create(std::move(retained_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> retained_plan, retained_scan->CreatePlan());
+    ASSERT_FALSE(retained_plan->Splits().empty());
+
+    ReadContextBuilder read_context_builder(table_path);
+    read_context_builder.SetOptions(options)
+        .SetPredicate(present_predicate)
+        .EnablePredicateFilter(false);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         table_read->CreateReader(retained_plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+    const std::shared_ptr<arrow::DataType> result_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int32()),
+         arrow::field("indexed_value", arrow::int32()), arrow::field("payload", arrow::utf8())});
+    const std::shared_ptr<arrow::ChunkedArray> expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(result_type, R"([[0, 2, 20, "two"]])")
+            .ValueOrDie());
+    ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
+}
+
+TEST(ScanAndReadFileIndexInteTest, TestPkDvReconstructsFileIndexPredicateAfterSchemaEvolution) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(nullptr, dir);
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                       arrow::field("indexed_value", arrow::int32()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::COMMIT_FORCE_COMPACT, "true"},
+        {Options::FILE_INDEX_READ_ENABLED, "true"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"},
+        {"file-index.bitmap.columns", "indexed_value"},
+    };
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                           options, /*is_streaming_mode=*/true, /*ignore_if_exists=*/false,
+                           PathUtil::JoinPath(dir->Str(), "tmp")));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([[1, 10, "one"], [2, 20, "two"], [3, 30, "three"]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, /*row_kinds=*/{}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0, std::nullopt));
+    helper.reset();
+
+    // Keep field IDs and types unchanged while renaming the indexed value field. The old file and
+    // its embedded bitmap still use "indexed_value", whereas scans use "renamed_value".
+    options["file-index.bitmap.columns"] = "renamed_value";
+    const std::vector<DataField> evolved_fields = {
+        DataField(0, arrow::field("id", arrow::int32(), /*nullable=*/false)),
+        DataField(1, arrow::field("renamed_value", arrow::int32())),
+        DataField(2, arrow::field("payload", arrow::utf8()))};
+    ASSERT_OK(TestHelper::WriteNextSchema(dir->GetFileSystem(), table_path, evolved_fields,
+                                          /*highest_field_id=*/2, options));
+
+    const std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"renamed_value", FieldType::INT, Literal(15));
+
+    // The evolved min/max range is still [10, 30], so statistics alone retain the old file.
+    ScanContextBuilder stats_only_scan_builder(table_path);
+    stats_only_scan_builder.SetOptions(options)
+        .AddOption(Options::FILE_INDEX_READ_ENABLED, "false")
+        .SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> stats_only_scan_context,
+                         stats_only_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> stats_only_scan,
+                         TableScan::Create(std::move(stats_only_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> stats_only_plan, stats_only_scan->CreatePlan());
+    ASSERT_FALSE(stats_only_plan->Splits().empty());
+
+    // Reconstructing the predicate to schema-0 lets its embedded bitmap prove that 15 is absent.
+    ScanContextBuilder indexed_scan_builder(table_path);
+    indexed_scan_builder.SetOptions(options).SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> indexed_scan_context,
+                         indexed_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> indexed_scan,
+                         TableScan::Create(std::move(indexed_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> indexed_plan, indexed_scan->CreatePlan());
+    ASSERT_TRUE(indexed_plan->Splits().empty());
+}
+
 TEST_P(ScanAndReadInteTest, TestPkDvTableIndexInDataAndWithExternalPath) {
     auto file_format = FileFormat();
     std::string table_path =

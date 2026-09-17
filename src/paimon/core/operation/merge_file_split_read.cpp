@@ -30,6 +30,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
+#include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
@@ -38,12 +39,12 @@
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
-#include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/io/async_key_value_projection_reader.h"
 #include "paimon/core/io/concat_key_value_record_reader.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/io/key_value_data_file_record_reader.h"
 #include "paimon/core/io/key_value_projection_consumer.h"
 #include "paimon/core/io/key_value_projection_reader.h"
@@ -65,6 +66,8 @@
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
+#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/reader/file_batch_reader.h"
@@ -488,7 +491,22 @@ Result<std::unique_ptr<FileBatchReader>> MergeFileSplitRead::ApplyIndexAndDvRead
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
-    // merge read does not use index
+    std::shared_ptr<FileIndexResult> file_index_result;
+    if (options_.FileIndexReadEnabled()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            file_index_result,
+            FileIndexEvaluator::Evaluate(data_schema, predicate, data_file_path_factory, file,
+                                         options_.GetFileSystem(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
+        if (!is_remain) {
+            return std::unique_ptr<FileBatchReader>();
+        }
+    }
+    const RoaringBitmap32* selection = nullptr;
+    if (auto* bitmap_file_index = dynamic_cast<BitmapIndexResult*>(file_index_result.get())) {
+        PAIMON_ASSIGN_OR_RAISE(selection, bitmap_file_index->GetBitmap());
+    }
+
     std::shared_ptr<DeletionVector> deletion_vector;
     if (dv_factory) {
         PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
@@ -500,10 +518,18 @@ Result<std::unique_ptr<FileBatchReader>> MergeFileSplitRead::ApplyIndexAndDvRead
     }
 
     std::optional<RoaringBitmap32> actual_selection;
-    if (deletion) {
+    if (selection && deletion) {
+        actual_selection = RoaringBitmap32::AndNot(*selection, *deletion);
+    } else if (selection) {
+        actual_selection = *selection;
+    } else if (deletion) {
         actual_selection = *deletion;
         PAIMON_ASSIGN_OR_RAISE(uint64_t num_rows, file_reader->GetNumberOfRows());
         actual_selection.value().Flip(0, num_rows);
+    }
+
+    if (actual_selection && actual_selection->IsEmpty()) {
+        return std::unique_ptr<FileBatchReader>();
     }
 
     ::ArrowSchema c_read_schema;
@@ -511,16 +537,19 @@ Result<std::unique_ptr<FileBatchReader>> MergeFileSplitRead::ApplyIndexAndDvRead
 
     PAIMON_RETURN_NOT_OK(file_reader->SetReadSchema(&c_read_schema, predicate, actual_selection));
 
+    std::unique_ptr<FileBatchReader> reader;
     if (!file_reader->SupportPreciseBitmapSelection() && actual_selection) {
-        return std::make_unique<ApplyDeletionVectorBatchReader>(std::move(file_reader),
-                                                                deletion_vector);
+        reader = std::make_unique<ApplyBitmapIndexBatchReader>(std::move(file_reader),
+                                                               std::move(actual_selection).value());
+    } else {
+        reader = std::move(file_reader);
     }
     if (deletion_vector && !deletion && !deletion_vector->IsEmpty()) {
         // TODO(xinyu.lxy): if deletion vector is bitmap64, use ApplyBitmapIndexBatchReader to
         // filter result
         return Status::NotImplemented("Only support BitmapDeletionVector");
     }
-    return std::move(file_reader);
+    return std::move(reader);
 }
 
 Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateMergeReader(
