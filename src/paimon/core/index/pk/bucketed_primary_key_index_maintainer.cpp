@@ -119,28 +119,33 @@ bool CoversAllSources(const std::vector<PrimaryKeyIndexSourceFile>& group_source
 
 }  // namespace
 
-std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>
-BucketedPrimaryKeyIndexMaintainer::Factory::Create(
+BucketedPrimaryKeyIndexMaintainer::Factory::Factory(
     const std::string& root_path, const std::string& branch,
     const std::shared_ptr<TableSchema>& table_schema,
     const std::vector<PrimaryKeyIndexDefinition>& definitions,
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<IndexFileHandler>& index_file_handler, const CoreOptions& options,
     const std::shared_ptr<IOManager>& io_manager, bool enable_multi_thread_spill,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
-    std::vector<PrimaryKeyIndexDefinition> btree_definitions;
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
+    : root_path_(root_path),
+      branch_(branch),
+      table_schema_(table_schema),
+      path_factory_(path_factory),
+      index_file_handler_(index_file_handler),
+      options_(options),
+      io_manager_(io_manager),
+      enable_multi_thread_spill_(enable_multi_thread_spill),
+      executor_(executor),
+      pool_(pool) {
     for (const PrimaryKeyIndexDefinition& definition : definitions) {
         if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE) {
-            btree_definitions.push_back(definition);
+            definitions_.push_back(definition);
         }
     }
-    std::sort(btree_definitions.begin(), btree_definitions.end(),
+    std::sort(definitions_.begin(), definitions_.end(),
               [](const PrimaryKeyIndexDefinition& left, const PrimaryKeyIndexDefinition& right) {
                   return left.FieldId() < right.FieldId();
               });
-    return std::shared_ptr<Factory>(new Factory(
-        root_path, branch, table_schema, std::move(btree_definitions), path_factory,
-        index_file_handler, options, io_manager, enable_multi_thread_spill, executor, pool));
 }
 
 Result<std::shared_ptr<BucketedPrimaryKeyIndexMaintainer>>

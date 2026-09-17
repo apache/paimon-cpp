@@ -31,8 +31,8 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
-#include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/index/index_file_meta.h"
+#include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
 #include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_entry.h"
@@ -309,8 +309,9 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFilesBySnapshot(
     if (index_manifest_name) {
         used_files.insert(index_manifest_name.value());
         std::vector<IndexManifestEntry> index_entries;
-        PAIMON_RETURN_NOT_OK(index_manifest_file_->ReadIfFileExist(
-            index_manifest_name.value(), /*filter=*/nullptr, &index_entries));
+        PAIMON_RETURN_NOT_OK(
+            index_manifest_file_->ReadIfFileExist(index_manifest_name.value(), /*filter=*/nullptr,
+                                                  /*file_size=*/std::nullopt, &index_entries));
         for (const IndexManifestEntry& index_entry : index_entries) {
             used_files.insert(index_entry.index_file->FileName());
         }

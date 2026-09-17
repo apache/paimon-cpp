@@ -397,9 +397,7 @@ TEST_F(ExpireSnapshotsTest, TestRejectExpirationWhileAnotherBranchExists) {
     ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, index_manifest_file_,
                            fs_, options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
     ASSERT_OK(fs_->Mkdirs(PathUtil::JoinPath(test_data_path_, "branch/branch-dev")));
-    ASSERT_NOK_WITH_MSG(expire.ExpireUntil(/*earliest_snapshot_id=*/1,
-                                           /*end_exclusive_id=*/2, /*latest_snapshot_id=*/2),
-                        "cross-branch file retention is not supported");
+    ASSERT_NOK_WITH_MSG(expire.Expire(), "has branches other than main");
 }
 
 TEST_F(ExpireSnapshotsTest, TestExpireKeepsSourceBackedBTreeIndexReferencedByTag) {
@@ -542,8 +540,8 @@ TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {
 TEST_F(ExpireSnapshotsTest, TestCleanUnusedDataFilePreservesRetainedExtraFiles) {
     auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
-    ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
-                           options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+    ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, index_manifest_file_,
+                           fs_, options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
 
     ManifestEntry entry = CreateManifestEntry("file1", /*bucket=*/0, FileKind::Delete(),
                                               {"file1.index", "file1.lookup"});

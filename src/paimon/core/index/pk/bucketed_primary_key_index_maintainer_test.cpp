@@ -41,6 +41,7 @@
 #include "paimon/core/index/pk/primary_key_index_source_meta.h"
 #include "paimon/core/index/pk/primary_key_index_source_policy.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/manifest/file_source.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -147,15 +148,76 @@ std::shared_ptr<IndexFileMeta> MakeMalformedPrimaryKeyBTreePayload(
                         /*extra_field_ids=*/std::nullopt, /*index_meta=*/nullptr, source_meta));
 }
 
+Result<std::shared_ptr<CommitMessage>> ReplaceBTreePayloadSources(
+    const CommitMessageImpl& message, const std::shared_ptr<IndexFileMeta>& payload,
+    const std::vector<PrimaryKeyIndexSourceFile>& sources,
+    const std::shared_ptr<MemoryPool>& pool) {
+    if (payload == nullptr || !payload->GetGlobalIndexMeta().has_value()) {
+        return Status::Invalid("Cannot replace source metadata for an invalid BTree payload.");
+    }
+    PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexSourceMeta original_source_meta,
+                           PrimaryKeyIndexSourceMeta::FromIndexFile(*payload));
+    PAIMON_ASSIGN_OR_RAISE(
+        PrimaryKeyIndexSourceMeta replacement_source_meta,
+        PrimaryKeyIndexSourceMeta::Create(original_source_meta.DataLevel(), sources));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> source_meta_bytes,
+                           replacement_source_meta.Serialize(pool));
+    const GlobalIndexMeta& original_global_meta = payload->GetGlobalIndexMeta().value();
+    int64_t row_count = TotalRows(sources);
+    auto replacement = std::make_shared<IndexFileMeta>(
+        payload->IndexType(), payload->FileName(), payload->FileSize(), row_count,
+        payload->DvRanges(), payload->ExternalPath(),
+        GlobalIndexMeta(/*row_range_start=*/0, /*row_range_end=*/row_count - 1,
+                        original_global_meta.index_field_id, original_global_meta.extra_field_ids,
+                        original_global_meta.index_meta, source_meta_bytes));
+
+    std::vector<std::shared_ptr<IndexFileMeta>> data_new_indexes =
+        message.GetNewFilesIncrement().NewIndexFiles();
+    std::vector<std::shared_ptr<IndexFileMeta>> compact_new_indexes =
+        message.GetCompactIncrement().NewIndexFiles();
+    bool replaced = false;
+    for (std::vector<std::shared_ptr<IndexFileMeta>>* indexes :
+         {&data_new_indexes, &compact_new_indexes}) {
+        for (std::shared_ptr<IndexFileMeta>& index : *indexes) {
+            if (index != nullptr && index->FileName() == payload->FileName()) {
+                index = replacement;
+                replaced = true;
+            }
+        }
+    }
+    if (!replaced) {
+        return Status::Invalid("BTree payload is not present in the commit message.");
+    }
+
+    const DataIncrement& data_increment = message.GetNewFilesIncrement();
+    DataIncrement replacement_data_increment(
+        std::vector<std::shared_ptr<DataFileMeta>>(data_increment.NewFiles()),
+        std::vector<std::shared_ptr<DataFileMeta>>(data_increment.DeletedFiles()),
+        std::vector<std::shared_ptr<DataFileMeta>>(data_increment.ChangelogFiles()),
+        std::move(data_new_indexes),
+        std::vector<std::shared_ptr<IndexFileMeta>>(data_increment.DeletedIndexFiles()));
+    const CompactIncrement& compact_increment = message.GetCompactIncrement();
+    CompactIncrement replacement_compact_increment(
+        std::vector<std::shared_ptr<DataFileMeta>>(compact_increment.CompactBefore()),
+        std::vector<std::shared_ptr<DataFileMeta>>(compact_increment.CompactAfter()),
+        std::vector<std::shared_ptr<DataFileMeta>>(compact_increment.ChangelogFiles()),
+        std::move(compact_new_indexes),
+        std::vector<std::shared_ptr<IndexFileMeta>>(compact_increment.DeletedIndexFiles()));
+    return std::make_shared<CommitMessageImpl>(message.Partition(), message.Bucket(),
+                                               message.TotalBuckets(), replacement_data_increment,
+                                               replacement_compact_increment);
+}
+
 }  // namespace
 
 TEST(BucketedPrimaryKeyIndexMaintainerStandaloneTest,
      DeletesRestoredBTreePayloadWhenNoDefinitionRemains) {
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
     std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory> factory =
-        BucketedPrimaryKeyIndexMaintainer::Factory::Create(
+        std::make_shared<BucketedPrimaryKeyIndexMaintainer::Factory>(
             /*root_path=*/"", /*branch=*/"main", /*table_schema=*/nullptr,
-            /*definitions=*/{}, /*path_factory=*/nullptr, /*index_file_handler=*/nullptr, options,
+            /*definitions=*/std::vector<PrimaryKeyIndexDefinition>{}, /*path_factory=*/nullptr,
+            /*index_file_handler=*/nullptr, options,
             /*io_manager=*/nullptr, /*enable_multi_thread_spill=*/false, /*executor=*/nullptr,
             GetDefaultPool());
     ASSERT_OK_AND_ASSIGN(
@@ -305,6 +367,48 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<st
     std::string table_path_;
 };
 
+TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsIndexForColumnNamedLikeInternalRowId) {
+    constexpr char kColumnName[] = "_PK_INDEX_ROW_ID";
+    schema_ = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
+                             arrow::field(kColumnName, arrow::utf8(), /*nullable=*/false)});
+    options_[Options::PK_BTREE_INDEX_COLUMNS] = kColumnName;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(directory_->Str(), {}));
+    for (bool spillable : {false, true}) {
+        SCOPED_TRACE(spillable);
+        const std::string table_name = spillable ? "row_id_spill" : "row_id_memory";
+        options_[Options::WRITE_BUFFER_SIZE] = spillable ? "1" : "1048576";
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema_, &c_schema).ok());
+        ASSERT_OK(catalog->CreateTable(Identifier("db", table_name), &c_schema,
+                                       /*partition_keys=*/{}, /*primary_keys=*/{"id"}, options_,
+                                       /*ignore_if_exists=*/false));
+        table_path_ = PathUtil::JoinPath(directory_->Str(), "db.db/" + table_name);
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
+                             WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",
+                                             /*commit_identifier=*/0));
+        ASSERT_OK(Commit(initial_messages, /*commit_identifier=*/0));
+
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                             CreateWriter(/*with_temp_directory=*/true, spillable));
+        ASSERT_OK(writer->Compact(/*partition=*/{}, /*bucket=*/0, /*full_compaction=*/true));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> compact_messages,
+                             writer->PrepareCommit(/*wait_compaction=*/true,
+                                                   /*commit_identifier=*/1));
+        ASSERT_OK(writer->Close());
+        ASSERT_EQ(1, compact_messages.size());
+        auto compact = std::dynamic_pointer_cast<CommitMessageImpl>(compact_messages[0]);
+        ASSERT_NE(nullptr, compact);
+        std::vector<std::shared_ptr<IndexFileMeta>> payloads =
+            BTreeIndexFiles(*compact, /*added=*/true);
+        ASSERT_EQ(1, payloads.size());
+        ASSERT_EQ(4, payloads[0]->RowCount());
+        ASSERT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta source_meta,
+                             PrimaryKeyIndexSourceMeta::FromIndexFile(*payloads[0]));
+        ASSERT_EQ(ExpectedSources(compact->GetCompactIncrement().CompactAfter()),
+                  source_meta.SourceFiles());
+    }
+}
+
 TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompactedLevelPayload) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
                          WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",
@@ -432,6 +536,124 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompacted
                          PrimaryKeyIndexSourceMeta::FromIndexFile(*replacement_payloads[0]));
     ASSERT_EQ(second_expected_sources, second_source_meta.SourceFiles());
     ASSERT_EQ(TotalRows(second_expected_sources), replacement_payloads[0]->RowCount());
+}
+
+TEST_P(BucketedPrimaryKeyIndexMaintainerTest, RebuildsPartialPayloadAndRetainsItWhenRebuildFails) {
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
+                         WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",
+                                         /*commit_identifier=*/0));
+    ASSERT_EQ(1, initial_messages.size());
+    std::shared_ptr<CommitMessageImpl> initial =
+        std::dynamic_pointer_cast<CommitMessageImpl>(initial_messages[0]);
+    ASSERT_NE(nullptr, initial);
+    const DataIncrement& original_data_increment = initial->GetNewFilesIncrement();
+    ASSERT_GT(original_data_increment.NewFiles().size(), 1);
+    std::vector<std::shared_ptr<DataFileMeta>> promoted_sources;
+    for (const std::shared_ptr<DataFileMeta>& file : original_data_increment.NewFiles()) {
+        std::shared_ptr<DataFileMeta> promoted = std::make_shared<DataFileMeta>(*file);
+        promoted->level = 1;
+        promoted->file_source = FileSource::Compact();
+        promoted_sources.push_back(std::move(promoted));
+    }
+    std::vector<PrimaryKeyIndexSourceFile> expected_sources = ExpectedSources(promoted_sources);
+    ASSERT_GT(expected_sources.size(), 1);
+    DataIncrement promoted_data_increment(
+        std::move(promoted_sources),
+        std::vector<std::shared_ptr<DataFileMeta>>(original_data_increment.DeletedFiles()),
+        std::vector<std::shared_ptr<DataFileMeta>>(original_data_increment.ChangelogFiles()),
+        std::vector<std::shared_ptr<IndexFileMeta>>(original_data_increment.NewIndexFiles()),
+        std::vector<std::shared_ptr<IndexFileMeta>>(original_data_increment.DeletedIndexFiles()));
+    std::shared_ptr<CommitMessage> promoted_message = std::make_shared<CommitMessageImpl>(
+        initial->Partition(), initial->Bucket(), initial->TotalBuckets(), promoted_data_increment,
+        initial->GetCompactIncrement());
+    ASSERT_OK(Commit({promoted_message}, /*commit_identifier=*/0));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> build_messages,
+                         CompactAndPrepare(/*full_compaction=*/false,
+                                           /*commit_identifier=*/1));
+    ASSERT_EQ(1, build_messages.size());
+    std::shared_ptr<CommitMessageImpl> build =
+        std::dynamic_pointer_cast<CommitMessageImpl>(build_messages[0]);
+    ASSERT_NE(nullptr, build);
+    ASSERT_TRUE(build->GetCompactIncrement().CompactBefore().empty());
+    ASSERT_TRUE(build->GetCompactIncrement().CompactAfter().empty());
+    std::vector<std::shared_ptr<IndexFileMeta>> payloads = BTreeIndexFiles(*build, /*added=*/true);
+    ASSERT_EQ(1, payloads.size());
+    std::vector<PrimaryKeyIndexSourceFile> partial_sources = {expected_sources[0]};
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CommitMessage> partial_message,
+        ReplaceBTreePayloadSources(*build, payloads[0], partial_sources, GetDefaultPool()));
+    ASSERT_OK(Commit({partial_message}, /*commit_identifier=*/1));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> failing_writer,
+                         CreateWriter(/*with_temp_directory=*/true,
+                                      /*write_buffer_spillable=*/false));
+    ASSERT_OK(failing_writer->Compact(/*partition=*/{}, /*bucket=*/0,
+                                      /*full_compaction=*/false));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> failed_rebuild_messages,
+        failing_writer->PrepareCommit(/*wait_compaction=*/true, /*commit_identifier=*/2));
+    ASSERT_OK(failing_writer->Close());
+    ASSERT_EQ(1, failed_rebuild_messages.size());
+    std::shared_ptr<CommitMessageImpl> failed_rebuild =
+        std::dynamic_pointer_cast<CommitMessageImpl>(failed_rebuild_messages[0]);
+    ASSERT_NE(nullptr, failed_rebuild);
+    ASSERT_TRUE(BTreeIndexFiles(*failed_rebuild, /*added=*/true).empty());
+    ASSERT_TRUE(BTreeIndexFiles(*failed_rebuild, /*added=*/false).empty());
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> repair_messages,
+                         CompactAndPrepare(/*full_compaction=*/false,
+                                           /*commit_identifier=*/2));
+    ASSERT_EQ(1, repair_messages.size());
+    std::shared_ptr<CommitMessageImpl> repair =
+        std::dynamic_pointer_cast<CommitMessageImpl>(repair_messages[0]);
+    ASSERT_NE(nullptr, repair);
+    std::vector<std::shared_ptr<IndexFileMeta>> replacement_payloads =
+        BTreeIndexFiles(*repair, /*added=*/true);
+    std::vector<std::shared_ptr<IndexFileMeta>> deleted_payloads =
+        BTreeIndexFiles(*repair, /*added=*/false);
+    ASSERT_EQ(1, replacement_payloads.size());
+    ASSERT_EQ(1, deleted_payloads.size());
+    ASSERT_EQ(payloads[0]->FileName(), deleted_payloads[0]->FileName());
+    ASSERT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta replacement_source_meta,
+                         PrimaryKeyIndexSourceMeta::FromIndexFile(*replacement_payloads[0]));
+    ASSERT_EQ(expected_sources, replacement_source_meta.SourceFiles());
+}
+
+TEST_P(BucketedPrimaryKeyIndexMaintainerTest, ReusesPayloadThatAlsoListsRetiredSources) {
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
+                         WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",
+                                         /*commit_identifier=*/0));
+    ASSERT_OK(Commit(initial_messages, /*commit_identifier=*/0));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> compact_messages,
+                         CompactAndPrepare(/*full_compaction=*/true,
+                                           /*commit_identifier=*/1));
+    ASSERT_EQ(1, compact_messages.size());
+    std::shared_ptr<CommitMessageImpl> compact =
+        std::dynamic_pointer_cast<CommitMessageImpl>(compact_messages[0]);
+    ASSERT_NE(nullptr, compact);
+    std::vector<std::shared_ptr<IndexFileMeta>> payloads =
+        BTreeIndexFiles(*compact, /*added=*/true);
+    ASSERT_EQ(1, payloads.size());
+    std::vector<PrimaryKeyIndexSourceFile> sources =
+        ExpectedSources(compact->GetCompactIncrement().CompactAfter());
+    ASSERT_FALSE(sources.empty());
+    sources.emplace_back("zz-retired.data", /*row_count=*/1);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CommitMessage> retired_source_message,
+        ReplaceBTreePayloadSources(*compact, payloads[0], sources, GetDefaultPool()));
+    ASSERT_OK(Commit({retired_source_message}, /*commit_identifier=*/1));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> unchanged_messages,
+                         CompactAndPrepare(/*full_compaction=*/false,
+                                           /*commit_identifier=*/2));
+    ASSERT_EQ(1, unchanged_messages.size());
+    std::shared_ptr<CommitMessageImpl> unchanged =
+        std::dynamic_pointer_cast<CommitMessageImpl>(unchanged_messages[0]);
+    ASSERT_NE(nullptr, unchanged);
+    ASSERT_TRUE(BTreeIndexFiles(*unchanged, /*added=*/true).empty());
+    ASSERT_TRUE(BTreeIndexFiles(*unchanged, /*added=*/false).empty());
 }
 
 TEST_P(BucketedPrimaryKeyIndexMaintainerTest, ContinuesCompactionWhenIndexBuildFails) {

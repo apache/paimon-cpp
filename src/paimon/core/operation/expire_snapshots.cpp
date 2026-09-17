@@ -24,8 +24,10 @@
 #include <functional>
 #include <future>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "fmt/format.h"
 #include "fmt/ranges.h"
@@ -372,7 +374,8 @@ bool ExpireSnapshots::TryDeleteEmptyDirectory(const std::string& path) const {
 Status ExpireSnapshots::CleanUnusedManifests(const std::string& manifest_list_name,
                                              const std::set<std::string>& skipping_sets) {
     std::vector<ManifestFileMeta> manifest_file_metas;
-    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt, &manifest_file_metas);
+    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt,
+                                       &manifest_file_metas);
     if (status.ok()) {
         std::vector<std::string> to_delete_manifests;
         // TODO(jinli.zjw): optimize for async
@@ -399,8 +402,8 @@ Status ExpireSnapshots::CleanUnusedIndexManifest(const std::optional<std::string
     }
 
     std::vector<IndexManifestEntry> entries;
-    Status read_status =
-        index_manifest_file_->ReadIfFileExist(index_manifest.value(), /*filter=*/nullptr, /*file_size=*/std::nullopt, &entries);
+    Status read_status = index_manifest_file_->ReadIfFileExist(
+        index_manifest.value(), /*filter=*/nullptr, /*file_size=*/std::nullopt, &entries);
     if (read_status.IsNotExist()) {
         return Status::OK();
     }
@@ -442,13 +445,14 @@ Status ExpireSnapshots::CleanUnusedDataFiles(
     const std::string& manifest_list_name, const std::set<std::string>& skipping_data_files,
     DataFilePathFactoryCache* data_file_path_factory_cache) {
     std::vector<ManifestFileMeta> manifest_file_metas;
-    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt, &manifest_file_metas);
+    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt,
+                                       &manifest_file_metas);
     if (status.ok()) {
         std::map<std::string, ManifestEntry> data_files_to_delete;
         for (const auto& manifest_file_meta : manifest_file_metas) {
             std::vector<ManifestEntry> manifest_entries;
-            auto status =
-                manifest_file_->Read(manifest_file_meta.FileName(), nullptr, /*file_size=*/std::nullopt, &manifest_entries);
+            auto status = manifest_file_->Read(manifest_file_meta.FileName(), nullptr,
+                                               /*file_size=*/std::nullopt, &manifest_entries);
             if (!status.ok()) {
                 // cancel deletion if any exception occurs
                 PAIMON_LOG_WARN(logger_, "Failed to read some manifest files. Cancel deletion. %s",
@@ -524,7 +528,8 @@ Status ExpireSnapshots::GetDataFileSkippingSet(
         LinkedHashMap<FileEntry::Identifier, ManifestEntry> boundary_entries;
         for (const ManifestFileMeta& manifest : manifests) {
             std::vector<ManifestEntry> entries;
-            PAIMON_RETURN_NOT_OK(manifest_file_->Read(manifest.FileName(), nullptr, /*file_size=*/std::nullopt, &entries));
+            PAIMON_RETURN_NOT_OK(manifest_file_->Read(manifest.FileName(), nullptr,
+                                                      /*file_size=*/std::nullopt, &entries));
             if (i == 0) {
                 PAIMON_RETURN_NOT_OK(FileEntry::MergeEntries(entries, &boundary_entries));
             } else {
@@ -635,8 +640,8 @@ Status ExpireSnapshots::AddIndexManifestToSkippingSet(
 
     skipping_manifest_set->insert(index_manifest.value());
     std::vector<IndexManifestEntry> entries;
-    PAIMON_RETURN_NOT_OK(
-        index_manifest_file_->Read(index_manifest.value(), /*filter=*/nullptr, /*file_size=*/std::nullopt, &entries));
+    PAIMON_RETURN_NOT_OK(index_manifest_file_->Read(index_manifest.value(), /*filter=*/nullptr,
+                                                    /*file_size=*/std::nullopt, &entries));
     for (const IndexManifestEntry& entry : entries) {
         skipping_manifest_set->insert(entry.index_file->FileName());
     }

@@ -296,7 +296,7 @@ TEST_F(IndexFileHandlerTest, TestScanPrimaryKeyIndexesBySourceMetadata) {
     std::string table_path =
         paimon::test::GetDataDir() + "/orc/pk_btree_source_meta.db/pk_btree_source_meta/";
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
-                         CoreOptions::FromMap({{Options::MANIFEST_FORMAT, "orc"}}));
+                         CoreOptions::FromMap({{"manifest.format", "orc"}}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexFileHandler> index_file_handler,
                          CreateIndexFileHandler(table_path, core_options));
 

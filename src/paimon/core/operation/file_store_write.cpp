@@ -27,12 +27,12 @@
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
-#include "paimon/common/global_index/btree/btree_defs.h"
-#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/disk/io_manager.h"
 #include "paimon/core/index/index_file_handler.h"
@@ -452,7 +452,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             primary_key_index_maintainer_factory;
         if (has_btree_index || has_restored_btree_index) {
             primary_key_index_maintainer_factory =
-                BucketedPrimaryKeyIndexMaintainer::Factory::Create(
+                std::make_shared<BucketedPrimaryKeyIndexMaintainer::Factory>(
                     ctx->GetRootPath(), branch, schema, primary_key_index_definitions.Definitions(),
                     file_store_path_factory, index_file_handler, options, io_manager,
                     ctx->EnableMultiThreadSpill(), ctx->GetExecutor(), ctx->GetMemoryPool());
@@ -469,10 +469,10 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         return std::make_unique<KeyValueFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
             ctx->GetRootPath(), schema, arrow_schema, realtime_schema_layout, partition_schema,
-            dv_maintainer_factory, primary_key_index_maintainer_factory, io_manager, key_comparator, sequence_fields_comparator,
-            merge_function_wrapper, options, ignore_previous_files, ctx->IsStreamingMode(),
-            ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(), ctx->GetRealtimeContext(),
-            ctx->GetExecutor(), ctx->GetMemoryPool());
+            dv_maintainer_factory, primary_key_index_maintainer_factory, io_manager, key_comparator,
+            sequence_fields_comparator, merge_function_wrapper, options, ignore_previous_files,
+            ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(),
+            ctx->GetRealtimeContext(), ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 }
 

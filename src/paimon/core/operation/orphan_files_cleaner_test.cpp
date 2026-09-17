@@ -182,7 +182,8 @@ TEST(OrphanFilesCleanerTest, TestRetainLiveDataFileExtraFiles) {
     ASSERT_FALSE(manifest_metas.empty());
     std::vector<ManifestEntry> manifest_entries;
     ASSERT_OK(cleaner_impl->manifest_file_->Read(manifest_metas.front().FileName(),
-                                                 /*filter=*/nullptr, &manifest_entries));
+                                                 /*filter=*/nullptr, /*file_size=*/std::nullopt,
+                                                 &manifest_entries));
     ASSERT_FALSE(manifest_entries.empty());
 
     const std::string extra_file_name = "data-live-extra.orc";

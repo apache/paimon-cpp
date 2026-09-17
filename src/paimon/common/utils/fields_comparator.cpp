@@ -47,26 +47,11 @@ Result<std::unique_ptr<FieldsComparator>> FieldsComparator::Create(
 Result<std::unique_ptr<FieldsComparator>> FieldsComparator::Create(
     const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
     bool is_ascending_order) {
-    return Create(input_data_field, sort_fields, is_ascending_order,
-                  /*use_java_floating_point_order=*/false);
-}
-
-Result<std::unique_ptr<FieldsComparator>> FieldsComparator::CreateWithJavaFloatingPointOrder(
-    const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
-    bool is_ascending_order) {
-    return Create(input_data_field, sort_fields, is_ascending_order,
-                  /*use_java_floating_point_order=*/true);
-}
-
-Result<std::unique_ptr<FieldsComparator>> FieldsComparator::Create(
-    const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
-    bool is_ascending_order, bool use_java_floating_point_order) {
     std::vector<FieldComparatorFunc> comparators;
     comparators.reserve(sort_fields.size());
     for (const auto& sort_field_idx : sort_fields) {
         const auto& type = input_data_field[sort_field_idx].Type();
-        PAIMON_ASSIGN_OR_RAISE(FieldComparatorFunc cmp,
-                               CompareField(sort_field_idx, type, use_java_floating_point_order));
+        PAIMON_ASSIGN_OR_RAISE(FieldComparatorFunc cmp, CompareField(sort_field_idx, type));
         comparators.emplace_back(cmp);
     }
     return std::unique_ptr<FieldsComparator>(
@@ -96,8 +81,7 @@ int32_t FieldsComparator::CompareTo(const InternalRow& lhs, const InternalRow& r
 }
 
 Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
-    int32_t field_idx, const std::shared_ptr<arrow::DataType>& input_type,
-    bool use_java_floating_point_order) {
+    int32_t field_idx, const std::shared_ptr<arrow::DataType>& input_type) {
     arrow::Type::type type = input_type->id();
     switch (type) {
         case arrow::Type::type::BOOL:
@@ -144,26 +128,18 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
                     return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
                 });
         case arrow::Type::type::FLOAT:
-            // The legacy branch does not define a strict order for NaN. Primary-key BTree index
-            // construction opts into the Java floating-point order instead.
-            return FieldsComparator::FieldComparatorFunc(
-                [field_idx, use_java_floating_point_order](const InternalRow& lhs,
-                                                           const InternalRow& rhs) -> int32_t {
+            return FieldComparatorFunc(
+                [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     float lvalue = lhs.GetFloat(field_idx);
                     float rvalue = rhs.GetFloat(field_idx);
-                    return use_java_floating_point_order
-                               ? CompareFloatingPoint(lvalue, rvalue)
-                               : (lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1));
+                    return CompareFloatingPoint(lvalue, rvalue);
                 });
         case arrow::Type::type::DOUBLE:
-            return FieldsComparator::FieldComparatorFunc(
-                [field_idx, use_java_floating_point_order](const InternalRow& lhs,
-                                                           const InternalRow& rhs) -> int32_t {
+            return FieldComparatorFunc(
+                [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     double lvalue = lhs.GetDouble(field_idx);
                     double rvalue = rhs.GetDouble(field_idx);
-                    return use_java_floating_point_order
-                               ? CompareFloatingPoint(lvalue, rvalue)
-                               : (lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1));
+                    return CompareFloatingPoint(lvalue, rvalue);
                 });
         case arrow::Type::type::STRING:
         case arrow::Type::type::BINARY: {

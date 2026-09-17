@@ -52,15 +52,17 @@ Semantics
   another payload exists for that level. Active files without accepted coverage are scanned
   normally.
 - Index construction reads every physical source row without applying deletion vectors,
-  orders source files by file name, and externally sorts ``(value, group row id)``. Missing,
-  duplicate, malformed, or stale payloads cause their complete level to be rebuilt. Data
-  files and the corresponding index ADD / DELETE entries are committed in the same
-  snapshot.
+  orders source files by file name, and externally sorts ``(value, group row id)``. During
+  maintenance, missing, duplicate, malformed, or incomplete payloads cause their complete current
+  level to be rebuilt. A payload that still covers every active source is reused even if it also
+  lists retired sources. Data files and the corresponding index ADD / DELETE entries are committed
+  in the same snapshot.
 - The builder uses the existing write-buffer and spill settings. A write context needs a
   temporary directory when a level exceeds the in-memory write buffer and spill is enabled.
-- If payload construction fails, the data-file transition is still committed and the affected
-  level remains uncovered; scans fall back to the data files and a later maintenance attempt can
-  rebuild the payload. Structural commit-increment errors are still rejected.
+- If payload construction fails, the data-file transition is still committed. Uncovered files at
+  that level fall back to scanning while any previously usable payload remains active, and a later
+  maintenance attempt can rebuild the complete current source group. Structural commit-increment
+  errors are still rejected.
 - Snapshot expiration retains payloads referenced by the snapshots in its retention set and
   current-branch live tags, and removes retired payloads before their index manifests, including
   payloads on an external index path. Expiration is rejected while another branch exists until

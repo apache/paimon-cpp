@@ -53,14 +53,14 @@ class BucketedPrimaryKeyIndexMaintainer {
  public:
     class Factory {
      public:
-        static std::shared_ptr<Factory> Create(
-            const std::string& root_path, const std::string& branch,
-            const std::shared_ptr<TableSchema>& table_schema,
-            const std::vector<PrimaryKeyIndexDefinition>& definitions,
-            const std::shared_ptr<FileStorePathFactory>& path_factory,
-            const std::shared_ptr<IndexFileHandler>& index_file_handler, const CoreOptions& options,
-            const std::shared_ptr<IOManager>& io_manager, bool enable_multi_thread_spill,
-            const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
+        Factory(const std::string& root_path, const std::string& branch,
+                const std::shared_ptr<TableSchema>& table_schema,
+                const std::vector<PrimaryKeyIndexDefinition>& definitions,
+                const std::shared_ptr<FileStorePathFactory>& path_factory,
+                const std::shared_ptr<IndexFileHandler>& index_file_handler,
+                const CoreOptions& options, const std::shared_ptr<IOManager>& io_manager,
+                bool enable_multi_thread_spill, const std::shared_ptr<Executor>& executor,
+                const std::shared_ptr<MemoryPool>& pool);
 
         Result<std::shared_ptr<BucketedPrimaryKeyIndexMaintainer>> CreateMaintainer(
             const BinaryRow& partition, int32_t bucket,
@@ -76,26 +76,6 @@ class BucketedPrimaryKeyIndexMaintainer {
         }
 
      private:
-        Factory(std::string root_path, std::string branch,
-                const std::shared_ptr<TableSchema>& table_schema,
-                std::vector<PrimaryKeyIndexDefinition> definitions,
-                const std::shared_ptr<FileStorePathFactory>& path_factory,
-                const std::shared_ptr<IndexFileHandler>& index_file_handler,
-                const CoreOptions& options, const std::shared_ptr<IOManager>& io_manager,
-                bool enable_multi_thread_spill, const std::shared_ptr<Executor>& executor,
-                const std::shared_ptr<MemoryPool>& pool)
-            : root_path_(std::move(root_path)),
-              branch_(std::move(branch)),
-              table_schema_(table_schema),
-              definitions_(std::move(definitions)),
-              path_factory_(path_factory),
-              index_file_handler_(index_file_handler),
-              options_(options),
-              io_manager_(io_manager),
-              enable_multi_thread_spill_(enable_multi_thread_spill),
-              executor_(executor),
-              pool_(pool) {}
-
         std::string root_path_;
         std::string branch_;
         std::shared_ptr<TableSchema> table_schema_;
