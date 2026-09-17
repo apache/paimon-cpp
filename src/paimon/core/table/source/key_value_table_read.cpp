@@ -193,8 +193,37 @@ void KeyValueTableRead::ForceKeepDelete(bool force_keep_delete) {
     }
 }
 
+Status KeyValueTableRead::ValidateFileIndexSearchSplit(const std::shared_ptr<Split>& split) const {
+    if (std::dynamic_pointer_cast<IndexedSplitImpl>(split)) {
+        return Status::NotImplemented(
+            "File Index search does not support indexed split row ranges");
+    }
+    if (std::dynamic_pointer_cast<RealtimeSplit>(split)) {
+        return Status::NotImplemented("File Index search does not support real-time splits");
+    }
+    auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+    if (!data_split) {
+        return Status::Invalid("File Index search requires a data split");
+    }
+    for (const auto& read : split_reads_) {
+        if (dynamic_cast<RawFileSplitRead*>(read.get())) {
+            PAIMON_ASSIGN_OR_RAISE(bool matched, read->Match(split, force_keep_delete_));
+            if (matched) {
+                return Status::OK();
+            }
+            break;
+        }
+    }
+    return Status::NotImplemented(
+        "File Index search requires a non-streaming, raw-convertible primary-key split "
+        "without physical delete rows");
+}
+
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
     const std::shared_ptr<Split>& split) {
+    if (context_->HasFileIndexSearch()) {
+        PAIMON_RETURN_NOT_OK(ValidateFileIndexSearchSplit(split));
+    }
     std::shared_ptr<RealtimeSplit> realtime_split = std::dynamic_pointer_cast<RealtimeSplit>(split);
     if (realtime_split) {
         return CreateRealtimeReader(realtime_split, /*release_ticket=*/true);
@@ -253,6 +282,11 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
 
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
     const std::vector<std::shared_ptr<Split>>& splits) {
+    if (context_->HasFileIndexSearch()) {
+        for (const auto& split : splits) {
+            PAIMON_RETURN_NOT_OK(ValidateFileIndexSearchSplit(split));
+        }
+    }
     std::vector<std::unique_ptr<BatchReader>> readers;
     readers.reserve(splits.size());
     std::vector<std::shared_ptr<RealtimeSplit>> realtime_splits;

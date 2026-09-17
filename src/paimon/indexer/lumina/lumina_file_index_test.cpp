@@ -122,6 +122,13 @@ TEST(LuminaFileIndexTest, RoundTripUsesFileLocalRowPositions) {
     ASSERT_EQ(1, result->GetScores().size());
     EXPECT_FLOAT_EQ(0.0f, result->GetScores()[0]);
 
+    std::shared_ptr<VectorSearch> filtered_search =
+        search->ReplacePreFilter([](int64_t file_row) { return file_row == 0; });
+    ASSERT_OK_AND_ASSIGN(result, reader->VisitVectorSearch(filtered_search));
+    EXPECT_EQ(RoaringBitmap32::From({0}), result->GetRowPositions());
+    ASSERT_EQ(1, result->GetScores().size());
+    EXPECT_FLOAT_EQ(4.0f, result->GetScores()[0]);
+
     std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
         /*field_index=*/1, /*field_name=*/"color", FieldType::STRING,
         Literal(FieldType::STRING, "red", 3));
@@ -186,7 +193,7 @@ TEST(LuminaFileIndexTest, RoundTripWithTagPredicate) {
     EXPECT_NEAR(0.01f, result->GetScores()[0], 1e-5f);
 
     std::shared_ptr<VectorSearch> filtered_search = std::make_shared<VectorSearch>(
-        "embedding", /*limit=*/4, std::vector<float>{1.0f, 1.0f, 1.0f, 1.0f},
+        "embedding", /*limit=*/1, std::vector<float>{1.0f, 1.0f, 1.0f, 1.0f},
         [](int64_t file_row) { return file_row == 0; }, predicate,
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     ASSERT_OK_AND_ASSIGN(result, reader->VisitVectorSearch(filtered_search));

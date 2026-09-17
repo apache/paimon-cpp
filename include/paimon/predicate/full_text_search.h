@@ -92,8 +92,9 @@ struct PAIMON_EXPORT FullTextSearch {
     std::string query;
     /// Type of search to perform.
     SearchType search_type;
-    /// A pre-filter based on **global row IDs**, implemented by leveraging another global index.
-    /// Only rows whose global row ID is present in `pre_filter` will be included during search.
+    /// A pre-filter whose row ID domain is determined by the reader: global row IDs for
+    /// GlobalIndexReader and physical file-local row IDs for FileIndexReader.
+    /// Only rows whose row ID is present in `pre_filter` will be included during search.
     /// If not set, all rows will be included.
     std::optional<RoaringBitmap64> pre_filter;
     /// Whether to compute and return relevance scores (e.g. BM25). The 4-path matrix:

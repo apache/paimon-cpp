@@ -21,6 +21,8 @@
 
 #include <utility>
 
+#include "arrow/c/abi.h"
+
 namespace paimon {
 CompleteIndexScoreFileBatchReader::CompleteIndexScoreFileBatchReader(
     std::unique_ptr<FileBatchReader>&& reader, const std::vector<float>& scores,

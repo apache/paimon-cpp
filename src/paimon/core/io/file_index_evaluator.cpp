@@ -305,12 +305,6 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateFullTextSea
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<MemoryPool>& pool) {
-    if (full_text_search->pre_filter) {
-        return Status::NotImplemented("File full-text search does not support pre-filter yet");
-    }
-    if (full_text_search->with_score) {
-        return Status::NotImplemented("File full-text search does not support score output yet");
-    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
                            ExtractIndexInputStream(/*only_use_embedding_index=*/false, path_factory,
                                                    file_meta, file_system));

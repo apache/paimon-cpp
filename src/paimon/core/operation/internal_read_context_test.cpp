@@ -18,7 +18,12 @@
 
 #include "paimon/core/operation/internal_read_context.h"
 
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
@@ -29,6 +34,7 @@
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -195,6 +201,42 @@ TEST(InternalReadContext, TestFileIndexSearchIndexScoreProjection) {
         EXPECT_EQ(std::vector<std::string>({"_INDEX_SCORE", "f0"}),
                   internal_context->GetReadSchema()->field_names());
     }
+}
+
+TEST(InternalReadContext, TestPrimaryKeyFileIndexSearchRequiresDeletionVectors) {
+    std::string path = paimon::test::GetDataDir() +
+                       "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
+    std::shared_ptr<VectorSearch> search =
+        std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr,
+                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    ReadContextBuilder builder(path);
+    builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(search);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<InternalReadContext> internal,
+        InternalReadContext::Create(context, table_schema, table_schema->Options()));
+    EXPECT_TRUE(internal->HasFileIndexSearch());
+
+    std::map<std::string, std::string> options = table_schema->Options();
+    options[Options::DELETION_VECTORS_ENABLED] = "false";
+    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, options),
+                        "primary-key tables requires deletion vectors");
+}
+
+TEST(InternalReadContext, TestFileFullTextSearchScoreIsNotSupported) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
+    auto search = std::make_shared<FullTextSearch>(
+        "f0", /*limit=*/1, "query", FullTextSearch::SearchType::MATCH_ALL,
+        /*pre_filter=*/std::nullopt, /*with_score=*/true);
+    ReadContextBuilder builder(path);
+    builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, table_schema->Options()),
+                        "does not support score output");
 }
 
 TEST(InternalReadContext, TestReadWithValueKindField) {

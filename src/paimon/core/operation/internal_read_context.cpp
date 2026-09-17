@@ -211,9 +211,13 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
         if (!core_options.FileIndexReadEnabled()) {
             return Status::Invalid("File Index read must be enabled for file-local search");
         }
-        if (!table_schema->PrimaryKeys().empty()) {
+        if (context->GetFullTextSearch() && context->GetFullTextSearch()->with_score) {
             return Status::NotImplemented(
-                "File Index search currently supports append-only tables only");
+                "File full-text search does not support score output yet");
+        }
+        if (!table_schema->PrimaryKeys().empty() && !core_options.DeletionVectorsEnabled()) {
+            return Status::NotImplemented(
+                "File Index search on primary-key tables requires deletion vectors");
         }
         if (core_options.DataEvolutionEnabled()) {
             return Status::NotImplemented(
