@@ -83,14 +83,6 @@ class RawFileSplitRead : public AbstractSplitRead {
         const std::optional<std::vector<Range>>& local_row_ranges);
 
     Result<bool> Match(const std::shared_ptr<Split>& split, bool force_keep_delete) const override;
-
-    Result<std::unique_ptr<FileBatchReader>> ApplyIndexAndDvReaderIfNeeded(
-        std::unique_ptr<FileBatchReader>&& file_reader, const std::shared_ptr<DataFileMeta>& file,
-        const std::shared_ptr<arrow::Schema>& data_schema,
-        const std::shared_ptr<arrow::Schema>& read_schema,
-        const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
-        const std::optional<std::vector<Range>>& ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const override;
 };
 
 }  // namespace paimon

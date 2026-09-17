@@ -2902,6 +2902,68 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeWriteAcrossAppendCompaction) {
     ASSERT_OK(writer->Close());
 }
 
+TEST_F(RealtimeWriteInteTest, TestPkDvExternalBitmapCanEliminateEntireDiskFile) {
+    options_[Options::FILE_FORMAT] = "parquet";
+    options_[Options::DELETION_VECTORS_ENABLED] = "true";
+    options_[Options::FILE_INDEX_READ_ENABLED] = "true";
+    options_["file-index.bitmap.columns"] = "payload";
+    options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
+    options_[Options::REALTIME_STORE_STATS_MODE] = "full";
+    CreatePkTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    // "middle" is inside the file's min/max range but absent from its bitmap index. Keeping the
+    // index external makes scan planning retain the file and lets the merge reader eliminate it.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
+                         MakeBatch({{1, "aaa", "p0"}, {2, "zzz", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(disk_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t disk_snapshot_id, Commit(disk_progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(disk_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot compact_snapshot, CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                                                     /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(compact_snapshot.Id()));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                         MakeBatch({{3, "middle", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(memory_batch)));
+
+    const std::string middle = "middle";
+    const std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
+        Literal(FieldType::STRING, middle.data(), middle.size()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+    ASSERT_EQ(1, plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+    ASSERT_NE(nullptr, realtime_split);
+
+    size_t external_high_level_file_count = 0;
+    for (const std::shared_ptr<Split>& split : realtime_split->DiskSplits()) {
+        std::shared_ptr<DataSplitImpl> data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(nullptr, data_split);
+        for (const std::shared_ptr<DataFileMeta>& file : data_split->DataFiles()) {
+            if (file->level > 0 && file->embedded_index == nullptr && !file->extra_files.empty() &&
+                file->extra_files[0].has_value()) {
+                ++external_high_level_file_count;
+            }
+        }
+    }
+    ASSERT_EQ(1, external_high_level_file_count);
+
+    // The external bitmap removes the only disk reader. The in-memory matching row must still be
+    // returned, and constructing the empty disk run must not rely on positional file/reader pairs.
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context, predicate,
+                                                                /*enable_predicate_filter=*/false));
+    ASSERT_EQ((std::vector<Row>{{3, "middle", "p0"}}), actual_rows);
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
 TEST_F(RealtimeWriteInteTest, TestPkDvRealtimeReadUsesEmbeddedAndExternalBitmapIndexes) {
     options_[Options::FILE_FORMAT] = "parquet";
     options_[Options::FILE_COMPRESSION] = "none";
