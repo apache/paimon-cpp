@@ -36,9 +36,11 @@
 #include "paimon/format/mosaic/mosaic_format_defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
+#include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/global_index/indexed_split.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/deletion_vector_test_helper.h"
@@ -400,6 +402,149 @@ class DataEvolutionTableTest : public ::testing::Test,
                                FileStoreCommit::Create(std::move(commit_context)));
         file_store_commit->RowIdCheckConflict(row_id_check_from_snapshot);
         return file_store_commit->Commit(commit_msgs);
+    }
+
+    void CheckGlobalIndexScoresWithFiltering(bool merge_files) const {
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true,
+                                 {{Options::READ_BATCH_SIZE, "4"}});
+        std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+        constexpr int64_t first_row_id = 100;
+        auto base_array = PrepareBulkData(
+            12, [](int32_t i) { return fmt::format(R"({}, "a{}", "x{}")", i, i, i); }, fields_);
+        ASSERT_OK_AND_ASSIGN(auto base_msgs,
+                             WriteArray(table_path, {"f0", "f1", "f2"}, base_array));
+        SetFirstRowId(first_row_id, base_msgs);
+        ASSERT_OK(Commit(table_path, base_msgs));
+        if (merge_files) {
+            auto update_array = PrepareBulkData(
+                12, [](int32_t i) { return fmt::format(R"("y{}")", i); }, {fields_[2]});
+            ASSERT_OK_AND_ASSIGN(auto update_msgs, WriteArray(table_path, {"f2"}, update_array));
+            SetFirstRowId(first_row_id, update_msgs);
+            ASSERT_OK(Commit(table_path, update_msgs));
+        }
+        auto not_two = PredicateBuilder::NotEqual(0, "f0", FieldType::INT, Literal(2));
+        auto below_ten = PredicateBuilder::LessThan(0, "f0", FieldType::INT, Literal(10));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::And({not_two, below_ten}));
+        auto reject_all = PredicateBuilder::GreaterOrEqual(0, "f0", FieldType::INT, Literal(100));
+        const std::vector<std::shared_ptr<Predicate>> predicates = {nullptr, predicate, reject_all};
+        const std::vector<int64_t> candidates = {100, 101, 102, 104, 105, 106,
+                                                 107, 108, 109, 110, 111};
+        const std::vector<int64_t> deleted = {1, 4, 5, 6, 7, 11};
+        for (bool with_dv : {false, true}) {
+            if (with_dv) {
+                ASSERT_OK_AND_ASSIGN(std::string anchor, PlannedAnchorFileName(table_path));
+                ASSERT_OK(CommitDeletionVectors(table_path, base_msgs[0], {{anchor, deleted}}));
+            }
+            std::vector<float> scores;
+            for (int64_t row_id : candidates) {
+                scores.push_back(static_cast<float>(row_id) + 0.5f);
+            }
+            ScanContextBuilder scan_builder(table_path);
+            scan_builder.SetGlobalIndexResult(std::make_shared<BitmapScoredGlobalIndexResult>(
+                RoaringBitmap64::From(candidates), std::move(scores)));
+            ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_builder));
+            ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+            ASSERT_EQ(plan->Splits().size(), 1);
+            auto scored_split = std::dynamic_pointer_cast<IndexedSplitImpl>(plan->Splits()[0]);
+            ASSERT_TRUE(scored_split);
+            ASSERT_EQ(scored_split->RowRanges(),
+                      std::vector<Range>({Range(100, 102), Range(104, 111)}));
+            ASSERT_EQ(scored_split->Scores().size(), candidates.size());
+            auto data_split =
+                std::dynamic_pointer_cast<DataSplitImpl>(scored_split->GetDataSplit());
+            ASSERT_TRUE(data_split);
+            ASSERT_EQ(data_split->DataFiles().size(), merge_files ? 2 : 1);
+            auto unscored_split =
+                std::make_shared<IndexedSplitImpl>(data_split, scored_split->RowRanges());
+            for (const auto& read_predicate : predicates) {
+                for (bool project_row_id : {false, true}) {
+                    std::vector<std::string> read_fields = {"_INDEX_SCORE", "f2", "f0"};
+                    if (project_row_id) {
+                        read_fields.insert(read_fields.begin(), "_ROW_ID");
+                    }
+                    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> bound_predicate,
+                                         PredicateUtils::CreatePickedFieldFilter(
+                                             read_predicate, {{"f0", project_row_id ? 3 : 2}}));
+                    ReadContextBuilder read_builder(table_path);
+                    read_builder.SetReadFieldNames(read_fields)
+                        .SetPredicate(bound_predicate)
+                        .EnablePredicateFilter(true);
+                    ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+                    ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+                    // Reuse the same TableRead with and without scores: the internal row-id
+                    // projection must not affect a subsequent split's output schema.
+                    for (bool with_scores : {true, false}) {
+                        SCOPED_TRACE(fmt::format(
+                            "merge={}, dv={}, predicate={}, row_id={}, scores={}", merge_files,
+                            with_dv, read_predicate ? read_predicate->ToString() : "none",
+                            project_row_id, with_scores));
+                        ASSERT_OK_AND_ASSIGN(
+                            auto reader,
+                            read->CreateReader(with_scores ? scored_split : unscored_split));
+                        ASSERT_OK_AND_ASSIGN(auto result,
+                                             ReadResultCollector::CollectResult(std::move(reader)));
+                        if (read_predicate == reject_all) {
+                            ASSERT_FALSE(result);
+                            continue;
+                        }
+                        ASSERT_TRUE(result);
+                        auto expected_names = read_fields;
+                        expected_names.insert(expected_names.begin(), "_VALUE_KIND");
+                        ASSERT_EQ(arrow::schema(result->type()->fields())->field_names(),
+                                  expected_names);
+                        size_t result_idx = 0;
+                        std::vector<int64_t> expected_ids;
+                        for (int64_t row_id : candidates) {
+                            int64_t value = row_id - first_row_id;
+                            if (with_dv &&
+                                std::find(deleted.begin(), deleted.end(), value) != deleted.end()) {
+                                continue;
+                            }
+                            if (read_predicate && (value == 2 || value >= 10)) {
+                                continue;
+                            }
+                            expected_ids.push_back(row_id);
+                        }
+                        for (const auto& chunk : result->chunks()) {
+                            auto rows = std::dynamic_pointer_cast<arrow::StructArray>(chunk);
+                            ASSERT_TRUE(rows);
+                            auto values = std::dynamic_pointer_cast<arrow::Int32Array>(
+                                rows->GetFieldByName("f0"));
+                            auto payload = std::dynamic_pointer_cast<arrow::StringArray>(
+                                rows->GetFieldByName("f2"));
+                            auto actual_scores = std::dynamic_pointer_cast<arrow::FloatArray>(
+                                rows->GetFieldByName("_INDEX_SCORE"));
+                            auto row_ids = std::dynamic_pointer_cast<arrow::Int64Array>(
+                                rows->GetFieldByName("_ROW_ID"));
+                            ASSERT_TRUE(values);
+                            ASSERT_TRUE(payload);
+                            ASSERT_TRUE(actual_scores);
+                            ASSERT_EQ(row_ids != nullptr, project_row_id);
+                            for (int64_t i = 0; i < rows->length(); ++i) {
+                                ASSERT_LT(result_idx, expected_ids.size());
+                                int64_t row_id = expected_ids[result_idx++];
+                                ASSERT_EQ(values->Value(i), row_id - first_row_id);
+                                ASSERT_EQ(payload->GetString(i),
+                                          fmt::format("{}{}", merge_files ? "y" : "x",
+                                                      row_id - first_row_id));
+                                if (with_scores) {
+                                    ASSERT_FALSE(actual_scores->IsNull(i));
+                                    ASSERT_FLOAT_EQ(actual_scores->Value(i), row_id + 0.5f);
+                                } else {
+                                    ASSERT_TRUE(actual_scores->IsNull(i));
+                                }
+                                if (row_ids) {
+                                    ASSERT_EQ(row_ids->Value(i), row_id);
+                                }
+                            }
+                        }
+                        ASSERT_EQ(result_idx, expected_ids.size());
+                    }
+                }
+            }
+        }
     }
 
     Status ScanAndRead(const std::string& table_path, const std::vector<std::string>& read_schema,
@@ -2793,6 +2938,14 @@ TEST_P(DataEvolutionTableTest, TestWithRowIds) {
                               expected_array, /*predicate=*/nullptr,
                               /*row_ranges=*/row_ranges));
     }
+}
+
+TEST_P(DataEvolutionTableTest, TestGlobalIndexScoresWithSingleFileFiltering) {
+    CheckGlobalIndexScoresWithFiltering(/*merge_files=*/false);
+}
+
+TEST_P(DataEvolutionTableTest, TestGlobalIndexScoresWithMergedFileFiltering) {
+    CheckGlobalIndexScoresWithFiltering(/*merge_files=*/true);
 }
 
 TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectors) {
