@@ -232,7 +232,8 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     /// test can tell it apart from the catalog-wide one; falls back to `GetFileSystem()`,
     /// matching the base default, when none was set.
     Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
-        const Identifier& identifier) const override {
+        const Identifier& identifier,
+        const std::map<std::string, std::string>& /*fs_options*/) const override {
         table_file_system_requests_.push_back(identifier);
         if (table_file_system_ != nullptr) {
             return table_file_system_;

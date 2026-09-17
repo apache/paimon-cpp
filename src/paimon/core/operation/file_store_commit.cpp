@@ -199,9 +199,10 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
             return Status::Invalid("a catalog commit requires a table identifier");
         }
         // Use the credentials of this table, which a catalog issuing per-table temporary
-        // ones only hands out through GetTableFileSystem.
-        PAIMON_ASSIGN_OR_RAISE(specific_fs,
-                               ctx->GetCatalog()->GetTableFileSystem(ctx->GetIdentifier().value()));
+        // ones only hands out through GetTableFileSystem. The context options override the
+        // catalog ones the file system is built from.
+        PAIMON_ASSIGN_OR_RAISE(specific_fs, ctx->GetCatalog()->GetTableFileSystem(
+                                                ctx->GetIdentifier().value(), ctx->GetOptions()));
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs));

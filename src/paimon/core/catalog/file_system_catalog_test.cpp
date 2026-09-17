@@ -55,9 +55,9 @@ TEST(FileSystemCatalogTest, TestGetTableFileSystem) {
 
     // a catalog without per-table credentials serves the table data with the catalog wide
     // file system, whatever the table is
-    ASSERT_OK_AND_ASSIGN(auto table_fs, catalog.GetTableFileSystem(Identifier("db1", "t1")));
+    ASSERT_OK_AND_ASSIGN(auto table_fs, catalog.GetTableFileSystem(Identifier("db1", "t1"), {}));
     ASSERT_EQ(catalog.GetFileSystem(), table_fs);
-    ASSERT_OK_AND_ASSIGN(auto other_fs, catalog.GetTableFileSystem(Identifier("db2", "t2")));
+    ASSERT_OK_AND_ASSIGN(auto other_fs, catalog.GetTableFileSystem(Identifier("db2", "t2"), {}));
     ASSERT_EQ(catalog.GetFileSystem(), other_fs);
 }
 

@@ -112,29 +112,4 @@ TEST(CredentialProviderFactoryTest, TestGetRejectsNullProvider) {
                         "created a null provider");
 }
 
-TEST(CredentialProviderFactoryTest, TestGetIfConfigured) {
-    std::map<std::string, std::string> options{
-        {CredentialProviderFactory::CREDENTIAL_PROVIDER_OPTION,
-         TestCredentialProviderFactory::IDENTIFIER},
-        {"test.secret", "token"}};
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<CredentialProvider> provider,
-                         CredentialProviderFactory::GetIfConfigured("oss://bucket/table", options));
-    ASSERT_NE(provider, nullptr);
-    ASSERT_OK_AND_ASSIGN(auto credentials, provider->GetCredentials());
-    ASSERT_EQ(credentials["secret"], "token");
-}
-
-TEST(CredentialProviderFactoryTest, TestGetIfConfiguredWithoutOption) {
-    // No provider named means the file system options authenticate the accesses themselves.
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<CredentialProvider> provider,
-                         CredentialProviderFactory::GetIfConfigured("/tmp/table", {}));
-    ASSERT_EQ(provider, nullptr);
-
-    std::map<std::string, std::string> empty_option{
-        {CredentialProviderFactory::CREDENTIAL_PROVIDER_OPTION, ""}};
-    ASSERT_OK_AND_ASSIGN(provider,
-                         CredentialProviderFactory::GetIfConfigured("/tmp/table", empty_option));
-    ASSERT_EQ(provider, nullptr);
-}
-
 }  // namespace paimon::test

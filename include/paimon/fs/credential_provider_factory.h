@@ -31,18 +31,17 @@ namespace paimon {
 
 /// A factory for creating `CredentialProvider` instances.
 ///
-/// Register an implementation with `REGISTER_PAIMON_FACTORY` to authenticate accesses
-/// with credentials of your own making: the built-in file systems build the provider
-/// named by their `fs.credential.provider` option and consult it whenever they sign.
+/// Register an implementation with `REGISTER_PAIMON_FACTORY` to build a provider that a
+/// file system of your own consults: get it with `Get`, call `GetCredentials` as you sign
+/// each access, and pass that file system in through `Catalog::Create` or a builder's
+/// `WithFileSystem`. The built-in file systems do not consult a provider; they sign with
+/// the static credentials of their own options.
 ///
 /// @note All factories share one identifier space, so an identifier that a file system
 /// factory already takes - "oss", "s3", "local", "jindo" - would replace it. Name the
 /// provider after where its credentials come from instead.
 class PAIMON_EXPORT CredentialProviderFactory : public Factory {
  public:
-    /// The option naming the factory a file system builds its provider with.
-    static const char CREDENTIAL_PROVIDER_OPTION[];
-
     /// Create a `CredentialProvider` of current factory for the accesses below a path.
     ///
     /// The options are the file system options of the accesses to authenticate, so an
@@ -55,11 +54,6 @@ class PAIMON_EXPORT CredentialProviderFactory : public Factory {
     static Result<std::shared_ptr<CredentialProvider>> Get(
         const std::string& identifier, const std::string& path,
         const std::map<std::string, std::string>& fs_options);
-
-    /// Get the `CredentialProvider` the options ask for, or a null provider when they name
-    /// none, in which case the file system options themselves authenticate the accesses.
-    static Result<std::shared_ptr<CredentialProvider>> GetIfConfigured(
-        const std::string& path, const std::map<std::string, std::string>& fs_options);
 };
 
 }  // namespace paimon
