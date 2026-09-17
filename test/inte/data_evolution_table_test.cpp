@@ -461,8 +461,13 @@ class DataEvolutionTableTest : public ::testing::Test,
             for (const auto& read_predicate : predicates) {
                 for (bool project_row_id : {false, true}) {
                     std::vector<std::string> read_fields = {"_INDEX_SCORE", "f2", "f0"};
+                    arrow::FieldVector expected_fields = {SpecialFields::ValueKind().field_,
+                                                          SpecialFields::IndexScore().field_,
+                                                          fields_[2], fields_[0]};
                     if (project_row_id) {
                         read_fields.insert(read_fields.begin(), "_ROW_ID");
+                        expected_fields.insert(expected_fields.begin() + 1,
+                                               SpecialFields::RowId().field_);
                     }
                     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> bound_predicate,
                                          PredicateUtils::CreatePickedFieldFilter(
@@ -490,12 +495,7 @@ class DataEvolutionTableTest : public ::testing::Test,
                             continue;
                         }
                         ASSERT_TRUE(result);
-                        auto expected_names = read_fields;
-                        expected_names.insert(expected_names.begin(), "_VALUE_KIND");
-                        ASSERT_EQ(arrow::schema(result->type()->fields())->field_names(),
-                                  expected_names);
-                        size_t result_idx = 0;
-                        std::vector<int64_t> expected_ids;
+                        std::vector<std::string> expected_rows;
                         for (int64_t row_id : candidates) {
                             int64_t value = row_id - first_row_id;
                             if (with_dv &&
@@ -505,42 +505,23 @@ class DataEvolutionTableTest : public ::testing::Test,
                             if (read_predicate && (value == 2 || value >= 10)) {
                                 continue;
                             }
-                            expected_ids.push_back(row_id);
+                            std::string row_id_json =
+                                project_row_id ? fmt::format("{}, ", row_id) : "";
+                            std::string score_json =
+                                with_scores ? fmt::format("{}", row_id + 0.5f) : "null";
+                            expected_rows.push_back(
+                                fmt::format(R"([0, {}{}, "{}{}", {}])", row_id_json, score_json,
+                                            merge_files ? "y" : "x", value, value));
                         }
-                        for (const auto& chunk : result->chunks()) {
-                            auto rows = std::dynamic_pointer_cast<arrow::StructArray>(chunk);
-                            ASSERT_TRUE(rows);
-                            auto values = std::dynamic_pointer_cast<arrow::Int32Array>(
-                                rows->GetFieldByName("f0"));
-                            auto payload = std::dynamic_pointer_cast<arrow::StringArray>(
-                                rows->GetFieldByName("f2"));
-                            auto actual_scores = std::dynamic_pointer_cast<arrow::FloatArray>(
-                                rows->GetFieldByName("_INDEX_SCORE"));
-                            auto row_ids = std::dynamic_pointer_cast<arrow::Int64Array>(
-                                rows->GetFieldByName("_ROW_ID"));
-                            ASSERT_TRUE(values);
-                            ASSERT_TRUE(payload);
-                            ASSERT_TRUE(actual_scores);
-                            ASSERT_EQ(row_ids != nullptr, project_row_id);
-                            for (int64_t i = 0; i < rows->length(); ++i) {
-                                ASSERT_LT(result_idx, expected_ids.size());
-                                int64_t row_id = expected_ids[result_idx++];
-                                ASSERT_EQ(values->Value(i), row_id - first_row_id);
-                                ASSERT_EQ(payload->GetString(i),
-                                          fmt::format("{}{}", merge_files ? "y" : "x",
-                                                      row_id - first_row_id));
-                                if (with_scores) {
-                                    ASSERT_FALSE(actual_scores->IsNull(i));
-                                    ASSERT_FLOAT_EQ(actual_scores->Value(i), row_id + 0.5f);
-                                } else {
-                                    ASSERT_TRUE(actual_scores->IsNull(i));
-                                }
-                                if (row_ids) {
-                                    ASSERT_EQ(row_ids->Value(i), row_id);
-                                }
-                            }
-                        }
-                        ASSERT_EQ(result_idx, expected_ids.size());
+                        std::shared_ptr<arrow::ChunkedArray> expected;
+                        ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
+                                        arrow::struct_(expected_fields),
+                                        {fmt::format("[{}]", fmt::join(expected_rows, ","))},
+                                        &expected)
+                                        .ok());
+                        ASSERT_TRUE(expected->Equals(*result))
+                            << "actual=" << result->ToString()
+                            << "\nexpected=" << expected->ToString();
                     }
                 }
             }
