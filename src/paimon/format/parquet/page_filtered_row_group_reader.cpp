@@ -382,6 +382,11 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
         const int64_t chunk_compressed_bytes =
             column_chunk ? column_chunk->total_compressed_size() : 0;
         const int64_t chunk_values = column_chunk ? column_chunk->num_values() : 0;
+        // Named intermediates of the estimate below, declared here so the debug print after the
+        // block can show the whole calculation; they stay 0 when the guard does not hold.
+        double avg_bytes_per_value = 0.0;
+        int64_t estimate_by_avg = 0;
+        int64_t cap_by_decompression = 0;
         if (chunk_bytes > 0 && chunk_values > 0 && reserve_values > 0) {
             // A heuristic, not a bound. total_uncompressed_size is uncompressed but still
             // ENCODED: a dictionary page stores each value once and its data pages only
@@ -395,17 +400,31 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
             // forgeable uncompressed one (see kMaxReservationDecompressionFactor). Fixed-width
             // leaves ignore the byte count entirely.
             const double avg = static_cast<double>(chunk_bytes) / static_cast<double>(chunk_values);
-            reserve_value_bytes = std::min(
-                {SaturatingDoubleToInteger<int64_t>(avg * static_cast<double>(reserve_values)),
-                 chunk_bytes,
-                 SaturatingDoubleToInteger<int64_t>(
-                     static_cast<double>(chunk_compressed_bytes) *
-                     static_cast<double>(kMaxReservationDecompressionFactor))});
+            avg_bytes_per_value = avg;
+            // Candidate 1: average width over the whole chunk times the rows actually appended.
+            estimate_by_avg = SaturatingDoubleToInteger<int64_t>(
+                avg * static_cast<double>(reserve_values));
+            // Candidate 3: the file-bounded compressed size times the decompression factor.
+            cap_by_decompression = SaturatingDoubleToInteger<int64_t>(
+                static_cast<double>(chunk_compressed_bytes) *
+                static_cast<double>(kMaxReservationDecompressionFactor));
+            // Candidate 2 is chunk_bytes itself (the uncompressed size), passed to min directly.
+            reserve_value_bytes = std::min({estimate_by_avg, chunk_bytes, cap_by_decompression});
         }
 
-        std::cerr << "[reserve_value_bytes] col_idx=" << col_idx
-                  << " reserve_values=" << reserve_values
-                  << " reserve_value_bytes=" << reserve_value_bytes << std::endl;
+        std::cerr << "[reserve_value_bytes] col_idx=" << col_idx << std::boolalpha
+                  << " guard(chunk_bytes>0&&chunk_values>0&&reserve_values>0)="
+                  << (chunk_bytes > 0 && chunk_values > 0 && reserve_values > 0)
+                  << " | inputs: reserve_values=" << reserve_values
+                  << " chunk_values=" << chunk_values
+                  << " chunk_bytes(uncompressed)=" << chunk_bytes
+                  << " chunk_compressed_bytes=" << chunk_compressed_bytes
+                  << " avg_bytes_per_value=" << avg_bytes_per_value
+                  << " | min of: estimate_by_avg(avg*reserve_values)=" << estimate_by_avg
+                  << ", cap_by_uncompressed(chunk_bytes)=" << chunk_bytes
+                  << ", cap_by_decompression(compressed*" << kMaxReservationDecompressionFactor
+                  << ")=" << cap_by_decompression
+                  << " => reserve_value_bytes=" << reserve_value_bytes << std::endl;
 
         PAIMON_RETURN_NOT_OK(ExecuteSkipReadPattern(col_idx, effective_ranges, effective_total,
                                                     reserve_values, reserve_value_bytes,
