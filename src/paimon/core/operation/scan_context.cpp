@@ -261,9 +261,11 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         }
         if (impl_->specific_file_system_ == nullptr) {
             // A catalog issuing per-table temporary credentials only hands them out through
-            // GetTableFileSystem, so the scan uses the credentials of this table.
-            PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
-                                   impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
+            // GetTableFileSystem, so the scan uses the credentials of this table. The context
+            // options override the catalog ones the file system is built from.
+            PAIMON_ASSIGN_OR_RAISE(
+                impl_->specific_file_system_,
+                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value(), impl_->options_));
         }
         PAIMON_ASSIGN_OR_RAISE(bool is_system_table, impl_->identifier_->IsSystemTable());
         // A system table derives its schema from the table it reads rather than keeping one in the

@@ -24,8 +24,6 @@
 
 namespace paimon {
 
-const char CredentialProviderFactory::CREDENTIAL_PROVIDER_OPTION[] = "fs.credential.provider";
-
 Result<std::shared_ptr<CredentialProvider>> CredentialProviderFactory::Get(
     const std::string& identifier, const std::string& path,
     const std::map<std::string, std::string>& fs_options) {
@@ -47,15 +45,6 @@ Result<std::shared_ptr<CredentialProvider>> CredentialProviderFactory::Get(
             fmt::format("Credential provider factory '{}' created a null provider.", identifier));
     }
     return provider;
-}
-
-Result<std::shared_ptr<CredentialProvider>> CredentialProviderFactory::GetIfConfigured(
-    const std::string& path, const std::map<std::string, std::string>& fs_options) {
-    auto option = fs_options.find(CREDENTIAL_PROVIDER_OPTION);
-    if (option == fs_options.end() || option->second.empty()) {
-        return std::shared_ptr<CredentialProvider>(nullptr);
-    }
-    return Get(option->second, path, fs_options);
 }
 
 }  // namespace paimon
