@@ -46,7 +46,7 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_FALSE(ctx->EnablePredicateFilter());
     ASSERT_FALSE(ctx->EnablePrefetch());
     ASSERT_TRUE(ctx->ReadAheadCacheEnabled());
-    ASSERT_EQ(WarmupLevel::DECODED, ctx->GetWarmupLevel());
+    ASSERT_EQ(WarmupLevel::RAW, ctx->GetWarmupLevel());
     ASSERT_EQ(600, ctx->GetPrefetchBatchCount());
     ASSERT_EQ(3, ctx->GetPrefetchMaxParallelNum());
     ASSERT_FALSE(ctx->EnableMultiThreadRowToBatch());
@@ -74,7 +74,7 @@ TEST(ReadContextTest, TestSetContent) {
     builder.EnablePredicateFilter(true);
     builder.EnablePrefetch(true);
     builder.SetReadAheadCacheEnabled(false);
-    builder.SetWarmupLevel(WarmupLevel::RAW);
+    builder.SetWarmupLevel(WarmupLevel::DECODED);
     builder.SetPrefetchBatchCount(1200);
     builder.SetPrefetchMaxParallelNum(6);
     builder.EnableMultiThreadRowToBatch(true);
@@ -100,7 +100,7 @@ TEST(ReadContextTest, TestSetContent) {
     ASSERT_TRUE(ctx->EnablePredicateFilter());
     ASSERT_TRUE(ctx->EnablePrefetch());
     ASSERT_FALSE(ctx->ReadAheadCacheEnabled());
-    ASSERT_EQ(WarmupLevel::RAW, ctx->GetWarmupLevel());
+    ASSERT_EQ(WarmupLevel::DECODED, ctx->GetWarmupLevel());
     ASSERT_EQ(1200, ctx->GetPrefetchBatchCount());
     ASSERT_EQ(6, ctx->GetPrefetchMaxParallelNum());
     ASSERT_TRUE(ctx->EnableMultiThreadRowToBatch());
@@ -135,7 +135,7 @@ TEST(ReadContextTest, TestSetWarmupLevel) {
     ASSERT_OK_AND_ASSIGN(auto first_ctx, builder.Finish());
     ASSERT_EQ(WarmupLevel::NONE, first_ctx->GetWarmupLevel());
     ASSERT_OK_AND_ASSIGN(auto second_ctx, builder.Finish());
-    ASSERT_EQ(WarmupLevel::DECODED, second_ctx->GetWarmupLevel());
+    ASSERT_EQ(WarmupLevel::RAW, second_ctx->GetWarmupLevel());
 }
 
 TEST(ReadContextTest, TestSetOptionsOverridesAddedOptions) {

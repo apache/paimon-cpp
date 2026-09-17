@@ -115,7 +115,7 @@ class ReadContextBuilder::Impl {
         realtime_context_.reset();
         cache_config_ = CacheConfig();
         cache_.reset();
-        warmup_level_ = WarmupLevel::DECODED;
+        warmup_level_ = WarmupLevel::RAW;
     }
 
  private:
@@ -146,7 +146,7 @@ class ReadContextBuilder::Impl {
     bool read_ahead_cache_enabled_ = true;
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
-    WarmupLevel warmup_level_ = WarmupLevel::DECODED;
+    WarmupLevel warmup_level_ = WarmupLevel::RAW;
 };
 
 ReadContextBuilder::ReadContextBuilder(const std::string& path)
