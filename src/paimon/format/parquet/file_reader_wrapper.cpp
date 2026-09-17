@@ -114,7 +114,7 @@ std::vector<::arrow::io::ReadRange> MergeOverlappingRanges(
 
 Result<std::unique_ptr<FileReaderWrapper>> FileReaderWrapper::Create(
     std::unique_ptr<::parquet::arrow::FileReader>&& file_reader, int64_t batch_size,
-    std::shared_ptr<::arrow::MemoryPool> pool, bool enable_offset_index_cache) {
+    bool enable_offset_index_cache, std::shared_ptr<::arrow::MemoryPool> pool) {
     try {
         if (file_reader == nullptr) {
             return Status::Invalid("file reader wrapper create failed. file reader is nullptr");
