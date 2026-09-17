@@ -2870,6 +2870,12 @@ TEST(FormatTableTest, TestAContextBuiltFromAFormatTableRefusesASecondAnswer) {
     ASSERT_NOK_WITH_MSG(
         write_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish(),
         "WithCatalog() requires a native table");
+    ReadContextBuilder read_catalog_builder(table);
+    ASSERT_NOK_WITH_MSG(read_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish(),
+                        "WithCatalog() cannot be used with one");
+    ScanContextBuilder scan_catalog_builder(table);
+    ASSERT_NOK_WITH_MSG(scan_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish(),
+                        "WithCatalog() cannot be used with one");
     catalog->SetTableSchema(latest.value());
     WriteContextBuilder path_catalog_builder(dir->Str(), "test-user");
     ASSERT_OK_AND_ASSIGN(
@@ -2877,6 +2883,18 @@ TEST(FormatTableTest, TestAContextBuiltFromAFormatTableRefusesASecondAnswer) {
         path_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish());
     ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(path_context)),
                         "use WriteContextBuilder(FormatTable)");
+    // A path names a table whose kind is only known once its schema is read, so the same answer
+    // comes from the read and scan paths once the schema turns out to be a format table's.
+    ReadContextBuilder read_path_builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(auto read_path_context,
+                         read_path_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_path_context)),
+                        "use ReadContextBuilder(FormatTable)");
+    ScanContextBuilder scan_path_builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(auto scan_path_context,
+                         scan_path_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_path_context)),
+                        "use ScanContextBuilder(FormatTable)");
 
     CommitContextBuilder commit_fs_builder(table);
     commit_fs_builder.WithFileSystem(dir->GetFileSystem());

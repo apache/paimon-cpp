@@ -192,7 +192,9 @@ class PAIMON_EXPORT Catalog {
     /// @note A catalog that hands out per-table temporary credentials returns a file
     ///       system that refreshes them, so the returned instance must be used for the
     ///       table it was requested for. Pass it to `ReadContextBuilder::WithFileSystem`,
-    ///       `ScanContextBuilder::WithFileSystem` or `WriteContextBuilder::WithFileSystem`.
+    ///       `ScanContextBuilder::WithFileSystem` or `WriteContextBuilder::WithFileSystem`,
+    ///       or let a builder request it for you through `ReadContextBuilder::WithCatalog`,
+    ///       `ScanContextBuilder::WithCatalog` or `WriteContextBuilder::WithCatalog`.
     ///
     /// @param identifier The identifier (database and table name) of the table.
     /// @return A shared pointer to the file system instance; the catalog-level file system

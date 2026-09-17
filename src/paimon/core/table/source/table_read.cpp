@@ -162,6 +162,11 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(
 /// refuses by name what a format table cannot honour.
 Result<std::unique_ptr<TableRead>> NewFormatTableRead(const std::shared_ptr<FormatTable>& table,
                                                       const std::shared_ptr<ReadContext>& context) {
+    if (context->GetCatalog() != nullptr) {
+        return Status::Invalid(
+            "WithCatalog() requires a native table; use ReadContextBuilder(FormatTable) for a "
+            "format table");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
                            FormatTableRead::Create(table, context));
     return std::unique_ptr<TableRead>(std::move(read));

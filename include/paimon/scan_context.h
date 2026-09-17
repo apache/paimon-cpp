@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "paimon/cache/cache.h"
+#include "paimon/catalog/identifier.h"
 #include "paimon/global_index/global_index_result.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
@@ -34,6 +35,7 @@
 namespace paimon {
 class ScanContextBuilder;
 class ScanFilter;
+class Catalog;
 class Executor;
 class FormatTable;
 class MemoryPool;
@@ -56,7 +58,9 @@ class PAIMON_EXPORT ScanContext {
                 const std::optional<std::string>& table_schema,
                 const std::map<std::string, std::string>& options,
                 const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table);
+                const std::shared_ptr<FormatTable>& format_table,
+                const std::shared_ptr<Catalog>& catalog,
+                const std::optional<Identifier>& identifier);
 
     ~ScanContext();
 
@@ -99,6 +103,8 @@ class PAIMON_EXPORT ScanContext {
         return specific_file_system_;
     }
 
+    /// The schema this context scans with, or null when it has to be read from the table path.
+    /// `WithCatalog()` resolves it to the catalog's schema when `SetTableSchema()` did not answer.
     const std::optional<std::string>& GetSpecificTableSchema() const {
         return table_schema_;
     }
@@ -111,6 +117,16 @@ class PAIMON_EXPORT ScanContext {
     /// schema under that path says what kind of table it is.
     const std::shared_ptr<FormatTable>& GetFormatTable() const {
         return format_table_;
+    }
+
+    /// Returns the catalog supplying table metadata, or null if unset.
+    const std::shared_ptr<Catalog>& GetCatalog() const {
+        return catalog_;
+    }
+
+    /// Returns the table identifier supplied with the catalog.
+    const std::optional<Identifier>& GetIdentifier() const {
+        return identifier_;
     }
 
  private:
@@ -127,6 +143,8 @@ class PAIMON_EXPORT ScanContext {
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<FormatTable> format_table_;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
 };
 
 /// Filter configuration for table scan operations
@@ -165,7 +183,8 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// Constructs a `ScanContextBuilder` for a format table that is already loaded: the only way
     /// to scan one whose schema lives in a metastore rather than under its location, such as a
     /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `SetTableSchema()` and `WithFileSystem()` are refused here rather than ignored.
+    /// `SetTableSchema()`, `WithFileSystem()` and `WithCatalog()` are refused here rather than
+    /// ignored.
     ///
     /// @param table The format table to scan, as `Catalog::GetFormatTable()` hands it back.
     explicit ScanContextBuilder(const std::shared_ptr<FormatTable>& table);
@@ -221,6 +240,20 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ScanContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Loads a native table's schema from the catalog and plans its data through that table's file
+    /// system - including the per-table temporary credentials a catalog that issues them hands out
+    /// through `Catalog::GetTableFileSystem`. A catalog which publishes snapshots through catalog
+    /// commits is also where the latest snapshot is read from.
+    ///
+    /// Only the main branch is supported. `SetTableSchema()` keeps the caller's schema and spares
+    /// the catalog request; `WithFileSystem()` overrides the file system.
+    /// @param catalog Non-null catalog, read when `Finish()` builds the context and kept alive
+    ///        while the scan uses its snapshot loader.
+    /// @param identifier The native table to scan.
+    /// @return Reference to this builder for method chaining.
+    ScanContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                    const Identifier& identifier);
 
     /// Set the table schema as a string to avoid schema loading I/O operations.
     ///

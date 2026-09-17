@@ -27,11 +27,13 @@
 #include <vector>
 
 #include "fmt/format.h"
+#include "paimon/catalog/catalog.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
@@ -97,6 +99,15 @@ class TableScanImpl {
         auto manifest_file_format = core_options.GetManifestFormat();
         std::string branch = BranchManager::NormalizeBranch(core_options.GetBranch());
         auto snapshot_manager = std::make_shared<SnapshotManager>(fs, context->GetPath(), branch);
+        if (VersionManagedCatalog* versioned = AsVersionManaged(context->GetCatalog())) {
+            std::shared_ptr<Catalog> catalog = context->GetCatalog();
+            Identifier identifier = context->GetIdentifier().value();
+            // Keep the catalog alive while the scan uses its snapshot loader.
+            snapshot_manager->SetSnapshotLoader(
+                [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
+                    return versioned->LoadSnapshot(identifier);
+                });
+        }
         // TODO(liancheng.lsz): support fallback branch in scan
         auto schema_manager = std::make_shared<SchemaManager>(fs, context->GetPath(), branch);
         PAIMON_ASSIGN_OR_RAISE(
@@ -203,6 +214,11 @@ Result<std::unique_ptr<TableScan>> NewFormatTableScan(const std::shared_ptr<Form
                                                       const std::shared_ptr<ScanContext>& context) {
     // Anything a `ScanContext` carries that a format table cannot honour is refused rather than
     // silently dropped.
+    if (context->GetCatalog() != nullptr) {
+        return Status::Invalid(
+            "WithCatalog() requires a native table; use ScanContextBuilder(FormatTable) for a "
+            "format table");
+    }
     if (context->IsStreamingMode()) {
         return Status::NotImplemented(
             "a format table has no snapshots, so there is nothing for a streaming scan to follow");
@@ -278,6 +294,14 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(shared_context->GetPath()));
     if (system_table_path) {
+        // A system table reads the snapshots under the table path, and a catalog which manages the
+        // versions of its tables keeps them nowhere else but in itself.
+        if (AsVersionManaged(shared_context->GetCatalog()) != nullptr) {
+            return Status::NotImplemented(
+                "a system table reads the snapshots under the table path, but this catalog manages "
+                "the versions of its tables and publishes no snapshot there; scan the system table "
+                "with WithFileSystem(Catalog::GetTableFileSystem()) instead of WithCatalog()");
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), shared_context->GetPath(),

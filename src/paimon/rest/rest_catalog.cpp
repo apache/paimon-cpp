@@ -39,6 +39,7 @@
 #include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/rest/rest_credential_provider.h"
 #include "paimon/rest/rest_token_file_system.h"
 #include "paimon/rest/rest_util.h"
 #include "paimon/table/format/format_table.h"
