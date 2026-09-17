@@ -26,6 +26,8 @@
 #include <set>
 #include <utility>
 
+#include "arrow/c/abi.h"
+#include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_defs.h"
@@ -37,6 +39,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/executor/future.h"
 #include "paimon/common/executor/reader_build_executor.h"
+#include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
 #include "paimon/common/reader/data_file_reader_factory.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
 #include "paimon/common/reader/late_materializing_reader_builder.h"
@@ -44,11 +47,14 @@
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/object_utils.h"
+#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/io/complete_row_tracking_fields_reader.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/field_mapping_reader.h"
+#include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/io/vector_file_batch_reader.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/partition/partition_info.h"
@@ -56,10 +62,13 @@
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/nested_projection_utils.h"
+#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/status.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon {
 class BinaryRow;
@@ -88,14 +97,33 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::map<std::string, std::string>& extra_format_options) const {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<RawFileReaderWithMeta> readers_with_meta,
+        CreateRawFileReadersWithMeta(partition, data_files, read_schema, predicate, dv_factory,
+                                     row_ranges, data_file_path_factory, extra_format_options));
+    std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers;
+    raw_file_readers.reserve(readers_with_meta.size());
+    for (auto& reader_with_meta : readers_with_meta) {
+        raw_file_readers.push_back(std::move(reader_with_meta.reader));
+    }
+    return raw_file_readers;
+}
+
+Result<std::vector<AbstractSplitRead::RawFileReaderWithMeta>>
+AbstractSplitRead::CreateRawFileReadersWithMeta(
+    const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+    const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
+    DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::map<std::string, std::string>& extra_format_options) const {
     if (data_files.empty()) {
-        return std::vector<std::unique_ptr<FileBatchReader>>();
+        return std::vector<RawFileReaderWithMeta>();
     }
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
         FieldMappingBuilder::Create(read_schema, context_->GetPartitionKeys(), predicate));
 
-    std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers;
+    std::vector<RawFileReaderWithMeta> raw_file_readers;
     raw_file_readers.reserve(data_files.size());
     const uint32_t parallel_num =
         static_cast<uint32_t>(std::min<size_t>(kReaderBuildMaxParallelNum, data_files.size()));
@@ -106,7 +134,7 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
                 CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
                                     row_ranges, data_file_path_factory, extra_format_options));
             if (file_reader) {
-                raw_file_readers.push_back(std::move(file_reader));
+                raw_file_readers.push_back({file, std::move(file_reader)});
             }
         }
         return std::move(raw_file_readers);
@@ -129,7 +157,9 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
     }
     // Readers keep the file order of the split, and CollectAll preserves the submit order.
     Status first_error;
+    size_t file_index = 0;
     for (auto& built : CollectAll(futures)) {
+        const std::shared_ptr<DataFileMeta>& file = data_files[file_index++];
         if (!built.ok()) {
             if (first_error.ok()) {
                 first_error = built.status();
@@ -138,11 +168,90 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
         }
         std::unique_ptr<FileBatchReader> file_reader = std::move(built).value();
         if (file_reader) {
-            raw_file_readers.push_back(std::move(file_reader));
+            raw_file_readers.push_back({file, std::move(file_reader)});
         }
     }
     PAIMON_RETURN_NOT_OK(first_error);
     return std::move(raw_file_readers);
+}
+
+Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReaderIfNeeded(
+    std::unique_ptr<FileBatchReader>&& file_reader, const std::shared_ptr<DataFileMeta>& file,
+    const std::shared_ptr<arrow::Schema>& data_schema,
+    const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
+    DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    std::shared_ptr<FileIndexResult> file_index_result;
+    if (options_.FileIndexReadEnabled()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            file_index_result,
+            FileIndexEvaluator::Evaluate(data_schema, predicate, data_file_path_factory, file,
+                                         options_.GetFileSystem(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
+        if (!is_remain) {
+            return std::unique_ptr<FileBatchReader>();
+        }
+    }
+
+    const RoaringBitmap32* selection = nullptr;
+    if (auto* bitmap_file_index = dynamic_cast<BitmapIndexResult*>(file_index_result.get())) {
+        PAIMON_ASSIGN_OR_RAISE(selection, bitmap_file_index->GetBitmap());
+    }
+
+    std::optional<RoaringBitmap32> row_ranges_selection;
+    if (row_ranges) {
+        RoaringBitmap32 row_ranges_bitmap;
+        for (const Range& range : row_ranges.value()) {
+            row_ranges_bitmap.AddRange(static_cast<int32_t>(range.from),
+                                       static_cast<int32_t>(range.to + 1));
+        }
+        row_ranges_selection = selection ? RoaringBitmap32::And(*selection, row_ranges_bitmap)
+                                         : std::move(row_ranges_bitmap);
+        selection = &row_ranges_selection.value();
+    }
+
+    std::shared_ptr<DeletionVector> deletion_vector;
+    if (dv_factory) {
+        PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
+    }
+    const RoaringBitmap32* deletion = nullptr;
+    if (auto* bitmap_dv = dynamic_cast<BitmapDeletionVector*>(deletion_vector.get())) {
+        deletion = bitmap_dv->GetBitmap();
+    }
+
+    std::optional<RoaringBitmap32> actual_selection;
+    if (selection && deletion) {
+        actual_selection = RoaringBitmap32::AndNot(*selection, *deletion);
+    } else if (selection) {
+        actual_selection = *selection;
+    } else if (deletion) {
+        actual_selection = *deletion;
+        PAIMON_ASSIGN_OR_RAISE(uint64_t num_rows, file_reader->GetNumberOfRows());
+        actual_selection->Flip(0, num_rows);
+    }
+
+    if (actual_selection && actual_selection->IsEmpty()) {
+        return std::unique_ptr<FileBatchReader>();
+    }
+
+    ::ArrowSchema c_read_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
+    PAIMON_RETURN_NOT_OK(file_reader->SetReadSchema(&c_read_schema, predicate, actual_selection));
+
+    std::unique_ptr<FileBatchReader> reader;
+    if (!file_reader->SupportPreciseBitmapSelection() && actual_selection) {
+        reader = std::make_unique<ApplyBitmapIndexBatchReader>(std::move(file_reader),
+                                                               std::move(actual_selection).value());
+    } else {
+        reader = std::move(file_reader);
+    }
+
+    if (deletion_vector && !deletion && !deletion_vector->IsEmpty()) {
+        // TODO(xinyu.lxy): if deletion vector is bitmap64, use ApplyBitmapIndexBatchReader to
+        // filter result
+        return Status::NotImplemented("Only support BitmapDeletionVector");
+    }
+    return reader;
 }
 
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateRawFileReader(
