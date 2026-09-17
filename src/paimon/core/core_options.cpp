@@ -755,9 +755,8 @@ struct CoreOptions::Impl {
             &changelog_row_deduplicate_ignore_fields, /*need_trim=*/true));
         // Parse changelog-producer.input.parallel-write - write data and input changelog
         // files in parallel, default true.
-        PAIMON_RETURN_NOT_OK(
-            parser.Parse<bool>(Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE,
-                               &input_changelog_parallel_write_enabled));
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE,
+                                                &input_changelog_parallel_write_enabled));
         // Parse partial-update.remove-record-on-delete - remove whole row on delete
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE,
                                                 &partial_update_remove_record_on_delete));

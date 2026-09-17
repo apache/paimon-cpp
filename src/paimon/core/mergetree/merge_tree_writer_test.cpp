@@ -430,10 +430,9 @@ TEST_P(MergeTreeWriterTest, TestInputChangelog) {
 TEST_P(MergeTreeWriterTest, TestInputChangelogWithParallelWriteDisabled) {
     ASSERT_OK_AND_ASSIGN(
         CoreOptions options,
-        CoreOptions::FromMap(
-            {{Options::FILE_FORMAT, "orc"},
-             {Options::CHANGELOG_PRODUCER, "input"},
-             {Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE, "false"}}));
+        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                              {Options::CHANGELOG_PRODUCER, "input"},
+                              {Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE, "false"}}));
 
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);

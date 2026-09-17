@@ -510,12 +510,11 @@ MergeTreeWriter::CreateRollingChangelogWriter() const {
 
 Result<std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
 MergeTreeWriter::CreateRollingWriter(bool is_changelog, int64_t target_file_row_num) const {
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<KeyValueDataFileWriterFactories::WriterFactory> factory,
-        KeyValueDataFileWriterFactories::Create(options_, schema_id_, write_schema_, /*level=*/0,
-                                                FileSource::Append(), trimmed_primary_keys_,
-                                                path_factory_, /*create_stats_extractor=*/true,
-                                                is_changelog, pool_));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeyValueDataFileWriterFactories::WriterFactory> factory,
+                           KeyValueDataFileWriterFactories::Create(
+                               options_, schema_id_, write_schema_, /*level=*/0,
+                               FileSource::Append(), trimmed_primary_keys_, path_factory_,
+                               /*create_stats_extractor=*/true, is_changelog, pool_));
     return std::make_unique<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>(
         options_.GetTargetFileSize(/*has_primary_key=*/true), target_file_row_num, factory);
 }
