@@ -19,6 +19,8 @@
 #pragma once
 
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "arrow/type.h"
 #include "paimon/format/reader_builder.h"
@@ -44,13 +46,23 @@ class MockFormatReaderBuilder : public ReaderBuilder {
         return this;
     }
 
+    /// Configure every reader this builder creates, see
+    /// MockFileBatchReader::SetPreBufferRangesPerSchema().
+    void SetPreBufferRangesPerSchema(
+        std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges_by_schema) {
+        pre_buffer_ranges_by_schema_ = std::move(ranges_by_schema);
+    }
+
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const override {
-        if (bitmap_) {
-            return std::make_unique<MockFileBatchReader>(data_, schema_, bitmap_.value(),
-                                                         read_batch_size_);
+        std::unique_ptr<MockFileBatchReader> reader =
+            bitmap_ ? std::make_unique<MockFileBatchReader>(data_, schema_, bitmap_.value(),
+                                                            read_batch_size_)
+                    : std::make_unique<MockFileBatchReader>(data_, schema_, read_batch_size_);
+        if (!pre_buffer_ranges_by_schema_.empty()) {
+            reader->SetPreBufferRangesPerSchema(pre_buffer_ranges_by_schema_);
         }
-        return std::make_unique<MockFileBatchReader>(data_, schema_, read_batch_size_);
+        return reader;
     }
 
  private:
@@ -58,6 +70,7 @@ class MockFormatReaderBuilder : public ReaderBuilder {
     std::shared_ptr<arrow::DataType> schema_;
     std::optional<RoaringBitmap32> bitmap_;
     int32_t read_batch_size_;
+    std::vector<std::vector<std::pair<uint64_t, uint64_t>>> pre_buffer_ranges_by_schema_;
 };
 
 }  // namespace paimon::test

@@ -104,6 +104,8 @@ const char Options::CHANGELOG_PRODUCER[] = "changelog-producer";
 const char Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE[] = "changelog-producer.row-deduplicate";
 const char Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS[] =
     "changelog-producer.row-deduplicate-ignore-fields";
+const char Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE[] =
+    "changelog-producer.input.parallel-write";
 const char Options::CHANGELOG_FILE_PREFIX[] = "changelog-file.prefix";
 const char Options::CHANGELOG_FILE_FORMAT[] = "changelog-file.format";
 const char Options::CHANGELOG_FILE_COMPRESSION[] = "changelog-file.compression";

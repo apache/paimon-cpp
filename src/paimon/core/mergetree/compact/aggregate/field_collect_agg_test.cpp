@@ -20,6 +20,8 @@
 #include "paimon/core/mergetree/compact/aggregate/field_collect_agg.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -32,6 +34,7 @@
 #include "paimon/common/data/generic_row.h"
 #include "paimon/common/data/serializer/binary_serializer_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/core_options.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
@@ -58,6 +61,18 @@ Result<std::unique_ptr<FieldCollectAgg>> MakeCollectAgg(bool distinct) {
         CoreOptions options,
         CoreOptions::FromMap({{"fields.f.distinct", distinct ? "true" : "false"}}));
     return FieldCollectAgg::Create(arrow::list(arrow::int32()), options, "f", GetDefaultPool());
+}
+
+Result<std::unique_ptr<FieldCollectAgg>> MakeDistinctAgg(
+    const std::shared_ptr<arrow::DataType>& element_type) {
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
+                           CoreOptions::FromMap({{"fields.f.distinct", "true"}}));
+    return FieldCollectAgg::Create(arrow::list(element_type), options, "f", GetDefaultPool());
+}
+
+VariantType Array(std::vector<VariantType> values) {
+    return VariantType(
+        checked_pointer_cast<InternalArray>(std::make_shared<GenericArray>(std::move(values))));
 }
 
 }  // namespace
@@ -94,6 +109,166 @@ TEST(FieldCollectAggTest, DistinctAndRetractOneOccurrence) {
     ASSERT_EQ((std::vector<int32_t>{1, 2, 3}), Values(retract_result));
 }
 
+TEST(FieldCollectAggTest, HashPathPreservesDuplicatesOverlapAndOrder) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldCollectAgg> agg, MakeCollectAgg(true));
+    std::vector<VariantType> accumulator;
+    std::vector<VariantType> input;
+    for (int32_t i = 0; i < 100; ++i) {
+        accumulator.emplace_back(i % 40);
+        input.emplace_back(20 + (i % 40));
+    }
+
+    ASSERT_OK_AND_ASSIGN(VariantType result,
+                         agg->Agg(IntArray(std::move(accumulator)), IntArray(std::move(input))));
+    std::vector<int32_t> expected;
+    for (int32_t i = 0; i < 60; ++i) {
+        expected.push_back(i);
+    }
+    ASSERT_EQ(expected, Values(result));
+}
+
+TEST(FieldCollectAggTest, HashPathHandlesNullsAndStringContent) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldCollectAgg> int_agg, MakeCollectAgg(true));
+    std::vector<VariantType> accumulator;
+    std::vector<VariantType> input;
+    for (int32_t i = 0; i < 100; ++i) {
+        accumulator.emplace_back(i == 0 ? VariantType(NullType()) : VariantType(int32_t{1}));
+        input.emplace_back(i == 0 ? VariantType(NullType()) : VariantType(int32_t{2}));
+    }
+    ASSERT_OK_AND_ASSIGN(VariantType int_result, int_agg->Agg(IntArray(std::move(accumulator)),
+                                                              IntArray(std::move(input))));
+    auto int_array = DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(int_result);
+    ASSERT_EQ(3, int_array->Size());
+    ASSERT_TRUE(int_array->IsNullAt(0));
+    ASSERT_EQ(1, int_array->GetInt(1));
+    ASSERT_EQ(2, int_array->GetInt(2));
+
+    for (const auto& element_type : {arrow::utf8(), arrow::binary()}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldCollectAgg> string_agg,
+                             MakeDistinctAgg(element_type));
+        std::vector<std::string> left(100, "same-content");
+        std::vector<std::string> right(100, "same-content");
+        std::vector<VariantType> left_values;
+        std::vector<VariantType> right_values;
+        for (const auto& value : left) {
+            left_values.emplace_back(std::string_view(value));
+        }
+        for (const auto& value : right) {
+            right_values.emplace_back(std::string_view(value));
+        }
+        ASSERT_OK_AND_ASSIGN(
+            VariantType string_result,
+            string_agg->Agg(IntArray(std::move(left_values)), IntArray(std::move(right_values))));
+        auto string_array =
+            DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(string_result);
+        ASSERT_EQ(1, string_array->Size());
+        ASSERT_EQ("same-content", string_array->GetStringView(0));
+    }
+}
+
+TEST(FieldCollectAggTest, HashPathPreservesFloatingPointAndTimestampSemantics) {
+    uint32_t float_bits1 = 0x7fc00001U;
+    uint32_t float_bits2 = 0x7fc00002U;
+    uint64_t double_bits1 = 0x7ff8000000000001ULL;
+    uint64_t double_bits2 = 0x7ff8000000000002ULL;
+    float float_nan1;
+    float float_nan2;
+    double double_nan1;
+    double double_nan2;
+    std::memcpy(&float_nan1, &float_bits1, sizeof(float_nan1));
+    std::memcpy(&float_nan2, &float_bits2, sizeof(float_nan2));
+    std::memcpy(&double_nan1, &double_bits1, sizeof(double_nan1));
+    std::memcpy(&double_nan2, &double_bits2, sizeof(double_nan2));
+
+    auto verify_floating_point = [&](const std::shared_ptr<arrow::DataType>& type,
+                                     const VariantType& negative_zero, const VariantType& nan1,
+                                     const VariantType& positive_zero, const VariantType& nan2) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldCollectAgg> agg, MakeDistinctAgg(type));
+        std::vector<VariantType> accumulator;
+        std::vector<VariantType> input;
+        for (int32_t i = 0; i < 100; ++i) {
+            accumulator.emplace_back(i % 2 == 0 ? negative_zero : nan1);
+            input.emplace_back(i % 2 == 0 ? positive_zero : nan2);
+        }
+        ASSERT_OK_AND_ASSIGN(VariantType result, agg->Agg(IntArray(std::move(accumulator)),
+                                                          IntArray(std::move(input))));
+        auto array = DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(result);
+        ASSERT_EQ(3, array->Size());
+        if (type->id() == arrow::Type::FLOAT) {
+            ASSERT_EQ(0, FieldsComparator::CompareFloatingPoint(array->GetFloat(0), -0.0F));
+            ASSERT_TRUE(std::isnan(array->GetFloat(1)));
+            ASSERT_EQ(0, FieldsComparator::CompareFloatingPoint(array->GetFloat(2), +0.0F));
+        } else {
+            ASSERT_EQ(0, FieldsComparator::CompareFloatingPoint(array->GetDouble(0), -0.0));
+            ASSERT_TRUE(std::isnan(array->GetDouble(1)));
+            ASSERT_EQ(0, FieldsComparator::CompareFloatingPoint(array->GetDouble(2), +0.0));
+        }
+    };
+    verify_floating_point(arrow::float32(), VariantType(-0.0F), VariantType(float_nan1),
+                          VariantType(+0.0F), VariantType(float_nan2));
+    verify_floating_point(arrow::float64(), VariantType(-0.0), VariantType(double_nan1),
+                          VariantType(+0.0), VariantType(double_nan2));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldCollectAgg> timestamp_agg,
+                         MakeDistinctAgg(arrow::timestamp(arrow::TimeUnit::NANO)));
+    Timestamp first = Timestamp::FromEpochMillis(100, 7);
+    Timestamp second = Timestamp::FromEpochMillis(101, 0);
+    std::vector<VariantType> timestamps;
+    std::vector<VariantType> more_timestamps;
+    for (int32_t i = 0; i < 100; ++i) {
+        timestamps.emplace_back(first);
+        more_timestamps.emplace_back(i == 0 ? first : second);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        VariantType timestamp_result,
+        timestamp_agg->Agg(IntArray(std::move(timestamps)), IntArray(std::move(more_timestamps))));
+    auto timestamp_array =
+        DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(timestamp_result);
+    ASSERT_EQ(2, timestamp_array->Size());
+    ASSERT_EQ(first, timestamp_array->GetTimestamp(0, 9));
+    ASSERT_EQ(second, timestamp_array->GetTimestamp(1, 9));
+}
+
+TEST(FieldCollectAggTest, FallbackDecimalPathPreservesEquality) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldCollectAgg> agg,
+                         MakeDistinctAgg(arrow::decimal128(10, 2)));
+    Decimal one = Decimal::FromUnscaledLong(100, 10, 2);
+    Decimal same_value = Decimal::FromUnscaledLong(1, 10, 0);
+    Decimal two = Decimal::FromUnscaledLong(200, 10, 2);
+    std::vector<VariantType> accumulator;
+    std::vector<VariantType> input;
+    for (int32_t i = 0; i < 100; ++i) {
+        accumulator.emplace_back(one);
+        input.emplace_back(i == 0 ? same_value : two);
+    }
+    ASSERT_OK_AND_ASSIGN(VariantType result,
+                         agg->Agg(IntArray(std::move(accumulator)), IntArray(std::move(input))));
+    auto array = DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(result);
+    ASSERT_EQ(2, array->Size());
+    ASSERT_EQ(one, array->GetDecimal(0, 10, 2));
+    ASSERT_EQ(two, array->GetDecimal(1, 10, 2));
+}
+
+TEST(FieldCollectAggTest, FallbackConstructedPathPreservesEquality) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldCollectAgg> agg,
+                         MakeDistinctAgg(arrow::list(arrow::int32())));
+    std::vector<VariantType> accumulator;
+    std::vector<VariantType> input;
+    for (int32_t i = 0; i < 100; ++i) {
+        accumulator.emplace_back(Array({int32_t{1}, int32_t{2}}));
+        input.emplace_back(i == 0 ? Array({int32_t{1}, int32_t{2}})
+                                  : Array({int32_t{2}, int32_t{3}}));
+    }
+    ASSERT_OK_AND_ASSIGN(VariantType result,
+                         agg->Agg(IntArray(std::move(accumulator)), IntArray(std::move(input))));
+    auto array = DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(result);
+    ASSERT_EQ(2, array->Size());
+    ASSERT_EQ(1, array->GetArray(0)->GetInt(0));
+    ASSERT_EQ(2, array->GetArray(0)->GetInt(1));
+    ASSERT_EQ(2, array->GetArray(1)->GetInt(0));
+    ASSERT_EQ(3, array->GetArray(1)->GetInt(1));
+}
+
 TEST(FieldCollectAggTest, RejectsNonArrayType) {
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
     ASSERT_NOK(FieldCollectAgg::Create(arrow::int32(), options, "f", GetDefaultPool()));
@@ -102,18 +277,6 @@ TEST(FieldCollectAggTest, RejectsNonArrayType) {
 // Ported from Java FieldAggregatorTest#testFiledCollectAggWith{Row,Array,Map}Type: distinct
 // collection over composite element types.
 namespace {
-
-Result<std::unique_ptr<FieldCollectAgg>> MakeDistinctAgg(
-    const std::shared_ptr<arrow::DataType>& element_type) {
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
-                           CoreOptions::FromMap({{"fields.f.distinct", "true"}}));
-    return FieldCollectAgg::Create(arrow::list(element_type), options, "f", GetDefaultPool());
-}
-
-VariantType Array(std::vector<VariantType> values) {
-    return VariantType(
-        checked_pointer_cast<InternalArray>(std::make_shared<GenericArray>(std::move(values))));
-}
 
 VariantType IntStringRow(int32_t id, std::string_view name) {
     std::shared_ptr<GenericRow> row = std::make_shared<GenericRow>(2);

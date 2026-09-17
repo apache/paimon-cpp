@@ -71,7 +71,7 @@ class CacheInputStreamTest : public ::testing::Test {
         // tests exercise the fallback of CacheInputStream on a cache miss.
         auto cache =
             std::make_shared<ReadAheadCache>(std::move(stream), config, /*file_size=*/0, pool_);
-        EXPECT_OK(cache->Init(std::move(ranges)));
+        EXPECT_OK(cache->AddRanges(std::move(ranges)).status());
         return cache;
     }
 
@@ -218,7 +218,7 @@ TEST_F(CacheInputStreamTest, TestReadAsyncCacheReadError) {
         config.SetPreBufferLimit(1024 * 1024);
         auto cache = std::make_shared<ReadAheadCache>(std::move(cache_stream), config,
                                                       /*file_size=*/0, pool_);
-        ASSERT_OK(cache->Init(std::vector<ByteRange>{{0, 10}}));
+        ASSERT_OK(cache->AddRanges(std::vector<ByteRange>{{0, 10}}).status());
 
         // Now activate IOHook so that the prefetch IO (triggered by cache_->Read -> PreBuffer)
         // will fail at the i-th IO operation

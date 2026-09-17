@@ -131,6 +131,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(ChangelogProducer::NONE, core_options.GetChangelogProducer());
     ASSERT_FALSE(core_options.ChangelogRowDeduplicate());
     ASSERT_TRUE(core_options.GetChangelogRowDeduplicateIgnoreFields().empty());
+    ASSERT_TRUE(core_options.InputChangelogParallelWriteEnabled());
     ASSERT_EQ("changelog-", core_options.ChangelogFilePrefix());
     ASSERT_FALSE(core_options.NeedLookup());
     ASSERT_FALSE(core_options.PrepareCommitWaitCompaction());
@@ -258,6 +259,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::CHANGELOG_PRODUCER, "full-compaction"},
         {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE, "true"},
         {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, "f0, f2"},
+        {Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE, "false"},
         {Options::CHANGELOG_FILE_PREFIX, "test-changelog-"},
         {Options::CHANGELOG_FILE_COMPRESSION, "lz4"},
         {Options::FORCE_LOOKUP, "true"},
@@ -410,6 +412,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.ChangelogRowDeduplicate());
     ASSERT_EQ(std::vector<std::string>({"f0", "f2"}),
               core_options.GetChangelogRowDeduplicateIgnoreFields());
+    ASSERT_FALSE(core_options.InputChangelogParallelWriteEnabled());
     ASSERT_EQ("test-changelog-", core_options.ChangelogFilePrefix());
     ASSERT_EQ(std::optional<std::string>("lz4"), core_options.GetChangelogFileCompression());
     ASSERT_TRUE(core_options.NeedLookup());

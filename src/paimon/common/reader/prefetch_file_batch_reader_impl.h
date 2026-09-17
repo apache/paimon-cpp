@@ -141,6 +141,19 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     /// SetReadStatus() rather than returned: a warmup hint for a file that may never be read must
     /// not fail an in-flight read.
     void WarmCacheOnce();
+
+    /// Registers byte ranges a sub-reader discovered mid-read (the late-materialization payload
+    /// pass) with the shared cache and starts fetching them from there. A no-op without a cache, or
+    /// once the read-range generation the ranges belong to has ended (CleanUp() cleared
+    /// cache_warmed_): a report that outlives its generation - a cache reset by
+    /// SetReadSchema()/RefreshReadRanges(), or released by Close() - registers nothing instead of
+    /// prefetching bytes nobody reads. Errors are recorded via SetReadStatus() for the same reason
+    /// as in WarmCacheOnce().
+    void RegisterLatePreBufferRanges(std::vector<std::pair<uint64_t, uint64_t>>&& read_ranges);
+
+    /// Detaches the callbacks installed on the sub-readers, so that a sub-reader outliving this
+    /// reader cannot call back into it. Called once the background thread has been joined.
+    void ClearPreBufferRangeCallbacks();
     void SetReadStatus(const Status& status);
     Status GetReadStatus() const;
     Result<bool> IsEofRange(const std::pair<uint64_t, uint64_t>& read_range) const;
@@ -194,7 +207,9 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     bool need_prefetch_ = false;
     bool read_ranges_freshed_ = false;
     // Guards the one-shot read-ahead cache Init/Warmup so it runs at most once per read-range
-    // generation. Reset by CleanUp() alongside read_ranges_freshed_.
+    // generation, and gates the mid-read range reports of that generation: CleanUp() clears it, so
+    // a sub-reader reporting after the generation ended registers nothing. Reset by CleanUp()
+    // alongside read_ranges_freshed_.
     std::atomic<bool> cache_warmed_{false};
     const uint32_t prefetch_queue_capacity_;
     const bool enable_adaptive_prefetch_strategy_;

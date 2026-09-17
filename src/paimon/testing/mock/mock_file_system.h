@@ -43,8 +43,13 @@ class MockInputStream : public InputStream {
     Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
         return 0;
     }
+    /// Completes the read inline. Leaving the callback uncalled would leave the promise a
+    /// read-ahead cache attaches to it unresolved forever, so anything waiting for that fetch -
+    /// the cache releasing its buffers, or a read hitting the range - would hang.
     void ReadAsync(char* buffer, int64_t size, int64_t offset,
-                   std::function<void(Status)>&& callback) override {}
+                   std::function<void(Status)>&& callback) override {
+        callback(Status::OK());
+    }
 
     Status Close() override {
         return Status::OK();
