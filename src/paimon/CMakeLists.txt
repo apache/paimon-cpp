@@ -77,6 +77,7 @@ set(PAIMON_COMMON_SRCS
     common/format/file_format_factory.cpp
     common/fs/file_system.cpp
     common/fs/resolving_file_system.cpp
+    common/fs/credential_provider_factory.cpp
     common/fs/file_system_factory.cpp
     common/global_index/union_global_index_reader.cpp
     common/global_index/offset_global_index_reader.cpp
@@ -489,6 +490,7 @@ if(PAIMON_ENABLE_REST)
          rest/rest_catalog.cpp
          rest/rest_messages.cpp
          rest/rest_token_file_system.cpp
+         rest/rest_credential_provider.cpp
          rest/rest_util.cpp)
 endif()
 
@@ -1010,6 +1012,7 @@ if(PAIMON_BUILD_TESTS)
     add_paimon_test(fs_test
                     SOURCES
                     common/fs/file_system_test.cpp
+                    common/fs/credential_provider_factory_test.cpp
                     common/fs/resolving_file_system_test.cpp
                     ${PAIMON_OBJECT_STORE_FS_TEST_SOURCES}
                     fs/local/local_file_test.cpp
@@ -1033,6 +1036,7 @@ if(PAIMON_BUILD_TESTS)
                         rest/rest_catalog_test.cpp
                         rest/rest_messages_test.cpp
                         rest/rest_token_file_system_test.cpp
+                        rest/rest_credential_provider_test.cpp
                         rest/rest_util_test.cpp
                         STATIC_LINK_LIBS
                         paimon_shared

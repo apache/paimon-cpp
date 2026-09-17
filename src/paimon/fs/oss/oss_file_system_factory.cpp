@@ -180,6 +180,13 @@ Result<std::unique_ptr<FileSystem>> OssFileSystemFactory::Create(
                            GetRequiredOption(options, bucket, kOssAccessKeyIdOption));
     PAIMON_ASSIGN_OR_RAISE(std::string access_key_secret,
                            GetRequiredOption(options, bucket, kOssAccessKeySecretOption));
+    std::string security_token = GetOption(options, bucket, kOssSecurityTokenOption);
+    if (security_token.empty()) {
+        security_token = GetOption(options, bucket, kOssSessionTokenOption);
+    }
+    std::shared_ptr<oss2::CredentialsProvider> credentials_provider =
+        std::make_shared<oss2::StaticCredentialsProvider>(
+            std::move(access_key_id), std::move(access_key_secret), std::move(security_token));
     std::string endpoint = GetOption(options, bucket, kOssEndpointOption);
     std::string region = GetOption(options, bucket, kOssRegionOption);
     if (region.empty()) {
@@ -197,10 +204,6 @@ Result<std::unique_ptr<FileSystem>> OssFileSystemFactory::Create(
         return Status::Invalid(
             "OSS region must be configured when the endpoint does not identify a region");
     }
-    std::string security_token = GetOption(options, bucket, kOssSecurityTokenOption);
-    if (security_token.empty()) {
-        security_token = GetOption(options, bucket, kOssSessionTokenOption);
-    }
 
     oss2::ClientConfiguration config = oss2::ClientConfiguration::loadDefault();
     if (!endpoint.empty()) {
@@ -213,8 +216,7 @@ Result<std::unique_ptr<FileSystem>> OssFileSystemFactory::Create(
         config.signatureVersion = signature_version;
     }
     config.userAgent = "paimon-cpp";
-    config.credentialsProvider = std::make_shared<oss2::StaticCredentialsProvider>(
-        std::move(access_key_id), std::move(access_key_secret), std::move(security_token));
+    config.credentialsProvider = std::move(credentials_provider);
     std::string path_style = GetOption(options, bucket, kOssUsePathStyleOption);
     if (!path_style.empty()) {
         std::optional<bool> value = StringUtils::StringToValue<bool>(path_style);

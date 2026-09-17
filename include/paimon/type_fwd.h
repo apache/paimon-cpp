@@ -54,6 +54,7 @@ class OutputStream;
 class InputStream;
 class FileStatus;
 class BasicFileStatus;
+class CredentialProvider;
 
 class RecordBatch;
 class RealtimeContext;

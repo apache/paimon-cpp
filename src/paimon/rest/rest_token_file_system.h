@@ -19,42 +19,22 @@
 #pragma once
 
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
-#include <optional>
-#include <shared_mutex>
 #include <string>
 #include <vector>
 
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/logging.h"
 #include "paimon/rest/rest_api.h"
+#include "paimon/rest/rest_credential_provider.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 
 namespace paimon {
-
-/// The temporary credentials of one table, as issued by the REST catalog.
-struct RestToken {
-    /// File system options, e.g. "fs.oss.accessKeyId".
-    std::map<std::string, std::string> token;
-    int64_t expires_at_millis = 0;
-
-    /// Credentials are interchangeable only when they grant the same access until the same
-    /// point in time, which is what makes them a file system cache key.
-    bool operator==(const RestToken& other) const {
-        return expires_at_millis == other.expires_at_millis && token == other.token;
-    }
-
-    struct Hash {
-        size_t operator()(const RestToken& rest_token) const;
-    };
-};
 
 /// File systems keyed by the credentials they were built from, so that the tables the
 /// server issues the same credentials for share one file system. Sharing this cache
@@ -69,7 +49,7 @@ using RestTokenFileSystemCache =
 /// options, so the schemes configured for the catalog keep working.
 class RestTokenFileSystem : public FileSystem {
  public:
-    using Clock = std::function<std::chrono::system_clock::time_point()>;
+    using Clock = RestCredentialProvider::Clock;
 
     /// Bounds of the file system cache, matching the Java client: the file system of
     /// credentials that were not used for this long is dropped, which also keeps a stream
@@ -121,31 +101,16 @@ class RestTokenFileSystem : public FileSystem {
     /// expire in less than `RestApi::kTokenExpirationSafeTimeMillis`.
     Result<std::shared_ptr<FileSystem>> Delegate() const;
 
-    /// Reloads the credentials from the server. Called with the write lock of `mutex_`
-    /// held.
-    Status RefreshToken() const;
-
-    /// Whether `token_` is absent or expires within the safe time.
-    bool ShouldRefresh() const;
-
     /// Builds the file system of `token`: the credentials are the only file system options
     /// that change, so it is built from the catalog options with them merged over.
     Result<std::shared_ptr<FileSystem>> BuildFileSystem(const RestToken& token) const;
 
-    /// `catalog_options_` with `token` merged over it.
-    std::map<std::string, std::string> MergeTokenOptions(
-        const std::map<std::string, std::string>& token) const;
-
-    std::shared_ptr<RestApi> api_;
     std::map<std::string, std::string> catalog_options_;
     Identifier identifier_;
     std::shared_ptr<RestTokenFileSystemCache> fs_cache_;
-    Clock clock_;
-    std::shared_ptr<Logger> logger_;
 
-    /// Guards `token_`.
-    mutable std::shared_mutex mutex_;
-    mutable std::optional<RestToken> token_;
+    /// The credentials this file system delegates with, reloaded before they expire.
+    std::shared_ptr<RestCredentialProvider> provider_;
 };
 
 }  // namespace paimon
