@@ -110,7 +110,7 @@ class PAIMON_EXPORT CacheConfig {
     //   costs a round trip whatever its size. The limit is therefore well above
     //   the page-sized gaps a filtered read leaves between the pages it keeps,
     //   which would otherwise each cost a request of their own.
-    uint64_t range_size_limit_ = 4 * 1024 * 1024;
+    uint64_t range_size_limit_ = 8 * 1024 * 1024;
     uint64_t hole_size_limit_ = 512 * 1024;
     uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
     // Blocks are aligned to the END of the file, so a block never reaches past

@@ -178,6 +178,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     /// Where the payload byte ranges are reported. Part of how this reader is wired into the
     /// prefetch layer rather than of a read generation, so Reset() leaves it alone.
+    /// TODO(yonghao.fyh): refactor pre buffer cache in the future
     PreBufferRangeCallback pre_buffer_range_callback_;
     LatMatState state_ = kInit;
     std::shared_ptr<arrow::Schema> full_schema_;
