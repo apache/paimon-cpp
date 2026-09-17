@@ -188,6 +188,7 @@ set(PAIMON_COMMON_SRCS
     common/utils/range.cpp
     common/utils/read_ahead_cache.cpp
     common/utils/byte_range_combiner.cpp
+    common/utils/optimized_roaring_bitmap64.cpp
     common/utils/roaring_bitmap32.cpp
     common/utils/roaring_bitmap64.cpp
     common/utils/row_range_index.cpp
@@ -688,6 +689,7 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/murmurhash_utils_test.cpp
                     common/utils/object_utils_test.cpp
                     common/utils/options_utils_test.cpp
+                    common/utils/optimized_roaring_bitmap64_test.cpp
                     common/utils/path_util_test.cpp
                     common/utils/preconditions_test.cpp
                     common/utils/rapidjson_util_test.cpp
