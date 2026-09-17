@@ -169,18 +169,18 @@ it; writers also allow ``WithFileSystemSchemeToIdentifierMap`` to override
 file-system selection. For format tables, use ``WriteContextBuilder(FormatTable)``
 instead.
 
-A file system passed to ``WithFileSystem`` is used exactly as it is, so a custom
-one that signs each request itself stays authenticated by drawing the table's
-temporary credentials from ``Catalog::GetTableCredentialProvider``: hold the provider
-and call ``CredentialProvider::GetCredentials`` at each access, which returns
-credentials that are still valid and reloads them before they expire. A catalog
-that issues no per-table credentials returns a null provider, and the custom file
-system's own configuration authenticates the access.
+A file system passed to ``WithFileSystem`` is used exactly as it is: neither the
+built-in file systems nor the table's own credentials are involved, so a custom
+one has to authenticate its own accesses. Draw credentials that expire from a
+``CredentialProvider`` you build with ``CredentialProviderFactory``: hold the
+provider and call ``CredentialProvider::GetCredentials`` at each access, which
+returns credentials that are still valid and reloads them before they expire.
 
 .. code-block:: cpp
 
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::CredentialProvider> provider,
-                          shared_catalog->GetTableCredentialProvider(paimon::Identifier("db", "tbl")));
+                          paimon::CredentialProviderFactory::Get("my-token-service",
+                                                                 "oss://bucket/tbl", options));
    // MyFileSystem merges provider->GetCredentials() over its own options per access.
    auto my_fs = std::make_shared<MyFileSystem>(provider);
    write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"))
@@ -285,9 +285,8 @@ Both builders read the table's schema from the catalog when ``Finish()`` builds
 the context, which is one catalog request; call ``SetTableSchema`` with a schema
 you already hold to skip it. The table's file system, including the per-table
 temporary credentials a catalog serves through ``Catalog::GetTableFileSystem``,
-is used for both. ``WithFileSystem`` overrides it, and a custom file system
-that signs its own requests can draw the table's credentials from
-``Catalog::GetTableCredentialProvider`` as shown above; the read builder also allows
+is used for both. ``WithFileSystem`` overrides it with a file system that is used
+as-is and authenticates its own accesses, and the read builder also allows
 ``WithFileSystemSchemeToIdentifierMap``.
 
 Only the main branch is supported. Both builders reject other branches in the
@@ -367,13 +366,19 @@ tags, branch management and consumers — are not supported.
 Authenticating with credentials of your own
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Credentials that a catalog does not issue — from a token service of your own, or
-from a catalog Paimon has no client for — reach the built-in file systems through
-a ``CredentialProvider``. Implement it together with a
-``CredentialProviderFactory`` that builds it, register the factory with
-``REGISTER_PAIMON_FACTORY``, and name it in the ``fs.credential.provider``
-option: the file system then builds the provider once and asks it for credentials
-as it signs, so credentials are reloaded as they expire without the file system
-being rebuilt.
+from a store Paimon has no client for — reach a file system through a
+``CredentialProvider`` that you consult yourself. Implement it together with a
+``CredentialProviderFactory`` that builds it and register the factory with
+``REGISTER_PAIMON_FACTORY``. Build a provider with
+``CredentialProviderFactory::Get``, wrap it in a ``FileSystem`` of your own that
+calls ``CredentialProvider::GetCredentials`` as it signs each access, and pass
+that file system in through ``Catalog::Create`` or a builder's ``WithFileSystem``.
+A file system passed this way is used as-is, so the credentials are reloaded as
+they expire without it being rebuilt.
+
+The built-in file systems — ``oss``, ``s3``, ``local``, ``jindo`` — do not consult
+a provider: they sign with the static credentials of their own options. Bring a
+file system of your own when the credentials expire.
 
 .. code-block:: cpp
 
@@ -409,18 +414,6 @@ the factory is called with are those of the accesses to authenticate, which is
 where an implementation reads its own configuration, such as the address of the
 token service, from.
 
-.. code-block:: none
-
-   fs.credential.provider=my-token-service
-
-Only the OSS file system consults a provider today; the others report
-``NotImplemented`` when the option names one, rather than signing with the
-credentials of the moment they were built and failing once those expire. All
-factories share one identifier space, so an identifier a file system factory
+All factories share one identifier space, so an identifier a file system factory
 already takes — ``oss``, ``s3``, ``local``, ``jindo`` — would replace it; name the
 provider after where its credentials come from instead.
-
-This is the other of the two ways a provider is reached. A custom file system
-passed to ``WithFileSystem`` signs its own requests and pulls from the provider
-itself, which is what ``Catalog::GetTableCredentialProvider`` serves; a built-in
-file system signs on your behalf and is pointed at a provider by this option.

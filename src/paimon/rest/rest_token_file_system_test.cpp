@@ -37,7 +37,6 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/defs.h"
-#include "paimon/fs/credential_provider.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/rest/rest_api.h"
