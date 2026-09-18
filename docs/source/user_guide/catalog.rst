@@ -252,7 +252,7 @@ so its restored file references are visible to the expiration operation.
    A branch the catalog holds without that directory, or one created while
    expiration runs, is not found: do not expire a table with such a branch, and
    serialize branch creation and expiration through the upstream coordinator.
-=======
+
 Reading through the catalog
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Pass the catalog and table identifier to ``ReadContextBuilder::WithCatalog`` or
@@ -360,8 +360,6 @@ identifier. The request body carries the table id but no table name and no
 branch, so the branch has to appear in the URL the caller sends that body to:
 the commit endpoint of ``tbl$branch_dev``, not the one of ``tbl``. A body sent
 to the bare table's URL publishes the branch's snapshot on the main branch.
-=======
-tags, branch management and consumers — are not supported.
 
 Authenticating with credentials of your own
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

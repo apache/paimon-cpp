@@ -377,6 +377,42 @@ TEST_F(RestTokenFileSystemTest, TokenOverridesTheCatalogFileSystemOptions) {
     ASSERT_EQ(1, state_->request_count.load());
 }
 
+TEST(RestTokenFileSystemMergeTokenOptions, IssuedCredentialsWinOverBucketScopedCatalogOnes) {
+    // The catalog is configured with bucket-scoped credentials, which a file system resolves
+    // ahead of the flat options, so they must not shadow the credentials the server issues.
+    std::map<std::string, std::string> catalog_options = {
+        {"fs.oss.bucket.b.accessKeyId", "catalog-bucket-ak"},
+        {"fs.oss.bucket.b.accessKeySecret", "catalog-bucket-sk"},
+        {"fs.oss.bucket.other.accessKeyId", "catalog-other-ak"},
+        {"fs.oss.accessKeyId", "catalog-ak"},
+        {"fs.oss.endpoint", "catalog-endpoint"},
+        {"fs.oss.bucket.b.endpoint", "catalog-bucket-endpoint"},
+        {"unrelated", "kept"},
+    };
+    RestToken token;
+    token.token = {{"fs.oss.accessKeyId", "token-ak"},
+                   {"fs.oss.accessKeySecret", "token-sk"},
+                   {"fs.oss.securityToken", "token-sts"}};
+
+    std::map<std::string, std::string> merged =
+        RestTokenFileSystem::MergeTokenOptions(catalog_options, token);
+
+    // The issued credentials are present and every bucket-scoped variant of them is gone, so
+    // the per-bucket resolution a file system does falls back to the issued flat options
+    // rather than signing with a stale catalog key pair and the issued security token.
+    ASSERT_EQ("token-ak", merged.at("fs.oss.accessKeyId"));
+    ASSERT_EQ("token-sk", merged.at("fs.oss.accessKeySecret"));
+    ASSERT_EQ("token-sts", merged.at("fs.oss.securityToken"));
+    ASSERT_EQ(0u, merged.count("fs.oss.bucket.b.accessKeyId"));
+    ASSERT_EQ(0u, merged.count("fs.oss.bucket.b.accessKeySecret"));
+    ASSERT_EQ(0u, merged.count("fs.oss.bucket.other.accessKeyId"));
+
+    // Options the token does not set keep their catalog value, bucket-scoped ones included.
+    ASSERT_EQ("catalog-endpoint", merged.at("fs.oss.endpoint"));
+    ASSERT_EQ("catalog-bucket-endpoint", merged.at("fs.oss.bucket.b.endpoint"));
+    ASSERT_EQ("kept", merged.at("unrelated"));
+}
+
 TEST_F(RestTokenFileSystemTest, ConcurrentFirstAccessLoadsTheTokenOnce) {
     std::string path = WriteFile("data", "paimon");
     std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem();
