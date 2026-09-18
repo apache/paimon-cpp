@@ -58,6 +58,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(std::nullopt, core_options.GetScanSnapshotId());
     ASSERT_EQ(5 * 60 * 1000, core_options.GetRealtimeReadViewTtlMillis());
     ASSERT_FALSE(core_options.RealtimeEnabled());
+    ASSERT_FALSE(core_options.RealtimeSpillEnabled());
     ASSERT_EQ(StatisticsMode::NONE, core_options.GetRealtimeStoreStatisticsMode());
     ASSERT_EQ("zstd", core_options.GetFileCompression());
     ASSERT_EQ(std::nullopt, core_options.GetChangelogFileCompression());
@@ -130,6 +131,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(ChangelogProducer::NONE, core_options.GetChangelogProducer());
     ASSERT_FALSE(core_options.ChangelogRowDeduplicate());
     ASSERT_TRUE(core_options.GetChangelogRowDeduplicateIgnoreFields().empty());
+    ASSERT_TRUE(core_options.InputChangelogParallelWriteEnabled());
     ASSERT_EQ("changelog-", core_options.ChangelogFilePrefix());
     ASSERT_FALSE(core_options.NeedLookup());
     ASSERT_FALSE(core_options.PrepareCommitWaitCompaction());
@@ -257,6 +259,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::CHANGELOG_PRODUCER, "full-compaction"},
         {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE, "true"},
         {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, "f0, f2"},
+        {Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE, "false"},
         {Options::CHANGELOG_FILE_PREFIX, "test-changelog-"},
         {Options::CHANGELOG_FILE_COMPRESSION, "lz4"},
         {Options::FORCE_LOOKUP, "true"},
@@ -325,6 +328,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "true"},
         {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"},
         {Options::REALTIME_ENABLED, "true"},
+        {Options::REALTIME_SPILL_ENABLED, "true"},
         {Options::BUCKET_FUNCTION_TYPE, "mod"},
         {"fields.metrics.map.storage-layout", "shared-shredding"},
         {"fields.metrics.map.shared-shredding.max-columns", "128"},
@@ -408,6 +412,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.ChangelogRowDeduplicate());
     ASSERT_EQ(std::vector<std::string>({"f0", "f2"}),
               core_options.GetChangelogRowDeduplicateIgnoreFields());
+    ASSERT_FALSE(core_options.InputChangelogParallelWriteEnabled());
     ASSERT_EQ("test-changelog-", core_options.ChangelogFilePrefix());
     ASSERT_EQ(std::optional<std::string>("lz4"), core_options.GetChangelogFileCompression());
     ASSERT_TRUE(core_options.NeedLookup());
@@ -494,6 +499,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.TableReadSequenceNumberEnabled());
     ASSERT_TRUE(core_options.KeyValueSequenceNumberEnabled());
     ASSERT_TRUE(core_options.RealtimeEnabled());
+    ASSERT_TRUE(core_options.RealtimeSpillEnabled());
     ASSERT_TRUE(core_options.LookupRemoteFileEnabled());
     ASSERT_EQ(core_options.GetLookupRemoteLevelThreshold(), 2);
     ASSERT_EQ(BucketFunctionType::MOD, core_options.GetBucketFunctionType());

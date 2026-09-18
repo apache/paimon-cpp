@@ -46,9 +46,8 @@ class CommitMessage;
 /// dropping partitions, and retrieving commit metrics.
 ///
 /// @note Direct file-system commits support append-only and primary-key tables on non-object-store
-/// paths. Object-store paths require REST catalog commit mode: enable it with
-/// `CommitContextBuilder::UseRESTCatalogCommit()`, call `Commit()` or `FilterAndCommit()`, and then
-/// retrieve the request with `GetLastCommitTableRequest()`.
+/// paths. `CommitContextBuilder::WithCatalog()` also supports object stores when the catalog
+/// manages versions. `UseRESTCatalogCommit()` only prepares a request for the caller to send.
 class PAIMON_EXPORT FileStoreCommit {
  public:
     /// Create an instance of `FileStoreCommit`.
@@ -94,9 +93,10 @@ class PAIMON_EXPORT FileStoreCommit {
     /// An error is terminal for the writer state which produced `realtime_commits`. The caller must
     /// discard its `RealtimeContext` and `FileStoreWrite`, load the current latest snapshot's
     /// durable offsets, recreate both objects, and replay input from those exclusive offsets.
-    /// External conflicts returned after submitting a REST catalog request are not retried by this
-    /// method. Concurrent rollback or partition deletion from another process must be fenced by
-    /// the upstream coordinator.
+    /// Conflicts from `CommitContextBuilder::WithCatalog()` are retried internally. With
+    /// `UseRESTCatalogCommit()`, the caller sends the request and handles server conflicts.
+    /// Concurrent rollback or partition deletion must be fenced by the upstream coordinator.
+    /// Configure catalog writers with `WriteContextBuilder::WithCatalog()` too.
     ///
     /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
     /// commit.
@@ -164,19 +164,29 @@ class PAIMON_EXPORT FileStoreCommit {
         const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
         int64_t commit_identifier, std::optional<int64_t> watermark = std::nullopt) = 0;
 
-    /// If user want to use REST catalog commit, please set
-    /// `CommitContextBuilder::UseRESTCatalogCommit()`, then call `Commit()` (or
-    /// `FilterAndCommit()`) normally, then call this method to get the last commit table request,
-    /// which is a JSON string that can be used to send to REST catalog server.
-    ///
+    /// Returns the request from the latest commit attempt, including failed attempts. Each attempt
+    /// clears the request of the one before it, so an attempt that failed before building one, as
+    /// one naming a branch a catalog cannot address does, leaves this returning an error.
+    /// Catalog commits send requests automatically; `UseRESTCatalogCommit()` only prepares them.
     /// @note Temporary interface for internal use, will be removed in the future.
-    ///
-    /// @return A Result containing a JSON string which including `snapshot` and `statistics`, but
-    /// excluding `tableId`.
+    /// @return JSON with `tableId`, `baseSnapshotUuid`, `snapshot` and `statistics`.
+    /// Unset `tableId` and an absent or legacy base snapshot UUID are serialized as null.
     virtual Result<std::string> GetLastCommitTableRequest() = 0;
 
     /// Expire old snapshot in the file store.
     ///
+    /// Protects files referenced by retained snapshots, including files restored by rollback.
+    /// Catalog commits require the current snapshot and retained history to be published to the
+    /// file system before deletion. An unpublished or mismatched current snapshot skips expiration;
+    /// catalog or retained-metadata read errors propagate without deleting files.
+    /// Retained snapshots with index manifests return `NotImplemented` before deletion.
+    /// @note Coordinate rollback and expiration so they do not run concurrently.
+    /// @note Returns `NotImplemented` before any snapshot is read or any file is deleted when this
+    ///       commit is on a branch other than main, or the table path holds such a branch under
+    ///       `branch/branch-<name>`: branches share the table's data files, while expiration only
+    ///       reads the retained snapshots of its own branch. A branch held only by a catalog, or
+    ///       created while expiration runs, is not found; do not expire a table with such a
+    ///       branch, and serialize branch creation and expiration.
     /// @return Result<int32_t> indicating the number of expired items or an error status.
     virtual Result<int32_t> Expire() = 0;
 
@@ -218,7 +228,8 @@ class PAIMON_EXPORT FileStoreCommit {
     ///     there is no latest snapshot or the target snapshot does not exist.
     /// @note Rollback restores the real-time progress recorded by the target snapshot. Active
     ///     real-time writers and their `RealtimeContext` instances must be recreated before
-    ///     further real-time operations.
+    ///     further real-time operations. Coordinate rollback with expiration so the target's
+    ///     files cannot be deleted while the rollback is being prepared or committed.
     virtual Result<bool> RollbackToAsLatest(int64_t target_snapshot_id) = 0;
 
     /// Configure row-id conflict checking from a specific snapshot id.

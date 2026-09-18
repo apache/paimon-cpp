@@ -1827,7 +1827,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
     for (const auto& range : pre_buffer_ranges) {
         byte_ranges.emplace_back(range.first, range.second);
     }
-    ASSERT_OK(cache->Init(std::move(byte_ranges)));
+    ASSERT_OK(cache->AddRanges(std::move(byte_ranges)).status());
     // Dispatch the prefetch immediately so every pre-buffered range is covered
     // before the reads below consume them.
     cache->Warmup();

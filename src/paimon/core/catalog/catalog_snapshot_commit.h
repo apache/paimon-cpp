@@ -18,32 +18,98 @@
 
 #pragma once
 
+#include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "paimon/catalog/catalog.h"
+#include "paimon/catalog/identifier.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/commit_table_request.h"
 #include "paimon/core/catalog/snapshot_commit.h"
+#include "paimon/core/catalog/version_managed_catalog.h"
+#include "paimon/core/utils/branch_manager.h"
+#include "paimon/result.h"
+#include "paimon/status.h"
 
 namespace paimon {
 
-/// A `SnapshotCommit` using `Catalog` to commit.
+/// Commits snapshots through a catalog or prepares requests for an external caller.
+///
+/// @note Without a catalog, the caller retrieves the request with `GetLastCommitTableRequest()`
+/// and sends it.
 class CatalogSnapshotCommit : public SnapshotCommit {
  public:
-    Result<bool> Commit(const Snapshot& snapshot,
+    /// @param catalog Catalog implementing version management.
+    /// @param identifier Identifier of the table to commit to.
+    /// @param table_id Catalog UUID captured before preparing changes; null if unavailable.
+    CatalogSnapshotCommit(const std::shared_ptr<Catalog>& catalog, Identifier identifier,
+                          const std::optional<std::string>& table_id)
+        : catalog_(catalog),
+          version_managed_catalog_(AsVersionManaged(catalog)),
+          identifier_(std::move(identifier)),
+          table_id_(table_id) {}
+
+    /// @param table_id Catalog UUID to include in the request; null if unavailable.
+    explicit CatalogSnapshotCommit(const std::optional<std::string>& table_id = std::nullopt)
+        : identifier_("", ""), table_id_(table_id) {}
+
+    Result<bool> Commit(const std::optional<std::string>& base_snapshot_uuid,
+                        const Snapshot& snapshot, const std::string& branch,
                         const std::vector<PartitionStatistics>& statistics) override {
-        commit_table_request_ = CommitTableRequest(snapshot, statistics);
-        return true;
+        // Dropped before anything can refuse this attempt, so that what a caller reads back is
+        // the attempt it just made or nothing at all, never the snapshot of an earlier one.
+        commit_table_request_.reset();
+        // Refused before the request is built: a branch whose object name reads back as another
+        // object is one that neither this nor the caller of a request can commit to.
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
+        commit_table_request_ =
+            CommitTableRequest(table_id_, base_snapshot_uuid, snapshot, statistics);
+        if (catalog_ == nullptr) {
+            return true;
+        }
+        if (version_managed_catalog_ == nullptr) {
+            return Status::Invalid(
+                "this catalog does not manage the versions of its tables, so there is nothing to "
+                "commit the snapshot to");
+        }
+        // The branch this commit is aimed at wins over the one the identifier was built for.
+        PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
+                               CatalogUtils::BranchIdentifier(identifier_, branch));
+        return version_managed_catalog_->CommitSnapshot(branch_identifier, table_id_,
+                                                        base_snapshot_uuid, snapshot, statistics);
     }
 
+    std::string DescribeTarget() const override {
+        return catalog_ == nullptr ? "commit table request built, not sent"
+                                   : "through catalog, " + identifier_.ToString();
+    }
+
+    bool IsRequestOnly() const override {
+        return catalog_ == nullptr;
+    }
+
+    /// Returns the request from the latest attempt, including refusals and errors. An attempt
+    /// refused before the request is built, as one naming an unaddressable branch is, leaves no
+    /// request behind rather than the one of the attempt before it.
     Result<std::string> GetLastCommitTableRequest() override {
         if (commit_table_request_) {
             return commit_table_request_.value().ToJsonString();
         } else {
-            return Status::Invalid("Should call Commit first before GetLastCommitTableRequest.");
+            return Status::Invalid(
+                "Should call Commit first before GetLastCommitTableRequest. An attempt refused "
+                "before it built a request leaves none behind.");
         }
     }
 
  private:
+    std::shared_ptr<Catalog> catalog_;
+    // Owned by catalog_.
+    VersionManagedCatalog* version_managed_catalog_ = nullptr;
+    Identifier identifier_;
+    std::optional<std::string> table_id_;
     std::optional<CommitTableRequest> commit_table_request_;
 };
 

@@ -55,8 +55,8 @@ Result<std::vector<IndexManifestEntry>> IndexFileHandler::Scan(
         return std::vector<IndexManifestEntry>();
     }
     std::vector<IndexManifestEntry> index_entries;
-    PAIMON_RETURN_NOT_OK(
-        index_manifest_file_->Read(index_manifest.value(), filter, &index_entries));
+    PAIMON_RETURN_NOT_OK(index_manifest_file_->Read(index_manifest.value(), filter,
+                                                    /*file_size=*/std::nullopt, &index_entries));
     return index_entries;
 }
 

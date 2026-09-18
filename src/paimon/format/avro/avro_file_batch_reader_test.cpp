@@ -18,6 +18,8 @@
 
 #include "paimon/format/avro/avro_file_batch_reader.h"
 
+#include <algorithm>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -25,18 +27,43 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/api.h"
+#include "avro/Compiler.hh"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/io/byte_array_input_stream.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
 
 namespace paimon::avro::test {
+
+class CountingInputStream : public ByteArrayInputStream {
+ public:
+    explicit CountingInputStream(const std::string& bytes)
+        : ByteArrayInputStream(bytes.data(), bytes.size()) {}
+
+    using ByteArrayInputStream::Read;
+
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        PAIMON_ASSIGN_OR_RAISE(int64_t count, ByteArrayInputStream::Read(buffer, size));
+        bytes_read += count;
+        return count;
+    }
+
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        ++seek_count;
+        return ByteArrayInputStream::Seek(offset, origin);
+    }
+
+    int64_t bytes_read = 0;
+    int32_t seek_count = 0;
+};
 
 class AvroFileBatchReaderTest : public ::testing::Test, public ::testing::WithParamInterface<bool> {
  public:
@@ -326,6 +353,346 @@ TEST_F(AvroFileBatchReaderTest, TestSetReadSchemaRejectNestedSubFieldProjection)
     ASSERT_NOK_WITH_MSG(batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
                                                     /*selection_bitmap=*/std::nullopt),
                         "does not support nested sub-field projection");
+}
+
+TEST_F(AvroFileBatchReaderTest, TestPreciseBitmapSelectionAndReset) {
+    auto data_type = arrow::struct_(
+        {arrow::field("id", arrow::int32()),
+         arrow::field("payload",
+                      arrow::struct_({arrow::field("text", arrow::utf8()),
+                                      arrow::field("values", arrow::list(arrow::int32()))}))});
+    auto source =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            data_type, R"([[0,["a",[1,2]]],[1,null],[2,["c",[]]],[3,["d",[4]]],[4,["e",null]]])")
+            .ValueOrDie();
+    const std::vector<std::vector<uint32_t>> selections = {
+        {}, {0}, {1, 3}, {0, 1, 2, 3, 4}, {2, 99}};
+    for (const std::string& compression : {std::string("null"), std::string("deflate")}) {
+        const std::string path = PathUtil::JoinPath(dir_->Str(), compression + ".avro");
+        WriteData(source, path, compression);
+        for (int32_t batch_size : {1, 2, 8}) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReaderBuilder> builder,
+                                 file_format_->CreateReaderBuilder(batch_size));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(path));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder->Build(input));
+            ASSERT_TRUE(reader->SupportPreciseBitmapSelection());
+            for (const auto& ids : selections) {
+                RoaringBitmap32 selection;
+                for (uint32_t id : ids) {
+                    selection.Add(id);
+                }
+                ArrowSchema c_schema;
+                ASSERT_TRUE(
+                    arrow::ExportSchema(*arrow::schema(data_type->fields()), &c_schema).ok());
+                ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, selection));
+                ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
+                size_t cursor = 0;
+                while (true) {
+                    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+                    if (BatchReader::IsEofBatch(batch)) {
+                        break;
+                    }
+                    auto array =
+                        arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+                    ASSERT_GT(array->length(), 0);
+                    ASSERT_LE(array->length(), batch_size);
+                    for (int64_t i = 0; i < array->length(); ++i) {
+                        ASSERT_LT(cursor, ids.size());
+                        ASSERT_OK_AND_ASSIGN(uint64_t file_row,
+                                             reader->GetPreviousBatchFileRowId(i));
+                        ASSERT_EQ(file_row, ids[cursor++]);
+                        ASSERT_TRUE(array->Slice(i, 1)->Equals(source->Slice(file_row, 1)));
+                    }
+                    ASSERT_NOK(reader->GetPreviousBatchFileRowId(array->length()));
+                }
+                ASSERT_EQ(cursor, static_cast<size_t>(std::count_if(
+                                      ids.begin(), ids.end(), [](uint32_t id) { return id < 5; })));
+                ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
+            }
+            // Removing the bitmap must restore ordinary contiguous file row IDs.
+            ArrowSchema c_schema;
+            ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(data_type->fields()), &c_schema).ok());
+            ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
+            ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+            auto array = arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+            ASSERT_TRUE(array->Equals(source->Slice(0, std::min(batch_size, 5))));
+            ASSERT_OK_AND_ASSIGN(uint64_t first_row, reader->GetPreviousBatchFileRowId(0));
+            ASSERT_EQ(first_row, 0);
+        }
+    }
+}
+
+TEST_F(AvroFileBatchReaderTest, TestBitmapSelectionAcrossBlocksAfterProjection) {
+    auto data_type = arrow::struct_(
+        {arrow::field("id", arrow::int32()), arrow::field("payload", arrow::utf8())});
+    std::string json = "[";
+    for (int32_t i = 0; i < 128; ++i) {
+        if (i != 0) {
+            json += ",";
+        }
+        json += fmt::format(R"([{},"{}"])", i, std::string(16384, 'a' + i % 26));
+    }
+    json += "]";
+    auto source = arrow::ipc::internal::json::ArrayFromJSON(data_type, json).ValueOrDie();
+    for (const std::string& compression : {std::string("null"), std::string("deflate")}) {
+        const std::string path = PathUtil::JoinPath(dir_->Str(), compression + ".avro");
+        WriteData(source, path, compression);
+        // Fresh reader, partial projection, full projection, and an exhausted bitmap that
+        // stopped before physical EOF must all support the same subsequent selections.
+        for (int32_t preparation : {0, 1, 2, 3}) {
+            SCOPED_TRACE(preparation);
+            for (int32_t batch_size : {1, 7, 256}) {
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReaderBuilder> builder,
+                                     file_format_->CreateReaderBuilder(batch_size));
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(path));
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
+                                     builder->Build(input));
+                if (preparation != 0) {
+                    ArrowSchema probe_schema;
+                    ASSERT_TRUE(
+                        arrow::ExportSchema(*arrow::schema({data_type->field(0)}), &probe_schema)
+                            .ok());
+                    const std::optional<RoaringBitmap32> selection =
+                        preparation == 3
+                            ? std::optional<RoaringBitmap32>(RoaringBitmap32::From({0, 64}))
+                            : std::nullopt;
+                    ASSERT_OK(reader->SetReadSchema(&probe_schema, nullptr, selection));
+                    do {
+                        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+                        if (BatchReader::IsEofBatch(batch)) {
+                            break;
+                        }
+                        ASSERT_TRUE(arrow::ImportArray(batch.first.get(), batch.second.get()).ok());
+                    } while (preparation != 1);
+                }
+                for (const std::vector<int32_t>& ids :
+                     std::vector<std::vector<int32_t>>{{},
+                                                       {127},
+                                                       {0, 1, 64, 65, 127},
+                                                       {31, 32, 33},
+                                                       {0, 128},
+                                                       {999},
+                                                       {0, std::numeric_limits<int32_t>::min()}}) {
+                    ArrowSchema full_schema;
+                    ASSERT_TRUE(
+                        arrow::ExportSchema(*arrow::schema(data_type->fields()), &full_schema)
+                            .ok());
+                    ASSERT_OK(
+                        reader->SetReadSchema(&full_schema, nullptr, RoaringBitmap32::From(ids)));
+                    size_t cursor = 0;
+                    while (true) {
+                        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+                        if (BatchReader::IsEofBatch(batch)) {
+                            break;
+                        }
+                        auto array =
+                            arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+                        for (int64_t i = 0; i < array->length(); ++i) {
+                            ASSERT_LT(cursor, ids.size());
+                            ASSERT_OK_AND_ASSIGN(uint64_t row,
+                                                 reader->GetPreviousBatchFileRowId(i));
+                            ASSERT_EQ(row, ids[cursor++]);
+                            ASSERT_TRUE(array->Slice(i, 1)->Equals(source->Slice(row, 1)));
+                        }
+                    }
+                    ASSERT_EQ(cursor, std::count_if(ids.begin(), ids.end(), [](int32_t id) {
+                                  return static_cast<uint32_t>(id) < 128;
+                              }));
+                }
+                ArrowSchema full_schema;
+                ASSERT_TRUE(
+                    arrow::ExportSchema(*arrow::schema(data_type->fields()), &full_schema).ok());
+                ASSERT_OK(reader->SetReadSchema(&full_schema, nullptr, std::nullopt));
+                ASSERT_OK_AND_ASSIGN(
+                    std::shared_ptr<arrow::ChunkedArray> restored,
+                    paimon::test::ReadResultCollector::CollectResult(reader.get()));
+                ASSERT_TRUE(restored->Equals(std::make_shared<arrow::ChunkedArray>(source)));
+            }
+        }
+    }
+}
+
+TEST_F(AvroFileBatchReaderTest, TestBitmapSelectionAvoidsUnnecessaryReads) {
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "indexed.avro");
+    auto data_type = arrow::struct_(
+        {arrow::field("id", arrow::int32()), arrow::field("payload", arrow::utf8())});
+    std::string json = "[";
+    for (int32_t i = 0; i < 256; ++i) {
+        if (i != 0) {
+            json += ",";
+        }
+        json += fmt::format(R"([{},"{}"])", i, std::string(16384, 'a' + i % 26));
+    }
+    json += "]";
+    auto source = arrow::ipc::internal::json::ArrayFromJSON(data_type, json).ValueOrDie();
+    WriteData(source, path, "null");
+    std::string bytes;
+    ASSERT_OK(fs_->ReadFile(path, &bytes));
+    auto input = std::make_shared<CountingInputStream>(bytes);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReaderBuilder> builder,
+                         file_format_->CreateReaderBuilder(/*batch_size=*/8));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder->Build(input));
+    auto set_selection = [&](const std::optional<RoaringBitmap32>& selection) -> Status {
+        ArrowSchema schema;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(
+            arrow::ExportSchema(*arrow::schema(data_type->fields()), &schema));
+        return reader->SetReadSchema(&schema, nullptr, selection);
+    };
+    ASSERT_OK(set_selection(RoaringBitmap32::From({0})));
+    input->bytes_read = 0;
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch first, reader->NextBatch());
+    auto first_array = arrow::ImportArray(first.first.get(), first.second.get()).ValueOrDie();
+    ASSERT_TRUE(first_array->Equals(source->Slice(0, 1)));
+    ASSERT_LT(input->bytes_read, static_cast<int64_t>(bytes.size()) / 2);
+    const int64_t prefix_reads = input->bytes_read;
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+    ASSERT_EQ(input->bytes_read, prefix_reads);
+    ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
+
+    // Exhausting a selection must not be treated as the end of the file.
+    ASSERT_OK_AND_ASSIGN(uint64_t row_count, reader->GetNumberOfRows());
+    ASSERT_EQ(row_count, 256);
+    ASSERT_OK(set_selection(RoaringBitmap32::From({255})));
+    input->bytes_read = 0;
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch last, reader->NextBatch());
+    auto last_array = arrow::ImportArray(last.first.get(), last.second.get()).ValueOrDie();
+    ASSERT_TRUE(last_array->Equals(source->Slice(255, 1)));
+    ASSERT_OK_AND_ASSIGN(uint64_t last_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(last_row, 255);
+    const int64_t sequential_reads = input->bytes_read;
+
+    ASSERT_OK(set_selection(std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> all,
+                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_TRUE(all->Equals(std::make_shared<arrow::ChunkedArray>(source)));
+    ASSERT_OK(set_selection(RoaringBitmap32::From({255})));
+    input->bytes_read = 0;
+    input->seek_count = 0;
+    ASSERT_OK_AND_ASSIGN(last, reader->NextBatch());
+    last_array = arrow::ImportArray(last.first.get(), last.second.get()).ValueOrDie();
+    ASSERT_TRUE(last_array->Equals(source->Slice(255, 1)));
+    ASSERT_OK_AND_ASSIGN(last_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(last_row, 255);
+    ASSERT_GT(input->seek_count, 0);
+    ASSERT_LT(input->bytes_read, sequential_reads);
+}
+
+TEST_F(AvroFileBatchReaderTest, TestBitmapSelectionOnEmptyFileAndReset) {
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "empty.avro");
+    auto schema = ::avro::compileJsonSchemaFromString(
+        R"({"type":"record","name":"row","fields":[{"name":"id","type":"int"}]})");
+    ::avro::DataFileWriterBase writer(path.c_str(), schema, /*syncInterval=*/1024);
+    writer.close();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReaderBuilder> builder,
+                         file_format_->CreateReaderBuilder(/*batch_size=*/2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder->Build(input));
+    // Reach EOF first so the reader has a complete, empty block index.
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch initial, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(initial));
+    for (const std::optional<RoaringBitmap32>& selection :
+         std::vector<std::optional<RoaringBitmap32>>{
+             RoaringBitmap32(), RoaringBitmap32::From({0, 99}), std::nullopt}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> read_schema, reader->GetFileSchema());
+        ASSERT_OK(reader->SetReadSchema(read_schema.get(), nullptr, selection));
+        ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
+        for (int32_t i = 0; i < 2; ++i) {
+            ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+            ASSERT_TRUE(BatchReader::IsEofBatch(batch));
+            ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
+        }
+        ASSERT_OK_AND_ASSIGN(uint64_t row_count, reader->GetNumberOfRows());
+        ASSERT_EQ(row_count, 0);
+    }
+}
+
+TEST_F(AvroFileBatchReaderTest, TestBlockIndexReset) {
+    AvroFileBatchReader::BlockIndex index;
+    index.Observe(/*row=*/0, /*file_offset=*/100);
+    index.Reset();
+    // A partial index must be discarded before rebuilding from the first row.
+    index.Observe(/*row=*/0, /*file_offset=*/200);
+    index.Finish(/*row_count=*/2);
+    ASSERT_EQ(index.RowCount(), 2);
+    ASSERT_TRUE(index.Locate(1));
+    ASSERT_EQ(index.Locate(1)->file_offset, 200);
+
+    // A completed index remains usable after a projection or selection reset.
+    index.Reset();
+    ASSERT_EQ(index.RowCount(), 2);
+    ASSERT_TRUE(index.Locate(1));
+    ASSERT_EQ(index.Locate(1)->file_offset, 200);
+
+    AvroFileBatchReader::BlockIndex oversized;
+    for (uint64_t row = 0; row <= 64 * 1024; ++row) {
+        oversized.Observe(row, static_cast<int64_t>(row));
+    }
+    oversized.Finish(/*row_count=*/64 * 1024 + 1);
+    ASSERT_FALSE(oversized.RowCount());
+    for (int32_t reset = 0; reset < 2; ++reset) {
+        oversized.Reset();
+        // An immutable file already known to exceed the limit must not start a new index.
+        oversized.Observe(/*row=*/0, /*file_offset=*/100);
+        oversized.Finish(/*row_count=*/1);
+        ASSERT_FALSE(oversized.RowCount());
+        ASSERT_FALSE(oversized.Locate(0));
+    }
+}
+
+TEST_F(AvroFileBatchReaderTest, TestBitmapSelectionBeyondBlockIndexLimit) {
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "many-blocks.avro");
+    auto schema = ::avro::compileJsonSchemaFromString(
+        R"({"type":"record","name":"row","fields":[{"name":"id","type":"int"}]})");
+    // One row per block exceeds the bounded index without requiring a large payload.
+    constexpr int32_t kRowCount = 64 * 1024 + 2;
+    ::avro::DataFileWriterBase writer(path.c_str(), schema, /*syncInterval=*/1024);
+    for (int32_t i = 0; i < kRowCount; ++i) {
+        writer.encoder().encodeInt(i);
+        writer.incr();
+        writer.flush();
+    }
+    writer.close();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReaderBuilder> builder,
+                         file_format_->CreateReaderBuilder(/*batch_size=*/1024));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder->Build(input));
+    int64_t scanned_rows = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        auto array = arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+        scanned_rows += array->length();
+    }
+    ASSERT_EQ(scanned_rows, kRowCount);
+    // Both sides of the index limit must remain readable after falling back to sequential skips.
+    const std::vector<int32_t> ids = {0, 64 * 1024 - 1, 64 * 1024, kRowCount - 1};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> read_schema, reader->GetFileSchema());
+    ASSERT_OK(reader->SetReadSchema(read_schema.get(), nullptr, RoaringBitmap32::From(ids)));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch selected, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(selected));
+    auto array = arrow::ImportArray(selected.first.get(), selected.second.get()).ValueOrDie();
+    auto rows = checked_pointer_cast<arrow::StructArray>(array);
+    auto values = checked_pointer_cast<arrow::Int32Array>(rows->field(0));
+    ASSERT_EQ(values->length(), ids.size());
+    for (size_t i = 0; i < ids.size(); ++i) {
+        ASSERT_EQ(values->Value(i), ids[i]);
+        ASSERT_OK_AND_ASSIGN(uint64_t file_row, reader->GetPreviousBatchFileRowId(i));
+        ASSERT_EQ(file_row, ids[i]);
+    }
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+    ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
+    ASSERT_OK_AND_ASSIGN(read_schema, reader->GetFileSchema());
+    ASSERT_OK(reader->SetReadSchema(read_schema.get(), nullptr, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch restored, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(restored));
+    ASSERT_EQ(restored.first->length, 1024);
+    ASSERT_OK_AND_ASSIGN(uint64_t first_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(first_row, 0);
+    ASSERT_TRUE(arrow::ImportArray(restored.first.get(), restored.second.get()).ok());
 }
 
 TEST_F(AvroFileBatchReaderTest, TestGetPreviousBatchFileRowId) {

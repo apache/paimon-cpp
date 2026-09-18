@@ -24,13 +24,13 @@
 
 #include "arrow/api.h"
 #include "paimon/common/global_index/btree/btree_file_footer.h"
-#include "paimon/common/global_index/btree/btree_index_meta.h"
 #include "paimon/common/sst/sst_file_writer.h"
 #include "paimon/global_index/global_index_writer.h"
 #include "paimon/global_index/io/global_index_file_writer.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/utils/roaring_bitmap64.h"
 namespace paimon {
+class KeySerializer;
 
 /// Writer for BTree Global Index files.
 /// This writer builds an SST file where each key maps to a list of row IDs.
@@ -76,7 +76,7 @@ class BTreeGlobalIndexWriter : public GlobalIndexWriter {
  private:
     BTreeGlobalIndexWriter(const std::string& field_name,
                            const std::shared_ptr<arrow::DataType>& arrow_type,
-                           const std::shared_ptr<arrow::DataType>& key_type,
+                           const std::shared_ptr<KeySerializer>& key_serializer,
                            const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
                            const std::string& index_file_name,
                            const std::shared_ptr<OutputStream>& output_stream,
@@ -90,7 +90,7 @@ class BTreeGlobalIndexWriter : public GlobalIndexWriter {
  private:
     std::string field_name_;
     std::shared_ptr<arrow::DataType> arrow_type_;
-    std::shared_ptr<arrow::DataType> key_type_;
+    std::shared_ptr<KeySerializer> key_serializer_;
     std::shared_ptr<MemoryPool> pool_;
 
     std::shared_ptr<GlobalIndexFileWriter> file_writer_;

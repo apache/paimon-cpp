@@ -396,8 +396,12 @@ TEST_P(MergeTreeWriterTest, TestInputChangelog) {
     const DataIncrement& data_increment = commit_increment.GetNewFilesIncrement();
     ASSERT_EQ(1, data_increment.NewFiles().size());
     ASSERT_EQ(1, data_increment.ChangelogFiles().size());
-    ASSERT_EQ("data-" + uuid + "-1.orc", data_increment.NewFiles()[0]->file_name);
-    ASSERT_EQ("changes-" + uuid + "-0.parquet", data_increment.ChangelogFiles()[0]->file_name);
+    ASSERT_TRUE(
+        StringUtils::StartsWith(data_increment.NewFiles()[0]->file_name, "data-" + uuid + "-"));
+    ASSERT_TRUE(StringUtils::EndsWith(data_increment.NewFiles()[0]->file_name, ".orc"));
+    ASSERT_TRUE(StringUtils::StartsWith(data_increment.ChangelogFiles()[0]->file_name,
+                                        "changes-" + uuid + "-"));
+    ASSERT_TRUE(StringUtils::EndsWith(data_increment.ChangelogFiles()[0]->file_name, ".parquet"));
     ASSERT_EQ(2, data_increment.NewFiles()[0]->row_count);
     ASSERT_EQ(4, data_increment.ChangelogFiles()[0]->row_count);
 
@@ -421,6 +425,48 @@ TEST_P(MergeTreeWriterTest, TestInputChangelog) {
     ASSERT_TRUE(changelog_status.ok());
     CheckFileContent(dir->Str() + "/" + data_increment.ChangelogFiles()[0]->file_name,
                      expected_changelog, "parquet");
+}
+
+TEST_P(MergeTreeWriterTest, TestInputChangelogWithParallelWriteDisabled) {
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions options,
+        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                              {Options::CHANGELOG_PRODUCER, "input"},
+                              {Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE, "false"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/1, options));
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Bob", 20, 0, 20.0],
+      ["Alice", 10, 0, 10.0],
+      ["Alice", 11, 0, 11.0],
+      ["Bob", 21, 0, 21.0]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+    if (GetParam()) {
+        ASSERT_OK(merge_writer->FlushMemory());
+    }
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    const DataIncrement& data_increment = commit_increment.GetNewFilesIncrement();
+    ASSERT_EQ(1, data_increment.NewFiles().size());
+    ASSERT_EQ(1, data_increment.ChangelogFiles().size());
+    ASSERT_EQ("changelog-" + uuid + "-0.orc", data_increment.ChangelogFiles()[0]->file_name);
+    ASSERT_EQ("data-" + uuid + "-1.orc", data_increment.NewFiles()[0]->file_name);
+    ASSERT_EQ(4, data_increment.ChangelogFiles()[0]->row_count);
+    ASSERT_EQ(2, data_increment.NewFiles()[0]->row_count);
 }
 
 TEST_P(MergeTreeWriterTest, TestInputChangelogIgnoresTargetFileRowNum) {

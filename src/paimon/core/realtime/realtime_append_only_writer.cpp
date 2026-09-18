@@ -52,7 +52,7 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     const std::shared_ptr<RealtimeContext>& realtime_context,
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
     const std::shared_ptr<RealtimeSchemaLayout>& schema_layout, const CoreOptions& options,
-    const std::shared_ptr<MemoryPool>& memory_pool) {
+    const std::string& temp_directory, const std::shared_ptr<MemoryPool>& memory_pool) {
     if (!realtime_context) {
         return Status::Invalid("real-time context is null");
     }
@@ -67,6 +67,10 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     RealtimeStoreCreateRequest request{std::move(write_schema), options.ToMap(), memory_pool,
                                        RealtimeStoreMode::APPEND_ONLY,
                                        options.GetRealtimeStoreStatisticsMode()};
+    if (options.RealtimeSpillEnabled()) {
+        request.temp_directory = temp_directory;
+        request.file_system = options.GetFileSystem();
+    }
     PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState store_state,
                            realtime_context_impl->GetOrCreateRealtimeStore(
                                std::move(request), RealtimePartitionBucket(partition, bucket)));

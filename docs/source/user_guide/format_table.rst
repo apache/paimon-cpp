@@ -68,7 +68,7 @@ a constructor taking one - which is what Java does through ``FormatTable.newRead
 
 The table already carries its schema and the file system it was loaded through, so a context built
 from one refuses ``SetTableSchema()``, ``WithFileSystem()``,
-``WithFileSystemSchemeToIdentifierMap()`` and a branch rather than quietly ignoring them. Options
+``WithFileSystemSchemeToIdentifierMap()``, ``WithCatalog()`` and a branch. Options
 given at the call still win over the ones the schema stored, as they do everywhere else.
 
 A batch comes back in the table's column order, or the projection's when the read names one,
@@ -126,11 +126,13 @@ A setting the format path cannot act on is refused by name rather than quietly d
 * ``WriteContextBuilder::WithWriteSchema()``, which names a subset of the columns to write.
 * ``WriteContextBuilder::WithWriteId()``, which prefixes a postpone-bucket writer's files so one
   compaction reader can put them back in order; a format table has no buckets.
-* ``CommitContextBuilder::IgnoreEmptyCommit(false)``, ``UseRESTCatalogCommit(true)`` and
-  ``AppendCommitCheckConflict(true)``. Keeping an empty commit means writing a snapshot that adds
-  no files, a rest-catalog commit sends that snapshot to a catalog, and the conflict check reads
-  the manifests of concurrent commits - none of which exist here. Each is refused only when set
-  away from its default, so an ordinary commit is unaffected.
+* ``CommitContextBuilder::IgnoreEmptyCommit(false)``, ``UseRESTCatalogCommit(true)``,
+  ``WithTableId()``, ``WithCatalog()`` and ``AppendCommitCheckConflict(true)``. Keeping an empty
+  commit means writing a snapshot that adds no files, a rest-catalog commit sends that snapshot to
+  a catalog, a table id names the table in the request that commit sends, committing through a
+  catalog hands it a snapshot to take, and the conflict check reads the manifests of concurrent
+  commits - none of which exist here. Each is refused only when set away from its default, so an
+  ordinary commit is unaffected.
 * the ``branch`` option, whatever names it: a format table keeps no metadata to branch, and its
   data is the files under its one location, which is where a read or a write would go whichever
   branch was asked for. It is refused wherever it comes from - the schema, a catalog that parsed
@@ -287,11 +289,13 @@ The layout, the option precedence and the read, write and overwrite semantics de
 follow Java Paimon's. What this implementation covers is nonetheless a subset of what Java's
 format table does; it does not yet support:
 
-* the ``csv``, ``json``, ``text`` and ``mosaic`` file formats, leaving ``parquet`` and ``orc``.
+* the ``csv``, ``json``, ``text``, ``lance`` and ``mosaic`` file formats, leaving ``parquet``
+  and ``orc``.
   The first three are line-delimited text in Java, which shares one line-reading layer between
   them; this library has no text file format at all, so the first of them to be added has to bring
-  that layer with it. ``mosaic`` is none of those: it has a reader and a writer of its own, which
-  this library builds under ``PAIMON_ENABLE_MOSAIC``, but a format table does not reach them yet;
+  that layer with it. ``lance`` and ``mosaic`` each have their own reader and writer, built under
+  ``PAIMON_ENABLE_LANCE`` and ``PAIMON_ENABLE_MOSAIC`` respectively, but a format table does not
+  reach them yet;
 * cutting one large data file into byte ranges so that several readers share it. Java does this
   for an uncompressed ``csv`` or ``json`` file written with the default line delimiter, and for no
   other format - not for ``text`` or ``mosaic`` either; ``parquet`` and ``orc`` each record where

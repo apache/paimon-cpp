@@ -20,19 +20,27 @@
 #include "paimon/snapshot/snapshot_file_scan.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/factories/io_hook.h"
+#include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/defs.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/scan_context.h"
+#include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -62,6 +70,34 @@ std::set<std::string> ExpectedFiles(const std::string& table_path,
     }
     return paths;
 }
+
+/// Records how each file was opened, so a scan can be shown to hand over the lengths that planning
+/// already has instead of leaving the store to answer them again. `Open(FileStatus)` has to be
+/// overridden here: the base implementation forwards to `Open(path)`, which would erase the
+/// difference between the two.
+class OpenRecordingFileSystem : public LocalFileSystem {
+ public:
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        {
+            std::lock_guard<std::mutex> lock(opens_mutex);
+            opens.emplace_back(path, std::nullopt);
+        }
+        return LocalFileSystem::Open(path);
+    }
+
+    Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override {
+        {
+            std::lock_guard<std::mutex> lock(opens_mutex);
+            opens.emplace_back(file_status.GetPath(), file_status.GetLen());
+        }
+        return LocalFileSystem::Open(file_status.GetPath());
+    }
+
+    // A scan reads manifests concurrently through the executor, so recording the opens has to be
+    // synchronized; the reads of `opens` happen only after the scan has collected every task.
+    mutable std::mutex opens_mutex;
+    mutable std::vector<std::pair<std::string, std::optional<int64_t>>> opens;
+};
 
 }  // namespace
 
@@ -117,6 +153,37 @@ TEST(SnapshotFileScanTest, TestLatestSnapshotAndBucketFilter) {
                                    "manifest/manifest-list-f2d59cb8-3ec6-4860-b34b-050b1a533416-3",
                                    "schema/schema-0", "snapshot/snapshot-5"}),
         bucket_one_files);
+}
+
+TEST(SnapshotFileScanTest, TestSingleBucketManifestAvoidsExtraIO) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema = arrow::schema({arrow::field("value", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(
+            dir->Str(), schema, {}, {},
+            {{Options::FILE_FORMAT, "orc"}, {Options::BUCKET, "1"}, {Options::BUCKET_KEY, "value"}},
+            false));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()), R"([["value"]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    helper.reset();
+    const std::string table_path = dir->Str() + "/foo.db/bar";
+
+    auto* io_hook = IOHook::GetInstance();
+    ScopeGuard guard([io_hook]() { io_hook->Clear(); });
+    io_hook->Reset(-1, IOHook::Mode::SILENT);
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> all_files, ListFiles(table_path));
+    const int64_t full_read_io_count = io_hook->IOCount();
+    ASSERT_GT(full_read_io_count, 0);
+
+    io_hook->Reset(-1, IOHook::Mode::SILENT);
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> bucket_files,
+                         ListFiles(table_path, std::nullopt, CreateFilter({}, 0)));
+    ASSERT_EQ(bucket_files, all_files);
+    ASSERT_EQ(io_hook->IOCount(), full_read_io_count);
 }
 
 TEST(SnapshotFileScanTest, TestExplicitSnapshot) {
@@ -312,6 +379,41 @@ TEST(SnapshotFileScanTest, TestInvalidArguments) {
         CreateFilter(/*partition_filters=*/{}, /*bucket_filter=*/std::nullopt, predicate);
     ASSERT_NOK_WITH_MSG(ListFiles("unused", std::nullopt, scan_filter),
                         "snapshot file scan does not support predicate filter");
+}
+
+// The metadata that leads a scan to a manifest already records how long that manifest is, in the
+// manifest list for a manifest and in the snapshot for a manifest list. Handing those lengths over
+// is what saves a metadata round trip per file on a remote store, and it is the whole point of the
+// size fields being carried through planning.
+TEST(SnapshotFileScanTest, TestListFilesOpensManifestsWithKnownLength) {
+    std::string table_path = GetDataDir() + "/orc/append_09.db/append_09";
+    auto file_system = std::make_shared<OpenRecordingFileSystem>();
+
+    ASSERT_OK_AND_ASSIGN(
+        std::set<std::string> all_files,
+        SnapshotFileScan::ListFiles(table_path, /*branch=*/"main", /*snapshot_id=*/std::nullopt,
+                                    /*scan_filter=*/nullptr, /*options=*/{}, file_system,
+                                    /*executor=*/nullptr, /*memory_pool=*/nullptr));
+    ASSERT_FALSE(all_files.empty());
+
+    // Every manifest the scan read has to be opened with the length the manifest list recorded for
+    // it. The two manifest lists are not held to that here: this snapshot was written before the
+    // size fields existed, so they fall back to discovering their own length, and
+    // ManifestListTest.TestReadDataManifests* covers both sides of that choice.
+    int manifest_opens = 0;
+    for (const auto& [path, length] : file_system->opens) {
+        const std::string name = PathUtil::GetName(path);
+        if (name.rfind("manifest-list-", 0) == 0) {
+            continue;
+        }
+        if (path.find("/manifest/") == std::string::npos) {
+            continue;
+        }
+        ++manifest_opens;
+        ASSERT_TRUE(length.has_value()) << "opened without a known length: " << path;
+    }
+    // The latest snapshot of this table references five manifests.
+    ASSERT_EQ(5, manifest_opens);
 }
 
 }  // namespace paimon::test

@@ -73,6 +73,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch()
             PAIMON_RETURN_NOT_OK(
                 SetInnerReadSchema(payload_schema_, /*predicate=*/nullptr, matched_bitmap_));
             state_ = kRunning;
+            PAIMON_RETURN_NOT_OK(ReportPayloadPreBufferRanges());
         }
     }
 
@@ -193,8 +194,19 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
         // Compact the payload superset down to the matched rows (ascending file row order).
         PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector payload_slices,
                                ReaderUtils::GenerateFilteredArrayVector(payload_array, valid));
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_compacted,
-                                          arrow::Concatenate(payload_slices, arrow_pool_.get()));
+        std::shared_ptr<arrow::Array> payload_compacted;
+        if (payload_slices.size() == 1) {
+            // A single run has nothing to merge, and `AssembleFullBatch` normalizes each column
+            // anyway, so hand the slice over rather than let `Concatenate` copy the payload a
+            // second time. A run at the batch head then stays zero-copy; a mid-batch run is still
+            // copied once by that normalization, so this is never worse. Where it stays zero-copy
+            // the slice keeps the batch's buffers alive until the consumer releases the assembled
+            // batch, bounded by the batch size times the prefetch queue depth.
+            payload_compacted = std::move(payload_slices.front());
+        } else {
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                payload_compacted, arrow::Concatenate(payload_slices, arrow_pool_.get()));
+        }
 
         auto card = static_cast<int64_t>(valid.Cardinality());
         if (probe_cursor_ + card > probe_data_->length()) {
@@ -248,6 +260,25 @@ Status LateMaterializingFileBatchReader::SetInnerReadSchema(
     ::ArrowSchema c_read_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
     PAIMON_RETURN_NOT_OK(inner_->SetReadSchema(&c_read_schema, predicate, selection));
+    return Status::OK();
+}
+
+Status LateMaterializingFileBatchReader::ReportPayloadPreBufferRanges() {
+    // The payload byte ranges only exist now: setting the payload schema refined the inner
+    // reader's target row groups down to the pages holding the matched rows. Reporting them
+    // here lets the shared read-ahead cache fetch them while this pass is still assembling
+    // its first batch, instead of every payload read waiting for its own IO.
+    if (!pre_buffer_range_callback_ || prefetch_inner_ == nullptr) {
+        return Status::OK();
+    }
+    // The error is propagated rather than swallowed: the ranges come from the file metadata, so a
+    // failure here means the reads about to follow would fail too.
+    using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
+    PAIMON_ASSIGN_OR_RAISE(ByteRanges ranges, prefetch_inner_->PreBufferRange());
+    if (ranges.empty()) {
+        return Status::OK();
+    }
+    pre_buffer_range_callback_(std::move(ranges));
     return Status::OK();
 }
 

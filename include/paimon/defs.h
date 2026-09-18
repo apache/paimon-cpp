@@ -421,6 +421,11 @@ struct PAIMON_EXPORT Options {
     /// "changelog-producer.row-deduplicate" is "true".
     static const char CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS[];
 
+    /// "changelog-producer.input.parallel-write" - Whether data and changelog files are
+    /// written in parallel for input mode changelog producer. Default value is "true".This
+    /// configuration is specific to cpp paimon.
+    static const char CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE[];
+
     /// "changelog-file.prefix" - Specify the file name prefix of changelog files. Default value is
     /// "changelog-".
     static const char CHANGELOG_FILE_PREFIX[];
@@ -611,6 +616,10 @@ struct PAIMON_EXPORT Options {
     /// "realtime.enabled" - Whether real-time write, commit, and read operations are enabled.
     /// Default value is "false".
     static const char REALTIME_ENABLED[];
+
+    /// "realtime.spill-enabled" - Whether the default real-time store spills sealed segments to
+    /// the local temporary directory. Default value is "false".
+    static const char REALTIME_SPILL_ENABLED[];
 
     /// "realtime.read-view-ttl" - Lifetime of a real-time memory view pinned by scan planning
     /// before reader creation. Default value is "5 min".

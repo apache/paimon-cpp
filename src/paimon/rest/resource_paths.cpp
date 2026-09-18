@@ -63,4 +63,14 @@ std::string ResourcePaths::Snapshots(const std::string& database_name,
     return Table(database_name, table_name) + "/snapshots";
 }
 
+std::string ResourcePaths::CommitTable(const std::string& database_name,
+                                       const std::string& table_name) const {
+    return Table(database_name, table_name) + "/commit";
+}
+
+std::string ResourcePaths::TableSnapshot(const std::string& database_name,
+                                         const std::string& table_name) const {
+    return Table(database_name, table_name) + "/snapshot";
+}
+
 }  // namespace paimon

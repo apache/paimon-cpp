@@ -35,11 +35,28 @@ const char Identifier::kSystemTableSplitter[] = "$";
 const char Identifier::kSystemBranchPrefix[] = "branch_";
 const char Identifier::kDefaultMainBranch[] = "main";
 
+namespace {
+
+std::string BranchObjectName(const std::string& table, const std::string& branch) {
+    if (StringUtils::IsNullOrWhitespaceOnly(branch) ||
+        StringUtils::EqualsIgnoreCase(branch, Identifier::kDefaultMainBranch)) {
+        return table;
+    }
+    return fmt::format("{}{}{}{}", table, Identifier::kSystemTableSplitter,
+                       Identifier::kSystemBranchPrefix, branch);
+}
+
+}  // namespace
+
 Identifier::Identifier(const std::string& table)
     : Identifier(std::string(kUnknownDatabase), table) {}
 
 Identifier::Identifier(const std::string& database, const std::string& table)
     : database_(database), table_(table) {}
+
+Identifier::Identifier(const std::string& database, const std::string& table,
+                       const std::string& branch)
+    : Identifier(database, BranchObjectName(table, branch)) {}
 
 bool Identifier::operator==(const Identifier& other) const {
     if (this == &other) {
@@ -143,7 +160,10 @@ Status Identifier::SplitTableName() const {
     } else {
         return Status::Invalid(fmt::format("Invalid table name: {}", table_));
     }
-    if (data_table.empty() || (branch && branch->empty()) ||
+    // A blank branch names the main branch everywhere else here, and the constructor above folds
+    // it into the bare table name, so an object name spelling one was hand-built and would be
+    // addressed as a branch of its own.
+    if (data_table.empty() || (branch && StringUtils::IsNullOrWhitespaceOnly(branch.value())) ||
         (system_table && system_table->empty())) {
         return Status::Invalid(fmt::format("Invalid table name: {}", table_));
     }

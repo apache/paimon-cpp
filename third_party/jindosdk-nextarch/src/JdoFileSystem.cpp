@@ -33,6 +33,7 @@
 #include "jdo_api.h"
 #include "jdo_defines.h"
 #include "jdo_error.h"
+#include "jdo_option_keys.h"
 #include "jdo_options.h"
 #include "jdo_file_status.h"
 #include "jdo_list_dir_result.h"
@@ -1138,6 +1139,33 @@ JdoStatus JdoFileSystem::openReader(const std::string &path,
     START_CALL(store)
     auto stream = jdo_open(ctx, path.c_str(), JDO_OPEN_FLAG_READ_ONLY, 0777, nullptr);
     END_CALL()
+
+    if (errorCode != 0) {
+        return JdoStatus::InternalError(errorCode, "open file reader failed: ", errorMsg);
+    }
+
+    result->reset(new JindoReader(path, store, stream));
+
+    return JdoStatus::OK();
+}
+
+JdoStatus JdoFileSystem::openReader(const std::string &path, int64_t file_length,
+                                    std::unique_ptr<JdoReader> *result) {
+    auto [store, err] = GetJdoStore(path);
+    if (!err.ok()) {
+        return err;
+    }
+
+    // The hint is what actually suppresses the getFileStatus on open; the store only reads
+    // JDO_OPEN_OPTS_FILE_LENGTH when it is set, and otherwise resolves the status itself.
+    auto options = jdo_createOptions();
+    jdo_setOption(options, JDO_OPEN_OPTS_HAS_GET_FILE_STATUS, "true");
+    jdo_setOption(options, JDO_OPEN_OPTS_FILE_LENGTH, std::to_string(file_length).c_str());
+
+    START_CALL(store)
+    auto stream = jdo_open(ctx, path.c_str(), JDO_OPEN_FLAG_READ_ONLY, 0777, options);
+    END_CALL()
+    jdo_freeOptions(options);
 
     if (errorCode != 0) {
         return JdoStatus::InternalError(errorCode, "open file reader failed: ", errorMsg);

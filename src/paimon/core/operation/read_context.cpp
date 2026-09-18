@@ -98,7 +98,7 @@ class ReadContextBuilder::Impl {
  public:
     friend class ReadContextBuilder;
     void Reset() {
-        branch_ = BranchManager::DEFAULT_MAIN_BRANCH;
+        branch_.reset();
         read_field_names_.clear();
         read_field_ids_.clear();
         read_schema_.reset();
@@ -122,7 +122,7 @@ class ReadContextBuilder::Impl {
         realtime_context_.reset();
         cache_config_ = CacheConfig();
         cache_.reset();
-        warmup_level_ = WarmupLevel::DECODED;
+        warmup_level_ = WarmupLevel::RAW;
     }
 
  private:
@@ -131,7 +131,9 @@ class ReadContextBuilder::Impl {
     /// than a setting of one read of it.
     std::shared_ptr<FormatTable> format_table_;
     bool built_from_format_table_ = false;
-    std::string branch_ = BranchManager::DEFAULT_MAIN_BRANCH;
+    /// Unset until `WithBranch()` names one, so that a branch named only by the `branch`
+    /// option is not overruled by the default.
+    std::optional<std::string> branch_;
     std::vector<std::string> read_field_names_;
     std::vector<int32_t> read_field_ids_;
     std::unique_ptr<ArrowSchema> read_schema_;
@@ -155,7 +157,7 @@ class ReadContextBuilder::Impl {
     bool read_ahead_cache_enabled_ = true;
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
-    WarmupLevel warmup_level_ = WarmupLevel::DECODED;
+    WarmupLevel warmup_level_ = WarmupLevel::RAW;
 };
 
 ReadContextBuilder::ReadContextBuilder(const std::string& path)
@@ -339,7 +341,8 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
                 "a format table carries the file system it was loaded through, so WithFileSystem() "
                 "and WithFileSystemSchemeToIdentifierMap() cannot be used with one");
         }
-        if (impl_->branch_ != BranchManager::DEFAULT_MAIN_BRANCH) {
+        if (impl_->branch_ &&
+            !BranchManager::IsMainBranch(BranchManager::NormalizeBranch(impl_->branch_.value()))) {
             return Status::Invalid(
                 "a format table has no branches, so WithBranch() cannot be used with one");
         }
@@ -348,8 +351,9 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot read with empty table path");
     }
-    // The branch names a directory under the table path, so it must stay a single path component.
-    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(impl_->branch_));
+    PAIMON_ASSIGN_OR_RAISE(std::string branch,
+                           BranchManager::ResolveBranch(/*identifier=*/std::nullopt,
+                                                        impl_->options_, impl_->branch_, "read"));
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0");
     }
@@ -375,15 +379,14 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         return Status::Invalid("row to batch thread number should be greater than 0");
     }
     auto ctx = std::make_unique<ReadContext>(
-        impl_->path_, impl_->branch_, impl_->read_field_names_, impl_->read_field_ids_,
-        impl_->predicate_, impl_->vector_search_, impl_->full_text_search_,
-        impl_->enable_predicate_filter_, impl_->enable_prefetch_, impl_->enable_late_materializing_,
-        impl_->prefetch_batch_count_, impl_->prefetch_max_parallel_num_,
-        impl_->enable_multi_thread_row_to_batch_, impl_->row_to_batch_thread_number_,
-        impl_->table_schema_, impl_->memory_pool_, impl_->executor_, impl_->specific_file_system_,
-        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
-        impl_->read_ahead_cache_enabled_, impl_->cache_config_, impl_->cache_, impl_->format_table_,
-        impl_->warmup_level_);
+        impl_->path_, branch, impl_->read_field_names_, impl_->read_field_ids_, impl_->predicate_,
+        impl_->vector_search_, impl_->full_text_search_, impl_->enable_predicate_filter_,
+        impl_->enable_prefetch_, impl_->enable_late_materializing_, impl_->prefetch_batch_count_,
+        impl_->prefetch_max_parallel_num_, impl_->enable_multi_thread_row_to_batch_,
+        impl_->row_to_batch_thread_number_, impl_->table_schema_, impl_->memory_pool_,
+        impl_->executor_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
+        impl_->realtime_context_, impl_->options_, impl_->read_ahead_cache_enabled_,
+        impl_->cache_config_, impl_->cache_, impl_->format_table_, impl_->warmup_level_);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
         ctx->SetReadSchema(std::move(impl_->read_schema_));
     }

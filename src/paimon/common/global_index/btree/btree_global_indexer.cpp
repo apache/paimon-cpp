@@ -27,8 +27,6 @@
 #include "paimon/common/compression/block_compression_factory.h"
 #include "paimon/common/global_index/btree/btree_file_footer.h"
 #include "paimon/common/global_index/btree/btree_global_index_writer.h"
-#include "paimon/common/global_index/btree/btree_index_meta.h"
-#include "paimon/common/global_index/btree/key_serializer.h"
 #include "paimon/common/global_index/btree/lazy_filtered_btree_reader.h"
 #include "paimon/common/memory/memory_slice.h"
 #include "paimon/common/memory/memory_slice_input.h"

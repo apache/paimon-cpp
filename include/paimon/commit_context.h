@@ -21,13 +21,16 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "paimon/catalog/identifier.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
+class Catalog;
 class Executor;
 class FormatTable;
 class MemoryPool;
@@ -39,9 +42,21 @@ class MemoryPool;
 /// @see CommitContextBuilder
 class PAIMON_EXPORT CommitContext {
  public:
+    /// Retained for source compatibility. Prefer `CommitContextBuilder` for input validation.
     CommitContext(const std::string& root_path, const std::string& commit_user,
                   bool ignore_empty_commit, bool use_rest_catalog_commit,
                   bool append_commit_check_conflict, const std::shared_ptr<MemoryPool>& memory_pool,
+                  const std::shared_ptr<Executor>& executor,
+                  const std::shared_ptr<FileSystem>& specific_file_system,
+                  const std::map<std::string, std::string>& options,
+                  const std::shared_ptr<FormatTable>& format_table);
+
+    CommitContext(const std::string& root_path, const std::string& commit_user,
+                  bool ignore_empty_commit, bool use_rest_catalog_commit,
+                  const std::shared_ptr<Catalog>& catalog,
+                  const std::optional<Identifier>& identifier,
+                  const std::optional<std::string>& table_id, bool append_commit_check_conflict,
+                  const std::shared_ptr<MemoryPool>& memory_pool,
                   const std::shared_ptr<Executor>& executor,
                   const std::shared_ptr<FileSystem>& specific_file_system,
                   const std::map<std::string, std::string>& options,
@@ -62,6 +77,21 @@ class PAIMON_EXPORT CommitContext {
 
     bool UseRESTCatalogCommit() const {
         return use_rest_catalog_commit_;
+    }
+
+    /// Returns the configured catalog, or null if unset.
+    const std::shared_ptr<Catalog>& GetCatalog() const {
+        return catalog_;
+    }
+
+    /// Returns the table identifier supplied with the catalog.
+    const std::optional<Identifier>& GetIdentifier() const {
+        return identifier_;
+    }
+
+    /// Returns the catalog table UUID sent as `tableId` in commit requests.
+    const std::optional<std::string>& GetTableId() const {
+        return table_id_;
     }
 
     bool AppendCommitCheckConflict() const {
@@ -95,6 +125,9 @@ class PAIMON_EXPORT CommitContext {
     std::string commit_user_;
     bool ignore_empty_commit_;
     bool use_rest_catalog_commit_;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
+    std::optional<std::string> table_id_;
     bool append_commit_check_conflict_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
@@ -146,11 +179,39 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// @return Reference to this builder for method chaining.
     CommitContextBuilder& IgnoreEmptyCommit(bool ignore_empty_commit);
 
-    /// Sets whether to use REST catalog commit (default is false).
+    /// Builds a REST commit request for the caller to send (default is false).
+    /// Use `WithCatalog()` for catalog-managed commits; the two modes are mutually exclusive.
     /// @note Temporary interface, will be removed in the future.
-    /// @param use_rest_catalog_commit True to use REST catalog commit, false otherwise.
+    /// @param use_rest_catalog_commit True to build the request without sending it.
     /// @return Reference to this builder for method chaining.
     CommitContextBuilder& UseRESTCatalogCommit(bool use_rest_catalog_commit);
+
+    /// Loads the current schema from `catalog`. Catalogs with version management also load and
+    /// commit snapshots, rebasing on conflicts. Other catalogs use file-system snapshot commits.
+    /// Mutually exclusive with `UseRESTCatalogCommit()`.
+    ///
+    /// Data and manifests remain on the file system. Recovery, rollback and row-id checks require
+    /// historical snapshots there; row-id checks also require the inspected data files' schemas.
+    /// `Expire()` manages file-system snapshots after confirming that the catalog's current
+    /// snapshot and retained history are published there. Configure writers with the same catalog
+    /// via `WriteContextBuilder::WithCatalog()`.
+    /// A branch is addressed by the identifier, as `tbl$branch_dev`, so that the catalog answers
+    /// for that branch. Its schema is read from the branch directory rather than from the catalog,
+    /// just as a read of that branch reads it. Configure the writer with the same identifier.
+    /// @param catalog Non-null catalog, kept alive by this context.
+    /// @param identifier Table to commit to, naming a branch of it as `tbl$branch_dev`.
+    /// @return Reference to this builder for method chaining.
+    CommitContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                      const Identifier& identifier);
+
+    /// Sets the catalog table UUID sent as `tableId` to detect table recreation (default is unset).
+    ///
+    /// Capture `Table::CatalogUuid()` before preparing changes. `Table::Uuid()` may fall back to
+    /// the table name. An unset ID is sent as null and validated by the server.
+    /// Requires `WithCatalog()` or `UseRESTCatalogCommit()`.
+    /// @param table_id Catalog UUID of the table to commit to.
+    /// @return Reference to this builder for method chaining.
+    CommitContextBuilder& WithTableId(const std::string& table_id);
 
     /// Sets whether append commits should perform conflict checking (default is false).
     /// @param append_commit_check_conflict True to enable append conflict checks.

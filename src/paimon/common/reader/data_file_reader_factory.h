@@ -56,7 +56,7 @@ struct DataFileReadOptions {
     bool prefetch_io_metrics_enabled = false;
     /// How far the prefetching reader prepares a file before it is read. It only matters when
     /// prefetching, because that reader is the one that can start work ahead of the read.
-    WarmupLevel warmup_level = WarmupLevel::DECODED;
+    WarmupLevel warmup_level = WarmupLevel::RAW;
 };
 
 /// Opens one data file as a `FileBatchReader`.

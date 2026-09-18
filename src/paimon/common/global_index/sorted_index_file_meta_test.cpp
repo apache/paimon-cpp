@@ -1,0 +1,369 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+#include "paimon/common/global_index/sorted_index_file_meta.h"
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+#include "gtest/gtest.h"
+#include "paimon/common/memory/memory_slice_output.h"
+#include "paimon/memory/memory_pool.h"
+#include "paimon/testing/utils/testharness.h"
+
+namespace paimon::test {
+class SortedIndexFileMetaTest : public ::testing::Test {
+ protected:
+    void SetUp() override {
+        pool_ = GetDefaultPool();
+    }
+
+    std::shared_ptr<Bytes> LegacyMetaBytes(const std::shared_ptr<Bytes>& first_key,
+                                           const std::shared_ptr<Bytes>& last_key,
+                                           bool has_nulls) const {
+        int32_t first_key_size = first_key ? first_key->size() : 0;
+        int32_t last_key_size = last_key ? last_key->size() : 0;
+        MemorySliceOutput output(first_key_size + last_key_size + 9, pool_.get());
+        output.WriteValue(first_key_size);
+        if (first_key) {
+            output.WriteBytes(first_key);
+        }
+        output.WriteValue(last_key_size);
+        if (last_key) {
+            output.WriteBytes(last_key);
+        }
+        output.WriteValue(static_cast<int8_t>(has_nulls ? 1 : 0));
+        return output.ToSlice().CopyBytes(pool_.get());
+    }
+
+    std::shared_ptr<Bytes> MetadataBytes(int32_t first_key_length, const std::string& first_key,
+                                         int32_t last_key_length, const std::string& last_key,
+                                         int8_t has_nulls,
+                                         const std::vector<int8_t>& suffix = {}) const {
+        MemorySliceOutput output(
+            static_cast<int32_t>(first_key.size() + last_key.size() + suffix.size() + 9),
+            pool_.get());
+        output.WriteValue(first_key_length);
+        if (!first_key.empty()) {
+            output.WriteBytes(std::make_shared<Bytes>(first_key, pool_.get()));
+        }
+        output.WriteValue(last_key_length);
+        if (!last_key.empty()) {
+            output.WriteBytes(std::make_shared<Bytes>(last_key, pool_.get()));
+        }
+        output.WriteValue(has_nulls);
+        for (int8_t byte : suffix) {
+            output.WriteValue(byte);
+        }
+        return output.ToSlice().CopyBytes(pool_.get());
+    }
+
+    std::shared_ptr<MemoryPool> pool_;
+};
+
+TEST_F(SortedIndexFileMetaTest, SerializeDeserializeNormalKeys) {
+    auto first_key = std::make_shared<Bytes>("first_key_data", pool_.get());
+    auto last_key = std::make_shared<Bytes>("last_key_data", pool_.get());
+    auto meta = std::make_shared<SortedIndexFileMeta>(first_key, last_key, true);
+
+    // Serialize
+    auto serialized = meta->Serialize(pool_.get());
+    ASSERT_TRUE(serialized);
+    ASSERT_GT(serialized->size(), 0u);
+
+    // Deserialize
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized);
+
+    // Verify first_key
+    auto deserialized_first = deserialized->FirstKey();
+    ASSERT_TRUE(deserialized_first);
+    ASSERT_EQ(std::string(deserialized_first->data(), deserialized_first->size()),
+              "first_key_data");
+
+    // Verify last_key
+    auto deserialized_last = deserialized->LastKey();
+    ASSERT_TRUE(deserialized_last);
+    ASSERT_EQ(std::string(deserialized_last->data(), deserialized_last->size()), "last_key_data");
+
+    // Verify has_nulls
+    ASSERT_TRUE(deserialized->HasNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, SerializeDeserializeEmptyFirstKey) {
+    auto empty_key = std::make_shared<Bytes>(0, pool_.get());
+    auto last_key = std::make_shared<Bytes>("last_key_data", pool_.get());
+    auto meta = std::make_shared<SortedIndexFileMeta>(empty_key, last_key, false);
+
+    auto serialized = meta->Serialize(pool_.get());
+    ASSERT_EQ(serialized->size(), 11 + last_key->size());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized->FirstKey());
+    ASSERT_EQ(deserialized->FirstKey()->size(), 0);
+    ASSERT_TRUE(deserialized->LastKey());
+    ASSERT_EQ(std::string(deserialized->LastKey()->data(), deserialized->LastKey()->size()),
+              "last_key_data");
+    ASSERT_FALSE(deserialized->HasNulls());
+    ASSERT_FALSE(deserialized->OnlyNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, SerializeDeserializeEmptyFirstAndLastKeysWithNulls) {
+    auto empty_key = std::make_shared<Bytes>(0, pool_.get());
+    auto meta = std::make_shared<SortedIndexFileMeta>(empty_key, empty_key, true);
+
+    auto serialized = meta->Serialize(pool_.get());
+    ASSERT_EQ(serialized->size(), 11);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized->FirstKey());
+    ASSERT_EQ(deserialized->FirstKey()->size(), 0);
+    ASSERT_TRUE(deserialized->LastKey());
+    ASSERT_EQ(deserialized->LastKey()->size(), 0);
+    ASSERT_TRUE(deserialized->HasNulls());
+    ASSERT_FALSE(deserialized->OnlyNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, SerializeDeserializeOnlyNulls) {
+    auto meta = std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, true);
+
+    auto serialized = meta->Serialize(pool_.get());
+    ASSERT_EQ(serialized->size(), 11);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized);
+    ASSERT_FALSE(deserialized->FirstKey());
+    ASSERT_FALSE(deserialized->LastKey());
+    ASSERT_TRUE(deserialized->HasNulls());
+    ASSERT_TRUE(deserialized->OnlyNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, DeserializeLegacyOnlyNulls) {
+    auto empty_key = std::make_shared<Bytes>(0, pool_.get());
+    auto serialized = LegacyMetaBytes(empty_key, empty_key, true);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_FALSE(deserialized->FirstKey());
+    ASSERT_FALSE(deserialized->LastKey());
+    ASSERT_TRUE(deserialized->HasNulls());
+    ASSERT_TRUE(deserialized->OnlyNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, DeserializeLegacyEmptyFirstKey) {
+    auto empty_key = std::make_shared<Bytes>(0, pool_.get());
+    auto last_key = std::make_shared<Bytes>("last_key_data", pool_.get());
+    auto serialized = LegacyMetaBytes(empty_key, last_key, false);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized->FirstKey());
+    ASSERT_EQ(deserialized->FirstKey()->size(), 0);
+    ASSERT_TRUE(deserialized->LastKey());
+    ASSERT_EQ(std::string(deserialized->LastKey()->data(), deserialized->LastKey()->size()),
+              "last_key_data");
+    ASSERT_FALSE(deserialized->HasNulls());
+    ASSERT_FALSE(deserialized->OnlyNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, DeserializeLegacyEmptyFirstAndLastKeysWithoutNulls) {
+    auto empty_key = std::make_shared<Bytes>(0, pool_.get());
+    auto serialized = LegacyMetaBytes(empty_key, empty_key, false);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized->FirstKey());
+    ASSERT_EQ(deserialized->FirstKey()->size(), 0);
+    ASSERT_TRUE(deserialized->LastKey());
+    ASSERT_EQ(deserialized->LastKey()->size(), 0);
+    ASSERT_FALSE(deserialized->HasNulls());
+    ASSERT_FALSE(deserialized->OnlyNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, DeserializeRejectsNullAndTruncatedMetadata) {
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(nullptr, pool_.get()));
+    for (size_t size = 0; size < 9; size++) {
+        auto truncated = std::make_shared<Bytes>(std::string(size, '\0'), pool_.get());
+        ASSERT_NOK(SortedIndexFileMeta::Deserialize(truncated, pool_.get()));
+    }
+}
+
+TEST_F(SortedIndexFileMetaTest, DeserializeRejectsInvalidKeyLengths) {
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(/*first_key_length=*/-1, "", /*last_key_length=*/0, "",
+                      /*has_nulls=*/0),
+        pool_.get()));
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(/*first_key_length=*/100, "", /*last_key_length=*/0, "",
+                      /*has_nulls=*/0),
+        pool_.get()));
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(/*first_key_length=*/0, "", /*last_key_length=*/-1, "",
+                      /*has_nulls=*/0),
+        pool_.get()));
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(/*first_key_length=*/0, "", /*last_key_length=*/100, "",
+                      /*has_nulls=*/0),
+        pool_.get()));
+}
+
+TEST_F(SortedIndexFileMetaTest, DeserializeRejectsMalformedFlagsAndTrailingBytes) {
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(MetadataBytes(0, "", 0, "", /*has_nulls=*/2),
+                                                pool_.get()));
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(0, "", 0, "", /*has_nulls=*/0, {/*truncated_version=*/1}), pool_.get()));
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(0, "", 0, "", /*has_nulls=*/0, {/*unsupported_version=*/2, /*flags=*/0}),
+        pool_.get()));
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(0, "", 0, "", /*has_nulls=*/0, {/*version=*/1, /*unknown_flags=*/4}),
+        pool_.get()));
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(0, "", 0, "", /*has_nulls=*/0, {/*version=*/1, /*flags=*/0, /*trailing=*/0}),
+        pool_.get()));
+    ASSERT_NOK(SortedIndexFileMeta::Deserialize(
+        MetadataBytes(1, "x", 0, "", /*has_nulls=*/0, {/*version=*/1, /*first_key_is_null=*/1}),
+        pool_.get()));
+}
+
+TEST_F(SortedIndexFileMetaTest, HasNullsAndOnlyNulls) {
+    // Case 1: Has nulls with keys
+    auto meta1 =
+        std::make_shared<SortedIndexFileMeta>(std::make_shared<Bytes>("key", pool_.get()),
+                                              std::make_shared<Bytes>("key", pool_.get()), true);
+    ASSERT_TRUE(meta1->HasNulls());
+    ASSERT_FALSE(meta1->OnlyNulls());
+
+    // Case 2: No nulls with keys
+    auto meta2 =
+        std::make_shared<SortedIndexFileMeta>(std::make_shared<Bytes>("key", pool_.get()),
+                                              std::make_shared<Bytes>("key", pool_.get()), false);
+    ASSERT_FALSE(meta2->HasNulls());
+    ASSERT_FALSE(meta2->OnlyNulls());
+
+    // Case 3: Only nulls (no keys)
+    auto meta3 = std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, true);
+    ASSERT_TRUE(meta3->HasNulls());
+    ASSERT_TRUE(meta3->OnlyNulls());
+
+    // Case 4: No nulls and no keys (edge case)
+    auto meta4 = std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, false);
+    ASSERT_FALSE(meta4->HasNulls());
+    ASSERT_TRUE(meta4->OnlyNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, SerializeDeserializeNoNulls) {
+    // Create a SortedIndexFileMeta without nulls
+    auto first_key = std::make_shared<Bytes>("abc", pool_.get());
+    auto last_key = std::make_shared<Bytes>("xyz", pool_.get());
+    auto meta = std::make_shared<SortedIndexFileMeta>(first_key, last_key, false);
+
+    // Serialize
+    auto serialized = meta->Serialize(pool_.get());
+    ASSERT_TRUE(serialized);
+
+    // Deserialize
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized);
+
+    // Verify has_nulls is false
+    ASSERT_FALSE(deserialized->HasNulls());
+}
+
+TEST_F(SortedIndexFileMetaTest, SerializeDeserializeWithOnlyFirstKey) {
+    // Create a SortedIndexFileMeta with only first_key (edge case)
+    auto first_key = std::make_shared<Bytes>("first", pool_.get());
+    auto meta = std::make_shared<SortedIndexFileMeta>(first_key, nullptr, false);
+
+    // Serialize
+    auto serialized = meta->Serialize(pool_.get());
+    ASSERT_TRUE(serialized);
+
+    // Deserialize
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized);
+
+    // Verify first_key
+    auto deserialized_first = deserialized->FirstKey();
+    ASSERT_TRUE(deserialized_first);
+    ASSERT_EQ(std::string(deserialized_first->data(), deserialized_first->size()), "first");
+
+    // Verify last_key is null
+    ASSERT_FALSE(deserialized->LastKey());
+}
+
+TEST_F(SortedIndexFileMetaTest, SerializeDeserializeWithOnlyLastKey) {
+    // Create a SortedIndexFileMeta with only last_key (edge case)
+    auto last_key = std::make_shared<Bytes>("last", pool_.get());
+    auto meta = std::make_shared<SortedIndexFileMeta>(nullptr, last_key, false);
+
+    // Serialize
+    auto serialized = meta->Serialize(pool_.get());
+    ASSERT_TRUE(serialized);
+
+    // Deserialize
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized);
+
+    // Verify first_key is null
+    ASSERT_FALSE(deserialized->FirstKey());
+
+    // Verify last_key
+    auto deserialized_last = deserialized->LastKey();
+    ASSERT_TRUE(deserialized_last);
+    ASSERT_EQ(std::string(deserialized_last->data(), deserialized_last->size()), "last");
+}
+
+TEST_F(SortedIndexFileMetaTest, SerializeDeserializeBinaryKeys) {
+    // Create a SortedIndexFileMeta with binary keys containing null bytes
+    std::string binary_first = std::string("key\0with\0nulls", 14);
+    std::string binary_last = std::string("last\0key", 8);
+    auto first_key = std::make_shared<Bytes>(binary_first, pool_.get());
+    auto last_key = std::make_shared<Bytes>(binary_last, pool_.get());
+    auto meta = std::make_shared<SortedIndexFileMeta>(first_key, last_key, true);
+
+    // Serialize
+    auto serialized = meta->Serialize(pool_.get());
+    ASSERT_TRUE(serialized);
+
+    // Deserialize
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SortedIndexFileMeta> deserialized,
+                         SortedIndexFileMeta::Deserialize(serialized, pool_.get()));
+    ASSERT_TRUE(deserialized);
+
+    // Verify first_key
+    auto deserialized_first = deserialized->FirstKey();
+    ASSERT_TRUE(deserialized_first);
+    ASSERT_EQ(std::string(deserialized_first->data(), deserialized_first->size()), binary_first);
+
+    // Verify last_key
+    auto deserialized_last = deserialized->LastKey();
+    ASSERT_TRUE(deserialized_last);
+    ASSERT_EQ(std::string(deserialized_last->data(), deserialized_last->size()), binary_last);
+}
+
+}  // namespace paimon::test

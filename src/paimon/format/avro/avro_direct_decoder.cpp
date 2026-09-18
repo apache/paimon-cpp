@@ -466,6 +466,10 @@ Status AvroDirectDecoder::DecodeAvroToBuilder(const ::avro::NodePtr& avro_node,
     return DecodeFieldToBuilder(avro_node, projection, decoder, array_builder, ctx);
 }
 
+Status AvroDirectDecoder::SkipValue(const ::avro::NodePtr& avro_node, ::avro::Decoder* decoder) {
+    return SkipAvroValue(avro_node, decoder);
+}
+
 Status AvroDirectDecoder::ReserveBuilderCapacity(int64_t capacity,
                                                  arrow::ArrayBuilder* array_builder) {
     return ReserveBuilderCapacityImpl(capacity, array_builder);

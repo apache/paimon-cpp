@@ -100,10 +100,14 @@ class RestHttpClient {
     /// established connection breaking mid-request or a truncated response body) are
     /// retried; every other transport failure fails immediately. `follow_redirects`
     /// must be false when authentication headers are bound to the original request.
+    ///
+    /// `retry_safe=false` disables retries and redirects, overriding `follow_redirects`,
+    /// to prevent replay when the original request's outcome is unknown.
     Result<Response> Execute(const std::string& method, const std::string& path,
                              const std::map<std::string, std::string>& query_params,
                              const std::map<std::string, std::string>& headers,
-                             const std::string& body, bool follow_redirects = true) const;
+                             const std::string& body, bool follow_redirects = true,
+                             bool retry_safe = true) const;
 
     const std::string& GetBaseUri() const {
         return base_uri_;

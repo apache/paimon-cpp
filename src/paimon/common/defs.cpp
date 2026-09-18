@@ -104,6 +104,8 @@ const char Options::CHANGELOG_PRODUCER[] = "changelog-producer";
 const char Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE[] = "changelog-producer.row-deduplicate";
 const char Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS[] =
     "changelog-producer.row-deduplicate-ignore-fields";
+const char Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE[] =
+    "changelog-producer.input.parallel-write";
 const char Options::CHANGELOG_FILE_PREFIX[] = "changelog-file.prefix";
 const char Options::CHANGELOG_FILE_FORMAT[] = "changelog-file.format";
 const char Options::CHANGELOG_FILE_COMPRESSION[] = "changelog-file.compression";
@@ -164,6 +166,7 @@ const char Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED[] = "table-read.sequence-
 const char Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED[] = "key-value.sequence_number.enabled";
 const char Options::SCAN_TIMESTAMP_MILLIS[] = "scan.timestamp-millis";
 const char Options::REALTIME_ENABLED[] = "realtime.enabled";
+const char Options::REALTIME_SPILL_ENABLED[] = "realtime.spill-enabled";
 const char Options::REALTIME_READ_VIEW_TTL[] = "realtime.read-view-ttl";
 const char Options::REALTIME_STORE_STATS_MODE[] = "realtime.store.stats-mode";
 const char Options::SCAN_TIMESTAMP[] = "scan.timestamp";

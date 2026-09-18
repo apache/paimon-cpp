@@ -1,0 +1,29 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "id",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "f_map_blob",
+    "type" : {
+      "type" : "MAP",
+      "key" : "STRING NOT NULL",
+      "value" : "BLOB"
+    }
+  } ],
+  "highestFieldId" : 1,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "blob-field" : "f_map_blob",
+    "row-tracking.enabled" : "true",
+    "data-evolution.enabled" : "true",
+    "manifest.format" : "avro",
+    "file.format" : "parquet"
+  },
+  "timeMillis" : 1788859708882
+}

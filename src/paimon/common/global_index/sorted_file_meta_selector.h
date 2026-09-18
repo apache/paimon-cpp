@@ -1,0 +1,89 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+#pragma once
+
+#include <functional>
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "paimon/common/global_index/key_serializer.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
+#include "paimon/common/memory/memory_slice.h"
+#include "paimon/global_index/global_index_io_meta.h"
+#include "paimon/predicate/function_visitor.h"
+
+namespace paimon {
+
+/// Selects candidate global index files by per-index-file min/max metadata.
+///
+/// All files are expected to belong to the same field.
+class SortedFileMetaSelector : public FunctionVisitor<std::vector<GlobalIndexIOMeta>> {
+ public:
+    static Result<std::unique_ptr<SortedFileMetaSelector>> Create(
+        const std::vector<GlobalIndexIOMeta>& files,
+        const std::shared_ptr<KeySerializer>& key_serializer);
+
+    Result<std::vector<GlobalIndexIOMeta>> VisitIsNotNull() override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitIsNull() override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitEqual(const Literal& literal) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitNotEqual(const Literal& literal) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitLessThan(const Literal& literal) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitLessOrEqual(const Literal& literal) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitGreaterThan(const Literal& literal) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitGreaterOrEqual(const Literal& literal) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitIn(const std::vector<Literal>& literals) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitNotIn(
+        const std::vector<Literal>& literals) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitStartsWith(const Literal& prefix) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitEndsWith(const Literal& suffix) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitContains(const Literal& literal) override;
+    Result<std::vector<GlobalIndexIOMeta>> VisitLike(const Literal& literal) override;
+
+ private:
+    SortedFileMetaSelector(
+        std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<SortedIndexFileMeta>>> files,
+        std::shared_ptr<KeySerializer> key_serializer);
+
+    using MetaPredicate = std::function<Result<bool>(const SortedIndexFileMeta&)>;
+
+    Result<std::vector<GlobalIndexIOMeta>> Filter(const MetaPredicate& predicate) const;
+
+    Result<bool> Overlaps(const SortedIndexFileMeta& meta, const MemorySlice& from,
+                          const MemorySlice& to) const;
+
+    Result<int32_t> CompareFirstKey(const SortedIndexFileMeta& meta,
+                                    const MemorySlice& literal) const;
+
+    Result<int32_t> CompareLastKey(const SortedIndexFileMeta& meta,
+                                   const MemorySlice& literal) const;
+
+    Result<MemorySlice> SerializeLiteral(const Literal& literal) const;
+
+    /// Create a non-owning MemorySlice view over the raw bytes of a key,
+    /// avoiding shared_ptr reference-count overhead.
+    static MemorySlice WrapKeySlice(const std::shared_ptr<Bytes>& key);
+
+    std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<SortedIndexFileMeta>>> files_;
+    std::shared_ptr<KeySerializer> key_serializer_;
+    MemorySlice::SliceComparator comparator_;
+};
+
+}  // namespace paimon

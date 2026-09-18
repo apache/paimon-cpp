@@ -435,6 +435,7 @@ struct CoreOptions::Impl {
     std::optional<int32_t> global_index_thread_num;
 
     bool realtime_enabled = false;
+    bool realtime_spill_enabled = false;
     bool scan_manifest_entry_lazy_decode_enabled = true;
     bool ignore_delete = false;
     bool manifest_delete_file_drop_stats = false;
@@ -446,6 +447,7 @@ struct CoreOptions::Impl {
     bool force_lookup = false;
     bool lookup_wait = true;
     bool changelog_row_deduplicate = false;
+    bool input_changelog_parallel_write_enabled = true;
     bool partial_update_remove_record_on_delete = false;
     bool aggregation_remove_record_on_delete = false;
     bool table_read_sequence_number_enabled = false;
@@ -751,6 +753,10 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.ParseList<std::string>(
             Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, Options::FIELDS_SEPARATOR,
             &changelog_row_deduplicate_ignore_fields, /*need_trim=*/true));
+        // Parse changelog-producer.input.parallel-write - write data and input changelog
+        // files in parallel, default true.
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE,
+                                                &input_changelog_parallel_write_enabled));
         // Parse partial-update.remove-record-on-delete - remove whole row on delete
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE,
                                                 &partial_update_remove_record_on_delete));
@@ -847,6 +853,8 @@ struct CoreOptions::Impl {
     // Parse real-time write and read configurations.
     Status ParseRealtimeOptions(const ConfigParser& parser) {
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::REALTIME_ENABLED, &realtime_enabled));
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::REALTIME_SPILL_ENABLED, &realtime_spill_enabled));
         PAIMON_RETURN_NOT_OK(parser.ParseTimeDuration(Options::REALTIME_READ_VIEW_TTL,
                                                       &realtime_read_view_ttl_millis));
         if (realtime_read_view_ttl_millis <= 0) {
@@ -1184,6 +1192,10 @@ std::optional<int64_t> CoreOptions::GetScanTimestampMillis() const {
 
 bool CoreOptions::RealtimeEnabled() const {
     return impl_->realtime_enabled;
+}
+
+bool CoreOptions::RealtimeSpillEnabled() const {
+    return impl_->realtime_spill_enabled;
 }
 
 int64_t CoreOptions::GetRealtimeReadViewTtlMillis() const {
@@ -1621,6 +1633,10 @@ bool CoreOptions::ChangelogRowDeduplicate() const {
 
 const std::vector<std::string>& CoreOptions::GetChangelogRowDeduplicateIgnoreFields() const {
     return impl_->changelog_row_deduplicate_ignore_fields;
+}
+
+bool CoreOptions::InputChangelogParallelWriteEnabled() const {
+    return impl_->input_changelog_parallel_write_enabled;
 }
 
 std::string CoreOptions::ChangelogFilePrefix() const {

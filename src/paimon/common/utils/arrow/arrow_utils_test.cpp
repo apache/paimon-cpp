@@ -19,6 +19,8 @@
 
 #include "paimon/common/utils/arrow/arrow_utils.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -220,6 +222,186 @@ TEST(ArrowUtilsTest, TestCheckNullableMatchWithStruct) {
     }
 }
 
+TEST(ArrowUtilsTest, TestCheckNullableMatchParentNullMasksChildren) {
+    auto child = arrow::field("child", arrow::int32(), /*nullable=*/false);
+    auto struct_field = arrow::field("parent", arrow::struct_({child}), /*nullable=*/true);
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto vector_field = arrow::field("embedding", vector_type, /*nullable=*/true);
+    auto schema = arrow::schema({struct_field, vector_field});
+
+    // Do not build the complete batch with ArrayFromJSON: for a null STRUCT it appends a valid
+    // default value to primitive children, which cannot represent the hidden child null under test.
+    auto parent_with_validity = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({child}), R"([null, [1]])")
+            .ValueOrDie());
+    std::shared_ptr<arrow::Array> child_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[null, 1]").ValueOrDie();
+    std::shared_ptr<arrow::StructArray> parent =
+        arrow::StructArray::Make({child_array}, {child}, parent_with_validity->null_bitmap(),
+                                 parent_with_validity->null_count())
+            .ValueOrDie();
+    auto vector = checked_pointer_cast<arrow::FixedSizeListArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(vector_type, R"([null, [1.0, 2.0, 3.0]])")
+            .ValueOrDie());
+    std::shared_ptr<arrow::StructArray> batch =
+        arrow::StructArray::Make({parent, vector}, {struct_field, vector_field}).ValueOrDie();
+
+    ASSERT_OK(ArrowUtils::CheckNullabilityMatch(schema, batch));
+}
+
+TEST(ArrowUtilsTest, TestCheckNullableMatchRejectsVisibleChildNulls) {
+    auto child = arrow::field("child", arrow::int32(), /*nullable=*/false);
+    auto struct_field = arrow::field("parent", arrow::struct_({child}), /*nullable=*/true);
+    std::shared_ptr<arrow::Array> struct_batch =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({struct_field}), R"([[[null]]])")
+            .ValueOrDie();
+    ASSERT_NOK_WITH_MSG(
+        ArrowUtils::CheckNullabilityMatch(arrow::schema({struct_field}), struct_batch),
+        "CheckNullabilityMatch failed, field child not nullable while data have null value");
+
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto vector_field = arrow::field("embedding", vector_type, /*nullable=*/true);
+    std::shared_ptr<arrow::Array> vector_batch =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({vector_field}),
+                                                  R"([[[1.0, null, 3.0]]])")
+            .ValueOrDie();
+    ASSERT_NOK_WITH_MSG(
+        ArrowUtils::CheckNullabilityMatch(arrow::schema({vector_field}), vector_batch),
+        "VECTOR field embedding is invalid: CheckNullabilityMatch failed, field item not nullable "
+        "while data have null value");
+}
+
+TEST(ArrowUtilsTest, TestCheckNullableMatchListParentNullMasksChildren) {
+    auto value_field = arrow::field("value", arrow::int32(), /*nullable=*/false);
+    auto list_type = arrow::list(value_field);
+    auto list_field = arrow::field("list_column", list_type, /*nullable=*/true);
+    auto offsets =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2]").ValueOrDie();
+    auto validity_source = checked_pointer_cast<arrow::ListArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(list_type, "[null, [1]]").ValueOrDie());
+
+    std::shared_ptr<arrow::Array> hidden_values =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[null, 1]").ValueOrDie();
+    std::shared_ptr<arrow::ListArray> hidden_list =
+        arrow::ListArray::FromArrays(list_type, *offsets, *hidden_values,
+                                     arrow::default_memory_pool(), validity_source->null_bitmap(),
+                                     /*null_count=*/1)
+            .ValueOrDie();
+    std::shared_ptr<arrow::StructArray> hidden_batch =
+        arrow::StructArray::Make({hidden_list}, {list_field}).ValueOrDie();
+    ASSERT_TRUE(hidden_batch->ValidateFull().ok());
+    ASSERT_OK(ArrowUtils::CheckNullabilityMatch(arrow::schema({list_field}), hidden_batch));
+
+    std::shared_ptr<arrow::Array> visible_values =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[null, null]").ValueOrDie();
+    std::shared_ptr<arrow::ListArray> visible_list =
+        arrow::ListArray::FromArrays(list_type, *offsets, *visible_values,
+                                     arrow::default_memory_pool(), validity_source->null_bitmap(),
+                                     /*null_count=*/1)
+            .ValueOrDie();
+    std::shared_ptr<arrow::StructArray> visible_batch =
+        arrow::StructArray::Make({visible_list}, {list_field}).ValueOrDie();
+    ASSERT_TRUE(visible_batch->ValidateFull().ok());
+    ASSERT_NOK_WITH_MSG(
+        ArrowUtils::CheckNullabilityMatch(arrow::schema({list_field}), visible_batch),
+        "CheckNullabilityMatch failed, field value not nullable while data have null value");
+}
+
+TEST(ArrowUtilsTest, TestCheckNullableMatchMapParentNullMasksChildren) {
+    auto key_field = arrow::field("key", arrow::int32(), /*nullable=*/false);
+    auto item_field = arrow::field("item", arrow::int32(), /*nullable=*/false);
+    auto map_type = std::make_shared<arrow::MapType>(key_field, item_field);
+    auto map_field = arrow::field("map_column", map_type, /*nullable=*/true);
+    auto offsets =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2]").ValueOrDie();
+    std::shared_ptr<arrow::Array> keys =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[1, 2]").ValueOrDie();
+    auto validity_source = checked_pointer_cast<arrow::ListArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::list(arrow::int32()), "[null, [1]]")
+            .ValueOrDie());
+
+    // Arrow rejects physical null MAP keys during construction, so exercise masking with the
+    // non-nullable item field.
+    std::shared_ptr<arrow::Array> hidden_items =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[null, 20]").ValueOrDie();
+    std::shared_ptr<arrow::Array> hidden_map =
+        arrow::MapArray::FromArrays(map_type, offsets, keys, hidden_items,
+                                    arrow::default_memory_pool(), validity_source->null_bitmap())
+            .ValueOrDie();
+    std::shared_ptr<arrow::StructArray> hidden_batch =
+        arrow::StructArray::Make({hidden_map}, {map_field}).ValueOrDie();
+    ASSERT_TRUE(hidden_batch->ValidateFull().ok());
+    ASSERT_OK(ArrowUtils::CheckNullabilityMatch(arrow::schema({map_field}), hidden_batch));
+
+    std::shared_ptr<arrow::Array> visible_items =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[null, null]").ValueOrDie();
+    std::shared_ptr<arrow::Array> visible_map =
+        arrow::MapArray::FromArrays(map_type, offsets, keys, visible_items,
+                                    arrow::default_memory_pool(), validity_source->null_bitmap())
+            .ValueOrDie();
+    std::shared_ptr<arrow::StructArray> visible_batch =
+        arrow::StructArray::Make({visible_map}, {map_field}).ValueOrDie();
+    ASSERT_TRUE(visible_batch->ValidateFull().ok());
+    ASSERT_NOK_WITH_MSG(
+        ArrowUtils::CheckNullabilityMatch(arrow::schema({map_field}), visible_batch),
+        "CheckNullabilityMatch failed, field item not nullable while data have null value");
+}
+
+TEST(ArrowUtilsTest, TestCheckNullableMatchWithSlicedList) {
+    auto value_field = arrow::field("value", arrow::int32(), /*nullable=*/false);
+    auto list_type = arrow::list(value_field);
+    auto list_field = arrow::field("list_column", list_type, /*nullable=*/true);
+    auto offsets =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2, 3]").ValueOrDie();
+    std::shared_ptr<arrow::Array> values =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[10, null, 30]").ValueOrDie();
+    auto validity_source = checked_pointer_cast<arrow::ListArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(list_type, "[[10], null, [30]]").ValueOrDie());
+    std::shared_ptr<arrow::ListArray> list =
+        arrow::ListArray::FromArrays(list_type, *offsets, *values, arrow::default_memory_pool(),
+                                     validity_source->null_bitmap(), /*null_count=*/1)
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> sliced_list = list->Slice(/*offset=*/1, /*length=*/2);
+    ASSERT_EQ(sliced_list->offset(), 1);
+
+    std::shared_ptr<arrow::StructArray> batch =
+        arrow::StructArray::Make({sliced_list}, {list_field}).ValueOrDie();
+    ASSERT_TRUE(batch->ValidateFull().ok());
+    ASSERT_OK(ArrowUtils::CheckNullabilityMatch(arrow::schema({list_field}), batch));
+}
+
+TEST(ArrowUtilsTest, TestCheckNullableMatchDeepParentNullMasksChildren) {
+    auto leaf_field = arrow::field("leaf", arrow::int32(), /*nullable=*/false);
+    auto item_type = arrow::struct_({leaf_field});
+    auto item_field = arrow::field("item", item_type, /*nullable=*/false);
+    auto list_type = arrow::list(item_field);
+    auto list_field = arrow::field("list_column", list_type, /*nullable=*/true);
+    auto outer_field = arrow::field("outer", arrow::struct_({list_field}), /*nullable=*/false);
+
+    std::shared_ptr<arrow::Array> leaves =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[null, 1]").ValueOrDie();
+    std::shared_ptr<arrow::StructArray> items =
+        arrow::StructArray::Make({leaves}, {leaf_field}).ValueOrDie();
+    auto offsets =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2]").ValueOrDie();
+    auto validity_source = checked_pointer_cast<arrow::ListArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::list(arrow::int32()), "[null, [1]]")
+            .ValueOrDie());
+    std::shared_ptr<arrow::ListArray> list =
+        arrow::ListArray::FromArrays(list_type, *offsets, *items, arrow::default_memory_pool(),
+                                     validity_source->null_bitmap(), /*null_count=*/1)
+            .ValueOrDie();
+    std::shared_ptr<arrow::StructArray> outer =
+        arrow::StructArray::Make({list}, {list_field}).ValueOrDie();
+    std::shared_ptr<arrow::StructArray> batch =
+        arrow::StructArray::Make({outer}, {outer_field}).ValueOrDie();
+
+    ASSERT_TRUE(batch->ValidateFull().ok());
+    ASSERT_OK(ArrowUtils::CheckNullabilityMatch(arrow::schema({outer_field}), batch));
+}
+
 TEST(ArrowUtilsTest, TestCheckNullableMatchWithList) {
     auto value_field = arrow::field("value", arrow::int32(), /*nullable=*/false);
     auto list_field = arrow::field("list_column", arrow::list(value_field), /*nullable=*/false);
@@ -270,7 +452,8 @@ TEST(ArrowUtilsTest, TestCheckNullableMatchRejectsNullVectorElement) {
 
     ASSERT_NOK_WITH_MSG(
         ArrowUtils::CheckNullabilityMatch(arrow::schema({vector_field}), struct_array),
-        "VECTOR field embedding is invalid: VECTOR cannot contain null elements");
+        "VECTOR field embedding is invalid: CheckNullabilityMatch failed, field item not nullable "
+        "while data have null value");
 }
 
 // Arrow accepts a FixedSizeList whose child is shorter than `length * list_size` when importing
@@ -1213,6 +1396,127 @@ TEST(ArrowUtilsTest, TestFlattenUnresolvableDictionaries) {
         ASSERT_TRUE(flattened->field(0)->type()->Equals(*arrow::utf8()));
         ASSERT_TRUE(flattened->field(1)->type()->Equals(*arrow::utf8()));
     }
+}
+
+namespace {
+
+/// What `ArrowUtils::UnpackBooleansToBytes` has to agree with: every row taken one at a time
+/// through the very accessors the helper replaces.
+std::vector<char> UnpackRowByRow(const arrow::BooleanArray& array, bool negate) {
+    std::vector<char> is_valid(static_cast<size_t>(array.length()), 0);
+    for (int64_t i = 0; i < array.length(); i++) {
+        if (array.IsNull(i)) {
+            continue;
+        }
+        is_valid[i] = static_cast<char>(array.Value(i) != negate);
+    }
+    return is_valid;
+}
+
+/// A boolean array of `values.size()` rows holding the value `values[i]` at row `i`, with a
+/// validity bitmap that marks row `i` as holding one when `valid[i]` is true.
+std::shared_ptr<arrow::BooleanArray> BooleansOf(const std::vector<bool>& values,
+                                                const std::vector<bool>& valid) {
+    const auto length = static_cast<int64_t>(values.size());
+    std::shared_ptr<arrow::Buffer> value_bits = arrow::AllocateBitmap(length).ValueOrDie();
+    std::shared_ptr<arrow::Buffer> valid_bits = arrow::AllocateBitmap(length).ValueOrDie();
+    int64_t null_count = 0;
+    for (int64_t i = 0; i < length; i++) {
+        arrow::bit_util::SetBitTo(value_bits->mutable_data(), i, values[static_cast<size_t>(i)]);
+        arrow::bit_util::SetBitTo(valid_bits->mutable_data(), i, valid[static_cast<size_t>(i)]);
+        null_count += valid[static_cast<size_t>(i)] ? 0 : 1;
+    }
+    return std::make_shared<arrow::BooleanArray>(length, value_bits, valid_bits, null_count);
+}
+
+}  // namespace
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytes) {
+    std::shared_ptr<arrow::Array> made =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::boolean(), R"([true, false, null, true])")
+            .ValueOrDie();
+    const auto& array = checked_cast<const arrow::BooleanArray&>(*made);
+
+    // A null row is left at 0 whatever the value bitmap holds for it.
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/false),
+              std::vector<char>({1, 0, 0, 1}));
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/true),
+              std::vector<char>({0, 1, 0, 0}));
+}
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytesAgreesWithTheAccessorsOnEverySlice) {
+    // Neither the row count nor the periods the values and the nulls repeat on are a multiple of
+    // eight, so the slices below land on a partial leading byte, on whole bytes and on a partial
+    // trailing one, whichever offset and length they take.
+    constexpr int64_t kRows = 41;
+    std::vector<bool> values;
+    std::vector<bool> valid;
+    for (int64_t i = 0; i < kRows; i++) {
+        values.push_back((i * 7 + 3) % 5 != 0);
+        valid.push_back(i % 4 != 0);
+    }
+    const std::shared_ptr<arrow::BooleanArray> source = BooleansOf(values, valid);
+
+    for (int64_t offset = 0; offset <= kRows; offset++) {
+        for (int64_t length = 0; length <= kRows - offset; length++) {
+            // `Slice` returns a new owner, so it has to be held for as long as the slice is read.
+            std::shared_ptr<arrow::Array> sliced = source->Slice(offset, length);
+            const auto& slice = checked_cast<const arrow::BooleanArray&>(*sliced);
+            for (bool negate : {false, true}) {
+                ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(slice, negate),
+                          UnpackRowByRow(slice, negate))
+                    << "offset=" << offset << " length=" << length << " negate=" << negate;
+            }
+        }
+    }
+}
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytesWithoutAValidityBitmap) {
+    // A bitmap written for a column with no null in it carries no validity buffer at all, which
+    // `Array::IsValid` reads as every row holding a value.
+    const int64_t length = 10;
+    std::shared_ptr<arrow::Buffer> value_bits = arrow::AllocateBitmap(length).ValueOrDie();
+    for (int64_t i = 0; i < length; i++) {
+        arrow::bit_util::SetBitTo(value_bits->mutable_data(), i, i % 3 != 0);
+    }
+    const arrow::BooleanArray array(length, value_bits, /*null_bitmap=*/nullptr,
+                                    /*null_count=*/0);
+
+    std::vector<char> expected(static_cast<size_t>(length));
+    for (int64_t i = 0; i < length; i++) {
+        expected[static_cast<size_t>(i)] = static_cast<char>(i % 3 != 0);
+    }
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/false), expected);
+    ASSERT_EQ(UnpackRowByRow(array, /*negate=*/false), expected);
+
+    // `negate` still applies once every row holds a value.
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/true),
+              UnpackRowByRow(array, /*negate=*/true));
+}
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytesOfAnArrayThatIsNullThroughout) {
+    // A predicate over a column no row holds a value in leaves every row null. The value bitmap is
+    // all set, so a 1 among the unpacked bytes can only be a null row read as holding a value.
+    const int64_t length = 9;
+    const std::shared_ptr<arrow::BooleanArray> array =
+        BooleansOf(std::vector<bool>(static_cast<size_t>(length), true),
+                   std::vector<bool>(static_cast<size_t>(length), false));
+    const arrow::Status validated = array->ValidateFull();
+    ASSERT_TRUE(validated.ok()) << validated.ToString();
+
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(*array, /*negate=*/false),
+              std::vector<char>(static_cast<size_t>(length), 0));
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(*array, /*negate=*/true),
+              std::vector<char>(static_cast<size_t>(length), 0));
+    ASSERT_EQ(UnpackRowByRow(*array, /*negate=*/true),
+              std::vector<char>(static_cast<size_t>(length), 0));
+}
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytesOfAnEmptyArray) {
+    const arrow::BooleanArray array(/*length=*/0, /*data=*/nullptr);
+
+    ASSERT_TRUE(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/false).empty());
+    ASSERT_TRUE(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/true).empty());
 }
 
 }  // namespace paimon::test

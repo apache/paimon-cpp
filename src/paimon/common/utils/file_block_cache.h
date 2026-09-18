@@ -22,7 +22,7 @@
 #include <cstdint>
 #include <future>
 #include <memory>
-#include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 
 #include "paimon/common/metrics/atomic_counter_pair.h"
@@ -142,14 +142,14 @@ class PAIMON_EXPORT FileBlockCache {
     // Blocks are aligned, so keying them by index keeps them disjoint by
     // construction and needs no ordering. A plain mutex is enough: only the
     // reads that no prefetched range covers touch the map, and they are few.
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     std::unordered_map<uint64_t, std::shared_ptr<Block>> blocks_;
     // Bytes held by blocks_, guarded by mutex_ and bounded by capacity_.
     uint64_t cached_bytes_ = 0;
     // The requests served out of a block, and the block fetches issued to the
     // underlying stream.
-    AtomicCounterPair hits_;
-    AtomicCounterPair fetches_;
+    AtomicCounterPair hit_metrics_;
+    AtomicCounterPair fetch_metrics_;
 };
 
 }  // namespace paimon

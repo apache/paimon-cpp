@@ -234,7 +234,7 @@ TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
 
 // A system table builds a fresh ReadContext for the data table underneath it, starting from the
 // defaults, so a setting that is not copied across silently reverts: a caller that asked for NONE
-// or RAW would get DECODED back. `$ro` has its own builder chain and `$audit_log` and `$binlog`
+// or DECODED would get RAW back. `$ro` has its own builder chain and `$audit_log` and `$binlog`
 // share one, so all three are pinned here.
 TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},

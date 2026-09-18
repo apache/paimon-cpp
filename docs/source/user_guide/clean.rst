@@ -113,6 +113,13 @@ Description
 
 - The snapshot expiration interface deletes data files according to the
   expiration policy and returns the number of snapshots deleted.
+- Expiration on a branch other than main, or on a table with such a branch under
+  ``branch/branch-<name>``, is not supported: branches share the table's data
+  files, so expiration returns ``NotImplemented`` before deleting anything.
+- A branch is found only by that directory. A branch held only by a catalog, or
+  one created while expiration runs, is not found, and expiration could delete
+  data files it still refers to: do not expire a table with such a branch, and
+  serialize branch creation and expiration.
 
 Detailed Steps
 ~~~~~~~~~~~~~~

@@ -23,11 +23,12 @@
 #include "paimon/common/utils/read_ahead_cache.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <cstring>
 #include <future>
+#include <optional>
 #include <shared_mutex>
+#include <utility>
 
 #include "paimon/common/memory/bytes_utils.h"
 #include "paimon/common/metrics/atomic_counter_pair.h"
@@ -39,23 +40,8 @@
 
 namespace paimon {
 
-struct RangeCacheEntry {
-    ByteRange range;
-    std::shared_ptr<Bytes> buffer;
-    std::shared_future<Status> future;  // use shared_future in case of multiple get calls
-
-    RangeCacheEntry() = default;
-    RangeCacheEntry(const ByteRange& range, std::shared_ptr<Bytes> buffer,
-                    std::future<Status> future)
-        : range(range), buffer(std::move(buffer)), future(std::move(future).share()) {}
-
-    friend bool operator<(const RangeCacheEntry& left, const RangeCacheEntry& right) {
-        return left.range.offset < right.range.offset;
-    }
-};
-
 // Everything needed to dispatch the prefetch IO of an entry AFTER the entry
-// has been published into entries_: the promise resolves the entry's future
+// has been published into ranges_: the promise resolves the entry's future
 // and the buffer capture keeps the destination alive for the async IO.
 struct PendingFetch {
     ByteRange range;
@@ -82,146 +68,154 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
 
 }  // namespace
 
-class ReadAheadCache::Impl {
- public:
-    Impl(const std::shared_ptr<InputStream>& stream, const CacheConfig& config, uint64_t file_size,
-         const std::shared_ptr<MemoryPool>& memory_pool);
-    ~Impl();
-
-    Status Init(std::vector<ByteRange>&& ranges);
-    Result<bool> Read(const ByteRange& range, char* dest);
-    void Reset();
-    void ReleaseBuffers();
-    void Warmup();
-    void CollectMetrics(std::shared_ptr<Metrics>* metrics) const;
-
- private:
-    /// Dispatch the prefetch IOs for entries that have already been published
-    /// into entries_.
-    void DispatchFetches(const std::vector<PendingFetch>& fetches);
-    /// Find the entries fully covering the given range under the read lock.
-    /// Returns an empty vector on miss. Entries are copied (shared buffers)
-    /// so the caller may use them after releasing the lock.
-    std::vector<RangeCacheEntry> FindCoveringEntries(const ByteRange& range);
-    void PreBuffer(uint64_t offset);
-
-    /// Mark, publish and fetch the pending ranges at the given indices.
-    ///
-    /// Marking is_cached_ and publishing the promise-backed entries happen
-    /// atomically under the write lock, before any IO is dispatched, so a
-    /// reader racing the prefetch waits on the in-flight entries instead of
-    /// re-fetching the same bytes.
-    void Cache(std::vector<size_t> pending_indices);
-
-    /// Clear the prefetch state, waiting for the fetches still writing into the
-    /// entry buffers. Leaves the block cache untouched.
-    void ReleasePrefetchBuffers();
-
-    std::shared_ptr<InputStream> stream_;
-    CacheConfig config_;
-    // Ordered by offset (so as to find a matching region by binary search)
-    std::vector<RangeCacheEntry> entries_;
-    std::shared_ptr<MemoryPool> memory_pool_;
-    std::shared_mutex rw_mutex_;
-    std::vector<std::atomic<bool>> is_cached_;
-    std::vector<ByteRange> pending_ranges_;
-    bool is_initialized_ = false;
-    // Caches the reads that no registered range covers, or null when the block
-    // cache is disabled. Owns its own locking and counters.
-    std::unique_ptr<FileBlockCache> block_cache_;
-    // The Read() requests issued to the cache and how they were served,
-    // aggregated over all the streams sharing this cache. A read is counted
-    // either as a hit, a block cache hit or a miss.
-    AtomicCounterPair reads_;
-    AtomicCounterPair hits_;
-    AtomicCounterPair misses_;
-    // The prefetch IO actually issued to the underlying stream. The block cache
-    // counts its own fetches, which CollectMetrics() adds to these.
-    AtomicCounterPair ios_;
-};
-
-void ReadAheadCache::Impl::Cache(std::vector<size_t> pending_indices) {
-    std::vector<RangeCacheEntry> new_entries;
-    std::vector<PendingFetch> fetches;
-    // Mark is_cached_, publish the promise-backed entries and only then
-    // dispatch the IOs. The mark and the publication happen atomically under
-    // the write lock: a reader racing the prefetch observes is_cached_=true
-    // only once the covering entries are already visible, so it waits on
-    // their futures instead of issuing a duplicate underlying read.
-    {
-        std::unique_lock<std::shared_mutex> lock(rw_mutex_);
-        for (size_t idx : pending_indices) {
-            if (is_cached_[idx].exchange(true)) {
-                continue;
-            }
-            const ByteRange& range = pending_ranges_[idx];
-            auto promise = std::make_shared<std::promise<Status>>();
-            auto future = promise->get_future();
-            auto buffer = AllocateBytesKeepingPoolAlive(range.length, memory_pool_);
-            fetches.push_back({range, buffer, promise});
-            new_entries.emplace_back(range, std::move(buffer), std::move(future));
-        }
-        if (!new_entries.empty()) {
-            // Entries are never evicted: the cache holds every published
-            // range until ReleaseBuffers()/Reset(), so an in-flight fetch
-            // always keeps its entry and thus its future reachable.
-            std::vector<RangeCacheEntry> merged(entries_.size() + new_entries.size());
-            std::merge(entries_.begin(), entries_.end(), new_entries.begin(), new_entries.end(),
-                       merged.begin());
-            entries_ = std::move(merged);
-        }
-    }
-    DispatchFetches(fetches);
-}
-
-Status ReadAheadCache::Impl::Init(std::vector<ByteRange>&& ranges) {
-    if (is_initialized_) {
-        return Status::Invalid("Cache has already been initialized");
-    }
+Result<std::optional<uint64_t>> ReadAheadCache::AddRanges(std::vector<ByteRange>&& ranges) {
+    // Both an up-front registration and a mid-read one are cut at the plain size limit.
     PAIMON_ASSIGN_OR_RAISE(
-        std::vector<ByteRange> pending_ranges,
+        std::vector<ByteRange> new_ranges,
         ByteRangeCombiner::CoalesceByteRanges(std::move(ranges), config_.GetHoleSizeLimit(),
                                               config_.GetRangeSizeLimit()));
-    for (const auto& pending_range : pending_ranges) {
-        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(pending_range.offset, "range offset"));
-        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(pending_range.length, "range length"));
+    for (const auto& new_range : new_ranges) {
+        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(new_range.offset, "range offset"));
+        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(new_range.length, "range length"));
     }
-    pending_ranges_ = pending_ranges;
-    is_cached_ = std::vector<std::atomic<bool>>(pending_ranges_.size());
-    for (auto& is_cached : is_cached_) {
-        is_cached.store(false);
-    }
-    is_initialized_ = true;
-    return Status::OK();
+
+    // Locked: a registration rewrites the very ranges_ a concurrent Read() serves from, so it
+    // must not race the read finding its covering entries.
+    std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+    return MergeRangesLocked(std::move(new_ranges));
 }
 
-void ReadAheadCache::Impl::PreBuffer(uint64_t offset) {
-    auto it = std::lower_bound(pending_ranges_.begin(), pending_ranges_.end(), offset,
-                               [](const ByteRange& range, uint64_t offset) {
-                                   return range.offset + range.length <= offset;
-                               });
-    if (it == pending_ranges_.end() || it->offset > offset) {
-        return;
+std::optional<uint64_t> ReadAheadCache::MergeRangesLocked(std::vector<ByteRange>&& new_ranges) {
+    // Merge the two sorted, internally disjoint lists, keeping the result disjoint so that
+    // FindCoveringEntries() may keep walking it: of a new range, only the parts no registered
+    // range covers are registered. Already registered entries are moved over as-is, so a range
+    // that was published keeps its buffer and future and is never fetched again.
+    std::vector<RangeCacheEntry> merged;
+    merged.reserve(ranges_.size() + new_ranges.size());
+    std::optional<uint64_t> first_added;
+    size_t old_idx = 0;
+    auto keep_registered = [&]() {
+        merged.push_back(std::move(ranges_[old_idx]));
+        ++old_idx;
+    };
+    auto register_new = [&](uint64_t offset, uint64_t length) {
+        if (!first_added.has_value()) {
+            first_added = offset;
+        }
+        merged.emplace_back(ByteRange(offset, length));
+    };
+    for (const ByteRange& candidate : new_ranges) {
+        const uint64_t candidate_end = candidate.offset + candidate.length;
+        // Start of the part of the candidate that is not registered yet.
+        uint64_t cursor = candidate.offset;
+        while (cursor < candidate_end) {
+            if (old_idx == ranges_.size()) {
+                register_new(cursor, candidate_end - cursor);
+                break;
+            }
+            const ByteRange registered = ranges_[old_idx].range;
+            const uint64_t registered_end = registered.offset + registered.length;
+            if (registered_end <= cursor) {
+                // Entirely before what is left of the candidate, so its place in the merged list
+                // is settled.
+                keep_registered();
+                continue;
+            }
+            if (registered.offset >= candidate_end) {
+                // The candidate ends before this one starts: the rest of it is new.
+                register_new(cursor, candidate_end - cursor);
+                break;
+            }
+            // Overlap: the hole before the registered range is new, and the overlapping part is
+            // dropped because it is already being fetched. The registered range is left for the
+            // next iteration to settle, as a later candidate may still start before it.
+            if (registered.offset > cursor) {
+                register_new(cursor, registered.offset - cursor);
+            }
+            cursor = registered_end;
+        }
     }
+    while (old_idx < ranges_.size()) {
+        keep_registered();
+    }
+    // Always move the merged list back: keep_registered() has already moved the existing entries'
+    // buffer/future out of ranges_, so returning early without this would drop the published state
+    // (and the future to wait on) even when nothing new was registered.
+    ranges_ = std::move(merged);
+    return first_added;
+}
 
-    size_t start_idx = std::distance(pending_ranges_.begin(), it);
-    std::vector<size_t> pending_indices;
+bool ReadAheadCache::WindowHasUnpublishedLocked(uint64_t offset) const {
+    auto it = std::lower_bound(ranges_.begin(), ranges_.end(), offset,
+                               [](const RangeCacheEntry& entry, uint64_t offset) {
+                                   return entry.range.offset + entry.range.length <= offset;
+                               });
+    if (it == ranges_.end() || it->range.offset > offset) {
+        return false;
+    }
     size_t total_bytes = 0;
-    for (size_t i = start_idx; i < pending_ranges_.size(); ++i) {
-        total_bytes += pending_ranges_[i].length;
+    for (auto entry = it; entry != ranges_.end(); ++entry) {
+        total_bytes += entry->range.length;
         if (total_bytes > config_.GetPreBufferLimit()) {
             break;
         }
-        pending_indices.push_back(i);
+        if (!entry->Published()) {
+            return true;
+        }
     }
-
-    if (!pending_indices.empty()) {
-        Cache(std::move(pending_indices));
-    }
+    return false;
 }
 
-ReadAheadCache::Impl::Impl(const std::shared_ptr<InputStream>& stream, const CacheConfig& config,
-                           uint64_t file_size, const std::shared_ptr<MemoryPool>& memory_pool)
+void ReadAheadCache::PreBuffer(uint64_t offset) {
+    // Fast path under the read lock: once the whole prefetch window is published there is nothing
+    // left to fetch, and returning here keeps the hot Read() path off the write lock, so concurrent
+    // readers' lookups are not serialized behind a publish that has nothing to publish.
+    {
+        std::shared_lock<std::shared_mutex> read_lock(rw_mutex_);
+        if (!WindowHasUnpublishedLocked(offset)) {
+            return;
+        }
+    }
+    std::vector<PendingFetch> fetches;
+    {
+        std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+        auto it = std::lower_bound(ranges_.begin(), ranges_.end(), offset,
+                                   [](const RangeCacheEntry& entry, uint64_t offset) {
+                                       return entry.range.offset + entry.range.length <= offset;
+                                   });
+        if (it == ranges_.end() || it->range.offset > offset) {
+            return;
+        }
+
+        size_t total_bytes = 0;
+        for (auto entry = it; entry != ranges_.end(); ++entry) {
+            total_bytes += entry->range.length;
+            if (total_bytes > config_.GetPreBufferLimit()) {
+                break;
+            }
+            if (entry->Published()) {
+                continue;
+            }
+            auto promise = std::make_shared<std::promise<Status>>();
+            auto future = promise->get_future();
+            auto buffer = AllocateBytesKeepingPoolAlive(entry->range.length, memory_pool_);
+            fetches.push_back({entry->range, buffer, promise});
+            // Published IN PLACE under the write lock, before the IO is dispatched below: a
+            // reader racing the prefetch then finds the entry and waits on its future instead of
+            // issuing a second fetch for the same bytes. Entries are never evicted, so an
+            // in-flight fetch always keeps its entry and thus its future reachable.
+            entry->buffer = std::move(buffer);
+            entry->future = std::move(future).share();
+        }
+    }
+    // Dispatched OUTSIDE the lock, so that a fetch completing inline does not deadlock against a
+    // Read() waiting for it.
+    DispatchFetches(fetches);
+}
+
+ReadAheadCache::ReadAheadCache(const std::shared_ptr<InputStream>& stream,
+                               const CacheConfig& config, uint64_t file_size,
+                               const std::shared_ptr<MemoryPool>& memory_pool)
     : stream_(stream), config_(config), memory_pool_(memory_pool) {
     // An unknown file size cannot be aligned to, and a zero limit or block size
     // means the block cache is turned off: leave it null in those cases.
@@ -231,20 +225,22 @@ ReadAheadCache::Impl::Impl(const std::shared_ptr<InputStream>& stream, const Cac
     }
 }
 
-ReadAheadCache::Impl::~Impl() {
+ReadAheadCache::~ReadAheadCache() {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
-    for (auto& entry : entries_) {
-        entry.future.wait();
+    for (auto& entry : ranges_) {
+        if (entry.Published()) {
+            entry.future.wait();
+        }
     }
     // The block cache waits for its own fetches when it is destroyed.
 }
 
-void ReadAheadCache::Impl::Reset() {
+void ReadAheadCache::Reset() {
     ReleasePrefetchBuffers();
-    reads_.Reset();
-    hits_.Reset();
-    misses_.Reset();
-    ios_.Reset();
+    read_metrics_.Reset();
+    hit_metrics_.Reset();
+    miss_metrics_.Reset();
+    io_metrics_.Reset();
     if (block_cache_ != nullptr) {
         // Only the counters: the blocks cache the file, not the registered
         // ranges, and a reader resetting the cache reads the same file again.
@@ -252,41 +248,47 @@ void ReadAheadCache::Impl::Reset() {
     }
 }
 
-void ReadAheadCache::Impl::ReleaseBuffers() {
+void ReadAheadCache::ReleaseBuffers() {
     ReleasePrefetchBuffers();
     if (block_cache_ != nullptr) {
         block_cache_->Release();
     }
 }
 
-void ReadAheadCache::Impl::ReleasePrefetchBuffers() {
-    std::unique_lock<std::shared_mutex> lock(rw_mutex_);
-    // Entries are never evicted, so waiting on entries_ covers every
-    // dispatched fetch: no fetch is still writing into an entry buffer when the
-    // buffers go away. The buffers keep the memory pool alive themselves, for
-    // the callbacks that a stream destroys later than it resolves them.
-    for (auto& entry : entries_) {
-        entry.future.wait();
+void ReadAheadCache::ReleasePrefetchBuffers() {
+    std::vector<RangeCacheEntry> to_release;
+    {
+        std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+        // Swap the entries out under the lock instead of waiting on them in place: an in-flight
+        // fetch may take arbitrarily long, and holding the write lock while waiting would stall
+        // every concurrent reader. Once swapped, the entries are owned locally and no other thread
+        // can observe or mutate them. Entries are never evicted, so waiting on the published ones
+        // covers every dispatched fetch: no fetch is still writing into an entry buffer when the
+        // buffers go away. The buffers keep the memory pool alive themselves, for the callbacks
+        // that a stream destroys later than it resolves them.
+        to_release.swap(ranges_);
     }
-    entries_.clear();
-    is_cached_.clear();
-    pending_ranges_.clear();
-    is_initialized_ = false;
+    // Wait OUTSIDE the lock; the buffers are released when to_release destructs.
+    for (auto& entry : to_release) {
+        if (entry.Published()) {
+            entry.future.wait();
+        }
+    }
     // The read/io counters are deliberately kept: a reader closed at EOF must
     // still be able to report them through CollectMetrics().
 }
 
-void ReadAheadCache::Impl::CollectMetrics(std::shared_ptr<Metrics>* metrics) const {
+void ReadAheadCache::CollectMetrics(std::shared_ptr<Metrics>* metrics) const {
     if (metrics == nullptr || !*metrics) {
         return;
     }
     auto& m = *metrics;
-    m->SetCounter(ReadAheadCacheMetrics::READ_COUNT, reads_.Count());
-    m->SetCounter(ReadAheadCacheMetrics::READ_BYTES, reads_.Bytes());
-    m->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.Count());
-    m->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES, hits_.Bytes());
-    m->SetCounter(ReadAheadCacheMetrics::READ_MISSES, misses_.Count());
-    m->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES, misses_.Bytes());
+    m->SetCounter(ReadAheadCacheMetrics::READ_COUNT, read_metrics_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_BYTES, read_metrics_.Bytes());
+    m->SetCounter(ReadAheadCacheMetrics::READ_HITS, hit_metrics_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES, hit_metrics_.Bytes());
+    m->SetCounter(ReadAheadCacheMetrics::READ_MISSES, miss_metrics_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES, miss_metrics_.Bytes());
     // The block cache keeps its own counters. Its fetches also go to the
     // underlying stream, so they are part of the io counters too.
     const FileBlockCache::Counters blocks =
@@ -295,28 +297,40 @@ void ReadAheadCache::Impl::CollectMetrics(std::shared_ptr<Metrics>* metrics) con
     m->SetCounter(ReadAheadCacheMetrics::BLOCK_HIT_BYTES, blocks.hit_bytes);
     m->SetCounter(ReadAheadCacheMetrics::BLOCK_FETCHES, blocks.fetches);
     m->SetCounter(ReadAheadCacheMetrics::BLOCK_FETCH_BYTES, blocks.fetch_bytes);
-    m->SetCounter(ReadAheadCacheMetrics::IO_COUNT, ios_.Count() + blocks.fetches);
-    m->SetCounter(ReadAheadCacheMetrics::IO_BYTES, ios_.Bytes() + blocks.fetch_bytes);
+    m->SetCounter(ReadAheadCacheMetrics::IO_COUNT, io_metrics_.Count() + blocks.fetches);
+    m->SetCounter(ReadAheadCacheMetrics::IO_BYTES, io_metrics_.Bytes() + blocks.fetch_bytes);
 }
 
-void ReadAheadCache::Impl::Warmup() {
-    // Init() only registers the pending ranges; without this the first fetch
+void ReadAheadCache::Warmup() {
+    // AddRanges() only registers the pending ranges; without this the first fetch
     // starts when the first Read() arrives, racing the reader's own miss fetch.
-    if (!pending_ranges_.empty()) {
-        PreBuffer(pending_ranges_.front().offset);
+    uint64_t from_offset = 0;
+    {
+        std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+        if (ranges_.empty()) {
+            return;
+        }
+        from_offset = ranges_.front().range.offset;
     }
+    PreBuffer(from_offset);
 }
 
-std::vector<RangeCacheEntry> ReadAheadCache::Impl::FindCoveringEntries(const ByteRange& range) {
+void ReadAheadCache::Warmup(uint64_t from_offset) {
+    PreBuffer(from_offset);
+}
+
+std::vector<RangeCacheEntry> ReadAheadCache::FindCoveringEntries(const ByteRange& range) {
     std::vector<RangeCacheEntry> covering;
     std::shared_lock<std::shared_mutex> lock(rw_mutex_);
     // Find the entry holding the start of the range: the first entry whose
     // end is beyond range.offset (entries are disjoint and sorted by offset).
-    auto it = std::lower_bound(entries_.begin(), entries_.end(), range.offset,
+    auto it = std::lower_bound(ranges_.begin(), ranges_.end(), range.offset,
                                [](const RangeCacheEntry& e, uint64_t offset) {
                                    return e.range.offset + e.range.length <= offset;
                                });
-    if (it == entries_.end() || it->range.offset > range.offset) {
+    // An unpublished covering entry means its prefetch has not been dispatched
+    // yet, so the bytes are not there to serve: a miss.
+    if (it == ranges_.end() || it->range.offset > range.offset || !it->Published()) {
         return covering;
     }
     if (it->range.Contains(range)) {
@@ -324,15 +338,15 @@ std::vector<RangeCacheEntry> ReadAheadCache::Impl::FindCoveringEntries(const Byt
         return covering;
     }
     // The request spans several adjacent entries (a column chunk larger than
-    // one coalesced range): collect the contiguous run and check it covers
-    // the whole request. Entries are published before their fetch is
-    // dispatched, so a reader racing the prefetch waits for the in-flight
-    // fetch instead of issuing a second one for the same bytes.
+    // one coalesced range): collect the contiguous run of published entries and
+    // check it covers the whole request. Entries are published before their
+    // fetch is dispatched, so a reader racing the prefetch waits for the
+    // in-flight fetch instead of issuing a second one for the same bytes.
     uint64_t covered_end = it->range.offset + it->range.length;
     covering.push_back(*it);
     auto next = std::next(it);
-    while (covered_end < range.offset + range.length && next != entries_.end() &&
-           next->range.offset == covered_end) {
+    while (covered_end < range.offset + range.length && next != ranges_.end() &&
+           next->range.offset == covered_end && next->Published()) {
         covered_end = next->range.offset + next->range.length;
         covering.push_back(*next);
         ++next;
@@ -343,11 +357,11 @@ std::vector<RangeCacheEntry> ReadAheadCache::Impl::FindCoveringEntries(const Byt
     return covering;
 }
 
-Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
+Result<bool> ReadAheadCache::Read(const ByteRange& range, char* dest) {
     if (range.length == 0) {
         return true;
     }
-    reads_.Add(range.length);
+    read_metrics_.Record(range.length);
     PreBuffer(range.offset);
     std::vector<RangeCacheEntry> covering = FindCoveringEntries(range);
     if (covering.empty()) {
@@ -358,7 +372,7 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
             // The block cache counts its own hits, see CollectMetrics().
             return true;
         }
-        misses_.Add(range.length);
+        miss_metrics_.Record(range.length);
         return false;
     }
     // Wait OUTSIDE the lock: the futures resolve when the prefetch stream's
@@ -368,11 +382,11 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     }
     // The data copy runs OUTSIDE the lock for the same reason.
     CopyRangeFromEntries(covering, range, dest);
-    hits_.Add(range.length);
+    hit_metrics_.Record(range.length);
     return true;
 }
 
-void ReadAheadCache::Impl::DispatchFetches(const std::vector<PendingFetch>& fetches) {
+void ReadAheadCache::DispatchFetches(const std::vector<PendingFetch>& fetches) {
     for (const auto& fetch : fetches) {
         auto promise = fetch.promise;
         auto buffer = fetch.buffer;
@@ -381,39 +395,8 @@ void ReadAheadCache::Impl::DispatchFetches(const std::vector<PendingFetch>& fetc
         stream_->ReadAsync(
             buffer->data(), read_size, read_offset,
             [promise, buffer](Status status) mutable { promise->set_value(status); });
-        ios_.Add(fetch.range.length);
+        io_metrics_.Record(fetch.range.length);
     }
-}
-
-ReadAheadCache::ReadAheadCache(const std::shared_ptr<InputStream>& stream,
-                               const CacheConfig& config, uint64_t file_size,
-                               const std::shared_ptr<MemoryPool>& memory_pool)
-    : impl_(std::make_unique<Impl>(stream, config, file_size, memory_pool)) {}
-
-ReadAheadCache::~ReadAheadCache() = default;
-
-Status ReadAheadCache::Init(std::vector<ByteRange>&& ranges) {
-    return impl_->Init(std::move(ranges));
-}
-
-Result<bool> ReadAheadCache::Read(const ByteRange& range, char* dest) {
-    return impl_->Read(range, dest);
-}
-
-void ReadAheadCache::Reset() {
-    return impl_->Reset();
-}
-
-void ReadAheadCache::ReleaseBuffers() {
-    return impl_->ReleaseBuffers();
-}
-
-void ReadAheadCache::Warmup() {
-    impl_->Warmup();
-}
-
-void ReadAheadCache::CollectMetrics(std::shared_ptr<Metrics>* metrics) const {
-    impl_->CollectMetrics(metrics);
 }
 
 }  // namespace paimon

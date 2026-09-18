@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/array/builder_dict.h"
 #include "arrow/array/builder_nested.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
@@ -208,6 +209,31 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
             EXPECT_TRUE(arr_values->Append(i).ok());
             EXPECT_TRUE(arr_values->Append(i + 1).ok());
             EXPECT_TRUE(tag->Append("t_" + std::to_string(i)).ok());
+        }
+        std::shared_ptr<arrow::Array> array;
+        EXPECT_TRUE(builder.Finish(&array).ok());
+        return array;
+    }
+
+    // Build a struct with a dictionary-encoded payload column [k:int64, v:dictionary<int32,utf8>].
+    std::shared_ptr<arrow::Array> BuildDictionaryPayloadData(int32_t n) {
+        auto type =
+            arrow::struct_({arrow::field("k", arrow::int64()),
+                            arrow::field("v", arrow::dictionary(arrow::int32(), arrow::utf8()))});
+        // `StringDictionaryBuilder` picks the narrowest index type its dictionary fits in - int8
+        // for the three values below - and `StructBuilder::type()` takes each field type from its
+        // builder, so the column would come out as `dictionary<int8,utf8>` whatever `type` says.
+        // The 32 builder is what keeps the index width this fixture declares.
+        arrow::StructBuilder builder(type, arrow::default_memory_pool(),
+                                     {std::make_shared<arrow::Int64Builder>(),
+                                      std::make_shared<arrow::StringDictionary32Builder>()});
+        auto* k = checked_cast<arrow::Int64Builder*>(builder.field_builder(0));
+        auto* v = checked_cast<arrow::StringDictionary32Builder*>(builder.field_builder(1));
+        for (int32_t i = 0; i < n; ++i) {
+            EXPECT_TRUE(builder.Append().ok());
+            EXPECT_TRUE(k->Append(i).ok());
+            // Repeat a few values so the dictionary is shorter than the column it encodes.
+            EXPECT_TRUE(v->Append("d_" + std::to_string(i % 3)).ok());
         }
         std::shared_ptr<arrow::Array> array;
         EXPECT_TRUE(builder.Finish(&array).ok());
@@ -533,6 +559,61 @@ TEST_F(LateMaterializingFileBatchReaderTest, NestedPayloadColumn) {
     }
 }
 
+// A payload column that the inner reader hands over dictionary-encoded has to stay that way in the
+// output. Compacting a batch down to a single matched run passes the run straight to the assembly
+// step rather than concatenating it, so on that path the encoding survives only because nothing
+// rewrites the array. Both shapes of a lone run are covered: one starting at the batch head, which
+// reaches the output untouched, and one starting mid-batch, which the per-column offset
+// normalization still copies.
+TEST_F(LateMaterializingFileBatchReaderTest, DictionaryPayloadColumnKeepsEncoding) {
+    auto data = BuildDictionaryPayloadData(8);
+    auto type = data->type();
+    auto mock = std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/3);
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    // probe = {k}; payload = {v}. k >= 5 matches only row 5 of the batch holding rows 3..5, a run
+    // at batch offset 2, and both rows of the batch holding rows 6..7, a run at batch offset 0.
+    auto predicate =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(type->fields()), predicate, std::nullopt));
+
+    std::vector<std::pair<int64_t, std::string>> rows;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
+                             reader->NextBatchWithBitmap());
+        if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+            break;
+        }
+        auto& [batch, bitmap] = batch_with_bitmap;
+        auto& [c_array, c_schema] = batch;
+        arrow::Result<std::shared_ptr<arrow::Array>> imported =
+            arrow::ImportArray(c_array.get(), c_schema.get());
+        ASSERT_TRUE(imported.ok()) << imported.status().ToString();
+        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(*imported);
+        auto k = arrow::internal::checked_pointer_cast<arrow::Int64Array>(
+            struct_array->GetFieldByName("k"));
+        std::shared_ptr<arrow::Array> v = struct_array->GetFieldByName("v");
+        ASSERT_TRUE(k && v);
+        // The index width is checked before the casts below, which a release build resolves
+        // statically and would otherwise read the index buffer at the wrong width.
+        ASSERT_TRUE(v->type()->Equals(*arrow::dictionary(arrow::int32(), arrow::utf8())))
+            << v->type()->ToString();
+        auto dict = arrow::internal::checked_pointer_cast<arrow::DictionaryArray>(v);
+        auto indices = arrow::internal::checked_pointer_cast<arrow::Int32Array>(dict->indices());
+        auto values = arrow::internal::checked_pointer_cast<arrow::StringArray>(dict->dictionary());
+        ASSERT_TRUE(indices && values);
+        for (int64_t i = 0; i < struct_array->length(); ++i) {
+            rows.emplace_back(k->Value(i), values->GetString(indices->Value(i)));
+        }
+    }
+    ASSERT_EQ(rows.size(), 3u);  // k = 5,6,7
+    for (size_t i = 0; i < rows.size(); ++i) {
+        int64_t expected_k = 5 + static_cast<int64_t>(i);
+        EXPECT_EQ(rows[i].first, expected_k);
+        EXPECT_EQ(rows[i].second, "d_" + std::to_string(expected_k % 3));
+    }
+}
+
 // The late-materialization reader must work correctly as an inner reader driven by
 // PrefetchFileBatchReaderImpl (schema broadcast, range dispatch, seek, row-id tracking).
 TEST_F(LateMaterializingFileBatchReaderTest, WorksAsInnerOfPrefetchReader) {
@@ -682,6 +763,143 @@ TEST_F(LateMaterializingFileBatchReaderTest, FailsOnPredicateTypeMismatch) {
     ASSERT_NOK_WITH_MSG(
         SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt),
         "mismatches");
+}
+
+// The payload byte ranges are only known once the probe pass has run, so they are reported through
+// the callback rather than through PreBufferRange(), and early enough to still be prefetched:
+// before the first payload batch leaves the reader.
+TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangesReportedToCallback) {
+    auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/3);
+    // Aliased because a type carrying a comma cannot be passed to the ASSERT_OK_AND_ASSIGN macro.
+    using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
+    const ByteRanges probe_ranges = {{0, 1024}};
+    const ByteRanges payload_ranges = {{100000, 2048}, {200000, 4096}};
+    mock->SetPreBufferRangesPerSchema({probe_ranges, payload_ranges});
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    int32_t batches = 0;
+    std::vector<ByteRanges> reported;
+    std::vector<int32_t> batches_when_reported;
+    reader->SetPreBufferRangeCallback([&](ByteRanges&& ranges) {
+        reported.push_back(std::move(ranges));
+        batches_when_reported.push_back(batches);
+    });
+    auto predicate =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(4l));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    // What is known up front is the probe projection's ranges, not the payload's.
+    ASSERT_OK_AND_ASSIGN(ByteRanges up_front, reader->PreBufferRange());
+    EXPECT_EQ(up_front, probe_ranges);
+
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(FileBatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        // Import the batch to run its release callback, as a real consumer would.
+        auto& [c_array, c_schema] = batch;
+        ASSERT_TRUE(arrow::ImportArray(c_array.get(), c_schema.get()).ok());
+        batches++;
+    }
+    EXPECT_GT(batches, 0);  // the payload pass did run
+    ASSERT_EQ(reported.size(), 1u);
+    EXPECT_EQ(reported[0], payload_ranges);
+    // Reported while the payload pass was still assembling its first batch, which is the whole
+    // point: reporting it later would leave the first payload reads waiting for their own IO.
+    EXPECT_EQ(batches_when_reported[0], 0);
+}
+
+// Without a predicate there is no payload pass, so there is no late range to report.
+TEST_F(LateMaterializingFileBatchReaderTest, NoCallbackReportWithoutLateMaterialization) {
+    auto data = BuildData({0, 1, 2, 3, 4});
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
+    mock->SetPreBufferRangesPerSchema({{{0, 1024}}, {{100000, 2048}}});
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    int32_t calls = 0;
+    reader->SetPreBufferRangeCallback(
+        [&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), /*predicate=*/nullptr,
+                            std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
+    ASSERT_EQ(rows.size(), 5u);
+    EXPECT_EQ(calls, 0);
+}
+
+// The probe pass matched nothing, so the payload pass never runs and reports no range.
+TEST_F(LateMaterializingFileBatchReaderTest, EmptyMatchDoesNotReportPayloadRanges) {
+    auto data = BuildData({0, 1, 2, 3, 4});
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
+    mock->SetPreBufferRangesPerSchema({{{0, 1024}}, {{100000, 2048}}});
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    int32_t calls = 0;
+    reader->SetPreBufferRangeCallback(
+        [&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
+    auto predicate =
+        PredicateBuilder::GreaterThan(/*field_index=*/0, "k", FieldType::BIGINT, Literal(100l));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
+    EXPECT_TRUE(rows.empty());
+    EXPECT_EQ(calls, 0);
+}
+
+// The payload ranges come from the file metadata, so failing to compute them means the payload
+// reads would fail too: the error surfaces from the read instead of being swallowed.
+TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangeErrorFailsRead) {
+    auto data = BuildData({0, 1, 2, 3, 4});
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
+    mock->SetPreBufferRangeStatus(Status::IOError("pre-buffer range unavailable"));
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    int32_t calls = 0;
+    reader->SetPreBufferRangeCallback(
+        [&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
+    auto predicate =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(2l));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "pre-buffer range unavailable");
+    EXPECT_EQ(calls, 0);
+}
+
+// End to end below the prefetch layer: the ranges the inner LM reader reports mid-read must reach
+// the shared read-ahead cache and be fetched, on top of the probe ranges registered up front.
+TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerRegistersPayloadPreBufferRanges) {
+    auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
+    auto format_builder =
+        std::make_unique<MockFormatReaderBuilder>(data, full_type_, /*batch_size=*/3);
+    // Far enough apart that the cache's hole-size limit keeps them as two separate ranges.
+    format_builder->SetPreBufferRangesPerSchema({{{0, 1024}}, {{100000, 2048}}});
+    LateMaterializingReaderBuilder builder(std::move(format_builder), GetArrowPool(pool_));
+    auto mock_fs = std::make_shared<MockFileSystem>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<PrefetchFileBatchReaderImpl> impl,
+        PrefetchFileBatchReaderImpl::Create(
+            /*data_file_path=*/"", /*data_file_size=*/0, &builder, mock_fs,
+            /*prefetch_max_parallel_num=*/1, /*batch_size=*/3, /*prefetch_batch_count=*/2,
+            /*enable_adaptive_prefetch_strategy=*/false, executor,
+            /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
+            /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
+    auto predicate =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(4l));
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(full_fields_), &c_schema).ok());
+    ASSERT_OK(impl->SetReadSchema(&c_schema, predicate, std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result, CollectStruct(impl.get()));
+    ASSERT_TRUE(result);
+    ASSERT_EQ(result->length(), 6);  // k = 4..9
+    std::shared_ptr<Metrics> metrics = impl->GetReaderMetrics();
+    ASSERT_TRUE(metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t io_bytes, metrics->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
+    // Both the probe ranges registered before the read and the payload ranges registered during it.
+    EXPECT_EQ(io_bytes, 1024u + 2048u);
+    impl->Close();
 }
 
 }  // namespace paimon::test

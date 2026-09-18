@@ -35,7 +35,7 @@ struct AtomicCounterPair {
     std::atomic<uint64_t> bytes{0};
 
     /// Record one request covering `size` bytes.
-    void Add(uint64_t size) {
+    void Record(uint64_t size) {
         count.fetch_add(1, std::memory_order_relaxed);
         bytes.fetch_add(size, std::memory_order_relaxed);
     }

@@ -108,6 +108,7 @@ class PAIMON_EXPORT CoreOptions {
     std::optional<int64_t> GetScanSnapshotId() const;
     std::optional<int64_t> GetScanTimestampMillis() const;
     bool RealtimeEnabled() const;
+    bool RealtimeSpillEnabled() const;
     int64_t GetRealtimeReadViewTtlMillis() const;
     /// Returns the statistics mode used by the real-time store.
     StatisticsMode GetRealtimeStoreStatisticsMode() const;
@@ -209,6 +210,7 @@ class PAIMON_EXPORT CoreOptions {
     ChangelogProducer GetChangelogProducer() const;
     bool ChangelogRowDeduplicate() const;
     const std::vector<std::string>& GetChangelogRowDeduplicateIgnoreFields() const;
+    bool InputChangelogParallelWriteEnabled() const;
     std::string ChangelogFilePrefix() const;
     std::shared_ptr<FileFormat> GetChangelogFileFormat() const;
     std::optional<std::string> GetChangelogFileCompression() const;

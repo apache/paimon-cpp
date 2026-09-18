@@ -54,6 +54,8 @@ constexpr const char kFieldDatabase[] = "database";
 constexpr const char kFieldObject[] = "object";
 constexpr const char kFieldSource[] = "source";
 constexpr const char kFieldDestination[] = "destination";
+constexpr const char kFieldSuccess[] = "success";
+constexpr const char kFieldSnapshot[] = "snapshot";
 
 void AddOptionalStringMember(rapidjson::Value* obj, const char* key,
                              const std::optional<std::string>& value,
@@ -388,6 +390,47 @@ rapidjson::Value RenameTableRequest::ToJson(rapidjson::Document::AllocatorType* 
 void RenameTableRequest::FromJson(const rapidjson::Value& obj) noexcept(false) {
     DeserializeIdentifier(obj, kFieldSource, &source_database_, &source_table_);
     DeserializeIdentifier(obj, kFieldDestination, &destination_database_, &destination_table_);
+}
+
+rapidjson::Value GetTableSnapshotResponse::ToJson(
+    rapidjson::Document::AllocatorType* allocator) const noexcept(false) {
+    rapidjson::Value wrapper(rapidjson::kNullType);
+    if (snapshot_) {
+        wrapper.SetObject();
+        wrapper.AddMember(rapidjson::StringRef(kFieldSnapshot),
+                          RapidJsonUtil::SerializeValue(snapshot_.value(), allocator).Move(),
+                          *allocator);
+    }
+    rapidjson::Value obj(rapidjson::kObjectType);
+    obj.AddMember(rapidjson::StringRef(kFieldSnapshot), wrapper.Move(), *allocator);
+    return obj;
+}
+
+void GetTableSnapshotResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
+    if (!obj.IsObject() || !obj.HasMember(kFieldSnapshot) ||
+        (!obj[kFieldSnapshot].IsObject() && !obj[kFieldSnapshot].IsNull())) {
+        throw std::invalid_argument(std::string("member '") + kFieldSnapshot +
+                                    "' must exist and be an object or null");
+    }
+    if (obj[kFieldSnapshot].IsNull()) {
+        snapshot_.reset();
+        return;
+    }
+    snapshot_ = RapidJsonUtil::DeserializeKeyValue<Snapshot>(obj[kFieldSnapshot], kFieldSnapshot);
+}
+
+rapidjson::Value CommitTableResponse::ToJson(rapidjson::Document::AllocatorType* allocator) const
+    noexcept(false) {
+    rapidjson::Value obj(rapidjson::kObjectType);
+    obj.AddMember(rapidjson::StringRef(kFieldSuccess),
+                  RapidJsonUtil::SerializeValue(success_, allocator).Move(), *allocator);
+    return obj;
+}
+
+void CommitTableResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
+    // Require an explicit boolean: treating an unknown outcome as false could delete
+    // manifests belonging to an accepted commit.
+    success_ = RapidJsonUtil::DeserializeKeyValue<bool>(obj, kFieldSuccess);
 }
 
 }  // namespace paimon

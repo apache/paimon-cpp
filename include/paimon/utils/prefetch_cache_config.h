@@ -34,8 +34,9 @@ namespace paimon {
 /// ReadAheadCache to balance memory usage, I/O efficiency, and latency hiding.
 class PAIMON_EXPORT CacheConfig {
  public:
-    /// Returns the maximum allowed size (in bytes) for a single cached range.
-    /// Defaults to 32 MiB.
+    /// Returns the maximum allowed size (in bytes) for a single cached range, both for the ranges
+    /// registered up front and, as the cap, for the ones registered mid-read.
+    /// Defaults to 8 MiB.
     uint64_t GetRangeSizeLimit() const {
         return range_size_limit_;
     }
@@ -46,7 +47,7 @@ class PAIMON_EXPORT CacheConfig {
     }
 
     /// Returns the maximum gap size (in bytes) considered mergeable between
-    /// adjacent ranges. Defaults to 8 KiB.
+    /// adjacent ranges. Defaults to 512 KiB.
     uint64_t GetHoleSizeLimit() const {
         return hole_size_limit_;
     }
@@ -93,15 +94,24 @@ class PAIMON_EXPORT CacheConfig {
  private:
     // The defaults are aligned with the reader's request granularity and with
     // realistic data file sizes:
-    // - range_size_limit matches the parquet reader's 32 MiB request blocks
-    //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
-    //   below the request size, so a request can never be served from one piece.
+    // - range_size_limit bounds a single coalesced cached range, both for the
+    //   ranges registered up front at Init and for the ones registered mid-read.
+    //   One range is one prefetch IO, so a smaller limit spreads a large pass
+    //   over several concurrent requests instead of one long serial one; a read
+    //   spanning several adjacent ranges is still served as one hit, as they are
+    //   contiguous. 8 MiB keeps a just-in-time mid-read pass concurrent while
+    //   staying large enough to amortize each request's round trip.
     // - pre_buffer_limit must exceed the LARGEST single read a reader issues
     //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
     //   only dispatched up to this window, so a request reaching past it can
     //   never be served and falls back to a second fetch of the same bytes.
-    uint64_t range_size_limit_ = 32 * 1024 * 1024;
-    uint64_t hole_size_limit_ = 8 * 1024;
+    // - hole_size_limit trades bytes against requests: coalescing across a gap
+    //   reads the gap too, but saves a request, and on remote storage a request
+    //   costs a round trip whatever its size. The limit is therefore well above
+    //   the page-sized gaps a filtered read leaves between the pages it keeps,
+    //   which would otherwise each cost a request of their own.
+    uint64_t range_size_limit_ = 8 * 1024 * 1024;
+    uint64_t hole_size_limit_ = 512 * 1024;
     uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
     // Blocks are aligned to the END of the file, so a block never reaches past
     // EOF. 64 KiB is the granularity the reads no prefetched range covers are
@@ -128,11 +138,11 @@ enum class PAIMON_EXPORT WarmupLevel {
     /// Fetch only the next file's raw, still-compressed bytes into memory, and leave the decoder
     /// alone. Overlaps the remote fetch while keeping memory lower than `DECODED`, because no
     /// decoded batches are materialized ahead of the read. It fetches through the read-ahead
-    /// cache, so it falls back to `NONE` when that cache is disabled.
+    /// cache, so it falls back to `NONE` when that cache is disabled. This is the default, as it
+    /// hides the remote fetch without committing memory to decoded batches.
     RAW,
     /// Fetch the raw bytes and start the background decode loop as well, so decoded batches are
-    /// ready before the file is read. Hides the most latency but uses the most memory. This is the
-    /// default.
+    /// ready before the file is read. Hides the most latency but uses the most memory.
     DECODED,
 };
 

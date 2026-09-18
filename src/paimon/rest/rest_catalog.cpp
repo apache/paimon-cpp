@@ -60,27 +60,14 @@ std::optional<std::string> NormalizeBranch(std::optional<std::string> branch) {
     return branch;
 }
 
-// Builds the "<table>$branch_<branch>" object name addressing `branch` of `table_name`
-// on the rest server.
-std::string BranchObjectName(std::string table_name, const std::string& branch) {
-    table_name.append(Identifier::kSystemTableSplitter);
-    table_name.append(Identifier::kSystemBranchPrefix);
-    table_name.append(branch);
-    return table_name;
-}
-
 // Builds the identifier sent to the rest server: the system table suffix is stripped
 // while the branch stays in the object name, so the server resolves the branch itself and
 // returns the branch's own schema. The path the server reports is the data table root in
 // either case; the branch subdirectory is derived downstream from the branch option and
 // must not be applied twice (see `ToTableSchema`).
 Result<Identifier> ToLoadIdentifier(const Identifier& identifier) {
-    PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
-    branch = NormalizeBranch(std::move(branch));
-    std::string object_name = branch ? BranchObjectName(std::move(data_table_name), branch.value())
-                                     : std::move(data_table_name);
-    return Identifier(identifier.GetDatabaseName(), object_name);
+    return CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string()));
 }
 
 }  // namespace
@@ -348,16 +335,24 @@ Result<std::unique_ptr<TableSchema>> RestCatalog::ToTableSchema(
 
 Result<std::shared_ptr<TableSchema>> RestCatalog::LoadDataTableSchema(
     const Identifier& data_identifier, const std::optional<std::string>& branch,
-    std::string* table_path) const {
+    std::string* table_path, std::string* table_id) const {
     PAIMON_ASSIGN_OR_RAISE(GetTableResponse response, api_->GetTable(data_identifier));
     if (table_path != nullptr) {
         *table_path = response.GetPath();
+    }
+    if (table_id != nullptr) {
+        *table_id = response.GetId();
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> schema, ToTableSchema(response, branch));
     return std::shared_ptr<TableSchema>(std::move(schema));
 }
 
 Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& identifier) const {
+    return LoadTableSchema(identifier, /*table_id=*/nullptr);
+}
+
+Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& identifier,
+                                                             std::string* table_id) const {
     // Serve the global system tables of the "sys" database locally, like
     // FileSystemCatalog.
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
@@ -390,7 +385,8 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         }
         std::string table_path;
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> latest_schema,
-                               LoadDataTableSchema(load_identifier, branch, &table_path));
+                               LoadDataTableSchema(load_identifier, branch, &table_path,
+                                                   /*table_id=*/nullptr));
         std::map<std::string, std::string> dynamic_options;
         if (branch) {
             dynamic_options[Options::BRANCH] = branch.value();
@@ -403,7 +399,7 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
-                           LoadDataTableSchema(load_identifier, branch, nullptr));
+                           LoadDataTableSchema(load_identifier, branch, nullptr, table_id));
     return checked_pointer_cast<Schema>(schema);
 }
 
@@ -415,8 +411,9 @@ Result<std::shared_ptr<FormatTable>> RestCatalog::LoadFormatTable(
     branch = NormalizeBranch(std::move(branch));
     PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
     std::string location;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
-                           LoadDataTableSchema(load_identifier, branch, &location));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<TableSchema> schema,
+        LoadDataTableSchema(load_identifier, branch, &location, /*table_id=*/nullptr));
     // A rest catalog holds the schema itself, so everything below the location is data.
     return FormatTable::Create(fs_, location, identifier, checked_pointer_cast<DataSchema>(schema),
                                /*location_carries_paimon_metadata=*/false,
@@ -424,10 +421,13 @@ Result<std::shared_ptr<FormatTable>> RestCatalog::LoadFormatTable(
 }
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, LoadTableSchema(identifier));
+    // Read UUID and schema together to avoid mixing table generations after recreation.
+    std::string uuid;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, LoadTableSchema(identifier, &uuid));
     PAIMON_RETURN_NOT_OK(
         CatalogUtils::CheckManagedTableType(identifier, schema, "Catalog::GetTable"));
-    return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetTableName());
+    return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetTableName(),
+                                   uuid);
 }
 
 std::string RestCatalog::GetRootPath() const {
@@ -442,12 +442,9 @@ Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& i
                                                              const std::string& branch) const {
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotBranch(identifier, "listSnapshots"));
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "listSnapshots"));
-    std::optional<std::string> normalized_branch =
-        NormalizeBranch(branch.empty() ? std::nullopt : std::make_optional(branch));
-    std::string object_name =
-        normalized_branch ? BranchObjectName(identifier.GetTableName(), normalized_branch.value())
-                          : identifier.GetTableName();
-    Identifier load_identifier(identifier.GetDatabaseName(), object_name);
+    // `CheckNotBranch` and `CheckNotSystemTable` above leave the table name bare, so the branch
+    // this is asked for is the only one the object name can carry.
+    Identifier load_identifier(identifier.GetDatabaseName(), identifier.GetTableName(), branch);
     // The Catalog interface has no pagination, so all pages are fetched; the server
     // does not order snapshots across pages while the contract requires ascending ids.
     PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> snapshots, api_->ListSnapshots(load_identifier));
@@ -459,6 +456,23 @@ Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& i
         result.push_back(snapshot.ToSnapshotInfo());
     }
     return result;
+}
+
+Result<std::optional<Snapshot>> RestCatalog::LoadSnapshot(const Identifier& identifier) const {
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "loadSnapshot"));
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+    return api_->LoadSnapshot(load_identifier);
+}
+
+Result<bool> RestCatalog::CommitSnapshot(const Identifier& identifier,
+                                         const std::optional<std::string>& table_uuid,
+                                         const std::optional<std::string>& base_snapshot_uuid,
+                                         const Snapshot& snapshot,
+                                         const std::vector<PartitionStatistics>& statistics) {
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "commitSnapshot"));
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+    return api_->CommitSnapshot(load_identifier, table_uuid, base_snapshot_uuid, snapshot,
+                                statistics);
 }
 
 }  // namespace paimon

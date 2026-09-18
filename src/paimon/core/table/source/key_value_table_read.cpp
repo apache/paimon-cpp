@@ -120,7 +120,8 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> primary_key_predicate,
                            PredicateUtils::CreatePickedFieldFilter(context->GetPredicate(),
                                                                    primary_key_name_to_index));
-    RealtimeQueryContext query_context{c_schema.get(), std::move(primary_key_predicate)};
+    RealtimeQueryContext query_context{c_schema.get(), std::move(primary_key_predicate),
+                                       context->GetCoreOptions().GetReadBatchSize()};
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> batch_readers,
                            memory.store->CreateQueryReaders(memory.read_view, query_context));
     PAIMON_ASSIGN_OR_RAISE(
