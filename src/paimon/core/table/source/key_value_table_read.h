@@ -65,6 +65,8 @@ class KeyValueTableRead : public TableRead {
     Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
         const std::shared_ptr<RealtimeSplit>& realtime_split, bool release_ticket);
 
+    Status ValidateFileIndexSearchSplit(const std::shared_ptr<Split>& split) const;
+
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<InternalReadContext> context_;

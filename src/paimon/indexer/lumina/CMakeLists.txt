@@ -15,7 +15,16 @@
 # limitations under the License.
 
 if(PAIMON_ENABLE_LUMINA)
-    set(PAIMON_LUMINA_INDEX lumina_global_index.cpp lumina_global_index_factory.cpp)
+    set(PAIMON_LUMINA_INDEX
+        lumina_dataset.cpp
+        lumina_file_index.cpp
+        lumina_file_index_factory.cpp
+        lumina_global_index.cpp
+        lumina_global_index_factory.cpp
+        lumina_index_accumulator.cpp
+        lumina_index_options.cpp
+        lumina_search_utils.cpp
+        lumina_tag_utils.cpp)
 
     add_paimon_lib(paimon_lumina_index
                    SOURCES
@@ -38,6 +47,7 @@ if(PAIMON_ENABLE_LUMINA)
         add_paimon_test(lumina_index_test
                         SOURCES
                         lumina_api_test.cpp
+                        lumina_file_index_test.cpp
                         lumina_file_io_test.cpp
                         lumina_global_index_test.cpp
                         EXTRA_INCLUDES

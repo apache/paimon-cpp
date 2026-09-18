@@ -72,12 +72,13 @@ TEST_F(FileIndexFormatTest, TestWriteAndReadEmptyIndexGoldenBytes) {
     ASSERT_OK_AND_ASSIGN(auto writer, FileIndexFormat::CreateWriter(output, pool_));
     ASSERT_OK(writer->WriteColumnIndexes(indexes));
     ASSERT_OK(writer->Close());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> actual, output->Finish(pool_.get()));
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> actual, output->Finish(pool_.get()));
 
     ASSERT_EQ(expected, std::vector<char>(actual->data(), actual->data() + actual->size()));
     auto schema = arrow::schema({arrow::field("c1", arrow::utf8())});
     auto input_stream = std::make_shared<ByteArrayInputStream>(actual->data(), actual->size());
-    ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input_stream, pool_));
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         FileIndexFormat::CreateReader(input_stream, pool_, /*options=*/{}));
     ASSERT_OK_AND_ASSIGN(auto index_file_readers,
                          reader->ReadColumnIndex("c1", CreateArrowSchema(schema).get()));
     ASSERT_EQ(1, index_file_readers.size());
@@ -113,7 +114,8 @@ TEST_F(FileIndexFormatTest, TestSimple) {
         0,   0,   0,   3,   0,   16,  0,   0,   0,   0,   0,   1,   0,  4,   0,   5,   0};
     auto input_stream = std::make_shared<ByteArrayInputStream>(
         reinterpret_cast<char*>(index_file_bytes.data()), index_file_bytes.size());
-    ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input_stream, pool_));
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         FileIndexFormat::CreateReader(input_stream, pool_, /*options=*/{}));
     {
         ASSERT_OK_AND_ASSIGN(auto index_file_readers,
                              reader->ReadColumnIndex("f1", CreateArrowSchema(schema).get()));
@@ -186,7 +188,8 @@ TEST_F(FileIndexFormatTest, TestBitmapIndexWithTimestamp) {
     ASSERT_OK(fs->ReadFile(file_name, &index_file_bytes));
     auto input_stream =
         std::make_shared<ByteArrayInputStream>(index_file_bytes.data(), index_file_bytes.size());
-    ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input_stream, pool_));
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         FileIndexFormat::CreateReader(input_stream, pool_, /*options=*/{}));
     auto check_second = [&](const std::string& field_name) {
         // data: second
         // 1745542802000lms, 0ns

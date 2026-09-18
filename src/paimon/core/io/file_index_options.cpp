@@ -85,13 +85,17 @@ Result<FileIndexOptions> FileIndexOptions::FromCoreOptions(const CoreOptions& op
         }
         std::vector<std::string> parts =
             StringUtils::Split(key.substr(kFileIndexPrefixLength), ".", /*ignore_empty=*/false);
-        if (parts.size() != 3) {
+        if (parts.size() < 3) {
             continue;
+        }
+        std::string option_name = parts[2];
+        for (size_t i = 3; i < parts.size(); ++i) {
+            option_name.append(".").append(parts[i]);
         }
         bool found = false;
         for (FileIndexDefinition& definition : result.definitions_) {
             if (definition.index_type == parts[0] && definition.column_name == parts[1]) {
-                definition.options[parts[2]] = value;
+                definition.options[option_name] = value;
                 found = true;
                 break;
             }
@@ -104,6 +108,23 @@ Result<FileIndexOptions> FileIndexOptions::FromCoreOptions(const CoreOptions& op
         }
     }
     return result;
+}
+
+Result<FileIndexOptions> FileIndexOptions::FromMap(
+    const std::map<std::string, std::string>& raw_options) {
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(raw_options));
+    return FromCoreOptions(core_options);
+}
+
+const std::map<std::string, std::string>& FileIndexOptions::GetIndexerOptions(
+    const std::string& column_name, const std::string& index_type) const {
+    static const std::map<std::string, std::string> kEmptyOptions;
+    for (const FileIndexDefinition& definition : definitions_) {
+        if (definition.column_name == column_name && definition.index_type == index_type) {
+            return definition.options;
+        }
+    }
+    return kEmptyOptions;
 }
 
 }  // namespace paimon

@@ -37,6 +37,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/executor/future.h"
 #include "paimon/common/executor/reader_build_executor.h"
+#include "paimon/common/reader/complete_index_score_file_batch_reader.h"
 #include "paimon/common/reader/data_file_reader_factory.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
 #include "paimon/common/reader/late_materializing_reader_builder.h"
@@ -279,10 +280,12 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
     }
     const auto& predicate = field_mapping->non_partition_info.non_partition_filter;
     auto all_data_schema = DataField::ConvertDataFieldsToArrowSchema(data_schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> final_reader,
-                           ApplyIndexAndDvReaderIfNeeded(
-                               std::move(file_reader), file_meta, all_data_schema, read_schema,
-                               predicate, dv_factory, row_ranges, data_file_path_factory));
+    std::vector<float> index_scores;
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<FileBatchReader> final_reader,
+        ApplyIndexAndDvReaderIfNeeded(std::move(file_reader), file_meta, all_data_schema,
+                                      read_schema, predicate, dv_factory, row_ranges,
+                                      data_file_path_factory, &index_scores));
     if (!final_reader) {
         // file is skipped by index or dv
         return std::unique_ptr<FileBatchReader>();
@@ -293,7 +296,13 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
                                field_mapping_builder->GetReadFieldCount(), std::move(final_reader),
                                partition, std::move(field_mapping),
                                std::move(skip_map_selected_keys_filter_field_ids), arrow_pool_));
-    return mapping_reader;
+    std::unique_ptr<FileBatchReader> result = std::move(mapping_reader);
+    if (!index_scores.empty() && context_->GetVectorSearch() &&
+        raw_read_schema_->GetFieldIndex(SpecialFields::IndexScore().Name()) >= 0) {
+        result = std::make_unique<CompleteIndexScoreFileBatchReader>(std::move(result),
+                                                                     index_scores, arrow_pool_);
+    }
+    return result;
 }
 
 Result<std::pair<std::unique_ptr<FileBatchReader>, std::set<int32_t>>>

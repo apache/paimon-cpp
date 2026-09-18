@@ -22,7 +22,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -32,31 +31,14 @@
 #include "lumina/extensions/SearchWithFilterExtension.h"
 #include "lumina/extensions/experimental/DatasetWithTag.h"
 #include "lumina/extensions/experimental/SearchWithTagExtension.h"
-#include "lumina/extensions/experimental/TagFilter.h"
-#include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/global_indexer.h"
-#include "paimon/global_index/lumina/lumina_memory_pool.h"
-#include "paimon/global_index/lumina/lumina_utils.h"
+#include "paimon/indexer/lumina/lumina_index_accumulator.h"
+#include "paimon/indexer/lumina/lumina_index_options.h"
+#include "paimon/indexer/lumina/lumina_memory_pool.h"
+#include "paimon/indexer/lumina/lumina_tag_utils.h"
+#include "paimon/indexer/lumina/lumina_utils.h"
 
 namespace paimon::lumina {
-struct LuminaTagField {
-    enum class Type {
-        ENUM,
-        RANGE,
-    };
-
-    enum class ValueType {
-        INT32,
-        INT64,
-        FLOAT,
-        DOUBLE,
-        STRING,
-    };
-
-    std::string name;
-    Type type;
-    ValueType value_type;
-};
 
 /// @note When enabling the lumina global index in `paimon-cpp`, all configuration parameters
 ///       specific to Lumina **must be prefixed with `lumina.`**.
@@ -100,12 +82,6 @@ class LuminaGlobalIndex : public GlobalIndexer {
         const std::shared_ptr<MemoryPool>& pool) const override;
 
  private:
-    static Result<std::vector<LuminaTagField>> ParseTagSchema(
-        const std::map<std::string, std::string>& lumina_options);
-
-    static Status ValidateTagFields(const arrow::StructType& struct_type,
-                                    const std::vector<LuminaTagField>& tag_fields);
-
     std::map<std::string, std::string> options_;
 };
 
@@ -125,13 +101,7 @@ class LuminaIndexWriter : public GlobalIndexWriter {
     Result<std::vector<GlobalIndexIOMeta>> Finish() override;
 
  private:
-    static Result<std::vector<::lumina::extensions::experimental::TagDimensionData>>
-    ExtractTagDataForSegment(const std::shared_ptr<arrow::StructArray>& struct_array,
-                             const std::vector<LuminaTagField>& tag_fields, int64_t segment_start,
-                             int64_t segment_len);
-
     int64_t count_ = 0;
-    int64_t indexed_count_ = 0;
     std::shared_ptr<LuminaMemoryPool> pool_;
     std::string field_name_;
     std::shared_ptr<arrow::DataType> arrow_type_;
@@ -141,19 +111,12 @@ class LuminaIndexWriter : public GlobalIndexWriter {
     ::lumina::api::IOOptions io_options_;
     std::map<std::string, std::string> lumina_options_;
     std::vector<LuminaTagField> tag_fields_;
-    std::vector<std::shared_ptr<arrow::FloatArray>> array_vec_;
-    std::vector<int64_t> array_start_ids_;
-    std::vector<std::vector<::lumina::extensions::experimental::TagDimensionData>> tag_data_vec_;
+    LuminaIndexAccumulator accumulator_;
 };
 
 class LuminaIndexReader : public GlobalIndexReader {
  public:
-    struct IndexInfo {
-        uint32_t dimension;
-        std::string index_type;
-        VectorSearch::DistanceType distance_type;
-        bool has_tag;
-    };
+    using IndexInfo = LuminaIndexInfo;
 
     LuminaIndexReader(
         const IndexInfo& index_info, std::unique_ptr<::lumina::api::LuminaSearcher>&& searcher,
@@ -246,9 +209,6 @@ class LuminaIndexReader : public GlobalIndexReader {
     static Result<LuminaIndexReader::IndexInfo> GetIndexInfo(const GlobalIndexIOMeta& io_meta);
 
  private:
-    static Result<::lumina::extensions::experimental::TagFilter> PredicateToTagFilter(
-        const std::shared_ptr<Predicate>& predicate);
-
     LuminaIndexReader::IndexInfo index_info_;
     std::shared_ptr<LuminaMemoryPool> pool_;
     std::unique_ptr<::lumina::api::LuminaSearcher> searcher_;

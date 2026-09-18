@@ -93,7 +93,8 @@ class AbstractSplitRead : public SplitRead {
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const = 0;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        std::vector<float>* index_scores) const = 0;
 
     // 1. project write cols to data schema
     // 2. add partition fields (if write cols not contain)

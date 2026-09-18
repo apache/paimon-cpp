@@ -37,11 +37,15 @@ class Schema;
 namespace paimon {
 class LeafPredicate;
 class CompoundPredicate;
+class CoreOptions;
 class DataFilePathFactory;
 class FileIndexReader;
 class MemoryPool;
 class Predicate;
+class ScoredFileIndexResult;
 struct DataFileMeta;
+struct FullTextSearch;
+struct VectorSearch;
 
 class FileIndexEvaluator {
  public:
@@ -50,22 +54,36 @@ class FileIndexEvaluator {
 
     // for scan process, will only use embedding file to evaluate
     static Result<std::shared_ptr<FileIndexResult>> Evaluate(
-        const std::shared_ptr<arrow::Schema>& data_schema,
+        const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
         const std::shared_ptr<Predicate>& predicate, const std::shared_ptr<DataFileMeta>& file_meta,
         const std::shared_ptr<MemoryPool>& pool);
 
     // for read process, will use embedding file or extra index file to evaluate
     static Result<std::shared_ptr<FileIndexResult>> Evaluate(
-        const std::shared_ptr<arrow::Schema>& data_schema,
+        const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
         const std::shared_ptr<Predicate>& predicate,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::shared_ptr<DataFileMeta>& file_meta,
+        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
+
+    static Result<std::shared_ptr<ScoredFileIndexResult>> EvaluateVectorSearch(
+        const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
+        const std::shared_ptr<VectorSearch>& vector_search,
+        const std::shared_ptr<DataFilePathFactory>& path_factory,
+        const std::shared_ptr<DataFileMeta>& file_meta,
+        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
+
+    static Result<std::shared_ptr<FileIndexResult>> EvaluateFullTextSearch(
+        const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
+        const std::shared_ptr<FullTextSearch>& full_text_search,
+        const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::shared_ptr<DataFileMeta>& file_meta,
         const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
 
  private:
     static Result<std::shared_ptr<FileIndexResult>> Evaluate(
         bool only_use_embedding_index, const std::shared_ptr<arrow::Schema>& data_schema,
-        const std::shared_ptr<Predicate>& predicate,
+        const CoreOptions& core_options, const std::shared_ptr<Predicate>& predicate,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const std::shared_ptr<DataFileMeta>& file_meta,
         const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);

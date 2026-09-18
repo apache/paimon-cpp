@@ -39,9 +39,9 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
-#include "paimon/common/global_index/complete_index_score_batch_reader.h"
 #include "paimon/common/reader/blob_fallback_batch_reader.h"
 #include "paimon/common/reader/blob_view_resolving_batch_reader.h"
+#include "paimon/common/reader/complete_index_score_batch_reader.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
@@ -517,10 +517,10 @@ Result<bool> DataEvolutionSplitRead::SkipByFileIndex(
         }
 
         auto written_schema = DataField::ConvertDataFieldsToArrowSchema(written_fields);
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FileIndexResult> index_result,
-            FileIndexEvaluator::Evaluate(written_schema, data_predicate, data_file_path_factory,
-                                         file, options_.GetFileSystem(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
+                               FileIndexEvaluator::Evaluate(written_schema, options_,
+                                                            data_predicate, data_file_path_factory,
+                                                            file, options_.GetFileSystem(), pool_));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, index_result->IsRemain());
         if (!is_remain) {
             return true;
@@ -534,13 +534,14 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
     const std::shared_ptr<arrow::Schema>& data_schema,
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    std::vector<float>* index_scores) const {
     std::shared_ptr<FileIndexResult> file_index_result;
     if (options_.FileIndexReadEnabled()) {
         PAIMON_ASSIGN_OR_RAISE(
             file_index_result,
-            FileIndexEvaluator::Evaluate(data_schema, predicate, data_file_path_factory, file,
-                                         options_.GetFileSystem(), pool_));
+            FileIndexEvaluator::Evaluate(data_schema, options_, predicate, data_file_path_factory,
+                                         file, options_.GetFileSystem(), pool_));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {
             return std::unique_ptr<FileBatchReader>();

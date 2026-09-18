@@ -17,20 +17,18 @@
  * under the License.
  */
 
-#include "paimon/common/global_index/complete_index_score_batch_reader.h"
+#include "paimon/common/reader/complete_index_score_batch_reader.h"
 
 #include <cstddef>
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
 #include "arrow/array/array_nested.h"
-#include "arrow/array/util.h"
-#include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/scalar.h"
+#include "fmt/format.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
-#include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -64,6 +62,10 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            reader_->NextBatchWithBitmap());
     if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+        if (!scores_.empty() && score_cursor_ != scores_.size()) {
+            return Status::Invalid(fmt::format("Index score count {} does not match rows read {}",
+                                               scores_.size(), score_cursor_));
+        }
         return batch_with_bitmap;
     }
     if (scores_.empty()) {
@@ -93,6 +95,12 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
     auto* typed_builder = checked_cast<arrow::FloatBuilder*>(index_score_builder.get());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Reserve(struct_array->length()));
     bool all_not_null = (struct_array->length() == bitmap.Cardinality());
+    size_t score_count = all_not_null ? static_cast<size_t>(struct_array->length())
+                                      : static_cast<size_t>(bitmap.Cardinality());
+    if (score_cursor_ > scores_.size() || score_count > scores_.size() - score_cursor_) {
+        return Status::Invalid(fmt::format("Index score count {} is smaller than rows read {}",
+                                           scores_.size(), score_cursor_ + score_count));
+    }
     for (int64_t i = 0; i < struct_array->length(); i++) {
         if (all_not_null || bitmap.Contains(i)) {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Append(scores_[score_cursor_++]));
@@ -111,5 +119,11 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
         arrow::ExportArray(*array_with_score, c_array.get(), c_schema.get()));
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return batch_with_bitmap;
+}
+
+void CompleteIndexScoreBatchReader::ResetScoreState() {
+    score_cursor_ = 0;
+    index_score_field_idx_ = -1;
+    field_names_with_score_.clear();
 }
 }  // namespace paimon

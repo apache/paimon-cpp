@@ -27,16 +27,20 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/data/binary_row.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/abstract_split_read.h"
 #include "paimon/core/operation/split_read.h"
 #include "paimon/core/table/source/append_only_table_read.h"
+#include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
+#include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -123,6 +127,33 @@ TEST(TableReadTest, TestCreateKeyValueTableRead) {
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     auto key_value_table_read = dynamic_cast<KeyValueTableRead*>(table_read.get());
     ASSERT_TRUE(key_value_table_read);
+}
+
+TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
+    std::string path = paimon::test::GetDataDir() +
+                       "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality/";
+    auto search =
+        std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr,
+                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    ReadContextBuilder context_builder(path);
+    context_builder.SetReadFieldNames({"f0"}).SetVectorSearch(search);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> reader, TableRead::Create(std::move(context)));
+
+    BinaryRow partition = BinaryRowGenerator::GenerateRow({10}, GetDefaultPool().get());
+    DataSplitImpl::Builder builder(partition, /*bucket=*/0, /*bucket_path=*/"", /*data_files=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> non_raw,
+                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(false).Build());
+    ASSERT_NOK_WITH_MSG(reader->CreateReader(non_raw), "raw-convertible primary-key split");
+
+    DataSplitImpl::Builder raw_builder(partition, /*bucket=*/0, /*bucket_path=*/"",
+                                       /*data_files=*/{});
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<DataSplitImpl> raw,
+        raw_builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    ASSERT_OK(reader->CreateReader(raw));
+    std::vector<std::shared_ptr<Split>> splits = {raw, non_raw};
+    ASSERT_NOK_WITH_MSG(reader->CreateReader(splits), "raw-convertible primary-key split");
 }
 
 TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
