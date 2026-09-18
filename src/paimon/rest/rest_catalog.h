@@ -25,7 +25,6 @@
 #include <vector>
 
 #include "paimon/catalog/catalog.h"
-#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/logging.h"
 #include "paimon/rest/rest_api.h"
