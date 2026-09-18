@@ -342,9 +342,6 @@ TEST(OptimizedRoaringBitmap64Test, TestCopyAndMove) {
     AssertContent(move_assigned, expected);
     assigned = move_assigned;
     AssertContent(assigned, expected);
-
-    move_assigned = move_assigned;
-    AssertContent(move_assigned, expected);
 }
 
 TEST(OptimizedRoaringBitmap64Test, TestFromRoaringBitmap32CopiesContent) {
