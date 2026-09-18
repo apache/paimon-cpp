@@ -449,6 +449,7 @@ set(PAIMON_CORE_SRCS
     core/table/source/startup_mode.cpp
     core/table/source/table_read.cpp
     core/table/source/table_scan.cpp
+    core/table/source/table_scan_resources.cpp
     core/table/source/data_evolution_batch_scan.cpp
     core/table/source/primary_key_sorted_index_scan.cpp
     core/table/source/primary_key_sorted_index_result.cpp
@@ -956,6 +957,7 @@ if(PAIMON_BUILD_TESTS)
                     core/table/source/snapshot/snapshot_reader_test.cpp
                     core/table/source/startup_mode_test.cpp
                     core/table/source/table_scan_test.cpp
+                    core/table/source/table_scan_resources_test.cpp
                     core/table/system/system_table_test.cpp
                     core/tag/tag_test.cpp
                     core/utils/blob_view_lookup_test.cpp

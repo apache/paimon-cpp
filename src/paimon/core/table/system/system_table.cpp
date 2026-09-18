@@ -222,7 +222,8 @@ Result<std::optional<SystemTablePath>> SystemTableLoader::TryParsePath(const std
 
 Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
     const std::shared_ptr<FileSystem>& fs, const std::string& path,
-    const std::map<std::string, std::string>& dynamic_options) {
+    const std::map<std::string, std::string>& dynamic_options,
+    const SchemaManager* shared_schema_manager) {
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path, TryParsePath(path));
     if (!system_table_path) {
         return Status::Invalid("path is not a system table path: ", path);
@@ -243,10 +244,13 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
         return GlobalSystemTableLoader::Load(parsed.system_table_name, context);
     }
 
-    SchemaManager schema_manager(fs, parsed.table_path,
-                                 parsed.branch.value_or(BranchManager::DEFAULT_MAIN_BRANCH));
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                           schema_manager.Latest());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::optional<std::shared_ptr<TableSchema>> latest_schema,
+        shared_schema_manager
+            ? shared_schema_manager->Latest()
+            : SchemaManager(fs, parsed.table_path,
+                            parsed.branch.value_or(BranchManager::DEFAULT_MAIN_BRANCH))
+                  .Latest());
     if (!latest_schema) {
         return Status::NotExist("base table schema not found for system table path: ", path);
     }

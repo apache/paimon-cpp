@@ -33,6 +33,7 @@ namespace paimon {
 class FileSystem;
 class ReadContext;
 class ScanContext;
+class SchemaManager;
 class TableScan;
 class TableRead;
 class TableSchema;
@@ -80,7 +81,8 @@ class SystemTableLoader {
 
     static Result<std::shared_ptr<SystemTable>> LoadFromPath(
         const std::shared_ptr<FileSystem>& fs, const std::string& path,
-        const std::map<std::string, std::string>& dynamic_options);
+        const std::map<std::string, std::string>& dynamic_options,
+        const SchemaManager* schema_manager);
 };
 
 }  // namespace paimon
