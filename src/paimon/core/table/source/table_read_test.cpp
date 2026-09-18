@@ -27,21 +27,16 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/catalog/identifier.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/abstract_split_read.h"
 #include "paimon/core/operation/split_read.h"
-#include "paimon/core/schema/schema_manager.h"
-#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/defs.h"
-#include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
-#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -140,33 +135,6 @@ TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
     ASSERT_TRUE(append_only_table_read);
-}
-
-TEST(TableReadTest, TestCatalogReadUsesPerTableFileSystem) {
-    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    // A catalog that issues per-table credentials hands out a file system for this table;
-    // pointing it at a real local file system lets the read reach the table's files, while a
-    // request count tells that this per-table answer, not the catalog-wide one, was used.
-    auto table_fs = std::make_shared<LocalFileSystem>();
-    SchemaManager schema_manager(table_fs, path);
-    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest,
-                         schema_manager.Latest());
-    ASSERT_TRUE(latest.has_value());
-
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(table_fs);
-    catalog->SetTableSchema(latest.value());
-
-    ReadContextBuilder context_builder(path);
-    context_builder.WithCatalog(catalog, Identifier("append_09.db", "append_09"));
-    context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-    ASSERT_TRUE(dynamic_cast<AppendOnlyTableRead*>(table_read.get()));
-
-    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
-    ASSERT_EQ(catalog->TableFileSystemRequests().front(), Identifier("append_09.db", "append_09"));
-    ASSERT_EQ(catalog->LoadTableSchemaCalls(), 1U);
 }
 
 TEST(TableReadTest, TestMergeOptions) {

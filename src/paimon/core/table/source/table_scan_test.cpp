@@ -25,17 +25,10 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/catalog/identifier.h"
-#include "paimon/core/schema/schema_manager.h"
-#include "paimon/core/schema/table_schema.h"
-#include "paimon/core/snapshot.h"
-#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
-#include "paimon/fs/local/local_file_system.h"
 #include "paimon/metrics.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
-#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -127,62 +120,6 @@ TEST(TableScanTest, TestReadOptimizedPrimaryKeyStreamingScanUnsupported) {
     ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(context)),
                         "read-optimized system table does not support streaming scan for primary "
                         "key table");
-}
-
-TEST(TableScanTest, TestCatalogScanReadsSnapshotFromCatalog) {
-    std::string fixture = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    // Copy the table so its snapshot file can be removed without touching the shared fixture.
-    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
-    ASSERT_NE(nullptr, dir);
-    std::string path = dir->Str();
-    ASSERT_TRUE(TestUtil::CopyDirectory(fixture, path));
-    auto table_fs = dir->GetFileSystem();
-    ASSERT_NE(nullptr, table_fs);
-
-    SchemaManager schema_manager(table_fs, path);
-    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                         schema_manager.Latest());
-    ASSERT_TRUE(latest_schema.has_value());
-    SnapshotManager snapshot_manager(table_fs, path);
-    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> snapshot, snapshot_manager.LatestSnapshot());
-    ASSERT_TRUE(snapshot.has_value());
-
-    // A version-managed catalog can hold a snapshot it never published to the table path. Remove
-    // the snapshot file so that re-reading the body from the path would fail with NotExist: the
-    // plan must be built from the body the catalog returns, while the manifests it points at stay
-    // on the file system.
-    ASSERT_OK(table_fs->Delete(snapshot_manager.SnapshotDirectory(), /*recursive=*/true));
-    ASSERT_OK_AND_ASSIGN(bool snapshot_file_exists,
-                         table_fs->Exists(snapshot_manager.SnapshotPath(snapshot.value().Id())));
-    ASSERT_FALSE(snapshot_file_exists);
-
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(table_fs);
-    catalog->SetTableSchema(latest_schema.value());
-    catalog->SetHeldSnapshot(snapshot.value());
-
-    ScanContextBuilder builder(path);
-    builder.WithCatalog(catalog, Identifier("append_09.db", "append_09"));
-    builder.AddOption(Options::FILE_FORMAT, "orc");
-    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(context)));
-    ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
-    ASSERT_TRUE(plan->SnapshotId());
-    ASSERT_FALSE(plan->Splits().empty());
-    ASSERT_GT(catalog->LoadSnapshotCalls(), 0U);
-}
-
-TEST(TableScanTest, TestCatalogScanRejectsSystemTablePath) {
-    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09$snapshots";
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(std::make_shared<LocalFileSystem>());
-    ScanContextBuilder builder(path);
-    builder.WithCatalog(catalog, Identifier("append_09.db", "append_09$snapshots"));
-    builder.AddOption(Options::FILE_FORMAT, "orc");
-    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(context)),
-                        "this catalog manages the versions of its tables and publishes no snapshot "
-                        "there");
 }
 
 }  // namespace paimon::test

@@ -64,9 +64,7 @@ class PAIMON_EXPORT ReadContext {
                 const std::shared_ptr<RealtimeContext>& realtime_context,
                 const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
                 const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
-                const std::shared_ptr<Catalog>& catalog,
-                const std::optional<Identifier>& identifier);
+                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level);
 
     ~ReadContext();
 
@@ -119,8 +117,6 @@ class PAIMON_EXPORT ReadContext {
     uint32_t GetRowToBatchThreadNumber() const {
         return row_to_batch_thread_number_;
     }
-    /// The schema this context reads with, or null when it has to be read from the table path.
-    /// `WithCatalog()` resolves it to the catalog's schema when `SetTableSchema()` did not answer.
     const std::optional<std::string>& GetSpecificTableSchema() const {
         return table_schema_;
     }
@@ -159,16 +155,6 @@ class PAIMON_EXPORT ReadContext {
 
     WarmupLevel GetWarmupLevel() const {
         return warmup_level_;
-    }
-
-    /// Returns the catalog supplying table metadata, or null if unset.
-    const std::shared_ptr<Catalog>& GetCatalog() const {
-        return catalog_;
-    }
-
-    /// Returns the table identifier supplied with the catalog.
-    const std::optional<Identifier>& GetIdentifier() const {
-        return identifier_;
     }
 
     /// Whether a read schema (C ArrowSchema) for nested column pruning was provided.
@@ -212,8 +198,6 @@ class PAIMON_EXPORT ReadContext {
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<FormatTable> format_table_;
     WarmupLevel warmup_level_;
-    std::shared_ptr<Catalog> catalog_;
-    std::optional<Identifier> identifier_;
     // Owns schema resources and releases ArrowSchema::release in destructor.
     std::unique_ptr<ArrowSchema> read_schema_;
 };
@@ -228,8 +212,8 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Constructs a `ReadContextBuilder` for a format table that is already loaded: the only way
     /// to read one whose schema lives in a metastore rather than under its location, such as a
     /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `SetTableSchema()`, `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()`,
-    /// `WithCatalog()` and a branch are refused here rather than ignored.
+    /// `SetTableSchema()`, `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()` and a
+    /// branch are refused here rather than ignored.
     ///
     /// @param table The format table to read, as `Catalog::GetFormatTable()` hands it back.
     explicit ReadContextBuilder(const std::shared_ptr<FormatTable>& table);
@@ -496,13 +480,10 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ReadContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
 
-    /// Loads a native table's schema from the catalog and reads its data through that table's file
-    /// system - including the per-table temporary credentials a catalog that issues them hands out
-    /// through `Catalog::GetTableFileSystem`.
-    ///
-    /// Only the main branch is supported. `SetTableSchema()` keeps the caller's schema and spares
-    /// the catalog request; `WithFileSystem()` and `WithFileSystemSchemeToIdentifierMap()` override
-    /// the file system.
+    /// Reads a native table through its own file system - including the per-table temporary
+    /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.
+    /// This is a shorthand for `WithFileSystem(catalog->GetTableFileSystem(identifier))`; an
+    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked.
     /// @param catalog Non-null catalog, read when `Finish()` builds the context.
     /// @param identifier The native table to read.
     /// @return Reference to this builder for method chaining.

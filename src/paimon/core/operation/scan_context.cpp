@@ -20,32 +20,28 @@
 
 #include <utility>
 
-#include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
-#include "paimon/core/catalog/version_managed_catalog.h"
-#include "paimon/core/utils/branch_manager.h"
-#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
-#include "paimon/schema/schema.h"
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
 
 namespace paimon {
 class Predicate;
 
-ScanContext::ScanContext(
-    const std::string& path, bool is_streaming_mode, std::optional<int32_t> limit,
-    const std::shared_ptr<ScanFilter>& scan_filter,
-    const std::shared_ptr<GlobalIndexResult>& global_index_result,
-    const std::shared_ptr<RealtimeContext>& realtime_context,
-    const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
-    const std::shared_ptr<FileSystem>& specific_file_system,
-    const std::optional<std::string>& table_schema,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<Cache>& cache,
-    const std::shared_ptr<FormatTable>& format_table, const std::shared_ptr<Catalog>& catalog,
-    const std::optional<Identifier>& identifier)
+ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
+                         std::optional<int32_t> limit,
+                         const std::shared_ptr<ScanFilter>& scan_filter,
+                         const std::shared_ptr<GlobalIndexResult>& global_index_result,
+                         const std::shared_ptr<RealtimeContext>& realtime_context,
+                         const std::shared_ptr<MemoryPool>& memory_pool,
+                         const std::shared_ptr<Executor>& executor,
+                         const std::shared_ptr<FileSystem>& specific_file_system,
+                         const std::optional<std::string>& table_schema,
+                         const std::map<std::string, std::string>& options,
+                         const std::shared_ptr<Cache>& cache,
+                         const std::shared_ptr<FormatTable>& format_table)
     : path_(path),
       is_streaming_mode_(is_streaming_mode),
       limit_(limit),
@@ -58,9 +54,7 @@ ScanContext::ScanContext(
       table_schema_(table_schema),
       options_(options),
       cache_(cache),
-      format_table_(format_table),
-      catalog_(catalog),
-      identifier_(identifier) {}
+      format_table_(format_table) {}
 
 ScanContext::~ScanContext() = default;
 
@@ -214,12 +208,12 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         return Status::Invalid("cannot scan with null format table");
     }
     if (impl_->format_table_ != nullptr) {
-        // The table already answers each of these, and from a source this cannot see behind, so a
-        // second answer is refused rather than silently dropped.
+        // The table already answers both, and from a source this cannot see behind, so a second
+        // answer is refused rather than silently dropped.
         if (impl_->catalog_ != nullptr) {
             return Status::Invalid(
-                "a format table carries its own schema and the file system it was loaded through, "
-                "so WithCatalog() cannot be used with one; use ScanContextBuilder(FormatTable)");
+                "a format table carries the file system it was loaded through, so WithCatalog() "
+                "cannot be used with one");
         }
         if (impl_->table_schema_) {
             return Status::Invalid(
@@ -236,53 +230,26 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot scan with empty table path");
     }
-    std::shared_ptr<Executor> executor =
-        impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot scan through a null catalog");
     }
-    if (impl_->catalog_ != nullptr) {
-        PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(impl_->catalog_));
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
-                               impl_->identifier_->GetBranchName());
-        auto branch_option = impl_->options_.find(Options::BRANCH);
-        std::optional<std::string> option_branch =
-            branch_option == impl_->options_.end()
-                ? std::nullopt
-                : std::optional<std::string>(branch_option->second);
-        for (const std::optional<std::string>& branch : {identifier_branch, option_branch}) {
-            if (branch &&
-                !BranchManager::IsMainBranch(BranchManager::NormalizeBranch(branch.value()))) {
-                return Status::Invalid(fmt::format(
-                    "a scan through a catalog reads the main branch of the table, so it cannot be "
-                    "aimed at branch '{}'",
-                    branch.value()));
-            }
-        }
-        if (impl_->specific_file_system_ == nullptr) {
-            // A catalog issuing per-table temporary credentials only hands them out through
-            // GetTableFileSystem, so the scan uses the credentials of this table. The context
-            // options override the catalog ones the file system is built from.
-            PAIMON_ASSIGN_OR_RAISE(
-                impl_->specific_file_system_,
-                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value(), impl_->options_));
-        }
-        PAIMON_ASSIGN_OR_RAISE(bool is_system_table, impl_->identifier_->IsSystemTable());
-        // A system table derives its schema from the table it reads rather than keeping one in the
-        // catalog, so that schema is left to be read from under the table path.
-        if (!impl_->table_schema_ && !is_system_table) {
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
-                                   impl_->catalog_->LoadTableSchema(impl_->identifier_.value()));
-            PAIMON_ASSIGN_OR_RAISE(impl_->table_schema_, schema->GetJsonSchema());
-        }
+    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
+        // A catalog issuing per-table temporary credentials only hands them out through
+        // GetTableFileSystem, so the scan uses the credentials of this table. The context
+        // options override the catalog ones the file system is built from.
+        PAIMON_ASSIGN_OR_RAISE(
+            impl_->specific_file_system_,
+            impl_->catalog_->GetTableFileSystem(impl_->identifier_.value(), impl_->options_));
     }
+    std::shared_ptr<Executor> executor =
+        impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
     auto ctx = std::make_unique<ScanContext>(
         impl_->path_, impl_->is_streaming_mode_, impl_->limit_,
         std::make_shared<ScanFilter>(impl_->predicates_, impl_->partition_filters_,
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
         impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
-        impl_->format_table_, impl_->catalog_, impl_->identifier_);
+        impl_->format_table_);
     impl_->Reset();
     return ctx;
 }

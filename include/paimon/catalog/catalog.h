@@ -194,7 +194,8 @@ class PAIMON_EXPORT Catalog {
     ///       table it was requested for. Pass it to `ReadContextBuilder::WithFileSystem`,
     ///       `ScanContextBuilder::WithFileSystem` or `WriteContextBuilder::WithFileSystem`,
     ///       or let a builder request it for you through `ReadContextBuilder::WithCatalog`,
-    ///       `ScanContextBuilder::WithCatalog` or `WriteContextBuilder::WithCatalog`.
+    ///       `ScanContextBuilder::WithCatalog`, `WriteContextBuilder::WithCatalog` or
+    ///       `CommitContextBuilder::WithCatalog`.
     ///
     /// @param identifier The identifier (database and table name) of the table.
     /// @param fs_options File system options that override the ones the file system is

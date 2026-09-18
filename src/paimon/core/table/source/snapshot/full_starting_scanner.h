@@ -20,7 +20,6 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 
 #include "paimon/core/table/source/snapshot/starting_scanner.h"
 
@@ -33,29 +32,19 @@ class FullStartingScanner : public StartingScanner {
 
     Result<std::shared_ptr<ScanResult>> Scan(
         const std::shared_ptr<SnapshotReader>& snapshot_reader) override {
-        if (starting_snapshot_ == std::nullopt) {
-            // Resolve the latest snapshot together with its body: a version-managed catalog
-            // can hold a snapshot it never published to the table path, so reading only its
-            // id and then reloading the body from the path would fail with NotExist. Whether
-            // the body came from the catalog or from the path, it is the one to plan from.
-            PAIMON_ASSIGN_OR_RAISE(SnapshotManager::LatestSnapshotResult latest,
-                                   snapshot_manager_->LatestSnapshotWithSource());
-            if (latest.snapshot == std::nullopt) {
-                return std::make_shared<StartingScanner::NoSnapshot>();
-            }
-            starting_snapshot_ = latest.snapshot;
-            starting_snapshot_id_ = latest.snapshot->Id();
+        if (starting_snapshot_id_ == std::nullopt) {
+            // try to get first snapshot
+            PAIMON_ASSIGN_OR_RAISE(starting_snapshot_id_, snapshot_manager_->LatestSnapshotId());
         }
+        if (starting_snapshot_id_ == std::nullopt) {
+            return std::make_shared<StartingScanner::NoSnapshot>();
+        }
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
+                               snapshot_manager_->LoadSnapshot(starting_snapshot_id_.value()));
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<Plan> plan,
-            snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(*starting_snapshot_)->Read());
+            snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(snapshot)->Read());
         return std::make_shared<StartingScanner::CurrentSnapshot>(plan);
     }
-
- private:
-    /// The body of the snapshot this scan starts from, resolved once so that a catalog-held
-    /// snapshot is planned from the body the catalog returned instead of being re-read from a
-    /// path it was never published to.
-    std::optional<Snapshot> starting_snapshot_;
 };
 }  // namespace paimon

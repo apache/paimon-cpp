@@ -255,10 +255,10 @@ so its restored file references are visible to the expiration operation.
 
 Reading through the catalog
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Pass the catalog and table identifier to ``ReadContextBuilder::WithCatalog`` or
-``ScanContextBuilder::WithCatalog`` to read a native table the same way, in one
-call: the table's schema comes from the catalog, its data is read through the
-table's file system, and a scan reads the latest snapshot from the catalog:
+To read a native table with the per-table temporary credentials a catalog issues,
+pass the catalog and table identifier to ``ReadContextBuilder::WithCatalog`` or
+``ScanContextBuilder::WithCatalog``. This is a shorthand for asking the catalog
+for that table's file system and passing it in through ``WithFileSystem``:
 
 .. code-block:: cpp
 
@@ -279,24 +279,16 @@ table's file system, and a scan reads the latest snapshot from the catalog:
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
                           paimon::TableRead::Create(std::move(read_context)));
 
-A scan takes only its latest snapshot from the catalog; the manifests that
-snapshot points at and any historical snapshots still come from the table path.
-Both builders read the table's schema from the catalog when ``Finish()`` builds
-the context, which is one catalog request; call ``SetTableSchema`` with a schema
-you already hold to skip it. The table's file system, including the per-table
-temporary credentials a catalog serves through ``Catalog::GetTableFileSystem``,
-is used for both. ``WithFileSystem`` overrides it with a file system that is used
-as-is and authenticates its own accesses, and the read builder also allows
-``WithFileSystemSchemeToIdentifierMap``.
-
-Only the main branch is supported. Both builders reject other branches in the
-identifier or ``branch`` option; the read builder also checks ``WithBranch``.
-Explicit ``tbl$branch_main`` and ``branch=main`` are accepted. For a format
+When ``Finish()`` builds the context, it asks the catalog for the table's file
+system through ``Catalog::GetTableFileSystem`` and uses it as-is for the schema,
+snapshots, manifests and data under the table path, so it signs every access with
+the table's credentials and reloads them as they expire. An explicit
+``WithFileSystem`` takes precedence, so the catalog is not asked. A catalog that
+issues no per-table credentials returns its catalog-level file system, so this is
+also how you read with the catalog's own object-store credentials. For a format
 table, use ``ReadContextBuilder(FormatTable)`` or ``ScanContextBuilder(FormatTable)``
-instead; ``WithCatalog`` is rejected. A system table path such as ``tbl$snapshots``
-reads snapshots from under the table path, which a version-managed catalog
-publishes nowhere but in itself, so it is rejected with ``NotImplemented``; scan
-such a table with ``WithFileSystem(Catalog::GetTableFileSystem(...))`` instead.
+instead; ``WithCatalog`` is rejected because the table already carries the file
+system it was loaded through.
 
 The C++ REST catalog covers the database, table, snapshot and commit operations
 of the ``Catalog`` API. The parts of the Java REST catalog that have no C++
