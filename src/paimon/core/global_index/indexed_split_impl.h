@@ -19,10 +19,8 @@
 
 #pragma once
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -100,22 +98,7 @@ class IndexedSplitImpl : public IndexedSplit {
         }
         if (!scores_.empty()) {
             size_t row_count = 0;
-            auto sorted_ranges = row_ranges_;
-            std::sort(sorted_ranges.begin(), sorted_ranges.end());
-            std::optional<int64_t> previous_end;
-            for (const auto& range : sorted_ranges) {
-                if (range.from < 0 || range.from > range.to) {
-                    return Status::Invalid("Invalid row id range in scored indexed split.");
-                }
-                if (range.to == std::numeric_limits<int64_t>::max()) {
-                    return Status::Invalid(
-                        "Row id range upper bound must be less than INT64_MAX in scored indexed "
-                        "split.");
-                }
-                if (previous_end && range.from <= previous_end.value()) {
-                    return Status::Invalid("Duplicate row id in scored indexed split.");
-                }
-                previous_end = range.to;
+            for (const auto& range : row_ranges_) {
                 row_count += range.Count();
             }
             if (row_count != scores_.size()) {

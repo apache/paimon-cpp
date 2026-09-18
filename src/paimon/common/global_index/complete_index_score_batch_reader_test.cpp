@@ -172,6 +172,8 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestGlobalScoresFollowRowIds) {
                          arrow::struct_(fields),
                          R"([[null, 12, 102], [null, 99, null], [null, 10, 100], [null, 18, 108]])")
                          .ValueOrDie();
+    const std::unordered_map<int64_t, float> scores_by_row_id = {
+        {100, 1.0f}, {101, 2.0f}, {102, 3.0f}, {108, 9.0f}, {109, 10.0f}};
     for (bool remove_row_id : {false, true}) {
         auto expected_fields = fields;
         if (remove_row_id) {
@@ -189,9 +191,7 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestGlobalScoresFollowRowIds) {
                 src_array, src_array->type(), RoaringBitmap32::From({0, 2, 3}), batch_size);
             inner->EnableRandomizeBatchSize(false);
             auto reader = std::make_unique<CompleteIndexScoreBatchReader>(
-                std::move(inner),
-                std::unordered_map<int64_t, float>{
-                    {100, 1.0f}, {101, 2.0f}, {102, 3.0f}, {108, 9.0f}, {109, 10.0f}},
+                std::move(inner), std::unordered_map<int64_t, float>(scores_by_row_id),
                 remove_row_id, GetArrowPool(pool_));
             ASSERT_OK_AND_ASSIGN(auto result_array,
                                  ReadResultCollector::CollectResult(std::move(reader)));

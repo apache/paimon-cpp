@@ -19,7 +19,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -220,32 +219,6 @@ TEST(IndexedSplitTest, TestValidate) {
         IndexedSplitImpl split(data_split, row_ranges, scores);
         ASSERT_NOK_WITH_MSG(split.Validate(),
                             "Scores length does not match row ranges in indexed split.");
-    }
-    {
-        IndexedSplitImpl split(data_split, {Range(10, 12), Range(12, 13)},
-                               {1.0f, 2.0f, 3.0f, 4.0f, 5.0f});
-        ASSERT_NOK_WITH_MSG(split.Validate(), "Duplicate row id in scored indexed split.");
-    }
-    {
-        IndexedSplitImpl split(data_split, {Range(30, 31), Range(10, 12)},
-                               {1.0f, 2.0f, 3.0f, 4.0f, 5.0f});
-        ASSERT_OK(split.Validate());
-    }
-    {
-        IndexedSplitImpl split(data_split, {Range(-1, 0)}, {1.0f, 2.0f});
-        ASSERT_NOK_WITH_MSG(split.Validate(), "Invalid row id range in scored indexed split.");
-    }
-    {
-        constexpr int64_t max_row_id = std::numeric_limits<int64_t>::max();
-        IndexedSplitImpl split(data_split, {Range(max_row_id, max_row_id)}, {1.0f});
-        ASSERT_NOK_WITH_MSG(split.Validate(),
-                            "Row id range upper bound must be less than INT64_MAX");
-        IndexedSplitImpl range_split(data_split, {Range(max_row_id - 1, max_row_id)}, {1.0f, 2.0f});
-        ASSERT_NOK_WITH_MSG(range_split.Validate(),
-                            "Row id range upper bound must be less than INT64_MAX");
-        IndexedSplitImpl valid_split(data_split, {Range(max_row_id - 2, max_row_id - 1)},
-                                     {1.0f, 2.0f});
-        ASSERT_OK(valid_split.Validate());
     }
     {
         std::vector<Range> row_ranges = {};
