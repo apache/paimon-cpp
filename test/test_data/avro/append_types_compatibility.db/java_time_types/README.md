@@ -10,6 +10,3 @@ key.
 Add: (1, 12:34:56, 12:34:56.123)
 Add: (2, null, null)
 Add: (3, null, null)
-
-Paimon C++ is expected to reject this table while TIME is unsupported. Java Avro supports only
-the precision-0 and precision-3 declarations used here.

@@ -12,7 +12,3 @@ is unpartitioned and has no primary key.
 Add: (1, 12:34:56, 12:34:56.123, 12:34:56.123000, 12:34:56.123000000)
 Add: (2, null, null, null, null)
 Add: (3, 00:00:00, 00:00:00.000, 00:00:00.000000, 00:00:00.000000000)
-
-Paimon C++ is expected to reject this table while TIME is unsupported. Paimon's internal TIME
-value is milliseconds since midnight, so the precision-6 and precision-9 declarations do not add
-digits beyond .123 in this fixture.
