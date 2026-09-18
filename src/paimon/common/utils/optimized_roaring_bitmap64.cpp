@@ -105,8 +105,8 @@ OptimizedRoaringBitmap64 OptimizedRoaringBitmap64::FromRoaringBitmap32(
 
 Status OptimizedRoaringBitmap64::Add(int64_t position) {
     PAIMON_RETURN_NOT_OK(CheckPosition(position));
-    const int32_t key = static_cast<int32_t>(position >> 32);
-    const uint32_t position32 = static_cast<uint32_t>(position);
+    const auto key = static_cast<int32_t>(position >> 32);
+    const auto position32 = static_cast<uint32_t>(position);
     AllocateBitmapsIfNeeded(static_cast<size_t>(key) + 1);
     impl_->bitmaps[key].add(position32);
     return Status::OK();
@@ -130,8 +130,8 @@ OptimizedRoaringBitmap64& OptimizedRoaringBitmap64::operator|=(
 
 Result<bool> OptimizedRoaringBitmap64::Contains(int64_t position) const {
     PAIMON_RETURN_NOT_OK(CheckPosition(position));
-    const int32_t key = static_cast<int32_t>(position >> 32);
-    const uint32_t position32 = static_cast<uint32_t>(position);
+    const auto key = static_cast<int32_t>(position >> 32);
+    const auto position32 = static_cast<uint32_t>(position);
     return static_cast<size_t>(key) < impl_->bitmaps.size() &&
            impl_->bitmaps[key].contains(position32);
 }
