@@ -37,6 +37,19 @@ class PAIMON_EXPORT Identifier {
 
     explicit Identifier(const std::string& table);
     Identifier(const std::string& database, const std::string& table);
+    /// Names `branch` of `table`: every branch but the main one is addressed by the object name
+    /// this builds, which joins them as `tbl$branch_dev`.
+    ///
+    /// The branch is matched against the main branch ignoring case, as the Java client matches it,
+    /// so `MAIN` names the main branch here rather than a branch of its own. A branch of only
+    /// whitespace names it too, which the Java client does not do: this library reads a blank
+    /// branch as the main branch everywhere.
+    ///
+    /// @param database Database holding the table.
+    /// @param table Data table name, carrying no branch or system table suffix.
+    /// @param branch Branch of `table`; any spelling of `main`, an empty and a blank name all
+    ///        name the main branch.
+    Identifier(const std::string& database, const std::string& table, const std::string& branch);
 
     bool operator==(const Identifier& other) const;
     const std::string& GetDatabaseName() const;

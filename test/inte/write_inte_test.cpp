@@ -3619,6 +3619,74 @@ TEST_F(WriteInteTest, TestBranchWrite) {
     ASSERT_TRUE(expected_commit_message_1->TEST_Equal(*result_commit_msgs1));
 }
 
+TEST_F(WriteInteTest, TestBranchCommitAndRead) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
+                                 arrow::field("f1", arrow::int32())};
+    auto schema = arrow::schema(fields);
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::BUCKET, "-1"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> main_helper,
+                         TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{},
+                                            /*primary_keys=*/{}, options,
+                                            /*is_streaming_mode=*/false));
+    std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> main_batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["main", 1]])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(main_helper->WriteAndCommit(std::move(main_batch), /*commit_identifier=*/0,
+                                          /*expected_commit_messages=*/std::nullopt));
+
+    SchemaManager branch_schema_manager(file_system_, table_path, "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(schema, /*partition_keys=*/{},
+                                                /*primary_keys=*/{}, options));
+
+    std::map<std::string, std::string> branch_options = options;
+    branch_options[Options::BRANCH] = "dev";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> branch_helper,
+        TestHelper::Create(table_path, branch_options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> branch_batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["dev", 2]])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(branch_helper->WriteAndCommit(std::move(branch_batch), /*commit_identifier=*/1,
+                                            /*expected_commit_messages=*/std::nullopt));
+
+    std::string branch_snapshots = PathUtil::JoinPath(table_path, "branch/branch-dev/snapshot");
+    ASSERT_OK_AND_ASSIGN(bool branch_snapshot_exists,
+                         file_system_->Exists(PathUtil::JoinPath(branch_snapshots, "snapshot-1")));
+    ASSERT_TRUE(branch_snapshot_exists);
+    ASSERT_OK_AND_ASSIGN(bool branch_hint_exists,
+                         file_system_->Exists(PathUtil::JoinPath(branch_snapshots, "LATEST")));
+    ASSERT_TRUE(branch_hint_exists);
+    ASSERT_OK_AND_ASSIGN(bool main_snapshot_exists, file_system_->Exists(PathUtil::JoinPath(
+                                                        table_path, "snapshot/snapshot-1")));
+    ASSERT_TRUE(main_snapshot_exists);
+    ASSERT_OK_AND_ASSIGN(bool main_holds_branch_snapshot, file_system_->Exists(PathUtil::JoinPath(
+                                                              table_path, "snapshot/snapshot-2")));
+    ASSERT_FALSE(main_holds_branch_snapshot);
+
+    arrow::FieldVector fields_with_row_kind = fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    auto data_type = arrow::struct_(fields_with_row_kind);
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<Split>> branch_splits,
+        branch_helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool branch_read, branch_helper->ReadAndCheckResult(
+                                               data_type, branch_splits, R"([[0, "dev", 2]])"));
+    ASSERT_TRUE(branch_read);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<Split>> main_splits,
+        main_helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool main_read, main_helper->ReadAndCheckResult(data_type, main_splits,
+                                                                         R"([[0, "main", 1]])"));
+    ASSERT_TRUE(main_read);
+}
+
 TEST_P(WriteInteTest, TestDataEvolutionWrite) {
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::utf8()),  arrow::field("f1", arrow::int8()),

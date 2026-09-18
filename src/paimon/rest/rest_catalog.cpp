@@ -60,27 +60,14 @@ std::optional<std::string> NormalizeBranch(std::optional<std::string> branch) {
     return branch;
 }
 
-// Builds the "<table>$branch_<branch>" object name addressing `branch` of `table_name`
-// on the rest server.
-std::string BranchObjectName(std::string table_name, const std::string& branch) {
-    table_name.append(Identifier::kSystemTableSplitter);
-    table_name.append(Identifier::kSystemBranchPrefix);
-    table_name.append(branch);
-    return table_name;
-}
-
 // Builds the identifier sent to the rest server: the system table suffix is stripped
 // while the branch stays in the object name, so the server resolves the branch itself and
 // returns the branch's own schema. The path the server reports is the data table root in
 // either case; the branch subdirectory is derived downstream from the branch option and
 // must not be applied twice (see `ToTableSchema`).
 Result<Identifier> ToLoadIdentifier(const Identifier& identifier) {
-    PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
-    branch = NormalizeBranch(std::move(branch));
-    std::string object_name = branch ? BranchObjectName(std::move(data_table_name), branch.value())
-                                     : std::move(data_table_name);
-    return Identifier(identifier.GetDatabaseName(), object_name);
+    return CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string()));
 }
 
 }  // namespace
@@ -455,12 +442,9 @@ Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& i
                                                              const std::string& branch) const {
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotBranch(identifier, "listSnapshots"));
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "listSnapshots"));
-    std::optional<std::string> normalized_branch =
-        NormalizeBranch(branch.empty() ? std::nullopt : std::make_optional(branch));
-    std::string object_name =
-        normalized_branch ? BranchObjectName(identifier.GetTableName(), normalized_branch.value())
-                          : identifier.GetTableName();
-    Identifier load_identifier(identifier.GetDatabaseName(), object_name);
+    // `CheckNotBranch` and `CheckNotSystemTable` above leave the table name bare, so the branch
+    // this is asked for is the only one the object name can carry.
+    Identifier load_identifier(identifier.GetDatabaseName(), identifier.GetTableName(), branch);
     // The Catalog interface has no pagination, so all pages are fetched; the server
     // does not order snapshots across pages while the contract requires ascending ids.
     PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> snapshots, api_->ListSnapshots(load_identifier));

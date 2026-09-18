@@ -24,8 +24,8 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/utils/branch_manager.h"
-#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
@@ -81,7 +81,7 @@ class WriteContextBuilder::Impl {
         memory_pool_ = GetDefaultPool();
         executor_ = CreateDefaultExecutor();
         temp_directory_.clear();
-        branch_ = BranchManager::DEFAULT_MAIN_BRANCH;
+        branch_.reset();
         write_schema_.clear();
         fs_scheme_to_identifier_map_.clear();
         specific_file_system_.reset();
@@ -98,7 +98,9 @@ class WriteContextBuilder::Impl {
     std::shared_ptr<FormatTable> format_table_;
     bool built_from_format_table_ = false;
     std::string commit_user_;
-    std::string branch_ = BranchManager::DEFAULT_MAIN_BRANCH;
+    /// Unset until `WithBranch()` names one, so that a branch named only by the identifier or
+    /// the `branch` option is not overruled by the default.
+    std::optional<std::string> branch_;
     std::optional<int32_t> write_id_;
     bool is_streaming_mode_ = false;
     bool ignore_num_bucket_check_ = false;
@@ -239,7 +241,8 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
                 "a format table carries the file system it was loaded through, so WithFileSystem() "
                 "and WithFileSystemSchemeToIdentifierMap() cannot be used with one");
         }
-        if (impl_->branch_ != BranchManager::DEFAULT_MAIN_BRANCH) {
+        if (impl_->branch_ &&
+            !BranchManager::IsMainBranch(BranchManager::NormalizeBranch(impl_->branch_.value()))) {
             return Status::Invalid(
                 "a format table has no branches, so WithBranch() cannot be used with one");
         }
@@ -248,27 +251,29 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
     if (impl_->root_path_.empty()) {
         return Status::Invalid("root path is empty");
     }
-    // The branch names a directory under the root path, so it must stay a single path component.
-    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(impl_->branch_));
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot write through a null catalog");
     }
-    if (impl_->catalog_ != nullptr) {
+    if (impl_->identifier_) {
+        // Before the branch is read out of the identifier: the branch of `tbl$branch_dev$options`
+        // reads back as `dev`, so a write built for such a name would go to another branch.
+        PAIMON_RETURN_NOT_OK(
+            CatalogUtils::CheckNotSystemTable(impl_->identifier_.value(), "write"));
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::string branch,
+        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "write"));
+    if (impl_->catalog_ != nullptr && !BranchManager::IsMainBranch(branch)) {
+        // Refused here rather than at the commit of what is written to the branch.
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
                                impl_->identifier_->GetBranchName());
-        auto branch_option = impl_->options_.find(Options::BRANCH);
-        std::optional<std::string> option_branch =
-            branch_option == impl_->options_.end()
-                ? std::nullopt
-                : std::optional<std::string>(branch_option->second);
-        for (const std::optional<std::string>& branch :
-             {identifier_branch, option_branch, std::optional<std::string>(impl_->branch_)}) {
-            if (branch &&
-                !BranchManager::IsMainBranch(BranchManager::NormalizeBranch(branch.value()))) {
-                return Status::Invalid(
-                    fmt::format("a write through a catalog requires the main branch, but got '{}'",
-                                branch.value()));
-            }
+        if (!identifier_branch) {
+            PAIMON_ASSIGN_OR_RAISE(std::string table_name, impl_->identifier_->GetDataTableName());
+            return Status::Invalid(fmt::format(
+                "a write through a catalog addresses a branch by the table identifier, so name "
+                "branch '{}' there as '{}$branch_{}'",
+                branch, table_name, branch));
         }
     }
     bool enable_multi_thread_spill = impl_->spill_thread_number_ > 0;
@@ -279,10 +284,10 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
     auto ctx = std::make_unique<WriteContext>(
         impl_->root_path_, impl_->commit_user_, impl_->is_streaming_mode_,
         impl_->ignore_num_bucket_check_, impl_->ignore_previous_files_, enable_multi_thread_spill,
-        impl_->write_id_, impl_->branch_, impl_->write_schema_, impl_->memory_pool_,
-        impl_->executor_, impl_->temp_directory_, impl_->specific_file_system_,
-        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
-        impl_->format_table_, impl_->catalog_, impl_->identifier_);
+        impl_->write_id_, branch, impl_->write_schema_, impl_->memory_pool_, impl_->executor_,
+        impl_->temp_directory_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
+        impl_->realtime_context_, impl_->options_, impl_->format_table_, impl_->catalog_,
+        impl_->identifier_);
     impl_->Reset();
     return ctx;
 }

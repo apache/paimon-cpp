@@ -172,14 +172,16 @@ Operational Flow
    For a table of a catalog which owns its versions, such as a REST catalog, it
    passes that catalog and the table identifier to
    ``WriteContextBuilder::WithCatalog`` and ``CommitContextBuilder::WithCatalog``.
-   The writer loads the current schema and latest snapshot from the catalog.
-   On ``Commit``, the snapshot and
-   the statistics of the change go to the catalog, which decides whether this
-   commit wins, and one that lost the race is rebased and retried the way a
-   file-system commit is. A caller without a catalog client can instead enable
-   REST catalog commit mode, call ``Commit``, obtain the JSON request from
-   ``GetLastCommitTableRequest``, and send that request to the REST catalog
-   itself.
+   The writer loads the latest snapshot from the catalog, and the current schema
+   from it as well when it writes to the main branch; a write aimed at another
+   branch reads the schema published under ``branch/branch-<name>`` instead. On
+   ``Commit``, the snapshot and the statistics of the change go to the catalog,
+   which decides whether this commit wins, and one that lost the race is rebased
+   and retried the way a file-system commit is. A caller without a catalog
+   client can instead enable REST catalog commit mode, call ``Commit``, obtain
+   the JSON request from ``GetLastCommitTableRequest``, and send that request to
+   the REST catalog itself. That request body names no branch, so a commit aimed
+   at one has to be sent to the URL of ``tbl$branch_dev`` rather than of ``tbl``.
 
 6. The local committer or REST catalog validates the messages, updates
    manifests/metadata, and finalizes the snapshot atomically.

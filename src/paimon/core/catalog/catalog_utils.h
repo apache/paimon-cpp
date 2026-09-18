@@ -50,6 +50,14 @@ class CatalogUtils {
     /// Fails when `identifier` carries a "$branch_" suffix.
     static Status CheckNotBranch(const Identifier& identifier, const std::string& action);
 
+    /// Returns the identifier a catalog is told `branch` of the data table of `identifier` by:
+    /// the bare data table for the main branch, and the branch object name, as `tbl$branch_dev`,
+    /// for any other.
+    /// Every call a commit or a write makes to the catalog goes to this one identifier, so that
+    /// what is read and what is committed name one object.
+    static Result<Identifier> BranchIdentifier(const Identifier& identifier,
+                                               const std::string& branch);
+
     /// Fails when `db_name` cannot be used as a single path component, which is required to
     /// keep the database path under the warehouse.
     static Status CheckValidDatabaseName(const std::string& db_name);

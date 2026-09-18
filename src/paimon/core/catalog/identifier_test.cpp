@@ -99,6 +99,21 @@ TEST(IdentifierTest, ParseBranchTable) {
     ASSERT_FALSE(is_system_table);
 }
 
+TEST(IdentifierTest, BranchConstructor) {
+    Identifier branch_id("db", "tbl", "dev");
+    ASSERT_EQ(branch_id.GetTableName(), "tbl$branch_dev");
+    ASSERT_OK_AND_ASSIGN(std::string data_table_name, branch_id.GetDataTableName());
+    ASSERT_EQ(data_table_name, "tbl");
+    ASSERT_OK_AND_ASSIGN(std::optional<std::string> branch_name, branch_id.GetBranchName());
+    ASSERT_TRUE(branch_name);
+    ASSERT_EQ(branch_name.value(), "dev");
+
+    ASSERT_EQ(Identifier("db", "tbl", Identifier::kDefaultMainBranch), Identifier("db", "tbl"));
+    ASSERT_EQ(Identifier("db", "tbl", "MAIN"), Identifier("db", "tbl"));
+    ASSERT_EQ(Identifier("db", "tbl", ""), Identifier("db", "tbl"));
+    ASSERT_EQ(Identifier("db", "tbl", "   "), Identifier("db", "tbl"));
+}
+
 TEST(IdentifierTest, ParseBranchSystemTable) {
     Identifier id("db", "tbl$branch_dev$options");
     ASSERT_OK_AND_ASSIGN(std::string data_table_name, id.GetDataTableName());
@@ -167,6 +182,7 @@ TEST(IdentifierTest, InvalidEmptySystemTableNameParts) {
     ASSERT_NOK_WITH_MSG(Identifier("db", "$options").IsSystemTable(), "Invalid table name");
     ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$").IsSystemTable(), "Invalid table name");
     ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_").IsSystemTable(), "Invalid table name");
+    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_   ").IsSystemTable(), "Invalid table name");
     ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_dev$").IsSystemTable(), "Invalid table name");
     ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$$options").IsSystemTable(),
                         "System table can only contain one '$' separator");

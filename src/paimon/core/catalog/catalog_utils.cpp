@@ -69,6 +69,12 @@ Status CatalogUtils::CheckNotSystemTable(const Identifier& identifier, const std
     return Status::OK();
 }
 
+Result<Identifier> CatalogUtils::BranchIdentifier(const Identifier& identifier,
+                                                  const std::string& branch) {
+    PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
+    return Identifier(identifier.GetDatabaseName(), data_table_name, branch);
+}
+
 Status CatalogUtils::CheckNotBranch(const Identifier& identifier, const std::string& action) {
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
     if (branch) {

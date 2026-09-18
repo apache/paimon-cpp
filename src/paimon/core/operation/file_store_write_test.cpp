@@ -186,6 +186,42 @@ TEST(FileStoreWriteTest, TestCreateAppendTable) {
     }
 }
 
+TEST(FileStoreWriteTest, TestCatalogWriteAsksTheCatalogOnlyForTheMainBranchSchema) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const auto logical_schema = arrow::schema(
+        {arrow::field("id", arrow::int64(), false), arrow::field("value", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
+                         TableSchema::Create(0, logical_schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, /*options=*/{}));
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableSchema(schema);
+    catalog->SetFileSystem(dir->GetFileSystem());
+
+    WriteContextBuilder main_builder(dir->Str(), "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> main_context,
+        main_builder.WithCatalog(catalog, Identifier("db", "table$branch_main")).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> main_write,
+                         FileStoreWrite::Create(std::move(main_context)));
+    ASSERT_OK(main_write->Close());
+    ASSERT_EQ(catalog->LoadTableSchemaIdentifiers().size(), 1u);
+    ASSERT_EQ(catalog->LoadTableSchemaIdentifiers().front(), Identifier("db", "table"));
+
+    SchemaManager branch_schema_manager(dir->GetFileSystem(), dir->Str(), "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(logical_schema, /*partition_keys=*/{},
+                                                /*primary_keys=*/{}, /*options=*/{}));
+    catalog->SetTableSchema(nullptr);
+    WriteContextBuilder branch_builder(dir->Str(), "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> branch_context,
+        branch_builder.WithCatalog(catalog, Identifier("db", "table$branch_dev")).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> branch_write,
+                         FileStoreWrite::Create(std::move(branch_context)));
+    ASSERT_OK(branch_write->Close());
+    ASSERT_EQ(catalog->LoadTableSchemaIdentifiers().size(), 1u);
+}
+
 TEST(FileStoreWriteTest, TestCreateWriterForLoadedMapBlobTable) {
     auto dir = UniqueTestDirectory::Create();
     std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");

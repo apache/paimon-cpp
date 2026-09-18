@@ -24,9 +24,12 @@
 #include <functional>
 #include <future>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "fmt/format.h"
+#include "fmt/ranges.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/executor/future.h"
 #include "paimon/common/utils/date_time_utils.h"
@@ -42,6 +45,7 @@
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/fs/file_system.h"
@@ -85,6 +89,25 @@ Result<int32_t> ExpireSnapshots::Expire() {
     }
     if (snapshot_manager_ == nullptr) {
         return Status::Invalid("Expire failed: snapshot manager is nullptr");
+    }
+    // All branches of a table share its data files, while expiration only reads the retained
+    // snapshots of its own branch, so it could delete a file another branch still refers to.
+    if (!BranchManager::IsMainBranch(snapshot_manager_->Branch())) {
+        return Status::NotImplemented(fmt::format(
+            "Expire failed: expiring snapshots of table {} on branch '{}' is not supported, "
+            "because the branches of a table share its data files",
+            snapshot_manager_->RootPath(), snapshot_manager_->Branch()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> branches,
+                           BranchManager::ListBranches(fs_, snapshot_manager_->RootPath()));
+    branches.erase(
+        std::remove(branches.begin(), branches.end(), BranchManager::DEFAULT_MAIN_BRANCH),
+        branches.end());
+    if (!branches.empty()) {
+        return Status::NotImplemented(fmt::format(
+            "Expire failed: expiring snapshots of table {} is not supported, because the table "
+            "has branches other than main ({}), which share its data files",
+            snapshot_manager_->RootPath(), fmt::join(branches, ", ")));
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest_snapshot_id,
                            snapshot_manager_->LatestSnapshotIdFromFileSystem());
@@ -186,8 +209,8 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id, int64
             break;
         }
     }
-    PAIMON_LOG_DEBUG(logger_, "Snapshot expire range is [%ld, %ld]", begin_inclusive_id,
-                     end_exclusive_id);
+    PAIMON_LOG_DEBUG(logger_, "Snapshot expire range of table %s is [%ld, %ld]",
+                     snapshot_manager_->RootPath().c_str(), begin_inclusive_id, end_exclusive_id);
 
     // Since the data file deletion information for each snapshot is recorded in the delta part of
     // the next snapshot, it is necessary to check the next snapshot. Otherwise, its data files will

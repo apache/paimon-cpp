@@ -47,7 +47,8 @@ TEST(CatalogSnapshotCommitTest, TestCommitThroughCatalog) {
     std::vector<PartitionStatistics> statistics = {
         PartitionStatistics({{"f1", "20"}}, 1, 541, 1, 1724090888743, -1),
         PartitionStatistics({{"f1", "10"}}, 4, 1118, 2, 1724090888727, 2)};
-    ASSERT_OK_AND_ASSIGN(bool success, commit.Commit("base-snapshot-uuid", snapshot, statistics));
+    ASSERT_OK_AND_ASSIGN(bool success, commit.Commit("base-snapshot-uuid", snapshot,
+                                                     Identifier::kDefaultMainBranch, statistics));
     ASSERT_TRUE(success);
 
     ASSERT_EQ(catalog->CommitCalls().size(), 1u);
@@ -66,7 +67,8 @@ TEST(CatalogSnapshotCommitTest, TestCommitThroughCatalog) {
               CommitTableRequest("table-uuid", "base-snapshot-uuid", snapshot, statistics));
 
     Snapshot next_snapshot = BuildTestSnapshot(3, "snapshot-uuid-3");
-    ASSERT_OK_AND_ASSIGN(success, commit.Commit(snapshot.Uuid(), next_snapshot, {}));
+    ASSERT_OK_AND_ASSIGN(
+        success, commit.Commit(snapshot.Uuid(), next_snapshot, Identifier::kDefaultMainBranch, {}));
     ASSERT_TRUE(success);
     ASSERT_EQ(catalog->CommitCalls().size(), 2u);
     const MockVersionManagedCatalog::CommitCall& next_call = catalog->CommitCalls().back();
@@ -81,11 +83,39 @@ TEST(CatalogSnapshotCommitTest, TestCommitThroughCatalog) {
     ASSERT_EQ(next_request, CommitTableRequest("table-uuid", snapshot.Uuid(), next_snapshot, {}));
 }
 
+TEST(CatalogSnapshotCommitTest, TestCommitToBranch) {
+    auto catalog = std::make_shared<MockVersionManagedCatalog>(true);
+    CatalogSnapshotCommit commit(catalog, Identifier("db", "tbl"), "table-uuid");
+    ASSERT_OK_AND_ASSIGN(
+        bool success,
+        commit.Commit(std::nullopt, BuildTestSnapshot(1, "snapshot-uuid-1"), "dev", {}));
+    ASSERT_TRUE(success);
+    ASSERT_EQ(catalog->CommitCalls().back().identifier, Identifier("db", "tbl$branch_dev"));
+
+    ASSERT_OK(commit.Commit(std::nullopt, BuildTestSnapshot(2, "snapshot-uuid-2"),
+                            Identifier::kDefaultMainBranch, {}));
+    ASSERT_EQ(catalog->CommitCalls().back().identifier, Identifier("db", "tbl"));
+
+    ASSERT_NOK_WITH_MSG(
+        commit.Commit(std::nullopt, BuildTestSnapshot(3, "snapshot-uuid-3"), "MAIN", {}),
+        "a catalog names branch 'MAIN' as it names the main branch");
+    ASSERT_EQ(catalog->CommitCalls().size(), 2u);
+
+    CatalogSnapshotCommit branch_commit(catalog, Identifier("db", "tbl$branch_dev"), "table-uuid");
+    ASSERT_OK(
+        branch_commit.Commit(std::nullopt, BuildTestSnapshot(4, "snapshot-uuid-4"), "release", {}));
+    ASSERT_EQ(catalog->CommitCalls().back().identifier, Identifier("db", "tbl$branch_release"));
+    ASSERT_OK(branch_commit.Commit(std::nullopt, BuildTestSnapshot(5, "snapshot-uuid-5"),
+                                   Identifier::kDefaultMainBranch, {}));
+    ASSERT_EQ(catalog->CommitCalls().back().identifier, Identifier("db", "tbl"));
+}
+
 TEST(CatalogSnapshotCommitTest, TestLostRaceIsNotAnError) {
     auto catalog = std::make_shared<MockVersionManagedCatalog>(false);
     CatalogSnapshotCommit commit(catalog, Identifier("db", "tbl"), std::nullopt);
-    ASSERT_OK_AND_ASSIGN(
-        bool success, commit.Commit("base-snapshot-uuid", BuildTestSnapshot(2, std::nullopt), {}));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         commit.Commit("base-snapshot-uuid", BuildTestSnapshot(2, std::nullopt),
+                                       Identifier::kDefaultMainBranch, {}));
     ASSERT_FALSE(success);
     ASSERT_EQ(catalog->CommitCalls().size(), 1u);
     ASSERT_EQ(catalog->CommitCalls().front().table_uuid, std::nullopt);
@@ -95,7 +125,8 @@ TEST(CatalogSnapshotCommitTest, TestCatalogFailurePropagates) {
     auto catalog =
         std::make_shared<MockVersionManagedCatalog>(Status::IOError("catalog unreachable"));
     CatalogSnapshotCommit commit(catalog, Identifier("db", "tbl"), "table-uuid");
-    ASSERT_NOK_WITH_MSG(commit.Commit(std::nullopt, BuildTestSnapshot(1, std::nullopt), {}),
+    ASSERT_NOK_WITH_MSG(commit.Commit(std::nullopt, BuildTestSnapshot(1, std::nullopt),
+                                      Identifier::kDefaultMainBranch, {}),
                         "catalog unreachable");
 
     ASSERT_OK_AND_ASSIGN(std::string request_str, commit.GetLastCommitTableRequest());
@@ -109,7 +140,8 @@ TEST(CatalogSnapshotCommitTest, TestCatalogWhichDoesNotManageVersionsIsRefused) 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetSupportsVersionManagement(false);
     CatalogSnapshotCommit commit(catalog, Identifier("db", "tbl"), "table-uuid");
-    ASSERT_NOK_WITH_MSG(commit.Commit(std::nullopt, BuildTestSnapshot(1, std::nullopt), {}),
+    ASSERT_NOK_WITH_MSG(commit.Commit(std::nullopt, BuildTestSnapshot(1, std::nullopt),
+                                      Identifier::kDefaultMainBranch, {}),
                         "does not manage the versions of its tables");
     ASSERT_TRUE(catalog->CommitCalls().empty());
 }
@@ -122,7 +154,8 @@ TEST(CatalogSnapshotCommitTest, TestBuildRequestWithoutCatalog) {
     ASSERT_EQ(commit.DescribeTarget(), "commit table request built, not sent");
 
     Snapshot snapshot = BuildTestSnapshot(2, std::nullopt);
-    ASSERT_OK_AND_ASSIGN(bool success, commit.Commit("base-snapshot-uuid", snapshot, {}));
+    ASSERT_OK_AND_ASSIGN(bool success, commit.Commit("base-snapshot-uuid", snapshot,
+                                                     Identifier::kDefaultMainBranch, {}));
     ASSERT_TRUE(success);
 
     ASSERT_OK_AND_ASSIGN(std::string request_str, commit.GetLastCommitTableRequest());
@@ -132,9 +165,24 @@ TEST(CatalogSnapshotCommitTest, TestBuildRequestWithoutCatalog) {
     ASSERT_EQ(request.GetBaseSnapshotUuid(), std::optional<std::string>("base-snapshot-uuid"));
     ASSERT_EQ(request.GetSnapshot().Id(), 2);
 
+    ASSERT_OK_AND_ASSIGN(
+        bool branch_success,
+        commit.Commit(std::nullopt, BuildTestSnapshot(3, std::nullopt), "dev", {}));
+    ASSERT_TRUE(branch_success);
+    ASSERT_OK_AND_ASSIGN(std::string branch_request_str, commit.GetLastCommitTableRequest());
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest branch_request,
+                         CommitTableRequest::FromJsonString(branch_request_str));
+    ASSERT_EQ(branch_request.GetSnapshot().Id(), 3);
+
+    ASSERT_NOK_WITH_MSG(commit.Commit(std::nullopt, BuildTestSnapshot(4, std::nullopt), "MAIN", {}),
+                        "a catalog names branch 'MAIN' as it names the main branch");
+    ASSERT_NOK_WITH_MSG(commit.GetLastCommitTableRequest(),
+                        "Should call Commit first before GetLastCommitTableRequest.");
+
     CatalogSnapshotCommit bare_commit;
     ASSERT_OK_AND_ASSIGN(bool bare_success,
-                         bare_commit.Commit(std::nullopt, BuildTestSnapshot(1, std::nullopt), {}));
+                         bare_commit.Commit(std::nullopt, BuildTestSnapshot(1, std::nullopt),
+                                            Identifier::kDefaultMainBranch, {}));
     ASSERT_TRUE(bare_success);
     ASSERT_OK_AND_ASSIGN(std::string bare_request_str, bare_commit.GetLastCommitTableRequest());
     ASSERT_OK_AND_ASSIGN(CommitTableRequest bare_request,

@@ -104,15 +104,19 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     }
 
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier) const override {
-        ++load_table_schema_calls_;
+        load_table_schema_identifiers_.push_back(identifier);
         if (table_schema_ == nullptr) {
             return Status::NotExist(identifier.ToString() + " not exist");
         }
         return table_schema_;
     }
 
+    const std::vector<Identifier>& LoadTableSchemaIdentifiers() const {
+        return load_table_schema_identifiers_;
+    }
+
     size_t LoadTableSchemaCalls() const {
-        return load_table_schema_calls_;
+        return load_table_schema_identifiers_.size();
     }
 
     Result<std::optional<Snapshot>> LoadSnapshot(const Identifier& identifier) const override {
@@ -248,7 +252,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     std::optional<std::string> current_snapshot_uuid_;
     std::vector<Snapshot> accepted_;
     mutable size_t get_table_calls_ = 0;
-    mutable size_t load_table_schema_calls_ = 0;
+    mutable std::vector<Identifier> load_table_schema_identifiers_;
     mutable std::vector<Identifier> load_snapshot_identifiers_;
     bool serve_snapshots_ = false;
     Status load_snapshot_status_;

@@ -1262,6 +1262,10 @@ TEST_F(RestCatalogTest, ListSnapshots) {
     ASSERT_OK_AND_ASSIGN(std::vector<SnapshotInfo> main_case_snapshots,
                          catalog->ListSnapshots(identifier, "MAIN"));
     ASSERT_EQ(2, main_case_snapshots.size());
+    // a blank name is the main branch everywhere in this library, so it is the bare table here
+    ASSERT_OK_AND_ASSIGN(std::vector<SnapshotInfo> blank_snapshots,
+                         catalog->ListSnapshots(identifier, "   "));
+    ASSERT_EQ(2, blank_snapshots.size());
 
     Status missing = catalog->ListSnapshots(Identifier("db1", "t9"), "").status();
     ASSERT_TRUE(missing.IsNotExist()) << missing.ToString();

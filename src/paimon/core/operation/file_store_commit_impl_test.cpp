@@ -68,10 +68,12 @@
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/metrics/commit_metrics.h"
 #include "paimon/core/partition/partition_statistics.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/table/system/system_table_schema.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/file_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -282,13 +284,16 @@ class FileStoreCommitImplTest : public testing::Test {
         return catalog;
     }
 
+    static std::vector<std::string> FirstCommitMessageFiles() {
+        return {"/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc",
+                "/f1=10/bucket-1/data-6828284c-e707-49b5-af6b-69be79af120c-0.orc",
+                "/f1=20/bucket-0/data-8dc7f04c-3c98-48b2-9d56-834d746c4a40-0.orc",
+                "/f1=10/bucket-1/data-fd1d2255-43f2-4534-b4cc-08b29e662940-0.orc",
+                "/f1=20/bucket-0/data-7b3f4cc7-116b-4d2f-9c62-5dadc1f11bcb-0.orc"};
+    }
+
     Status PrepareFirstCommitMessageFiles() {
-        return PrepareFakeFiles(
-            {"/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc",
-             "/f1=10/bucket-1/data-6828284c-e707-49b5-af6b-69be79af120c-0.orc",
-             "/f1=20/bucket-0/data-8dc7f04c-3c98-48b2-9d56-834d746c4a40-0.orc",
-             "/f1=10/bucket-1/data-fd1d2255-43f2-4534-b4cc-08b29e662940-0.orc",
-             "/f1=20/bucket-0/data-7b3f4cc7-116b-4d2f-9c62-5dadc1f11bcb-0.orc"});
+        return PrepareFakeFiles(FirstCommitMessageFiles());
     }
 
     void PublishAcceptedSnapshots(const std::shared_ptr<MockVersionManagedCatalog>& catalog) {
@@ -329,7 +334,7 @@ class FileStoreCommitImplTest : public testing::Test {
         std::shared_ptr<Catalog> catalog;
         std::string commit_user = "commit_user_1";
         std::string root_path;
-        Identifier identifier{"db", "tbl"};
+        std::optional<Identifier> identifier = Identifier("db", "tbl");
         std::optional<std::string> table_id;
         bool append_commit_check_conflict = false;
         std::map<std::string, std::string> options;
@@ -340,7 +345,7 @@ class FileStoreCommitImplTest : public testing::Test {
         CommitContextBuilder builder(spec.root_path.empty() ? table_path_ : spec.root_path,
                                      spec.commit_user);
         builder.AddOption(Options::FILE_SYSTEM, "local")
-            .WithCatalog(spec.catalog, spec.identifier)
+            .WithCatalog(spec.catalog, spec.identifier.value())
             .AppendCommitCheckConflict(spec.append_commit_check_conflict);
         if (spec.table_id) {
             builder.WithTableId(spec.table_id.value());
@@ -402,6 +407,51 @@ class FileStoreCommitImplTest : public testing::Test {
         ASSERT_OK(other_commit->Commit(CommitMessagesOfRound(2), 1));
         ASSERT_EQ(recovery->catalog->AcceptedSnapshots().size(), 2u);
         ASSERT_EQ(recovery->catalog->AcceptedSnapshots().back().CommitUser(), "commit_user_2");
+    }
+
+    void CheckExpireIsRefusedWithoutDeleting(const std::string& branch,
+                                             const std::string& expected_msg) {
+        CommitContextBuilder builder(table_path_, "commit_user_1");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                             builder.AddOption(Options::FILE_SYSTEM, "local")
+                                 .AddOption(Options::BRANCH, branch)
+                                 .AddOption(Options::SNAPSHOT_NUM_RETAINED_MIN, "1")
+                                 .AddOption(Options::SNAPSHOT_NUM_RETAINED_MAX, "1")
+                                 .AddOption(Options::SNAPSHOT_TIME_RETAINED, "1ms")
+                                 .Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                             FileStoreCommit::Create(std::move(context)));
+        ASSERT_OK(PrepareFirstCommitMessageFiles());
+        ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
+        ASSERT_OK(commit->DropPartition({{{"f1", "10"}}}, /*commit_identifier=*/2));
+
+        SnapshotManager snapshot_manager(file_system_, table_path_, branch);
+        ASSERT_OK_AND_ASSIGN(Snapshot first, snapshot_manager.LoadSnapshot(1));
+        const std::string manifest_dir = PathUtil::JoinPath(table_path_, "manifest");
+        size_t manifest_count = CountFiles(manifest_dir);
+        ASSERT_GT(manifest_count, 0u);
+
+        Result<int32_t> expired = commit->Expire();
+        ASSERT_TRUE(expired.status().IsNotImplemented()) << expired.status().ToString();
+        ASSERT_NOK_WITH_MSG(expired, expected_msg);
+
+        ASSERT_OK_AND_ASSIGN(bool snapshot_exists, snapshot_manager.SnapshotExists(1));
+        ASSERT_TRUE(snapshot_exists);
+        ASSERT_OK_AND_ASSIGN(std::optional<int64_t> earliest_id,
+                             snapshot_manager.EarliestSnapshotId());
+        ASSERT_EQ(earliest_id, std::optional<int64_t>(1));
+        for (const std::string& manifest_list :
+             {first.BaseManifestList(), first.DeltaManifestList()}) {
+            ASSERT_OK_AND_ASSIGN(bool manifest_list_exists, file_system_->Exists(PathUtil::JoinPath(
+                                                                manifest_dir, manifest_list)));
+            ASSERT_TRUE(manifest_list_exists) << manifest_list;
+        }
+        ASSERT_EQ(CountFiles(manifest_dir), manifest_count);
+        for (const std::string& data_file : FirstCommitMessageFiles()) {
+            ASSERT_OK_AND_ASSIGN(bool data_file_exists,
+                                 file_system_->Exists(PathUtil::JoinPath(table_path_, data_file)));
+            ASSERT_TRUE(data_file_exists) << data_file;
+        }
     }
 
     size_t CountFiles(const std::string& dir) const {
@@ -719,6 +769,193 @@ TEST_F(FileStoreCommitImplTest, TestCatalogCommitTakesTheSnapshot) {
                          file_system_->Exists(PathUtil::JoinPath(table_path_, "snapshot/LATEST")));
     ASSERT_FALSE(hint_exist);
     ASSERT_GT(CountFiles(PathUtil::JoinPath(table_path_, "manifest")), 0u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCommitToBranch) {
+    CommitContextBuilder missing_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> missing_context,
+                         missing_builder.AddOption(Options::FILE_SYSTEM, "local")
+                             .AddOption(Options::BRANCH, "dev")
+                             .Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(missing_context)),
+                        "not found latest schema in branch dev");
+
+    SchemaManager branch_schema_manager(file_system_, table_path_, "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
+                                                /*primary_keys=*/{}, /*options=*/{}));
+
+    CommitContextBuilder builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         builder.AddOption(Options::FILE_SYSTEM, "local")
+                             .AddOption(Options::BRANCH, "dev")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(context)));
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
+
+    std::string branch_snapshots = PathUtil::JoinPath(table_path_, "branch/branch-dev/snapshot");
+    ASSERT_OK_AND_ASSIGN(bool branch_snapshot_exists,
+                         file_system_->Exists(PathUtil::JoinPath(branch_snapshots, "snapshot-1")));
+    ASSERT_TRUE(branch_snapshot_exists);
+    ASSERT_OK_AND_ASSIGN(bool hint_exist,
+                         file_system_->Exists(PathUtil::JoinPath(branch_snapshots, "LATEST")));
+    ASSERT_TRUE(hint_exist);
+    ASSERT_OK_AND_ASSIGN(bool main_snapshot_exists, file_system_->Exists(PathUtil::JoinPath(
+                                                        table_path_, "snapshot/snapshot-1")));
+    ASSERT_FALSE(main_snapshot_exists);
+    ASSERT_GT(CountFiles(PathUtil::JoinPath(table_path_, "manifest")), 0u);
+
+    SnapshotManager branch_snapshot_manager(file_system_, table_path_, "dev");
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> latest, branch_snapshot_manager.LatestSnapshot());
+    ASSERT_TRUE(latest);
+    ASSERT_EQ(latest.value().Id(), 1);
+}
+
+TEST_F(FileStoreCommitImplTest, TestRequestOnlyCommitToBranch) {
+    SchemaManager branch_schema_manager(file_system_, table_path_, "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
+                                                /*primary_keys=*/{}, /*options=*/{}));
+
+    CommitContextBuilder builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         builder.AddOption(Options::FILE_SYSTEM, "local")
+                             .AddOption(Options::BRANCH, "dev")
+                             .UseRESTCatalogCommit(true)
+                             .WithTableId("table-uuid")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(context)));
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
+
+    ASSERT_OK_AND_ASSIGN(std::string request_str, commit->GetLastCommitTableRequest());
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest request,
+                         CommitTableRequest::FromJsonString(request_str));
+    ASSERT_EQ(request.GetTableId(), std::optional<std::string>("table-uuid"));
+    ASSERT_EQ(request.GetSnapshot().Id(), 1);
+    ASSERT_EQ(request.GetSnapshot().SchemaId(), 0);
+
+    ASSERT_OK_AND_ASSIGN(bool branch_snapshot_exists,
+                         file_system_->Exists(PathUtil::JoinPath(
+                             table_path_, "branch/branch-dev/snapshot/snapshot-1")));
+    ASSERT_FALSE(branch_snapshot_exists);
+    ASSERT_OK_AND_ASSIGN(bool main_snapshot_exists, file_system_->Exists(PathUtil::JoinPath(
+                                                        table_path_, "snapshot/snapshot-1")));
+    ASSERT_FALSE(main_snapshot_exists);
+    ASSERT_GT(CountFiles(PathUtil::JoinPath(table_path_, "manifest")), 0u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitToBranchTakesTheBranchSnapshot) {
+    SchemaManager branch_schema_manager(file_system_, table_path_, "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
+                                                /*primary_keys=*/{}, /*options=*/{}));
+
+    CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
+                         base_builder.AddOption(Options::FILE_SYSTEM, "local")
+                             .AddOption(Options::BRANCH, "dev")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> base_commit,
+                         FileStoreCommit::Create(std::move(base_context)));
+    ASSERT_OK(base_commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
+    SnapshotManager branch_snapshot_manager(file_system_, table_path_, "dev");
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> base_snapshot,
+                         branch_snapshot_manager.LatestSnapshot());
+    ASSERT_TRUE(base_snapshot);
+    ASSERT_EQ(base_snapshot.value().Id(), 1);
+    ASSERT_TRUE(base_snapshot.value().Uuid().has_value());
+
+    auto catalog = CreateCatalog();
+    catalog->SetHeldSnapshot(base_snapshot.value());
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.identifier.emplace("db", "tbl$branch_dev");
+    spec.table_id = "table-uuid-1";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(2), /*commit_identifier=*/2));
+
+    ASSERT_GT(catalog->LoadSnapshotCalls(), 0u);
+    for (const Identifier& asked : catalog->LoadSnapshotIdentifiers()) {
+        ASSERT_EQ(asked, Identifier("db", "tbl$branch_dev"));
+    }
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    const MockVersionManagedCatalog::CommitCall& call = catalog->CommitCalls().front();
+    ASSERT_EQ(call.identifier, Identifier("db", "tbl$branch_dev"));
+    ASSERT_EQ(call.base_snapshot_uuid, base_snapshot.value().Uuid());
+    ASSERT_EQ(call.snapshot.Id(), 2);
+
+    ASSERT_OK_AND_ASSIGN(bool base_published,
+                         file_system_->Exists(PathUtil::JoinPath(
+                             table_path_, "branch/branch-dev/snapshot/snapshot-1")));
+    ASSERT_TRUE(base_published);
+    ASSERT_OK_AND_ASSIGN(bool branch_snapshot_exists,
+                         file_system_->Exists(PathUtil::JoinPath(
+                             table_path_, "branch/branch-dev/snapshot/snapshot-2")));
+    ASSERT_FALSE(branch_snapshot_exists);
+}
+
+TEST_F(FileStoreCommitImplTest, TestBranchCommitReadsTheSchemaFromTheBranch) {
+    SchemaManager branch_schema_manager(file_system_, table_path_, "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
+                                                /*primary_keys=*/{}, /*options=*/{}));
+
+    std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.identifier.emplace("db", "tbl$branch_dev");
+    spec.table_id = "table-uuid-1";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_EQ(catalog->CommitCalls().front().identifier, Identifier("db", "tbl$branch_dev"));
+    ASSERT_EQ(catalog->CommitCalls().front().snapshot.SchemaId(), 0);
+    ASSERT_EQ(catalog->LoadTableSchemaCalls(), 0u);
+
+    catalog->SetTableSchema(nullptr);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> next_commit, CreateCatalogCommit(spec));
+    ASSERT_OK(next_commit->Commit(CommitMessagesOfRound(2), /*commit_identifier=*/2));
+
+    ASSERT_EQ(catalog->CommitCalls().size(), 2u);
+    ASSERT_EQ(catalog->CommitCalls().back().snapshot.SchemaId(), 0);
+    ASSERT_EQ(catalog->LoadTableSchemaCalls(), 0u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestBranchCommitNamesTheBranchWhenItFails) {
+    SchemaManager branch_schema_manager(file_system_, table_path_, "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
+                                                /*primary_keys=*/{}, /*options=*/{}));
+
+    auto catalog = CreateCatalog(Status::IOError("catalog unreachable"));
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.identifier.emplace("db", "tbl$branch_dev");
+    spec.table_id = "table-uuid";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+
+    Status failed = commit->Commit(CommitMessagesOfRound(1));
+    ASSERT_NOK_WITH_MSG(failed, "catalog unreachable");
+    ASSERT_NOK_WITH_MSG(failed, "(branch dev, through catalog");
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitCanonicalizesTheMainBranchIdentifier) {
+    auto catalog = CreateCatalog();
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.identifier.emplace("db", "tbl$branch_main");
+    spec.table_id = "table-uuid-1";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
+
+    ASSERT_GT(catalog->LoadTableSchemaCalls(), 0u);
+    for (const Identifier& asked : catalog->LoadTableSchemaIdentifiers()) {
+        ASSERT_EQ(asked, Identifier("db", "tbl"));
+    }
+    ASSERT_GT(catalog->LoadSnapshotCalls(), 0u);
+    for (const Identifier& asked : catalog->LoadSnapshotIdentifiers()) {
+        ASSERT_EQ(asked, Identifier("db", "tbl"));
+    }
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_EQ(catalog->CommitCalls().front().identifier, Identifier("db", "tbl"));
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitIsRefusedForATableRecreatedUnderTheSameName) {
@@ -2786,6 +3023,31 @@ TEST_F(FileStoreCommitImplTest, TestDropPartitionAndExpireSnapshot) {
     ASSERT_EQ(1, manifests.size());
     ASSERT_EQ(0, manifests[0].NumAddedFiles());
     ASSERT_EQ(2, manifests[0].NumDeletedFiles());
+}
+
+TEST_F(FileStoreCommitImplTest, TestExpireOnBranchIsNotSupported) {
+    SchemaManager branch_schema_manager(file_system_, table_path_, "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
+                                                /*primary_keys=*/{}, /*options=*/{}));
+
+    ASSERT_NO_FATAL_FAILURE(CheckExpireIsRefusedWithoutDeleting(
+        "dev",
+        "on branch 'dev' is not supported, because the branches of a table share its data "
+        "files"));
+}
+
+TEST_F(FileStoreCommitImplTest, TestExpireOnMainOfTableWithBranchesIsNotSupported) {
+    for (const char* branch : {"dev", "test"}) {
+        SchemaManager branch_schema_manager(file_system_, table_path_, branch);
+        ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_),
+                                                    /*partition_keys=*/{"f1"},
+                                                    /*primary_keys=*/{}, /*options=*/{}));
+    }
+
+    ASSERT_NO_FATAL_FAILURE(CheckExpireIsRefusedWithoutDeleting(
+        BranchManager::DEFAULT_MAIN_BRANCH,
+        "is not supported, because the table has branches other than main (dev, test), which "
+        "share its data files"));
 }
 
 TEST_F(FileStoreCommitImplTest, TestDropMultiPartitionAndExpireSnapshot) {

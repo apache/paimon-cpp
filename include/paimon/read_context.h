@@ -362,7 +362,7 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Warmup overlaps remote-storage latency with the read of the current file. Higher levels hide
     /// more latency but use more memory, and may warm files that a query never reads (for example
     /// when a LIMIT stops the scan early).
-    /// @param level The warmup level to use (default: WarmupLevel::DECODED).
+    /// @param level The warmup level to use (default: WarmupLevel::RAW).
     /// @return Reference to this builder for method chaining.
     /// @note WarmupLevel::RAW warms the read-ahead cache, so it has no effect and behaves like
     /// WarmupLevel::NONE when the cache is off (see SetReadAheadCacheEnabled()).
@@ -443,9 +443,12 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Paimon supports branching for data versioning and time travel queries.
     /// This method allows reading from a specific branch instead of the main branch.
     ///
+    /// The `branch` option names the branch too, as it does for a scan of one branch; naming two
+    /// different branches is refused rather than silently resolved.
+    ///
     /// @param branch Name of the branch to read from.
     /// @return Reference to this builder for method chaining.
-    /// @note Default branch is "main" if not specified.
+    /// @note Default branch is "main" if not specified. An empty name is the main branch.
     ReadContextBuilder& WithBranch(const std::string& branch);
 
     /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system

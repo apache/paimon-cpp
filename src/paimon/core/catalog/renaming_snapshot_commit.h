@@ -24,8 +24,10 @@
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
@@ -46,9 +48,17 @@ class RenamingSnapshotCommit : public SnapshotCommit {
         : fs_(fs), snapshot_manager_(snapshot_manager) {}
 
     /// @note The atomic rename detects conflicts by snapshot ID, so `base_snapshot_uuid` is unused.
+    /// @note `branch` has to be the branch of the snapshot manager this commit was built with.
     Result<bool> Commit(const std::optional<std::string>& base_snapshot_uuid,
-                        const Snapshot& snapshot,
+                        const Snapshot& snapshot, const std::string& branch,
                         const std::vector<PartitionStatistics>& statistics) override {
+        const std::string normalized_branch = BranchManager::NormalizeBranch(branch);
+        if (normalized_branch != snapshot_manager_->Branch()) {
+            return Status::Invalid(fmt::format(
+                "renaming snapshot commit built for branch '{}' cannot commit snapshot #{} to "
+                "branch '{}'",
+                snapshot_manager_->Branch(), snapshot.Id(), normalized_branch));
+        }
         PAIMON_ASSIGN_OR_RAISE(std::string json_str, snapshot.ToJsonString());
         std::string snapshot_path = snapshot_manager_->SnapshotPath(snapshot.Id());
         PAIMON_ASSIGN_OR_RAISE(bool is_exist, fs_->Exists(snapshot_path));

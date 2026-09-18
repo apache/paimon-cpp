@@ -25,11 +25,13 @@
 #include <string>
 #include <utility>
 
+#include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
@@ -51,6 +53,7 @@
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/defs.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
@@ -110,15 +113,16 @@ bool IsCatalogCommit(const CommitContext& ctx) {
 }
 
 Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
-    const CommitContext& ctx, const std::shared_ptr<FileSystem>& fs,
+    const CommitContext& ctx, const std::optional<Identifier>& catalog_identifier,
+    const std::shared_ptr<FileSystem>& fs,
     const std::shared_ptr<SnapshotManager>& snapshot_manager) {
     if (IsCatalogCommit(ctx)) {
-        if (!ctx.GetIdentifier()) {
+        if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
         // Reuse the caller's UUID so table recreation cannot redirect this commit.
         return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(
-            ctx.GetCatalog(), ctx.GetIdentifier().value(), ctx.GetTableId()));
+            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId()));
     }
     if (ctx.UseRESTCatalogCommit()) {
         return std::shared_ptr<SnapshotCommit>(
@@ -196,19 +200,35 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs));
     const std::string& root_path = ctx->GetRootPath();
-    // Catalog-managed schemas may be absent from the table directory.
+    // The branch the context was built for, already validated by `CommitContextBuilder`.
+    PAIMON_ASSIGN_OR_RAISE(std::string branch, BranchManager::ResolveBranch(
+                                                   ctx->GetIdentifier(), ctx->GetOptions(),
+                                                   /*explicit_branch=*/std::nullopt, "commit"));
+    std::optional<Identifier> catalog_identifier;
+    if (ctx->GetIdentifier()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            Identifier branch_identifier,
+            CatalogUtils::BranchIdentifier(ctx->GetIdentifier().value(), branch));
+        catalog_identifier.emplace(std::move(branch_identifier));
+    }
+    // Catalog-managed schemas may be absent from the table directory, but only on the main branch:
+    // a branch publishes its own under `branch/branch-<name>`, which is where the load below and a
+    // read of the branch both read it, so a catalog answering for no branch schema does not fail
+    // a commit to one.
     std::optional<std::string> catalog_table_schema;
     FileStoreCommitImpl::SchemaIdLoader schema_id_loader;
     if (ctx->GetCatalog() != nullptr) {
-        if (!ctx->GetIdentifier()) {
+        if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> loaded_schema,
-                               ctx->GetCatalog()->LoadTableSchema(ctx->GetIdentifier().value()));
-        PAIMON_ASSIGN_OR_RAISE(std::string schema_json, loaded_schema->GetJsonSchema());
-        catalog_table_schema = std::move(schema_json);
+        if (BranchManager::IsMainBranch(branch)) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> loaded_schema,
+                                   ctx->GetCatalog()->LoadTableSchema(catalog_identifier.value()));
+            PAIMON_ASSIGN_OR_RAISE(std::string schema_json, loaded_schema->GetJsonSchema());
+            catalog_table_schema = std::move(schema_json);
+        }
         std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
-        Identifier identifier = ctx->GetIdentifier().value();
+        Identifier identifier = catalog_identifier.value();
         schema_id_loader = [catalog, identifier]() -> Result<int64_t> {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
                                    catalog->LoadTableSchema(identifier));
@@ -222,26 +242,29 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         };
     }
     // A format table commits by renaming files into place, so it never reaches the snapshot path
-    // below. The managed path here reads the main branch, so this reads the same one: the two
+    // below. The managed path here reads the commit's branch, so this reads the same one: the two
     // must not dispatch on different schemas.
-    auto schema_manager = std::make_shared<SchemaManager>(tmp_options.GetFileSystem(), root_path);
+    auto schema_manager =
+        std::make_shared<SchemaManager>(tmp_options.GetFileSystem(), root_path, branch);
     std::shared_ptr<TableSchema> latest_schema;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FormatTable> format_table,
-        FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), root_path,
-                                   BranchManager::DEFAULT_MAIN_BRANCH, ctx->GetOptions(),
-                                   catalog_table_schema, schema_manager.get(), &latest_schema));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
+                           FormatTableLoader::TryLoad(
+                               tmp_options.GetFileSystem(), root_path, branch, ctx->GetOptions(),
+                               catalog_table_schema, schema_manager.get(), &latest_schema));
     if (format_table != nullptr) {
         return NewFormatTableCommit(format_table, *ctx);
     }
     if (latest_schema == nullptr) {
-        return Status::Invalid("not found latest schema");
+        return Status::Invalid(fmt::format("not found latest schema in branch {}", branch));
     }
     const std::shared_ptr<TableSchema>& schema = latest_schema;
     auto opts = schema->Options();
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;
     }
+    // The metadata paths below are built for this branch, so what reads through these options,
+    // whose cache keys are scoped by it, has to read the same one.
+    opts[Options::BRANCH] = branch;
     std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(opts, specific_fs));
@@ -272,11 +295,12 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
             options.LegacyPartitionNameEnabled(), external_paths, global_index_external_path,
             options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
 
-    auto snapshot_manager = std::make_shared<SnapshotManager>(options.GetFileSystem(), root_path);
+    auto snapshot_manager =
+        std::make_shared<SnapshotManager>(options.GetFileSystem(), root_path, branch);
     if (IsCatalogCommit(*ctx)) {
         std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
         VersionManagedCatalog* versioned = AsVersionManaged(catalog);
-        Identifier identifier = ctx->GetIdentifier().value();
+        Identifier identifier = catalog_identifier.value();
         // Capture the catalog to keep the versioned interface alive.
         snapshot_manager->SetSnapshotLoader(
             [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
@@ -318,8 +342,9 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
                                              ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotCommit> snapshot_commit,
-                           NewSnapshotCommit(*ctx, options.GetFileSystem(), snapshot_manager));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<SnapshotCommit> snapshot_commit,
+        NewSnapshotCommit(*ctx, catalog_identifier, options.GetFileSystem(), snapshot_manager));
 
     return std::make_unique<FileStoreCommitImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, root_path, ctx->GetCommitUser(),

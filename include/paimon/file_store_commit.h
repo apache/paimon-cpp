@@ -164,7 +164,9 @@ class PAIMON_EXPORT FileStoreCommit {
         const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
         int64_t commit_identifier, std::optional<int64_t> watermark = std::nullopt) = 0;
 
-    /// Returns the request from the latest commit attempt, including failed attempts.
+    /// Returns the request from the latest commit attempt, including failed attempts. Each attempt
+    /// clears the request of the one before it, so an attempt that failed before building one, as
+    /// one naming a branch a catalog cannot address does, leaves this returning an error.
     /// Catalog commits send requests automatically; `UseRESTCatalogCommit()` only prepares them.
     /// @note Temporary interface for internal use, will be removed in the future.
     /// @return JSON with `tableId`, `baseSnapshotUuid`, `snapshot` and `statistics`.
@@ -179,6 +181,12 @@ class PAIMON_EXPORT FileStoreCommit {
     /// catalog or retained-metadata read errors propagate without deleting files.
     /// Retained snapshots with index manifests return `NotImplemented` before deletion.
     /// @note Coordinate rollback and expiration so they do not run concurrently.
+    /// @note Returns `NotImplemented` before any snapshot is read or any file is deleted when this
+    ///       commit is on a branch other than main, or the table path holds such a branch under
+    ///       `branch/branch-<name>`: branches share the table's data files, while expiration only
+    ///       reads the retained snapshots of its own branch. A branch held only by a catalog, or
+    ///       created while expiration runs, is not found; do not expire a table with such a
+    ///       branch, and serialize branch creation and expiration.
     /// @return Result<int32_t> indicating the number of expired items or an error status.
     virtual Result<int32_t> Expire() = 0;
 

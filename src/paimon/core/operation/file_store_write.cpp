@@ -27,6 +27,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/disk/io_manager.h"
@@ -46,10 +47,12 @@
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/format/format_table_file_store_write.h"
 #include "paimon/core/table/format/format_table_loader.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/defs.h"
 #include "paimon/format/file_format.h"
 #include "paimon/result.h"
 #include "paimon/schema/schema.h"
@@ -159,16 +162,28 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs,
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
+    std::string branch = ctx->GetBranch();
+    std::optional<Identifier> catalog_identifier;
+    if (ctx->GetIdentifier()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            Identifier branch_identifier,
+            CatalogUtils::BranchIdentifier(ctx->GetIdentifier().value(), branch));
+        catalog_identifier.emplace(std::move(branch_identifier));
+    }
+    // Only the main branch may have a current schema the catalog alone holds. A branch publishes
+    // its own under `branch/branch-<name>`, which is where the load below and a read of the branch
+    // both read it, so a catalog answering for no branch schema does not fail a write to one.
     std::optional<std::string> catalog_table_schema;
     if (ctx->GetCatalog() != nullptr) {
-        if (!ctx->GetIdentifier()) {
+        if (!catalog_identifier) {
             return Status::Invalid("a catalog write requires a table identifier");
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
-                               ctx->GetCatalog()->LoadTableSchema(ctx->GetIdentifier().value()));
-        PAIMON_ASSIGN_OR_RAISE(catalog_table_schema, schema->GetJsonSchema());
+        if (BranchManager::IsMainBranch(branch)) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
+                                   ctx->GetCatalog()->LoadTableSchema(catalog_identifier.value()));
+            PAIMON_ASSIGN_OR_RAISE(catalog_table_schema, schema->GetJsonSchema());
+        }
     }
-    std::string branch = ctx->GetBranch();
     // A format table writes plain data files into a directory, so it never reaches the manifest
     // path below.
     auto schema_manager =
@@ -185,7 +200,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     // The schema the dispatch above already read through `schema_manager`, rather than a second
     // read of the same file.
     if (latest_schema == nullptr) {
-        return Status::Invalid(fmt::format("cannot found latest schema in branch {}", branch));
+        return Status::Invalid(fmt::format("not found latest schema in branch {}", branch));
     }
     const std::shared_ptr<TableSchema>& schema = latest_schema;
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
@@ -194,6 +209,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;
     }
+    // The metadata paths above are built for this branch, so what reads through these options,
+    // whose cache keys are scoped by it, has to read the same one.
+    opts[Options::BRANCH] = branch;
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions options,
         CoreOptions::FromMap(opts, specific_fs, ctx->GetFileSystemSchemeToIdentifierMap()));
@@ -216,7 +234,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         std::make_shared<SnapshotManager>(options.GetFileSystem(), ctx->GetRootPath(), branch);
     if (VersionManagedCatalog* versioned = AsVersionManaged(ctx->GetCatalog())) {
         std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
-        Identifier identifier = ctx->GetIdentifier().value();
+        Identifier identifier = catalog_identifier.value();
         // Keep the catalog alive while the writer uses its snapshot loader.
         snapshot_manager->SetSnapshotLoader(
             [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
