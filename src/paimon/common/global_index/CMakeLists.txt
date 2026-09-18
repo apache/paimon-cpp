@@ -16,6 +16,9 @@
 
 set(PAIMON_GLOBAL_INDEX_SRC
     bitmap/bitmap_global_index.cpp
+    bitmap/bitmap_global_index_format.cpp
+    bitmap/bitmap_global_index_writer.cpp
+    bitmap/bitmap_index_reader.cpp
     bitmap/bitmap_global_index_factory.cpp
     btree/btree_file_footer.cpp
     btree/btree_global_index_factory.cpp
