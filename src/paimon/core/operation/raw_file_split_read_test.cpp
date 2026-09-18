@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
@@ -34,6 +35,7 @@
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
@@ -95,8 +97,10 @@ class RawVectorSearchTestReader final : public FileIndexReader {
 class RawVectorSearchTestIndexer final : public FileIndexer {
  public:
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema*, int32_t, int32_t, const std::shared_ptr<InputStream>&,
+        ::ArrowSchema* arrow_schema, int32_t, int32_t, const std::shared_ptr<InputStream>&,
         const std::shared_ptr<MemoryPool>&) const override {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW([[maybe_unused]] std::shared_ptr<arrow::Schema> schema,
+                                          arrow::ImportSchema(arrow_schema));
         return std::make_shared<RawVectorSearchTestReader>();
     }
 
@@ -141,8 +145,10 @@ class RawFullTextSearchTestReader final : public FileIndexReader {
 class RawFullTextSearchTestIndexer final : public FileIndexer {
  public:
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema*, int32_t, int32_t, const std::shared_ptr<InputStream>&,
+        ::ArrowSchema* arrow_schema, int32_t, int32_t, const std::shared_ptr<InputStream>&,
         const std::shared_ptr<MemoryPool>&) const override {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW([[maybe_unused]] std::shared_ptr<arrow::Schema> schema,
+                                          arrow::ImportSchema(arrow_schema));
         return std::make_shared<RawFullTextSearchTestReader>();
     }
 

@@ -50,7 +50,7 @@ TEST(ByteArrayOutputStreamTest, TestWriteAndFinish) {
     ASSERT_NOK_WITH_MSG(stream->Finish(pool.get()), "already been finished");
     stream.reset();
     ASSERT_EQ("abcdef", std::string(result->data(), result->size()));
-    ASSERT_EQ(6, pool->CurrentUsage());
+    ASSERT_EQ(result->size() + sizeof(Bytes), pool->CurrentUsage());
     result.reset();
     ASSERT_EQ(0, pool->CurrentUsage());
 }

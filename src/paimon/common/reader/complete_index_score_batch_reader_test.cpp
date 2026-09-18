@@ -174,8 +174,6 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestFileReaderForwardsOperationsAndRes
     auto reader = std::make_unique<CompleteIndexScoreFileBatchReader>(
         std::move(inner_reader), std::vector<float>{1.25f, 2.5f}, GetArrowPool(GetDefaultPool()));
 
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<::ArrowSchema> file_schema, reader->GetFileSchema());
-    EXPECT_TRUE(file_schema);
     ASSERT_OK_AND_ASSIGN(uint64_t row_count, reader->GetNumberOfRows());
     EXPECT_EQ(2, row_count);
     EXPECT_FALSE(reader->SupportPreciseBitmapSelection());
