@@ -18,11 +18,27 @@
 
 #include "paimon/rest/rest_token_file_system.h"
 
+#include <string>
 #include <utility>
 
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 
 namespace paimon {
+namespace {
+
+// Length of the "fs.<scheme>." prefix of a file system option key, or 0 when `key` is not
+// scheme-qualified. Only a scheme-qualified key such as "fs.oss.accessKeyId" can have a
+// bucket-scoped variant such as "fs.oss.bucket.<bucket>.accessKeyId".
+size_t FileSystemOptionPrefixLength(const std::string& key) {
+    if (!StringUtils::StartsWith(key, "fs.")) {
+        return 0;
+    }
+    size_t scheme_end = key.find('.', 3);
+    return scheme_end == std::string::npos ? 0 : scheme_end + 1;
+}
+
+}  // namespace
 
 std::shared_ptr<RestTokenFileSystemCache> RestTokenFileSystem::CreateFileSystemCache() {
     RestTokenFileSystemCache::Options cache_options;
@@ -42,14 +58,40 @@ RestTokenFileSystem::RestTokenFileSystem(const std::shared_ptr<RestApi>& api,
       provider_(std::make_shared<RestCredentialProvider>(api, catalog_options, identifier,
                                                          std::move(clock))) {}
 
-Result<std::shared_ptr<FileSystem>> RestTokenFileSystem::BuildFileSystem(
-    const RestToken& token) const {
-    std::map<std::string, std::string> fs_options = catalog_options_;
+std::map<std::string, std::string> RestTokenFileSystem::MergeTokenOptions(
+    const std::map<std::string, std::string>& catalog_options, const RestToken& token) {
+    std::map<std::string, std::string> fs_options = catalog_options;
     for (const auto& [key, value] : token.token) {
+        // A file system resolves a bucket-scoped option such as
+        // "fs.oss.bucket.<bucket>.accessKeyId" ahead of the flat "fs.oss.accessKeyId" the
+        // token carries. Keeping a catalog's bucket-scoped credential would sign an access
+        // with that stale key pair together with the token's security token, an invalid
+        // combination, so drop the bucket-scoped variant of every option the token sets: the
+        // issued credentials then win whichever bucket the table's data lives in.
+        size_t prefix_length = FileSystemOptionPrefixLength(key);
+        if (prefix_length != 0) {
+            std::string bucket_prefix = key.substr(0, prefix_length) + "bucket.";
+            std::string bucket_suffix = "." + key.substr(prefix_length);
+            for (auto it = fs_options.begin(); it != fs_options.end();) {
+                if (it->first.size() > bucket_prefix.size() + bucket_suffix.size() &&
+                    StringUtils::StartsWith(it->first, bucket_prefix) &&
+                    StringUtils::EndsWith(it->first, bucket_suffix)) {
+                    it = fs_options.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
         fs_options[key] = value;
     }
+    return fs_options;
+}
+
+Result<std::shared_ptr<FileSystem>> RestTokenFileSystem::BuildFileSystem(
+    const RestToken& token) const {
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                           CoreOptions::FromMap(fs_options, /*specified_file_system=*/nullptr));
+                           CoreOptions::FromMap(MergeTokenOptions(catalog_options_, token),
+                                                /*specified_file_system=*/nullptr));
     std::shared_ptr<FileSystem> fs = core_options.GetFileSystem();
     if (fs == nullptr) {
         return Status::Invalid("failed to build the file system of the data token of ",

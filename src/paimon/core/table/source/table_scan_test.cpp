@@ -130,18 +130,31 @@ TEST(TableScanTest, TestReadOptimizedPrimaryKeyStreamingScanUnsupported) {
 }
 
 TEST(TableScanTest, TestCatalogScanReadsSnapshotFromCatalog) {
-    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    auto table_fs = std::make_shared<LocalFileSystem>();
+    std::string fixture = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    // Copy the table so its snapshot file can be removed without touching the shared fixture.
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, dir);
+    std::string path = dir->Str();
+    ASSERT_TRUE(TestUtil::CopyDirectory(fixture, path));
+    auto table_fs = dir->GetFileSystem();
+    ASSERT_NE(nullptr, table_fs);
+
     SchemaManager schema_manager(table_fs, path);
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                          schema_manager.Latest());
     ASSERT_TRUE(latest_schema.has_value());
-    // A version-managed catalog keeps the latest snapshot in itself, not under the table path.
-    // Read the table's real snapshot and hand it back through the catalog, so the plan must go
-    // through the catalog's loader while the manifests it points at stay on the file system.
     SnapshotManager snapshot_manager(table_fs, path);
     ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> snapshot, snapshot_manager.LatestSnapshot());
     ASSERT_TRUE(snapshot.has_value());
+
+    // A version-managed catalog can hold a snapshot it never published to the table path. Remove
+    // the snapshot file so that re-reading the body from the path would fail with NotExist: the
+    // plan must be built from the body the catalog returns, while the manifests it points at stay
+    // on the file system.
+    ASSERT_OK(table_fs->Delete(snapshot_manager.SnapshotDirectory(), /*recursive=*/true));
+    ASSERT_OK_AND_ASSIGN(bool snapshot_file_exists,
+                         table_fs->Exists(snapshot_manager.SnapshotPath(snapshot.value().Id())));
+    ASSERT_FALSE(snapshot_file_exists);
 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetTableFileSystem(table_fs);

@@ -76,13 +76,16 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     std::shared_ptr<FileSystem> GetFileSystem() const override;
     /// Returns a file system that refreshes the temporary credentials the server issues
     /// for the table when `CatalogOptions::DATA_TOKEN_ENABLED` is set, and the
-    /// catalog-level file system otherwise. Every call returns an instance bound to the
-    /// table it was asked for, whose credentials are loaded on the first access; the file
-    /// systems built from them are shared through a bounded cache, so the tables the
-    /// server issues the same credentials for share one file system. `fs_options` override
-    /// the catalog options the file system is built from, the credentials still win over
-    /// them; a call that overrides anything builds a file system of its own rather than
-    /// reading the shared cache, so its override is never dropped for a cache hit.
+    /// catalog-level file system otherwise. A file system the caller supplied to
+    /// `Catalog::Create` is that catalog-level file system and is returned as-is, data
+    /// tokens or not, so its own `CredentialProvider` keeps signing its accesses. Every
+    /// call returns an instance bound to the table it was asked for, whose credentials are
+    /// loaded on the first access; the file systems built from them are shared through a
+    /// bounded cache, so the tables the server issues the same credentials for share one
+    /// file system. `fs_options` override the catalog options the file system is built
+    /// from, the credentials still win over them; a call that overrides anything builds a
+    /// file system of its own rather than reading the shared cache, so its override is
+    /// never dropped for a cache hit.
     Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
         const Identifier& identifier,
         const std::map<std::string, std::string>& fs_options) const override;
@@ -113,7 +116,7 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
 
  private:
     RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
-                const std::string& warehouse, bool data_token_enabled);
+                const std::string& warehouse, bool data_token_enabled, bool fs_explicitly_supplied);
 
     /// Loads the schema and catalog table ID from the same response.
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier,
@@ -133,6 +136,10 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     std::string warehouse_;
     /// Whether table data is accessed with the credentials the server issues per table.
     bool data_token_enabled_ = false;
+    /// Whether `fs_` was supplied by the caller of `Catalog::Create` rather than built from
+    /// the merged options. A supplied file system authenticates its own accesses and is used
+    /// as-is, so it is handed out even when the server issues data tokens.
+    bool fs_explicitly_supplied_ = false;
     /// The "table-default." options of the merged config, applied to `CreateTable`
     /// options when absent.
     std::map<std::string, std::string> table_default_options_;

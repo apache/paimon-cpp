@@ -553,6 +553,33 @@ TEST_F(RestCatalogTest, TableFileSystemWithoutDataToken) {
     ASSERT_EQ(catalog->GetFileSystem(), fs);
 }
 
+TEST_F(RestCatalogTest, TableFileSystemKeepsAnExplicitlySuppliedFileSystem) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, dir);
+    std::shared_ptr<FileSystem> custom_fs = dir->GetFileSystem();
+    ASSERT_NE(nullptr, custom_fs);
+
+    // A file system supplied to Create authenticates its own accesses and is used as-is, so
+    // it is handed out for the table data even though the server issues data tokens:
+    // rebuilding a delegate from the options would discard it and its CredentialProvider.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog,
+                         RestCatalog::Create(kWarehouse, options_, custom_fs));
+    ASSERT_EQ(custom_fs, catalog->GetFileSystem());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> table_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1"), {}));
+    ASSERT_EQ(custom_fs, table_fs);
+    // Handing out the supplied file system asks the server for no data token.
+    ASSERT_TRUE(TokenRequests().empty());
+
+    // The same options without a supplied file system do build a token file system, so the
+    // identity above comes from the supplied file system, not from data tokens being off.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> token_catalog, CreateRestCatalog());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> token_fs,
+                         token_catalog->GetTableFileSystem(Identifier("db1", "t1"), {}));
+    ASSERT_NE(custom_fs, token_fs);
+}
+
 TEST_F(RestCatalogTest, TableFileSystemWithDataToken) {
     options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());

@@ -76,11 +76,13 @@ Result<Identifier> ToLoadIdentifier(const Identifier& identifier) {
 }  // namespace
 
 RestCatalog::RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
-                         const std::string& warehouse, bool data_token_enabled)
+                         const std::string& warehouse, bool data_token_enabled,
+                         bool fs_explicitly_supplied)
     : api_(std::move(api)),
       fs_(fs),
       warehouse_(warehouse),
       data_token_enabled_(data_token_enabled),
+      fs_explicitly_supplied_(fs_explicitly_supplied),
       table_default_options_(RestUtil::ExtractPrefixMap(
           api_->GetMergedOptions(), CatalogOptions::TABLE_DEFAULT_OPTION_PREFIX)),
       logger_(Logger::GetLogger("RestCatalog")) {
@@ -100,8 +102,9 @@ Result<std::unique_ptr<RestCatalog>> RestCatalog::Create(
     PAIMON_ASSIGN_OR_RAISE(bool data_token_enabled,
                            OptionsUtils::GetValueFromMap<bool>(
                                api->GetMergedOptions(), CatalogOptions::DATA_TOKEN_ENABLED, false));
-    return std::unique_ptr<RestCatalog>(new RestCatalog(
-        std::move(api), core_options.GetFileSystem(), warehouse, data_token_enabled));
+    return std::unique_ptr<RestCatalog>(
+        new RestCatalog(std::move(api), core_options.GetFileSystem(), warehouse, data_token_enabled,
+                        /*fs_explicitly_supplied=*/file_system != nullptr));
 }
 
 const std::map<std::string, std::string>& RestCatalog::GetOptions() const {
@@ -455,7 +458,12 @@ std::shared_ptr<FileSystem> RestCatalog::GetFileSystem() const {
 
 Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
     const Identifier& identifier, const std::map<std::string, std::string>& fs_options) const {
-    if (!data_token_enabled_) {
+    // A file system the caller supplied to `Catalog::Create` authenticates its own accesses
+    // and is used as-is, so it is handed out even when the server issues data tokens:
+    // rebuilding a delegate from the options would discard it together with the
+    // `CredentialProvider` it signs with, and could send a custom scheme to the default
+    // backend. Without data tokens the catalog-wide file system serves the data as well.
+    if (!data_token_enabled_ || fs_explicitly_supplied_) {
         return fs_;
     }
     // The credentials are issued for the data table, so a system table shares those of

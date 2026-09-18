@@ -96,6 +96,15 @@ class RestTokenFileSystem : public FileSystem {
     /// credentials are requested with.
     Result<RestToken> ValidToken() const;
 
+    /// Merges the issued credentials over the catalog options the delegate is built from. A
+    /// bucket-scoped variant of an option the credentials set, such as
+    /// "fs.oss.bucket.<bucket>.accessKeyId" for the credentials' "fs.oss.accessKeyId", is
+    /// dropped: a file system resolves the bucket-scoped option first, so keeping a catalog's
+    /// one would sign an access with a stale key pair and the issued security token, an invalid
+    /// combination. Exposed for tests.
+    static std::map<std::string, std::string> MergeTokenOptions(
+        const std::map<std::string, std::string>& catalog_options, const RestToken& token);
+
  private:
     /// Returns the file system of the current credentials, reloading them when they
     /// expire in less than `RestApi::kTokenExpirationSafeTimeMillis`.
