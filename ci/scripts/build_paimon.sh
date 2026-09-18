@@ -21,6 +21,16 @@ usage() {
     echo "Usage: $0 --source_dir <path> [--enable_asan] [--enable_ubsan] [--enable_tsan] [--check_clang_tidy] [--build_type <type>] [--lint_git_target_commit <commit-or-branch>] [--install_smoke]"
 }
 
+require_value() {
+    local option=$1
+    local value=${2-}
+    if [[ -z "${value}" || "${value}" == --* ]]; then
+        echo "Missing value for ${option}" >&2
+        usage >&2
+        exit 1
+    fi
+}
+
 source_dir=""
 enable_asan="false"
 enable_ubsan="false"
@@ -33,11 +43,7 @@ install_smoke="false"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --source_dir)
-            if [[ $# -lt 2 ]]; then
-                echo "Missing value for --source_dir" >&2
-                usage >&2
-                exit 1
-            fi
+            require_value "$1" "${2-}"
             source_dir=$2
             shift 2
             ;;
@@ -58,20 +64,12 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --build_type)
-            if [[ $# -lt 2 ]]; then
-                echo "Missing value for --build_type" >&2
-                usage >&2
-                exit 1
-            fi
+            require_value "$1" "${2-}"
             build_type=$2
             shift 2
             ;;
         --lint_git_target_commit)
-            if [[ $# -lt 2 ]]; then
-                echo "Missing value for --lint_git_target_commit" >&2
-                usage >&2
-                exit 1
-            fi
+            require_value "$1" "${2-}"
             lint_git_target_commit=$2
             shift 2
             ;;
@@ -96,6 +94,15 @@ if [[ -z "${source_dir}" ]]; then
     usage >&2
     exit 1
 fi
+
+case "${build_type}" in
+    Debug | Release | RelWithDebInfo | MinSizeRel) ;;
+    *)
+        echo "Invalid value for --build_type: ${build_type}" >&2
+        usage >&2
+        exit 1
+        ;;
+esac
 
 if [[ "${enable_asan}" == "true" && "${enable_tsan}" == "true" ]]; then
     echo "ASAN and TSAN cannot be enabled together" >&2
