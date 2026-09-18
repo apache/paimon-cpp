@@ -196,6 +196,53 @@ TEST(RestMessagesTest, GetTableResponseParse) {
     ASSERT_STREQ("f0", schema["fields"][0]["name"].GetString());
 }
 
+TEST(RestMessagesTest, GetTableTokenResponseParse) {
+    std::string json = R"({
+        "token": {"fs.oss.accessKeyId": "ak", "fs.oss.securityToken": "st"},
+        "expiresAtMillis": 1700000000000,
+        "futureField": [1, 2]
+    })";
+    ASSERT_OK_AND_ASSIGN(GetTableTokenResponse response,
+                         GetTableTokenResponse::FromJsonString(json));
+    ASSERT_EQ(2u, response.GetToken().size());
+    ASSERT_EQ("ak", response.GetToken().at("fs.oss.accessKeyId"));
+    ASSERT_EQ("st", response.GetToken().at("fs.oss.securityToken"));
+    ASSERT_EQ(1700000000000, response.GetExpiresAtMillis());
+}
+
+TEST(RestMessagesTest, GetTableTokenResponseLenientParse) {
+    // an absent expiration makes the credentials expire immediately rather than fail
+    ASSERT_OK_AND_ASSIGN(GetTableTokenResponse no_expiration,
+                         GetTableTokenResponse::FromJsonString(R"({"token": {"k": "v"}})"));
+    ASSERT_EQ("v", no_expiration.GetToken().at("k"));
+    ASSERT_EQ(0, no_expiration.GetExpiresAtMillis());
+
+    // credentials the server reports as explicitly empty are parsed as such
+    ASSERT_OK_AND_ASSIGN(
+        GetTableTokenResponse empty_token,
+        GetTableTokenResponse::FromJsonString(R"({"token": {}, "expiresAtMillis": 5})"));
+    ASSERT_TRUE(empty_token.GetToken().empty());
+    ASSERT_EQ(5, empty_token.GetExpiresAtMillis());
+}
+
+TEST(RestMessagesTest, GetTableTokenResponseRequiresTheToken) {
+    // a missing or null token is a malformed response, telling it apart from an empty one
+    // keeps it from being served as "no credentials", which would fall back to the
+    // credentials configured for the catalog
+    ASSERT_NOK(GetTableTokenResponse::FromJsonString(R"({"expiresAtMillis": 5})").status());
+    ASSERT_NOK(
+        GetTableTokenResponse::FromJsonString(R"({"token": null, "expiresAtMillis": 5})").status());
+}
+
+TEST(RestMessagesTest, GetTableTokenResponseRoundTrip) {
+    GetTableTokenResponse response({{"fs.oss.accessKeyId", "ak"}, {"fs.oss.endpoint", "ep"}},
+                                   1700000000000);
+    ASSERT_OK_AND_ASSIGN(std::string json, response.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(GetTableTokenResponse parsed, GetTableTokenResponse::FromJsonString(json));
+    ASSERT_EQ(response.GetToken(), parsed.GetToken());
+    ASSERT_EQ(1700000000000, parsed.GetExpiresAtMillis());
+}
+
 TEST(RestMessagesTest, UnknownFieldsAreIgnored) {
     // forward compatibility: fields a newer server adds must be ignored
     std::string json = R"({

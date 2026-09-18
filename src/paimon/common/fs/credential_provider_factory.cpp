@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include "paimon/fs/file_system_factory.h"
+#include "paimon/fs/credential_provider_factory.h"
 
 #include "fmt/format.h"
 #include "paimon/factories/factory_creator.h"
@@ -24,30 +24,27 @@
 
 namespace paimon {
 
-namespace {
-
-Result<FileSystemFactory*> LookUpFactory(const std::string& identifier) {
+Result<std::shared_ptr<CredentialProvider>> CredentialProviderFactory::Get(
+    const std::string& identifier, const std::string& path,
+    const std::map<std::string, std::string>& fs_options) {
     auto factory_creator = FactoryCreator::GetInstance();
     auto factory = factory_creator->Create(identifier);
     if (factory == nullptr) {
         return Status::Invalid(
             fmt::format("Create factory failed with identifier '{}'.", identifier));
     }
-    auto file_system_factory = dynamic_cast<FileSystemFactory*>(factory);
-    if (file_system_factory == nullptr) {
-        return Status::Invalid(
-            fmt::format("Failed to cast file system factory with identifier '{}'.", identifier));
+    auto credential_provider_factory = dynamic_cast<CredentialProviderFactory*>(factory);
+    if (credential_provider_factory == nullptr) {
+        return Status::Invalid(fmt::format(
+            "Failed to cast credential provider factory with identifier '{}'.", identifier));
     }
-    return file_system_factory;
-}
-
-}  // namespace
-
-Result<std::unique_ptr<FileSystem>> FileSystemFactory::Get(
-    const std::string& identifier, const std::string& path,
-    const std::map<std::string, std::string>& fs_options) {
-    PAIMON_ASSIGN_OR_RAISE(FileSystemFactory * factory, LookUpFactory(identifier));
-    return factory->Create(path, fs_options);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CredentialProvider> provider,
+                           credential_provider_factory->Create(path, fs_options));
+    if (provider == nullptr) {
+        return Status::Invalid(
+            fmt::format("Credential provider factory '{}' created a null provider.", identifier));
+    }
+    return provider;
 }
 
 }  // namespace paimon

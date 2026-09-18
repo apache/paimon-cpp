@@ -20,6 +20,7 @@
 
 #include <utility>
 
+#include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
@@ -75,6 +76,8 @@ class ScanContextBuilder::Impl {
         table_schema_ = std::nullopt;
         options_.clear();
         cache_.reset();
+        catalog_.reset();
+        identifier_.reset();
     }
 
  private:
@@ -97,6 +100,8 @@ class ScanContextBuilder::Impl {
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
 };
 
 ScanContextBuilder::ScanContextBuilder(const std::string& path)
@@ -181,6 +186,13 @@ ScanContextBuilder& ScanContextBuilder::WithFileSystem(
     return *this;
 }
 
+ScanContextBuilder& ScanContextBuilder::WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                                    const Identifier& identifier) {
+    impl_->catalog_ = catalog;
+    impl_->identifier_.emplace(identifier);
+    return *this;
+}
+
 ScanContextBuilder& ScanContextBuilder::SetTableSchema(const std::string& table_schema) {
     impl_->table_schema_ = table_schema;
     return *this;
@@ -198,6 +210,11 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->format_table_ != nullptr) {
         // The table already answers both, and from a source this cannot see behind, so a second
         // answer is refused rather than silently dropped.
+        if (impl_->catalog_ != nullptr) {
+            return Status::Invalid(
+                "a format table carries the file system it was loaded through, so WithCatalog() "
+                "cannot be used with one");
+        }
         if (impl_->table_schema_) {
             return Status::Invalid(
                 "a format table carries its own schema, so SetTableSchema() cannot be used with "
@@ -212,6 +229,17 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     PAIMON_ASSIGN_OR_RAISE(impl_->path_, PathUtil::NormalizePath(impl_->path_));
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot scan with empty table path");
+    }
+    if (impl_->catalog_ == nullptr && impl_->identifier_) {
+        return Status::Invalid("cannot scan through a null catalog");
+    }
+    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
+        // A catalog issuing per-table temporary credentials only hands them out through
+        // GetTableFileSystem, so the scan uses the credentials of this table. The context
+        // options override the catalog ones the file system is built from.
+        PAIMON_ASSIGN_OR_RAISE(
+            impl_->specific_file_system_,
+            impl_->catalog_->GetTableFileSystem(impl_->identifier_.value(), impl_->options_));
     }
     std::shared_ptr<Executor> executor =
         impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();

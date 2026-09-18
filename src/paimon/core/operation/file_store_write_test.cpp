@@ -222,6 +222,37 @@ TEST(FileStoreWriteTest, TestCatalogWriteAsksTheCatalogOnlyForTheMainBranchSchem
     ASSERT_EQ(catalog->LoadTableSchemaIdentifiers().size(), 1u);
 }
 
+TEST(FileStoreWriteTest, TestCatalogWriteUsesPerTableFileSystem) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    const Identifier identifier("foo", "bar");
+    const auto logical_schema = arrow::schema(
+        {arrow::field("id", arrow::int64(), false), arrow::field("value", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> schema,
+        TableSchema::Create(0, logical_schema, /*partition_keys=*/{},
+                            /*primary_keys=*/{}, {{Options::FILE_FORMAT, "parquet"}}));
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableSchema(schema);
+    // The catalog-wide file system is a different instance, so a write that reached for it
+    // instead of the table's own would not be served the credentials the table needs.
+    catalog->SetFileSystem(std::make_shared<LocalFileSystem>());
+    catalog->SetTableFileSystem(dir->GetFileSystem());
+
+    WriteContextBuilder builder(table_path, "writer");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> ctx,
+                         builder.WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         FileStoreWrite::Create(std::move(ctx)));
+    ASSERT_OK(writer->Close());
+
+    // The file system was resolved per table, not from the catalog-wide one.
+    const std::vector<Identifier>& requests = catalog->TableFileSystemRequests();
+    ASSERT_FALSE(requests.empty());
+    ASSERT_EQ(requests.back().GetFullName(), identifier.GetFullName());
+}
+
 TEST(FileStoreWriteTest, TestCreateWriterForLoadedMapBlobTable) {
     auto dir = UniqueTestDirectory::Create();
     std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");

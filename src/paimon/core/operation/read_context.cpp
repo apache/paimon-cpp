@@ -22,6 +22,7 @@
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/executor.h"
@@ -116,6 +117,8 @@ class ReadContextBuilder::Impl {
         cache_config_ = CacheConfig();
         cache_.reset();
         warmup_level_ = WarmupLevel::RAW;
+        catalog_.reset();
+        identifier_.reset();
     }
 
  private:
@@ -149,6 +152,8 @@ class ReadContextBuilder::Impl {
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
     WarmupLevel warmup_level_ = WarmupLevel::RAW;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
 };
 
 ReadContextBuilder::ReadContextBuilder(const std::string& path)
@@ -279,6 +284,13 @@ ReadContextBuilder& ReadContextBuilder::WithFileSystem(
     return *this;
 }
 
+ReadContextBuilder& ReadContextBuilder::WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                                    const Identifier& identifier) {
+    impl_->catalog_ = catalog;
+    impl_->identifier_.emplace(identifier);
+    return *this;
+}
+
 ReadContextBuilder& ReadContextBuilder::SetReadAheadCacheEnabled(bool enabled) {
     impl_->read_ahead_cache_enabled_ = enabled;
     return *this;
@@ -306,6 +318,11 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->format_table_ != nullptr) {
         // The table already answers each of these, and from a source this cannot see behind, so a
         // second answer is refused rather than silently dropped.
+        if (impl_->catalog_ != nullptr) {
+            return Status::Invalid(
+                "a format table carries the file system it was loaded through, so WithCatalog() "
+                "cannot be used with one");
+        }
         if (impl_->table_schema_) {
             return Status::Invalid(
                 "a format table carries its own schema, so SetTableSchema() cannot be used with "
@@ -326,6 +343,17 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     PAIMON_ASSIGN_OR_RAISE(impl_->path_, PathUtil::NormalizePath(impl_->path_));
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot read with empty table path");
+    }
+    if (impl_->catalog_ == nullptr && impl_->identifier_) {
+        return Status::Invalid("cannot read through a null catalog");
+    }
+    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
+        // A catalog issuing per-table temporary credentials only hands them out through
+        // GetTableFileSystem, so the read uses the credentials of this table. The context
+        // options override the catalog ones the file system is built from.
+        PAIMON_ASSIGN_OR_RAISE(
+            impl_->specific_file_system_,
+            impl_->catalog_->GetTableFileSystem(impl_->identifier_.value(), impl_->options_));
     }
     PAIMON_ASSIGN_OR_RAISE(std::string branch,
                            BranchManager::ResolveBranch(/*identifier=*/std::nullopt,

@@ -187,6 +187,27 @@ class PAIMON_EXPORT Catalog {
     /// @return A shared pointer to the file system instance.
     virtual std::shared_ptr<FileSystem> GetFileSystem() const = 0;
 
+    /// Returns the file system used to access the data of a specified table.
+    ///
+    /// @note A catalog that hands out per-table temporary credentials returns a file
+    ///       system that refreshes them, so the returned instance must be used for the
+    ///       table it was requested for. Pass it to `ReadContextBuilder::WithFileSystem`,
+    ///       `ScanContextBuilder::WithFileSystem` or `WriteContextBuilder::WithFileSystem`,
+    ///       or let a builder request it for you through `ReadContextBuilder::WithCatalog`,
+    ///       `ScanContextBuilder::WithCatalog`, `WriteContextBuilder::WithCatalog` or
+    ///       `CommitContextBuilder::WithCatalog`.
+    ///
+    /// @param identifier The identifier (database and table name) of the table.
+    /// @param fs_options File system options that override the ones the file system is
+    ///                   built from. The per-table temporary credentials a catalog issues
+    ///                   still take precedence over them.
+    /// @return A shared pointer to the file system instance; the catalog-level file system
+    ///         by default.
+    virtual Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
+        const Identifier& identifier, const std::map<std::string, std::string>& fs_options) const {
+        return GetFileSystem();
+    }
+
     /// Returns the catalog-level options that were passed during catalog creation.
     ///
     /// @return A const reference to the map of catalog options (key-value pairs).

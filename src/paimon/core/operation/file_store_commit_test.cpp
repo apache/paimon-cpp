@@ -39,6 +39,7 @@
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_increment.h"
 #include "paimon/core/operation/file_store_commit_impl.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
@@ -46,6 +47,7 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
+#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -101,6 +103,35 @@ TEST(FileStoreCommitTest, TestCreateWithCatalogRequiresIdentifier) {
         /*format_table=*/nullptr);
     ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)),
                         "a catalog commit requires a table identifier");
+}
+
+TEST(FileStoreCommitTest, TestCatalogCommitUsesPerTableFileSystem) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    const Identifier identifier("foo", "bar");
+    const auto logical_schema = arrow::schema(
+        {arrow::field("id", arrow::int64(), false), arrow::field("value", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> schema,
+        TableSchema::Create(0, logical_schema, /*partition_keys=*/{},
+                            /*primary_keys=*/{}, {{Options::FILE_FORMAT, "parquet"}}));
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableSchema(schema);
+    // The catalog-wide file system is a different instance, so a commit that reached for it
+    // instead of the table's own would not be served the credentials the table needs.
+    catalog->SetFileSystem(std::make_shared<LocalFileSystem>());
+    catalog->SetTableFileSystem(dir->GetFileSystem());
+
+    CommitContextBuilder builder(table_path, "commit_user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> ctx,
+                         builder.WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(ctx)));
+
+    // The file system was resolved per table, not from the catalog-wide one.
+    const std::vector<Identifier>& requests = catalog->TableFileSystemRequests();
+    ASSERT_FALSE(requests.empty());
+    ASSERT_EQ(requests.back().GetFullName(), identifier.GetFullName());
 }
 
 TEST(FileStoreCommitTest, TestAppendDvIndexShouldUseOverwriteCommitKind) {
