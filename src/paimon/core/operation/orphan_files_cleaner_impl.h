@@ -45,6 +45,7 @@ namespace paimon {
 class SnapshotManager;
 class FileStorePathFactory;
 class FileSystem;
+class IndexManifestFile;
 class ManifestFile;
 class ManifestList;
 class Executor;
@@ -60,6 +61,7 @@ class OrphanFilesCleanerImpl : public OrphanFilesCleaner {
                            const std::vector<std::string>& partition_keys,
                            const std::shared_ptr<ManifestFile>& manifest_file,
                            const std::shared_ptr<ManifestList>& manifest_list,
+                           const std::shared_ptr<IndexManifestFile>& index_manifest_file,
                            int64_t older_than_ms,
                            std::function<bool(const std::string&)> should_be_retained);
 
@@ -91,6 +93,7 @@ class OrphanFilesCleanerImpl : public OrphanFilesCleaner {
     std::vector<std::string> partition_keys_;
     std::shared_ptr<ManifestFile> manifest_file_;
     std::shared_ptr<ManifestList> manifest_list_;
+    std::shared_ptr<IndexManifestFile> index_manifest_file_;
     int64_t older_than_ms_;
     std::function<bool(const std::string&)> should_be_retained_;
 
