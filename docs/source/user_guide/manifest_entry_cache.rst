@@ -28,8 +28,8 @@ scans that target the same bucket.
 
 The cache stores decoded and merged live manifest entries by table path, branch,
 and bucket for ``ScanMode::ALL``. Each cache value can retain several snapshot
-results for that bucket. Exact snapshot hits are served from the cache; cache
-misses rebuild the target snapshot bucket from the target snapshot's data
+results for that bucket. Exact snapshot hits are served from the cache without reading or decoding the
+manifest lists again; cache misses rebuild the target snapshot bucket from the target snapshot's data
 manifests and store the rebuilt live entries.
 
 Request-specific filters are not stored in the cache. Partition, level, and
@@ -89,3 +89,7 @@ The scan metrics expose existing counters for the last scan:
 
 - ``lastScannedManifests``: how many manifest files were loaded during this
   scan before manifest entry decoding.
+
+On an exact cache hit, ``lastScannedManifests`` is zero. The cached table file
+count preserves the skipped-file metric even when manifest lists are bypassed.
+This changes only transient cache values; persisted table formats are unchanged.
