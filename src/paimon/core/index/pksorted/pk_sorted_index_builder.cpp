@@ -120,11 +120,6 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
     if (source_files.empty()) {
         return Status::Invalid("Cannot build a sorted index for an empty data level.");
     }
-    for (const std::shared_ptr<DataFileMeta>& file : source_files) {
-        if (file == nullptr) {
-            return Status::Invalid("A sorted index source file is null.");
-        }
-    }
     std::vector<std::shared_ptr<DataFileMeta>> ordered_files = source_files;
     std::sort(
         ordered_files.begin(), ordered_files.end(),
@@ -135,8 +130,7 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
     std::vector<PrimaryKeyIndexSourceFile> source_metas;
     source_metas.reserve(ordered_files.size());
     for (const std::shared_ptr<DataFileMeta>& file : ordered_files) {
-        if (file == nullptr || file->level != data_level ||
-            !PrimaryKeyIndexSourcePolicy::ShouldRead(*file)) {
+        if (file->level != data_level || !PrimaryKeyIndexSourcePolicy::ShouldRead(*file)) {
             return Status::Invalid(
                 "A sorted index can only cover compacted files from one positive data level.");
         }
@@ -277,9 +271,6 @@ Status PkSortedIndexBuilder::ReadSourceFiles(
 }
 
 Status PkSortedIndexBuilder::DeletePayload(const std::shared_ptr<IndexFileMeta>& payload) const {
-    if (payload == nullptr) {
-        return Status::OK();
-    }
     return fs_->Delete(index_path_factory_->ToPath(payload));
 }
 

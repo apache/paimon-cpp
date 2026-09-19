@@ -48,30 +48,21 @@ Logger* GetLogger() {
 void RemoveDataFiles(const std::vector<std::shared_ptr<DataFileMeta>>& files,
                      std::map<std::string, std::shared_ptr<DataFileMeta>>* active) {
     for (const std::shared_ptr<DataFileMeta>& file : files) {
-        if (file != nullptr) {
-            active->erase(file->file_name);
-        }
+        active->erase(file->file_name);
     }
 }
 
-Status AddSourceFiles(const std::vector<std::shared_ptr<DataFileMeta>>& files,
-                      std::map<std::string, std::shared_ptr<DataFileMeta>>* active) {
+void AddSourceFiles(const std::vector<std::shared_ptr<DataFileMeta>>& files,
+                    std::map<std::string, std::shared_ptr<DataFileMeta>>* active) {
     for (const std::shared_ptr<DataFileMeta>& file : files) {
-        if (file == nullptr) {
-            return Status::Invalid("Primary-key index data increment contains a null file.");
-        }
         if (PrimaryKeyIndexSourcePolicy::ShouldRead(*file)) {
             (*active)[file->file_name] = file;
         }
     }
-    return Status::OK();
 }
 
 Status ValidateAppendFiles(const std::vector<std::shared_ptr<DataFileMeta>>& files) {
     for (const std::shared_ptr<DataFileMeta>& file : files) {
-        if (file == nullptr) {
-            return Status::Invalid("Primary-key index append increment contains a null file.");
-        }
         if (PrimaryKeyIndexSourcePolicy::ShouldRead(*file)) {
             return Status::Invalid(fmt::format(
                 "Append file {} must not be a primary-key sorted-index source.", file->file_name));
@@ -81,9 +72,6 @@ Status ValidateAppendFiles(const std::vector<std::shared_ptr<DataFileMeta>>& fil
 }
 
 std::string PayloadIdentity(const std::shared_ptr<IndexFileMeta>& payload) {
-    if (payload == nullptr) {
-        return std::string();
-    }
     return payload->ExternalPath().value_or(payload->FileName());
 }
 
@@ -97,7 +85,7 @@ void AddUniquePayload(const std::shared_ptr<IndexFileMeta>& payload,
 }
 
 bool IsPrimaryKeyBTreePayload(const std::shared_ptr<IndexFileMeta>& payload) {
-    return payload != nullptr && payload->IndexType() == BtreeDefs::kIdentifier &&
+    return payload->IndexType() == BtreeDefs::kIdentifier &&
            IndexFileHandler::IsPrimaryKeySourceIndex(*payload);
 }
 
@@ -154,7 +142,7 @@ BucketedPrimaryKeyIndexMaintainer::Factory::CreateMaintainer(
     const std::vector<std::shared_ptr<DataFileMeta>>& restored_data_files,
     const std::vector<std::shared_ptr<IndexFileMeta>>& restored_payloads) const {
     std::map<std::string, std::shared_ptr<DataFileMeta>> active_data_files;
-    PAIMON_RETURN_NOT_OK(AddSourceFiles(restored_data_files, &active_data_files));
+    AddSourceFiles(restored_data_files, &active_data_files);
     std::vector<FieldMaintainer> fields;
     fields.reserve(definitions_.size());
     for (const PrimaryKeyIndexDefinition& definition : definitions_) {
@@ -179,7 +167,7 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
     const CompactIncrement& compact_increment = increment->GetCompactIncrement();
     PAIMON_RETURN_NOT_OK(ValidateAppendFiles(data_increment.NewFiles()));
     RemoveDataFiles(compact_increment.CompactBefore(), &next_data_files);
-    PAIMON_RETURN_NOT_OK(AddSourceFiles(compact_increment.CompactAfter(), &next_data_files));
+    AddSourceFiles(compact_increment.CompactAfter(), &next_data_files);
     active_data_files_ = std::move(next_data_files);
 
     std::vector<std::shared_ptr<DataFileMeta>> active_data;
@@ -258,7 +246,7 @@ void BucketedPrimaryKeyIndexMaintainer::ReconcileField(
 
     std::map<int32_t, std::vector<std::shared_ptr<DataFileMeta>>> desired_by_level;
     for (const std::shared_ptr<DataFileMeta>& file : active_data) {
-        if (file != nullptr && PrimaryKeyIndexSourcePolicy::ShouldRead(*file)) {
+        if (PrimaryKeyIndexSourcePolicy::ShouldRead(*file)) {
             desired_by_level[file->level].push_back(file);
         }
     }

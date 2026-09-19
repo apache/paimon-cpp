@@ -249,9 +249,10 @@ TEST(BucketedPrimaryKeyIndexMaintainerStandaloneTest, InvalidIncrementPreservesS
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload,
                          MakeSourceBackedBTreePayload("index", 7, GetDefaultPool()));
     BucketedPrimaryKeyIndexMaintainer maintainer({}, {{file->file_name, file}}, {payload});
-    CommitIncrement increment(DataIncrement({}, {}, {}),
-                              CompactIncrement({file}, {replacement, nullptr}, {}), nullptr);
-    ASSERT_NOK(maintainer.PrepareCommit(&increment));
+    CommitIncrement increment(DataIncrement({replacement}, {}, {}),
+                              CompactIncrement({file}, {replacement}, {}), nullptr);
+    ASSERT_NOK_WITH_MSG(maintainer.PrepareCommit(&increment),
+                        "must not be a primary-key sorted-index source");
     ASSERT_EQ(1, maintainer.active_data_files_.size());
     ASSERT_EQ(file, maintainer.active_data_files_.at(file->file_name));
     ASSERT_EQ(maintainer.active_payloads_, (std::vector<std::shared_ptr<IndexFileMeta>>{payload}));

@@ -73,9 +73,6 @@ PkSortedDataFileReader::PkSortedDataFileReader(
 Status PkSortedDataFileReader::ReadFile(const BinaryRow& partition, int32_t bucket,
                                         const std::shared_ptr<DataFileMeta>& file,
                                         const BatchConsumer& consumer) const {
-    if (file == nullptr) {
-        return Status::Invalid("Primary-key sorted-index source file is null.");
-    }
     if (file->row_count < 0) {
         return Status::Invalid(fmt::format("Source file {} has negative row count {}.",
                                            file->file_name, file->row_count));
