@@ -215,11 +215,32 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateReader(
     if (auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(split)) {
         PAIMON_RETURN_NOT_OK(indexed_split->Validate());
         const auto& data_split = indexed_split->GetDataSplit();
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
-                               InnerCreateReader(data_split, indexed_split->RowRanges()));
-        if (HasIndexScoreField(raw_read_schema_)) {
+        auto read_schema = raw_read_schema_;
+        bool complete_scores = HasIndexScoreField(read_schema) && !indexed_split->Scores().empty();
+        bool remove_row_id = false;
+        std::unordered_map<int64_t, float> scores_by_row_id;
+        if (complete_scores) {
+            scores_by_row_id.reserve(indexed_split->Scores().size());
+            size_t score_idx = 0;
+            for (const auto& range : indexed_split->RowRanges()) {
+                for (int64_t row_id = range.from; row_id <= range.to; ++row_id) {
+                    scores_by_row_id.emplace(row_id, indexed_split->Scores()[score_idx++]);
+                }
+            }
+            remove_row_id = read_schema->GetFieldIndex(SpecialFields::RowId().Name()) < 0;
+            if (remove_row_id) {
+                PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                    read_schema, read_schema->AddField(read_schema->num_fields(),
+                                                       DataField::ConvertDataFieldToArrowField(
+                                                           SpecialFields::RowId())));
+            }
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<BatchReader> batch_reader,
+            InnerCreateReader(data_split, indexed_split->RowRanges(), read_schema));
+        if (complete_scores) {
             batch_reader = std::make_unique<CompleteIndexScoreBatchReader>(
-                std::move(batch_reader), indexed_split->Scores(), arrow_pool_);
+                std::move(batch_reader), std::move(scores_by_row_id), remove_row_id, arrow_pool_);
         }
         return WrapWithBlobViewResolverIfNeeded(data_split, std::move(batch_reader),
                                                 indexed_split->RowRanges());
@@ -228,8 +249,9 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateReader(
             return Status::Invalid(
                 "Invalid read schema, read _INDEX_SCORE while split cannot cast to IndexedSplit");
         }
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> inner_reader,
-                               InnerCreateReader(data_split, /*row_ranges=*/std::nullopt));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<BatchReader> inner_reader,
+            InnerCreateReader(data_split, /*row_ranges=*/std::nullopt, raw_read_schema_));
         return WrapWithBlobViewResolverIfNeeded(data_split, std::move(inner_reader),
                                                 /*row_ranges=*/std::nullopt);
     }
@@ -385,19 +407,20 @@ Result<std::unordered_set<BlobViewStruct>> DataEvolutionSplitRead::ExtractBlobVi
 
 Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
     const std::shared_ptr<DataSplit>& data_split,
-    const std::optional<std::vector<Range>>& row_ranges) const {
+    const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<arrow::Schema>& read_schema) const {
     auto split_impl = dynamic_cast<DataSplitImpl*>(data_split.get());
     if (split_impl == nullptr) {
         return Status::Invalid("unexpected error, split cast to impl failed");
     }
-    assert(raw_read_schema_->num_fields() > 0);
+    assert(read_schema->num_fields() > 0);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<DataFilePathFactory> data_file_path_factory,
         path_factory_->CreateDataFilePathFactory(split_impl->Partition(), split_impl->Bucket()));
     auto metas = split_impl->DataFiles();
     DeletionVector::Factory split_dv_factory = CreateSplitDvFactory(*split_impl);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> push_down_predicate,
-                           CreatePushDownPredicate(context_->GetPredicate(), raw_read_schema_));
+                           CreatePushDownPredicate(context_->GetPredicate(), read_schema));
 
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> split_by_row_id,
                            MergeRangesAndSort(std::move(metas)));
@@ -420,7 +443,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
             // No need to merge fields, just create a single file reader
             PAIMON_ASSIGN_OR_RAISE(
                 std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
-                CreateRawFileReaders(split_impl->Partition(), need_merge_files, raw_read_schema_,
+                CreateRawFileReaders(split_impl->Partition(), need_merge_files, read_schema,
                                      push_down_predicate, group_dv_factory, row_ranges,
                                      data_file_path_factory,
                                      /*extra_format_options=*/{}));
@@ -435,7 +458,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
             PAIMON_ASSIGN_OR_RAISE(
                 std::unique_ptr<DataEvolutionFileReader> evolution_reader,
                 CreateUnionReader(split_impl->Partition(), need_merge_files, row_ranges,
-                                  data_file_path_factory, group_dv_factory, group_dv));
+                                  data_file_path_factory, group_dv_factory, group_dv, read_schema));
             sub_readers.push_back(std::move(evolution_reader));
         }
     }
@@ -630,7 +653,8 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateU
     const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const DeletionVector::Factory& group_dv_factory,
-    const std::optional<GroupDeletionVector>& group_dv) const {
+    const std::optional<GroupDeletionVector>& group_dv,
+    const std::shared_ptr<arrow::Schema>& read_schema) const {
     auto blob_field_to_field_id =
         [&](const std::shared_ptr<DataFileMeta>& file_meta) -> Result<int32_t> {
         if (!BlobUtils::IsBlobFile(file_meta->file_name)) {
@@ -674,7 +698,7 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateU
 
     // Init all we need to create a compound reader
     PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> all_read_fields,
-                           DataField::ConvertArrowSchemaToDataFields(raw_read_schema_));
+                           DataField::ConvertArrowSchemaToDataFields(read_schema));
     std::vector<std::unique_ptr<BatchReader>> file_batch_readers(fields_files.size());
     std::vector<int32_t> read_field_ids = DataField::GetAllFieldIds(all_read_fields);
     // which row the read field index belongs to
@@ -747,7 +771,7 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateU
         }
     }
     // TODO(xinyu.lxy): check nullable when reader_offsets[read_field_idx] = -1
-    return DataEvolutionFileReader::Create(std::move(file_batch_readers), raw_read_schema_,
+    return DataEvolutionFileReader::Create(std::move(file_batch_readers), read_schema,
                                            options_.GetReadBatchSize(), reader_offsets,
                                            field_offsets, arrow_pool_);
 }

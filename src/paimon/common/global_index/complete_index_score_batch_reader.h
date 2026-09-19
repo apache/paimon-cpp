@@ -21,9 +21,7 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
-#include <utility>
-#include <vector>
+#include <unordered_map>
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
@@ -37,11 +35,15 @@ class Metrics;
 /// It assumes the input data already contains the `_INDEX_SCORE` column,
 /// and ensures this score is properly updated in the returned batches.
 ///
-/// @pre The read schema must include the `_INDEX_SCORE` field.
+/// @pre The read schema must include the `_INDEX_SCORE` and `_ROW_ID` fields.
+/// The schema must remain unchanged across batches, and selected row ids must be non-null.
 class CompleteIndexScoreBatchReader : public BatchReader {
  public:
+    /// Align global index scores with surviving row ids after filtering.
+    /// Remove `_ROW_ID` from the output only when it was added internally for score lookup.
     CompleteIndexScoreBatchReader(std::unique_ptr<BatchReader>&& reader,
-                                  const std::vector<float>& scores,
+                                  std::unordered_map<int64_t, float>&& scores_by_row_id,
+                                  bool remove_row_id,
                                   const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<ReadBatch> NextBatch() override;
@@ -57,14 +59,14 @@ class CompleteIndexScoreBatchReader : public BatchReader {
     }
 
  private:
-    void UpdateScoreFieldIndex(const arrow::StructType* struct_type);
+    Status InitFieldIndices(const arrow::StructType* struct_type);
 
  private:
-    size_t score_cursor_ = 0;
     int32_t index_score_field_idx_ = -1;
-    std::vector<std::string> field_names_with_score_;
+    int32_t row_id_field_idx_ = -1;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<BatchReader> reader_;
-    std::vector<float> scores_;
+    std::unordered_map<int64_t, float> scores_by_row_id_;
+    bool remove_row_id_ = false;
 };
 }  // namespace paimon
