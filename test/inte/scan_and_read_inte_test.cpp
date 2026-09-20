@@ -3690,6 +3690,49 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
 }
 #endif
 
+#ifdef PAIMON_ENABLE_VORTEX
+TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibility) {
+    // Fixture written by Paimon Java 2.0.0 with file.format=vortex; see
+    // test/test_data/vortex/append_java_compat.db/append_java_compat/README.md. This verifies that
+    // paimon-cpp reads back a Vortex table produced by the Java implementation.
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        arrow::field("name", arrow::utf8()),
+    };
+    std::shared_ptr<arrow::DataType> data_type = arrow::struct_(fields);
+    std::shared_ptr<arrow::Array> expected_array =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
+[0, 1, "one"],
+[0, 2, null],
+[0, 3, "three"],
+[0, 4, "four"],
+[0, 5, "five"]
+])")
+            .ValueOrDie();
+    auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
+
+    const std::string table_name = "append_java_compat";
+    const std::string table_path = GetDataDir() + "/vortex/" + table_name + ".db/" + table_name;
+    ScanContextBuilder scan_context_builder(table_path);
+    ReadContextBuilder read_context_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         table_read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+    ASSERT_TRUE(expected->Equals(actual))
+        << "actual: " << (actual == nullptr ? "null" : actual->ToString())
+        << "\nexpected: " << expected->ToString();
+}
+#endif
+
 TEST_F(ScanAndReadInteTest, TestAvroWithAppendTable) {
     auto read_data = [](int64_t snapshot_id, const std::string& result_json) {
         std::string table_path = GetDataDir() + "/avro/append_multiple.db/append_multiple";

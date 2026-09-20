@@ -67,7 +67,7 @@ Result<FormatTable::Format> FormatTable::ParseFormat(const std::string& file_for
         return Format::ORC;
     }
     if (normalized == "csv" || normalized == "text" || normalized == "json" ||
-        normalized == "mosaic") {
+        normalized == "mosaic" || normalized == "vortex") {
         return Status::NotImplemented(
             fmt::format("format table file format '{}' is not supported by paimon-cpp yet. "
                         "Supported formats: parquet, orc",

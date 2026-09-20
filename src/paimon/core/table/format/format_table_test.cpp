@@ -613,7 +613,7 @@ TEST(FormatTableTest, TestParseFormat) {
 
     // Format table formats with no reader here yet answer `NotImplemented`, which is a different
     // answer from a name that is no format at all.
-    for (const char* format : {"csv", "text", "json", "mosaic"}) {
+    for (const char* format : {"csv", "text", "json", "mosaic", "vortex"}) {
         Result<FormatTable::Format> unimplemented = FormatTable::ParseFormat(format);
         ASSERT_FALSE(unimplemented.ok()) << format;
         ASSERT_TRUE(unimplemented.status().IsNotImplemented()) << format;
