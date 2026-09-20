@@ -114,6 +114,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gdb libcurl4-openssl-dev libssl-dev
+      - name: Install flatc (Vortex)
+        shell: bash
+        run: ci/scripts/setup_flatc.sh
       - name: Build Paimon
         shell: bash
         env:

@@ -135,6 +135,10 @@ jobs:
         shell: bash
         run: ci/scripts/setup_rust.sh
 
+      - name: Install flatc (Vortex)
+        shell: bash
+        run: ci/scripts/setup_flatc.sh
+
       - name: Install HTTP and TLS development dependencies
         run: |
           sudo apt-get update

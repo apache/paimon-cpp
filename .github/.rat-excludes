@@ -12,6 +12,7 @@ iwyu_tool\.py
 arrow\.diff
 jieba\.diff
 orc\.diff
+vortex\.diff
 licenses/*
 .codespell_ignore
 .gitignore

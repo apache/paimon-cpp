@@ -91,6 +91,18 @@ else()
     endif()
 endif()
 
+if(DEFINED ENV{PAIMON_VORTEX_URL})
+    set(VORTEX_SOURCE_URL "$ENV{PAIMON_VORTEX_URL}")
+else()
+    if(EXISTS "${THIRDPARTY_DIR}/${PAIMON_VORTEX_PKG_NAME}")
+        set_urls(VORTEX_SOURCE_URL "${THIRDPARTY_DIR}/${PAIMON_VORTEX_PKG_NAME}")
+    else()
+        set_urls(VORTEX_SOURCE_URL
+                 "${THIRDPARTY_MIRROR_URL}https://github.com/vortex-data/vortex/archive/${PAIMON_VORTEX_BUILD_VERSION}.tar.gz"
+        )
+    endif()
+endif()
+
 if(DEFINED ENV{PAIMON_MOSAIC_URL})
     set(MOSAIC_SOURCE_URL "$ENV{PAIMON_MOSAIC_URL}")
 else()
@@ -1403,6 +1415,103 @@ macro(build_mosaic)
     install(FILES "${MOSAIC_DYNAMIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endmacro()
 
+macro(build_vortex)
+    message(STATUS "Building Vortex Rust FFI (static) from source")
+    find_program(PAIMON_CARGO_EXECUTABLE cargo REQUIRED)
+    # Vortex compiles FlatBuffers schemas at build time; flatc must match the flatbuffers crate
+    # version Vortex uses. Allow a FLATC env override, else require flatc on PATH.
+    if(DEFINED ENV{FLATC})
+        set(VORTEX_FLATC "$ENV{FLATC}")
+    else()
+        find_program(VORTEX_FLATC flatc REQUIRED)
+    endif()
+
+    set(VORTEX_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/vortex_ep-install")
+    set(VORTEX_INCLUDE_DIR "${VORTEX_PREFIX}/include")
+    set(VORTEX_LIB_DIR "${VORTEX_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+    set(VORTEX_STATIC_LIB
+        "${VORTEX_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}vortex_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}"
+    )
+    set(VORTEX_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/vortex_ep-cargo")
+    set(VORTEX_CARGO_STATIC_LIB
+        "${VORTEX_CARGO_TARGET_DIR}/release/${CMAKE_STATIC_LIBRARY_PREFIX}vortex_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}"
+    )
+    # Vortex's C API can only read a whole file already in memory or a path it resolves itself,
+    # neither of which can go through paimon's filesystem. `callback_io.rs` adds an entry point
+    # backed by host callbacks; it is maintained in this repository and injected into the Vortex
+    # source tree, and the patch only declares the module.
+    set(VORTEX_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/vortex.diff")
+    set(VORTEX_CALLBACK_IO_SRC
+        "${CMAKE_SOURCE_DIR}/crates/vortex_callback_io/callback_io.rs")
+
+    file(MAKE_DIRECTORY "${VORTEX_INCLUDE_DIR}")
+    file(MAKE_DIRECTORY "${VORTEX_LIB_DIR}")
+
+    # A local checkout (PAIMON_VORTEX_SOURCE_DIR) avoids re-downloading the full cargo workspace;
+    # otherwise download the pinned source archive (with SHA256 when versions.txt provides one).
+    if(DEFINED ENV{PAIMON_VORTEX_SOURCE_DIR})
+        set(VORTEX_EP_DOWNLOAD SOURCE_DIR "$ENV{PAIMON_VORTEX_SOURCE_DIR}"
+                               DOWNLOAD_COMMAND "")
+    elseif(PAIMON_VORTEX_BUILD_SHA256_CHECKSUM)
+        set(VORTEX_EP_DOWNLOAD URL ${VORTEX_SOURCE_URL} URL_HASH
+                               "SHA256=${PAIMON_VORTEX_BUILD_SHA256_CHECKSUM}")
+    else()
+        set(VORTEX_EP_DOWNLOAD URL ${VORTEX_SOURCE_URL})
+    endif()
+
+    externalproject_add(vortex_ep
+                        ${VORTEX_EP_DOWNLOAD} ${THIRDPARTY_LOG_OPTIONS}
+                        BUILD_IN_SOURCE TRUE
+                        CONFIGURE_COMMAND ""
+                        LOG_PATCH ON
+                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
+                                      "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${VORTEX_PATCH_FILE}' && touch .patched"
+                        # Rebuild every time so edits to callback_io.rs are picked up; cargo
+                        # returns immediately when nothing changed, and copy_if_different keeps
+                        # the archive's timestamp stable so dependents do not relink.
+                        BUILD_ALWAYS TRUE
+                        BUILD_COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                      "${VORTEX_CALLBACK_IO_SRC}"
+                                      "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
+                        COMMAND ${CMAKE_COMMAND} -E env "FLATC=${VORTEX_FLATC}"
+                                "RUSTUP_TOOLCHAIN=stable" "CC=${CMAKE_C_COMPILER}"
+                                "CXX=${CMAKE_CXX_COMPILER}"
+                                "CARGO_TARGET_DIR=${VORTEX_CARGO_TARGET_DIR}"
+                                "RUSTFLAGS=-Crelocation-model=pic"
+                                ${PAIMON_CARGO_EXECUTABLE} rustc --locked --package
+                                vortex-ffi --lib --crate-type=staticlib --release
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                "${VORTEX_CARGO_STATIC_LIB}" "${VORTEX_STATIC_LIB}"
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                "<SOURCE_DIR>/vortex-ffi/cinclude/vortex.h"
+                                "${VORTEX_INCLUDE_DIR}/vortex.h"
+                        INSTALL_COMMAND ""
+                        BUILD_BYPRODUCTS "${VORTEX_STATIC_LIB}")
+
+    if(NOT TARGET Threads::Threads)
+        set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+        find_package(Threads REQUIRED)
+    endif()
+    add_library(paimon_vortex_ffi STATIC IMPORTED GLOBAL)
+    set_target_properties(paimon_vortex_ffi
+                          PROPERTIES IMPORTED_LOCATION "${VORTEX_STATIC_LIB}"
+                                     INTERFACE_INCLUDE_DIRECTORIES
+                                     "${VORTEX_INCLUDE_DIR}")
+    # System libraries required to link the Rust static archive on Linux (per Vortex's own
+    # vortex-ffi/cmake/SystemDependencies.cmake).
+    target_link_libraries(paimon_vortex_ffi
+                          INTERFACE gcc_s
+                                    util
+                                    rt
+                                    Threads::Threads
+                                    m
+                                    ${CMAKE_DL_LIBS}
+                                    c)
+    add_dependencies(paimon_vortex_ffi vortex_ep)
+
+    install(FILES "${VORTEX_STATIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endmacro()
+
 macro(build_jindosdk_nextarch)
     message(STATUS "Building jindosdk-nextarch from local source")
 
@@ -2127,6 +2236,9 @@ resolve_dependency(glog)
 
 if(PAIMON_ENABLE_MOSAIC)
     build_mosaic()
+endif()
+if(PAIMON_ENABLE_VORTEX)
+    build_vortex()
 endif()
 if(PAIMON_ENABLE_AVRO)
     resolve_dependency(Avro)

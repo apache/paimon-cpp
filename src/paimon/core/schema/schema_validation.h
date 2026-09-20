@@ -129,6 +129,10 @@ class SchemaValidation {
 
     static Status ValidateLanceDataField(const std::shared_ptr<arrow::Field>& field);
 
+    static Status ValidateVortexDataFields(const TableSchema& schema, const CoreOptions& options);
+
+    static Status ValidateVortexDataField(const std::shared_ptr<arrow::Field>& field);
+
     static Status ValidateMapStorageLayout(const TableSchema& schema, const CoreOptions& options);
 
     static Status ValidateVectorFields(const TableSchema& schema, const CoreOptions& options);
