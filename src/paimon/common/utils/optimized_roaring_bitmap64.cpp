@@ -60,46 +60,11 @@ Result<T> ReadLittleEndian(ByteArrayInputStream* input_stream) {
 
 }  // namespace
 
-class OptimizedRoaringBitmap64::Impl {
- public:
-    std::vector<roaring::Roaring> bitmaps;
-};
-
-OptimizedRoaringBitmap64::OptimizedRoaringBitmap64() : impl_(std::make_unique<Impl>()) {}
-
-OptimizedRoaringBitmap64::~OptimizedRoaringBitmap64() = default;
-
-OptimizedRoaringBitmap64::OptimizedRoaringBitmap64(const OptimizedRoaringBitmap64& other)
-    : impl_(std::make_unique<Impl>(*other.impl_)) {}
-
-OptimizedRoaringBitmap64& OptimizedRoaringBitmap64::operator=(
-    const OptimizedRoaringBitmap64& other) {
-    if (this != &other) {
-        if (impl_ == nullptr) {
-            impl_ = std::make_unique<Impl>(*other.impl_);
-        } else {
-            *impl_ = *other.impl_;
-        }
-    }
-    return *this;
-}
-
-OptimizedRoaringBitmap64::OptimizedRoaringBitmap64(OptimizedRoaringBitmap64&& other) noexcept
-    : impl_(std::move(other.impl_)) {}
-
-OptimizedRoaringBitmap64& OptimizedRoaringBitmap64::operator=(
-    OptimizedRoaringBitmap64&& other) noexcept {
-    if (this != &other) {
-        impl_ = std::move(other.impl_);
-    }
-    return *this;
-}
-
 OptimizedRoaringBitmap64 OptimizedRoaringBitmap64::FromRoaringBitmap32(
     const RoaringBitmap32& bitmap) {
     OptimizedRoaringBitmap64 result;
     const auto* roaring_bitmap = static_cast<const roaring::Roaring*>(bitmap.roaring_bitmap_);
-    result.impl_->bitmaps.push_back(*roaring_bitmap);
+    result.bitmaps_.push_back(*roaring_bitmap);
     return result;
 }
 
@@ -108,7 +73,7 @@ Status OptimizedRoaringBitmap64::Add(int64_t position) {
     const auto key = static_cast<int32_t>(position >> 32);
     const auto position32 = static_cast<uint32_t>(position);
     AllocateBitmapsIfNeeded(static_cast<size_t>(key) + 1);
-    impl_->bitmaps[key].add(position32);
+    bitmaps_[key].add(position32);
     return Status::OK();
 }
 
@@ -121,9 +86,9 @@ Status OptimizedRoaringBitmap64::AddRange(int64_t start, int64_t end) {
 
 OptimizedRoaringBitmap64& OptimizedRoaringBitmap64::operator|=(
     const OptimizedRoaringBitmap64& other) {
-    AllocateBitmapsIfNeeded(other.impl_->bitmaps.size());
-    for (size_t key = 0; key < other.impl_->bitmaps.size(); ++key) {
-        impl_->bitmaps[key] |= other.impl_->bitmaps[key];
+    AllocateBitmapsIfNeeded(other.bitmaps_.size());
+    for (size_t key = 0; key < other.bitmaps_.size(); ++key) {
+        bitmaps_[key] |= other.bitmaps_[key];
     }
     return *this;
 }
@@ -132,8 +97,7 @@ Result<bool> OptimizedRoaringBitmap64::Contains(int64_t position) const {
     PAIMON_RETURN_NOT_OK(CheckPosition(position));
     const auto key = static_cast<int32_t>(position >> 32);
     const auto position32 = static_cast<uint32_t>(position);
-    return static_cast<size_t>(key) < impl_->bitmaps.size() &&
-           impl_->bitmaps[key].contains(position32);
+    return static_cast<size_t>(key) < bitmaps_.size() && bitmaps_[key].contains(position32);
 }
 
 bool OptimizedRoaringBitmap64::IsEmpty() const {
@@ -142,7 +106,7 @@ bool OptimizedRoaringBitmap64::IsEmpty() const {
 
 int64_t OptimizedRoaringBitmap64::Cardinality() const {
     int64_t cardinality = 0;
-    for (const roaring::Roaring& bitmap : impl_->bitmaps) {
+    for (const roaring::Roaring& bitmap : bitmaps_) {
         cardinality += static_cast<int64_t>(bitmap.cardinality());
     }
     return cardinality;
@@ -150,15 +114,15 @@ int64_t OptimizedRoaringBitmap64::Cardinality() const {
 
 bool OptimizedRoaringBitmap64::RunLengthEncode() {
     bool changed = false;
-    for (roaring::Roaring& bitmap : impl_->bitmaps) {
+    for (roaring::Roaring& bitmap : bitmaps_) {
         changed |= bitmap.runOptimize();
     }
     return changed;
 }
 
 void OptimizedRoaringBitmap64::ForEach(const std::function<void(int64_t)>& consumer) const {
-    for (size_t key = 0; key < impl_->bitmaps.size(); ++key) {
-        for (uint32_t position32 : impl_->bitmaps[key]) {
+    for (size_t key = 0; key < bitmaps_.size(); ++key) {
+        for (uint32_t position32 : bitmaps_[key]) {
             const uint64_t position = (static_cast<uint64_t>(key) << 32) | position32;
             consumer(static_cast<int64_t>(position));
         }
@@ -166,12 +130,12 @@ void OptimizedRoaringBitmap64::ForEach(const std::function<void(int64_t)>& consu
 }
 
 size_t OptimizedRoaringBitmap64::GetAllocatedBitmapCount() const {
-    return impl_->bitmaps.size();
+    return bitmaps_.size();
 }
 
 size_t OptimizedRoaringBitmap64::GetSizeInBytes() const {
     size_t size = kBitmapCountSizeBytes;
-    for (const roaring::Roaring& bitmap : impl_->bitmaps) {
+    for (const roaring::Roaring& bitmap : bitmaps_) {
         size += kBitmapKeySizeBytes + bitmap.getSizeInBytes();
     }
     return size;
@@ -183,10 +147,10 @@ PAIMON_UNIQUE_PTR<Bytes> OptimizedRoaringBitmap64::Serialize(MemoryPool* pool) c
     }
     PAIMON_UNIQUE_PTR<Bytes> bytes = Bytes::AllocateBytes(GetSizeInBytes(), pool);
     char* output = bytes->data();
-    WriteLittleEndian(static_cast<int64_t>(impl_->bitmaps.size()), &output);
-    for (size_t key = 0; key < impl_->bitmaps.size(); ++key) {
+    WriteLittleEndian(static_cast<int64_t>(bitmaps_.size()), &output);
+    for (size_t key = 0; key < bitmaps_.size(); ++key) {
         WriteLittleEndian(static_cast<int32_t>(key), &output);
-        output += impl_->bitmaps[key].write(output);
+        output += bitmaps_[key].write(output);
     }
     return bytes;
 }
@@ -197,9 +161,10 @@ Status OptimizedRoaringBitmap64::Deserialize(ByteArrayInputStream* input_stream)
     }
 
     PAIMON_ASSIGN_OR_RAISE(int64_t bitmap_count, ReadLittleEndian<int64_t>(input_stream));
-    if (bitmap_count < 0 || bitmap_count > std::numeric_limits<int32_t>::max()) {
+    if (bitmap_count < 0) {
         return Status::Invalid(fmt::format("Invalid bitmap count: {}", bitmap_count));
     }
+    PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(bitmap_count, "bitmap count"));
 
     std::vector<roaring::Roaring> bitmaps;
     bitmaps.reserve(static_cast<size_t>(bitmap_count));
@@ -232,7 +197,7 @@ Status OptimizedRoaringBitmap64::Deserialize(ByteArrayInputStream* input_stream)
         last_key = key;
     }
 
-    impl_->bitmaps = std::move(bitmaps);
+    bitmaps_ = std::move(bitmaps);
     return Status::OK();
 }
 
@@ -248,7 +213,7 @@ bool OptimizedRoaringBitmap64::operator==(const OptimizedRoaringBitmap64& other)
     if (this == &other) {
         return true;
     }
-    return impl_->bitmaps == other.impl_->bitmaps;
+    return bitmaps_ == other.bitmaps_;
 }
 
 Status OptimizedRoaringBitmap64::CheckPosition(int64_t position) {
@@ -261,8 +226,8 @@ Status OptimizedRoaringBitmap64::CheckPosition(int64_t position) {
 }
 
 void OptimizedRoaringBitmap64::AllocateBitmapsIfNeeded(size_t required_length) {
-    if (impl_->bitmaps.size() < required_length) {
-        impl_->bitmaps.resize(required_length);
+    if (bitmaps_.size() < required_length) {
+        bitmaps_.resize(required_length);
     }
 }
 

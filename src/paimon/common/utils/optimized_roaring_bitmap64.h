@@ -29,6 +29,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/bytes.h"
@@ -36,6 +37,7 @@
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/utils/roaring_bitmap32.h"
+#include "roaring.hh"  // NOLINT(build/include_subdir)
 
 namespace paimon {
 
@@ -49,15 +51,6 @@ class OptimizedRoaringBitmap64 {
     static constexpr int64_t kMaxValue =
         (static_cast<int64_t>(std::numeric_limits<int32_t>::max() - 1) << 32) |
         static_cast<uint32_t>(std::numeric_limits<int32_t>::min());
-
-    OptimizedRoaringBitmap64();
-    ~OptimizedRoaringBitmap64();
-
-    OptimizedRoaringBitmap64(const OptimizedRoaringBitmap64& other);
-    OptimizedRoaringBitmap64& operator=(const OptimizedRoaringBitmap64& other);
-
-    OptimizedRoaringBitmap64(OptimizedRoaringBitmap64&& other) noexcept;
-    OptimizedRoaringBitmap64& operator=(OptimizedRoaringBitmap64&& other) noexcept;
 
     /// Create an optimized 64-bit bitmap containing all positions from a 32-bit bitmap.
     static OptimizedRoaringBitmap64 FromRoaringBitmap32(const RoaringBitmap32& bitmap);
@@ -104,12 +97,10 @@ class OptimizedRoaringBitmap64 {
     bool operator==(const OptimizedRoaringBitmap64& other) const noexcept;
 
  private:
-    class Impl;
-
     static Status CheckPosition(int64_t position);
     void AllocateBitmapsIfNeeded(size_t required_length);
 
-    std::unique_ptr<Impl> impl_;
+    std::vector<roaring::Roaring> bitmaps_;
 };
 
 }  // namespace paimon

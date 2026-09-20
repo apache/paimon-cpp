@@ -483,14 +483,14 @@ TEST(OptimizedRoaringBitmap64Test, TestDeserializeRejectsInvalidInput) {
     };
     ASSERT_NOK_WITH_MSG(bitmap.Deserialize(reinterpret_cast<const char*>(negative_count.data()),
                                            negative_count.size()),
-                        "Invalid bitmap count");
+                        "bitmap count");
 
     const std::vector<uint8_t> too_large_count = {
         0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
     };
     ASSERT_NOK_WITH_MSG(bitmap.Deserialize(reinterpret_cast<const char*>(too_large_count.data()),
                                            too_large_count.size()),
-                        "Invalid bitmap count");
+                        "bitmap count");
 
     const std::vector<uint8_t> truncated_key = {
         0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
