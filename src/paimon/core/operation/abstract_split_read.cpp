@@ -193,11 +193,13 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
         }
     }
 
+    // prepare selection bitmap for index
     const RoaringBitmap32* selection = nullptr;
     if (auto* bitmap_file_index = dynamic_cast<BitmapIndexResult*>(file_index_result.get())) {
         PAIMON_ASSIGN_OR_RAISE(selection, bitmap_file_index->GetBitmap());
     }
 
+    // narrow the selection to the file-local row positions of an indexed split
     std::optional<RoaringBitmap32> row_ranges_selection;
     if (row_ranges) {
         RoaringBitmap32 row_ranges_bitmap;
@@ -210,6 +212,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
         selection = &row_ranges_selection.value();
     }
 
+    // prepare deletion bitmap for deletion vector
     std::shared_ptr<DeletionVector> deletion_vector;
     if (dv_factory) {
         PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
@@ -219,6 +222,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
         deletion = bitmap_dv->GetBitmap();
     }
 
+    // merge deletion and bitmap index selection
     std::optional<RoaringBitmap32> actual_selection;
     if (selection && deletion) {
         actual_selection = RoaringBitmap32::AndNot(*selection, *deletion);
