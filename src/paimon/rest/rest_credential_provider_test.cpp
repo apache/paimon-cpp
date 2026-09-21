@@ -117,7 +117,7 @@ class RestCredentialProviderTest : public ::testing::Test {
         }
         std::shared_ptr<RestApi> shared_api(std::move(api).value());
         return std::make_shared<RestCredentialProvider>(
-            shared_api, catalog_options_, Identifier("db1", "t1"), [this] {
+            shared_api, Identifier("db1", "t1"), [this] {
                 return std::chrono::system_clock::time_point(
                     std::chrono::milliseconds(now_millis_.load()));
             });
@@ -194,7 +194,7 @@ TEST_F(RestCredentialProviderTest, ExpiredTokenReloadsOnEveryCall) {
     ASSERT_EQ(2, state_->request_count.load());
 }
 
-TEST_F(RestCredentialProviderTest, DlfEndpointOverridesTheServerEndpoint) {
+TEST_F(RestCredentialProviderTest, DlfEndpointOverridesTheServerEndpointOnMerge) {
     catalog_options_[CatalogOptions::DLF_OSS_ENDPOINT] = "dlf-endpoint";
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
@@ -203,14 +203,20 @@ TEST_F(RestCredentialProviderTest, DlfEndpointOverridesTheServerEndpoint) {
     std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
     ASSERT_NE(nullptr, provider);
 
+    // the token is the cache key and stays exactly as issued, carrying no catalog secrets and
+    // not the endpoint correction, which is a merge concern
     ASSERT_OK_AND_ASSIGN(RestToken token, provider->ValidToken());
     ASSERT_EQ("ak-1", token.token.at("fs.oss.accessKeyId"));
-    // the endpoint the credentials were issued for wins over the one the server reported
-    ASSERT_EQ("dlf-endpoint", token.token.at(kOssEndpointOption));
+    ASSERT_EQ("server-endpoint", token.token.at(kOssEndpointOption));
     ASSERT_EQ(kExpiresAtMillis, token.expires_at_millis);
-    // the catalog options are not part of the token, so its secrets stay private
     ASSERT_EQ(0u, token.token.count(CatalogOptions::TOKEN));
     ASSERT_EQ(2u, token.token.size());
+
+    // merging shapes the credentials into the file system options: the endpoint the credentials
+    // were issued for wins over the one the server reported
+    Credentials merged = provider->MergeOptionsWithCredentials(catalog_options_, token.token);
+    ASSERT_EQ("ak-1", merged.at("fs.oss.accessKeyId"));
+    ASSERT_EQ("dlf-endpoint", merged.at(kOssEndpointOption));
 }
 
 TEST_F(RestCredentialProviderTest, EmptyDlfOssEndpointIsNotApplied) {
@@ -222,10 +228,10 @@ TEST_F(RestCredentialProviderTest, EmptyDlfOssEndpointIsNotApplied) {
     std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
     ASSERT_NE(nullptr, provider);
 
-    // an unset dlf endpoint leaves the endpoint the server reported alone
+    // an unset dlf endpoint leaves the endpoint the credentials carry alone through the merge
     ASSERT_OK_AND_ASSIGN(RestToken token, provider->ValidToken());
-    ASSERT_EQ("server-endpoint", token.token.at(kOssEndpointOption));
-    ASSERT_EQ(1u, token.token.size());
+    Credentials merged = provider->MergeOptionsWithCredentials(catalog_options_, token.token);
+    ASSERT_EQ("server-endpoint", merged.at(kOssEndpointOption));
 }
 
 TEST_F(RestCredentialProviderTest, ForbiddenIsReportedToTheCaller) {

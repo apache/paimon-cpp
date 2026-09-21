@@ -42,11 +42,9 @@ size_t RestToken::Hash::operator()(const RestToken& rest_token) const {
     return result;
 }
 
-RestCredentialProvider::RestCredentialProvider(
-    const std::shared_ptr<RestApi>& api, const std::map<std::string, std::string>& catalog_options,
-    const Identifier& identifier, Clock clock)
+RestCredentialProvider::RestCredentialProvider(const std::shared_ptr<RestApi>& api,
+                                               const Identifier& identifier, Clock clock)
     : api_(api),
-      catalog_options_(catalog_options),
       identifier_(identifier),
       clock_(std::move(clock)),
       logger_(Logger::GetLogger("RestCredentialProvider")) {}
@@ -60,13 +58,17 @@ bool RestCredentialProvider::ShouldRefresh() const {
     return token_->expires_at_millis - now_millis < RestApi::kTokenExpirationSafeTimeMillis;
 }
 
-std::map<std::string, std::string> RestCredentialProvider::ApplyDlfEndpointOverride(
-    const std::map<std::string, std::string>& token) const {
-    std::map<std::string, std::string> merged = token;
+std::map<std::string, std::string> RestCredentialProvider::MergeOptionsWithCredentials(
+    const std::map<std::string, std::string>& base_options,
+    const std::map<std::string, std::string>& credentials) const {
+    std::map<std::string, std::string> merged = base_options;
+    for (const auto& [key, value] : credentials) {
+        merged[key] = value;
+    }
     // The DLF OSS endpoint overrides the standard one, since the credentials are issued
     // for the DLF endpoint rather than for the endpoint the catalog was configured with.
-    auto dlf_oss_endpoint = catalog_options_.find(CatalogOptions::DLF_OSS_ENDPOINT);
-    if (dlf_oss_endpoint != catalog_options_.end() && !dlf_oss_endpoint->second.empty()) {
+    auto dlf_oss_endpoint = base_options.find(CatalogOptions::DLF_OSS_ENDPOINT);
+    if (dlf_oss_endpoint != base_options.end() && !dlf_oss_endpoint->second.empty()) {
         merged[kOssEndpointOption] = dlf_oss_endpoint->second;
     }
     return merged;
@@ -80,8 +82,7 @@ Status RestCredentialProvider::RefreshToken() const {
                     identifier_.ToString().c_str(),
                     static_cast<int64_t>(response.GetExpiresAtMillis()));
 
-    token_ =
-        RestToken{ApplyDlfEndpointOverride(response.GetToken()), response.GetExpiresAtMillis()};
+    token_ = RestToken{response.GetToken(), response.GetExpiresAtMillis()};
     return Status::OK();
 }
 

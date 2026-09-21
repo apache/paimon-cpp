@@ -46,9 +46,29 @@ class PAIMON_EXPORT CredentialProvider {
     virtual ~CredentialProvider() = default;
 
     /// Returns the credentials to sign an access with, reloading them when they are about
-    /// to expire. The keys are file system options, e.g. "fs.oss.accessKeyId" or
-    /// "fs.oss.securityToken", so a caller merges them over its own file system options.
+    /// to expire. The keys are file system options, so a caller merges them over its own
+    /// file system options with `MergeOptionsWithCredentials`.
     virtual Result<std::map<std::string, std::string>> GetCredentials() const = 0;
+
+    /// Merges the issued credentials into the file system options a delegate is built from.
+    /// This is the canonical way to shape credentials into the options of an access: a
+    /// caller that brings its own file system calls it so the credentials are applied the
+    /// same way the built-in data token file system applies them.
+    ///
+    /// The default overlays the credentials key by key over `base_options`, so they win
+    /// wherever they overlap, mirroring the Java client and staying scheme-agnostic. A
+    /// provider that knows the file system its credentials are for overrides this to
+    /// normalize option aliases or clear stale bucket-scoped variants the credentials
+    /// replace.
+    virtual std::map<std::string, std::string> MergeOptionsWithCredentials(
+        const std::map<std::string, std::string>& base_options,
+        const std::map<std::string, std::string>& credentials) const {
+        std::map<std::string, std::string> merged = base_options;
+        for (const auto& [key, value] : credentials) {
+            merged[key] = value;
+        }
+        return merged;
+    }
 };
 
 }  // namespace paimon
