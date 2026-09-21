@@ -93,14 +93,6 @@ class RestTokenFileSystem : public FileSystem {
     /// credentials are requested with.
     Result<RestToken> ValidToken() const;
 
-    /// Merges the issued credentials over the catalog options the delegate is built from. The
-    /// credentials are themselves file system options, so they are overlaid key by key and win
-    /// wherever they overlap, mirroring the Java client; how a concrete file system resolves the
-    /// catalog options the token does not carry is that file system's own concern, so this merge
-    /// stays scheme-agnostic. Exposed for tests.
-    static std::map<std::string, std::string> MergeTokenOptions(
-        const std::map<std::string, std::string>& catalog_options, const RestToken& token);
-
  private:
     /// Returns the file system of the current credentials, reloading them when they
     /// expire in less than `RestApi::kTokenExpirationSafeTimeMillis`.

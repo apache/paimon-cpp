@@ -483,7 +483,7 @@ Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
     // from the catalog options, which every table agrees on, so a rotation rebuilds them.
     const std::map<std::string, std::string>& catalog_options = api_->GetMergedOptions();
     std::shared_ptr<RestCredentialProvider> provider =
-        std::make_shared<RestCredentialProvider>(api_, catalog_options, load_identifier);
+        std::make_shared<RestCredentialProvider>(api_, load_identifier);
     return std::make_shared<RestTokenFileSystem>(std::move(provider), catalog_options,
                                                  token_fs_cache_, fs_scheme_to_identifier_map_);
 }

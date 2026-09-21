@@ -117,7 +117,7 @@ class RestCredentialProviderTest : public ::testing::Test {
         }
         std::shared_ptr<RestApi> shared_api(std::move(api).value());
         return std::make_shared<RestCredentialProvider>(
-            shared_api, catalog_options_, Identifier("db1", "t1"), [this] {
+            shared_api, Identifier("db1", "t1"), [this] {
                 return std::chrono::system_clock::time_point(
                     std::chrono::milliseconds(now_millis_.load()));
             });
@@ -194,7 +194,7 @@ TEST_F(RestCredentialProviderTest, ExpiredTokenReloadsOnEveryCall) {
     ASSERT_EQ(2, state_->request_count.load());
 }
 
-TEST_F(RestCredentialProviderTest, DlfEndpointOverridesTheServerEndpoint) {
+TEST_F(RestCredentialProviderTest, DlfEndpointOverridesTheServerEndpointOnMerge) {
     catalog_options_[CatalogOptions::DLF_OSS_ENDPOINT] = "dlf-endpoint";
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
@@ -203,14 +203,20 @@ TEST_F(RestCredentialProviderTest, DlfEndpointOverridesTheServerEndpoint) {
     std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
     ASSERT_NE(nullptr, provider);
 
+    // the token is the cache key and stays exactly as issued, carrying no catalog secrets and
+    // not the endpoint correction, which is a merge concern
     ASSERT_OK_AND_ASSIGN(RestToken token, provider->ValidToken());
     ASSERT_EQ("ak-1", token.token.at("fs.oss.accessKeyId"));
-    // the endpoint the credentials were issued for wins over the one the server reported
-    ASSERT_EQ("dlf-endpoint", token.token.at(kOssEndpointOption));
+    ASSERT_EQ("server-endpoint", token.token.at(kOssEndpointOption));
     ASSERT_EQ(kExpiresAtMillis, token.expires_at_millis);
-    // the catalog options are not part of the token, so its secrets stay private
     ASSERT_EQ(0u, token.token.count(CatalogOptions::TOKEN));
     ASSERT_EQ(2u, token.token.size());
+
+    // merging shapes the credentials into the file system options: the endpoint the credentials
+    // were issued for wins over the one the server reported
+    Credentials merged = provider->MergeOptionsWithCredentials(catalog_options_, token.token);
+    ASSERT_EQ("ak-1", merged.at("fs.oss.accessKeyId"));
+    ASSERT_EQ("dlf-endpoint", merged.at(kOssEndpointOption));
 }
 
 TEST_F(RestCredentialProviderTest, EmptyDlfOssEndpointIsNotApplied) {
@@ -222,10 +228,92 @@ TEST_F(RestCredentialProviderTest, EmptyDlfOssEndpointIsNotApplied) {
     std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
     ASSERT_NE(nullptr, provider);
 
-    // an unset dlf endpoint leaves the endpoint the server reported alone
+    // an unset dlf endpoint leaves the endpoint the credentials carry alone through the merge
     ASSERT_OK_AND_ASSIGN(RestToken token, provider->ValidToken());
-    ASSERT_EQ("server-endpoint", token.token.at(kOssEndpointOption));
-    ASSERT_EQ(1u, token.token.size());
+    Credentials merged = provider->MergeOptionsWithCredentials(catalog_options_, token.token);
+    ASSERT_EQ("server-endpoint", merged.at(kOssEndpointOption));
+}
+
+TEST_F(RestCredentialProviderTest, IssuedCredentialsClearStaleBucketScopedCatalogVariants) {
+    // The OSS backend resolves a bucket-scoped option ahead of the flat one, so a stale
+    // bucket-scoped catalog value would shadow the flat credential the token just refreshed.
+    std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
+    ASSERT_NE(nullptr, provider);
+
+    Credentials base = {
+        {"fs.oss.accessKeyId", "catalog-ak"},
+        {"fs.oss.bucket.b.accessKeyId", "catalog-bucket-ak"},
+        {"unrelated", "kept"},
+    };
+    Credentials credentials = {{"fs.oss.accessKeyId", "token-ak"}};
+
+    Credentials merged = provider->MergeOptionsWithCredentials(base, credentials);
+    ASSERT_EQ("token-ak", merged.at("fs.oss.accessKeyId"));
+    ASSERT_EQ(0u, merged.count("fs.oss.bucket.b.accessKeyId"));
+    ASSERT_EQ("kept", merged.at("unrelated"));
+}
+
+TEST_F(RestCredentialProviderTest, SessionTokenCredentialClearsStaleSecurityTokenAliases) {
+    // A token carrying a fresh session token must clear a stale catalog security token -- the
+    // OSS backend reads securityToken first, so leaving it in place would pair the refreshed
+    // key pair with the old STS token and fail authentication. Both the flat and the
+    // bucket-scoped stale securityToken have to go.
+    std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
+    ASSERT_NE(nullptr, provider);
+
+    Credentials base = {
+        {"fs.oss.securityToken", "stale-sts"},
+        {"fs.oss.bucket.b.securityToken", "stale-bucket-sts"},
+    };
+    Credentials credentials = {{"fs.oss.accessKeyId", "token-ak"},
+                               {"fs.oss.accessKeySecret", "token-sk"},
+                               {"fs.oss.sessionToken", "fresh-sts"}};
+
+    Credentials merged = provider->MergeOptionsWithCredentials(base, credentials);
+    ASSERT_EQ("token-ak", merged.at("fs.oss.accessKeyId"));
+    ASSERT_EQ("token-sk", merged.at("fs.oss.accessKeySecret"));
+    ASSERT_EQ("fresh-sts", merged.at("fs.oss.sessionToken"));
+    ASSERT_EQ(0u, merged.count("fs.oss.securityToken"));
+    ASSERT_EQ(0u, merged.count("fs.oss.bucket.b.securityToken"));
+}
+
+TEST_F(RestCredentialProviderTest, SecurityTokenCredentialClearsStaleSessionTokenAlias) {
+    // The alias goes the other way too: a fresh securityToken clears a stale sessionToken so the
+    // backend cannot fall back to it.
+    std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
+    ASSERT_NE(nullptr, provider);
+
+    Credentials base = {{"fs.oss.sessionToken", "stale-sts"}};
+    Credentials credentials = {{"fs.oss.securityToken", "fresh-sts"}};
+
+    Credentials merged = provider->MergeOptionsWithCredentials(base, credentials);
+    ASSERT_EQ("fresh-sts", merged.at("fs.oss.securityToken"));
+    ASSERT_EQ(0u, merged.count("fs.oss.sessionToken"));
+}
+
+TEST_F(RestCredentialProviderTest, TokenSuppliedBucketScopedCredentialsArePreserved) {
+    // When the token itself carries a complete bucket-scoped credential set, those values are
+    // authoritative: the cleanup that a global credential of the same suffix would otherwise
+    // trigger must not erase the token's own bucket-scoped keys.
+    std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
+    ASSERT_NE(nullptr, provider);
+
+    Credentials base = {};
+    Credentials credentials = {
+        {"fs.oss.accessKeyId", "token-ak"},
+        {"fs.oss.accessKeySecret", "token-sk"},
+        {"fs.oss.securityToken", "token-sts"},
+        {"fs.oss.bucket.b.accessKeyId", "token-bucket-ak"},
+        {"fs.oss.bucket.b.accessKeySecret", "token-bucket-sk"},
+        {"fs.oss.bucket.b.securityToken", "token-bucket-sts"},
+    };
+
+    Credentials merged = provider->MergeOptionsWithCredentials(base, credentials);
+    ASSERT_EQ("token-ak", merged.at("fs.oss.accessKeyId"));
+    ASSERT_EQ("token-sts", merged.at("fs.oss.securityToken"));
+    ASSERT_EQ("token-bucket-ak", merged.at("fs.oss.bucket.b.accessKeyId"));
+    ASSERT_EQ("token-bucket-sk", merged.at("fs.oss.bucket.b.accessKeySecret"));
+    ASSERT_EQ("token-bucket-sts", merged.at("fs.oss.bucket.b.securityToken"));
 }
 
 TEST_F(RestCredentialProviderTest, ForbiddenIsReportedToTheCaller) {

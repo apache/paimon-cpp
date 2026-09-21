@@ -42,20 +42,11 @@ RestTokenFileSystem::RestTokenFileSystem(
       fs_cache_(std::move(fs_cache)),
       provider_(std::move(provider)) {}
 
-std::map<std::string, std::string> RestTokenFileSystem::MergeTokenOptions(
-    const std::map<std::string, std::string>& catalog_options, const RestToken& token) {
-    std::map<std::string, std::string> fs_options = catalog_options;
-    for (const auto& [key, value] : token.token) {
-        fs_options[key] = value;
-    }
-    return fs_options;
-}
-
 Result<std::shared_ptr<FileSystem>> RestTokenFileSystem::BuildFileSystem(
     const RestToken& token) const {
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions core_options,
-        CoreOptions::FromMap(MergeTokenOptions(catalog_options_, token),
+        CoreOptions::FromMap(provider_->MergeOptionsWithCredentials(catalog_options_, token.token),
                              /*specified_file_system=*/nullptr, fs_scheme_to_identifier_map_));
     std::shared_ptr<FileSystem> fs = core_options.GetFileSystem();
     if (fs == nullptr) {
