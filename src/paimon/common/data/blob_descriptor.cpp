@@ -31,6 +31,13 @@
 #include "paimon/status.h"
 
 namespace paimon {
+namespace {
+
+constexpr int64_t kMagic = 0x424C4F4244455343l;
+// One byte for version, eight bytes for magic number.
+constexpr uint64_t kMinDescriptorLength = 9;
+
+}  // namespace
 
 Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::Create(const std::string& uri,
                                                                int64_t offset, int64_t length) {
