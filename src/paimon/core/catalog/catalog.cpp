@@ -42,9 +42,10 @@ const char Catalog::SYSTEM_TABLE_SPLITTER[] = "$";
 const char Catalog::DB_SUFFIX[] = ".db";
 const char Catalog::DB_LOCATION_PROP[] = "location";
 
-Result<std::unique_ptr<Catalog>> Catalog::Create(const std::string& root_path,
-                                                 const std::map<std::string, std::string>& options,
-                                                 const std::shared_ptr<FileSystem>& file_system) {
+Result<std::unique_ptr<Catalog>> Catalog::Create(
+    const std::string& root_path, const std::map<std::string, std::string>& options,
+    const std::shared_ptr<FileSystem>& file_system,
+    const std::map<std::string, std::string>& fs_scheme_to_identifier_map) {
     std::string metastore = "filesystem";
     auto metastore_iter = options.find(CatalogOptions::METASTORE);
     if (metastore_iter != options.end()) {
@@ -54,7 +55,8 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(const std::string& root_path,
     }
     if (metastore == "rest") {
 #ifdef PAIMON_ENABLE_REST
-        return RestCatalog::Create(root_path, options, file_system);
+        return RestCatalog::Create(root_path, options, file_system, RestHttpClient::Config(),
+                                   fs_scheme_to_identifier_map);
 #else
         return Status::NotImplemented(
             "the rest catalog requires building paimon with PAIMON_ENABLE_REST=ON");
@@ -63,7 +65,8 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(const std::string& root_path,
     if (metastore != "filesystem") {
         return Status::Invalid("unsupported metastore: ", metastore);
     }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options, file_system));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
+                           CoreOptions::FromMap(options, file_system, fs_scheme_to_identifier_map));
     return std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options);
 }
 

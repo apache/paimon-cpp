@@ -68,9 +68,12 @@ class RestCredentialProvider : public CredentialProvider {
 
     /// @param api Client of the catalog that issues the credentials. Shared because a
     ///            provider commonly outlives the catalog it was obtained from.
+    /// @param catalog_options Options the credentials are merged over.
     /// @param identifier The table the credentials are requested for.
     /// @param clock Source of the current time, overridable for tests.
-    RestCredentialProvider(const std::shared_ptr<RestApi>& api, const Identifier& identifier,
+    RestCredentialProvider(const std::shared_ptr<RestApi>& api,
+                           const std::map<std::string, std::string>& catalog_options,
+                           const Identifier& identifier,
                            Clock clock = std::chrono::system_clock::now);
 
     ~RestCredentialProvider() override = default;
@@ -86,15 +89,6 @@ class RestCredentialProvider : public CredentialProvider {
     /// source.
     Result<std::map<std::string, std::string>> GetCredentials() const override;
 
-    /// Merges the issued credentials over `base_options`, then corrects the OSS endpoint: the
-    /// credentials are issued for the catalog's DLF OSS endpoint, which overrides both the
-    /// endpoint the catalog was configured with and the one the server reported. The correction
-    /// lives here rather than in the token so the token stays a minimal cache key that carries
-    /// only the issued credentials.
-    std::map<std::string, std::string> MergeOptionsWithCredentials(
-        const std::map<std::string, std::string>& base_options,
-        const std::map<std::string, std::string>& credentials) const override;
-
  private:
     /// Reloads the credentials from the server. Called with the write lock of `mutex_`
     /// held.
@@ -103,7 +97,17 @@ class RestCredentialProvider : public CredentialProvider {
     /// Whether `token_` is absent or expires within the safe time.
     bool ShouldRefresh() const;
 
+    /// The issued `token` with the catalog's DLF OSS endpoint, when set, overriding the endpoint
+    /// the server reported: the credentials are issued for the DLF endpoint, not the one the
+    /// catalog was configured with. The token is otherwise left exactly as issued -- it is a file
+    /// system cache key and what `ValidToken()` serves, so it carries only the credentials, never
+    /// the whole catalog options; merging those over the token to build a delegate is the file
+    /// system's `MergeTokenOptions`.
+    std::map<std::string, std::string> ApplyDlfEndpointOverride(
+        const std::map<std::string, std::string>& token) const;
+
     std::shared_ptr<RestApi> api_;
+    std::map<std::string, std::string> catalog_options_;
     Identifier identifier_;
     Clock clock_;
     std::shared_ptr<Logger> logger_;

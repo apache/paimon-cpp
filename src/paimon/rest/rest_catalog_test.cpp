@@ -608,6 +608,29 @@ TEST_F(RestCatalogTest, TableFileSystemWithDataToken) {
               TokenRequests());
 }
 
+TEST_F(RestCatalogTest, DataTokenFileSystemResolvesSchemesThroughTheIdentifierMap) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    // The merged options resolve the local scheme through "local", but a scheme-to-identifier
+    // map routes it to a file system that does not exist. The map must reach both the
+    // catalog-level file system and the delegate a data token builds.
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RestCatalog> catalog,
+        RestCatalog::Create(kWarehouse, options_, /*file_system=*/nullptr, RestHttpClient::Config(),
+                            {{"file", "no-such-file-system"}}));
+
+    // the catalog-level file system routes the local scheme to the missing backend
+    Status catalog_fs_status = catalog->GetFileSystem()->Exists("/no-such-file").status();
+    ASSERT_NOK(catalog_fs_status);
+    ASSERT_NOK_WITH_MSG(catalog_fs_status, "no-such-file-system");
+
+    // the delegate the data token builds routes it the same way
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> table_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+    Status table_fs_status = table_fs->Exists("/no-such-file").status();
+    ASSERT_NOK(table_fs_status);
+    ASSERT_NOK_WITH_MSG(table_fs_status, "no-such-file-system");
+}
+
 TEST_F(RestCatalogTest, TableFileSystemIsBoundToTheTableItWasAskedFor) {
     options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());

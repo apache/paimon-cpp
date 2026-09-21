@@ -62,9 +62,13 @@ class RestTokenFileSystem : public FileSystem {
     /// @param fs_cache Cache of the delegates, shared with the file systems of the other
     ///                 tables of the same catalog so that tables issued equal credentials
     ///                 reuse one delegate. The catalog owns it and hands it out.
+    /// @param fs_scheme_to_identifier_map Maps a URI scheme to the registered file system
+    ///                 identifier that serves it, so the delegate built from the credentials
+    ///                 routes each scheme the same way the catalog-level file system does.
     RestTokenFileSystem(std::shared_ptr<RestCredentialProvider> provider,
                         const std::map<std::string, std::string>& catalog_options,
-                        std::shared_ptr<RestTokenFileSystemCache> fs_cache);
+                        std::shared_ptr<RestTokenFileSystemCache> fs_cache,
+                        const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
 
     ~RestTokenFileSystem() override = default;
 
@@ -89,6 +93,14 @@ class RestTokenFileSystem : public FileSystem {
     /// credentials are requested with.
     Result<RestToken> ValidToken() const;
 
+    /// Merges the issued credentials over the catalog options the delegate is built from. The
+    /// credentials are themselves file system options, so they are overlaid key by key and win
+    /// wherever they overlap, mirroring the Java client; how a concrete file system resolves the
+    /// catalog options the token does not carry is that file system's own concern, so this merge
+    /// stays scheme-agnostic. Exposed for tests.
+    static std::map<std::string, std::string> MergeTokenOptions(
+        const std::map<std::string, std::string>& catalog_options, const RestToken& token);
+
  private:
     /// Returns the file system of the current credentials, reloading them when they
     /// expire in less than `RestApi::kTokenExpirationSafeTimeMillis`.
@@ -99,6 +111,10 @@ class RestTokenFileSystem : public FileSystem {
     Result<std::shared_ptr<FileSystem>> BuildFileSystem(const RestToken& token) const;
 
     std::map<std::string, std::string> catalog_options_;
+    /// Maps a URI scheme to the registered file system identifier that serves it, applied when
+    /// the delegate is built from the merged options so a data token access routes each scheme
+    /// the same way the catalog-level file system does.
+    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<RestTokenFileSystemCache> fs_cache_;
 
     /// The credentials this file system delegates with, reloaded before they expire.

@@ -404,14 +404,6 @@ the factory is called with are those of the accesses to authenticate, which is
 where an implementation reads its own configuration, such as the address of the
 token service, from.
 
-Merge the credentials into your file system's options with
-``CredentialProvider::MergeOptionsWithCredentials`` rather than by hand, so they are
-shaped the same way the built-in data token file system shapes them. The default
-overlays the credentials key by key over the base options, mirroring the Java
-client. A provider that knows the file system its credentials are for overrides
-``MergeOptionsWithCredentials`` to normalize option aliases or clear the stale
-bucket-scoped variants the fresh credentials replace.
-
 All factories share one identifier space, so an identifier a file system factory
 already takes — ``oss``, ``s3``, ``local``, ``jindo`` — would replace it; name the
 provider after where its credentials come from instead.

@@ -47,10 +47,15 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     /// by `CatalogOptions::URI`, then builds the file system from the merged options.
     ///
     /// @param warehouse The warehouse identifier sent to the server; may be empty.
+    /// @param fs_scheme_to_identifier_map Maps a URI scheme to the registered file system
+    ///        identifier that serves it, used both for the catalog-level file system and for
+    ///        the file systems built from per-table data tokens. Ignored when `file_system`
+    ///        is supplied.
     static Result<std::unique_ptr<RestCatalog>> Create(
         const std::string& warehouse, const std::map<std::string, std::string>& options,
         const std::shared_ptr<FileSystem>& file_system,
-        const RestHttpClient::Config& http_config = RestHttpClient::Config());
+        const RestHttpClient::Config& http_config = RestHttpClient::Config(),
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
 
     Status CreateDatabase(const std::string& name,
                           const std::map<std::string, std::string>& options,
@@ -111,7 +116,8 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
 
  private:
     RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
-                const std::string& warehouse, bool data_token_enabled, bool fs_explicitly_supplied);
+                const std::string& warehouse, bool data_token_enabled, bool fs_explicitly_supplied,
+                const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
 
     /// Loads the schema and catalog table ID from the same response.
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier,
@@ -138,6 +144,11 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     /// The "table-default." options of the merged config, applied to `CreateTable`
     /// options when absent.
     std::map<std::string, std::string> table_default_options_;
+    /// Maps a URI scheme to the registered file system identifier that serves it, passed to
+    /// the file systems built from per-table data tokens so a data token access routes each
+    /// scheme the same way the catalog-level file system does. Unused when the caller
+    /// supplied a file system, which serves every scheme itself.
+    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     /// The file systems of the data tokens, keyed by the credentials they were built from
     /// and shared by the data token file systems this catalog hands out. Only created when
     /// `data_token_enabled_` is set.

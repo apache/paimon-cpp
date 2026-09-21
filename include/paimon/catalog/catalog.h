@@ -64,10 +64,16 @@ class PAIMON_EXPORT Catalog {
     /// @param file_system Specifies the file system for file operations.
     ///                    If not set, use default file system (configured in
     ///                    `Options::FILE_SYSTEM`)
+    /// @param fs_scheme_to_identifier_map Maps a URI scheme (like "oss") to the registered file
+    ///                    system identifier that serves it, so a catalog that resolves several
+    ///                    schemes, including the file systems it builds from per-table data
+    ///                    tokens, keeps routing each scheme to its backend. Ignored when
+    ///                    `file_system` is supplied, which serves every scheme itself.
     /// @return A result containing a unique pointer to a `Catalog` instance, or an error status.
     static Result<std::unique_ptr<Catalog>> Create(
         const std::string& root_path, const std::map<std::string, std::string>& options,
-        const std::shared_ptr<FileSystem>& file_system = nullptr);
+        const std::shared_ptr<FileSystem>& file_system = nullptr,
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
 
     virtual ~Catalog() = default;
 

@@ -77,7 +77,8 @@ Result<Identifier> ToLoadIdentifier(const Identifier& identifier) {
 
 RestCatalog::RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
                          const std::string& warehouse, bool data_token_enabled,
-                         bool fs_explicitly_supplied)
+                         bool fs_explicitly_supplied,
+                         const std::map<std::string, std::string>& fs_scheme_to_identifier_map)
     : api_(std::move(api)),
       fs_(fs),
       warehouse_(warehouse),
@@ -85,6 +86,7 @@ RestCatalog::RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<Fil
       fs_explicitly_supplied_(fs_explicitly_supplied),
       table_default_options_(RestUtil::ExtractPrefixMap(
           api_->GetMergedOptions(), CatalogOptions::TABLE_DEFAULT_OPTION_PREFIX)),
+      fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
       logger_(Logger::GetLogger("RestCatalog")) {
     if (data_token_enabled_) {
         token_fs_cache_ = RestTokenFileSystem::CreateFileSystemCache();
@@ -93,18 +95,20 @@ RestCatalog::RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<Fil
 
 Result<std::unique_ptr<RestCatalog>> RestCatalog::Create(
     const std::string& warehouse, const std::map<std::string, std::string>& options,
-    const std::shared_ptr<FileSystem>& file_system, const RestHttpClient::Config& http_config) {
+    const std::shared_ptr<FileSystem>& file_system, const RestHttpClient::Config& http_config,
+    const std::map<std::string, std::string>& fs_scheme_to_identifier_map) {
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RestApi> api,
         RestApi::Create(options, warehouse, /*config_required=*/true, http_config));
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                           CoreOptions::FromMap(api->GetMergedOptions(), file_system));
+    PAIMON_ASSIGN_OR_RAISE(
+        CoreOptions core_options,
+        CoreOptions::FromMap(api->GetMergedOptions(), file_system, fs_scheme_to_identifier_map));
     PAIMON_ASSIGN_OR_RAISE(bool data_token_enabled,
                            OptionsUtils::GetValueFromMap<bool>(
                                api->GetMergedOptions(), CatalogOptions::DATA_TOKEN_ENABLED, false));
-    return std::unique_ptr<RestCatalog>(
-        new RestCatalog(std::move(api), core_options.GetFileSystem(), warehouse, data_token_enabled,
-                        /*fs_explicitly_supplied=*/file_system != nullptr));
+    return std::unique_ptr<RestCatalog>(new RestCatalog(
+        std::move(api), core_options.GetFileSystem(), warehouse, data_token_enabled,
+        /*fs_explicitly_supplied=*/file_system != nullptr, fs_scheme_to_identifier_map));
 }
 
 const std::map<std::string, std::string>& RestCatalog::GetOptions() const {
@@ -479,9 +483,9 @@ Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
     // from the catalog options, which every table agrees on, so a rotation rebuilds them.
     const std::map<std::string, std::string>& catalog_options = api_->GetMergedOptions();
     std::shared_ptr<RestCredentialProvider> provider =
-        std::make_shared<RestCredentialProvider>(api_, load_identifier);
+        std::make_shared<RestCredentialProvider>(api_, catalog_options, load_identifier);
     return std::make_shared<RestTokenFileSystem>(std::move(provider), catalog_options,
-                                                 token_fs_cache_);
+                                                 token_fs_cache_, fs_scheme_to_identifier_map_);
 }
 
 Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& identifier,
