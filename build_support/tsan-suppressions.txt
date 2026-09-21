@@ -18,3 +18,11 @@
 # Prebuilt shared libraries are not TSAN-instrumented. Suppress reports from the whole library.
 race:liblumina.so
 race:libjindosdk_c.so.6
+
+# Vortex links an un-instrumented Rust staticlib. The handoff between its blocking-pool threads
+# (which invoke the paimon read/write callbacks) and the calling thread happens inside Rust, so
+# TSAN cannot see the happens-before edge and reports false data races on the shared buffers.
+# These patterns match only the Rust frames, so races confined to paimon C++ are still reported.
+race:vortex_buffer
+race:vortex_io
+race:CallbackReadAt
