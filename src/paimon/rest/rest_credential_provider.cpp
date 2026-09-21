@@ -108,13 +108,17 @@ std::map<std::string, std::string> RestCredentialProvider::MergeOptionsWithCrede
     }
     for (auto it = merged.begin(); it != merged.end();) {
         const std::string& key = it->first;
-        bool stale_bucket_scoped = StringUtils::StartsWith(key, kOssBucketPrefix) &&
+        // A credential the token itself supplies is authoritative and is never dropped, even when
+        // it is bucket-scoped or the alias of another key the token carries.
+        bool token_supplied = credentials.find(key) != credentials.end();
+        bool stale_bucket_scoped = !token_supplied &&
+                                   StringUtils::StartsWith(key, kOssBucketPrefix) &&
                                    std::any_of(refreshed_suffixes.begin(), refreshed_suffixes.end(),
                                                [&](const std::string& suffix) {
                                                    return StringUtils::EndsWith(key, "." + suffix);
                                                });
         bool stale_security_token_alias =
-            refreshed_security_token && credentials.find(key) == credentials.end() &&
+            !token_supplied && refreshed_security_token &&
             (key == std::string(kOssOptionPrefix) + kOssSecurityTokenSuffix ||
              key == std::string(kOssOptionPrefix) + kOssSessionTokenSuffix);
         if (stale_bucket_scoped || stale_security_token_alias) {

@@ -291,6 +291,31 @@ TEST_F(RestCredentialProviderTest, SecurityTokenCredentialClearsStaleSessionToke
     ASSERT_EQ(0u, merged.count("fs.oss.sessionToken"));
 }
 
+TEST_F(RestCredentialProviderTest, TokenSuppliedBucketScopedCredentialsArePreserved) {
+    // When the token itself carries a complete bucket-scoped credential set, those values are
+    // authoritative: the cleanup that a global credential of the same suffix would otherwise
+    // trigger must not erase the token's own bucket-scoped keys.
+    std::shared_ptr<RestCredentialProvider> provider = CreateProvider();
+    ASSERT_NE(nullptr, provider);
+
+    Credentials base = {};
+    Credentials credentials = {
+        {"fs.oss.accessKeyId", "token-ak"},
+        {"fs.oss.accessKeySecret", "token-sk"},
+        {"fs.oss.securityToken", "token-sts"},
+        {"fs.oss.bucket.b.accessKeyId", "token-bucket-ak"},
+        {"fs.oss.bucket.b.accessKeySecret", "token-bucket-sk"},
+        {"fs.oss.bucket.b.securityToken", "token-bucket-sts"},
+    };
+
+    Credentials merged = provider->MergeOptionsWithCredentials(base, credentials);
+    ASSERT_EQ("token-ak", merged.at("fs.oss.accessKeyId"));
+    ASSERT_EQ("token-sts", merged.at("fs.oss.securityToken"));
+    ASSERT_EQ("token-bucket-ak", merged.at("fs.oss.bucket.b.accessKeyId"));
+    ASSERT_EQ("token-bucket-sk", merged.at("fs.oss.bucket.b.accessKeySecret"));
+    ASSERT_EQ("token-bucket-sts", merged.at("fs.oss.bucket.b.securityToken"));
+}
+
 TEST_F(RestCredentialProviderTest, ForbiddenIsReportedToTheCaller) {
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
