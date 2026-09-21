@@ -708,6 +708,52 @@ TEST_F(ParquetFileBatchReaderTest, TestNextBatchWithDictionary) {
     check_result(false);
 }
 
+TEST_F(ParquetFileBatchReaderTest, TestBinaryDictionaryOutputDependsOnStoredArrowSchema) {
+    auto dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::binary(), R"(["a\u0000b", ""])")
+            .ValueOrDie();
+    auto indices = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, null, 0, 1]")
+                       .ValueOrDie();
+    auto encoded = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie();
+    auto schema = arrow::schema({arrow::field("payload", encoded->type())});
+    auto table = arrow::Table::Make(schema, {encoded});
+    for (bool store_schema : {false, true}) {
+        SCOPED_TRACE(store_schema);
+        auto sink = arrow::io::BufferOutputStream::Create().ValueOrDie();
+        auto writer_properties =
+            ::parquet::WriterProperties::Builder().enable_dictionary()->build();
+        ::parquet::ArrowWriterProperties::Builder arrow_properties;
+        if (store_schema) {
+            arrow_properties.store_schema();
+        }
+        ASSERT_TRUE(::parquet::arrow::WriteTable(*table, pool_.get(), sink, table->num_rows(),
+                                                 writer_properties, arrow_properties.build())
+                        .ok());
+        auto buffer = sink->Finish().ValueOrDie();
+        for (bool passthrough : {false, true}) {
+            SCOPED_TRACE(passthrough);
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<ParquetFileBatchReader> reader,
+                ParquetFileBatchReader::Create(
+                    std::make_shared<arrow::io::BufferReader>(buffer),
+                    {{PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH, passthrough ? "true" : "false"}},
+                    /*batch_size=*/8, /*file_metadata=*/nullptr, /*storage_read_bytes=*/nullptr,
+                    pool_, /*hints=*/std::nullopt));
+            ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+            ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+            auto array = arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+            auto result = checked_pointer_cast<arrow::StructArray>(array)->field(0);
+            ASSERT_EQ(store_schema ? arrow::Type::DICTIONARY : arrow::Type::BINARY,
+                      result->type_id());
+            if (store_schema) {
+                auto dict = checked_pointer_cast<arrow::DictionaryArray>(result);
+                ASSERT_EQ(arrow::Type::BINARY, dict->dictionary()->type_id());
+            }
+            reader->Close();
+        }
+    }
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestColumnarAccessWithBinaryDictionary) {
     const std::vector<std::string> values = {std::string("\x00\xff\x80", 3), "",
                                              std::string("a\0b", 3)};
@@ -2024,11 +2070,8 @@ TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthrough) {
 }
 
 TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughSkipsBinaryColumn) {
-    // Parquet stores STRING and BINARY in the same BYTE_ARRAY leaf and dictionary-encodes both, so
-    // the gate has to exclude BINARY by logical type. It does, because nothing downstream can read
-    // `dictionary(int32, binary)`: ColumnarUtils::GetView() asserts on it and returns an empty view
-    // in a release build, and LiteralConverter rejects it. `f8` is the control - same physical
-    // type, same pages, and it is forwarded - so this fails if the exclusion is ever widened back.
+    // Keep the passthrough policy limited to STRING even though consumers also support binary
+    // dictionaries. Both columns use BYTE_ARRAY and dictionary pages; f8 is the STRING control.
     WriteArray(file_path_, struct_array_, schema_,
                /*write_batch_size=*/struct_array_->length(), /*enable_dictionary=*/true,
                /*max_row_group_length=*/struct_array_->length());

@@ -23,6 +23,19 @@
 #include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
+Result<std::shared_ptr<arrow::Array>> CastingUtils::DecodeDictionary(
+    const std::shared_ptr<arrow::Array>& array, arrow::MemoryPool* pool) {
+    if (array->type_id() != arrow::Type::DICTIONARY) {
+        return array;
+    }
+    const auto& dictionary_type = checked_cast<const arrow::DictionaryType&>(*array->type());
+    std::shared_ptr<arrow::DataType> value_type = dictionary_type.value_type();
+    if (value_type->id() == arrow::Type::LARGE_STRING) {
+        value_type = arrow::utf8();
+    }
+    return Cast(array, value_type, arrow::compute::CastOptions::Safe(), pool);
+}
+
 Result<std::shared_ptr<arrow::Array>> CastingUtils::Cast(
     const std::shared_ptr<arrow::Array>& src_array,
     const std::shared_ptr<arrow::DataType>& target_type, const arrow::compute::CastOptions& options,
