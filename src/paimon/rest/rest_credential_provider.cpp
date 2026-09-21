@@ -18,12 +18,15 @@
 
 #include "paimon/rest/rest_credential_provider.h"
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <set>
 #include <utility>
 
 #include "paimon/catalog_options.h"
+#include "paimon/common/utils/string_utils.h"
 
 namespace paimon {
 
@@ -31,6 +34,24 @@ namespace {
 /// Declared here rather than taken from the OSS file system, which is an optional build
 /// component this module must not depend on.
 constexpr const char kOssEndpointOption[] = "fs.oss.endpoint";
+constexpr const char kOssOptionPrefix[] = "fs.oss.";
+constexpr const char kOssBucketPrefix[] = "fs.oss.bucket.";
+// The two OSS names for the STS token: the backend reads securityToken first and only
+// consults sessionToken when it is empty, so a token under either name has to clear the
+// catalog value under both.
+constexpr const char kOssSecurityTokenSuffix[] = "securityToken";
+constexpr const char kOssSessionTokenSuffix[] = "sessionToken";
+
+/// The suffix of a flat OSS option, i.e. what follows "fs.oss." for a key like
+/// "fs.oss.accessKeyId"; empty for a bucket-scoped ("fs.oss.bucket.<bucket>.<suffix>") or a
+/// non-OSS key.
+std::string FlatOssOptionSuffix(const std::string& key) {
+    if (!StringUtils::StartsWith(key, kOssOptionPrefix) ||
+        StringUtils::StartsWith(key, kOssBucketPrefix)) {
+        return "";
+    }
+    return key.substr(std::string(kOssOptionPrefix).size());
+}
 }  // namespace
 
 size_t RestToken::Hash::operator()(const RestToken& rest_token) const {
@@ -64,6 +85,43 @@ std::map<std::string, std::string> RestCredentialProvider::MergeOptionsWithCrede
     std::map<std::string, std::string> merged = base_options;
     for (const auto& [key, value] : credentials) {
         merged[key] = value;
+    }
+    // The OSS backend resolves a bucket-scoped option ("fs.oss.bucket.<b>.<suffix>") ahead of the
+    // flat one and reads "fs.oss.securityToken" ahead of its "fs.oss.sessionToken" alias, so a
+    // stale catalog value can shadow a credential the token just refreshed. Drop the stale
+    // variants of every credential the token supplies -- including both security-token aliases
+    // when it supplies either -- so the issued credential is the one that wins.
+    std::set<std::string> refreshed_suffixes;
+    bool refreshed_security_token = false;
+    for (const auto& [key, value] : credentials) {
+        std::string suffix = FlatOssOptionSuffix(key);
+        if (suffix.empty()) {
+            continue;
+        }
+        refreshed_suffixes.insert(suffix);
+        refreshed_security_token = refreshed_security_token || suffix == kOssSecurityTokenSuffix ||
+                                   suffix == kOssSessionTokenSuffix;
+    }
+    if (refreshed_security_token) {
+        refreshed_suffixes.insert(kOssSecurityTokenSuffix);
+        refreshed_suffixes.insert(kOssSessionTokenSuffix);
+    }
+    for (auto it = merged.begin(); it != merged.end();) {
+        const std::string& key = it->first;
+        bool stale_bucket_scoped = StringUtils::StartsWith(key, kOssBucketPrefix) &&
+                                   std::any_of(refreshed_suffixes.begin(), refreshed_suffixes.end(),
+                                               [&](const std::string& suffix) {
+                                                   return StringUtils::EndsWith(key, "." + suffix);
+                                               });
+        bool stale_security_token_alias =
+            refreshed_security_token && credentials.find(key) == credentials.end() &&
+            (key == std::string(kOssOptionPrefix) + kOssSecurityTokenSuffix ||
+             key == std::string(kOssOptionPrefix) + kOssSessionTokenSuffix);
+        if (stale_bucket_scoped || stale_security_token_alias) {
+            it = merged.erase(it);
+        } else {
+            ++it;
+        }
     }
     // The DLF OSS endpoint overrides the standard one, since the credentials are issued
     // for the DLF endpoint rather than for the endpoint the catalog was configured with.
