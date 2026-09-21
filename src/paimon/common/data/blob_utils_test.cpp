@@ -24,11 +24,11 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/data/blob_defs.h"
-#include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/data/blob.h"
+#include "paimon/data/blob_descriptor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 

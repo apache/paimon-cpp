@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/common/data/blob_descriptor.h"
+#include "paimon/data/blob_descriptor.h"
 
 #include <utility>
 

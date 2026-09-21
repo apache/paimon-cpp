@@ -26,6 +26,7 @@
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
+#include "paimon/visibility.h"
 
 namespace paimon {
 /// Blob descriptor to describe a blob reference.
