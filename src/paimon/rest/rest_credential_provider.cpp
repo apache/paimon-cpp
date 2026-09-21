@@ -60,7 +60,7 @@ bool RestCredentialProvider::ShouldRefresh() const {
     return token_->expires_at_millis - now_millis < RestApi::kTokenExpirationSafeTimeMillis;
 }
 
-std::map<std::string, std::string> RestCredentialProvider::MergeTokenOptions(
+std::map<std::string, std::string> RestCredentialProvider::ApplyDlfEndpointOverride(
     const std::map<std::string, std::string>& token) const {
     std::map<std::string, std::string> merged = token;
     // The DLF OSS endpoint overrides the standard one, since the credentials are issued
@@ -80,7 +80,8 @@ Status RestCredentialProvider::RefreshToken() const {
                     identifier_.ToString().c_str(),
                     static_cast<int64_t>(response.GetExpiresAtMillis()));
 
-    token_ = RestToken{MergeTokenOptions(response.GetToken()), response.GetExpiresAtMillis()};
+    token_ =
+        RestToken{ApplyDlfEndpointOverride(response.GetToken()), response.GetExpiresAtMillis()};
     return Status::OK();
 }
 

@@ -97,8 +97,13 @@ class RestCredentialProvider : public CredentialProvider {
     /// Whether `token_` is absent or expires within the safe time.
     bool ShouldRefresh() const;
 
-    /// `catalog_options_` with `token` merged over it.
-    std::map<std::string, std::string> MergeTokenOptions(
+    /// The issued `token` with the catalog's DLF OSS endpoint, when set, overriding the endpoint
+    /// the server reported: the credentials are issued for the DLF endpoint, not the one the
+    /// catalog was configured with. The token is otherwise left exactly as issued -- it is a file
+    /// system cache key and what `ValidToken()` serves, so it carries only the credentials, never
+    /// the whole catalog options; merging those over the token to build a delegate is the file
+    /// system's `MergeTokenOptions`.
+    std::map<std::string, std::string> ApplyDlfEndpointOverride(
         const std::map<std::string, std::string>& token) const;
 
     std::shared_ptr<RestApi> api_;

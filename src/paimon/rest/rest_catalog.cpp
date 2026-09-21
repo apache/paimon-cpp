@@ -477,7 +477,10 @@ Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
     //
     // The shared cache is keyed by the credentials alone and holds the file systems built
     // from the catalog options, which every table agrees on, so a rotation rebuilds them.
-    return std::make_shared<RestTokenFileSystem>(api_, api_->GetMergedOptions(), load_identifier,
+    const std::map<std::string, std::string>& catalog_options = api_->GetMergedOptions();
+    std::shared_ptr<RestCredentialProvider> provider =
+        std::make_shared<RestCredentialProvider>(api_, catalog_options, load_identifier);
+    return std::make_shared<RestTokenFileSystem>(std::move(provider), catalog_options,
                                                  token_fs_cache_);
 }
 

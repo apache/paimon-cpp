@@ -40,6 +40,7 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/rest/rest_api.h"
+#include "paimon/rest/rest_credential_provider.h"
 #include "paimon/rest/rest_messages.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -157,11 +158,16 @@ class RestTokenFileSystemTest : public ::testing::Test {
             return nullptr;
         }
         std::shared_ptr<RestApi> shared_api(std::move(api).value());
-        return std::make_shared<RestTokenFileSystem>(
-            shared_api, catalog_options_, Identifier("db1", "t1"), std::move(fs_cache), [this] {
+        if (fs_cache == nullptr) {
+            fs_cache = RestTokenFileSystem::CreateFileSystemCache();
+        }
+        std::shared_ptr<RestCredentialProvider> provider = std::make_shared<RestCredentialProvider>(
+            shared_api, catalog_options_, Identifier("db1", "t1"), [this] {
                 return std::chrono::system_clock::time_point(
                     std::chrono::milliseconds(now_millis_.load()));
             });
+        return std::make_shared<RestTokenFileSystem>(std::move(provider), catalog_options_,
+                                                     std::move(fs_cache));
     }
 
     // Writes `content` to a file of the temp directory with the local file system and
@@ -338,8 +344,11 @@ TEST_F(RestTokenFileSystemTest, DefaultClockIsTheSystemClock) {
     }
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestApi> api,
                          RestApi::Create(catalog_options_, "", /*config_required=*/false));
-    RestTokenFileSystem fs(std::shared_ptr<RestApi>(std::move(api)), catalog_options_,
-                           Identifier("db1", "t1"));
+    // the provider is built with its default clock, the system clock
+    std::shared_ptr<RestCredentialProvider> provider = std::make_shared<RestCredentialProvider>(
+        std::shared_ptr<RestApi>(std::move(api)), catalog_options_, Identifier("db1", "t1"));
+    RestTokenFileSystem fs(provider, catalog_options_,
+                           RestTokenFileSystem::CreateFileSystemCache());
     ASSERT_OK(fs.ValidToken().status());
     ASSERT_OK(fs.ValidToken().status());
     ASSERT_EQ(1, state_->request_count.load());
@@ -377,16 +386,15 @@ TEST_F(RestTokenFileSystemTest, TokenOverridesTheCatalogFileSystemOptions) {
     ASSERT_EQ(1, state_->request_count.load());
 }
 
-TEST(RestTokenFileSystemMergeTokenOptions, IssuedCredentialsWinOverBucketScopedCatalogOnes) {
-    // The catalog is configured with bucket-scoped credentials, which a file system resolves
-    // ahead of the flat options, so they must not shadow the credentials the server issues.
+TEST(RestTokenFileSystemMergeTokenOptions, IssuedCredentialsOverrideTheCatalogOptions) {
+    // The issued credentials are file system options merged over the catalog options: they win
+    // wherever the two overlap, and every catalog option the token does not carry is kept as-is,
+    // mirroring the Java client. How the file system resolves the kept options -- a per-bucket
+    // variant or an alias -- is its own concern, so the merge leaves them untouched.
     std::map<std::string, std::string> catalog_options = {
-        {"fs.oss.bucket.b.accessKeyId", "catalog-bucket-ak"},
-        {"fs.oss.bucket.b.accessKeySecret", "catalog-bucket-sk"},
-        {"fs.oss.bucket.other.accessKeyId", "catalog-other-ak"},
         {"fs.oss.accessKeyId", "catalog-ak"},
         {"fs.oss.endpoint", "catalog-endpoint"},
-        {"fs.oss.bucket.b.endpoint", "catalog-bucket-endpoint"},
+        {"fs.oss.bucket.b.accessKeyId", "catalog-bucket-ak"},
         {"unrelated", "kept"},
     };
     RestToken token;
@@ -397,19 +405,15 @@ TEST(RestTokenFileSystemMergeTokenOptions, IssuedCredentialsWinOverBucketScopedC
     std::map<std::string, std::string> merged =
         RestTokenFileSystem::MergeTokenOptions(catalog_options, token);
 
-    // The issued credentials are present and every bucket-scoped variant of them is gone, so
-    // the per-bucket resolution a file system does falls back to the issued flat options
-    // rather than signing with a stale catalog key pair and the issued security token.
+    // The token value replaces the catalog's for the key they share, and the token-only keys are
+    // added.
     ASSERT_EQ("token-ak", merged.at("fs.oss.accessKeyId"));
     ASSERT_EQ("token-sk", merged.at("fs.oss.accessKeySecret"));
     ASSERT_EQ("token-sts", merged.at("fs.oss.securityToken"));
-    ASSERT_EQ(0u, merged.count("fs.oss.bucket.b.accessKeyId"));
-    ASSERT_EQ(0u, merged.count("fs.oss.bucket.b.accessKeySecret"));
-    ASSERT_EQ(0u, merged.count("fs.oss.bucket.other.accessKeyId"));
 
-    // Options the token does not set keep their catalog value, bucket-scoped ones included.
+    // Catalog options the token does not set are kept untouched, whatever their form.
     ASSERT_EQ("catalog-endpoint", merged.at("fs.oss.endpoint"));
-    ASSERT_EQ("catalog-bucket-endpoint", merged.at("fs.oss.bucket.b.endpoint"));
+    ASSERT_EQ("catalog-bucket-ak", merged.at("fs.oss.bucket.b.accessKeyId"));
     ASSERT_EQ("kept", merged.at("unrelated"));
 }
 

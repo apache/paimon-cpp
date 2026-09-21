@@ -18,18 +18,14 @@
 
 #pragma once
 
-#include <chrono>
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "paimon/catalog/identifier.h"
 #include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/rest/rest_api.h"
 #include "paimon/rest/rest_credential_provider.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -49,8 +45,6 @@ using RestTokenFileSystemCache =
 /// options, so the schemes configured for the catalog keep working.
 class RestTokenFileSystem : public FileSystem {
  public:
-    using Clock = RestCredentialProvider::Clock;
-
     /// Bounds of the file system cache, matching the Java client: the file system of
     /// credentials that were not used for this long is dropped, which also keeps a stream
     /// opened just before a rotation from losing the file system it came from.
@@ -60,18 +54,17 @@ class RestTokenFileSystem : public FileSystem {
     /// Creates a cache the file systems of many tables can share.
     static std::shared_ptr<RestTokenFileSystemCache> CreateFileSystemCache();
 
-    /// @param api Client of the catalog that issues the credentials. Shared because this
-    ///            file system commonly outlives the catalog it was obtained from.
-    /// @param catalog_options Options the credentials are merged over.
-    /// @param identifier The table the credentials are requested for.
+    /// @param provider Source of this table's credentials, built and owned by the catalog
+    ///                 and injected so this file system neither reaches the server nor knows
+    ///                 how the credentials are obtained. Shared because this file system
+    ///                 commonly outlives the catalog it was obtained from.
+    /// @param catalog_options Options the credentials are merged over to build a delegate.
     /// @param fs_cache Cache of the delegates, shared with the file systems of the other
-    ///                 tables of the same catalog. A private one is created when null.
-    /// @param clock Source of the current time, overridable for tests.
-    RestTokenFileSystem(const std::shared_ptr<RestApi>& api,
+    ///                 tables of the same catalog so that tables issued equal credentials
+    ///                 reuse one delegate. The catalog owns it and hands it out.
+    RestTokenFileSystem(std::shared_ptr<RestCredentialProvider> provider,
                         const std::map<std::string, std::string>& catalog_options,
-                        const Identifier& identifier,
-                        std::shared_ptr<RestTokenFileSystemCache> fs_cache = nullptr,
-                        Clock clock = std::chrono::system_clock::now);
+                        std::shared_ptr<RestTokenFileSystemCache> fs_cache);
 
     ~RestTokenFileSystem() override = default;
 
@@ -96,12 +89,11 @@ class RestTokenFileSystem : public FileSystem {
     /// credentials are requested with.
     Result<RestToken> ValidToken() const;
 
-    /// Merges the issued credentials over the catalog options the delegate is built from. A
-    /// bucket-scoped variant of an option the credentials set, such as
-    /// "fs.oss.bucket.<bucket>.accessKeyId" for the credentials' "fs.oss.accessKeyId", is
-    /// dropped: a file system resolves the bucket-scoped option first, so keeping a catalog's
-    /// one would sign an access with a stale key pair and the issued security token, an invalid
-    /// combination. Exposed for tests.
+    /// Merges the issued credentials over the catalog options the delegate is built from. The
+    /// credentials are themselves file system options, so they are overlaid key by key and win
+    /// wherever they overlap, mirroring the Java client; how a concrete file system resolves the
+    /// catalog options the token does not carry is that file system's own concern, so this merge
+    /// stays scheme-agnostic. Exposed for tests.
     static std::map<std::string, std::string> MergeTokenOptions(
         const std::map<std::string, std::string>& catalog_options, const RestToken& token);
 
@@ -115,7 +107,6 @@ class RestTokenFileSystem : public FileSystem {
     Result<std::shared_ptr<FileSystem>> BuildFileSystem(const RestToken& token) const;
 
     std::map<std::string, std::string> catalog_options_;
-    Identifier identifier_;
     std::shared_ptr<RestTokenFileSystemCache> fs_cache_;
 
     /// The credentials this file system delegates with, reloaded before they expire.
