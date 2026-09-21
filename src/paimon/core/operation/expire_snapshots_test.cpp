@@ -43,6 +43,7 @@
 #include "paimon/format/file_format.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -226,6 +227,31 @@ TEST_F(ExpireSnapshotsTest, TestInvalidInput) {
                                options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
         ASSERT_NOK(expire.Expire());
     }
+}
+
+TEST_F(ExpireSnapshotsTest, CachedRetainedSnapshotDoesNotProvePublication) {
+    auto cache = std::make_shared<SnapshotManager::SnapshotCache>();
+    auto manager = std::make_shared<SnapshotManager>(fs_, test_data_path_, "main", cache);
+    ASSERT_OK(fs_->Mkdirs(manager->SnapshotDirectory()));
+    for (int64_t id : {1, 2, 3}) {
+        ASSERT_OK_AND_ASSIGN(std::string json, BuildTestSnapshot(id).ToJsonString());
+        ASSERT_OK(fs_->WriteFile(manager->SnapshotPath(id), json, false));
+        ASSERT_OK(manager->LoadSnapshot(id));
+    }
+    ASSERT_OK(manager->CommitEarliestHint(1));
+    ASSERT_OK(manager->CommitLatestHint(3));
+    ASSERT_OK(fs_->Delete(manager->SnapshotPath(3)));
+    manager->SetSnapshotLoader([]() -> Result<std::optional<Snapshot>> {
+        return std::optional<Snapshot>(BuildTestSnapshot(3));
+    });
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::SNAPSHOT_NUM_RETAINED_MIN, "2"},
+                                               {Options::SNAPSHOT_NUM_RETAINED_MAX, "2"}}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_, fs_,
+                           options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+    ASSERT_TRUE(expire.Expire().status().IsNotExist());
+    ASSERT_OK_AND_ASSIGN(bool exists, manager->SnapshotExists(1));
+    ASSERT_TRUE(exists);
 }
 
 TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {

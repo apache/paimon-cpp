@@ -21,6 +21,8 @@
 #include <utility>
 
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/table/source/table_scan_resources_impl.h"
+#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
@@ -40,7 +42,8 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
                          const std::optional<std::string>& table_schema,
                          const std::map<std::string, std::string>& options,
                          const std::shared_ptr<Cache>& cache,
-                         const std::shared_ptr<FormatTable>& format_table)
+                         const std::shared_ptr<FormatTable>& format_table,
+                         const std::shared_ptr<TableScanResources>& table_resources)
     : path_(path),
       is_streaming_mode_(is_streaming_mode),
       limit_(limit),
@@ -53,7 +56,8 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
       table_schema_(table_schema),
       options_(options),
       cache_(cache),
-      format_table_(format_table) {}
+      format_table_(format_table),
+      table_resources_(table_resources) {}
 
 ScanContext::~ScanContext() = default;
 
@@ -75,6 +79,7 @@ class ScanContextBuilder::Impl {
         table_schema_ = std::nullopt;
         options_.clear();
         cache_.reset();
+        table_resources_.reset();
     }
 
  private:
@@ -97,6 +102,7 @@ class ScanContextBuilder::Impl {
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
+    std::shared_ptr<TableScanResources> table_resources_;
 };
 
 ScanContextBuilder::ScanContextBuilder(const std::string& path)
@@ -191,11 +197,20 @@ ScanContextBuilder& ScanContextBuilder::WithCache(const std::shared_ptr<Cache>& 
     return *this;
 }
 
+ScanContextBuilder& ScanContextBuilder::WithTableResources(
+    const std::shared_ptr<TableScanResources>& resources) {
+    impl_->table_resources_ = resources;
+    return *this;
+}
+
 Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
         return Status::Invalid("cannot scan with null format table");
     }
     if (impl_->format_table_ != nullptr) {
+        if (impl_->table_resources_) {
+            return Status::Invalid("table scan resources cannot be used with a format table");
+        }
         // The table already answers both, and from a source this cannot see behind, so a second
         // answer is refused rather than silently dropped.
         if (impl_->table_schema_) {
@@ -213,6 +228,16 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot scan with empty table path");
     }
+    auto options = impl_->options_;
+    std::shared_ptr<FileSystem> file_system = impl_->specific_file_system_;
+    if (impl_->table_resources_) {
+        auto& resources = TableScanResourcesAccess::Get(*impl_->table_resources_);
+        auto branch = options.emplace(Options::BRANCH, resources.branch_).first;
+        if (!file_system) {
+            file_system = resources.file_system_;
+        }
+        PAIMON_RETURN_NOT_OK(resources.Validate(impl_->path_, branch->second, file_system));
+    }
     std::shared_ptr<Executor> executor =
         impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
     auto ctx = std::make_unique<ScanContext>(
@@ -220,8 +245,8 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         std::make_shared<ScanFilter>(impl_->predicates_, impl_->partition_filters_,
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
-        impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
-        impl_->format_table_);
+        file_system, impl_->table_schema_, options, impl_->cache_, impl_->format_table_,
+        impl_->table_resources_);
     impl_->Reset();
     return ctx;
 }

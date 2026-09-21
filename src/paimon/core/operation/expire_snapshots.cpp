@@ -174,7 +174,9 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id, int64
     }
     std::vector<Snapshot> retained_snapshots;
     for (int64_t id = end_exclusive_id; id <= latest_snapshot_id; ++id) {
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(id));
+        // Cached metadata cannot prove that the current file has been published.
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
+                               snapshot_manager_->LoadSnapshotFromFileSystem(id));
         retained_snapshots.push_back(std::move(snapshot));
     }
     if (latest.from_catalog && !(retained_snapshots.back() == latest.snapshot.value())) {
@@ -249,7 +251,7 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id, int64
                 expired_offset_files.insert(offsets_path.value());
             }
         }
-        auto status = fs_->Delete(snapshot_manager_->SnapshotPath(id));
+        auto status = snapshot_manager_->DeleteSnapshot(id);
         // delete quietly will ignore any status error
         (void)status;
     }

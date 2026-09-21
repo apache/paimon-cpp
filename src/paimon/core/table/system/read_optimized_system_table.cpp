@@ -69,7 +69,8 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
         .WithFileSystem(context->GetSpecificFileSystem())
-        .WithCache(context->GetCache());
+        .WithCache(context->GetCache())
+        .WithTableResources(context->GetTableResources());
     if (context->GetLimit().has_value()) {
         builder.SetLimit(context->GetLimit().value());
     }

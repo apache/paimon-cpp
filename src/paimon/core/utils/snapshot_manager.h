@@ -18,14 +18,17 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -45,10 +48,36 @@ class SnapshotManager {
     /// Loads the catalog's latest snapshot. Null means no snapshot; only `NotImplemented`
     /// permits file-system fallback.
     using SnapshotLoader = std::function<Result<std::optional<Snapshot>>()>;
+    /// Shared snapshot metadata cache. Replace the whole cache after 30 minutes or on
+    /// invalidation; in-flight loads may finish against the discarded cache only.
+    class SnapshotCache {
+     public:
+        using Clock = std::function<std::chrono::steady_clock::time_point()>;
+
+        SnapshotCache();
+        explicit SnapshotCache(Clock clock);
+
+        Result<Snapshot> Get(const std::string& path,
+                             std::function<Result<Snapshot>(const std::string&)> supplier);
+        Status Put(const std::string& path, const Snapshot& snapshot);
+        void InvalidateAll();
+
+     private:
+        using Cache = GenericLruCache<std::string, Snapshot>;
+        std::shared_ptr<Cache> GetCache();
+
+        Clock clock_;
+        std::mutex mutex_;
+        std::chrono::steady_clock::time_point created_at_;
+        std::shared_ptr<Cache> cache_;
+    };
 
     SnapshotManager(const std::shared_ptr<FileSystem>& fs, const std::string& root_path);
     SnapshotManager(const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
                     const std::string& branch);
+    SnapshotManager(const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
+                    const std::string& branch,
+                    const std::shared_ptr<SnapshotCache>& snapshot_cache);
     ~SnapshotManager();
 
     /// Sets the loader for `LatestSnapshot()` and `LatestSnapshotId()`.
@@ -86,7 +115,16 @@ class SnapshotManager {
         bool latest_from_catalog) const;
     Status CommitLatestHint(int64_t snapshot_id);
     Status CommitEarliestHint(int64_t snapshot_id);
+    /// Returns snapshot metadata, using the optional cache supplied at construction.
+    /// Managers without a cache always read the file system.
+    /// A cache hit does not guarantee that the snapshot or its data files still exist.
     Result<Snapshot> LoadSnapshot(int64_t snapshot_id) const;
+    /// Bypasses the cache when file existence or current contents must be observed.
+    Result<Snapshot> LoadSnapshotFromFileSystem(int64_t snapshot_id) const;
+    /// Deletes a snapshot and invalidates the entire injected cache, including concurrent loads.
+    Status DeleteSnapshot(int64_t snapshot_id);
+    /// Clears the injected cache. Does not invalidate metadata already held by active scans.
+    void InvalidateCache();
     Result<std::optional<int64_t>> EarliestSnapshotId() const;
     Result<std::optional<int64_t>> LatestSnapshotId() const;
     /// Finds the latest snapshot published to the file system, without consulting the loader.
@@ -126,6 +164,7 @@ class SnapshotManager {
     std::string root_path_;
     std::string branch_;
     SnapshotLoader snapshot_loader_;
+    const std::shared_ptr<SnapshotCache> snapshot_cache_;
 };
 
 }  // namespace paimon
