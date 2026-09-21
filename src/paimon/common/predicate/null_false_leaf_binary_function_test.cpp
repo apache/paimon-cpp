@@ -339,6 +339,28 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestLargeStringDictionary) {
               std::vector<char>({0, 1, 0, 0}));
 }
 
+TEST_F(NullFalseLeafBinaryFunctionTest, TestBinaryDictionary) {
+    const std::vector<std::pair<std::shared_ptr<arrow::DataType>, std::shared_ptr<arrow::DataType>>>
+        types = {{arrow::binary(), arrow::int32()}, {arrow::large_binary(), arrow::int64()}};
+    for (const auto& [value_type, index_type] : types) {
+        SCOPED_TRACE(value_type->ToString());
+        auto dictionary =
+            arrow::ipc::internal::json::ArrayFromJSON(value_type, R"(["a\u0000b", "a", "", null])")
+                .ValueOrDie();
+        SCOPED_TRACE(index_type->ToString());
+        auto indices =
+            arrow::ipc::internal::json::ArrayFromJSON(index_type, "[1, 0, null, 1, 2, 3, 0]")
+                .ValueOrDie();
+        auto array = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie()->Slice(1);
+        const auto literal = BinaryLiteral(std::string("a\0b", 3));
+        ASSERT_EQ(Eval(Equal::Instance(), literal, array), std::vector<char>({1, 0, 0, 0, 0, 1}));
+        ASSERT_EQ(Eval(LessThan::Instance(), literal, array),
+                  std::vector<char>({0, 0, 1, 1, 0, 0}));
+        ASSERT_EQ(Eval(NotEqual::Instance(), BinaryLiteral(""), array),
+                  std::vector<char>({1, 0, 1, 0, 0, 1}));
+    }
+}
+
 TEST_F(NullFalseLeafBinaryFunctionTest, TestDictionaryWithNullValue) {
     // A kernel decodes the dictionary, so a row pointing at a null dictionary value becomes a null
     // row and is false for every comparison. The row by row path reads the slot the index names
