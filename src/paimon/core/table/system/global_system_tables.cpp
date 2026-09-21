@@ -518,7 +518,7 @@ Result<std::vector<GenericRow>> PartitionsSystemTable::BuildRows() const {
         // The files of each table are served with the credentials of that table, which a
         // catalog issuing temporary ones per table only hands out through the catalog.
         Result<std::shared_ptr<FileSystem>> table_fs_result =
-            context_.catalog->GetTableFileSystem(id, /*fs_options=*/{});
+            context_.catalog->GetTableFileSystem(id);
         if (!table_fs_result.ok()) {
             if (table_fs_result.status().IsNotExist()) {
                 continue;

@@ -298,8 +298,7 @@ class PerTableFileSystemCatalog : public FileSystemCatalog {
         : FileSystemCatalog(fs, warehouse, options) {}
 
     Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
-        const Identifier& identifier,
-        const std::map<std::string, std::string>& /*fs_options*/) const override {
+        const Identifier& identifier) const override {
         requested.push_back(identifier.GetFullName());
         if (failure) {
             return failure.value();

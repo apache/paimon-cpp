@@ -198,13 +198,10 @@ class PAIMON_EXPORT Catalog {
     ///       `CommitContextBuilder::WithCatalog`.
     ///
     /// @param identifier The identifier (database and table name) of the table.
-    /// @param fs_options File system options that override the ones the file system is
-    ///                   built from. The per-table temporary credentials a catalog issues
-    ///                   still take precedence over them.
     /// @return A shared pointer to the file system instance; the catalog-level file system
     ///         by default.
     virtual Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
-        const Identifier& identifier, const std::map<std::string, std::string>& fs_options) const {
+        const Identifier& identifier) const {
         return GetFileSystem();
     }
 

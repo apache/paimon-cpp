@@ -161,10 +161,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             return Status::Invalid("a catalog write requires a table identifier");
         }
         // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the write uses the credentials of this table. The context
-        // options override the catalog ones the file system is built from.
-        PAIMON_ASSIGN_OR_RAISE(specific_fs, ctx->GetCatalog()->GetTableFileSystem(
-                                                ctx->GetIdentifier().value(), ctx->GetOptions()));
+        // GetTableFileSystem, so the write uses the credentials of this table.
+        PAIMON_ASSIGN_OR_RAISE(specific_fs,
+                               ctx->GetCatalog()->GetTableFileSystem(ctx->GetIdentifier().value()));
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs,

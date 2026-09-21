@@ -548,7 +548,7 @@ TEST_F(RestCatalogTest, CreateMergesServerConfig) {
 TEST_F(RestCatalogTest, TableFileSystemWithoutDataToken) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
-                         catalog->GetTableFileSystem(Identifier("db1", "t1"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
     // without the data token the catalog wide credentials are used for the data as well
     ASSERT_EQ(catalog->GetFileSystem(), fs);
 }
@@ -567,7 +567,7 @@ TEST_F(RestCatalogTest, TableFileSystemKeepsAnExplicitlySuppliedFileSystem) {
                          RestCatalog::Create(kWarehouse, options_, custom_fs));
     ASSERT_EQ(custom_fs, catalog->GetFileSystem());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> table_fs,
-                         catalog->GetTableFileSystem(Identifier("db1", "t1"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
     ASSERT_EQ(custom_fs, table_fs);
     // Handing out the supplied file system asks the server for no data token.
     ASSERT_TRUE(TokenRequests().empty());
@@ -576,7 +576,7 @@ TEST_F(RestCatalogTest, TableFileSystemKeepsAnExplicitlySuppliedFileSystem) {
     // identity above comes from the supplied file system, not from data tokens being off.
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> token_catalog, CreateRestCatalog());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> token_fs,
-                         token_catalog->GetTableFileSystem(Identifier("db1", "t1"), {}));
+                         token_catalog->GetTableFileSystem(Identifier("db1", "t1")));
     ASSERT_NE(custom_fs, token_fs);
 }
 
@@ -584,7 +584,7 @@ TEST_F(RestCatalogTest, TableFileSystemWithDataToken) {
     options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
-                         catalog->GetTableFileSystem(Identifier("db1", "t1"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
     ASSERT_NE(nullptr, fs);
     ASSERT_NE(catalog->GetFileSystem(), fs);
 
@@ -598,10 +598,10 @@ TEST_F(RestCatalogTest, TableFileSystemWithDataToken) {
     // a system table reads the files of the table it belongs to, so it is served the
     // credentials of that table
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> system_table_fs,
-                         catalog->GetTableFileSystem(Identifier("db1", "t1$snapshots"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$snapshots")));
     ASSERT_OK(system_table_fs->Exists("/no-such-file").status());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> other_table_fs,
-                         catalog->GetTableFileSystem(Identifier("db1", "t2"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t2")));
     ASSERT_OK(other_table_fs->Exists("/no-such-file").status());
     ASSERT_EQ(std::vector<std::string>(
                   {TokenPath("db1", "t1"), TokenPath("db1", "t1"), TokenPath("db1", "t2")}),
@@ -615,10 +615,10 @@ TEST_F(RestCatalogTest, TableFileSystemIsBoundToTheTableItWasAskedFor) {
     // the database and the table are addressed separately, so identifiers that print the
     // same must not be served the credentials of one another
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> dotted_database,
-                         catalog->GetTableFileSystem(Identifier("db1.a", "t1"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1.a", "t1")));
     ASSERT_OK(dotted_database->Exists("/no-such-file").status());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> dotted_table,
-                         catalog->GetTableFileSystem(Identifier("db1", "a.t1"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "a.t1")));
     ASSERT_OK(dotted_table->Exists("/no-such-file").status());
     ASSERT_EQ(std::vector<std::string>({TokenPath("db1.a", "t1"), TokenPath("db1", "a.t1")}),
               TokenRequests());
@@ -630,17 +630,16 @@ TEST_F(RestCatalogTest, TableFileSystemNormalizesTheBranch) {
 
     // the main branch is the table itself, so it shares the credentials
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> main_branch_fs,
-                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_main"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_main")));
     ASSERT_OK(main_branch_fs->Exists("/no-such-file").status());
 
     // another branch is addressed as its own object on the server, so it gets its own
     // credentials
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> branch_fs,
-                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_b1"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_b1")));
     ASSERT_OK(branch_fs->Exists("/no-such-file").status());
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<FileSystem> branch_system_fs,
-        catalog->GetTableFileSystem(Identifier("db1", "t1$branch_b1$snapshots"), {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> branch_system_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_b1$snapshots")));
     ASSERT_OK(branch_system_fs->Exists("/no-such-file").status());
     ASSERT_EQ(std::vector<std::string>({TokenPath("db1", "t1"), TokenPath("db1", "t1$branch_b1"),
                                         TokenPath("db1", "t1$branch_b1")}),
@@ -655,43 +654,15 @@ TEST_F(RestCatalogTest, TableFileSystemIsNotRetainedPerTable) {
     // another location is never served the credentials of the dropped one. What is cached
     // and bounded are the file systems built from the credentials, keyed by them.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> first,
-                         catalog->GetTableFileSystem(Identifier("db1", "t1"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> second,
-                         catalog->GetTableFileSystem(Identifier("db1", "t1"), {}));
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
     ASSERT_NE(first, second);
 
     ASSERT_OK(first->Exists("/no-such-file").status());
     ASSERT_OK(second->Exists("/no-such-file").status());
     ASSERT_EQ(std::vector<std::string>({TokenPath("db1", "t1"), TokenPath("db1", "t1")}),
               TokenRequests());
-}
-
-TEST_F(RestCatalogTest, TableFileSystemOptionsOverrideIsNotDroppedByTheSharedCache) {
-    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
-    Identifier identifier("db1", "t1");
-
-    // A call that overrides nothing builds its delegate from the catalog options and puts it
-    // in the cache the tables of this catalog share, keyed by the credentials.
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> plain,
-                         catalog->GetTableFileSystem(identifier, {}));
-    ASSERT_OK(plain->Exists("/no-such-file").status());
-
-    // The same table with an override must not reuse that cached delegate: it builds a file
-    // system of its own, so the overridden scheme reaches the delegate and building it fails
-    // with the scheme it was overridden to instead of silently keeping the cached local one.
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<FileSystem> overridden,
-        catalog->GetTableFileSystem(identifier, {{Options::FILE_SYSTEM, "no-such-file-system"}}));
-    Status status = overridden->Exists("/no-such-file").status();
-    ASSERT_NOK(status);
-    ASSERT_NOK_WITH_MSG(status, "no-such-file-system");
-
-    // The override never entered the shared cache, so a following default call is still
-    // served a delegate built from the catalog options.
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> plain_again,
-                         catalog->GetTableFileSystem(identifier, {}));
-    ASSERT_OK(plain_again->Exists("/no-such-file").status());
 }
 
 TEST_F(RestCatalogTest, RecreatedTableLoadsNewCredentialsBeforeOldTokenExpires) {
@@ -702,7 +673,7 @@ TEST_F(RestCatalogTest, RecreatedTableLoadsNewCredentialsBeforeOldTokenExpires) 
     ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
     ASSERT_OK_AND_ASSIGN(std::string old_location, catalog->GetTableLocation(identifier));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> first,
-                         catalog->GetTableFileSystem(identifier, {}));
+                         catalog->GetTableFileSystem(identifier));
     std::shared_ptr<RestTokenFileSystem> first_token_fs =
         std::dynamic_pointer_cast<RestTokenFileSystem>(first);
     ASSERT_NE(nullptr, first_token_fs);
@@ -725,7 +696,7 @@ TEST_F(RestCatalogTest, RecreatedTableLoadsNewCredentialsBeforeOldTokenExpires) 
     ASSERT_OK_AND_ASSIGN(std::string location, catalog->GetTableLocation(identifier));
     ASSERT_EQ(new_location, location);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> second,
-                         catalog->GetTableFileSystem(identifier, {}));
+                         catalog->GetTableFileSystem(identifier));
     ASSERT_NE(first, second);
     std::shared_ptr<RestTokenFileSystem> second_token_fs =
         std::dynamic_pointer_cast<RestTokenFileSystem>(second);

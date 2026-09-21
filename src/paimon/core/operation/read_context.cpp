@@ -349,11 +349,9 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     }
     if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
         // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the read uses the credentials of this table. The context
-        // options override the catalog ones the file system is built from.
-        PAIMON_ASSIGN_OR_RAISE(
-            impl_->specific_file_system_,
-            impl_->catalog_->GetTableFileSystem(impl_->identifier_.value(), impl_->options_));
+        // GetTableFileSystem, so the read uses the credentials of this table.
+        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
+                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
     PAIMON_ASSIGN_OR_RAISE(std::string branch,
                            BranchManager::ResolveBranch(/*identifier=*/std::nullopt,

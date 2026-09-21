@@ -24,9 +24,9 @@
 
 namespace paimon {
 
-namespace {
-
-Result<FileSystemFactory*> LookUpFactory(const std::string& identifier) {
+Result<std::unique_ptr<FileSystem>> FileSystemFactory::Get(
+    const std::string& identifier, const std::string& path,
+    const std::map<std::string, std::string>& fs_options) {
     auto factory_creator = FactoryCreator::GetInstance();
     auto factory = factory_creator->Create(identifier);
     if (factory == nullptr) {
@@ -38,16 +38,7 @@ Result<FileSystemFactory*> LookUpFactory(const std::string& identifier) {
         return Status::Invalid(
             fmt::format("Failed to cast file system factory with identifier '{}'.", identifier));
     }
-    return file_system_factory;
-}
-
-}  // namespace
-
-Result<std::unique_ptr<FileSystem>> FileSystemFactory::Get(
-    const std::string& identifier, const std::string& path,
-    const std::map<std::string, std::string>& fs_options) {
-    PAIMON_ASSIGN_OR_RAISE(FileSystemFactory * factory, LookUpFactory(identifier));
-    return factory->Create(path, fs_options);
+    return file_system_factory->Create(path, fs_options);
 }
 
 }  // namespace paimon

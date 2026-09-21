@@ -457,7 +457,7 @@ std::shared_ptr<FileSystem> RestCatalog::GetFileSystem() const {
 }
 
 Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
-    const Identifier& identifier, const std::map<std::string, std::string>& fs_options) const {
+    const Identifier& identifier) const {
     // A file system the caller supplied to `Catalog::Create` authenticates its own accesses
     // and is used as-is, so it is handed out even when the server issues data tokens:
     // rebuilding a delegate from the options would discard it together with the
@@ -469,12 +469,6 @@ Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
     // The credentials are issued for the data table, so a system table shares those of
     // the table it belongs to.
     PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
-    // The caller's options override the catalog ones; the temporary credentials are merged
-    // over both when the delegate is built, so they always win.
-    std::map<std::string, std::string> options = api_->GetMergedOptions();
-    for (const auto& [key, value] : fs_options) {
-        options[key] = value;
-    }
     // Building the file system asks the server for nothing, the credentials are loaded on
     // the first access, so nothing is keyed by the table here: the file systems built from
     // the credentials are what a cache reuses and bounds. Keying an instance by its table
@@ -482,14 +476,9 @@ Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
     // location.
     //
     // The shared cache is keyed by the credentials alone and holds the file systems built
-    // from the catalog options, which every table that overrides nothing agrees on. A call
-    // that does override them builds a different file system, so it must neither read nor
-    // write that cache: reading it would hand back a file system built from other options
-    // and silently drop the override. Such a file system keeps a private cache of its own,
-    // still keyed by the credentials so a rotation rebuilds it.
-    std::shared_ptr<RestTokenFileSystemCache> fs_cache =
-        fs_options.empty() ? token_fs_cache_ : nullptr;
-    return std::make_shared<RestTokenFileSystem>(api_, options, load_identifier, fs_cache);
+    // from the catalog options, which every table agrees on, so a rotation rebuilds them.
+    return std::make_shared<RestTokenFileSystem>(api_, api_->GetMergedOptions(), load_identifier,
+                                                 token_fs_cache_);
 }
 
 Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& identifier,

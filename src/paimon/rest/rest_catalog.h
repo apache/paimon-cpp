@@ -81,13 +81,9 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     /// call returns an instance bound to the table it was asked for, whose credentials are
     /// loaded on the first access; the file systems built from them are shared through a
     /// bounded cache, so the tables the server issues the same credentials for share one
-    /// file system. `fs_options` override the catalog options the file system is built
-    /// from, the credentials still win over them; a call that overrides anything builds a
-    /// file system of its own rather than reading the shared cache, so its override is
-    /// never dropped for a cache hit.
+    /// file system.
     Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
-        const Identifier& identifier,
-        const std::map<std::string, std::string>& fs_options) const override;
+        const Identifier& identifier) const override;
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override;
     Result<std::vector<SnapshotInfo>> ListSnapshots(const Identifier& identifier,
                                                     const std::string& branch) const override;
