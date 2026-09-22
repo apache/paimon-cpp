@@ -22,7 +22,10 @@
 #include <utility>
 
 #include "arrow/c/bridge.h"
+#include "arrow/memory_pool.h"
+#include "arrow/type.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
 #include "paimon/fs/file_system.h"
@@ -85,11 +88,28 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
     if (finished_ || sink_ == nullptr) {
         return Status::Invalid("cannot add a batch after Vortex writer is finished");
     }
+    // vx_array_from_arrow imports through arrow-rs, which cannot represent a sliced (offset > 0)
+    // top-level struct: the parent offset gets re-applied to children that Arrow C++ already
+    // exported with it, tripping an arrow-data slice assertion (end <= len) that aborts the
+    // process. Rebase such a batch to offset 0 first, mirroring the read path. Offset-0 batches
+    // (the common case) are handed over untouched, so the hot path adds no copy.
+    ::ArrowArray* vortex_batch = batch;
+    ::ArrowArray rebased_batch{};
+    if (batch->offset != 0) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> imported,
+            arrow::ImportArray(batch, arrow::struct_(schema_->fields())));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<arrow::Array> normalized,
+            ArrowUtils::NormalizeArrayOffsets(imported, arrow::default_memory_pool()));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*normalized, &rebased_batch));
+        vortex_batch = &rebased_batch;
+    }
     ::ArrowSchema ffi_schema = {};
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, &ffi_schema));
     vx_error* error = nullptr;
-    // vx_array_from_arrow consumes both `batch` and `ffi_schema` on success and on failure.
-    VxArrayPtr array(vx_array_from_arrow(batch, &ffi_schema, /*nullable=*/false, &error),
+    // vx_array_from_arrow consumes both `vortex_batch` and `ffi_schema` on success and on failure.
+    VxArrayPtr array(vx_array_from_arrow(vortex_batch, &ffi_schema, /*nullable=*/false, &error),
                      vx_array_free);
     if (array == nullptr) {
         return VortexFfiError("convert Arrow batch to Vortex array", error);

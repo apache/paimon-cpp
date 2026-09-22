@@ -31,6 +31,11 @@
 //! The write side needs its own handle type rather than reusing `vx_array_sink`, whose fields are
 //! private to `crate::sink`.
 //!
+//! The sink entry points below (`vx_callback_sink_push` / `_close` / `_abort`) are adapted from
+//! vortex-ffi's `src/sink.rs` (SPDX-License-Identifier: Apache-2.0, Copyright the Vortex
+//! contributors), reworked to drive the write pipeline through host callbacks instead of a
+//! Vortex-resolved filesystem path.
+//!
 //! This file is maintained in the paimon-cpp tree (`crates/vortex_callback_io/`) and copied into
 //! `vortex-ffi/src/` at build time; see `cmake_modules/vortex.diff`.
 //!

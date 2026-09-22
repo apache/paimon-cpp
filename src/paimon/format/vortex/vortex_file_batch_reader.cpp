@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <string>
 #include <utility>
 
 #include "arrow/api.h"
@@ -178,34 +179,85 @@ Result<std::shared_ptr<arrow::Array>> NormalizeViewArray(const std::shared_ptr<a
     }
 }
 
+// Recursively projects `array` onto `target_type` (the read schema's type for this level),
+// selecting struct children by field name and pruning nested struct/list/fixed-size-list elements
+// so the returned array's type equals `target_type`. Returns `array` unchanged when its type
+// already matches. Leaf types are expected to match after view normalization; an unexpected leaf
+// mismatch is returned as-is for the caller's schema check to surface.
+Result<std::shared_ptr<arrow::Array>> ProjectArrayToType(
+    const std::shared_ptr<arrow::Array>& array,
+    const std::shared_ptr<arrow::DataType>& target_type) {
+    if (array->type()->Equals(target_type)) {
+        return array;
+    }
+    switch (target_type->id()) {
+        case arrow::Type::STRUCT: {
+            const auto& struct_array = checked_cast<const arrow::StructArray&>(*array);
+            const auto& struct_type = checked_cast<const arrow::StructType&>(*array->type());
+            const auto& target_struct = checked_cast<const arrow::StructType&>(*target_type);
+            arrow::ArrayVector children;
+            children.reserve(target_struct.num_fields());
+            for (const std::shared_ptr<arrow::Field>& target_field : target_struct.fields()) {
+                const int32_t index = struct_type.GetFieldIndex(target_field->name());
+                if (index < 0) {
+                    return Status::Invalid(
+                        fmt::format("Vortex read field '{}' is not present in the file schema",
+                                    target_field->name()));
+                }
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::shared_ptr<arrow::Array> child,
+                    ProjectArrayToType(struct_array.field(index), target_field->type()));
+                children.push_back(std::move(child));
+            }
+            return std::make_shared<arrow::StructArray>(
+                target_type, struct_array.length(), children, struct_array.null_bitmap(),
+                struct_array.null_count(), struct_array.offset());
+        }
+        case arrow::Type::LIST: {
+            const auto& list = checked_cast<const arrow::ListArray&>(*array);
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<arrow::Array> values,
+                ProjectArrayToType(list.values(), target_type->field(0)->type()));
+            return std::make_shared<arrow::ListArray>(
+                arrow::list(target_type->field(0)->WithType(values->type())), list.length(),
+                list.value_offsets(), values, list.null_bitmap(), list.null_count(), list.offset());
+        }
+        case arrow::Type::LARGE_LIST: {
+            const auto& list = checked_cast<const arrow::LargeListArray&>(*array);
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<arrow::Array> values,
+                ProjectArrayToType(list.values(), target_type->field(0)->type()));
+            return std::make_shared<arrow::LargeListArray>(
+                arrow::large_list(target_type->field(0)->WithType(values->type())), list.length(),
+                list.value_offsets(), values, list.null_bitmap(), list.null_count(), list.offset());
+        }
+        case arrow::Type::FIXED_SIZE_LIST: {
+            const auto& list = checked_cast<const arrow::FixedSizeListArray&>(*array);
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<arrow::Array> values,
+                ProjectArrayToType(list.values(), target_type->field(0)->type()));
+            const auto& fsl_type = checked_cast<const arrow::FixedSizeListType&>(*target_type);
+            return std::make_shared<arrow::FixedSizeListArray>(
+                arrow::fixed_size_list(target_type->field(0)->WithType(values->type()),
+                                       fsl_type.list_size()),
+                list.length(), values, list.null_bitmap(), list.null_count(), list.offset());
+        }
+        default:
+            return array;
+    }
+}
+
 // Projects a struct array to the columns named by `read_schema`, selected by field name and ordered
-// as in `read_schema`, so NextBatch returns exactly the read schema (the FileBatchReader contract;
-// paimon's FieldMappingReader maps fields but does not re-project). Returns `array` unchanged when
-// it already matches, or when `read_schema` is null (SetReadSchema not yet called).
+// as in `read_schema` (recursing into nested fields), so NextBatch returns exactly the read schema
+// (the FileBatchReader contract; paimon's FieldMappingReader maps fields but does not re-project).
+// Returns `array` unchanged when it already matches, or when `read_schema` is null (SetReadSchema
+// not yet called).
 Result<std::shared_ptr<arrow::Array>> ProjectToReadSchema(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::Schema>& read_schema) {
     if (read_schema == nullptr) {
         return array;
     }
-    const std::shared_ptr<arrow::DataType> target_type = arrow::struct_(read_schema->fields());
-    if (array->type()->Equals(target_type)) {
-        return array;
-    }
-    const auto& struct_array = checked_cast<const arrow::StructArray&>(*array);
-    const auto& struct_type = checked_cast<const arrow::StructType&>(*array->type());
-    arrow::ArrayVector children;
-    children.reserve(read_schema->num_fields());
-    for (const std::shared_ptr<arrow::Field>& read_field : read_schema->fields()) {
-        const int32_t index = struct_type.GetFieldIndex(read_field->name());
-        if (index < 0) {
-            return Status::Invalid(fmt::format(
-                "Vortex read field '{}' is not present in the file schema", read_field->name()));
-        }
-        children.push_back(struct_array.field(index));
-    }
-    return std::make_shared<arrow::StructArray>(target_type, struct_array.length(), children,
-                                                struct_array.null_bitmap(),
-                                                struct_array.null_count(), struct_array.offset());
+    return ProjectArrayToType(array, arrow::struct_(read_schema->fields()));
 }
 
 }  // namespace
@@ -300,10 +352,17 @@ VortexFileBatchReader::~VortexFileBatchReader() {
 Result<bool> VortexFileBatchReader::OpenNextPartitionStream() {
     if (scan_ == nullptr) {
         vx_error* error = nullptr;
-        // NULL options: scan all rows and columns (no projection/predicate pushdown).
-        VxScanPtr scan(vx_data_source_scan(data_source_.get(), /*options=*/nullptr,
-                                           /*estimate=*/nullptr, &error),
-                       vx_scan_free);
+        // Scan all rows and columns (Step 1 does no projection/predicate pushdown), but require
+        // storage order. Vortex defaults to ordered=false and may emit chunks out of order via
+        // buffer_unordered; NextBatch assigns physical row positions by batch order
+        // (rows_emitted_), so unordered chunks would misalign deletion vectors and primary-key
+        // merge. paimon-java's VortexRecordsReader likewise builds its scan with
+        // ScanOptions.ordered(true).
+        vx_scan_options options{};  // zero-init: all columns, no filter/row-range/selection/limit
+        options.ordered = true;
+        VxScanPtr scan(
+            vx_data_source_scan(data_source_.get(), &options, /*estimate=*/nullptr, &error),
+            vx_scan_free);
         if (scan == nullptr) {
             return VortexCallbackError("create Vortex scan", error,
                                        input_context_->GetCallbackStatus());
@@ -342,7 +401,10 @@ Result<std::shared_ptr<arrow::Array>> VortexFileBatchReader::ReadNextArray() {
         ::ArrowArray ffi_array = {};
         const int32_t rc = current_stream_.get_next(&current_stream_, &ffi_array);
         if (rc != 0) {
+            // get_last_error returns a pointer owned by the stream; the Arrow C stream contract
+            // invalidates it once the stream is released, so copy it before ReleaseStream().
             const char* message = current_stream_.get_last_error(&current_stream_);
+            std::string message_copy = message == nullptr ? "unknown" : message;
             // A read failure surfaces here as an opaque stream error, so prefer the status the IO
             // callback stashed.
             Status callback_status = input_context_->GetCallbackStatus();
@@ -351,8 +413,7 @@ Result<std::shared_ptr<arrow::Array>> VortexFileBatchReader::ReadNextArray() {
                 return callback_status.WithMessage("read Vortex batch", ": ",
                                                    callback_status.message());
             }
-            return Status::IOError("Vortex Arrow stream error: ",
-                                   message == nullptr ? "unknown" : message);
+            return Status::IOError("Vortex Arrow stream error: ", message_copy);
         }
         if (ffi_array.release == nullptr) {
             ReleaseStream();  // Partition exhausted; try the next one.

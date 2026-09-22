@@ -313,6 +313,80 @@ TEST_F(VortexFileFormatTest, ProjectedReadReturnsOnlyRequestedColumns) {
     ASSERT_TRUE(actual->Equals(expected)) << actual->ToString() << "\nvs\n" << expected->ToString();
 }
 
+// Regression: nested projection must prune sub-fields, not merely relabel the parent type. Reading
+// only r.b from a file whose r is ROW<a, b> must yield r as ROW<b> with matching data; before the
+// recursive fix the full ROW<a, b> child was kept under a ROW<b> type, so the exported ArrowSchema
+// disagreed with the array layout and silently corrupted the output. The b column also exercises
+// view normalization inside a nested struct.
+TEST_F(VortexFileFormatTest, ProjectedReadPrunesNestedStruct) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "nested-projection.vortex");
+    std::shared_ptr<arrow::DataType> r_type =
+        arrow::struct_({arrow::field("a", arrow::int32()), arrow::field("b", arrow::utf8())});
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),
+                                 arrow::field("r", r_type)};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> written =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(fields),
+            R"([[1,{"a":10,"b":"x"}],[2,{"a":20,"b":null}],[3,{"a":30,"b":"z"}]])")
+            .ValueOrDie();
+    // batch_size=2 also slices the top-level struct column on write (offset > 0), exercising the
+    // writer's offset rebasing together with the nested-projection read fix.
+    ASSERT_OK(WriteFile(path, schema, written, /*batch_size=*/2));
+
+    // Read only r.b: drop the top-level id column and prune r.a.
+    std::shared_ptr<arrow::DataType> r_pruned = arrow::struct_({arrow::field("b", arrow::utf8())});
+    arrow::FieldVector projected_fields = {arrow::field("r", r_pruned)};
+    std::shared_ptr<arrow::Schema> projected = arrow::schema(projected_fields);
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(projected_fields),
+                                                  R"([[{"b":"x"}],[{"b":null}],[{"b":"z"}]])")
+            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual,
+                         ReadFile(path, projected, /*batch_size=*/2, /*expected_row_count=*/3));
+    ASSERT_TRUE(actual->Equals(expected)) << actual->ToString() << "\nvs\n" << expected->ToString();
+}
+
+// Regression guard for ordered scans: 200 sequential rows span many Vortex chunks, and a small read
+// batch size forces many batches. With ScanOptions.ordered(true) the rows must come back in storage
+// order, so the concatenated result equals the written 0..199 sequence exactly (physical row
+// positions, which the upper layer assigns by batch order, stay aligned for deletion vectors and
+// primary-key merge).
+TEST_F(VortexFileFormatTest, ReadPreservesRowOrderAcrossBatches) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "row-order.vortex");
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false)};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::string json = "[";
+    for (int32_t i = 0; i < 200; ++i) {
+        json += (i > 0 ? "," : "") + std::string("[") + std::to_string(i) + "]";
+    }
+    json += "]";
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), json).ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, expected, /*batch_size=*/16));
+    AssertReadWithBatchSizes(path, schema, expected, {1, 7, 64, 200});
+}
+
+// Regression: writing a top-level struct column in slices must not abort. arrow-rs cannot import a
+// sliced (offset > 0) top-level struct (the parent offset is re-applied to already-offset children,
+// tripping an arrow-data slice assertion), so VortexFormatWriter::AddBatch rebases such a batch to
+// offset 0 before handing it to Vortex. batch_size=2 over 4 rows produces a slice at offset 2.
+TEST_F(VortexFileFormatTest, WriteThenReadSlicedStructColumn) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "sliced-struct.vortex");
+    std::shared_ptr<arrow::DataType> r_type =
+        arrow::struct_({arrow::field("a", arrow::int32()), arrow::field("b", arrow::utf8())});
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),
+                                 arrow::field("r", r_type)};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(fields),
+            R"([[1,{"a":10,"b":"x"}],[2,{"a":20,"b":null}],[3,{"a":30,"b":"z"}],[4,{"a":40,"b":"w"}]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, expected, /*batch_size=*/2));
+    AssertReadWithBatchSizes(path, schema, expected, {1, 2, 4});
+}
+
 // The IO callback bridge must surface a paimon IO failure as that paimon error, not Vortex's
 // opaque "stream error": the callback can only hand a status code back across the FFI boundary, so
 // the reader/writer stashes the real error and prefers it. `IOHook` injects a failure at the Nth
