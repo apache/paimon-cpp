@@ -37,9 +37,9 @@
 // vortex.h's API refers to the Arrow C-data-interface structs via these typedef
 // names, which it skips defining under USE_OWN_ARROW. Provide them from Arrow's
 // definitions, exactly as vortex.h's own header comment instructs.
-typedef struct ArrowSchema FFI_ArrowSchema;
-typedef struct ArrowArray FFI_ArrowArray;
-typedef struct ArrowArrayStream FFI_ArrowArrayStream;
+using FFI_ArrowSchema = struct ArrowSchema;
+using FFI_ArrowArray = struct ArrowArray;
+using FFI_ArrowArrayStream = struct ArrowArrayStream;
 
 extern "C" {
 #include "vortex.h"  // NOLINT(build/include_subdir)
@@ -57,21 +57,21 @@ extern "C" {
 /// boundary, so the callback is expected to keep its error detail on `ctx`.
 ///
 /// Must be thread-safe: Vortex issues concurrent positional reads for the same context.
-typedef int32_t (*vx_read_at_fn)(void* ctx, uint64_t offset, uint8_t* dst, size_t length);
+using vx_read_at_fn = int32_t (*)(void* ctx, uint64_t offset, uint8_t* dst, size_t length);
 
 /// Release `ctx`. Called exactly once, when the owning data source is freed (including when it
 /// fails to open).
-typedef void (*vx_release_fn)(void* ctx);
+using vx_release_fn = void (*)(void* ctx);
 
 /// Host callbacks backing a positional reader.
-typedef struct vx_input_callbacks {
+struct vx_input_callbacks {
     /// Opaque host context, passed back to every callback.
     void* ctx;
     /// Positional read. Required.
     vx_read_at_fn read_at_fn;
     /// Context destructor. Optional; may be null.
     vx_release_fn release_fn;
-} vx_input_callbacks;
+};
 
 /// Create a data source that reads through `callbacks`. `size` is the total file length in bytes.
 /// Returns null and sets `err` on failure.
@@ -82,13 +82,13 @@ const vx_data_source* vx_data_source_new_callback(const vx_session* session,
 /// Append `length` bytes from `src` to the host sink. Returns 0 on success and non-zero on failure;
 /// a partial write must be reported as a failure. Writes for one sink are sequential, never
 /// concurrent.
-typedef int32_t (*vx_write_fn)(void* ctx, const uint8_t* src, size_t length);
+using vx_write_fn = int32_t (*)(void* ctx, const uint8_t* src, size_t length);
 
 /// Flush whatever the host has buffered. Returns 0 on success and non-zero on failure.
-typedef int32_t (*vx_flush_fn)(void* ctx);
+using vx_flush_fn = int32_t (*)(void* ctx);
 
 /// Host callbacks backing a sequential writer.
-typedef struct vx_output_callbacks {
+struct vx_output_callbacks {
     /// Opaque host context, passed back to every callback.
     void* ctx;
     /// Sequential write. Required.
@@ -97,11 +97,11 @@ typedef struct vx_output_callbacks {
     vx_flush_fn flush_fn;
     /// Context destructor. Optional; may be null.
     vx_release_fn release_fn;
-} vx_output_callbacks;
+};
 
 /// A sink writing a Vortex file through host callbacks. Mirrors `vx_array_sink`, which can only
 /// target a local filesystem path.
-typedef struct vx_callback_sink vx_callback_sink;
+struct vx_callback_sink;
 
 /// Open a sink writing through `callbacks`. Returns null and sets `err` on failure. Write errors
 /// are reported by `vx_callback_sink_close`, since the bytes are produced by a background task.
