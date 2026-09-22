@@ -1,9 +1,9 @@
 diff --git a/vortex-ffi/src/lib.rs b/vortex-ffi/src/lib.rs
 --- a/vortex-ffi/src/lib.rs
 +++ b/vortex-ffi/src/lib.rs
-@@ -11,4 +11,5 @@
+@@ -8,4 +8,5 @@
  mod array;
 +mod callback_io;
+ mod array_iterator;
+ mod binary;
  mod data_source;
- mod dtype;
- mod error;

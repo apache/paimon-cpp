@@ -233,13 +233,19 @@ Result<std::unique_ptr<VortexFileBatchReader>> VortexFileBatchReader::Create(
     }
 
     // The data source dtype is available without consuming a scan.
-    VxDtypePtr dtype(vx_data_source_dtype(data_source.get()), vx_dtype_free);
+    // NOTE(vortex 0.75): vx_data_source_dtype returns a BORROWED pointer (arc_wrapper new_ref:
+    // no refcount bump), so it must NOT be freed here; doing so spuriously decrements the data
+    // source's DType Arc and causes a use-after-free/segfault later in the scan. It stays valid
+    // as long as `data_source` lives, which outlives this schema conversion. (Upstream 0.77
+    // changed vx_data_source_dtype to return an owned clone that MUST be freed; if the pin moves
+    // to >=0.77, wrap the result with vx_dtype_free again.)
+    const vx_dtype* dtype = vx_data_source_dtype(data_source.get());
     if (dtype == nullptr) {
         return Status::IOError("failed to read Vortex data source dtype");
     }
     ::ArrowSchema ffi_schema = {};
     error = nullptr;
-    if (vx_dtype_to_arrow_schema(session.get(), dtype.get(), &ffi_schema, &error) != 0) {
+    if (vx_dtype_to_arrow_schema(dtype, &ffi_schema, &error) != 0) {
         return VortexFfiError("convert Vortex dtype to Arrow schema", error);
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> file_schema,
