@@ -21,6 +21,7 @@
 
 #include <string>
 
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/vortex/vortex_format_writer.h"
 #include "paimon/status.h"
 
@@ -33,7 +34,7 @@ Result<std::unique_ptr<FormatWriter>> VortexWriterBuilder::Build(
     }
     // The paimon compression hint is not mapped to the sink; Vortex picks its own encodings.
     (void)compression;
-    return VortexFormatWriter::Create(output, schema_);
+    return VortexFormatWriter::Create(output, schema_, GetArrowPool(pool_));
 }
 
 }  // namespace paimon::vortex

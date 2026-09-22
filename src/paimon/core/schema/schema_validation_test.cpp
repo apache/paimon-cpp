@@ -406,6 +406,37 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
 }
 #endif
 
+#ifdef PAIMON_ENABLE_VORTEX
+TEST(SchemaValidationTest, TestVortexDataTypes) {
+    std::shared_ptr<TableSchema> table_schema;
+    // Vortex as the default file format: unsupported types are rejected at validation time.
+    std::map<std::string, std::string> vortex_options = {{Options::BUCKET, "-1"},
+                                                         {Options::FILE_FORMAT, "vortex"}};
+    ASSERT_OK_AND_ASSIGN(
+        table_schema,
+        TableSchema::Create(
+            /*schema_id=*/0,
+            arrow::schema({arrow::field("map", arrow::map(arrow::int32(), arrow::utf8()))}),
+            /*partition_keys=*/{}, /*primary_keys=*/{}, vortex_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type MAP");
+
+    // Vortex selected per level or for the changelog must be validated too, not only the default.
+    for (const auto& [option_key, option_value] : std::vector<std::pair<std::string, std::string>>{
+             {Options::FILE_FORMAT_PER_LEVEL, "1:vortex"},
+             {Options::CHANGELOG_FILE_FORMAT, "vortex"}}) {
+        std::map<std::string, std::string> alternate_format_options = {
+            {Options::BUCKET, "-1"}, {Options::FILE_FORMAT, "parquet"}, {option_key, option_value}};
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(
+                /*schema_id=*/0,
+                arrow::schema({arrow::field("map", arrow::map(arrow::int32(), arrow::utf8()))}),
+                /*partition_keys=*/{}, /*primary_keys=*/{}, alternate_format_options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type MAP");
+    }
+}
+#endif
+
 TEST(SchemaValidationTest, TestRowTracking) {
     auto f0 = arrow::field("f0", arrow::utf8());
     auto f1 = arrow::field("f1", arrow::int32());

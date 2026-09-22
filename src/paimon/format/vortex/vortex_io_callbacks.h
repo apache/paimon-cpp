@@ -143,11 +143,25 @@ class VortexOutputContext {
     /// @return The number of bytes written to the paimon stream so far.
     int64_t BytesWritten() const;
 
+    /// Flush the paimon stream, serialized with the background writer task's writes.
+    ///
+    /// `OutputStream` carries no thread-safety contract for concurrent `Write`/`Flush`, and
+    /// Vortex's writer task invokes the write callback from its own thread, so a caller-thread
+    /// flush must take the same lock the write callback holds. Vortex buffers internally, so this
+    /// flushes the bytes handed over so far; whatever is still buffered is drained when the sink is
+    /// closed (`Finish`).
+    ///
+    /// @return OK on success, or the flush error.
+    Status FlushStream();
+
  private:
     void SetCallbackStatus(const Status& status);
 
     std::shared_ptr<OutputStream> output_;
     mutable std::mutex mutex_;
+    // Serializes access to `output_` between the Vortex writer task (write/flush callbacks) and a
+    // caller-thread `FlushStream`; `mutex_` only guards the status/byte-count bookkeeping.
+    std::mutex stream_mutex_;
     Status callback_status_;
     int64_t bytes_written_ = 0;
 };

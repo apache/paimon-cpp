@@ -35,18 +35,21 @@ namespace paimon::vortex {
 VortexFormatWriter::VortexFormatWriter(std::shared_ptr<OutputStream> output,
                                        std::shared_ptr<arrow::Schema> schema, VxSessionPtr session,
                                        std::shared_ptr<VortexOutputContext> output_context,
-                                       vx_callback_sink* sink)
+                                       vx_callback_sink* sink,
+                                       std::shared_ptr<arrow::MemoryPool> arrow_pool)
     : output_(std::move(output)),
       schema_(std::move(schema)),
+      arrow_pool_(std::move(arrow_pool)),
       session_(std::move(session)),
       output_context_(std::move(output_context)),
       sink_(sink),
       metrics_(std::make_shared<MetricsImpl>()) {}
 
 Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
-    const std::shared_ptr<OutputStream>& output, const std::shared_ptr<arrow::Schema>& schema) {
-    if (output == nullptr || schema == nullptr) {
-        return Status::Invalid("Vortex writer requires non-null output and schema");
+    const std::shared_ptr<OutputStream>& output, const std::shared_ptr<arrow::Schema>& schema,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    if (output == nullptr || schema == nullptr || arrow_pool == nullptr) {
+        return Status::Invalid("Vortex writer requires non-null output, schema and arrow pool");
     }
     VxSessionPtr session(vx_session_new(), vx_session_free);
     if (session == nullptr) {
@@ -69,7 +72,7 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
                                    output_context->GetCallbackStatus());
     }
     return std::unique_ptr<VortexFormatWriter>(new VortexFormatWriter(
-        output, schema, std::move(session), std::move(output_context), sink));
+        output, schema, std::move(session), std::move(output_context), sink, arrow_pool));
 }
 
 VortexFormatWriter::~VortexFormatWriter() {
@@ -99,9 +102,8 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::Array> imported,
             arrow::ImportArray(batch, arrow::struct_(schema_->fields())));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<arrow::Array> normalized,
-            ArrowUtils::NormalizeArrayOffsets(imported, arrow::default_memory_pool()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized,
+                               ArrowUtils::NormalizeArrayOffsets(imported, arrow_pool_.get()));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*normalized, &rebased_batch));
         vortex_batch = &rebased_batch;
     }
@@ -127,8 +129,10 @@ Status VortexFormatWriter::Flush() {
     if (finished_) {
         return Status::OK();
     }
-    // Vortex buffers internally, so this only flushes what its sink has already handed over.
-    return output_->Flush();
+    // Flush through the output context so it is serialized with the background writer task's writes
+    // (OutputStream has no concurrent Write/Flush contract). Vortex buffers internally, so this
+    // flushes the bytes handed over so far; the rest is drained when the sink closes in Finish().
+    return output_context_->FlushStream();
 }
 
 Status VortexFormatWriter::Finish() {

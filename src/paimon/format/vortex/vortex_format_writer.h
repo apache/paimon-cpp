@@ -30,6 +30,7 @@
 #include "paimon/result.h"
 
 namespace arrow {
+class MemoryPool;
 class Schema;
 }  // namespace arrow
 namespace paimon {
@@ -48,7 +49,8 @@ namespace paimon::vortex {
 class VortexFormatWriter : public FormatWriter {
  public:
     static Result<std::unique_ptr<VortexFormatWriter>> Create(
-        const std::shared_ptr<OutputStream>& output, const std::shared_ptr<arrow::Schema>& schema);
+        const std::shared_ptr<OutputStream>& output, const std::shared_ptr<arrow::Schema>& schema,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~VortexFormatWriter() override;
 
@@ -62,10 +64,13 @@ class VortexFormatWriter : public FormatWriter {
  private:
     VortexFormatWriter(std::shared_ptr<OutputStream> output, std::shared_ptr<arrow::Schema> schema,
                        VxSessionPtr session, std::shared_ptr<VortexOutputContext> output_context,
-                       vx_callback_sink* sink);
+                       vx_callback_sink* sink, std::shared_ptr<arrow::MemoryPool> arrow_pool);
 
     std::shared_ptr<OutputStream> output_;
     std::shared_ptr<arrow::Schema> schema_;
+    // The caller's Arrow pool, used for any buffer (re)allocation on the write path so it counts
+    // against Paimon's memory accounting instead of Arrow's default pool.
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     VxSessionPtr session_;
     std::shared_ptr<VortexOutputContext> output_context_;
     // Raw pointer on purpose: close (in Finish) and abort (in the destructor) are mutually
