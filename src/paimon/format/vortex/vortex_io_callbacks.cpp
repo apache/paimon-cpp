@@ -75,7 +75,7 @@ Status VortexInputContext::GetCallbackStatus() const {
 
 int32_t VortexInputContext::ReadAt(void* ctx, uint64_t offset, uint8_t* dst,
                                    size_t length) noexcept {
-    VortexInputContext* context = ContextFrom<VortexInputContext>(ctx);
+    auto* context = ContextFrom<VortexInputContext>(ctx);
     if (context == nullptr || dst == nullptr) {
         if (context != nullptr) {
             context->SetCallbackStatus(Status::Invalid("invalid Vortex read request"));
@@ -158,7 +158,7 @@ int64_t VortexOutputContext::BytesWritten() const {
 }
 
 int32_t VortexOutputContext::Write(void* ctx, const uint8_t* src, size_t length) noexcept {
-    VortexOutputContext* context = ContextFrom<VortexOutputContext>(ctx);
+    auto* context = ContextFrom<VortexOutputContext>(ctx);
     if (context == nullptr || src == nullptr) {
         if (context != nullptr) {
             context->SetCallbackStatus(Status::Invalid("invalid Vortex write request"));
@@ -190,7 +190,7 @@ int32_t VortexOutputContext::Write(void* ctx, const uint8_t* src, size_t length)
 }
 
 int32_t VortexOutputContext::Flush(void* ctx) noexcept {
-    VortexOutputContext* context = ContextFrom<VortexOutputContext>(ctx);
+    auto* context = ContextFrom<VortexOutputContext>(ctx);
     if (context == nullptr) {
         return -1;
     }

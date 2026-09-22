@@ -66,7 +66,7 @@ VortexStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fil
     if (row_count.type == VX_ESTIMATE_UNKNOWN) {
         return Status::Invalid("Vortex file did not report a row count");
     }
-    const int64_t rows = static_cast<int64_t>(row_count.estimate);
+    const auto rows = static_cast<int64_t>(row_count.estimate);
     // Empty column stats: Vortex keeps its statistics internal and does not surface them to Paimon.
     return std::make_pair(ColumnStatsVector(), FileInfo(rows));
 }
