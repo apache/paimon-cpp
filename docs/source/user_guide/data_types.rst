@@ -271,7 +271,10 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        `Variant Shredding <https://github.com/apache/parquet-format/blob/master/VariantShredding.md>`_
        specification by setting ``variant.shreddingSchema`` to a ROW type JSON
        whose fields map top-level variant column names to their shredding
-       types. Alternatively, setting ``variant.inferShreddingSchema`` to
+       types. Explicit field IDs are preserved. If every ROW field, including
+       nested fields, omits ``id``, IDs are assigned in preorder starting at 0,
+       as in Java Paimon. Partially specified IDs are rejected.
+       Alternatively, setting ``variant.inferShreddingSchema`` to
        ``true`` infers a shredding schema per file from the first written rows
        (tuned by ``variant.shredding.maxSchemaWidth``, which bounds the total
        number of shredded fields across all variant columns of the schema,

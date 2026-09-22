@@ -20,6 +20,7 @@
 #include "paimon/common/types/data_field.h"
 
 #include <stdexcept>
+#include <utility>
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
@@ -137,7 +138,8 @@ TEST_F(DataFieldTest, ConvertArrowFieldToDataField) {
 TEST_F(DataFieldTest, FromJson) {
     const char* json = R"({
     "id" : 0,
-    "name" : "f0",
+    "name" : "f0\u0000tail",
+    "description" : "d\u0000tail",
     "type" : {
       "type" : "ROW",
       "fields" : [ {
@@ -161,7 +163,8 @@ TEST_F(DataFieldTest, FromJson) {
     DataField field;
     field.FromJson(doc);
     EXPECT_EQ(field.Id(), 0);
-    EXPECT_EQ(field.Name(), "f0");
+    ASSERT_EQ(field.Name(), std::string("f0\0tail", 7));
+    ASSERT_EQ(field.Description(), std::string("d\0tail", 6));
     EXPECT_EQ(field.Type()->id(), arrow::Type::STRUCT);
 
     auto sub_fields = field.Type()->fields();
@@ -225,6 +228,30 @@ TEST_F(DataFieldTest, FromJsonFailed) {
        }]}
 })";
         check_result(json_str, "parse data type failed, error msg: ");
+    }
+    const std::vector<std::pair<const char*, const char*>> test_cases = {
+        {R"([{"id":0,"name":"a","type":"INT"}])", "data field must be an object"},
+        {R"({"id":"0","name":"a","type":"INT"})", "value of key 'id' must be int"},
+        {R"({"name":"a","type":"INT"})", "key 'id' must exist"},
+        {R"({"id":null,"name":"a","type":"INT"})", "key 'id' must exist"},
+        {R"({"id":0,"type":"INT"})", "key 'name' must exist"},
+        {R"({"id":0,"name":0,"type":"INT"})", "value of key 'name' must be string"},
+        {R"({"id":0,"name":"a"})", "key 'type' must exist"},
+        {R"({"id":0,"name":"a","type":"INT","description":0})",
+         "value of key 'description' must be string"},
+        {R"({"id":0,"name":"a","type":{"type":"ROW",
+               "fields":[{"name":"b","type":"INT"}]}})",
+         "key 'id' must exist"},
+        {R"({"id":0,"name":"a","type":{"type":"ARRAY","element":{"type":"ROW",
+               "fields":[{"name":"b","type":"INT"}]}}})",
+         "key 'id' must exist"},
+        {R"({"id":0,"name":"a","type":{"type":"MAP","key":"STRING",
+               "value":{"type":"ROW","fields":[{"name":"b","type":"INT"}]}}})",
+         "key 'id' must exist"},
+    };
+    for (const auto& [json, error_msg] : test_cases) {
+        SCOPED_TRACE(json);
+        ASSERT_NO_FATAL_FAILURE(check_result(json, error_msg));
     }
 }
 

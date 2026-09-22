@@ -503,6 +503,24 @@ constexpr const char* kNestedShreddingSchema = R"({
     } ]
 })";
 
+constexpr const char* kNestedShreddingSchemaWithoutIds = R"({
+    "type": "ROW",
+    "fields": [ {
+        "name": "v",
+        "type": {
+            "type": "ROW",
+            "fields": [
+                {"name": "age", "type": "INT"},
+                {"name": "addr", "type": {
+                    "type": "ROW",
+                    "fields": [ {"name": "city", "type": "STRING"} ]
+                }},
+                {"name": "tags", "type": {"type": "ARRAY", "element": "STRING"}}
+            ]
+        }
+    } ]
+})";
+
 void CollectFieldIds(const ::parquet::schema::Node& node, const std::string& prefix,
                      std::map<std::string, int32_t>* field_ids) {
     std::string path = prefix.empty() ? node.name() : prefix + "." + node.name();
@@ -648,12 +666,18 @@ TEST_F(VariantParquetTest, ShreddedWriteAndReadRoundTrip) {
         R"({"age": "not a number", "extra": [1, 2]})",
         "[\"top level array\"]",
     };
-    for (const std::string mode : {"configured", "per-file", "adaptive"}) {
+    const std::map<std::string, std::map<std::string, int32_t>> expected_object_ids = {
+        {"configured", {{"age", 3}, {"addr", 4}, {"city", 5}, {"tags", 6}}},
+        {"configured-without-ids", {{"age", 1}, {"addr", 2}, {"city", 3}, {"tags", 4}}},
+        {"per-file", {{"age", 1}, {"addr", 0}, {"city", 0}, {"tags", 2}}},
+        {"adaptive", {{"age", 1}, {"addr", 0}, {"city", 0}, {"tags", 2}}}};
+    for (const auto& [mode, object_ids] : expected_object_ids) {
         SCOPED_TRACE(mode);
-        const bool configured = mode == "configured";
+        const bool configured = mode == "configured" || mode == "configured-without-ids";
         std::map<std::string, std::string> option_map;
         if (configured) {
-            option_map[Options::VARIANT_SHREDDING_SCHEMA] = kNestedShreddingSchema;
+            option_map[Options::VARIANT_SHREDDING_SCHEMA] =
+                mode == "configured" ? kNestedShreddingSchema : kNestedShreddingSchemaWithoutIds;
         } else {
             option_map[Options::VARIANT_INFER_SHREDDING_SCHEMA] = "true";
             option_map[Options::VARIANT_SHREDDING_INFERENCE_MODE] = mode;
@@ -703,16 +727,16 @@ TEST_F(VariantParquetTest, ShreddedWriteAndReadRoundTrip) {
                     {"v.metadata", 0},
                     {"v.value", 1},
                     {"v.typed_value", 2},
-                    {"v.typed_value.age", configured ? 3 : 1},
+                    {"v.typed_value.age", object_ids.at("age")},
                     {"v.typed_value.age.value", 0},
                     {"v.typed_value.age.typed_value", 1},
-                    {"v.typed_value.addr", configured ? 4 : 0},
+                    {"v.typed_value.addr", object_ids.at("addr")},
                     {"v.typed_value.addr.value", 0},
                     {"v.typed_value.addr.typed_value", 1},
-                    {"v.typed_value.addr.typed_value.city", configured ? 5 : 0},
+                    {"v.typed_value.addr.typed_value.city", object_ids.at("city")},
                     {"v.typed_value.addr.typed_value.city.value", 0},
                     {"v.typed_value.addr.typed_value.city.typed_value", 1},
-                    {"v.typed_value.tags", configured ? 6 : 2},
+                    {"v.typed_value.tags", object_ids.at("tags")},
                     {"v.typed_value.tags.value", 0},
                     {"v.typed_value.tags.typed_value", 1},
                     {"v.typed_value.tags.typed_value.list", -1},
