@@ -53,7 +53,7 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &ffi_schema));
     vx_error* error = nullptr;
     // vx_dtype_from_arrow_schema consumes ffi_schema on both success and failure.
-    VxDtypePtr dtype(vx_dtype_from_arrow_schema(session.get(), &ffi_schema, &error), vx_dtype_free);
+    VxDtypePtr dtype(vx_dtype_from_arrow_schema(&ffi_schema, &error), vx_dtype_free);
     if (dtype == nullptr) {
         return VortexFfiError("convert Arrow schema to Vortex dtype", error);
     }
@@ -89,9 +89,8 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, &ffi_schema));
     vx_error* error = nullptr;
     // vx_array_from_arrow consumes both `batch` and `ffi_schema` on success and on failure.
-    VxArrayPtr array(
-        vx_array_from_arrow(session_.get(), batch, &ffi_schema, /*nullable=*/false, &error),
-        vx_array_free);
+    VxArrayPtr array(vx_array_from_arrow(batch, &ffi_schema, /*nullable=*/false, &error),
+                     vx_array_free);
     if (array == nullptr) {
         return VortexFfiError("convert Arrow batch to Vortex array", error);
     }

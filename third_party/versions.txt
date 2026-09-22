@@ -72,12 +72,14 @@ PAIMON_MOSAIC_BUILD_VERSION=0.2.0
 PAIMON_MOSAIC_BUILD_SHA256_CHECKSUM=8123eaadd293a7904b692eff900484691711dc0cb24878166a2f90a378d37a22
 PAIMON_MOSAIC_PKG_NAME=apache-paimon-mosaic-${PAIMON_MOSAIC_BUILD_VERSION}-src.tgz
 
-# Vortex has no Apache release and vortex-ffi is publish=false, so it is pinned to an upstream
-# commit. The file format is back-compatible since vortex 0.36.0, so this reads files written by
-# paimon-java's vortex-jni 0.73.0. The SHA256 is the self-computed checksum of the pinned commit's
-# GitHub source archive (upstream publishes none); recompute it whenever the pin changes.
-PAIMON_VORTEX_BUILD_VERSION=d82de0e1c8c46dc90a3b95a433a51668e283dfdc
-PAIMON_VORTEX_BUILD_SHA256_CHECKSUM=af7dd32d1e92090293ca3bd70f5a3f97b00a5cec968a0c8e99c7612feeb35934
+# Vortex has no Apache release and vortex-ffi is publish=false, so it is pinned to an upstream tag.
+# 0.75.0 is chosen for BIDIRECTIONAL Vortex interop with paimon-java's vortex-jni 0.73.0: 0.75 reads
+# 0.73-written files (back-compatible since 0.36.0) and, empirically, 0.73 reads 0.75-written files
+# (the 0.75 writer emits no encoding/layout unknown to 0.73). Newer pins (>=0.77) break that forward
+# direction ("Encoding not found in registry"). The SHA256 is the self-computed checksum of the
+# tag's GitHub source archive (upstream publishes none); recompute it whenever the pin changes.
+PAIMON_VORTEX_BUILD_VERSION=0.75.0
+PAIMON_VORTEX_BUILD_SHA256_CHECKSUM=a0ceeed81e1b76dc9b591acde7d8e9ba96da78279a217fca12cd6c7c6b44b493
 PAIMON_VORTEX_PKG_NAME=vortex-${PAIMON_VORTEX_BUILD_VERSION}.tar.gz
 
 PAIMON_AVRO_BUILD_VERSION=c499eefb48aa2db906c7bca14a047223806f36db

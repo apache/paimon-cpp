@@ -73,7 +73,6 @@ use vortex::io::runtime::BlockingRuntime;
 use vortex::io::runtime::Handle;
 use vortex::io::runtime::Task;
 use vortex::io::session::RuntimeSessionExt;
-use vortex::layout::scan::multi::MultiLayoutDataSource;
 
 use crate::RUNTIME;
 use crate::array::vx_array;
@@ -273,13 +272,7 @@ unsafe fn data_source_new_callback(
     });
 
     let file = RUNTIME.block_on(async { session.open_options().open(reader).await })?;
-    let data_source = MultiLayoutDataSource::new_with_first(
-        file.layout_reader()?,
-        Vec::new(),
-        vec![Some(size)],
-        &session,
-    );
-    Ok(vx_data_source::new(data_source))
+    Ok(vx_data_source::new(file.data_source()?))
 }
 
 /// Create a data source that reads through host callbacks.
@@ -558,7 +551,6 @@ mod tests {
     use crate::sink::vx_array_sink_close;
     use crate::sink::vx_array_sink_open_file;
     use crate::sink::vx_array_sink_push;
-    use crate::string::vx_view;
 
     /// Host context standing in for paimon's `InputStream`: positional reads against a file.
     struct FileContext {
@@ -598,18 +590,19 @@ mod tests {
 
         unsafe {
             let session = vx_session_new();
-            let vx_dtype_ptr = vx_dtype::new(dtype.clone());
+            let vx_dtype_ptr = vx_dtype::new(Arc::new(dtype.clone()));
             let mut error = ptr::null_mut();
 
+            let c_path = std::ffi::CString::new(path.clone()).unwrap();
             let sink = vx_array_sink_open_file(
                 session,
-                vx_view::from_str(&path),
+                c_path.as_ptr(),
                 vx_dtype_ptr,
                 &raw mut error,
             );
             assert!(error.is_null());
             let array = PrimitiveArray::new(buffer![1i32, 2i32, 3i32], Validity::NonNullable);
-            let vx_array_ptr = vx_array::new(array.into_array());
+            let vx_array_ptr = vx_array::new(Arc::new(array.into_array()));
             vx_array_sink_push(sink, vx_array_ptr, &raw mut error);
             assert!(error.is_null());
             vx_array_sink_close(sink, &raw mut error);
@@ -726,7 +719,7 @@ mod tests {
 
         unsafe {
             let session = vx_session_new();
-            let vx_dtype_ptr = vx_dtype::new(dtype.clone());
+            let vx_dtype_ptr = vx_dtype::new(Arc::new(dtype.clone()));
             let mut error = ptr::null_mut();
 
             let out_ctx = Box::into_raw(Box::new(Arc::clone(&shared)));
@@ -746,7 +739,7 @@ mod tests {
 
             let array =
                 PrimitiveArray::new(buffer![10i32, 20i32, 30i32, 40i32], Validity::NonNullable);
-            let vx_array_ptr = vx_array::new(array.into_array());
+            let vx_array_ptr = vx_array::new(Arc::new(array.into_array()));
             vx_callback_sink_push(sink, vx_array_ptr, &raw mut error);
             assert!(error.is_null());
             vx_callback_sink_close(sink, &raw mut error);

@@ -25,9 +25,10 @@ Status VortexFfiError(const std::string& operation, vx_error* error) {
     if (error == nullptr) {
         return Status::OK();
     }
-    vx_view message = vx_error_message(error);
-    std::string text =
-        message.ptr == nullptr ? std::string() : std::string(message.ptr, message.len);
+    const vx_string* message = vx_error_get_message(error);
+    const char* ptr = message == nullptr ? nullptr : vx_string_ptr(message);
+    const size_t len = message == nullptr ? 0 : vx_string_len(message);
+    std::string text = ptr == nullptr ? std::string() : std::string(ptr, len);
     vx_error_free(error);
     return Status::Invalid(operation, ": ", text);
 }
