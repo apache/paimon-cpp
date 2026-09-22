@@ -935,21 +935,35 @@ Status SchemaValidation::ValidateVortexDataField(const std::shared_ptr<arrow::Fi
 
 Status SchemaValidation::ValidateVortexDataFields(const TableSchema& schema,
                                                   const CoreOptions& options) {
-    if (StringUtils::ToLowerCase(options.GetFileFormat()->Identifier()) != "vortex") {
-        return Status::OK();
-    }
-
     const std::vector<std::string> inline_blob_fields = options.GetBlobInlineFields();
     const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
                                                       inline_blob_fields.end());
-    // Mirror the Mosaic path: only validate fields stored in the normal data file. A non-inline
-    // BLOB lives in a separate blob file, so it is skipped here; an inline BLOB is rejected.
-    for (const DataField& field : schema.Fields()) {
-        if (BlobUtils::IsBlobField(field.ArrowField()) &&
-            inline_blob_field_set.count(field.Name()) == 0) {
-            continue;
+    // Mirror the Lance path: Vortex can be selected not only as the default file format but also
+    // per level or for the changelog, so validate the schema against every place it can be chosen.
+    auto validate_format = [&](const std::string&, const std::string& file_format) -> Status {
+        if (!StringUtils::EqualsIgnoreCase(file_format, "vortex")) {
+            return Status::OK();
         }
-        PAIMON_RETURN_NOT_OK(ValidateVortexDataField(field.ArrowField()));
+        // Mirror the Mosaic path: only validate fields stored in the normal data file. A non-inline
+        // BLOB lives in a separate blob file, so it is skipped here; an inline BLOB is rejected.
+        for (const DataField& field : schema.Fields()) {
+            if (BlobUtils::IsBlobField(field.ArrowField()) &&
+                inline_blob_field_set.count(field.Name()) == 0) {
+                continue;
+            }
+            PAIMON_RETURN_NOT_OK(ValidateVortexDataField(field.ArrowField()));
+        }
+        return Status::OK();
+    };
+
+    PAIMON_RETURN_NOT_OK(
+        validate_format(Options::FILE_FORMAT, options.GetFileFormat()->Identifier()));
+    PAIMON_RETURN_NOT_OK(
+        ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL, validate_format));
+    std::shared_ptr<FileFormat> changelog_format = options.GetChangelogFileFormat();
+    if (changelog_format) {
+        PAIMON_RETURN_NOT_OK(
+            validate_format(Options::CHANGELOG_FILE_FORMAT, changelog_format->Identifier()));
     }
     return Status::OK();
 }

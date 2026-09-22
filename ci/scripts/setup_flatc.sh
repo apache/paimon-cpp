@@ -36,6 +36,18 @@ set -eux
 FLATBUFFERS_VERSION=${FLATBUFFERS_VERSION:-25.12.19}
 FLATC_INSTALL_DIR=${FLATC_INSTALL_DIR:-"${HOME}/.local/bin"}
 
+# Vortex's native dependencies invoke bindgen in their build scripts, which loads libclang at
+# build time. Images that only carry GCC (e.g. the gcc8 test container) may lack it.
+if ! ldconfig -p 2>/dev/null | grep -q 'libclang'; then
+    if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+        apt_prefix="sudo"
+    else
+        apt_prefix=""
+    fi
+    ${apt_prefix} apt-get update -y
+    ${apt_prefix} apt-get install -y libclang-dev
+fi
+
 # Skip when a matching flatc is already available.
 if command -v flatc >/dev/null 2>&1 &&
     [[ "$(flatc --version 2>/dev/null | awk '{print $NF}')" == "${FLATBUFFERS_VERSION}" ]]; then
@@ -60,17 +72,5 @@ install -m 0755 "${workdir}/build/flatc" "${FLATC_INSTALL_DIR}/flatc"
 export PATH="${FLATC_INSTALL_DIR}:${PATH}"
 echo "${FLATC_INSTALL_DIR}" >>"${GITHUB_PATH:-/dev/null}" || true
 echo "FLATC=${FLATC_INSTALL_DIR}/flatc" >>"${GITHUB_ENV:-/dev/null}" || true
-
-# Vortex's native dependencies invoke bindgen in their build scripts, which loads libclang at
-# build time. Images that only carry GCC (e.g. the gcc8 test container) may lack it.
-if ! ldconfig -p 2>/dev/null | grep -q 'libclang'; then
-    if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
-        apt_prefix="sudo"
-    else
-        apt_prefix=""
-    fi
-    ${apt_prefix} apt-get update -y
-    ${apt_prefix} apt-get install -y libclang-dev
-fi
 
 "${FLATC_INSTALL_DIR}/flatc" --version

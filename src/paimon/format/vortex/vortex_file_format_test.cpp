@@ -387,6 +387,40 @@ TEST_F(VortexFileFormatTest, WriteThenReadSlicedStructColumn) {
     AssertReadWithBatchSizes(path, schema, expected, {1, 2, 4});
 }
 
+// Regression: Flush() between batches must be safe (it is serialized with the background writer
+// task's writes on the host OutputStream) and must not lose or reorder any data.
+TEST_F(VortexFileFormatTest, FlushBetweenBatchesThenRead) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "flush-between.vortex");
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),
+                                 arrow::field("name", arrow::utf8())};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> written =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[1,"one"],[2,null],[3,"three"],[4,"four"]])")
+            .ValueOrDie();
+
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriterBuilder> writer_builder,
+                         format_->CreateWriterBuilder(&ffi_schema, /*batch_size=*/2));
+    writer_builder->WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                         file_system_->Create(path, /*overwrite=*/false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatWriter> writer,
+                         writer_builder->Build(output, "zstd"));
+    for (int64_t offset = 0; offset < written->length(); offset += 2) {
+        std::shared_ptr<arrow::Array> slice = written->Slice(offset, 2);
+        ::ArrowArray ffi_array = {};
+        ASSERT_TRUE(arrow::ExportArray(*slice, &ffi_array).ok());
+        ASSERT_OK(writer->AddBatch(&ffi_array));
+        ASSERT_OK(writer->Flush());
+    }
+    ASSERT_OK(writer->Finish());
+    ASSERT_OK(output->Close());
+
+    AssertReadWithBatchSizes(path, schema, written, {1, 2, 4});
+}
+
 // The IO callback bridge must surface a paimon IO failure as that paimon error, not Vortex's
 // opaque "stream error": the callback can only hand a status code back across the FFI boundary, so
 // the reader/writer stashes the real error and prefers it. `IOHook` injects a failure at the Nth

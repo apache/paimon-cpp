@@ -171,8 +171,12 @@ int32_t VortexOutputContext::Write(void* ctx, const uint8_t* src, size_t length)
         return -1;
     }
     auto write_length = static_cast<int64_t>(length);
-    Result<int64_t> result =
-        context->output_->Write(reinterpret_cast<const char*>(src), write_length);
+    // The Vortex writer task is the only other accessor of `output_`; hold the stream lock so a
+    // concurrent caller-thread FlushStream cannot interleave with this write.
+    Result<int64_t> result = [&] {
+        std::lock_guard<std::mutex> stream_lock(context->stream_mutex_);
+        return context->output_->Write(reinterpret_cast<const char*>(src), write_length);
+    }();
     if (!result.ok()) {
         context->SetCallbackStatus(result.status());
         return -1;
@@ -194,12 +198,17 @@ int32_t VortexOutputContext::Flush(void* ctx) noexcept {
     if (context == nullptr) {
         return -1;
     }
-    Status status = context->output_->Flush();
+    Status status = context->FlushStream();
     if (!status.ok()) {
         context->SetCallbackStatus(status);
         return -1;
     }
     return 0;
+}
+
+Status VortexOutputContext::FlushStream() {
+    std::lock_guard<std::mutex> stream_lock(stream_mutex_);
+    return output_->Flush();
 }
 
 }  // namespace paimon::vortex
