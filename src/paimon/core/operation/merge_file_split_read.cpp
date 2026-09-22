@@ -26,8 +26,6 @@
 #include <set>
 #include <utility>
 
-#include "arrow/c/abi.h"
-#include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
@@ -38,8 +36,6 @@
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
-#include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
-#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/io/async_key_value_projection_reader.h"
 #include "paimon/core/io/concat_key_value_record_reader.h"
@@ -69,7 +65,6 @@
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/table/source/data_split.h"
-#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon {
 class BinaryRow;
@@ -482,47 +477,6 @@ MergeFileSplitRead::CreateMergeFunctionWrapper(const CoreOptions& core_options,
     return std::make_shared<ReducerMergeFunctionWrapper>(std::move(merge_function));
 }
 
-Result<std::unique_ptr<FileBatchReader>> MergeFileSplitRead::ApplyIndexAndDvReaderIfNeeded(
-    std::unique_ptr<FileBatchReader>&& file_reader, const std::shared_ptr<DataFileMeta>& file,
-    const std::shared_ptr<arrow::Schema>& data_schema,
-    const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
-    DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
-    // merge read does not use index
-    std::shared_ptr<DeletionVector> deletion_vector;
-    if (dv_factory) {
-        PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
-    }
-
-    const RoaringBitmap32* deletion = nullptr;
-    if (auto* bitmap_dv = dynamic_cast<BitmapDeletionVector*>(deletion_vector.get())) {
-        deletion = bitmap_dv->GetBitmap();
-    }
-
-    std::optional<RoaringBitmap32> actual_selection;
-    if (deletion) {
-        actual_selection = *deletion;
-        PAIMON_ASSIGN_OR_RAISE(uint64_t num_rows, file_reader->GetNumberOfRows());
-        actual_selection.value().Flip(0, num_rows);
-    }
-
-    ::ArrowSchema c_read_schema;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
-
-    PAIMON_RETURN_NOT_OK(file_reader->SetReadSchema(&c_read_schema, predicate, actual_selection));
-
-    if (!file_reader->SupportPreciseBitmapSelection() && actual_selection) {
-        return std::make_unique<ApplyDeletionVectorBatchReader>(std::move(file_reader),
-                                                                deletion_vector);
-    }
-    if (deletion_vector && !deletion && !deletion_vector->IsEmpty()) {
-        // TODO(xinyu.lxy): if deletion vector is bitmap64, use ApplyBitmapIndexBatchReader to
-        // filter result
-        return Status::NotImplemented("Only support BitmapDeletionVector");
-    }
-    return std::move(file_reader);
-}
-
 Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateMergeReader(
     const std::shared_ptr<DataSplitImpl>& data_split,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) {
@@ -867,19 +821,18 @@ Result<std::unique_ptr<KeyValueRecordReader>> MergeFileSplitRead::CreateReaderFo
     // no overlap in a run
     const auto& data_files = sorted_run.Files();
     PAIMON_ASSIGN_OR_RAISE(
-        std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
-        CreateRawFileReaders(partition, data_files, read_schema_, predicate, dv_factory,
-                             /*row_ranges=*/{}, data_file_path_factory,
-                             /*extra_format_options=*/{}));
+        std::vector<RawFileReaderWithMeta> raw_file_readers,
+        CreateRawFileReadersWithMeta(partition, data_files, read_schema_, predicate, dv_factory,
+                                     /*row_ranges=*/{}, data_file_path_factory,
+                                     /*extra_format_options=*/{}));
 
-    assert(data_files.size() == raw_file_readers.size());
     // KeyValueDataFileRecordReader converts arrow array from format reader to KeyValue objects
     std::vector<std::unique_ptr<KeyValueRecordReader>> file_record_readers;
-    file_record_readers.reserve(data_files.size());
-    for (size_t i = 0; i < data_files.size(); i++) {
+    file_record_readers.reserve(raw_file_readers.size());
+    for (auto& raw_file_reader : raw_file_readers) {
         file_record_readers.push_back(std::make_unique<KeyValueDataFileRecordReader>(
-            std::move(raw_file_readers[i]), key_schema_, value_schema_, data_files[i]->level,
-            pool_));
+            std::move(raw_file_reader.reader), key_schema_, value_schema_,
+            raw_file_reader.file->level, pool_));
     }
     return std::make_unique<ConcatKeyValueRecordReader>(std::move(file_record_readers));
 }

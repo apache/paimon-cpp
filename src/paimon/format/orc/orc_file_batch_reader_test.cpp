@@ -533,6 +533,20 @@ TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsPrimitiveMap) {
     ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{1, 2, 3}));
 }
 
+TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsCompatibleStringKinds) {
+    std::unique_ptr<::orc::Type> src_type = ::orc::Type::buildTypeFromString(
+        "struct<char_value:char(3),varchar_value:varchar(64),"
+        "nested:array<map<char(4),varchar(16)>>>");
+    std::unique_ptr<::orc::Type> target_type = ::orc::Type::buildTypeFromString(
+        "struct<char_value:string,varchar_value:string,nested:array<map<string,string>>>");
+    std::vector<uint64_t> target_column_ids;
+
+    ASSERT_OK(OrcFileBatchReader::CollectTargetColumnIds(src_type.get(), target_type.get(),
+                                                         &target_column_ids));
+    // char_value(1), varchar_value(2), nested-list(3), map(4), key(5), value(6)
+    ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{1, 2, 3, 4, 5, 6}));
+}
+
 TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsDeeplyNestedMap) {
     std::string schema =
         "struct<attributes:map<string,array<struct<score:double,tags:array<string>>>>>";

@@ -67,7 +67,6 @@
   "primaryKeys" : [ ],
   "options" : {
     "bucket" : "-1",
-    "manifest.format" : "avro",
     "file.format" : "parquet"
   },
   "timeMillis" : 1788853436194

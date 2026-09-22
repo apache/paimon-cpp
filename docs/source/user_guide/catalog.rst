@@ -162,10 +162,29 @@ already advanced the latest snapshot, the requested snapshot must be published
 under the table path. Recreating the writer restores offsets from the catalog's
 current snapshot.
 
-Both builders use the catalog's file system for manifests and data, preserving
-its object-store credentials. ``WithFileSystem`` overrides it; writers also
-allow ``WithFileSystemSchemeToIdentifierMap`` to override file-system selection.
-For format tables, use ``WriteContextBuilder(FormatTable)`` instead.
+Both builders use the file system of the table being written or committed for
+manifests and data, so a catalog that issues temporary credentials per table
+serves them through ``Catalog::GetTableFileSystem``. ``WithFileSystem`` overrides
+it; writers also allow ``WithFileSystemSchemeToIdentifierMap`` to override
+file-system selection. For format tables, use ``WriteContextBuilder(FormatTable)``
+instead.
+
+A file system passed to ``WithFileSystem`` is used exactly as it is: neither the
+built-in file systems nor the table's own credentials are involved, so a custom
+one has to authenticate its own accesses. Draw credentials that expire from a
+``CredentialProvider`` you build with ``CredentialProviderFactory``: hold the
+provider and call ``CredentialProvider::GetCredentials`` at each access, which
+returns credentials that are still valid and reloads them before they expire.
+
+.. code-block:: cpp
+
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::CredentialProvider> provider,
+                          paimon::CredentialProviderFactory::Get("my-token-service",
+                                                                 "oss://bucket/tbl", options));
+   // MyFileSystem merges provider->GetCredentials() over its own options per access.
+   auto my_fs = std::make_shared<MyFileSystem>(provider);
+   write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"))
+       .WithFileSystem(my_fs);
 
 The snapshot being committed carries a uuid generated on the client, and the
 commit names the snapshot it is based on by that snapshot's uuid, so the server
@@ -234,6 +253,43 @@ so its restored file references are visible to the expiration operation.
    expiration runs, is not found: do not expire a table with such a branch, and
    serialize branch creation and expiration through the upstream coordinator.
 
+Reading through the catalog
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+To read a native table with the per-table temporary credentials a catalog issues,
+pass the catalog and table identifier to ``ReadContextBuilder::WithCatalog`` or
+``ScanContextBuilder::WithCatalog``. This is a shorthand for asking the catalog
+for that table's file system and passing it in through ``WithFileSystem``:
+
+.. code-block:: cpp
+
+   // Readers and scanners share ownership of the catalog.
+   std::shared_ptr<paimon::Catalog> shared_catalog(std::move(catalog));
+
+   paimon::ScanContextBuilder scan_builder(table_path);
+   scan_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
+                          scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
+                          paimon::TableScan::Create(std::move(scan_context)));
+
+   paimon::ReadContextBuilder read_builder(table_path);
+   read_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
+                          read_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
+                          paimon::TableRead::Create(std::move(read_context)));
+
+When ``Finish()`` builds the context, it asks the catalog for the table's file
+system through ``Catalog::GetTableFileSystem`` and uses it as-is for the schema,
+snapshots, manifests and data under the table path, so it signs every access with
+the table's credentials and reloads them as they expire. An explicit
+``WithFileSystem`` takes precedence, so the catalog is not asked. A catalog that
+issues no per-table credentials returns its catalog-level file system, so this is
+also how you read with the catalog's own object-store credentials. For a format
+table, use ``ReadContextBuilder(FormatTable)`` or ``ScanContextBuilder(FormatTable)``
+instead; ``WithCatalog`` is rejected because the table already carries the file
+system it was loaded through.
+
 The C++ REST catalog covers the database, table, snapshot and commit operations
 of the ``Catalog`` API. The parts of the Java REST catalog that have no C++
 counterpart yet — altering a database or a table, views, functions, partitions,
@@ -296,3 +352,66 @@ identifier. The request body carries the table id but no table name and no
 branch, so the branch has to appear in the URL the caller sends that body to:
 the commit endpoint of ``tbl$branch_dev``, not the one of ``tbl``. A body sent
 to the bare table's URL publishes the branch's snapshot on the main branch.
+
+Authenticating with credentials of your own
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Credentials that a catalog does not issue — from a token service of your own, or
+from a store Paimon has no client for — reach a file system through a
+``CredentialProvider`` that you consult yourself. Implement it together with a
+``CredentialProviderFactory`` that builds it and register the factory with
+``REGISTER_PAIMON_FACTORY``. Build a provider with
+``CredentialProviderFactory::Get``, wrap it in a ``FileSystem`` of your own that
+calls ``CredentialProvider::GetCredentials`` as it signs each access, and pass
+that file system in through ``Catalog::Create`` or a builder's ``WithFileSystem``.
+A file system passed this way is used as-is, so the credentials are reloaded as
+they expire without it being rebuilt.
+
+The built-in file systems — ``oss``, ``s3``, ``local``, ``jindo`` — do not consult
+a provider: they sign with the static credentials of their own options. Bring a
+file system of your own when the credentials expire.
+
+.. code-block:: cpp
+
+   class MyCredentialProvider : public paimon::CredentialProvider {
+    public:
+       // Called as each access is signed; reload the credentials before they expire.
+       paimon::Result<std::map<std::string, std::string>> GetCredentials() const override {
+           return std::map<std::string, std::string>{
+               {"fs.oss.accessKeyId", ...}, {"fs.oss.accessKeySecret", ...},
+               {"fs.oss.securityToken", ...}};
+       }
+   };
+
+   class MyCredentialProviderFactory : public paimon::CredentialProviderFactory {
+    public:
+       const char* Identifier() const override {
+           return "my-token-service";
+       }
+
+       paimon::Result<std::shared_ptr<paimon::CredentialProvider>> Create(
+           const std::string& path,
+           const std::map<std::string, std::string>& options) const override {
+           return std::make_shared<MyCredentialProvider>(path, options);
+       }
+   };
+
+   REGISTER_PAIMON_FACTORY(MyCredentialProviderFactory);
+
+The credentials are file-system options, e.g. ``fs.oss.securityToken``, and are
+merged over the options the file system was configured with, so a provider serves
+only what rotates and the endpoint and the rest stay in the options. The options
+the factory is called with are those of the accesses to authenticate, which is
+where an implementation reads its own configuration, such as the address of the
+token service, from.
+
+Merge the credentials into your file system's options with
+``CredentialProvider::MergeOptionsWithCredentials`` rather than by hand, so they are
+shaped the same way the built-in data token file system shapes them. The default
+overlays the credentials key by key over the base options, mirroring the Java
+client. A provider that knows the file system its credentials are for overrides
+``MergeOptionsWithCredentials`` to normalize option aliases or clear the stale
+bucket-scoped variants the fresh credentials replace.
+
+All factories share one identifier space, so an identifier a file system factory
+already takes — ``oss``, ``s3``, ``local``, ``jindo`` — would replace it; name the
+provider after where its credentials come from instead.

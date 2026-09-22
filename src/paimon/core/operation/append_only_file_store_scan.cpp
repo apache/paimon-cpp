@@ -18,31 +18,18 @@
 
 #include "paimon/core/operation/append_only_file_store_scan.h"
 
-#include <cassert>
 #include <cstdint>
 #include <exception>
-#include <map>
-#include <optional>
-#include <set>
-#include <string>
-#include <utility>
-#include <vector>
 
-#include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
-#include "paimon/common/types/data_field.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
-#include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
 #include "paimon/core/stats/simple_stats_evolutions.h"
-#include "paimon/core/utils/field_mapping.h"
-#include "paimon/file_index/file_index_result.h"
-#include "paimon/predicate/predicate_utils.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
 
@@ -130,35 +117,7 @@ Result<bool> AppendOnlyFileStoreScan::FilterByStats(const ManifestEntry& entry) 
             fmt::format("FilterByStats failed for file {}, with unknown error", meta->file_name));
     }
 
-    if (!core_options_.FileIndexReadEnabled()) {
-        return true;
-    }
-
-    return TestFileIndex(meta, evolution, data_schema);
-}
-
-Result<bool> AppendOnlyFileStoreScan::TestFileIndex(
-    const std::shared_ptr<DataFileMeta>& meta,
-    const std::shared_ptr<SimpleStatsEvolution>& evolution,
-    const std::shared_ptr<TableSchema>& data_schema) const {
-    std::shared_ptr<Predicate> data_predicate = predicates_;
-    if (data_schema->Id() != table_schema_->Id()) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<Predicate>> reconstruct_predicate,
-                               FieldMappingBuilder::ReconstructPredicateWithDataFields(
-                                   predicates_, evolution->GetFieldNameToTableField(),
-                                   evolution->GetFieldIdToDataField()));
-
-        if (reconstruct_predicate == std::nullopt) {
-            return true;
-        }
-        data_predicate = reconstruct_predicate.value();
-    }
-    assert(data_predicate);
-    auto data_arrow_schema = DataField::ConvertDataFieldsToArrowSchema(data_schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileIndexResult> index_result,
-        FileIndexEvaluator::Evaluate(data_arrow_schema, data_predicate, meta, pool_));
-    return index_result->IsRemain();
+    return TestFileIndex(predicates_, meta, evolution, data_schema);
 }
 
 }  // namespace paimon

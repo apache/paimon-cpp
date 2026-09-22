@@ -56,6 +56,8 @@ constexpr const char kFieldSource[] = "source";
 constexpr const char kFieldDestination[] = "destination";
 constexpr const char kFieldSuccess[] = "success";
 constexpr const char kFieldSnapshot[] = "snapshot";
+constexpr const char kFieldToken[] = "token";
+constexpr const char kFieldExpiresAtMillis[] = "expiresAtMillis";
 
 void AddOptionalStringMember(rapidjson::Value* obj, const char* key,
                              const std::optional<std::string>& value,
@@ -358,6 +360,24 @@ void GetTableResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
     schema_id_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, kFieldSchemaId);
     schema_json_ = DeserializeRawJsonMember(obj, kFieldSchema);
     audit_.ParseFrom(obj);
+}
+
+rapidjson::Value GetTableTokenResponse::ToJson(rapidjson::Document::AllocatorType* allocator) const
+    noexcept(false) {
+    rapidjson::Value obj(rapidjson::kObjectType);
+    obj.AddMember(rapidjson::StringRef(kFieldToken),
+                  RapidJsonUtil::SerializeValue(token_, allocator).Move(), *allocator);
+    obj.AddMember(rapidjson::StringRef(kFieldExpiresAtMillis),
+                  RapidJsonUtil::SerializeValue(expires_at_millis_, allocator).Move(), *allocator);
+    return obj;
+}
+
+void GetTableTokenResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
+    // A response without credentials must not be turned into a fall back to the catalog
+    // credentials, so "token" is required while an explicitly empty object is accepted.
+    token_ =
+        RapidJsonUtil::DeserializeKeyValue<std::map<std::string, std::string>>(obj, kFieldToken);
+    expires_at_millis_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, kFieldExpiresAtMillis, 0);
 }
 
 rapidjson::Value CreateTableRequest::ToJson(rapidjson::Document::AllocatorType* allocator) const

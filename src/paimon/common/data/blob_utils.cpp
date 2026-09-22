@@ -28,12 +28,12 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_defs.h"
-#include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/data/blob_descriptor.h"
 namespace arrow {
 class Array;
 }

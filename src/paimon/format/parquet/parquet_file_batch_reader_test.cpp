@@ -431,6 +431,37 @@ TEST_F(ParquetFileBatchReaderTest, TestCachedFooterKeepsAllocatorAliveUntilEvict
     ASSERT_TRUE(cached_pool.expired());
 }
 
+TEST_F(ParquetFileBatchReaderTest, TestOffsetIndexCacheOption) {
+    WriteArray(file_path_, struct_array_, schema_, 1, false, 3, 1);
+    auto projection = arrow::schema({schema_->GetFieldByName("f4")});
+    auto predicate = PredicateBuilder::Equal(0, "f4", FieldType::INT, Literal(300002));
+    for (const std::string setting : {"", "false", "true", "invalid"}) {
+        SCOPED_TRACE(setting);
+        std::map<std::string, std::string> options;
+        if (!setting.empty()) {
+            options[PARQUET_READ_ENABLE_OFFSET_INDEX_CACHE] = setting;
+        }
+        ParquetReaderBuilder builder(options, 10);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        if (setting == "invalid") {
+            ASSERT_NOK(builder.Build(input));
+            continue;
+        }
+        ASSERT_OK_AND_ASSIGN(auto reader, builder.Build(input));
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*projection, &c_schema).ok());
+        ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, std::nullopt));
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             paimon::test::ReadResultCollector::CollectResult(reader.get()));
+        ASSERT_EQ(1, result->length());
+        auto rows = std::dynamic_pointer_cast<arrow::StructArray>(result->chunk(0));
+        ASSERT_TRUE(rows);
+        auto values = std::dynamic_pointer_cast<arrow::Int32Array>(rows->field(0));
+        ASSERT_TRUE(values);
+        ASSERT_EQ(300002, values->Value(0));
+    }
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestPointReadReusesFooterAndPageIndexes) {
     WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/1,
                /*enable_dictionary=*/false, /*max_row_group_length=*/3,

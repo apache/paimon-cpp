@@ -19,7 +19,8 @@
 
 #include "paimon/common/global_index/complete_index_score_batch_reader.h"
 
-#include <cstddef>
+#include <cassert>
+#include <utility>
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
@@ -28,6 +29,7 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/scalar.h"
+#include "fmt/format.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
@@ -37,9 +39,12 @@
 #include "paimon/status.h"
 namespace paimon {
 CompleteIndexScoreBatchReader::CompleteIndexScoreBatchReader(
-    std::unique_ptr<BatchReader>&& reader, const std::vector<float>& scores,
-    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
-    : arrow_pool_(arrow_pool), reader_(std::move(reader)), scores_(scores) {}
+    std::unique_ptr<BatchReader>&& reader, std::unordered_map<int64_t, float>&& scores_by_row_id,
+    bool remove_row_id, const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool),
+      reader_(std::move(reader)),
+      scores_by_row_id_(std::move(scores_by_row_id)),
+      remove_row_id_(remove_row_id) {}
 
 Result<BatchReader::ReadBatch> CompleteIndexScoreBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
@@ -50,24 +55,25 @@ Result<BatchReader::ReadBatch> CompleteIndexScoreBatchReader::NextBatch() {
     return batch;
 }
 
-void CompleteIndexScoreBatchReader::UpdateScoreFieldIndex(const arrow::StructType* struct_type) {
-    if (index_score_field_idx_ != -1) {
-        return;
+Status CompleteIndexScoreBatchReader::InitFieldIndices(const arrow::StructType* struct_type) {
+    int32_t index_score_field_idx = struct_type->GetFieldIndex(SpecialFields::IndexScore().Name());
+    if (index_score_field_idx < 0) {
+        return Status::Invalid("Missing _INDEX_SCORE in CompleteIndexScoreBatchReader");
     }
-    index_score_field_idx_ = struct_type->GetFieldIndex(SpecialFields::IndexScore().Name());
-    field_names_with_score_.reserve(struct_type->num_fields());
-    for (const auto& field : struct_type->fields()) {
-        field_names_with_score_.push_back(field->name());
+    int32_t row_id_field_idx = struct_type->GetFieldIndex(SpecialFields::RowId().Name());
+    if (row_id_field_idx < 0 ||
+        struct_type->field(row_id_field_idx)->type()->id() != arrow::Type::INT64) {
+        return Status::Invalid("Global index score lookup requires an int64 _ROW_ID field");
     }
+    index_score_field_idx_ = index_score_field_idx;
+    row_id_field_idx_ = row_id_field_idx;
+    return Status::OK();
 }
+
 Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatchWithBitmap() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            reader_->NextBatchWithBitmap());
     if (BatchReader::IsEofBatch(batch_with_bitmap)) {
-        return batch_with_bitmap;
-    }
-    if (scores_.empty()) {
-        // Indicates score field all null.
         return batch_with_bitmap;
     }
 
@@ -80,7 +86,10 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
     }
     auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
     auto struct_type = struct_array->struct_type();
-    UpdateScoreFieldIndex(struct_type);
+    if (row_id_field_idx_ == -1) {
+        PAIMON_RETURN_NOT_OK(InitFieldIndices(struct_type));
+    }
+    auto row_ids = checked_pointer_cast<arrow::Int64Array>(struct_array->field(row_id_field_idx_));
 
     // prepare index score array
     std::unique_ptr<arrow::ArrayBuilder> index_score_builder;
@@ -95,7 +104,14 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
     bool all_not_null = (struct_array->length() == bitmap.Cardinality());
     for (int64_t i = 0; i < struct_array->length(); i++) {
         if (all_not_null || bitmap.Contains(i)) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Append(scores_[score_cursor_++]));
+            assert(!row_ids->IsNull(i));
+            int64_t row_id = row_ids->Value(i);
+            auto iter = scores_by_row_id_.find(row_id);
+            if (iter == scores_by_row_id_.end()) {
+                return Status::Invalid(
+                    fmt::format("Missing global index score for row id {}", row_id));
+            }
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Append(iter->second));
         } else {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->AppendNull());
         }
@@ -105,8 +121,13 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
     // update index score array to struct array
     arrow::ArrayVector array_vec = struct_array->fields();
     array_vec[index_score_field_idx_] = index_score_array;
+    arrow::FieldVector fields = struct_type->fields();
+    if (remove_row_id_) {
+        array_vec.erase(array_vec.begin() + row_id_field_idx_);
+        fields.erase(fields.begin() + row_id_field_idx_);
+    }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array_with_score,
-                                      arrow::StructArray::Make(array_vec, field_names_with_score_));
+                                      arrow::StructArray::Make(array_vec, fields));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*array_with_score, c_array.get(), c_schema.get()));
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));

@@ -511,7 +511,9 @@ struct PAIMON_EXPORT Options {
     static const char MAP_SHARED_SHREDDING_COLUMN_PLACEMENT_POLICY[];
 
     /// "variant.shreddingSchema" - The Variant shredding schema for writing: a ROW type JSON
-    /// whose fields map variant column names to their shredding types. No default value.
+    /// whose fields map variant column names to their shredding types. All ROW fields, including
+    /// nested fields, must all specify 'id' or all omit it. Omitted IDs are assigned in preorder
+    /// starting at 0. No default value.
     static const char VARIANT_SHREDDING_SCHEMA[];
     /// "parquet.variant.shreddingSchema" - Fallback key of "variant.shreddingSchema".
     static const char PARQUET_VARIANT_SHREDDING_SCHEMA[];

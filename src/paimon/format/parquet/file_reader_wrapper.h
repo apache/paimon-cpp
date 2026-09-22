@@ -60,7 +60,7 @@ class FileReaderWrapper {
 
     static Result<std::unique_ptr<FileReaderWrapper>> Create(
         std::unique_ptr<::parquet::arrow::FileReader>&& reader, int64_t batch_size,
-        std::shared_ptr<arrow::MemoryPool> pool);
+        bool enable_offset_index_cache, std::shared_ptr<arrow::MemoryPool> pool);
 
     /// Seek to the specified row number.
     /// @param row_number The row to seek to (must be at a row group boundary).
@@ -227,6 +227,8 @@ class FileReaderWrapper {
 
     // Track pre-buffered ranges so we can wait on destruction
     std::vector<::arrow::io::ReadRange> prebuffered_ranges_;
+
+    bool enable_offset_index_cache_ = false;
 
     // Arrow caches the file-level PageIndexReader, but RowGroup() creates a new reader each time.
     // Keep one reader per row group so its page-index buffers are shared by all read stages.

@@ -66,6 +66,13 @@ TEST(SpecialFieldsTest, TestKeyValueSpecialFieldCount) {
     ASSERT_EQ(SpecialFields::KEY_VALUE_SPECIAL_FIELD_COUNT, 2);
 }
 
+TEST(SpecialFieldsTest, TestGetArrayElementFieldId) {
+    ASSERT_EQ(SpecialFields::STRUCTURED_TYPE_FIELD_ID_BASE, 536870911);
+    ASSERT_EQ(SpecialFields::STRUCTURED_TYPE_FIELD_DEPTH_LIMIT, 1024);
+    ASSERT_EQ(SpecialFields::GetArrayElementFieldId(1, 1), 536871936);
+    ASSERT_EQ(SpecialFields::GetArrayElementFieldId(2, 2), 536872961);
+}
+
 TEST(SpecialFieldsTest, TestIsSystemField) {
     ASSERT_TRUE(SpecialFields::IsSystemField("_SEQUENCE_NUMBER"));
     ASSERT_TRUE(SpecialFields::IsSystemField("_VALUE_KIND"));

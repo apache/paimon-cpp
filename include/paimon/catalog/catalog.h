@@ -64,10 +64,16 @@ class PAIMON_EXPORT Catalog {
     /// @param file_system Specifies the file system for file operations.
     ///                    If not set, use default file system (configured in
     ///                    `Options::FILE_SYSTEM`)
+    /// @param fs_scheme_to_identifier_map Maps a URI scheme (like "oss") to the registered file
+    ///                    system identifier that serves it, so a catalog that resolves several
+    ///                    schemes, including the file systems it builds from per-table data
+    ///                    tokens, keeps routing each scheme to its backend. Ignored when
+    ///                    `file_system` is supplied, which serves every scheme itself.
     /// @return A result containing a unique pointer to a `Catalog` instance, or an error status.
     static Result<std::unique_ptr<Catalog>> Create(
         const std::string& root_path, const std::map<std::string, std::string>& options,
-        const std::shared_ptr<FileSystem>& file_system = nullptr);
+        const std::shared_ptr<FileSystem>& file_system = nullptr,
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
 
     virtual ~Catalog() = default;
 
@@ -186,6 +192,24 @@ class PAIMON_EXPORT Catalog {
     ///
     /// @return A shared pointer to the file system instance.
     virtual std::shared_ptr<FileSystem> GetFileSystem() const = 0;
+
+    /// Returns the file system used to access the data of a specified table.
+    ///
+    /// @note A catalog that hands out per-table temporary credentials returns a file
+    ///       system that refreshes them, so the returned instance must be used for the
+    ///       table it was requested for. Pass it to `ReadContextBuilder::WithFileSystem`,
+    ///       `ScanContextBuilder::WithFileSystem` or `WriteContextBuilder::WithFileSystem`,
+    ///       or let a builder request it for you through `ReadContextBuilder::WithCatalog`,
+    ///       `ScanContextBuilder::WithCatalog`, `WriteContextBuilder::WithCatalog` or
+    ///       `CommitContextBuilder::WithCatalog`.
+    ///
+    /// @param identifier The identifier (database and table name) of the table.
+    /// @return A shared pointer to the file system instance; the catalog-level file system
+    ///         by default.
+    virtual Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
+        const Identifier& identifier) const {
+        return GetFileSystem();
+    }
 
     /// Returns the catalog-level options that were passed during catalog creation.
     ///

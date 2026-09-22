@@ -41,11 +41,9 @@ class ManifestList;
 class MemoryPool;
 class ScanFilter;
 class SchemaManager;
-class SimpleStatsEvolution;
 class SimpleStatsEvolutions;
 class SnapshotManager;
 class TableSchema;
-struct DataFileMeta;
 
 /// `FileStoreScan` for `AppendOnlyFileStore`.
 class AppendOnlyFileStoreScan : public FileStoreScan {
@@ -64,10 +62,6 @@ class AppendOnlyFileStoreScan : public FileStoreScan {
     Result<bool> FilterByStats(const ManifestEntry& entry) const override;
 
  private:
-    Result<bool> TestFileIndex(const std::shared_ptr<DataFileMeta>& meta,
-                               const std::shared_ptr<SimpleStatsEvolution>& evolution,
-                               const std::shared_ptr<TableSchema>& data_schema) const;
-
     AppendOnlyFileStoreScan(const std::shared_ptr<SnapshotManager>& snapshot_manager,
                             const std::shared_ptr<SchemaManager>& schema_manager,
                             const std::shared_ptr<ManifestList>& manifest_list,
