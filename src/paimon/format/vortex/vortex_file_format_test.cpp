@@ -205,6 +205,69 @@ TEST_F(VortexFileFormatTest, WriteThenReadSupportedTypes) {
     AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3, 5});
 }
 
+// Regression: a list<utf8> column round-trips through Vortex's Utf8View export. The leaf strings
+// include a null element, an empty list, a null list, an empty string and a string long enough to
+// exceed the 12-byte StringView inline threshold (exercising the non-inline view buffer path).
+TEST_F(VortexFileFormatTest, WriteThenReadListOfString) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "list-of-string.vortex");
+    arrow::FieldVector fields = {arrow::field("tags", arrow::list(arrow::utf8()))};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+          [["one","two",null]],
+          [[]],
+          [null],
+          [["","a-longer-string-that-exceeds-the-inline-view-threshold","x"]],
+          [[null,null]]
+        ])")
+            .ValueOrDie();
+
+    ASSERT_OK(WriteFile(path, schema, expected, /*batch_size=*/2));
+    AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3, 5});
+}
+
+// Regression for the FIXED_SIZE_LIST branch of NormalizeViewArray: without recursion into the
+// elements, a fixed_size_list<utf8> column comes back as fixed_size_list<utf8view> (Vortex
+// hardcodes Utf8 -> Utf8View), mismatching the normalized read schema and silently corrupting the
+// data.
+TEST_F(VortexFileFormatTest, WriteThenReadFixedSizeListOfString) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "fsl-of-string.vortex");
+    arrow::FieldVector fields = {arrow::field("triples", arrow::fixed_size_list(arrow::utf8(), 3))};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+          [["a","bb","ccc"]],
+          [null],
+          [["","a-longer-string-that-exceeds-the-inline-view-threshold","z"]],
+          [[null,"q",null]]
+        ])")
+            .ValueOrDie();
+
+    ASSERT_OK(WriteFile(path, schema, expected, /*batch_size=*/2));
+    AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3, 4});
+}
+
+// Regression for a struct nested inside a list: the LIST branch recurses into the struct, whose
+// utf8 leaf is a view; the combination must normalize back to list<struct<utf8, int32>>.
+TEST_F(VortexFileFormatTest, WriteThenReadListOfStruct) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "list-of-struct.vortex");
+    std::shared_ptr<arrow::DataType> item =
+        arrow::struct_({arrow::field("name", arrow::utf8()), arrow::field("id", arrow::int32())});
+    arrow::FieldVector fields = {arrow::field("items", arrow::list(item))};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+          [[{"name":"a","id":1},{"name":null,"id":2}]],
+          [[]],
+          [null],
+          [[{"name":"a-longer-string-that-exceeds-the-inline-view-threshold","id":null}]]
+        ])")
+            .ValueOrDie();
+
+    ASSERT_OK(WriteFile(path, schema, expected, /*batch_size=*/2));
+    AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3});
+}
+
 TEST_F(VortexFileFormatTest, ExtractStatisticsReportsRowCount) {
     std::string path = PathUtil::JoinPath(directory_->Str(), "statistics.vortex");
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),

@@ -149,6 +149,30 @@ Result<std::shared_ptr<arrow::Array>> NormalizeViewArray(const std::shared_ptr<a
                 arrow::list(array->type()->field(0)->WithType(values->type())), list.length(),
                 list.value_offsets(), values, list.null_bitmap(), list.null_count(), list.offset());
         }
+        case arrow::Type::LARGE_LIST: {
+            const auto& list = checked_cast<const arrow::LargeListArray&>(*array);
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> values,
+                                   NormalizeViewArray(list.values(), pool));
+            if (values.get() == list.values().get()) {
+                return array;
+            }
+            return std::make_shared<arrow::LargeListArray>(
+                arrow::large_list(array->type()->field(0)->WithType(values->type())), list.length(),
+                list.value_offsets(), values, list.null_bitmap(), list.null_count(), list.offset());
+        }
+        case arrow::Type::FIXED_SIZE_LIST: {
+            const auto& list = checked_cast<const arrow::FixedSizeListArray&>(*array);
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> values,
+                                   NormalizeViewArray(list.values(), pool));
+            if (values.get() == list.values().get()) {
+                return array;
+            }
+            const auto& fsl_type = checked_cast<const arrow::FixedSizeListType&>(*array->type());
+            return std::make_shared<arrow::FixedSizeListArray>(
+                arrow::fixed_size_list(array->type()->field(0)->WithType(values->type()),
+                                       fsl_type.list_size()),
+                list.length(), values, list.null_bitmap(), list.null_count(), list.offset());
+        }
         default:
             return array;
     }
