@@ -161,7 +161,8 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
     auto sorted_reader = std::make_unique<SortMergeReaderWithMinHeap>(
         std::move(readers), comparator, sequence_comparator,
         /*merge_function_wrapper=*/nullptr);
-    auto file_manager = std::make_shared<GlobalIndexFileManager>(fs_, index_path_factory_);
+    auto file_manager = std::make_shared<GlobalIndexFileManager>(
+        fs_, index_path_factory_, /*checkpoint_path_factory=*/nullptr);
     auto tracking_writer = std::make_shared<TrackingGlobalIndexFileWriter>(file_manager);
     Result<std::shared_ptr<IndexFileMeta>> result = PkSortedIndexFile::BuildFromSortedReader(
         field_, definition_.IndexType(), definition_.Options(), data_level, source_metas,
