@@ -21,25 +21,25 @@
 #include <cstring>
 #include <numeric>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 #include "arrow/c/bridge.h"
-#include "arrow/c/helpers.h"
+#include "glog/logging.h"
 #include "lumina/api/Dataset.h"
 #include "lumina/api/LuminaBuilder.h"
 #include "lumina/api/LuminaSearcher.h"
 #include "lumina/api/OptionsNormalize.h"
 #include "lumina/core/Constants.h"
-#include "lumina/core/Status.h"
-#include "lumina/core/Types.h"
 #include "lumina/extensions/experimental/BuildCombinedExtensionV0.h"
 #include "paimon/common/global_index/global_index_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
-#include "paimon/common/utils/string_utils.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
+#include "paimon/global_index/io/global_index_checkpoint_file_manager.h"
+#include "paimon/global_index/lumina/lumina_checkpoint_manager.h"
 #include "paimon/global_index/lumina/lumina_file_reader.h"
 #include "paimon/global_index/lumina/lumina_file_writer.h"
 #include "paimon/global_index/lumina/lumina_utils.h"
@@ -360,6 +360,11 @@ Result<TagValues> LiteralsToTagValues(const std::vector<Literal>& literals) {
     }
 }
 
+bool IsCheckpointEnabled(const std::map<std::string, std::string>& lumina_options) {
+    return lumina_options.count(std::string(::lumina::core::kExtensionCkptThreshold)) != 0 ||
+           lumina_options.count(std::string(::lumina::core::kExtensionCkptCount)) != 0;
+}
+
 }  // namespace
 
 Result<std::vector<TagDimensionData>> LuminaIndexWriter::ExtractTagDataForSegment(
@@ -582,10 +587,19 @@ Result<std::shared_ptr<GlobalIndexWriter>> LuminaGlobalIndex::CreateWriter(
         ::lumina::api::BuilderOptions builder_options,
         ::lumina::api::NormalizeBuilderOptions(std::unordered_map<std::string, std::string>(
             lumina_options.begin(), lumina_options.end())));
+    std::shared_ptr<GlobalIndexCheckpointFileManager> checkpoint_file_manager;
+    if (IsCheckpointEnabled(lumina_options)) {
+        checkpoint_file_manager =
+            std::dynamic_pointer_cast<GlobalIndexCheckpointFileManager>(file_writer);
+        if (!checkpoint_file_manager || !checkpoint_file_manager->SupportsCheckpoint()) {
+            return Status::Invalid("Lumina checkpoint requires a checkpoint-capable file writer");
+        }
+    }
     auto lumina_pool = std::make_shared<LuminaMemoryPool>(pool);
     return std::make_shared<LuminaIndexWriter>(
         field_name, arrow_type, dimension, file_writer, std::move(builder_options),
-        ::lumina::api::IOOptions(), lumina_options, std::move(tag_fields), lumina_pool);
+        ::lumina::api::IOOptions(), lumina_options, std::move(tag_fields), checkpoint_file_manager,
+        lumina_pool);
 }
 
 Result<LuminaIndexReader::IndexInfo> LuminaIndexReader::GetIndexInfo(
@@ -804,12 +818,25 @@ class LuminaDatasetWithTag : public ::lumina::extensions::experimental::DatasetW
     size_t cursor_ = 0;
 };
 
+struct LuminaBuildContext {
+    explicit LuminaBuildContext(::lumina::api::LuminaBuilder&& value) : builder(std::move(value)) {}
+
+    ::lumina::api::LuminaBuilder builder;
+    std::unique_ptr<::lumina::extensions::experimental::BuildWithCheckpointExtension>
+        checkpoint_extension;
+    std::unique_ptr<::lumina::extensions::experimental::BuildWithTagExtension> tag_extension;
+    std::unique_ptr<::lumina::extensions::experimental::BuildWithCkptAndTagExtension>
+        checkpoint_tag_extension;
+};
+
 LuminaIndexWriter::LuminaIndexWriter(
     const std::string& field_name, const std::shared_ptr<arrow::DataType>& arrow_type,
     uint32_t dimension, const std::shared_ptr<GlobalIndexFileWriter>& file_manager,
     ::lumina::api::BuilderOptions&& builder_options, ::lumina::api::IOOptions&& io_options,
     const std::map<std::string, std::string>& lumina_options,
-    std::vector<LuminaTagField>&& tag_fields, const std::shared_ptr<LuminaMemoryPool>& pool)
+    std::vector<LuminaTagField>&& tag_fields,
+    const std::shared_ptr<GlobalIndexCheckpointFileManager>& checkpoint_file_manager,
+    const std::shared_ptr<LuminaMemoryPool>& pool)
     : pool_(pool),
       field_name_(field_name),
       arrow_type_(arrow_type),
@@ -818,7 +845,8 @@ LuminaIndexWriter::LuminaIndexWriter(
       builder_options_(std::move(builder_options)),
       io_options_(std::move(io_options)),
       lumina_options_(lumina_options),
-      tag_fields_(std::move(tag_fields)) {}
+      tag_fields_(std::move(tag_fields)),
+      checkpoint_file_manager_(checkpoint_file_manager) {}
 
 Status LuminaIndexWriter::AddBatch(::ArrowArray* arrow_array,
                                    std::vector<int64_t>&& relative_row_ids) {
@@ -846,7 +874,6 @@ Status LuminaIndexWriter::AddBatch(::ArrowArray* arrow_array,
     for (int64_t i = 0; i <= field_length; i++) {
         bool is_null = (i < field_length) && list_field_array->IsNull(i);
         bool is_end = (i == field_length);
-
         if (!is_null && !is_end && segment_start == -1) {
             segment_start = i;
         }
@@ -896,28 +923,85 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
     if (indexed_count_ == 0) {
         return std::vector<GlobalIndexIOMeta>();
     }
-    ::lumina::core::MemoryResourceConfig memory_resource(pool_.get());
-    PAIMON_ASSIGN_OR_RAISE_FROM_LUMINA(
-        ::lumina::api::LuminaBuilder builder,
-        ::lumina::api::LuminaBuilder::Create(builder_options_, memory_resource));
-    // pretrain
-    LuminaDataset dataset1(indexed_count_, dimension_, array_vec_, array_start_ids_);
-    PAIMON_RETURN_NOT_OK_FROM_LUMINA(builder.PretrainFrom(dataset1));
 
-    // insert data
-    if (tag_fields_.empty()) {
-        LuminaDataset dataset2(indexed_count_, dimension_, array_vec_, array_start_ids_);
-        std::vector<std::shared_ptr<arrow::FloatArray>>().swap(array_vec_);
-        PAIMON_RETURN_NOT_OK_FROM_LUMINA(builder.InsertFrom(dataset2));
-    } else {
-        ::lumina::extensions::experimental::BuildWithTagExtension tag_extension;
-        PAIMON_RETURN_NOT_OK_FROM_LUMINA(builder.Attach(tag_extension));
-        LuminaDatasetWithTag dataset2(indexed_count_, dimension_, array_vec_, array_start_ids_,
-                                      tag_data_vec_);
-        std::vector<std::shared_ptr<arrow::FloatArray>>().swap(array_vec_);
-        std::vector<std::vector<TagDimensionData>>().swap(tag_data_vec_);
-        PAIMON_RETURN_NOT_OK_FROM_LUMINA(tag_extension.InsertFromWithTag(dataset2));
+    bool had_checkpoint = false;
+    if (checkpoint_file_manager_) {
+        PAIMON_ASSIGN_OR_RAISE(had_checkpoint, checkpoint_file_manager_->CheckpointExists());
     }
+
+    auto create_build_context = [&]() -> Result<std::unique_ptr<LuminaBuildContext>> {
+        ::lumina::core::MemoryResourceConfig memory_resource(pool_.get());
+        PAIMON_ASSIGN_OR_RAISE_FROM_LUMINA(
+            ::lumina::api::LuminaBuilder builder,
+            ::lumina::api::LuminaBuilder::Create(builder_options_, memory_resource));
+        auto context = std::make_unique<LuminaBuildContext>(std::move(builder));
+        if (checkpoint_file_manager_) {
+            auto checkpoint_manager =
+                std::make_unique<LuminaCheckpointManager>(checkpoint_file_manager_);
+            auto attach_checkpoint = [&](auto* extension) -> Status {
+                PAIMON_RETURN_NOT_OK_FROM_LUMINA(context->builder.Attach(*extension));
+                PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                    extension->LoadCkptManager(std::move(checkpoint_manager)));
+                return Status::OK();
+            };
+            Status checkpoint_status = Status::OK();
+            if (tag_fields_.empty()) {
+                context->checkpoint_extension = std::make_unique<
+                    ::lumina::extensions::experimental::BuildWithCheckpointExtension>();
+                checkpoint_status = attach_checkpoint(context->checkpoint_extension.get());
+            } else {
+                context->checkpoint_tag_extension = std::make_unique<
+                    ::lumina::extensions::experimental::BuildWithCkptAndTagExtension>();
+                checkpoint_status = attach_checkpoint(context->checkpoint_tag_extension.get());
+            }
+            if (!checkpoint_status.ok()) {
+                return checkpoint_status;
+            }
+        } else if (!tag_fields_.empty()) {
+            context->tag_extension =
+                std::make_unique<::lumina::extensions::experimental::BuildWithTagExtension>();
+            PAIMON_RETURN_NOT_OK_FROM_LUMINA(context->builder.Attach(*context->tag_extension));
+        }
+        return context;
+    };
+
+    auto build_index = [&]() -> Result<std::unique_ptr<LuminaBuildContext>> {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LuminaBuildContext> context, create_build_context());
+        // pretrain
+        LuminaDataset pretrain_dataset(indexed_count_, dimension_, array_vec_, array_start_ids_);
+        PAIMON_RETURN_NOT_OK_FROM_LUMINA(context->builder.PretrainFrom(pretrain_dataset));
+        // insert data
+        if (tag_fields_.empty()) {
+            LuminaDataset insert_dataset(indexed_count_, dimension_, array_vec_, array_start_ids_);
+            PAIMON_RETURN_NOT_OK_FROM_LUMINA(context->builder.InsertFrom(insert_dataset));
+        } else {
+            LuminaDatasetWithTag insert_dataset(indexed_count_, dimension_, array_vec_,
+                                                array_start_ids_, tag_data_vec_);
+            if (context->checkpoint_tag_extension) {
+                PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                    context->checkpoint_tag_extension->InsertFromWithTag(insert_dataset));
+            } else {
+                PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                    context->tag_extension->InsertFromWithTag(insert_dataset));
+            }
+        }
+        return context;
+    };
+
+    Result<std::unique_ptr<LuminaBuildContext>> build_result = build_index();
+    if (!build_result.ok() && had_checkpoint) {
+        LOG(WARNING) << "Failed to build Lumina index with checkpoint, discard it and rebuild "
+                        "from scratch: "
+                     << build_result.status().ToString();
+        PAIMON_RETURN_NOT_OK(checkpoint_file_manager_->DeleteCheckpoint());
+        build_result = build_index();
+    }
+    if (!build_result.ok()) {
+        return build_result.status();
+    }
+    std::unique_ptr<LuminaBuildContext> build_context = std::move(build_result).value();
+    std::vector<std::shared_ptr<arrow::FloatArray>>().swap(array_vec_);
+    std::vector<std::vector<TagDimensionData>>().swap(tag_data_vec_);
 
     // dump index
     PAIMON_ASSIGN_OR_RAISE(std::string index_file_name,
@@ -925,7 +1009,9 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out,
                            file_manager_->NewOutputStream(index_file_name));
     auto file_writer = std::make_unique<LuminaFileWriter>(out);
-    PAIMON_RETURN_NOT_OK_FROM_LUMINA(builder.Dump(std::move(file_writer), io_options_));
+    PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+        build_context->builder.Dump(std::move(file_writer), io_options_));
+
     // prepare GlobalIndexIOMeta
     PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_manager_->GetFileSize(index_file_name));
     std::string options_json;
@@ -933,12 +1019,14 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
     auto meta_bytes = std::make_shared<Bytes>(options_json, pool_->GetPaimonPool().get());
     GlobalIndexIOMeta meta(file_manager_->ToPath(index_file_name), file_size,
                            /*metadata=*/meta_bytes);
+    if (checkpoint_file_manager_) {
+        PAIMON_RETURN_NOT_OK(checkpoint_file_manager_->DeleteCheckpoint());
+    }
     return std::vector<GlobalIndexIOMeta>({meta});
 }
 
 LuminaIndexReader::LuminaIndexReader(
-    const LuminaIndexReader::IndexInfo& index_info,
-    std::unique_ptr<::lumina::api::LuminaSearcher>&& searcher,
+    const IndexInfo& index_info, std::unique_ptr<::lumina::api::LuminaSearcher>&& searcher,
     std::unique_ptr<::lumina::extensions::SearchWithFilterExtension>&& searcher_with_filter,
     std::unique_ptr<::lumina::extensions::experimental::SearchWithTagExtension>&& searcher_with_tag,
     const std::shared_ptr<LuminaMemoryPool>& pool)

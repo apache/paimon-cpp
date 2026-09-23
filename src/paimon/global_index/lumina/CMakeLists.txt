@@ -15,7 +15,10 @@
 # limitations under the License.
 
 if(PAIMON_ENABLE_LUMINA)
-    set(PAIMON_LUMINA_INDEX lumina_global_index.cpp lumina_global_index_factory.cpp)
+    set(PAIMON_LUMINA_INDEX
+        lumina_checkpoint_manager.cpp
+        lumina_global_index.cpp
+        lumina_global_index_factory.cpp)
 
     add_paimon_lib(paimon_lumina_index
                    SOURCES

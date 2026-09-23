@@ -39,6 +39,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/global_index/global_indexer_factory.h"
@@ -57,7 +58,7 @@ Result<std::unique_ptr<GlobalIndexer>> CreateGlobalIndexer(const std::string& in
     return indexer;
 }
 
-Result<std::shared_ptr<GlobalIndexFileManager>> CreateGlobalIndexFileManager(
+Result<std::shared_ptr<FileStorePathFactory>> CreateFileStorePathFactory(
     const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
     const CoreOptions& core_options, const std::shared_ptr<MemoryPool>& pool) {
     auto all_arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
@@ -65,18 +66,11 @@ Result<std::shared_ptr<GlobalIndexFileManager>> CreateGlobalIndexFileManager(
                            core_options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
                            core_options.CreateGlobalIndexExternalPath());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(
-            table_path, all_arrow_schema, table_schema->PartitionKeys(),
-            core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
-            core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            pool));
-    std::shared_ptr<IndexPathFactory> index_path_factory =
-        path_factory->CreateGlobalIndexFileFactory();
-    return std::make_shared<GlobalIndexFileManager>(core_options.GetFileSystem(),
-                                                    index_path_factory);
+    return FileStorePathFactory::Create(
+        table_path, all_arrow_schema, table_schema->PartitionKeys(),
+        core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
+        core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(), external_paths,
+        global_index_external_path, core_options.IndexFileInDataFileDir(), pool);
 }
 
 Result<std::shared_ptr<GlobalIndexWriter>> CreateGlobalIndexWriter(
@@ -344,7 +338,7 @@ Result<std::shared_ptr<CommitMessage>> ToCommitMessage(
 Result<std::shared_ptr<CommitMessage>> GlobalIndexWriteTask::WriteIndex(
     const std::string& table_path, const std::string& field_name, const std::string& index_type,
     const std::shared_ptr<IndexedSplit>& indexed_split,
-    const std::map<std::string, std::string>& options,
+    const std::map<std::string, std::string>& options, const std::optional<std::string>& task_id,
     const std::shared_ptr<MemoryPool>& memory_pool,
     const std::shared_ptr<FileSystem>& file_system) {
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(indexed_split->GetDataSplit());
@@ -387,12 +381,20 @@ Result<std::shared_ptr<CommitMessage>> GlobalIndexWriteTask::WriteIndex(
     std::vector<std::string> writer_field_names = BuildWriterFieldNames(field_name, extra_fields);
     std::vector<std::string> read_field_names = BuildReadFieldNames(field_name, extra_fields);
 
-    // create index file manager
+    // Checkpoint capability is optional; only plugins enabling checkpoints will use it.
     PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<GlobalIndexFileManager> index_file_manager,
-        CreateGlobalIndexFileManager(table_path, table_schema, core_options, pool));
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        CreateFileStorePathFactory(table_path, table_schema, core_options, pool));
+    std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory;
+    if (task_id && !task_id->empty() && indexer->SupportsCheckpoint()) {
+        PAIMON_ASSIGN_OR_RAISE(checkpoint_path_factory,
+                               path_factory->CreateGlobalIndexCheckpointPathFactory(
+                                   index_type, field_name, range, task_id.value()));
+    }
+    auto index_file_manager = std::make_shared<GlobalIndexFileManager>(
+        core_options.GetFileSystem(), path_factory->CreateGlobalIndexFileFactory(),
+        std::move(checkpoint_path_factory));
 
-    // create batch reader
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<BatchReader> batch_reader,
         CreateBatchReader(table_path, read_field_names, indexed_split, core_options, pool));

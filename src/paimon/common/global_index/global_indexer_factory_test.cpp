@@ -39,6 +39,7 @@ TEST(GlobalIndexerFactoryTest, TestLegacyBitmapEnabledForTesting) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<GlobalIndexer> indexer,
                          GlobalIndexerFactory::Get("bitmap", options));
     ASSERT_TRUE(dynamic_cast<BitmapGlobalIndex*>(indexer.get()));
+    ASSERT_FALSE(indexer->SupportsCheckpoint());
 }
 
 TEST(GlobalIndexerFactoryTest, TestNonExist) {
