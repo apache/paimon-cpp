@@ -24,7 +24,7 @@
 #include "lumina/io/FileWriter.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/global_index/lumina/lumina_utils.h"
+#include "paimon/indexer/lumina/lumina_utils.h"
 namespace paimon::lumina {
 class LuminaFileWriter : public ::lumina::io::FileWriter {
  public:

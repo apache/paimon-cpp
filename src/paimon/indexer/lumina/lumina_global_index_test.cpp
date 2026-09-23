@@ -15,7 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "paimon/global_index/lumina/lumina_global_index.h"
+#include "paimon/indexer/lumina/lumina_global_index.h"
 
 #include <random>
 #include <thread>

@@ -16,14 +16,14 @@
  * limitations under the License.
  */
 
-#include "paimon/global_index/lumina/lumina_global_index_factory.h"
+#include "paimon/indexer/lumina/lumina_global_index_factory.h"
 
 #include <map>
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "paimon/global_index/lumina/lumina_global_index.h"
+#include "paimon/indexer/lumina/lumina_global_index.h"
 namespace paimon::lumina {
 
 const char LuminaGlobalIndexFactory::IDENTIFIER[] = "lumina-global";
