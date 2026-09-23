@@ -139,7 +139,7 @@ TEST_F(GlobalIndexFileManagerTest, TestCheckpointNotConfigured) {
 TEST_F(GlobalIndexFileManagerTest, TestCheckpointIOAndRestart) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
     ASSERT_EQ(fs_->list_count_, 0);
-    std::string directory = PathUtil::JoinPath(dir_->Str(), "index/checkpoint/10_20");
+    std::string directory = PathUtil::JoinPath(dir_->Str(), "index/checkpoint");
     std::string prefix = "lumina-global-index-vector-10-20-task-1-";
     std::string previous_path = PathUtil::JoinPath(directory, prefix + "9.index.ckpt");
     // The latest sequence must be discovered on first file name allocation, not at construction.
@@ -204,7 +204,7 @@ TEST_F(GlobalIndexFileManagerTest, TestInitializationFailureCanRetry) {
 
 TEST_F(GlobalIndexFileManagerTest, TestLatestCheckpointUsesNumericId) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
-    std::string directory = PathUtil::JoinPath(dir_->Str(), "index/checkpoint/10_20");
+    std::string directory = PathUtil::JoinPath(dir_->Str(), "index/checkpoint");
     std::string prefix = "lumina-global-index-vector-10-20-task-1-";
     ASSERT_OK(fs_->WriteFile(PathUtil::JoinPath(directory, prefix + "9.index.ckpt"), "older",
                              /*overwrite=*/false));
@@ -222,7 +222,7 @@ TEST_F(GlobalIndexFileManagerTest, TestReadsDoNotInitializeFileId) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
     ASSERT_OK_AND_ASSIGN(bool exists, manager->CheckpointExists());
     ASSERT_FALSE(exists);
-    std::string directory = PathUtil::JoinPath(dir_->Str(), "index/checkpoint/10_20");
+    std::string directory = PathUtil::JoinPath(dir_->Str(), "index/checkpoint");
     std::string prefix = "lumina-global-index-vector-10-20-task-1-";
     ASSERT_OK(fs_->WriteFile(PathUtil::JoinPath(directory, prefix + "9.index.ckpt"), "old",
                              /*overwrite=*/false));
@@ -242,7 +242,7 @@ TEST_F(GlobalIndexFileManagerTest, TestReadsDoNotInitializeFileId) {
 
 TEST_F(GlobalIndexFileManagerTest, TestFileIdOverflow) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
-    std::string directory = PathUtil::JoinPath(dir_->Str(), "index/checkpoint/10_20");
+    std::string directory = PathUtil::JoinPath(dir_->Str(), "index/checkpoint");
     std::string prefix = "lumina-global-index-vector-10-20-task-1-";
     int64_t max_id = std::numeric_limits<int64_t>::max();
     ASSERT_OK(fs_->WriteFile(

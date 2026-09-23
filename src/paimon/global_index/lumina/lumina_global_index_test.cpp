@@ -686,7 +686,7 @@ TEST_F(LuminaGlobalIndexTest, TestWriteAndReadWithTagFilter) {
 
     std::map<std::string, std::string> tag_options = options_;
     tag_options["lumina.extension.build.ckpt.threshold"] = "1";
-    tag_options["lumina.extension.build.ckpt.count"] = "2";
+    tag_options["lumina.extension.build.ckpt.count"] = "1";
     tag_options["lumina.extension.build.tag.tag_schema"] =
         R"({"key_name":"color","type":"enum","value_type":"string"})";
 
@@ -706,8 +706,7 @@ TEST_F(LuminaGlobalIndexTest, TestWriteAndReadWithTagFilter) {
         GlobalIndexIOMeta meta,
         WriteGlobalIndex(test_root, tag_data_type, tag_options, tag_array, Range(0, 3)));
     std::vector<BasicFileStatus> checkpoint_files;
-    ASSERT_OK(
-        fs_->ListDir(PathUtil::JoinPath(test_root, "index/checkpoint"), &checkpoint_files));
+    ASSERT_OK(fs_->ListDir(PathUtil::JoinPath(test_root, "index/checkpoint"), &checkpoint_files));
     ASSERT_TRUE(checkpoint_files.empty());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader,
                          CreateGlobalIndexReader(test_root, data_type_, tag_options, meta));
