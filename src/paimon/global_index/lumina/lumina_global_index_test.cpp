@@ -225,7 +225,8 @@ class LuminaGlobalIndexTest : public ::testing::Test {
         const std::map<std::string, std::string>& options, const GlobalIndexIOMeta& meta) const {
         auto global_index = std::make_shared<LuminaGlobalIndex>(options);
         auto path_factory = std::make_shared<FakeIndexPathFactory>(index_root);
-        auto file_reader = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_reader = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         return global_index->CreateReader(CreateArrowSchema(data_type).get(), file_reader, {meta},
                                           pool_);
     }
@@ -357,7 +358,8 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointCapabilityOnlyRequiredWhenEnabled) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
                          CreateFileStorePathFactory(dir->Str()));
     auto plain_manager =
-        std::make_shared<GlobalIndexFileManager>(fs_, path_factory->CreateGlobalIndexFileFactory());
+        std::make_shared<GlobalIndexFileManager>(fs_, path_factory->CreateGlobalIndexFileFactory(),
+                                                 /*checkpoint_path_factory=*/nullptr);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<CountingCheckpointFileManager> checkpoint_manager,
                          CreateCountingCheckpointFileManager(path_factory, Range(0, 3)));
     std::map<std::string, std::string> options = options_;
@@ -1219,7 +1221,8 @@ TEST_F(LuminaGlobalIndexTest, TestInvalidInputs) {
         {
             auto global_index = std::make_shared<LuminaGlobalIndex>(options_);
             auto path_factory = std::make_shared<FakeIndexPathFactory>(index_root);
-            auto file_reader = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+            auto file_reader = std::make_shared<GlobalIndexFileManager>(
+                fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
 
             ASSERT_NOK_WITH_MSG(global_index->CreateReader(CreateArrowSchema(data_type_).get(),
                                                            file_reader, {meta, meta}, pool_),
@@ -1437,7 +1440,8 @@ TEST_F(LuminaGlobalIndexTest, TestWriteWithAllNullRows) {
 
     auto global_index = std::make_shared<LuminaGlobalIndex>(options_);
     auto path_factory = std::make_shared<FakeIndexPathFactory>(test_root);
-    auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+    auto file_writer = std::make_shared<GlobalIndexFileManager>(
+        fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<GlobalIndexWriter> global_writer,
@@ -1509,7 +1513,8 @@ TEST_F(LuminaGlobalIndexTest, TestWriteWithNullAcrossMultipleBatches) {
 
     auto global_index = std::make_shared<LuminaGlobalIndex>(options_);
     auto path_factory = std::make_shared<FakeIndexPathFactory>(test_root);
-    auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+    auto file_writer = std::make_shared<GlobalIndexFileManager>(
+        fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<GlobalIndexWriter> global_writer,

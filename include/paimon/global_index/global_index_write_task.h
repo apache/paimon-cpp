@@ -46,12 +46,13 @@ class PAIMON_EXPORT GlobalIndexWriteTask {
     ///                     The range must be fully contained within the data covered
     ///                     by the given `indexed_split`.
     /// @param options      Index-specific configuration (e.g., false positive rate for bloom
-    /// filters).
+    ///                     filters).
     /// @param task_id      When checkpoints are enabled, the caller must provide a non-empty task
-    /// identifier that uniquely identifies an index build task. Reuse it when retrying the same
-    /// build. If the source data, build configuration, or build source code changes, the caller
-    /// must use a new identifier; otherwise, the index build may fail. Pass nullopt when
-    /// checkpoints are disabled. Index types without checkpoint support ignore this value.
+    ///                     identifier that uniquely identifies an index build task. Reuse it when
+    ///                     retrying the same build. If the source data, build configuration, or
+    ///                     build source code changes, the caller must use a new identifier;
+    ///                     otherwise, the index build may fail. Pass nullopt when checkpoints are
+    ///                     disabled. Index types without checkpoint support ignore this value.
     /// @param pool         Memory pool for temporary allocations during index construction.
     ///                     If `nullptr`, the system's default memory pool will be used.
     /// @param file_system  Specifies the file system for file operations.

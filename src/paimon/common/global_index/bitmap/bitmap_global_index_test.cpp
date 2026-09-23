@@ -67,7 +67,8 @@ class BitmapGlobalIndexTest : public ::testing::Test {
         auto global_index = std::make_shared<BitmapGlobalIndex>(file_index);
 
         auto path_factory = std::make_shared<MockIndexPathFactory>(index_root);
-        auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_writer = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
 
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<GlobalIndexWriter> global_writer,
@@ -112,7 +113,8 @@ class BitmapGlobalIndexTest : public ::testing::Test {
         auto global_index = std::make_shared<BitmapGlobalIndex>(file_index);
 
         auto path_factory = std::make_shared<MockIndexPathFactory>(index_root);
-        auto file_reader = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_reader = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         EXPECT_OK_AND_ASSIGN(
             auto global_index_reader,
             global_index->CreateReader(CreateArrowSchema(type).get(), file_reader, {meta}, pool_));

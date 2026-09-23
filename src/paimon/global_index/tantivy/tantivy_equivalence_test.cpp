@@ -117,7 +117,8 @@ class TantivyEquivalenceTest : public ::testing::Test {
                                const std::string& root) {
         EXPECT_OK_AND_ASSIGN(auto indexer, GlobalIndexerFactory::Get(factory_id, options));
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_writer = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         EXPECT_OK_AND_ASSIGN(
             auto writer,
             indexer->CreateWriter("f0", CreateArrowSchema(data_type).get(), file_writer, pool_));
@@ -139,7 +140,8 @@ class TantivyEquivalenceTest : public ::testing::Test {
                                                const std::string& root) {
         EXPECT_OK_AND_ASSIGN(auto indexer, GlobalIndexerFactory::Get(factory_id, options));
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_reader = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_reader = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         EXPECT_OK_AND_ASSIGN(auto reader, indexer->CreateReader(CreateArrowSchema(data_type).get(),
                                                                 file_reader, {meta}, pool_));
         return reader;

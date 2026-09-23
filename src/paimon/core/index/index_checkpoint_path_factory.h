@@ -22,8 +22,6 @@
 #include <optional>
 #include <string>
 
-#include "paimon/result.h"
-
 namespace paimon {
 
 /// Path factory for global index checkpoints scoped to one task.
@@ -31,12 +29,8 @@ class IndexCheckpointPathFactory {
  public:
     virtual ~IndexCheckpointPathFactory() = default;
 
-    /// Initializes the counter before the first allocation, without storage I/O.
-    /// @param last_file_id Largest existing checkpoint id, or -1 if no checkpoint exists.
-    virtual void InitializeFileId(int64_t last_file_id) = 0;
-
-    /// Allocates the next id and creates its path, without storage I/O. Fails on id overflow.
-    virtual Result<std::string> NewPath() const = 0;
+    /// Creates the path for the specified checkpoint id, without storage I/O.
+    virtual std::string NewPath(int64_t checkpoint_id) const = 0;
     virtual std::string ToPath(const std::string& file_name) const = 0;
 
     /// Returns the directory containing the checkpoint files.

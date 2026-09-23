@@ -19,7 +19,6 @@
 #include "paimon/core/utils/file_store_path_factory.h"
 
 #include <cassert>
-#include <limits>
 
 #include "fmt/format.h"
 #include "paimon/common/fs/external_path_provider.h"
@@ -224,17 +223,10 @@ FileStorePathFactory::CreateGlobalIndexCheckpointPathFactory(const std::string& 
                                        const std::string& file_name_prefix)
             : directory_(directory), file_name_prefix_(file_name_prefix) {}
 
-        void InitializeFileId(int64_t last_file_id) override {
-            assert(last_file_id >= -1);
-            last_file_id_ = last_file_id;
-        }
-
-        Result<std::string> NewPath() const override {
-            if (last_file_id_ == std::numeric_limits<int64_t>::max()) {
-                return Status::Invalid("checkpoint file id exceeds int64 max");
-            }
-            std::string file_name = fmt::format("{}{}{}", file_name_prefix_, ++last_file_id_,
-                                                kIndexCheckpointFileSuffix);
+        std::string NewPath(int64_t checkpoint_id) const override {
+            assert(checkpoint_id >= 0);
+            std::string file_name =
+                fmt::format("{}{}{}", file_name_prefix_, checkpoint_id, kIndexCheckpointFileSuffix);
             return ToPath(file_name);
         }
 
@@ -253,7 +245,6 @@ FileStorePathFactory::CreateGlobalIndexCheckpointPathFactory(const std::string& 
      private:
         std::string directory_;
         std::string file_name_prefix_;
-        mutable int64_t last_file_id_ = -1;
     };
     PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint index type", index_type));
     PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint field", field_name));

@@ -94,7 +94,7 @@ TEST_F(GlobalIndexFileManagerTest, TestIndexIOWithoutCheckpointAccess) {
     ASSERT_TRUE(std::dynamic_pointer_cast<GlobalIndexCheckpointFileManager>(reader));
     ASSERT_TRUE(manager->SupportsCheckpoint());
     auto plain_manager = std::make_shared<GlobalIndexFileManager>(
-        fs_, path_factory_->CreateGlobalIndexFileFactory());
+        fs_, path_factory_->CreateGlobalIndexFileFactory(), /*checkpoint_path_factory=*/nullptr);
     ASSERT_TRUE(std::dynamic_pointer_cast<GlobalIndexCheckpointFileManager>(plain_manager));
     ASSERT_FALSE(plain_manager->SupportsCheckpoint());
 
@@ -122,7 +122,8 @@ TEST_F(GlobalIndexFileManagerTest, TestIndexIOWithoutCheckpointAccess) {
 
 TEST_F(GlobalIndexFileManagerTest, TestCheckpointNotConfigured) {
     fs_->fail_list_ = true;
-    GlobalIndexFileManager manager(fs_, path_factory_->CreateGlobalIndexFileFactory());
+    GlobalIndexFileManager manager(fs_, path_factory_->CreateGlobalIndexFileFactory(),
+                                   /*checkpoint_path_factory=*/nullptr);
     ASSERT_FALSE(manager.SupportsCheckpoint());
     ASSERT_NOK_WITH_MSG(manager.CreateCheckpointOutputStream(),
                         "checkpoint storage is not configured");

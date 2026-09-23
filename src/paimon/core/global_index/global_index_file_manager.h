@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -43,10 +44,9 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
                                public GlobalIndexFileWriter,
                                public GlobalIndexCheckpointFileManager {
  public:
-    GlobalIndexFileManager(
-        const std::shared_ptr<FileSystem>& fs,
-        const std::shared_ptr<IndexPathFactory>& path_factory,
-        std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory = nullptr)
+    GlobalIndexFileManager(const std::shared_ptr<FileSystem>& fs,
+                           const std::shared_ptr<IndexPathFactory>& path_factory,
+                           std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory)
         : fs_(fs),
           path_factory_(path_factory),
           checkpoint_path_factory_(std::move(checkpoint_path_factory)) {}
@@ -94,9 +94,9 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
         if (!SupportsCheckpoint()) {
             return Status::Invalid("global index checkpoint storage is not configured");
         }
-        PAIMON_ASSIGN_OR_RAISE(std::string file_name, NewCheckpointFileName());
+        PAIMON_ASSIGN_OR_RAISE(int64_t file_id, NextCheckpointFileId());
         PAIMON_RETURN_NOT_OK(fs_->Mkdirs(checkpoint_path_factory_->GetDirectoryPath()));
-        return fs_->Create(checkpoint_path_factory_->ToPath(file_name), /*overwrite=*/false);
+        return fs_->Create(checkpoint_path_factory_->NewPath(file_id), /*overwrite=*/false);
     }
 
     Result<std::unique_ptr<InputStream>> OpenCheckpointInputStream() const override {
@@ -125,10 +125,14 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
             return Status::Invalid("global index checkpoint storage is not configured");
         }
         PAIMON_ASSIGN_OR_RAISE(std::vector<CheckpointFile> checkpoint_files, ListCheckpointFiles());
+        Status first_error = Status::OK();
         for (const CheckpointFile& checkpoint_file : checkpoint_files) {
-            PAIMON_RETURN_NOT_OK(fs_->Delete(checkpoint_file.path, /*recursive=*/false));
+            Status status = fs_->Delete(checkpoint_file.path, /*recursive=*/false);
+            if (!status.ok() && first_error.ok()) {
+                first_error = std::move(status);
+            }
         }
-        return Status::OK();
+        return first_error;
     }
 
  private:
@@ -137,15 +141,16 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
         std::string path;
     };
 
-    Result<std::string> NewCheckpointFileName() const {
-        if (!checkpoint_file_id_initialized_) {
+    Result<int64_t> NextCheckpointFileId() const {
+        if (!last_checkpoint_file_id_) {
             PAIMON_ASSIGN_OR_RAISE(std::optional<CheckpointFile> checkpoint_file,
                                    LatestCheckpointFile());
-            checkpoint_path_factory_->InitializeFileId(checkpoint_file ? checkpoint_file->id : -1);
-            checkpoint_file_id_initialized_ = true;
+            last_checkpoint_file_id_ = checkpoint_file ? checkpoint_file->id : -1;
         }
-        PAIMON_ASSIGN_OR_RAISE(std::string path, checkpoint_path_factory_->NewPath());
-        return PathUtil::GetName(path);
+        if (last_checkpoint_file_id_.value() == std::numeric_limits<int64_t>::max()) {
+            return Status::Invalid("checkpoint file id exceeds int64 max");
+        }
+        return ++last_checkpoint_file_id_.value();
     }
 
     Result<std::vector<CheckpointFile>> ListCheckpointFiles() const {
@@ -184,7 +189,7 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
     std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<IndexPathFactory> path_factory_;
     std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory_;
-    // Historical ids are loaded only on the first successful file name allocation scan.
-    mutable bool checkpoint_file_id_initialized_ = false;
+    // Historical ids are loaded only on the first successful file id allocation scan.
+    mutable std::optional<int64_t> last_checkpoint_file_id_;
 };
 }  // namespace paimon

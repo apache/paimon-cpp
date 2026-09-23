@@ -602,10 +602,9 @@ TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactory) {
                              "lumina", "vector", Range(10, 20), "task-1"));
     std::string checkpoint_dir = PathUtil::JoinPath(dir->Str(), "index/checkpoint");
     ASSERT_EQ(checkpoint_path_factory->GetDirectoryPath(), checkpoint_dir);
-    checkpoint_path_factory->InitializeFileId(-1);
-    ASSERT_OK_AND_ASSIGN(std::string first_path, checkpoint_path_factory->NewPath());
+    std::string first_path = checkpoint_path_factory->NewPath(0);
     ASSERT_EQ(first_path, PathUtil::JoinPath(checkpoint_dir, prefix + "0.index.ckpt"));
-    ASSERT_OK_AND_ASSIGN(std::string second_path, checkpoint_path_factory->NewPath());
+    std::string second_path = checkpoint_path_factory->NewPath(1);
     ASSERT_EQ(second_path, PathUtil::JoinPath(checkpoint_dir, prefix + "1.index.ckpt"));
     ASSERT_EQ(checkpoint_path_factory->ToPath("checkpoint"),
               PathUtil::JoinPath(checkpoint_dir, "checkpoint"));
@@ -632,26 +631,17 @@ TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactory) {
     ASSERT_FALSE(exists);
 }
 
-TEST_F(FileStorePathFactoryTest, TestCheckpointFileIdInitializationAndOverflow) {
+TEST_F(FileStorePathFactoryTest, TestCheckpointFileIdPath) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto factory = CreateFactory(dir->Str());
-    for (int64_t last_id : {int64_t{9}, std::numeric_limits<int64_t>::max() - 1,
+    for (int64_t file_id : {int64_t{9}, std::numeric_limits<int64_t>::max() - 1,
                             std::numeric_limits<int64_t>::max()}) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_factory,
                              factory->CreateGlobalIndexCheckpointPathFactory(
                                  "lumina", "vector", Range(10, 20), "task-1"));
-        checkpoint_factory->InitializeFileId(last_id);
-        if (last_id != std::numeric_limits<int64_t>::max()) {
-            ASSERT_OK_AND_ASSIGN(std::string path, checkpoint_factory->NewPath());
-            ASSERT_EQ(checkpoint_factory->GetCheckpointId(PathUtil::GetName(path)), last_id + 1);
-        }
-        if (last_id >= std::numeric_limits<int64_t>::max() - 1) {
-            ASSERT_NOK_WITH_MSG(checkpoint_factory->NewPath(),
-                                "checkpoint file id exceeds int64 max");
-            ASSERT_NOK_WITH_MSG(checkpoint_factory->NewPath(),
-                                "checkpoint file id exceeds int64 max");
-        }
+        std::string path = checkpoint_factory->NewPath(file_id);
+        ASSERT_EQ(checkpoint_factory->GetCheckpointId(PathUtil::GetName(path)), file_id);
         ASSERT_OK_AND_ASSIGN(bool exists,
                              dir->GetFileSystem()->Exists(checkpoint_factory->GetDirectoryPath()));
         ASSERT_FALSE(exists);
@@ -671,10 +661,9 @@ TEST_F(FileStorePathFactoryTest, TestCheckpointTaskIsolation) {
                                                                          Range(10, 20), "task-2"));
     ASSERT_EQ(own_factory->GetDirectoryPath(), other_factory->GetDirectoryPath());
     ASSERT_OK(fs->Mkdirs(own_factory->GetDirectoryPath()));
-    ASSERT_OK_AND_ASSIGN(std::string own_path, own_factory->NewPath());
+    std::string own_path = own_factory->NewPath(0);
     ASSERT_OK(fs->WriteFile(own_path, "checkpoint", /*overwrite=*/false));
-    other_factory->InitializeFileId(99);
-    ASSERT_OK_AND_ASSIGN(std::string other_path, other_factory->NewPath());
+    std::string other_path = other_factory->NewPath(100);
     ASSERT_OK(fs->WriteFile(other_path, "foreign", /*overwrite=*/false));
     ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(own_path)), 0);
     ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(other_path)), std::nullopt);

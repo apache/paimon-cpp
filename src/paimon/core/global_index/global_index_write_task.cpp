@@ -395,6 +395,7 @@ Result<std::shared_ptr<CommitMessage>> GlobalIndexWriteTask::WriteIndex(
         core_options.GetFileSystem(), path_factory->CreateGlobalIndexFileFactory(),
         std::move(checkpoint_path_factory));
 
+    // create batch reader
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<BatchReader> batch_reader,
         CreateBatchReader(table_path, read_field_names, indexed_split, core_options, pool));

@@ -944,18 +944,14 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
                     extension->LoadCkptManager(std::move(checkpoint_manager)));
                 return Status::OK();
             };
-            Status checkpoint_status = Status::OK();
             if (tag_fields_.empty()) {
                 context->checkpoint_extension = std::make_unique<
                     ::lumina::extensions::experimental::BuildWithCheckpointExtension>();
-                checkpoint_status = attach_checkpoint(context->checkpoint_extension.get());
+                PAIMON_RETURN_NOT_OK(attach_checkpoint(context->checkpoint_extension.get()));
             } else {
                 context->checkpoint_tag_extension = std::make_unique<
                     ::lumina::extensions::experimental::BuildWithCkptAndTagExtension>();
-                checkpoint_status = attach_checkpoint(context->checkpoint_tag_extension.get());
-            }
-            if (!checkpoint_status.ok()) {
-                return checkpoint_status;
+                PAIMON_RETURN_NOT_OK(attach_checkpoint(context->checkpoint_tag_extension.get()));
             }
         } else if (!tag_fields_.empty()) {
             context->tag_extension =
@@ -1000,8 +996,6 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
         return build_result.status();
     }
     std::unique_ptr<LuminaBuildContext> build_context = std::move(build_result).value();
-    std::vector<std::shared_ptr<arrow::FloatArray>>().swap(array_vec_);
-    std::vector<std::vector<TagDimensionData>>().swap(tag_data_vec_);
 
     // dump index
     PAIMON_ASSIGN_OR_RAISE(std::string index_file_name,
@@ -1020,7 +1014,11 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
     GlobalIndexIOMeta meta(file_manager_->ToPath(index_file_name), file_size,
                            /*metadata=*/meta_bytes);
     if (checkpoint_file_manager_) {
-        PAIMON_RETURN_NOT_OK(checkpoint_file_manager_->DeleteCheckpoint());
+        Status status = checkpoint_file_manager_->DeleteCheckpoint();
+        if (!status.ok()) {
+            LOG(WARNING) << "Failed to delete Lumina checkpoints after successful build: "
+                         << status.ToString();
+        }
     }
     return std::vector<GlobalIndexIOMeta>({meta});
 }

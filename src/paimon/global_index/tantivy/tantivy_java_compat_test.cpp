@@ -96,7 +96,8 @@ class JavaCompatTest : public ::testing::Test {
         std::map<std::string, std::string> options;
         auto global_index = std::make_shared<TantivyGlobalIndex>(options);
         auto path_factory = std::make_shared<FixturePathFactory>(fixture_dir);
-        auto file_reader = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_reader = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
 
         auto data_type = arrow::struct_({arrow::field("f0", arrow::utf8())});
         auto c_schema = std::make_unique<::ArrowSchema>();
@@ -417,7 +418,8 @@ TEST_F(JavaCompatTest, CppWriteDefaultTokenizerForJavaCrossRead) {
     auto reader_factory =
         std::make_shared<TantivyGlobalIndex>(std::map<std::string, std::string>{});
     auto reader_path_factory = std::make_shared<FixturePathFactory>(out_dir);
-    auto reader_file_mgr = std::make_shared<GlobalIndexFileManager>(fs_, reader_path_factory);
+    auto reader_file_mgr = std::make_shared<GlobalIndexFileManager>(
+        fs_, reader_path_factory, /*checkpoint_path_factory=*/nullptr);
 
     auto c_schema = std::make_unique<::ArrowSchema>();
     ASSERT_TRUE(arrow::ExportType(*data_type, c_schema.get()).ok());
