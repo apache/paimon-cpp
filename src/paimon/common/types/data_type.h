@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -29,6 +30,7 @@
 
 namespace arrow {
 class DataType;
+class Field;
 class TimestampType;
 class KeyValueMetadata;
 }  // namespace arrow
@@ -37,6 +39,12 @@ namespace paimon {
 
 class DataType : public Jsonizable<DataType> {
  public:
+    static constexpr char kTimePrecision[] = "paimon.time.precision";
+
+    // Arrow carries milliseconds, while metadata preserves the declared TIME precision.
+    // Arrow-only schemas use Paimon's default precision of zero.
+    static Result<int32_t> GetTimePrecision(const arrow::Field& field);
+
     static std::unique_ptr<DataType> Create(
         const std::shared_ptr<arrow::DataType>& type, bool nullable,
         const std::shared_ptr<const arrow::KeyValueMetadata>& metadata);
@@ -58,6 +66,10 @@ class DataType : public Jsonizable<DataType> {
     std::shared_ptr<const arrow::KeyValueMetadata> metadata_;
 
  private:
+    static Result<int32_t> GetTimePrecision(
+        const std::shared_ptr<arrow::DataType>& type,
+        const std::shared_ptr<const arrow::KeyValueMetadata>& metadata);
+
     std::string TimestampToString(const std::shared_ptr<arrow::TimestampType>& type) const;
     std::string DataTypeToString(const std::shared_ptr<arrow::DataType>& type) const;
 };

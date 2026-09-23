@@ -225,10 +225,10 @@ TEST_F(BlobFallbackBatchReaderTest, TestRowTrackingFieldsPreserved) {
             }
             arrow::FieldVector fields = {BlobUtils::ToArrowField("blob_col", true)};
             if (with_row_id) {
-                fields.push_back(SpecialFields::RowId().field_);
+                fields.push_back(SpecialFields::RowId().ArrowField());
             }
             if (with_seq_num) {
-                fields.push_back(SpecialFields::SequenceNumber().field_);
+                fields.push_back(SpecialFields::SequenceNumber().ArrowField());
             }
             auto struct_type = arrow::struct_(fields);
             auto schema = arrow::schema(fields);

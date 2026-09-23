@@ -95,20 +95,63 @@ TEST_F(VariantShreddingWritePlanFactoryTest, ConfiguredSchema) {
             }
         } ]
     })";
-    ASSERT_OK_AND_ASSIGN(CoreOptions options,
-                         MakeOptions({{"variant.shreddingSchema", shredding_schema_json}}));
-    auto factory = VariantShreddingWritePlanFactory::Create(options, schema_, pool_);
-    ASSERT_TRUE(factory->ShouldCreateWritePlan());
-    ASSERT_FALSE(factory->ShouldInferWritePlan());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ShreddingBatchConverter> converter,
-                         factory->CreateConverter("parquet", {}));
-    ASSERT_NE(converter, nullptr);
-    auto variant_field = converter->GetPhysicalSchema()->GetFieldByName("v");
-    ASSERT_NE(variant_field, nullptr);
-    const auto& physical_type = static_cast<const arrow::StructType&>(*variant_field->type());
-    ASSERT_NE(physical_type.GetFieldByName("typed_value"), nullptr);
-    // Variant shredding only supports the parquet format.
-    ASSERT_TRUE(factory->CreateConverter("orc", {}).status().IsNotImplemented());
+    const char* shredding_schema_json_without_ids = R"({
+        "type": "ROW",
+        "fields": [ {
+            "name": "v",
+            "type": {
+                "type": "ROW",
+                "fields": [
+                    {"name": "age", "type": "INT"},
+                    {"name": "city", "type": "STRING"}
+                ]
+            }
+        } ]
+    })";
+    std::shared_ptr<arrow::Schema> physical_schema;
+    for (const char* option_key : {"variant.shreddingSchema", "parquet.variant.shreddingSchema"}) {
+        SCOPED_TRACE(option_key);
+        for (const char* configured_schema :
+             {shredding_schema_json, shredding_schema_json_without_ids}) {
+            SCOPED_TRACE(configured_schema);
+            ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                                 MakeOptions({{option_key, configured_schema}}));
+            auto factory = VariantShreddingWritePlanFactory::Create(options, schema_, pool_);
+            ASSERT_TRUE(factory->ShouldCreateWritePlan());
+            ASSERT_FALSE(factory->ShouldInferWritePlan());
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ShreddingBatchConverter> converter,
+                                 factory->CreateConverter("parquet", {}));
+            ASSERT_NE(converter, nullptr);
+            auto variant_field = converter->GetPhysicalSchema()->GetFieldByName("v");
+            ASSERT_NE(variant_field, nullptr);
+            const auto& physical_type =
+                static_cast<const arrow::StructType&>(*variant_field->type());
+            ASSERT_NE(physical_type.GetFieldByName("typed_value"), nullptr);
+            if (physical_schema == nullptr) {
+                physical_schema = converter->GetPhysicalSchema();
+            } else {
+                ASSERT_TRUE(converter->GetPhysicalSchema()->Equals(*physical_schema,
+                                                                   /*check_metadata=*/true));
+            }
+            ASSERT_TRUE(factory->CreateConverter("orc", {}).status().IsNotImplemented());
+        }
+    }
+}
+
+TEST_F(VariantShreddingWritePlanFactoryTest, ConfiguredSchemaRejectsPartialFieldIds) {
+    for (const char* configured_schema : {
+             R"({"type":"ROW","fields":[{"id":0,"name":"v","type":{
+                    "type":"ROW","fields":[{"name":"age","type":"INT"}]}}]})",
+             R"({"type":"ROW","fields":[{"name":"v","type":{
+                    "type":"ROW","fields":[{"id":1,"name":"age","type":"INT"}]}}]})",
+         }) {
+        SCOPED_TRACE(configured_schema);
+        ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                             MakeOptions({{"variant.shreddingSchema", configured_schema}}));
+        auto factory = VariantShreddingWritePlanFactory::Create(options, schema_, pool_);
+        ASSERT_NOK_WITH_MSG(factory->CreateConverter("parquet", {}),
+                            "Partial field id is not allowed.");
+    }
 }
 
 TEST_F(VariantShreddingWritePlanFactoryTest, InferredSchema) {

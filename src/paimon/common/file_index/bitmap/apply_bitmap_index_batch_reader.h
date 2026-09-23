@@ -101,11 +101,25 @@ class ApplyBitmapIndexBatchReader : public FileBatchReader {
  private:
     Result<RoaringBitmap32> Filter(int32_t batch_size) const {
         RoaringBitmap32 result;
-        auto bitmap_iter = bitmap_.Begin();
+        if (batch_size == 0) {
+            return result;
+        }
+
+        PAIMON_ASSIGN_OR_RAISE(uint64_t first_file_row_id,
+                               reader_->GetPreviousBatchFileRowId(/*batch_row_id=*/0));
+        if (first_file_row_id > static_cast<uint64_t>(RoaringBitmap32::MAX_VALUE)) {
+            return result;
+        }
+        // Avoid rescanning bitmap entries before this batch while retaining a single linear
+        // iterator for all rows in the batch.
+        auto bitmap_iter = bitmap_.EqualOrLarger(static_cast<int32_t>(first_file_row_id));
         auto bitmap_end = bitmap_.End();
 
         for (int32_t i = 0; i < batch_size; ++i) {
-            PAIMON_ASSIGN_OR_RAISE(uint64_t file_row_id, reader_->GetPreviousBatchFileRowId(i));
+            uint64_t file_row_id = first_file_row_id;
+            if (i > 0) {
+                PAIMON_ASSIGN_OR_RAISE(file_row_id, reader_->GetPreviousBatchFileRowId(i));
+            }
             while (bitmap_iter != bitmap_end && static_cast<uint64_t>(*bitmap_iter) < file_row_id) {
                 ++bitmap_iter;
             }

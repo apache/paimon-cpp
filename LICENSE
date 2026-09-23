@@ -228,6 +228,9 @@ This product includes code from Apache Iceberg C++.
   * src/paimon/format/avro/avro_direct_encoder.cpp
   * src/paimon/format/avro/avro_direct_encoder.h
 * Avro input stream in src/paimon/format/avro/avro_input_stream_impl.cpp
+* Optimized 64-bit Roaring bitmap:
+  * src/paimon/common/utils/optimized_roaring_bitmap64.h
+  * src/paimon/common/utils/optimized_roaring_bitmap64.cpp
 
 Copyright: 2024-2025 The Apache Software Foundation.
 Home page: https://iceberg.apache.org/

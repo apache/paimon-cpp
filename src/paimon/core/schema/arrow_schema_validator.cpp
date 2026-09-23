@@ -28,6 +28,7 @@
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/types/vector_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/decimal_utils.h"
@@ -123,6 +124,7 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
         case arrow::Type::type::DATE32:
         case arrow::Type::type::DECIMAL128:
         case arrow::Type::type::TIMESTAMP:
+        case arrow::Type::type::TIME32:
             return Status::OK();
         case arrow::Type::type::LIST: {
             const auto& value_field = checked_cast<arrow::BaseListType*>(type.get())->value_field();
@@ -207,6 +209,9 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
         case arrow::Type::type::BINARY:
         case arrow::Type::type::DATE32:
         case arrow::Type::type::TIMESTAMP:
+            break;
+        case arrow::Type::type::TIME32:
+            PAIMON_RETURN_NOT_OK(DataType::GetTimePrecision(*field));
             break;
         case arrow::Type::type::DECIMAL128:
             PAIMON_RETURN_NOT_OK(DecimalUtils::CheckDecimalType(*field->type()));

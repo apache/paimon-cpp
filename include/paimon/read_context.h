@@ -27,6 +27,7 @@
 
 #include "arrow/c/abi.h"
 #include "paimon/cache/cache.h"
+#include "paimon/catalog/identifier.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
@@ -34,6 +35,7 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
+class Catalog;
 class Executor;
 class FormatTable;
 class MemoryPool;
@@ -477,6 +479,16 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ReadContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Reads a native table through its own file system - including the per-table temporary
+    /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.
+    /// This is a shorthand for `WithFileSystem(catalog->GetTableFileSystem(identifier))`; an
+    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked.
+    /// @param catalog Non-null catalog, read when `Finish()` builds the context.
+    /// @param identifier The native table to read.
+    /// @return Reference to this builder for method chaining.
+    ReadContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                    const Identifier& identifier);
 
     /// Inject a cache for read operations. Passing nullptr disables cache.
     /// @return Reference to this builder for method chaining.

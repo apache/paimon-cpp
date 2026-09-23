@@ -2660,6 +2660,88 @@ TEST_F(RealtimeWriteInteTest, TestAppendScanKeepsDiskSplitsIndependent) {
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
+TEST_F(RealtimeWriteInteTest, TestAppendRealtimeReadUsesEmbeddedAndExternalBitmapIndexes) {
+    options_["file-index.bitmap.columns"] = "payload";
+    options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1MB";
+    options_[Options::REALTIME_STORE_STATS_MODE] = "full";
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> embedded_writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> embedded_batch,
+        MakeBatch(
+            {{1, "embedded-one", "p0"}, {2, "embedded-match", "p0"}, {3, "embedded-three", "p0"}},
+            /*partitioned=*/false));
+    ASSERT_OK(embedded_writer->Write(std::move(embedded_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> embedded_progress,
+                         embedded_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    std::vector<std::shared_ptr<DataFileMeta>> embedded_files = NewFiles(embedded_progress);
+    ASSERT_EQ(1, embedded_files.size());
+    ASSERT_NE(nullptr, embedded_files[0]->embedded_index);
+    ASSERT_TRUE(embedded_files[0]->extra_files.empty());
+    ASSERT_OK_AND_ASSIGN(int64_t embedded_snapshot_id,
+                         Commit(embedded_progress, /*commit_identifier=*/0));
+    ASSERT_OK(embedded_writer->RefreshCommittedSnapshot(embedded_snapshot_id));
+    ASSERT_OK(embedded_writer->Close());
+
+    options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> external_writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> external_batch,
+        MakeBatch(
+            {{4, "external-four", "p0"}, {5, "external-match", "p0"}, {6, "external-six", "p0"}},
+            /*partitioned=*/false));
+    ASSERT_OK(external_writer->Write(std::move(external_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> external_progress,
+                         external_writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    std::vector<std::shared_ptr<DataFileMeta>> external_files = NewFiles(external_progress);
+    ASSERT_EQ(1, external_files.size());
+    ASSERT_EQ(nullptr, external_files[0]->embedded_index);
+    ASSERT_EQ(1, external_files[0]->extra_files.size());
+    ASSERT_TRUE(external_files[0]->extra_files[0].has_value());
+    std::string external_index_path =
+        PathUtil::JoinPath(table_path_, "bucket-0/" + external_files[0]->extra_files[0].value());
+    ASSERT_OK_AND_ASSIGN(bool external_index_exists,
+                         dir_->GetFileSystem()->Exists(external_index_path));
+    ASSERT_TRUE(external_index_exists);
+    ASSERT_OK_AND_ASSIGN(int64_t external_snapshot_id,
+                         Commit(external_progress, /*commit_identifier=*/1));
+    ASSERT_OK(external_writer->RefreshCommittedSnapshot(external_snapshot_id));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                         MakeBatch({{7, "memory-seven", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(external_writer->Write(std::move(memory_batch)));
+
+    const std::string embedded_match = "embedded-match";
+    const std::string external_match = "external-match";
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> predicate,
+        PredicateBuilder::Or(
+            {PredicateBuilder::Equal(
+                 /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
+                 Literal(FieldType::STRING, embedded_match.data(), embedded_match.size())),
+             PredicateBuilder::Equal(
+                 /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
+                 Literal(FieldType::STRING, external_match.data(), external_match.size()))}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+    bool has_realtime_split = false;
+    for (const std::shared_ptr<Split>& split : plan->Splits()) {
+        has_realtime_split |= std::dynamic_pointer_cast<RealtimeSplit>(split) != nullptr;
+    }
+    ASSERT_TRUE(has_realtime_split);
+    // Residual filtering is disabled. Batch statistics remove the non-matching memory batch, while
+    // the absence of the other disk rows verifies that both bitmap index storage forms are used.
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context, predicate,
+                                                                /*enable_predicate_filter=*/false));
+    std::sort(actual_rows.begin(), actual_rows.end());
+    ASSERT_EQ((std::vector<Row>{{2, "embedded-match", "p0"}, {5, "external-match", "p0"}}),
+              actual_rows);
+    ASSERT_OK(PrepareAndClose(external_writer.get()));
+}
+
 TEST_F(RealtimeWriteInteTest, TestCommitOrdersPreparedOffsetRanges) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter());
@@ -2818,6 +2900,210 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeWriteAcrossAppendCompaction) {
     ASSERT_OK_AND_ASSIGN(std::vector<Row> final_rows_after_refresh, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, final_rows_after_refresh);
     ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestPkDvExternalBitmapCanEliminateEntireDiskFile) {
+    options_[Options::FILE_FORMAT] = "parquet";
+    options_[Options::DELETION_VECTORS_ENABLED] = "true";
+    options_[Options::FILE_INDEX_READ_ENABLED] = "true";
+    options_["file-index.bitmap.columns"] = "payload";
+    options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
+    options_[Options::REALTIME_STORE_STATS_MODE] = "full";
+    CreatePkTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    // "middle" is inside the file's min/max range but absent from its bitmap index. Keeping the
+    // index external makes scan planning retain the file and lets the merge reader eliminate it.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
+                         MakeBatch({{1, "aaa", "p0"}, {2, "zzz", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(disk_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t disk_snapshot_id, Commit(disk_progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(disk_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot compact_snapshot, CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                                                     /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(compact_snapshot.Id()));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                         MakeBatch({{3, "middle", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(memory_batch)));
+
+    const std::string middle = "middle";
+    const std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
+        Literal(FieldType::STRING, middle.data(), middle.size()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+    ASSERT_EQ(1, plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+    ASSERT_NE(nullptr, realtime_split);
+
+    size_t external_high_level_file_count = 0;
+    for (const std::shared_ptr<Split>& split : realtime_split->DiskSplits()) {
+        std::shared_ptr<DataSplitImpl> data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(nullptr, data_split);
+        for (const std::shared_ptr<DataFileMeta>& file : data_split->DataFiles()) {
+            if (file->level > 0 && file->embedded_index == nullptr && !file->extra_files.empty() &&
+                file->extra_files[0].has_value()) {
+                ++external_high_level_file_count;
+            }
+        }
+    }
+    ASSERT_EQ(1, external_high_level_file_count);
+
+    // The external bitmap removes the only disk reader. The in-memory matching row must still be
+    // returned, and constructing the empty disk run must not rely on positional file/reader pairs.
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context, predicate,
+                                                                /*enable_predicate_filter=*/false));
+    ASSERT_EQ((std::vector<Row>{{3, "middle", "p0"}}), actual_rows);
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimeWriteInteTest, TestPkDvRealtimeReadUsesEmbeddedAndExternalBitmapIndexes) {
+    options_[Options::FILE_FORMAT] = "parquet";
+    options_[Options::FILE_COMPRESSION] = "none";
+    options_[Options::DELETION_VECTORS_ENABLED] = "true";
+    options_["file-index.bitmap.columns"] = "payload";
+    options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1MB";
+    options_[Options::REALTIME_STORE_STATS_MODE] = "full";
+    CreatePkTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> embedded_writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    // Keep the max-level file substantially larger than the later L0 files. Otherwise the
+    // size-ratio picker may rewrite all levels together instead of producing a deletion vector.
+    // Put the padding in a non-indexed column so the data file is much larger than both L0 files
+    // without making the embedded bitmap index itself large.
+    const std::string first_padding(256 * 1024, 'X');
+    const std::string third_padding(256 * 1024, 'Y');
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> base_batch,
+                         MakeBatch({{1, "high-one", first_padding},
+                                    {2, "high-match", "p0"},
+                                    {3, "high-old-three", third_padding}},
+                                   /*partitioned=*/false));
+    ASSERT_OK(embedded_writer->Write(std::move(base_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> base_progress,
+                         embedded_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    std::vector<std::shared_ptr<DataFileMeta>> base_files = NewFiles(base_progress);
+    ASSERT_EQ(1, base_files.size());
+    ASSERT_NE(nullptr, base_files[0]->embedded_index);
+    ASSERT_TRUE(base_files[0]->extra_files.empty());
+    ASSERT_OK_AND_ASSIGN(int64_t base_snapshot_id, Commit(base_progress, /*commit_identifier=*/0));
+    ASSERT_OK(embedded_writer->RefreshCommittedSnapshot(base_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot full_compact_snapshot,
+                         CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                          /*commit_identifier=*/1));
+    ASSERT_OK(embedded_writer->RefreshCommittedSnapshot(full_compact_snapshot.Id()));
+    ASSERT_OK(embedded_writer->Close());
+
+    options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> external_writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> external_batch,
+                         MakeBatch({{3, "external-current-three", "p0"},
+                                    {4, "external-four", "p0"},
+                                    {5, "external-match", "p0"}},
+                                   /*partitioned=*/false, /*bucket=*/0,
+                                   {RecordBatch::RowKind::UPDATE_AFTER,
+                                    RecordBatch::RowKind::INSERT, RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(external_writer->Write(std::move(external_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> external_progress,
+                         external_writer->PrepareCommitWithProgress(/*commit_identifier=*/2));
+    std::vector<std::shared_ptr<DataFileMeta>> external_files = NewFiles(external_progress);
+    ASSERT_EQ(1, external_files.size());
+    ASSERT_EQ(0, external_files[0]->level);
+    ASSERT_EQ(nullptr, external_files[0]->embedded_index);
+    ASSERT_EQ(1, external_files[0]->extra_files.size());
+    ASSERT_TRUE(external_files[0]->extra_files[0].has_value());
+    std::string external_index_path =
+        PathUtil::JoinPath(table_path_, "bucket-0/" + external_files[0]->extra_files[0].value());
+    ASSERT_OK_AND_ASSIGN(bool external_index_exists,
+                         dir_->GetFileSystem()->Exists(external_index_path));
+    ASSERT_TRUE(external_index_exists);
+    ASSERT_OK_AND_ASSIGN(int64_t external_snapshot_id,
+                         Commit(external_progress, /*commit_identifier=*/2));
+    ASSERT_OK(external_writer->RefreshCommittedSnapshot(external_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_external_batch,
+                         MakeBatch({{6, "external-six", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(external_writer->Write(std::move(second_external_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_external_progress,
+                         external_writer->PrepareCommitWithProgress(/*commit_identifier=*/3));
+    ASSERT_OK_AND_ASSIGN(int64_t second_external_snapshot_id,
+                         Commit(second_external_progress, /*commit_identifier=*/3));
+    ASSERT_OK(external_writer->RefreshCommittedSnapshot(second_external_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot dv_compact_snapshot,
+                         CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                          /*commit_identifier=*/4,
+                                          /*full_compaction=*/false));
+    ASSERT_OK(external_writer->RefreshCommittedSnapshot(dv_compact_snapshot.Id()));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                         MakeBatch({{7, "memory-seven", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(external_writer->Write(std::move(memory_batch)));
+
+    const std::string high_match = "high-match";
+    const std::string external_match = "external-match";
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> predicate,
+        PredicateBuilder::Or(
+            {PredicateBuilder::Equal(
+                 /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
+                 Literal(FieldType::STRING, high_match.data(), high_match.size())),
+             PredicateBuilder::Equal(
+                 /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
+                 Literal(FieldType::STRING, external_match.data(), external_match.size()))}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+    ASSERT_EQ(1, plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+    ASSERT_NE(nullptr, realtime_split);
+    ASSERT_OK_AND_ASSIGN(DiskFileLayout layout, InspectDiskFiles(realtime_split->DiskSplits()));
+    ASSERT_TRUE(layout.has_high_level_file);
+    ASSERT_TRUE(layout.has_high_level_deletion_vector);
+    bool has_embedded_high_level_index_with_dv = false;
+    bool has_external_high_level_index = false;
+    for (const std::shared_ptr<Split>& split : realtime_split->DiskSplits()) {
+        std::shared_ptr<DataSplitImpl> data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(nullptr, data_split);
+        const std::vector<std::shared_ptr<DataFileMeta>>& files = data_split->DataFiles();
+        const std::vector<std::optional<DeletionFile>>& deletion_files =
+            data_split->DeletionFiles();
+        for (size_t i = 0; i < files.size(); ++i) {
+            has_embedded_high_level_index_with_dv |=
+                files[i]->level > 0 && files[i]->embedded_index != nullptr &&
+                !deletion_files.empty() && deletion_files[i].has_value();
+            if (files[i]->level > 0 && files[i]->embedded_index == nullptr &&
+                !files[i]->extra_files.empty() && files[i]->extra_files[0].has_value()) {
+                has_external_high_level_index = true;
+                std::string index_path =
+                    PathUtil::JoinPath(data_split->BucketPath(), files[i]->extra_files[0].value());
+                ASSERT_OK_AND_ASSIGN(bool index_exists, dir_->GetFileSystem()->Exists(index_path));
+                ASSERT_TRUE(index_exists);
+            }
+        }
+    }
+    ASSERT_TRUE(has_embedded_high_level_index_with_dv);
+    ASSERT_TRUE(has_external_high_level_index);
+
+    // Only primary-key predicates are sent to L0 and memory in PK MOR reads. The non-key predicate
+    // still reaches both high-level bitmap indexes, while the unfiltered memory row remains.
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context, predicate,
+                                                                /*enable_predicate_filter=*/false));
+    std::sort(actual_rows.begin(), actual_rows.end());
+    ASSERT_EQ((std::vector<Row>{
+                  {2, "high-match", "p0"}, {5, "external-match", "p0"}, {7, "memory-seven", "p0"}}),
+              actual_rows);
+    ASSERT_OK(PrepareAndClose(external_writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkDvPredicateAcrossHighLevelLevel0AndMemory) {

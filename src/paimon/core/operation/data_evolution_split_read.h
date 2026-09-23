@@ -171,7 +171,8 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
  private:
     Result<std::unique_ptr<BatchReader>> InnerCreateReader(
         const std::shared_ptr<DataSplit>& data_split,
-        const std::optional<std::vector<Range>>& row_ranges) const;
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<arrow::Schema>& read_schema) const;
 
     /// Keeps top-level conjuncts whose fields all belong to `read_schema`, excluding conjuncts
     /// over system fields. The returned predicate is for pushdown only; the original predicate is
@@ -251,7 +252,8 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const DeletionVector::Factory& group_dv_factory,
-        const std::optional<GroupDeletionVector>& group_dv) const;
+        const std::optional<GroupDeletionVector>& group_dv,
+        const std::shared_ptr<arrow::Schema>& read_schema) const;
 
     /// Builds the row-level fallback reader for a blob bunch spanning multiple max sequence
     /// number layers: groups the files by max sequence number, pads uncovered row id ranges of

@@ -187,13 +187,16 @@ class FileReaderWrapperTest : public ::testing::Test {
     }
 
     Result<std::unique_ptr<FileReaderWrapper>> PrepareReaderWrapper(
-        const std::string& file_path, int64_t wrapper_batch_size = 0) {
+        const std::string& file_path, int64_t wrapper_batch_size = 0,
+        bool enable_offset_index_cache = false) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> in, fs_->Open(file_path));
-        return PrepareReaderWrapperOnStream(std::move(in), wrapper_batch_size);
+        return PrepareReaderWrapperOnStream(std::move(in), wrapper_batch_size,
+                                            enable_offset_index_cache);
     }
 
     Result<std::unique_ptr<FileReaderWrapper>> PrepareReaderWrapperOnStream(
-        std::shared_ptr<InputStream> in, int64_t wrapper_batch_size = 0) {
+        std::shared_ptr<InputStream> in, int64_t wrapper_batch_size = 0,
+        bool enable_offset_index_cache = false) {
         PAIMON_ASSIGN_OR_RAISE(int64_t file_length, in->Length());
         auto input_stream =
             std::make_unique<ArrowInputStreamAdapter>(std::move(in), file_length, arrow_pool_);
@@ -212,7 +215,8 @@ class FileReaderWrapperTest : public ::testing::Test {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(file_reader_builder.memory_pool(arrow_pool_.get())
                                             ->properties(arrow_reader_props)
                                             ->Build(&file_reader));
-        return FileReaderWrapper::Create(std::move(file_reader), wrapper_batch_size, arrow_pool_);
+        return FileReaderWrapper::Create(std::move(file_reader), wrapper_batch_size,
+                                         enable_offset_index_cache, arrow_pool_);
     }
 
     void PrepareParquetFile(const std::string& file_path, int32_t row_count,
@@ -274,6 +278,7 @@ TEST_F(FileReaderWrapperTest, EmptyFile) {
 TEST_F(FileReaderWrapperTest, NullFileReader) {
     ASSERT_NOK_WITH_MSG(FileReaderWrapper::Create(nullptr,
                                                   /*batch_size=*/0,
+                                                  /*enable_offset_index_cache=*/false,
                                                   /*pool=*/arrow_pool_),
                         "file reader wrapper create failed. file reader is nullptr");
 }
@@ -309,6 +314,39 @@ TEST_F(FileReaderWrapperTest, PredicateReadsOnlyItsPageIndexesAndKeepsPayloadRea
     ASSERT_TRUE(batch->Equals(*expected_batch.ValueOrDie()));
     ASSERT_OK_AND_ASSIGN(auto end, reader->Next());
     ASSERT_FALSE(end);
+}
+
+TEST_F(FileReaderWrapperTest, ReusesParsedOffsetIndexesWithinFileReader) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "parsed-index.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/true);
+    ASSERT_OK_AND_ASSIGN(auto uncached_reader, PrepareReaderWrapper(file_path));
+    auto uncached = uncached_reader->GetRowGroupPageIndexReader(0);
+    auto first_uncached = uncached->GetOffsetIndex(0);
+    ASSERT_NE(first_uncached, uncached->GetOffsetIndex(0));
+    ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapper(file_path, 0, true));
+    std::weak_ptr<::parquet::OffsetIndex> released_index;
+    {
+        auto first = reader->GetRowGroupPageIndexReader(0);
+        auto second = reader->GetRowGroupPageIndexReader(1);
+        ASSERT_TRUE(first);
+        ASSERT_TRUE(second);
+        ASSERT_NE(first, second);
+        for (int32_t col = 0; col < 3; ++col) {
+            auto offset = first->GetOffsetIndex(col);
+            auto column = first->GetColumnIndex(col);
+            ASSERT_TRUE(offset);
+            ASSERT_TRUE(column);
+            ASSERT_EQ(offset, first->GetOffsetIndex(col));
+            ASSERT_NE(offset, second->GetOffsetIndex(col));
+            released_index = offset;
+        }
+        ASSERT_THROW(first->GetOffsetIndex(-1), ::parquet::ParquetException);
+        ASSERT_THROW(first->GetColumnIndex(100), ::parquet::ParquetException);
+        ASSERT_TRUE(first->GetOffsetIndex(0));
+    }
+    ASSERT_FALSE(released_index.expired());
+    reader.reset();
+    ASSERT_TRUE(released_index.expired());
 }
 
 TEST_F(FileReaderWrapperTest, Simple) {

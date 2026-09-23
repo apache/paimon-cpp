@@ -444,6 +444,10 @@ Status SchemaValidation::ValidateNotContainSpecificType(
         auto it = fields_map.find(field_name);
         if (it != fields_map.end()) {
             auto field = it->second;
+            if (field->type()->id() == arrow::Type::TIME32) {
+                return Status::Invalid(
+                    fmt::format("partition field {} cannot be TIME", field_name));
+            }
             if (IsComplexType(field)) {
                 return Status::Invalid(
                     fmt::format("partition field {} cannot be TIMESTAMP/DECIMAL/BLOB", field_name));

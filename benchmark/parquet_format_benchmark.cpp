@@ -74,6 +74,8 @@
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap32.h"
+#include "parquet/file_reader.h"
+#include "parquet/page_index.h"
 
 namespace {
 
@@ -551,8 +553,9 @@ Result<int64_t> WriteParquetFile(const std::shared_ptr<FileSystem>& fs, const st
                                  const std::shared_ptr<arrow::Schema>& schema,
                                  const std::vector<std::shared_ptr<arrow::Array>>& batches,
                                  const std::map<std::string, std::string>& options,
-                                 const std::string& compression) {
-    ParquetWriterBuilder writer_builder(schema, kWriteBatchSize, options);
+                                 const std::string& compression,
+                                 int32_t write_batch_size = kWriteBatchSize) {
+    ParquetWriterBuilder writer_builder(schema, write_batch_size, options);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out, fs->Create(path, /*overwrite=*/true));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatWriter> writer,
                            writer_builder.Build(out, compression));
@@ -704,8 +707,9 @@ class ReadFixture {
  public:
     ReadFixture(const std::string& file_name, const std::shared_ptr<arrow::Schema>& schema,
                 const BatchFactory& make_batch,
-                const std::map<std::string, std::string>& write_options = {}) {
-        status_ = Build(file_name, schema, make_batch, write_options);
+                const std::map<std::string, std::string>& write_options = {},
+                int32_t write_batch_size = kWriteBatchSize) {
+        status_ = Build(file_name, schema, make_batch, write_options, write_batch_size);
     }
 
     const Status& status() const {
@@ -731,17 +735,19 @@ class ReadFixture {
  private:
     Status Build(const std::string& file_name, const std::shared_ptr<arrow::Schema>& schema,
                  const BatchFactory& make_batch,
-                 const std::map<std::string, std::string>& write_options) {
+                 const std::map<std::string, std::string>& write_options,
+                 int32_t write_batch_size) {
         PAIMON_ASSIGN_OR_RAISE(env_, BenchmarkEnv::Create());
         path_ = env_->PathOf(file_name);
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<arrow::Array>> batches,
                                MakeBatches(schema, make_batch, kRowsPerBatch));
         std::map<std::string, std::string> options = write_options;
-        options[paimon::parquet::PARQUET_PAGE_SIZE] = std::to_string(kPageSizeBytes);
-        options[paimon::parquet::PARQUET_WRITE_MAX_ROW_GROUP_LENGTH] =
-            std::to_string(kRowGroupLength);
-        PAIMON_ASSIGN_OR_RAISE(file_bytes_, WriteParquetFile(env_->fs(), path_, schema, batches,
-                                                             options, kDefaultCompression));
+        options.emplace(paimon::parquet::PARQUET_PAGE_SIZE, std::to_string(kPageSizeBytes));
+        options.emplace(paimon::parquet::PARQUET_WRITE_MAX_ROW_GROUP_LENGTH,
+                        std::to_string(kRowGroupLength));
+        PAIMON_ASSIGN_OR_RAISE(file_bytes_,
+                               WriteParquetFile(env_->fs(), path_, schema, batches, options,
+                                                kDefaultCompression, write_batch_size));
         return Status::OK();
     }
 
@@ -751,12 +757,17 @@ class ReadFixture {
     Status status_;
 };
 
+std::map<std::string, std::unique_ptr<ReadFixture>>& ReadFixtures() {
+    static std::map<std::string, std::unique_ptr<ReadFixture>> fixtures;
+    return fixtures;
+}
+
 // Built on first use, so a case excluded by --benchmark_filter never pays to write its file.
 // google/benchmark may report from a different thread than it registered on, hence the lock.
 const ReadFixture& GetFixture(const std::string& key,
                               const std::function<std::unique_ptr<ReadFixture>()>& build) {
     static std::mutex mutex;
-    static std::map<std::string, std::unique_ptr<ReadFixture>> fixtures;
+    auto& fixtures = ReadFixtures();
     std::lock_guard<std::mutex> guard(mutex);
     std::unique_ptr<ReadFixture>& fixture = fixtures[key];
     if (!fixture) {
@@ -1229,6 +1240,71 @@ void RunReadBenchmark(::benchmark::State& state, const ReadFixture& fixture,
     state.counters["batches"] = ::benchmark::Counter(static_cast<double>(stats.batches));
 }
 
+// Sparse lookup into a large row group of 1 KiB values. Page size controls how much
+// OffsetIndex parsing each lookup repeats; full scan is the decoding-dominated control.
+void BM_ParquetRead_OffsetIndexCache(::benchmark::State& state) {
+    const int64_t page_size = state.range(0);
+    const bool cache = state.range(1) != 0;
+    const bool full_scan = state.range(2) != 0;
+    const std::string key = "offset_index_" + std::to_string(page_size);
+    const auto& fixture = GetFixture(key, [key, page_size] {
+        return std::make_unique<ReadFixture>(
+            key + ".parquet", StringSchema(),
+            [](const std::shared_ptr<arrow::Schema>& schema, int64_t offset,
+               int64_t rows) -> Result<std::shared_ptr<arrow::Array>> {
+                arrow::StringBuilder builder;
+                for (int64_t row = offset; row < offset + rows; ++row) {
+                    std::string value = std::to_string(row);
+                    uint64_t random = static_cast<uint64_t>(row) + 1;
+                    while (value.size() < 1024) {
+                        random ^= random << 13;
+                        random ^= random >> 7;
+                        random ^= random << 17;
+                        value.push_back('a' + random % 26);
+                    }
+                    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(value));
+                }
+                std::shared_ptr<arrow::Array> values;
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&values));
+                return MakeStructArray(schema->fields(), {values});
+            },
+            std::map<std::string, std::string>{
+                {paimon::parquet::PARQUET_PAGE_SIZE, std::to_string(page_size)},
+                {paimon::parquet::PARQUET_WRITE_MAX_ROW_GROUP_LENGTH, std::to_string(kRowsPerFile)},
+                {paimon::parquet::PARQUET_ENABLE_DICTIONARY, "false"}},
+            /*write_batch_size=*/16);
+    });
+    if (FailBenchmark(state, fixture.status())) {
+        return;
+    }
+    auto page_count = [&]() -> Result<int64_t> {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input,
+                               fixture.fs()->Open(fixture.path()));
+        auto stream = std::make_shared<ArrowInputStreamAdapter>(input, fixture.file_bytes(),
+                                                                fixture.arrow_pool());
+        auto reader = ::parquet::ParquetFileReader::Open(stream);
+        return reader->GetPageIndexReader()
+            ->RowGroup(0)
+            ->GetOffsetIndex(0)
+            ->page_locations()
+            .size();
+    }();
+    if (FailBenchmark(state, page_count.status())) {
+        return;
+    }
+    state.counters["pages"] = ::benchmark::Counter(static_cast<double>(page_count.value()));
+    std::optional<RoaringBitmap32> bitmap;
+    if (!full_scan) {
+        bitmap.emplace();
+        bitmap->Add(kRowsPerFile / 2);
+    }
+    RunReadBenchmark(
+        state, fixture, StringSchema(), nullptr, bitmap,
+        {{paimon::parquet::PARQUET_READ_ENABLE_OFFSET_INDEX_CACHE, cache ? "true" : "false"},
+         {paimon::parquet::PARQUET_READ_BITMAP_ROW_RANGE_REFINING_STRATEGY, "trim"}},
+        kReadBatchSize, full_scan ? RowExpectation{} : RowExpectation{1, 1});
+}
+
 void BM_ParquetRead_FullScan(::benchmark::State& state) {
     RunReadBenchmark(state, FlatFixture(), FlatSchema(), /*predicate=*/nullptr,
                      /*selection_bitmap=*/std::nullopt, /*options=*/{}, kReadBatchSize);
@@ -1496,6 +1572,16 @@ BENCHMARK_CAPTURE(BM_ParquetWrite_Compression, zstd, "zstd")
     ->Unit(benchmark::kMillisecond)
     ->UseRealTime();
 
+BENCHMARK(BM_ParquetRead_OffsetIndexCache)
+    ->ArgNames({"page_bytes", "cache", "full_scan"})
+    ->Args({16384, 0, 0})
+    ->Args({16384, 1, 0})
+    ->Args({1048576, 0, 0})
+    ->Args({1048576, 1, 0})
+    ->Args({16384, 0, 1})
+    ->Args({16384, 1, 1})
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
 BENCHMARK(BM_ParquetRead_FullScan)->Unit(benchmark::kMillisecond)->UseRealTime();
 BENCHMARK_CAPTURE(BM_ParquetRead_Projection, id, "id")
     ->Unit(benchmark::kMillisecond)
@@ -1590,6 +1676,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     ::benchmark::RunSpecifiedBenchmarks();
+    // Delete temporary files before filesystem singletons (including IOHook) are destroyed.
+    ReadFixtures().clear();
     ::benchmark::Shutdown();
     return g_failed.load() ? 1 : 0;
 }

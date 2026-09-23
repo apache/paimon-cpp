@@ -33,9 +33,9 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/types/vector_type.h"
 #include "paimon/common/utils/date_time_utils.h"
-#include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
@@ -85,11 +85,11 @@ struct Token {
     std::string value;
 };
 
-// Extension type attributes of a parsed atomic type. BLOB and VARIANT parse to plain arrow
-// types (large_binary / struct) and need field-level metadata markers applied by the caller.
+// Logical attributes not represented by the Arrow type are attached to the parsed field.
 struct AtomicTypeAttributes {
     bool is_blob = false;
     bool is_variant = false;
+    std::optional<int32_t> time_precision;
 };
 
 // nullptr is returned in the case of parsing failed
@@ -250,6 +250,7 @@ class TokenParser {
     Result<std::shared_ptr<arrow::DataType>> ParseStringType();
     Result<std::shared_ptr<arrow::DataType>> ParseDecimalType();
     Result<std::shared_ptr<arrow::DataType>> ParseDoubleType();
+    Result<std::shared_ptr<arrow::DataType>> ParseTimeType(AtomicTypeAttributes* attributes);
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampType();
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampLtzType();
     Result<std::shared_ptr<arrow::DataType>> ParseVectorType();
@@ -523,6 +524,8 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTypeByKeyword(
             return ParseDoubleType();
         case Keyword::DATE:
             return arrow::date32();
+        case Keyword::TIME:
+            return ParseTimeType(attributes);
         case Keyword::TIMESTAMP:
             return ParseTimestampType();
         case Keyword::TIMESTAMP_LTZ:
@@ -580,6 +583,22 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseDoubleType() {
         PAIMON_RETURN_NOT_OK(NextToken(Keyword::PRECISION));
     }
     return arrow::float64();
+}
+
+Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTimeType(
+    AtomicTypeAttributes* attributes) {
+    PAIMON_ASSIGN_OR_RAISE(int32_t precision, ParseOptionalPrecision(/*default_precision=*/0));
+    if (precision < 0 || precision > 9) {
+        return Status::Invalid("Time precision must be between 0 and 9 (both inclusive)");
+    }
+    if (HasNextToken({Keyword::WITHOUT})) {
+        PAIMON_RETURN_NOT_OK(NextToken(Keyword::WITHOUT));
+        PAIMON_RETURN_NOT_OK(NextToken(Keyword::TIME));
+        PAIMON_RETURN_NOT_OK(NextToken(Keyword::ZONE));
+    }
+    // Paimon stores TIME as milliseconds of the day, including PyPaimon's TIME(0).
+    attributes->time_precision = precision;
+    return arrow::time32(arrow::TimeUnit::MILLI);
 }
 
 Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTimestampType() {
@@ -647,15 +666,91 @@ Result<int32_t> TokenParser::ParseOptionalPrecision(int32_t default_precision) {
 }
 }  // namespace
 
+Result<int32_t> DataTypeJsonParser::FieldIdAssigner::Assign(
+    const std::optional<int32_t>& explicit_id) {
+    // Mixing both forms would let a generated id collide with an explicit one.
+    if (explicit_id.has_value()) {
+        if (next_generated_id_ != 0) {
+            return Status::Invalid("Partial field id is not allowed.");
+        }
+        has_explicit_id_ = true;
+        return explicit_id.value();
+    }
+    if (has_explicit_id_) {
+        return Status::Invalid("Partial field id is not allowed.");
+    }
+    return next_generated_id_++;
+}
+
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseType(
     const std::string& name, const rapidjson::Value& type_json_value) {
+    FieldIdAssigner field_id_assigner;
+    return ParseType(name, type_json_value, &field_id_assigner);
+}
+
+Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseType(
+    const std::string& name, const rapidjson::Value& type_json_value,
+    FieldIdAssigner* field_id_assigner) {
     if (type_json_value.IsString()) {
         return ParseAtomicTypeField(name, type_json_value);
     } else if (type_json_value.IsObject()) {
-        return ParseComplexTypeField(name, type_json_value);
+        return ParseComplexTypeField(name, type_json_value, field_id_assigner);
     }
 
     return Status::Invalid("cannot parse data type");
+}
+
+Result<DataField> DataTypeJsonParser::ParseDataField(const rapidjson::Value& field_json_value) {
+    return ParseDataField(field_json_value, /*field_id_assigner=*/nullptr);
+}
+
+Result<DataField> DataTypeJsonParser::ParseDataField(const rapidjson::Value& field_json_value,
+                                                     FieldIdAssigner* field_id_assigner) {
+    if (!field_json_value.IsObject()) {
+        return Status::Invalid("data field must be an object");
+    }
+    std::optional<int32_t> explicit_id;
+    if (field_json_value.HasMember("id") && !field_json_value["id"].IsNull()) {
+        if (!field_json_value["id"].IsInt()) {
+            return Status::Invalid("value of key 'id' must be int");
+        }
+        explicit_id = field_json_value["id"].GetInt();
+    }
+    int32_t id = -1;
+    if (field_id_assigner != nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(id, field_id_assigner->Assign(explicit_id));
+    } else if (explicit_id.has_value()) {
+        id = explicit_id.value();
+    } else {
+        return Status::Invalid("key 'id' must exist");
+    }
+    if (!field_json_value.HasMember("name")) {
+        return Status::Invalid("key 'name' must exist");
+    }
+    const auto& name_value = field_json_value["name"];
+    if (!name_value.IsString()) {
+        return Status::Invalid("value of key 'name' must be string");
+    }
+    std::string name(name_value.GetString(), name_value.GetStringLength());
+    if (!field_json_value.HasMember("type")) {
+        return Status::Invalid("key 'type' must exist");
+    }
+    Result<std::shared_ptr<arrow::Field>> field_result =
+        ParseType(name, field_json_value["type"], field_id_assigner);
+    if (!field_result.ok()) {
+        return Status::Invalid(
+            fmt::format("parse data type failed, error msg: {}", field_result.status().ToString()));
+    }
+    std::optional<std::string> description;
+    if (field_json_value.HasMember("description") && !field_json_value["description"].IsNull()) {
+        const auto& description_value = field_json_value["description"];
+        if (!description_value.IsString()) {
+            return Status::Invalid("value of key 'description' must be string");
+        }
+        description =
+            std::string(description_value.GetString(), description_value.GetStringLength());
+    }
+    return DataField(id, field_result.value(), description);
 }
 
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseAtomicTypeField(
@@ -668,13 +763,19 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseAtomicTypeField(
         return BlobUtils::ToArrowField(name, nullable);
     } else if (attributes.is_variant) {
         return VariantTypeUtils::ToArrowField(name, nullable);
+    } else if (attributes.time_precision) {
+        return arrow::field(
+            name, type, nullable,
+            arrow::KeyValueMetadata::Make({DataType::kTimePrecision},
+                                          {std::to_string(attributes.time_precision.value())}));
     } else {
         return arrow::field(name, type, nullable);
     }
 }
 
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseComplexTypeField(
-    const std::string& name, const rapidjson::Value& type_json_value) {
+    const std::string& name, const rapidjson::Value& type_json_value,
+    FieldIdAssigner* field_id_assigner) {
     if (!type_json_value.HasMember("type")) {
         return Status::Invalid("complex data type must have type");
     }
@@ -686,13 +787,13 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseComplexTypeField(
     }
 
     if (StringUtils::StartsWith(type_str, "ARRAY")) {
-        return ParseArrayType(name, type_json_value, nullable);
+        return ParseArrayType(name, type_json_value, nullable, field_id_assigner);
     } else if (StringUtils::StartsWith(type_str, "VECTOR")) {
-        return ParseVectorType(name, type_json_value, nullable);
+        return ParseVectorType(name, type_json_value, nullable, field_id_assigner);
     } else if (StringUtils::StartsWith(type_str, "MAP")) {
-        return ParseMapType(name, type_json_value, nullable);
+        return ParseMapType(name, type_json_value, nullable, field_id_assigner);
     } else if (StringUtils::StartsWith(type_str, "ROW")) {
-        return ParseRowType(name, type_json_value, nullable);
+        return ParseRowType(name, type_json_value, nullable, field_id_assigner);
     } else if (StringUtils::StartsWith(type_str, "MULTISET")) {
         return Status::NotImplemented("MULTISET is not supported");
     }
@@ -701,18 +802,20 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseComplexTypeField(
 }
 
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseArrayType(
-    const std::string& name, const rapidjson::Value& type_json_value, bool nullable) {
+    const std::string& name, const rapidjson::Value& type_json_value, bool nullable,
+    FieldIdAssigner* field_id_assigner) {
     if (!type_json_value.HasMember("element")) {
         return Status::Invalid("array data type must have element");
     }
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> element_field,
-                           ParseType("item", type_json_value["element"]));
+                           ParseType("item", type_json_value["element"], field_id_assigner));
     return arrow::field(name, arrow::list(element_field), nullable);
 }
 
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseVectorType(
-    const std::string& name, const rapidjson::Value& type_json_value, bool nullable) {
+    const std::string& name, const rapidjson::Value& type_json_value, bool nullable,
+    FieldIdAssigner* field_id_assigner) {
     if (!type_json_value.HasMember("element") || !type_json_value.HasMember("length")) {
         return Status::Invalid("vector data type must have element and length");
     }
@@ -724,7 +827,7 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseVectorType(
         return Status::Invalid("Vector length must be between 1 and 2147483647 (both inclusive)");
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> element_field,
-                           ParseType("item", type_json_value["element"]));
+                           ParseType("item", type_json_value["element"], field_id_assigner));
     if (!VectorType::IsValidElementType(element_field->type())) {
         return Status::Invalid(
             fmt::format("Invalid element type for vector: {}", element_field->type()->ToString()));
@@ -733,13 +836,14 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseVectorType(
 }
 
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseMapType(
-    const std::string& name, const rapidjson::Value& type_json_value, bool nullable) {
+    const std::string& name, const rapidjson::Value& type_json_value, bool nullable,
+    FieldIdAssigner* field_id_assigner) {
     if (!type_json_value.HasMember("key") || !type_json_value.HasMember("value")) {
         return Status::Invalid("map data type must have key and value");
     }
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> key,
-                           ParseType("key", type_json_value["key"]));
+                           ParseType("key", type_json_value["key"], field_id_assigner));
 
     // NOTE: Unlike Java Paimon, this C++ implementation does not support nullable keys in
     // MapType. This is a limitation of Apache Arrow, which does not allow null keys in its
@@ -748,14 +852,24 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseMapType(
     // interoperating with Java Paimon.
     key = key->WithNullable(false);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> value,
-                           ParseType("value", type_json_value["value"]));
+                           ParseType("value", type_json_value["value"], field_id_assigner));
     return arrow::field(name, std::make_shared<arrow::MapType>(key, value), nullable);
 }
 
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseRowType(
-    const std::string& name, const rapidjson::Value& type_json_value, bool nullable) {
-    auto data_fields =
-        RapidJsonUtil::DeserializeKeyValue<std::vector<DataField>>(type_json_value, "fields");
+    const std::string& name, const rapidjson::Value& type_json_value, bool nullable,
+    FieldIdAssigner* field_id_assigner) {
+    if (!type_json_value.HasMember("fields") || !type_json_value["fields"].IsArray()) {
+        return Status::Invalid("row data type must have fields");
+    }
+    const auto& field_json_array = type_json_value["fields"].GetArray();
+    std::vector<DataField> data_fields;
+    data_fields.reserve(field_json_array.Size());
+    for (const auto& field_json_value : field_json_array) {
+        PAIMON_ASSIGN_OR_RAISE(DataField data_field,
+                               ParseDataField(field_json_value, field_id_assigner));
+        data_fields.push_back(std::move(data_field));
+    }
 
     auto struct_type = DataField::ConvertDataFieldsToArrowStructType(data_fields);
     return arrow::field(name, struct_type, nullable);

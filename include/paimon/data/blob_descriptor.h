@@ -26,6 +26,7 @@
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
+#include "paimon/visibility.h"
 
 namespace paimon {
 /// Blob descriptor to describe a blob reference.
@@ -78,9 +79,6 @@ class PAIMON_EXPORT BlobDescriptor {
         : version_(version), uri_(uri), offset_(offset), length_(length) {}
 
  private:
-    static constexpr int64_t kMagic = 0x424C4F4244455343l;
-    /// one byte for version, eight bytes for magic number.
-    static constexpr uint64_t kMinDescriptorLength = 9;
     static constexpr int8_t kCurrentVersion = 2;
 
     const int8_t version_ = kCurrentVersion;

@@ -23,7 +23,6 @@
   "options": {
     "bucket": "-1",
     "file.format": "parquet",
-    "manifest.format": "avro",
     "row-tracking.enabled": "true",
     "data-evolution.enabled": "true",
     "blob-field": "f_array_blob"

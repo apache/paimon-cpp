@@ -171,9 +171,6 @@ Result<bool> KeyValueFileStoreScan::FilterByValueFilter(const ManifestEntry& ent
     if (!value_filter_) {
         return true;
     }
-    if (entry.File()->embedded_index != nullptr) {
-        return Status::NotImplemented("do not support embedded index in DataFileMeta");
-    }
 
     const auto& meta = entry.File();
 
@@ -201,12 +198,12 @@ Result<bool> KeyValueFileStoreScan::FilterByValueFilter(const ManifestEntry& ent
         SimpleStatsEvolution::EvolutionStats new_stats,
         evolution->Evolution(meta->value_stats, meta->row_count, meta->value_stats_cols));
 
+    bool predicate_result = false;
     try {
         PAIMON_ASSIGN_OR_RAISE(
-            bool predicate_result,
+            predicate_result,
             predicate_filter->Test(schema_, meta->row_count, *(new_stats.min_values),
                                    *(new_stats.max_values), *(new_stats.null_counts)));
-        return predicate_result;
     } catch (const std::exception& e) {
         return Status::Invalid(fmt::format("FilterByValueFilter failed for file {}, with {} error",
                                            meta->file_name, e.what()));
@@ -214,6 +211,11 @@ Result<bool> KeyValueFileStoreScan::FilterByValueFilter(const ManifestEntry& ent
         return Status::Invalid(fmt::format(
             "FilterByValueFilter failed for file {}, with unknown error", meta->file_name));
     }
+    if (!predicate_result) {
+        return false;
+    }
+
+    return TestFileIndex(value_filter_, meta, evolution, data_schema);
 }
 
 bool KeyValueFileStoreScan::NoOverlapping(const std::vector<ManifestEntry>& entries) {
