@@ -81,7 +81,7 @@ class PAIMON_EXPORT BlobUtils {
     /// Returns whether the field is a top-level MAP whose values are BLOBs.
     static bool IsMapBlobField(const std::shared_ptr<arrow::Field>& field);
     /// Returns whether the field is stored in a standalone blob file.
-    static bool IsBlobFileField(const std::shared_ptr<arrow::Field>& field);
+    static bool IsAnyBlobField(const std::shared_ptr<arrow::Field>& field);
     /// Returns whether an ARRAY<BLOB> row is the internal fallback sentinel.
     static bool IsArrayBlobPlaceholder(const arrow::ListArray& array, int64_t row);
     /// Returns whether a MAP<..., BLOB> row is the internal fallback sentinel.

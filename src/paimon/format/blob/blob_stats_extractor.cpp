@@ -46,7 +46,7 @@ BlobStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& file_
         return Status::Invalid(
             fmt::format("schema field number {} is not 1", write_schema_->num_fields()));
     }
-    if (!BlobUtils::IsBlobFileField(write_schema_->field(0))) {
+    if (!BlobUtils::IsAnyBlobField(write_schema_->field(0))) {
         return Status::Invalid(
             fmt::format("field {} is not a blob-file field", write_schema_->field(0)->ToString()));
     }

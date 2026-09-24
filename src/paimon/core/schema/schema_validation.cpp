@@ -775,7 +775,7 @@ Status SchemaValidation::ValidateRowTracking(const TableSchema& table_schema,
 
     std::vector<std::string> blob_names;
     for (const auto& field : table_schema.Fields()) {
-        if (BlobUtils::IsBlobFileField(field.ArrowField())) {
+        if (BlobUtils::IsAnyBlobField(field.ArrowField())) {
             blob_names.push_back(field.Name());
         }
     }
@@ -817,9 +817,8 @@ Status SchemaValidation::ValidateBlobFields(const TableSchema& schema, const Cor
         PAIMON_RETURN_NOT_OK(ValidateNoDuplicateField(field_names, option_key));
         PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> blob_fields, schema.GetFields(field_names));
         for (const auto& blob_field : blob_fields) {
-            bool is_blob = allow_container_blob
-                               ? BlobUtils::IsBlobFileField(blob_field.ArrowField())
-                               : BlobUtils::IsBlobField(blob_field.ArrowField());
+            bool is_blob = allow_container_blob ? BlobUtils::IsAnyBlobField(blob_field.ArrowField())
+                                                : BlobUtils::IsBlobField(blob_field.ArrowField());
             if (!is_blob) {
                 const std::string expected_type =
                     allow_container_blob ? "BLOB, ARRAY<BLOB> or MAP<..., BLOB>" : "BLOB";
@@ -909,7 +908,7 @@ Status SchemaValidation::ValidateMosaicDataFields(const TableSchema& schema,
     // Top-level blob-file fields stored in separate files are skipped; descriptor and view fields
     // are inline, so Mosaic must reject them here.
     for (const DataField& field : schema.Fields()) {
-        if (BlobUtils::IsBlobFileField(field.ArrowField()) &&
+        if (BlobUtils::IsAnyBlobField(field.ArrowField()) &&
             inline_blob_field_set.count(field.Name()) == 0) {
             continue;
         }
@@ -975,7 +974,7 @@ Status SchemaValidation::ValidateLanceDataFields(const TableSchema& schema,
             return Status::OK();
         }
         for (const DataField& field : schema.Fields()) {
-            if (BlobUtils::IsBlobFileField(field.ArrowField()) &&
+            if (BlobUtils::IsAnyBlobField(field.ArrowField()) &&
                 inline_blob_field_set.count(field.Name()) == 0) {
                 continue;
             }

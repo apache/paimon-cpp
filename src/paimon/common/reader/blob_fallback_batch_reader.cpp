@@ -56,7 +56,7 @@ Result<std::unique_ptr<BlobFallbackBatchReader>> BlobFallbackBatchReader::Create
     }
     int32_t blob_field_idx = -1;
     for (int32_t i = 0; i < read_schema->num_fields(); i++) {
-        if (BlobUtils::IsBlobFileField(read_schema->field(i))) {
+        if (BlobUtils::IsAnyBlobField(read_schema->field(i))) {
             if (blob_field_idx != -1) {
                 return Status::Invalid(
                     "Blob fallback read schema should contain exactly one blob field.");

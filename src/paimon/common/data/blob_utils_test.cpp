@@ -83,7 +83,7 @@ TEST_F(BlobUtilsTest, IsArrayBlobField) {
     auto array_blob_field =
         arrow::field("array_blob", arrow::list(BlobUtils::ToArrowField("item", true)));
     ASSERT_TRUE(BlobUtils::IsArrayBlobField(array_blob_field));
-    ASSERT_TRUE(BlobUtils::IsBlobFileField(array_blob_field));
+    ASSERT_TRUE(BlobUtils::IsAnyBlobField(array_blob_field));
 
     ASSERT_FALSE(BlobUtils::IsArrayBlobField(nullptr));
     ASSERT_FALSE(BlobUtils::IsArrayBlobField(

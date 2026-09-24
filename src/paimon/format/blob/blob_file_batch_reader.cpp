@@ -264,7 +264,7 @@ Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
             fmt::format("read schema field number {} is not 1", arrow_schema->num_fields()));
     }
     std::shared_ptr<arrow::Field> read_field = arrow_schema->field(0);
-    if (!BlobUtils::IsBlobFileField(read_field)) {
+    if (!BlobUtils::IsAnyBlobField(read_field)) {
         return Status::Invalid(fmt::format("field {} must be BLOB, ARRAY<BLOB> or MAP<..., BLOB>",
                                            read_field->ToString()));
     }

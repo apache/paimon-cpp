@@ -132,7 +132,7 @@ bool BlobUtils::IsMapBlobField(const std::shared_ptr<arrow::Field>& field) {
     return map_type.item_type()->id() == arrow::Type::LARGE_BINARY;
 }
 
-bool BlobUtils::IsBlobFileField(const std::shared_ptr<arrow::Field>& field) {
+bool BlobUtils::IsAnyBlobField(const std::shared_ptr<arrow::Field>& field) {
     return IsBlobField(field) || IsArrayBlobField(field) || IsMapBlobField(field);
 }
 
