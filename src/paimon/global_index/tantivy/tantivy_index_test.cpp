@@ -85,7 +85,8 @@ class TantivyGlobalIndexIntegrationTest : public ::testing::Test {
                                                int64_t /*unused_expected_range_end*/) const {
         auto global_index = std::make_shared<TantivyGlobalIndex>(options);
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_writer = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexWriter> w,
                                global_index->CreateWriter("f0", CreateArrowSchema(data_type).get(),
                                                           file_writer, pool_));
@@ -111,7 +112,8 @@ class TantivyGlobalIndexIntegrationTest : public ::testing::Test {
         const std::map<std::string, std::string>& options, const GlobalIndexIOMeta& meta) const {
         auto global_index = std::make_shared<TantivyGlobalIndex>(options);
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_reader = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_reader = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         return global_index->CreateReader(CreateArrowSchema(data_type).get(), file_reader, {meta},
                                           pool_);
     }

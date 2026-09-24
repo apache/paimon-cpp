@@ -70,6 +70,11 @@ class PAIMON_EXPORT GlobalIndexer {
         ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
         const std::vector<GlobalIndexIOMeta>& files,
         const std::shared_ptr<MemoryPool>& pool) const = 0;
+
+    /// Whether this indexer supports checkpointing an index build.
+    virtual bool SupportsCheckpoint() const {
+        return false;
+    }
 };
 
 }  // namespace paimon

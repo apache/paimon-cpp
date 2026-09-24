@@ -145,7 +145,9 @@ struct PAIMON_EXPORT RealtimeQueryContext {
 /// Customizable plugin interface for storing and querying real-time rows before Paimon data-file
 /// generation.
 ///
-/// Paimon serializes calls to `Write` and `SealForCommit` for the same store. After sealing,
+/// Calls to `Write` and `SealForCommit` can overlap for the same store. Store implementations must
+/// synchronize segment rotation. After rotation, subsequent writes go to the new building segment
+/// while the sealed segment may be spilled. After sealing,
 /// `CreateCommitReaders` may read the immutable sealed segment while later `Write` calls append to
 /// a new building segment. Paimon retains control of file format, rolling, indexes, and
 /// commit-message generation. A store may choose its own in-memory representation, indexes, and

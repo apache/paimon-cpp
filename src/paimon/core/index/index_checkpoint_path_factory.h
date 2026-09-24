@@ -7,7 +7,7 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,30 +21,23 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <vector>
-
-#include "fmt/format.h"
-#include "paimon/common/data/binary_row.h"
-#include "paimon/core/manifest/manifest_entry.h"
-#include "paimon/core/operation/restore_files.h"
-#include "paimon/result.h"
 
 namespace paimon {
 
-/// Restore for write to restore data files by partition and bucket from file system.
-class WriteRestore {
+/// Path factory for global index checkpoints scoped to one task.
+class IndexCheckpointPathFactory {
  public:
-    static Result<std::optional<int32_t>> ExtractDataFiles(
-        const std::vector<ManifestEntry>& entries,
-        std::vector<std::shared_ptr<DataFileMeta>>* data_files);
+    virtual ~IndexCheckpointPathFactory() = default;
 
-    virtual ~WriteRestore() = default;
+    /// Creates the path for the specified checkpoint id, without storage I/O.
+    virtual std::string NewPath(int64_t checkpoint_id) const = 0;
+    virtual std::string ToPath(const std::string& file_name) const = 0;
 
-    virtual Result<int64_t> LatestCommittedIdentifier(const std::string& user) const = 0;
+    /// Returns the directory containing the checkpoint files.
+    virtual const std::string& GetDirectoryPath() const = 0;
 
-    virtual Result<std::shared_ptr<RestoreFiles>> GetRestoreFiles(
-        const BinaryRow& partition, int32_t bucket, bool scan_delete_vectors_index,
-        bool scan_source_index_payloads) const = 0;
+    /// Returns the checkpoint id when the file name belongs to this factory.
+    virtual std::optional<int64_t> GetCheckpointId(const std::string& file_name) const = 0;
 };
 
 }  // namespace paimon

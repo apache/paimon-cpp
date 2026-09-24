@@ -2056,11 +2056,12 @@ TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughSkipsFallbackToPlain
     // its presence cannot be the signal; the data pages are what say the column went plain. Both
     // are asserted so the test fails loudly if the fixture stops producing a mixed chunk rather
     // than quietly passing for the wrong reason.
-    auto metadata_file = arrow::io::ReadableFile::Open(file_path, pool_.get());
+    auto metadata_file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
     ASSERT_TRUE(metadata_file.ok());
     std::unique_ptr<::parquet::arrow::FileReader> metadata_reader;
-    ASSERT_TRUE(
-        ::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), pool_.get(), &metadata_reader).ok());
+    ASSERT_TRUE(::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), arrow::default_memory_pool(),
+                                           &metadata_reader)
+                    .ok());
     std::unique_ptr<::parquet::ColumnChunkMetaData> column_chunk =
         metadata_reader->parquet_reader()->metadata()->RowGroup(0)->ColumnChunk(0);
     ASSERT_TRUE(column_chunk->has_dictionary_page());
@@ -2151,11 +2152,12 @@ TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughRequiresEveryRowGrou
 
     // Pin the fixture: without this the read assertion below would also pass on a file whose
     // first row group was never dictionary-encoded in the first place.
-    auto metadata_file = arrow::io::ReadableFile::Open(file_path, pool_.get());
+    auto metadata_file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
     ASSERT_TRUE(metadata_file.ok());
     std::unique_ptr<::parquet::arrow::FileReader> metadata_reader;
-    ASSERT_TRUE(
-        ::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), pool_.get(), &metadata_reader).ok());
+    ASSERT_TRUE(::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), arrow::default_memory_pool(),
+                                           &metadata_reader)
+                    .ok());
     std::shared_ptr<::parquet::FileMetaData> metadata =
         metadata_reader->parquet_reader()->metadata();
     ASSERT_EQ(2, metadata->num_row_groups());

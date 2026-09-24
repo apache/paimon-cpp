@@ -545,10 +545,11 @@ TEST_F(VariantParquetTest, PhysicalLayoutMatchesJava) {
     // reader is required because these parquet-level properties (repetition, physical types,
     // field ids, the absence of a logical-type annotation) are not visible in the Arrow schema
     // surfaced by the paimon reader.
-    auto file = arrow::io::ReadableFile::Open(file_path_, arrow_pool_.get());
-    ASSERT_TRUE(file.ok());
+    auto file = arrow::io::ReadableFile::Open(file_path_, arrow::default_memory_pool());
+    ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
-    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    auto status =
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::SchemaDescriptor* schema = reader->parquet_reader()->metadata()->schema();
     ASSERT_EQ(schema->num_columns(), 3);
@@ -591,12 +592,14 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
 
     {
         // Sanity-check the raw file through the plain parquet-arrow reader: the struct child
-        // arrays must align with the logical rows.
-        auto file = arrow::io::ReadableFile::Open(file_path_, arrow_pool_.get());
-        ASSERT_TRUE(file.ok());
+        // arrays must align with the logical rows. Use the process-wide pool: pre-buffered reads
+        // may release their buffers on Arrow IO threads after this fixture's pool is destroyed.
+        auto file = arrow::io::ReadableFile::Open(file_path_, arrow::default_memory_pool());
+        ASSERT_TRUE(file.ok()) << file.status().ToString();
         std::unique_ptr<::parquet::arrow::FileReader> raw_reader;
         ASSERT_TRUE(
-            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &raw_reader).ok());
+            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &raw_reader)
+                .ok());
         std::shared_ptr<arrow::Table> table;
         ASSERT_TRUE(raw_reader->ReadTable(&table).ok());
         auto raw_variant = checked_pointer_cast<arrow::StructArray>(table->column(1)->chunk(0));
@@ -712,11 +715,11 @@ TEST_F(VariantParquetTest, ShreddedWriteAndReadRoundTrip) {
             }
 
             {
-                auto file = arrow::io::ReadableFile::Open(file_path_, arrow_pool_.get());
-                ASSERT_TRUE(file.ok());
+                auto file = arrow::io::ReadableFile::Open(file_path_, arrow::default_memory_pool());
+                ASSERT_TRUE(file.ok()) << file.status().ToString();
                 std::unique_ptr<::parquet::arrow::FileReader> reader;
-                auto status =
-                    ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+                auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(),
+                                                         arrow::default_memory_pool(), &reader);
                 ASSERT_TRUE(status.ok()) << status.ToString();
                 const auto* root = reader->parquet_reader()->metadata()->schema()->group_node();
                 ASSERT_EQ(root->field_count(), 2);

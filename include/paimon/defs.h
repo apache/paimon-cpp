@@ -396,6 +396,12 @@ struct PAIMON_EXPORT Options {
     /// a table is never compacted.
     static const char DELETION_VECTORS_ENABLED[];
 
+    /// "pk-clustering-override" - Enables clustering by non-primary key fields. When set to true,
+    /// the physical sort order of data files is determined by the configured 'clustering.columns'
+    /// instead of the primary key, optimizing query performance for non-PK columns.
+    /// Default value is false. The C++ commit path does not support this mode.
+    static const char PK_CLUSTERING_OVERRIDE[];
+
     /// "deletion-vector.index-file.target-size" - The target size of deletion vector index file.
     /// Default value is 2MB.
     static const char DELETION_VECTOR_INDEX_FILE_TARGET_SIZE[];
