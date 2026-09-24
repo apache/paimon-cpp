@@ -60,7 +60,8 @@ class BitmapIndexReaderTest : public ::testing::Test {
         test_dir_ = UniqueTestDirectory::Create("local");
         ASSERT_TRUE(test_dir_);
         file_manager_ = std::make_shared<GlobalIndexFileManager>(
-            test_dir_->GetFileSystem(), std::make_shared<MockIndexPathFactory>(test_dir_->Str()));
+            test_dir_->GetFileSystem(), std::make_shared<MockIndexPathFactory>(test_dir_->Str()),
+            /*checkpoint_path_factory=*/nullptr);
         ASSERT_OK_AND_ASSIGN(compression_factory_,
                              BlockCompressionFactory::Create(BlockCompressionType::NONE));
     }
