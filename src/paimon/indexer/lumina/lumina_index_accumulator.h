@@ -20,11 +20,14 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
 #include "lumina/api/LuminaBuilder.h"
 #include "lumina/api/Options.h"
+#include "lumina/extensions/experimental/BuildCombinedExtensionV0.h"
+#include "lumina/extensions/experimental/CkptManager.h"
 #include "lumina/extensions/experimental/DatasetWithTag.h"
 #include "paimon/indexer/lumina/lumina_memory_pool.h"
 #include "paimon/indexer/lumina/lumina_tag_utils.h"
@@ -33,6 +36,19 @@
 
 namespace paimon::lumina {
 
+/// Keeps a built Lumina index and its attached extensions alive until the index is dumped.
+struct LuminaIndexBuildContext {
+    explicit LuminaIndexBuildContext(::lumina::api::LuminaBuilder&& value)
+        : builder(std::move(value)) {}
+
+    ::lumina::api::LuminaBuilder builder;
+    std::unique_ptr<::lumina::extensions::experimental::BuildWithCheckpointExtension>
+        checkpoint_extension;
+    std::unique_ptr<::lumina::extensions::experimental::BuildWithTagExtension> tag_extension;
+    std::unique_ptr<::lumina::extensions::experimental::BuildWithCkptAndTagExtension>
+        checkpoint_tag_extension;
+};
+
 /// Accumulates the non-null vector segments shared by Lumina Global Index and File Index writers.
 class LuminaIndexAccumulator {
  public:
@@ -40,9 +56,10 @@ class LuminaIndexAccumulator {
                     const std::shared_ptr<arrow::ListArray>& vectors, uint32_t dimension,
                     const std::vector<LuminaTagField>& tag_fields, int64_t first_row_id);
 
-    Result<::lumina::api::LuminaBuilder> Build(const ::lumina::api::BuilderOptions& builder_options,
-                                               uint32_t dimension, bool with_tag,
-                                               LuminaMemoryPool* pool);
+    Result<std::unique_ptr<LuminaIndexBuildContext>> Build(
+        const ::lumina::api::BuilderOptions& builder_options, uint32_t dimension, bool with_tag,
+        std::unique_ptr<::lumina::extensions::experimental::CkptManager> checkpoint_manager,
+        LuminaMemoryPool* pool);
 
     int64_t IndexedCount() const {
         return indexed_count_;

@@ -81,34 +81,62 @@ Status LuminaIndexAccumulator::AddBatch(const std::shared_ptr<arrow::StructArray
     return Status::OK();
 }
 
-Result<::lumina::api::LuminaBuilder> LuminaIndexAccumulator::Build(
+Result<std::unique_ptr<LuminaIndexBuildContext>> LuminaIndexAccumulator::Build(
     const ::lumina::api::BuilderOptions& builder_options, uint32_t dimension, bool with_tag,
+    std::unique_ptr<::lumina::extensions::experimental::CkptManager> checkpoint_manager,
     LuminaMemoryPool* pool) {
     ::lumina::core::MemoryResourceConfig memory_resource(pool);
     PAIMON_ASSIGN_OR_RAISE_FROM_LUMINA(
         ::lumina::api::LuminaBuilder builder,
         ::lumina::api::LuminaBuilder::Create(builder_options, memory_resource));
+    auto context = std::make_unique<LuminaIndexBuildContext>(std::move(builder));
+
+    if (checkpoint_manager) {
+        if (!with_tag) {
+            context->checkpoint_extension = std::make_unique<
+                ::lumina::extensions::experimental::BuildWithCheckpointExtension>();
+            PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                context->builder.Attach(*context->checkpoint_extension));
+            PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                context->checkpoint_extension->LoadCkptManager(std::move(checkpoint_manager)));
+        } else {
+            context->checkpoint_tag_extension = std::make_unique<
+                ::lumina::extensions::experimental::BuildWithCkptAndTagExtension>();
+            PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                context->builder.Attach(*context->checkpoint_tag_extension));
+            PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                context->checkpoint_tag_extension->LoadCkptManager(std::move(checkpoint_manager)));
+        }
+    } else if (with_tag) {
+        context->tag_extension =
+            std::make_unique<::lumina::extensions::experimental::BuildWithTagExtension>();
+        PAIMON_RETURN_NOT_OK_FROM_LUMINA(context->builder.Attach(*context->tag_extension));
+    }
 
     // Pretrain before inserting the accumulated vectors.
     LuminaDataset pretrain_data(indexed_count_, dimension, arrays_, array_start_ids_);
-    PAIMON_RETURN_NOT_OK_FROM_LUMINA(builder.PretrainFrom(pretrain_data));
+    PAIMON_RETURN_NOT_OK_FROM_LUMINA(context->builder.PretrainFrom(pretrain_data));
 
     // insert data
     if (!with_tag) {
         LuminaDataset insert_data(indexed_count_, dimension, arrays_, array_start_ids_);
-        std::vector<std::shared_ptr<arrow::FloatArray>>().swap(arrays_);
-        PAIMON_RETURN_NOT_OK_FROM_LUMINA(builder.InsertFrom(insert_data));
+        PAIMON_RETURN_NOT_OK_FROM_LUMINA(context->builder.InsertFrom(insert_data));
     } else {
-        ::lumina::extensions::experimental::BuildWithTagExtension tag_extension;
-        PAIMON_RETURN_NOT_OK_FROM_LUMINA(builder.Attach(tag_extension));
         LuminaDatasetWithTag insert_data(indexed_count_, dimension, arrays_, array_start_ids_,
                                          tag_data_vec_);
-        std::vector<std::shared_ptr<arrow::FloatArray>>().swap(arrays_);
-        std::vector<std::vector<::lumina::extensions::experimental::TagDimensionData>>().swap(
-            tag_data_vec_);
-        PAIMON_RETURN_NOT_OK_FROM_LUMINA(tag_extension.InsertFromWithTag(insert_data));
+        if (context->checkpoint_tag_extension) {
+            PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                context->checkpoint_tag_extension->InsertFromWithTag(insert_data));
+        } else {
+            PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+                context->tag_extension->InsertFromWithTag(insert_data));
+        }
     }
-    return std::move(builder);
+
+    std::vector<std::shared_ptr<arrow::FloatArray>>().swap(arrays_);
+    std::vector<std::vector<::lumina::extensions::experimental::TagDimensionData>>().swap(
+        tag_data_vec_);
+    return context;
 }
 
 }  // namespace paimon::lumina

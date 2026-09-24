@@ -22,6 +22,7 @@
 
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "glog/logging.h"
 #include "lumina/api/LuminaBuilder.h"
 #include "lumina/api/LuminaSearcher.h"
 #include "lumina/core/Constants.h"
@@ -32,6 +33,7 @@
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
+#include "paimon/indexer/lumina/lumina_checkpoint_manager.h"
 #include "paimon/indexer/lumina/lumina_file_writer.h"
 #include "paimon/indexer/lumina/lumina_index_options.h"
 #include "paimon/indexer/lumina/lumina_index_searcher.h"
@@ -72,10 +74,19 @@ Result<std::shared_ptr<GlobalIndexWriter>> LuminaGlobalIndex::CreateWriter(
     PAIMON_ASSIGN_OR_RAISE(uint32_t dimension, LuminaIndexOptions::GetDimension(lumina_options));
     PAIMON_ASSIGN_OR_RAISE(::lumina::api::BuilderOptions builder_options,
                            LuminaIndexOptions::CreateBuilderOptions(lumina_options));
+    std::shared_ptr<GlobalIndexCheckpointFileManager> checkpoint_file_manager;
+    if (LuminaIndexOptions::IsCheckpointEnabled(lumina_options)) {
+        checkpoint_file_manager =
+            std::dynamic_pointer_cast<GlobalIndexCheckpointFileManager>(file_writer);
+        if (!checkpoint_file_manager || !checkpoint_file_manager->SupportsCheckpoint()) {
+            return Status::Invalid("Lumina checkpoint requires a checkpoint-capable file writer");
+        }
+    }
     auto lumina_pool = std::make_shared<LuminaMemoryPool>(pool);
     return std::make_shared<LuminaIndexWriter>(
         field_name, arrow_type, dimension, file_writer, std::move(builder_options),
-        ::lumina::api::IOOptions(), lumina_options, std::move(tag_fields), lumina_pool);
+        ::lumina::api::IOOptions(), lumina_options, std::move(tag_fields), checkpoint_file_manager,
+        lumina_pool);
 }
 
 Result<LuminaIndexReader::IndexInfo> LuminaIndexReader::GetIndexInfo(
@@ -137,7 +148,9 @@ LuminaIndexWriter::LuminaIndexWriter(
     uint32_t dimension, const std::shared_ptr<GlobalIndexFileWriter>& file_manager,
     ::lumina::api::BuilderOptions&& builder_options, ::lumina::api::IOOptions&& io_options,
     const std::map<std::string, std::string>& lumina_options,
-    std::vector<LuminaTagField>&& tag_fields, const std::shared_ptr<LuminaMemoryPool>& pool)
+    std::vector<LuminaTagField>&& tag_fields,
+    const std::shared_ptr<GlobalIndexCheckpointFileManager>& checkpoint_file_manager,
+    const std::shared_ptr<LuminaMemoryPool>& pool)
     : pool_(pool),
       field_name_(field_name),
       arrow_type_(arrow_type),
@@ -146,7 +159,8 @@ LuminaIndexWriter::LuminaIndexWriter(
       builder_options_(std::move(builder_options)),
       io_options_(std::move(io_options)),
       lumina_options_(lumina_options),
-      tag_fields_(std::move(tag_fields)) {}
+      tag_fields_(std::move(tag_fields)),
+      checkpoint_file_manager_(checkpoint_file_manager) {}
 
 Status LuminaIndexWriter::AddBatch(::ArrowArray* arrow_array,
                                    std::vector<int64_t>&& relative_row_ids) {
@@ -179,9 +193,34 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
     if (accumulator_.IndexedCount() == 0) {
         return std::vector<GlobalIndexIOMeta>();
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        ::lumina::api::LuminaBuilder builder,
-        accumulator_.Build(builder_options_, dimension_, !tag_fields_.empty(), pool_.get()));
+
+    bool had_checkpoint = false;
+    if (checkpoint_file_manager_) {
+        PAIMON_ASSIGN_OR_RAISE(had_checkpoint, checkpoint_file_manager_->CheckpointExists());
+    }
+
+    auto build_index = [&]() -> Result<std::unique_ptr<LuminaIndexBuildContext>> {
+        std::unique_ptr<::lumina::extensions::experimental::CkptManager> checkpoint_manager;
+        if (checkpoint_file_manager_) {
+            checkpoint_manager =
+                std::make_unique<LuminaCheckpointManager>(checkpoint_file_manager_);
+        }
+        return accumulator_.Build(builder_options_, dimension_, !tag_fields_.empty(),
+                                  std::move(checkpoint_manager), pool_.get());
+    };
+
+    Result<std::unique_ptr<LuminaIndexBuildContext>> build_result = build_index();
+    if (!build_result.ok() && had_checkpoint) {
+        LOG(WARNING) << "Failed to build Lumina index with checkpoint, discard it and rebuild "
+                        "from scratch: "
+                     << build_result.status().ToString();
+        PAIMON_RETURN_NOT_OK(checkpoint_file_manager_->DeleteCheckpoint());
+        build_result = build_index();
+    }
+    if (!build_result.ok()) {
+        return build_result.status();
+    }
+    std::unique_ptr<LuminaIndexBuildContext> build_context = std::move(build_result).value();
 
     // dump index
     PAIMON_ASSIGN_OR_RAISE(std::string index_file_name,
@@ -189,7 +228,8 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out,
                            file_manager_->NewOutputStream(index_file_name));
     auto file_writer = std::make_unique<LuminaFileWriter>(out);
-    PAIMON_RETURN_NOT_OK_FROM_LUMINA(builder.Dump(std::move(file_writer), io_options_));
+    PAIMON_RETURN_NOT_OK_FROM_LUMINA(
+        build_context->builder.Dump(std::move(file_writer), io_options_));
     // prepare GlobalIndexIOMeta
     PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_manager_->GetFileSize(index_file_name));
     std::string options_json;
@@ -197,6 +237,13 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
     auto meta_bytes = std::make_shared<Bytes>(options_json, pool_->GetPaimonPool().get());
     GlobalIndexIOMeta meta(file_manager_->ToPath(index_file_name), file_size,
                            /*metadata=*/meta_bytes);
+    if (checkpoint_file_manager_) {
+        Status status = checkpoint_file_manager_->DeleteCheckpoint();
+        if (!status.ok()) {
+            LOG(WARNING) << "Failed to delete Lumina checkpoints after successful build: "
+                         << status.ToString();
+        }
+    }
     return std::vector<GlobalIndexIOMeta>({meta});
 }
 

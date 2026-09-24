@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -29,6 +30,7 @@
 #include "lumina/api/Options.h"
 #include "lumina/extensions/experimental/DatasetWithTag.h"
 #include "paimon/global_index/global_indexer.h"
+#include "paimon/global_index/io/global_index_checkpoint_file_manager.h"
 #include "paimon/indexer/lumina/lumina_index_accumulator.h"
 #include "paimon/indexer/lumina/lumina_index_options.h"
 #include "paimon/indexer/lumina/lumina_index_searcher.h"
@@ -53,6 +55,8 @@ namespace paimon::lumina {
 ///           lumina.diskann.build.thread_count:64
 ///           lumina.diskann.build.ef_construction:1024
 ///           lumina.diskann.build.neighbor_count:64
+///           lumina.extension.build.ckpt.threshold:10000
+///           lumina.extension.build.ckpt.count:3
 ///
 ///       - **Index Reader:**
 ///           No configuration required at load time — settings are stored in the index metadata,
@@ -67,8 +71,14 @@ class LuminaGlobalIndex : public GlobalIndexer {
     explicit LuminaGlobalIndex(const std::map<std::string, std::string>& options)
         : options_(options) {}
 
+    bool SupportsCheckpoint() const override {
+        return true;
+    }
+
     Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const override;
 
+    /// With checkpoints enabled, file_writer must implement GlobalIndexCheckpointFileManager and
+    /// return true from SupportsCheckpoint().
     Result<std::shared_ptr<GlobalIndexWriter>> CreateWriter(
         const std::string& field_name, ::ArrowSchema* arrow_schema,
         const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
@@ -85,14 +95,14 @@ class LuminaGlobalIndex : public GlobalIndexer {
 
 class LuminaIndexWriter : public GlobalIndexWriter {
  public:
-    LuminaIndexWriter(const std::string& field_name,
-                      const std::shared_ptr<arrow::DataType>& arrow_type, uint32_t dimension,
-                      const std::shared_ptr<GlobalIndexFileWriter>& file_manager,
-                      ::lumina::api::BuilderOptions&& builder_options,
-                      ::lumina::api::IOOptions&& io_options,
-                      const std::map<std::string, std::string>& lumina_options,
-                      std::vector<LuminaTagField>&& tag_fields,
-                      const std::shared_ptr<LuminaMemoryPool>& pool);
+    LuminaIndexWriter(
+        const std::string& field_name, const std::shared_ptr<arrow::DataType>& arrow_type,
+        uint32_t dimension, const std::shared_ptr<GlobalIndexFileWriter>& file_manager,
+        ::lumina::api::BuilderOptions&& builder_options, ::lumina::api::IOOptions&& io_options,
+        const std::map<std::string, std::string>& lumina_options,
+        std::vector<LuminaTagField>&& tag_fields,
+        const std::shared_ptr<GlobalIndexCheckpointFileManager>& checkpoint_file_manager,
+        const std::shared_ptr<LuminaMemoryPool>& pool);
 
     Status AddBatch(::ArrowArray* arrow_array, std::vector<int64_t>&& relative_row_ids) override;
 
@@ -109,6 +119,7 @@ class LuminaIndexWriter : public GlobalIndexWriter {
     ::lumina::api::IOOptions io_options_;
     std::map<std::string, std::string> lumina_options_;
     std::vector<LuminaTagField> tag_fields_;
+    std::shared_ptr<GlobalIndexCheckpointFileManager> checkpoint_file_manager_;
     LuminaIndexAccumulator accumulator_;
 };
 

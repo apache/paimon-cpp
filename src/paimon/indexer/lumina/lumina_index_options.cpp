@@ -71,6 +71,12 @@ Result<::lumina::api::BuilderOptions> LuminaIndexOptions::CreateBuilderOptions(
     return builder_options;
 }
 
+bool LuminaIndexOptions::IsCheckpointEnabled(
+    const std::map<std::string, std::string>& lumina_options) {
+    return lumina_options.count(std::string(::lumina::core::kExtensionCkptThreshold)) != 0 ||
+           lumina_options.count(std::string(::lumina::core::kExtensionCkptCount)) != 0;
+}
+
 Result<::lumina::api::SearcherOptions> LuminaIndexOptions::CreateSearcherOptions(
     const std::map<std::string, std::string>& lumina_options, const LuminaIndexInfo& index_info) {
     std::map<std::string, std::string> options = lumina_options;
