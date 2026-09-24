@@ -388,6 +388,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateBlobFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMosaicDataFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateLanceDataFields(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateVortexDataFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
     return Status::OK();
@@ -979,6 +980,87 @@ Status SchemaValidation::ValidateLanceDataFields(const TableSchema& schema,
                 continue;
             }
             PAIMON_RETURN_NOT_OK(ValidateLanceDataField(field.ArrowField()));
+        }
+        return Status::OK();
+    };
+
+    PAIMON_RETURN_NOT_OK(
+        validate_format(Options::FILE_FORMAT, options.GetFileFormat()->Identifier()));
+    PAIMON_RETURN_NOT_OK(
+        ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL, validate_format));
+    std::shared_ptr<FileFormat> changelog_format = options.GetChangelogFileFormat();
+    if (changelog_format) {
+        PAIMON_RETURN_NOT_OK(
+            validate_format(Options::CHANGELOG_FILE_FORMAT, changelog_format->Identifier()));
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateVortexDataField(const std::shared_ptr<arrow::Field>& field) {
+    if (VariantTypeUtils::IsVariantField(field)) {
+        return Status::Invalid("Vortex file format does not support type VARIANT");
+    }
+    if (BlobUtils::IsBlobField(field)) {
+        return Status::Invalid("Vortex file format does not support type BLOB");
+    }
+
+    const std::shared_ptr<arrow::DataType>& type = field->type();
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::INT64:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::DATE32:
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+        case arrow::Type::TIME32:
+        case arrow::Type::TIMESTAMP:
+        case arrow::Type::DECIMAL128:
+            return Status::OK();
+        case arrow::Type::LIST:
+        case arrow::Type::FIXED_SIZE_LIST:
+            // Array / Vector: recurse into the element type.
+            return ValidateVortexDataField(type->field(0));
+        case arrow::Type::STRUCT: {
+            // Row: recurse into every field.
+            const auto& struct_type = checked_cast<const arrow::StructType&>(*type);
+            for (int32_t i = 0; i < struct_type.num_fields(); ++i) {
+                PAIMON_RETURN_NOT_OK(ValidateVortexDataField(struct_type.field(i)));
+            }
+            return Status::OK();
+        }
+        case arrow::Type::MAP:
+            // MAP (and MULTISET, which is stored as a MAP) is not supported by Vortex.
+            return Status::Invalid("Vortex file format does not support type MAP");
+        default:
+            break;
+    }
+    return Status::Invalid(
+        fmt::format("Vortex file format does not support type {}", type->ToString()));
+}
+
+Status SchemaValidation::ValidateVortexDataFields(const TableSchema& schema,
+                                                  const CoreOptions& options) {
+    const std::vector<std::string> inline_blob_fields = options.GetBlobInlineFields();
+    const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
+                                                      inline_blob_fields.end());
+    // Mirror the Lance path: Vortex can be selected not only as the default file format but also
+    // per level or for the changelog, so validate the schema against every place it can be chosen.
+    auto validate_format = [&](const std::string&, const std::string& file_format) -> Status {
+        if (!StringUtils::EqualsIgnoreCase(file_format, "vortex")) {
+            return Status::OK();
+        }
+        // Mirror the Mosaic path: only validate fields stored in the normal data file. A non-inline
+        // BLOB lives in a separate blob file, so it is skipped here; an inline BLOB is rejected.
+        for (const DataField& field : schema.Fields()) {
+            if (BlobUtils::IsBlobField(field.ArrowField()) &&
+                inline_blob_field_set.count(field.Name()) == 0) {
+                continue;
+            }
+            PAIMON_RETURN_NOT_OK(ValidateVortexDataField(field.ArrowField()));
         }
         return Status::OK();
     };

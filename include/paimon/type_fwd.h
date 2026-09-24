@@ -38,7 +38,10 @@ class Result;
 
 class Status;
 
-class MemoryPool;
+// paimon::MemoryPool is a real public type (see paimon/memory/); this forward declaration is
+// intentional. The NOLINT silences bugprone-forward-declaration-namespace, which otherwise fires in
+// any translation unit that includes this header and happens to use arrow::MemoryPool.
+class MemoryPool;  // NOLINT(bugprone-forward-declaration-namespace)
 
 class FileFormat;
 

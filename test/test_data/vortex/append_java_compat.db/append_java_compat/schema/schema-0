@@ -1,0 +1,21 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "id",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "name",
+    "type" : "STRING"
+  } ],
+  "highestFieldId" : 1,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "file.format" : "vortex"
+  },
+  "timeMillis" : 1789455840340
+}
