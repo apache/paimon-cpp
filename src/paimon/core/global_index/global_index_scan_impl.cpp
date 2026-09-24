@@ -43,8 +43,8 @@ GlobalIndexScanImpl::GlobalIndexScanImpl(const std::shared_ptr<TableSchema>& tab
     : pool_(pool),
       table_schema_(table_schema),
       options_(options),
-      index_file_manager_(
-          std::make_shared<GlobalIndexFileManager>(options.GetFileSystem(), path_factory)),
+      index_file_manager_(std::make_shared<GlobalIndexFileManager>(
+          options.GetFileSystem(), path_factory, /*checkpoint_path_factory=*/nullptr)),
       index_metas_(std::move(index_metas)),
       executor_(executor) {}
 

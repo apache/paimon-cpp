@@ -427,6 +427,37 @@ TEST_F(ParquetFileBatchReaderTest, TestCachedFooterKeepsAllocatorAliveUntilEvict
     ASSERT_TRUE(cached_pool.expired());
 }
 
+TEST_F(ParquetFileBatchReaderTest, TestOffsetIndexCacheOption) {
+    WriteArray(file_path_, struct_array_, schema_, 1, false, 3, 1);
+    auto projection = arrow::schema({schema_->GetFieldByName("f4")});
+    auto predicate = PredicateBuilder::Equal(0, "f4", FieldType::INT, Literal(300002));
+    for (const std::string setting : {"", "false", "true", "invalid"}) {
+        SCOPED_TRACE(setting);
+        std::map<std::string, std::string> options;
+        if (!setting.empty()) {
+            options[PARQUET_READ_ENABLE_OFFSET_INDEX_CACHE] = setting;
+        }
+        ParquetReaderBuilder builder(options, 10);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        if (setting == "invalid") {
+            ASSERT_NOK(builder.Build(input));
+            continue;
+        }
+        ASSERT_OK_AND_ASSIGN(auto reader, builder.Build(input));
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*projection, &c_schema).ok());
+        ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, std::nullopt));
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             paimon::test::ReadResultCollector::CollectResult(reader.get()));
+        ASSERT_EQ(1, result->length());
+        auto rows = std::dynamic_pointer_cast<arrow::StructArray>(result->chunk(0));
+        ASSERT_TRUE(rows);
+        auto values = std::dynamic_pointer_cast<arrow::Int32Array>(rows->field(0));
+        ASSERT_TRUE(values);
+        ASSERT_EQ(300002, values->Value(0));
+    }
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestPointReadReusesFooterAndPageIndexes) {
     WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/1,
                /*enable_dictionary=*/false, /*max_row_group_length=*/3,
@@ -1827,7 +1858,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
     for (const auto& range : pre_buffer_ranges) {
         byte_ranges.emplace_back(range.first, range.second);
     }
-    ASSERT_OK(cache->Init(std::move(byte_ranges)));
+    ASSERT_OK(cache->AddRanges(std::move(byte_ranges)).status());
     // Dispatch the prefetch immediately so every pre-buffered range is covered
     // before the reads below consume them.
     cache->Warmup();
@@ -2025,11 +2056,12 @@ TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughSkipsFallbackToPlain
     // its presence cannot be the signal; the data pages are what say the column went plain. Both
     // are asserted so the test fails loudly if the fixture stops producing a mixed chunk rather
     // than quietly passing for the wrong reason.
-    auto metadata_file = arrow::io::ReadableFile::Open(file_path, pool_.get());
+    auto metadata_file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
     ASSERT_TRUE(metadata_file.ok());
     std::unique_ptr<::parquet::arrow::FileReader> metadata_reader;
-    ASSERT_TRUE(
-        ::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), pool_.get(), &metadata_reader).ok());
+    ASSERT_TRUE(::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), arrow::default_memory_pool(),
+                                           &metadata_reader)
+                    .ok());
     std::unique_ptr<::parquet::ColumnChunkMetaData> column_chunk =
         metadata_reader->parquet_reader()->metadata()->RowGroup(0)->ColumnChunk(0);
     ASSERT_TRUE(column_chunk->has_dictionary_page());
@@ -2120,11 +2152,12 @@ TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughRequiresEveryRowGrou
 
     // Pin the fixture: without this the read assertion below would also pass on a file whose
     // first row group was never dictionary-encoded in the first place.
-    auto metadata_file = arrow::io::ReadableFile::Open(file_path, pool_.get());
+    auto metadata_file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
     ASSERT_TRUE(metadata_file.ok());
     std::unique_ptr<::parquet::arrow::FileReader> metadata_reader;
-    ASSERT_TRUE(
-        ::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), pool_.get(), &metadata_reader).ok());
+    ASSERT_TRUE(::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), arrow::default_memory_pool(),
+                                           &metadata_reader)
+                    .ok());
     std::shared_ptr<::parquet::FileMetaData> metadata =
         metadata_reader->parquet_reader()->metadata();
     ASSERT_EQ(2, metadata->num_row_groups());

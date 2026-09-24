@@ -37,8 +37,9 @@ This optimization is useful when the same Parquet files are opened repeatedly
 in the same process, for example repeated ``get`` or ``scan`` requests over the
 same snapshot. On a cache hit, the read path avoids reading the Parquet footer
 bytes from the filesystem again. Paimon C++ still parses the cached footer bytes
-into ``parquet::FileMetaData`` for each reader open. Data pages, page indexes,
-and column chunks are still read from the file as usual.
+into ``parquet::FileMetaData`` for each reader open. ColumnIndex and OffsetIndex
+bytes also use ``CacheKind::DATA_FILE_FOOTER`` with their actual positions and
+lengths. Data pages and column chunks are not stored in this metadata cache.
 
 Configuration
 -------------
@@ -99,6 +100,38 @@ Example:
 Passing ``nullptr`` or omitting ``WithCache()`` leaves Parquet metadata caching
 disabled. If a file URI cannot be obtained, Paimon C++ also bypasses the cache
 and opens the Parquet file normally.
+
+Reader-Local Page Indexes
+-------------------------
+
+Set ``parquet.read.enable-offset-index-cache=true`` to reuse parsed OffsetIndex
+objects during bitmap trimming, page-range planning and filtered decoding within
+one file reader. The option defaults to ``false``; it does not require
+``WithCache()``. Enable it only after measuring the CPU/memory trade-off for the
+workload, especially when projecting many columns.
+
+These objects are not stored in the caller's shared ``Cache``. They are released
+with their owning row-group index reader; the existing limit of 1,024 retained
+row-group readers is a count limit, not a parsed-index byte budget. Restricted
+predicate index readers remain separate so their column hints do not restrict
+later projected-column reads.
+
+Parsed page locations require approximately
+``retained row groups x accessed columns x pages per column x sizeof(PageLocation)``
+bytes, plus vector/map/object overhead, in addition to serialized index buffers.
+For example, with a 24-byte ``PageLocation``, 1,024 retained row groups, 10 accessed
+columns and 1,000 pages per column require about 234 MiB for page locations alone.
+There is no fixed byte upper bound; memory scales with the file's index sizes.
+
+This is independent of ``ReadAheadCache`` and its per-file ``FileBlockCache``,
+which reuse bytes rather than parsed objects. That block cache survives resets
+of the prefetch plan, but does not provide reuse across independent file-cache
+lifetimes. This optimization introduces no data-cache option or shared data cache.
+
+Filesystem or read-ahead byte caching does not replace this optimization: Arrow
+deserializes the cached index bytes again on every ``GetOffsetIndex`` call.
+With the option disabled, Paimon retains the existing byte-buffer reuse without
+retaining parsed OffsetIndex objects.
 
 Future Optimizations
 --------------------

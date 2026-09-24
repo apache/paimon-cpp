@@ -26,9 +26,13 @@
 
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/commit_table_request.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
+#include "paimon/core/utils/branch_manager.h"
+#include "paimon/result.h"
+#include "paimon/status.h"
 
 namespace paimon {
 
@@ -53,8 +57,14 @@ class CatalogSnapshotCommit : public SnapshotCommit {
         : identifier_("", ""), table_id_(table_id) {}
 
     Result<bool> Commit(const std::optional<std::string>& base_snapshot_uuid,
-                        const Snapshot& snapshot,
+                        const Snapshot& snapshot, const std::string& branch,
                         const std::vector<PartitionStatistics>& statistics) override {
+        // Dropped before anything can refuse this attempt, so that what a caller reads back is
+        // the attempt it just made or nothing at all, never the snapshot of an earlier one.
+        commit_table_request_.reset();
+        // Refused before the request is built: a branch whose object name reads back as another
+        // object is one that neither this nor the caller of a request can commit to.
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
         commit_table_request_ =
             CommitTableRequest(table_id_, base_snapshot_uuid, snapshot, statistics);
         if (catalog_ == nullptr) {
@@ -65,8 +75,11 @@ class CatalogSnapshotCommit : public SnapshotCommit {
                 "this catalog does not manage the versions of its tables, so there is nothing to "
                 "commit the snapshot to");
         }
-        return version_managed_catalog_->CommitSnapshot(identifier_, table_id_, base_snapshot_uuid,
-                                                        snapshot, statistics);
+        // The branch this commit is aimed at wins over the one the identifier was built for.
+        PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
+                               CatalogUtils::BranchIdentifier(identifier_, branch));
+        return version_managed_catalog_->CommitSnapshot(branch_identifier, table_id_,
+                                                        base_snapshot_uuid, snapshot, statistics);
     }
 
     std::string DescribeTarget() const override {
@@ -78,12 +91,16 @@ class CatalogSnapshotCommit : public SnapshotCommit {
         return catalog_ == nullptr;
     }
 
-    /// Returns the request from the latest attempt, including refusals and errors.
+    /// Returns the request from the latest attempt, including refusals and errors. An attempt
+    /// refused before the request is built, as one naming an unaddressable branch is, leaves no
+    /// request behind rather than the one of the attempt before it.
     Result<std::string> GetLastCommitTableRequest() override {
         if (commit_table_request_) {
             return commit_table_request_.value().ToJsonString();
         } else {
-            return Status::Invalid("Should call Commit first before GetLastCommitTableRequest.");
+            return Status::Invalid(
+                "Should call Commit first before GetLastCommitTableRequest. An attempt refused "
+                "before it built a request leaves none behind.");
         }
     }
 

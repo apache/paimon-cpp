@@ -77,6 +77,26 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
         enable_randomize_batch_size_ = enabled;
     }
 
+    /// Hand out a different set of pre-buffer ranges per read schema, so that a test can tell the
+    /// passes of a reader that switches schemas mid-file apart: the first SetReadSchema() selects
+    /// index 0, the second index 1, and a pass beyond the configured sets reports no range.
+    void SetPreBufferRangesPerSchema(
+        std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges_by_schema) {
+        pre_buffer_ranges_by_schema_ = std::move(ranges_by_schema);
+    }
+
+    void SetPreBufferRangeStatus(const Status& status) {
+        pre_buffer_range_status_ = status;
+    }
+
+    Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
+        PAIMON_RETURN_NOT_OK(pre_buffer_range_status_);
+        if (schema_generation_ == 0 || schema_generation_ > pre_buffer_ranges_by_schema_.size()) {
+            return std::vector<std::pair<uint64_t, uint64_t>>{};
+        }
+        return pre_buffer_ranges_by_schema_[schema_generation_ - 1];
+    }
+
     Status SetReadSchema(::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
                          const std::optional<RoaringBitmap32>& selection_bitmap) override {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
@@ -87,6 +107,7 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
         // late-materialization reader moving from its probe pass to its payload pass, rely on it.
         current_pos_ = 0;
         previous_batch_first_row_num_ = std::numeric_limits<uint64_t>::max();
+        schema_generation_++;
         return Status::OK();
     }
 
@@ -276,6 +297,11 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
     Status next_batch_status_;
     bool enable_randomize_batch_size_ = true;
     std::vector<std::pair<uint64_t, uint64_t>> read_ranges_;
+    // The pre-buffer ranges to report, one set per SetReadSchema() call, and how many of those
+    // calls have been made so far.
+    std::vector<std::vector<std::pair<uint64_t, uint64_t>>> pre_buffer_ranges_by_schema_;
+    size_t schema_generation_ = 0;
+    Status pre_buffer_range_status_;
     int32_t warmup_count_ = 0;
     std::mt19937 random_engine_{std::random_device{}()};  // NOLINT(whitespace/braces)
 };

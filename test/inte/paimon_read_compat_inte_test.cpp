@@ -17,6 +17,7 @@
  * under the License.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -28,8 +29,8 @@
 #include "arrow/api.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
-#include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/data/variant/generic_variant.h"
+#include "paimon/data/blob_descriptor.h"
 #include "paimon/defs.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
@@ -47,14 +48,28 @@ namespace {
 
 const char kDatabaseName[] = "append_types_compatibility";
 
-std::vector<std::string> WriterPrefixes() {
-    return {"python", "rust", "java"};
+struct CompatibilityParam {
+    std::string file_format;
+    std::string writer_prefix;
+    bool supports_variant;
+    bool supports_vector;
+    bool supports_nanosecond_timestamps;
+};
+
+std::vector<CompatibilityParam> CompatibilityParams() {
+    return {
+        {"parquet", "python", true, true, true}, {"parquet", "rust", true, true, true},
+        {"parquet", "java", true, true, true},   {"orc", "java", false, false, true},
+        {"avro", "java", false, true, false},
+    };
 }
 
 Result<std::shared_ptr<arrow::ChunkedArray>> ReadTable(
-    const std::string& table_name, const std::vector<std::string>& field_names,
+    const std::string& file_format, const std::string& table_name,
+    const std::vector<std::string>& field_names,
     const std::map<std::string, std::string>& options = {}) {
-    std::string table_path = GetDataDir() + "/parquet/" + kDatabaseName + ".db/" + table_name;
+    std::string table_path =
+        GetDataDir() + "/" + file_format + "/" + kDatabaseName + ".db/" + table_name;
 
     ScanContextBuilder scan_context_builder(table_path);
     scan_context_builder.SetOptions(options);
@@ -73,6 +88,13 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadTable(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     return ReadResultCollector::CollectResult(std::move(batch_reader));
+}
+
+Result<std::shared_ptr<arrow::ChunkedArray>> ReadTable(
+    const CompatibilityParam& param, const std::string& table_name,
+    const std::vector<std::string>& field_names,
+    const std::map<std::string, std::string>& options = {}) {
+    return ReadTable(param.file_format, table_name, field_names, options);
 }
 
 std::shared_ptr<arrow::StructArray> GetOnlyStructChunk(
@@ -134,10 +156,10 @@ void AssertVariantJsonAt(const std::shared_ptr<arrow::StructArray>& variants, in
 
 }  // namespace
 
-class PaimonReadCompatInteTest : public ::testing::TestWithParam<std::string> {};
+class PaimonReadCompatInteTest : public ::testing::TestWithParam<CompatibilityParam> {};
 
 TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
-    const std::string& writer_prefix = GetParam();
+    const CompatibilityParam& param = GetParam();
     TimezoneGuard timezone_guard("Asia/Shanghai");
 
     // Project every non-BLOB field from the main compatibility table in schema order.
@@ -175,8 +197,7 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
         "f_timestamp_ltz_3",
         "f_timestamp_ltz_6",
         "f_timestamp_ltz_9",
-        // VARIANT and nested container types.
-        "f_variant",
+        // Nested container types supported by every fixture.
         "f_array_int",
         "f_map_string_bigint",
         "f_row",
@@ -185,12 +206,18 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
         "f_map_array",
         "f_array_row",
         "f_map_row",
-        "f_deep_row",
-        "f_array_variant",
-        "f_map_variant",
     };
+    if (!param.supports_nanosecond_timestamps) {
+        fields.erase(std::remove(fields.begin(), fields.end(), "f_timestamp_9"), fields.end());
+        fields.erase(std::remove(fields.begin(), fields.end(), "f_timestamp_ltz_9"), fields.end());
+    }
+    if (param.supports_variant) {
+        auto nested_types = std::find(fields.begin(), fields.end(), "f_array_int");
+        fields.insert(nested_types, "f_variant");
+        fields.insert(fields.end(), {"f_deep_row", "f_array_variant", "f_map_variant"});
+    }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadTable(writer_prefix + "_types", fields));
+                         ReadTable(param, param.writer_prefix + "_types", fields));
     std::shared_ptr<arrow::StructArray> rows = GetOnlyStructChunk(result);
     ASSERT_TRUE(rows);
     ASSERT_EQ(rows->length(), 3);
@@ -208,7 +235,9 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
     AssertFieldEqualsJson(rows, "f_double", arrow::float64(), "[-12345.6789, null, null]");
 
     // Character and binary strings, including empty and embedded-null values.
-    AssertFieldEqualsJson(rows, "f_char", arrow::utf8(), R"(["char", null, ""])");
+    AssertFieldEqualsJson(
+        rows, "f_char", arrow::utf8(),
+        param.file_format == "orc" ? R"(["char    ", null, "        "])" : R"(["char", null, ""])");
     AssertFieldEqualsJson(rows, "f_varchar", arrow::utf8(), R"(["varchar-中文", null, ""])");
     AssertFieldEqualsJson(rows, "f_string", arrow::utf8(), R"(["pypaimon 2.0.0", null, ""])");
     AssertFieldEqualsJson(rows, "f_binary", arrow::binary(), R"(["12345678", null, "ABCDEFGH"])");
@@ -237,8 +266,10 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
                           R"(["2024-02-29 12:34:56.123", null, null])");
     AssertFieldEqualsJson(rows, "f_timestamp_6", arrow::timestamp(arrow::TimeUnit::MICRO),
                           R"(["2024-02-29 12:34:56.123456", null, null])");
-    AssertFieldEqualsJson(rows, "f_timestamp_9", arrow::timestamp(arrow::TimeUnit::NANO),
-                          R"(["2024-02-29 12:34:56.123456000", null, null])");
+    if (param.supports_nanosecond_timestamps) {
+        AssertFieldEqualsJson(rows, "f_timestamp_9", arrow::timestamp(arrow::TimeUnit::NANO),
+                              R"(["2024-02-29 12:34:56.123456000", null, null])");
+    }
     AssertFieldEqualsJson(rows, "f_timestamp_ltz_0",
                           arrow::timestamp(arrow::TimeUnit::SECOND, "Asia/Shanghai"),
                           R"(["2024-02-29 12:34:56", null, null])");
@@ -248,26 +279,39 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
     AssertFieldEqualsJson(rows, "f_timestamp_ltz_6",
                           arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai"),
                           R"(["2024-02-29 12:34:56.123456", null, null])");
-    AssertFieldEqualsJson(rows, "f_timestamp_ltz_9",
-                          arrow::timestamp(arrow::TimeUnit::NANO, "Asia/Shanghai"),
-                          R"(["2024-02-29 12:34:56.123456000", null, null])");
+    if (param.supports_nanosecond_timestamps) {
+        AssertFieldEqualsJson(rows, "f_timestamp_ltz_9",
+                              arrow::timestamp(arrow::TimeUnit::NANO, "Asia/Shanghai"),
+                              R"(["2024-02-29 12:34:56.123456000", null, null])");
+    }
 
     // First-level ARRAY, MAP, and ROW values with null and empty containers.
     AssertFieldEqualsJson(rows, "f_array_int", arrow::list(arrow::int32()),
                           "[[1, null, 3], null, []]");
     AssertFieldEqualsJson(rows, "f_map_string_bigint", arrow::map(arrow::utf8(), arrow::int64()),
                           R"([[ ["one", 1], ["null", null] ], null, []])");
-    std::shared_ptr<arrow::DataType> row_type = arrow::struct_({
-        arrow::field("nested_int", arrow::int32()),
-        arrow::field("nested_string", arrow::utf8()),
-        arrow::field("nested_decimal", arrow::decimal128(19, 4)),
-        arrow::field("nested_timestamp", arrow::timestamp(arrow::TimeUnit::NANO)),
-        arrow::field("nested_timestamp_ltz",
-                     arrow::timestamp(arrow::TimeUnit::NANO, "Asia/Shanghai")),
-    });
-    AssertFieldEqualsJson(
-        rows, "f_row", row_type,
-        R"([[7, "nested", "123456789012345.6789", "2024-02-29 12:34:56.123456000", "2024-02-29 12:34:56.123456000"], null, null])");
+    std::shared_ptr<arrow::DataType> row_type;
+    std::string row_json;
+    if (param.supports_nanosecond_timestamps) {
+        row_type = arrow::struct_({
+            arrow::field("nested_int", arrow::int32()),
+            arrow::field("nested_string", arrow::utf8()),
+            arrow::field("nested_decimal", arrow::decimal128(19, 4)),
+            arrow::field("nested_timestamp", arrow::timestamp(arrow::TimeUnit::NANO)),
+            arrow::field("nested_timestamp_ltz",
+                         arrow::timestamp(arrow::TimeUnit::NANO, "Asia/Shanghai")),
+        });
+        row_json =
+            R"([[7, "nested", "123456789012345.6789", "2024-02-29 12:34:56.123456000", "2024-02-29 12:34:56.123456000"], null, null])";
+    } else {
+        row_type = arrow::struct_({
+            arrow::field("nested_int", arrow::int32()),
+            arrow::field("nested_string", arrow::utf8()),
+            arrow::field("nested_decimal", arrow::decimal128(19, 4)),
+        });
+        row_json = R"([[7, "nested", "123456789012345.6789"], null, null])";
+    }
+    AssertFieldEqualsJson(rows, "f_row", row_type, row_json);
 
     // Nested ARRAY/MAP combinations and containers whose values are ROWs.
     AssertFieldEqualsJson(rows, "f_array_array_int", arrow::list(arrow::list(arrow::int32())),
@@ -292,81 +336,105 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
         rows, "f_map_row", map_row_type,
         R"([[ ["first", [true, "2024-02-29 12:34:56.123456"]], ["second", null] ], null, []])");
 
-    // Top-level VARIANT values are compared as normalized JSON.
-    const std::string object_variant_json =
-        R"({"name":"variant-object","count":42,"active":true,"items":[null,1,"x"],"nested":{"decimal":12.34}})";
-    const std::string array_variant_json = R"([1,"two",false,{"k":"v"}])";
-    std::shared_ptr<arrow::StructArray> variants =
-        std::dynamic_pointer_cast<arrow::StructArray>(rows->GetFieldByName("f_variant"));
-    ASSERT_TRUE(variants);
-    AssertVariantJsonAt(variants, 0, object_variant_json);
-    ASSERT_TRUE(variants->IsNull(1));
-    ASSERT_TRUE(variants->IsNull(2));
+    if (param.supports_variant) {
+        // Top-level VARIANT values are compared as normalized JSON.
+        const std::string object_variant_json =
+            R"({"name":"variant-object","count":42,"active":true,"items":[null,1,"x"],"nested":{"decimal":12.34}})";
+        const std::string array_variant_json = R"([1,"two",false,{"k":"v"}])";
+        std::shared_ptr<arrow::StructArray> variants =
+            std::dynamic_pointer_cast<arrow::StructArray>(rows->GetFieldByName("f_variant"));
+        ASSERT_TRUE(variants);
+        AssertVariantJsonAt(variants, 0, object_variant_json);
+        ASSERT_TRUE(variants->IsNull(1));
+        ASSERT_TRUE(variants->IsNull(2));
 
-    // Deeply nested ROW -> ARRAY<ROW<VARIANT>> and ROW -> MAP values.
-    std::shared_ptr<arrow::StructArray> deep_rows =
-        std::dynamic_pointer_cast<arrow::StructArray>(rows->GetFieldByName("f_deep_row"));
-    ASSERT_TRUE(deep_rows);
-    ASSERT_FALSE(deep_rows->IsNull(0));
-    ASSERT_TRUE(deep_rows->IsNull(1));
-    ASSERT_TRUE(deep_rows->IsNull(2));
-    std::shared_ptr<arrow::ListArray> children =
-        std::dynamic_pointer_cast<arrow::ListArray>(deep_rows->GetFieldByName("children"));
-    ASSERT_TRUE(children);
-    ASSERT_EQ(children->value_length(0), 2);
-    std::shared_ptr<arrow::StructArray> child_rows =
-        std::dynamic_pointer_cast<arrow::StructArray>(children->values());
-    ASSERT_TRUE(child_rows);
-    AssertArrayEqualsJson(child_rows->GetFieldByName("leaf_id"), "f_deep_row.children.leaf_id",
-                          "[10, 11]");
-    std::shared_ptr<arrow::StructArray> leaf_variants =
-        std::dynamic_pointer_cast<arrow::StructArray>(child_rows->GetFieldByName("leaf_variant"));
-    ASSERT_TRUE(leaf_variants);
-    AssertVariantJsonAt(leaf_variants, 0, array_variant_json);
-    ASSERT_TRUE(leaf_variants->IsNull(1));
-    std::shared_ptr<arrow::MapArray> labels =
-        std::dynamic_pointer_cast<arrow::MapArray>(deep_rows->GetFieldByName("labels"));
-    ASSERT_TRUE(labels);
-    AssertArrayEqualsJson(labels->Slice(0, 1), "f_deep_row.labels",
-                          R"([[ ["language", "python"], ["format", "parquet"] ]])");
+        // Deeply nested ROW -> ARRAY<ROW<VARIANT>> and ROW -> MAP values.
+        std::shared_ptr<arrow::StructArray> deep_rows =
+            std::dynamic_pointer_cast<arrow::StructArray>(rows->GetFieldByName("f_deep_row"));
+        ASSERT_TRUE(deep_rows);
+        ASSERT_FALSE(deep_rows->IsNull(0));
+        ASSERT_TRUE(deep_rows->IsNull(1));
+        ASSERT_TRUE(deep_rows->IsNull(2));
+        std::shared_ptr<arrow::ListArray> children =
+            std::dynamic_pointer_cast<arrow::ListArray>(deep_rows->GetFieldByName("children"));
+        ASSERT_TRUE(children);
+        ASSERT_EQ(children->value_length(0), 2);
+        std::shared_ptr<arrow::StructArray> child_rows =
+            std::dynamic_pointer_cast<arrow::StructArray>(children->values());
+        ASSERT_TRUE(child_rows);
+        AssertArrayEqualsJson(child_rows->GetFieldByName("leaf_id"), "f_deep_row.children.leaf_id",
+                              "[10, 11]");
+        std::shared_ptr<arrow::StructArray> leaf_variants =
+            std::dynamic_pointer_cast<arrow::StructArray>(
+                child_rows->GetFieldByName("leaf_variant"));
+        ASSERT_TRUE(leaf_variants);
+        AssertVariantJsonAt(leaf_variants, 0, array_variant_json);
+        ASSERT_TRUE(leaf_variants->IsNull(1));
+        std::shared_ptr<arrow::MapArray> labels =
+            std::dynamic_pointer_cast<arrow::MapArray>(deep_rows->GetFieldByName("labels"));
+        ASSERT_TRUE(labels);
+        AssertArrayEqualsJson(labels->Slice(0, 1), "f_deep_row.labels",
+                              R"([[ ["language", "python"], ["format", "parquet"] ]])");
 
-    // ARRAY<VARIANT> values, including null elements and empty arrays.
-    std::shared_ptr<arrow::ListArray> array_variants =
-        std::dynamic_pointer_cast<arrow::ListArray>(rows->GetFieldByName("f_array_variant"));
-    ASSERT_TRUE(array_variants);
-    ASSERT_EQ(array_variants->value_length(0), 3);
-    ASSERT_TRUE(array_variants->IsNull(1));
-    ASSERT_EQ(array_variants->value_length(2), 0);
-    std::shared_ptr<arrow::StructArray> array_variant_values =
-        std::dynamic_pointer_cast<arrow::StructArray>(array_variants->values());
-    ASSERT_TRUE(array_variant_values);
-    AssertVariantJsonAt(array_variant_values, 0, object_variant_json);
-    ASSERT_TRUE(array_variant_values->IsNull(1));
-    AssertVariantJsonAt(array_variant_values, 2, array_variant_json);
+        // ARRAY<VARIANT> values, including null elements and empty arrays.
+        std::shared_ptr<arrow::ListArray> array_variants =
+            std::dynamic_pointer_cast<arrow::ListArray>(rows->GetFieldByName("f_array_variant"));
+        ASSERT_TRUE(array_variants);
+        ASSERT_EQ(array_variants->value_length(0), 3);
+        ASSERT_TRUE(array_variants->IsNull(1));
+        ASSERT_EQ(array_variants->value_length(2), 0);
+        std::shared_ptr<arrow::StructArray> array_variant_values =
+            std::dynamic_pointer_cast<arrow::StructArray>(array_variants->values());
+        ASSERT_TRUE(array_variant_values);
+        AssertVariantJsonAt(array_variant_values, 0, object_variant_json);
+        ASSERT_TRUE(array_variant_values->IsNull(1));
+        AssertVariantJsonAt(array_variant_values, 2, array_variant_json);
 
-    // MAP<STRING, VARIANT> values and their key/value alignment.
-    std::shared_ptr<arrow::MapArray> map_variants =
-        std::dynamic_pointer_cast<arrow::MapArray>(rows->GetFieldByName("f_map_variant"));
-    ASSERT_TRUE(map_variants);
-    ASSERT_EQ(map_variants->value_length(0), 2);
-    ASSERT_TRUE(map_variants->IsNull(1));
-    ASSERT_EQ(map_variants->value_length(2), 0);
-    AssertArrayEqualsJson(map_variants->keys(), "f_map_variant.keys", R"(["object", "array"])");
-    std::shared_ptr<arrow::StructArray> map_variant_values =
-        std::dynamic_pointer_cast<arrow::StructArray>(map_variants->items());
-    ASSERT_TRUE(map_variant_values);
-    AssertVariantJsonAt(map_variant_values, 0, object_variant_json);
-    AssertVariantJsonAt(map_variant_values, 1, array_variant_json);
+        // MAP<STRING, VARIANT> values and their key/value alignment.
+        std::shared_ptr<arrow::MapArray> map_variants =
+            std::dynamic_pointer_cast<arrow::MapArray>(rows->GetFieldByName("f_map_variant"));
+        ASSERT_TRUE(map_variants);
+        ASSERT_EQ(map_variants->value_length(0), 2);
+        ASSERT_TRUE(map_variants->IsNull(1));
+        ASSERT_EQ(map_variants->value_length(2), 0);
+        AssertArrayEqualsJson(map_variants->keys(), "f_map_variant.keys", R"(["object", "array"])");
+        std::shared_ptr<arrow::StructArray> map_variant_values =
+            std::dynamic_pointer_cast<arrow::StructArray>(map_variants->items());
+        ASSERT_TRUE(map_variant_values);
+        AssertVariantJsonAt(map_variant_values, 0, object_variant_json);
+        AssertVariantJsonAt(map_variant_values, 1, array_variant_json);
+    }
+}
+
+TEST_P(PaimonReadCompatInteTest, ReadsTimeValues) {
+    const CompatibilityParam& param = GetParam();
+    if (param.file_format != "parquet") {
+        GTEST_SKIP() << "TIME reading is only supported for Parquet";
+    }
+    for (int32_t precision : {0, 3, 6, 9}) {
+        std::string field_name = "f_time_" + std::to_string(precision);
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             ReadTable(param, param.writer_prefix + "_time_types", {field_name}));
+        auto rows = GetOnlyStructChunk(result);
+        ASSERT_TRUE(rows);
+        ASSERT_EQ(rows->length(), 2);
+        AssertFieldEqualsJson(rows, field_name, arrow::time32(arrow::TimeUnit::MILLI),
+                              precision == 0 ? "[45296000, null]" : "[45296123, null]");
+    }
 }
 
 TEST_P(PaimonReadCompatInteTest, ReadsBlobValues) {
-    const std::string& writer_prefix = GetParam();
+    const CompatibilityParam& param = GetParam();
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadTable(writer_prefix + "_types", {"f_blob", "f_blob_descriptor"},
-                                   {{Options::FILE_SYSTEM, "local"},
-                                    {Options::BLOB_AS_DESCRIPTOR, "true"},
-                                    {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}}));
+    std::vector<std::string> blob_fields = {"f_blob", "f_blob_descriptor"};
+    std::map<std::string, std::string> blob_descriptor_options;
+    blob_descriptor_options[Options::FILE_SYSTEM] = "local";
+    blob_descriptor_options[Options::BLOB_AS_DESCRIPTOR] = "true";
+    blob_descriptor_options[Options::BLOB_VIEW_RESOLVE_ENABLED] = "false";
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::ChunkedArray> result,
+        ReadTable(param, param.writer_prefix + "_types", blob_fields, blob_descriptor_options));
     std::shared_ptr<arrow::StructArray> rows = GetOnlyStructChunk(result);
     ASSERT_TRUE(rows);
     ASSERT_EQ(rows->length(), 3);
@@ -392,18 +460,18 @@ TEST_P(PaimonReadCompatInteTest, ReadsBlobValues) {
     ASSERT_EQ(empty_descriptor->Length(), 0);
 
     // Resolve the external BLOB and validate its payload instead of its descriptor.
-    std::map<std::string, std::string> blob_value_options = {
-        {Options::FILE_SYSTEM, "local"},
-        {Options::BLOB_AS_DESCRIPTOR, "false"},
-    };
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> blob_value_result,
-                         ReadTable(writer_prefix + "_types", {"f_blob"}, blob_value_options));
+    std::map<std::string, std::string> blob_value_options;
+    blob_value_options[Options::FILE_SYSTEM] = "local";
+    blob_value_options[Options::BLOB_AS_DESCRIPTOR] = "false";
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::ChunkedArray> blob_value_result,
+        ReadTable(param, param.writer_prefix + "_types", {"f_blob"}, blob_value_options));
     std::shared_ptr<arrow::StructArray> blob_value_rows = GetOnlyStructChunk(blob_value_result);
     ASSERT_TRUE(blob_value_rows);
     AssertFieldEqualsJson(blob_value_rows, "f_blob", arrow::large_binary(),
                           R"(["ordinary blob payload from pypaimon 2.0.0", null, ""])");
 
-    // Inline BLOB descriptors exercise compatible binary types restored from ARROW:schema.
+    // Inline BLOB descriptors exercise each file format's compatible binary representation.
     std::shared_ptr<arrow::LargeBinaryArray> inline_blobs =
         std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
             rows->GetFieldByName("f_blob_descriptor"));
@@ -423,12 +491,12 @@ TEST_P(PaimonReadCompatInteTest, ReadsBlobValues) {
     // Python and Java store MAP<STRING, BLOB> values in standard separate BLOB files. Validate
     // resolved payloads, null values, and an empty map. Rust stores raw values inline in Parquet,
     // which is not a compatible Paimon BLOB representation and is asserted separately below.
-    if (writer_prefix == "rust") {
+    if (param.writer_prefix == "rust") {
         return;
     }
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<arrow::ChunkedArray> map_blob_result,
-        ReadTable(writer_prefix + "_map_blob_types", {"id", "f_map_blob"}, blob_value_options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> map_blob_result,
+                         ReadTable(param, param.writer_prefix + "_map_blob_types",
+                                   {"id", "f_map_blob"}, blob_value_options));
     std::shared_ptr<arrow::StructArray> map_blob_rows = GetOnlyStructChunk(map_blob_result);
     ASSERT_TRUE(map_blob_rows);
     ASSERT_EQ(map_blob_rows->length(), 3);
@@ -440,12 +508,15 @@ TEST_P(PaimonReadCompatInteTest, ReadsBlobValues) {
 
 TEST(PaimonReadCompatInteStandaloneTest, RejectsNonStandardRustMapBlob) {
     ASSERT_NOK_WITH_MSG(
-        ReadTable("rust_map_blob_types", {"f_map_blob"}),
+        ReadTable("parquet", "rust_map_blob_types", {"f_map_blob"}),
         "Parquet does not support partial projection inside list/map: src map<string, binary");
 }
 
 TEST_P(PaimonReadCompatInteTest, ReadsVectorValues) {
-    const std::string& writer_prefix = GetParam();
+    const CompatibilityParam& param = GetParam();
+    if (!param.supports_vector) {
+        return;
+    }
 
     // Validate every supported VECTOR element type.
     std::vector<std::string> vector_fields = {
@@ -453,7 +524,7 @@ TEST_P(PaimonReadCompatInteTest, ReadsVectorValues) {
         "f_vector_int", "f_vector_bigint",  "f_vector_float",   "f_vector_double",
     };
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> vector_result,
-                         ReadTable(writer_prefix + "_vector_types", vector_fields));
+                         ReadTable(param, param.writer_prefix + "_vector_types", vector_fields));
     std::shared_ptr<arrow::StructArray> vector_rows = GetOnlyStructChunk(vector_result);
     ASSERT_TRUE(vector_rows);
     ASSERT_EQ(vector_rows->length(), 2);
@@ -479,9 +550,10 @@ TEST_P(PaimonReadCompatInteTest, ReadsVectorValues) {
                           "[[1.125, -2.25, 3.5], [4.125, 5.25, 6.5]]");
 }
 
-INSTANTIATE_TEST_SUITE_P(Writers, PaimonReadCompatInteTest, ::testing::ValuesIn(WriterPrefixes()),
-                         [](const ::testing::TestParamInfo<std::string>& info) {
-                             return info.param;
+INSTANTIATE_TEST_SUITE_P(FormatsAndWriters, PaimonReadCompatInteTest,
+                         ::testing::ValuesIn(CompatibilityParams()),
+                         [](const ::testing::TestParamInfo<CompatibilityParam>& info) {
+                             return info.param.file_format + "_" + info.param.writer_prefix;
                          });
 
 struct UnsupportedReadCase {
@@ -492,6 +564,7 @@ struct UnsupportedReadCase {
 };
 
 struct UnsupportedReadParam {
+    std::string file_format;
     std::string writer_prefix;
     UnsupportedReadCase read_case;
 };
@@ -500,7 +573,8 @@ class PaimonUnsupportedTypeInteTest : public ::testing::TestWithParam<Unsupporte
 
 TEST_P(PaimonUnsupportedTypeInteTest, ReportsExpectedError) {
     const UnsupportedReadParam& test_case = GetParam();
-    ASSERT_NOK_WITH_MSG(ReadTable(test_case.writer_prefix + "_" + test_case.read_case.table_suffix,
+    ASSERT_NOK_WITH_MSG(ReadTable(test_case.file_format,
+                                  test_case.writer_prefix + "_" + test_case.read_case.table_suffix,
                                   {test_case.read_case.field_name}),
                         test_case.read_case.expected_error);
 }
@@ -509,15 +583,30 @@ std::vector<UnsupportedReadParam> UnsupportedReadParams() {
     const std::vector<UnsupportedReadCase> read_cases = {
         {"ArrayBlob", "array_blob_types", "f_array_blob",
          "BLOB field must be a top-level field or the direct value of a top-level MAP field"},
-        {"TimePrecision0", "time_types", "f_time_0", "Unsupported type: TIME"},
-        {"TimePrecision3", "time_types", "f_time_3", "Unsupported type: TIME"},
-        {"TimePrecision6", "time_types", "f_time_6", "Unsupported type: TIME"},
-        {"TimePrecision9", "time_types", "f_time_9", "Unsupported type: TIME"},
+        {"TimePrecision0", "time_types", "f_time_0", ""},
+        {"TimePrecision3", "time_types", "f_time_3", ""},
+        {"TimePrecision6", "time_types", "f_time_6", ""},
+        {"TimePrecision9", "time_types", "f_time_9", ""},
     };
     std::vector<UnsupportedReadParam> result;
-    for (const std::string& writer_prefix : WriterPrefixes()) {
+    for (const CompatibilityParam& param : CompatibilityParams()) {
         for (const UnsupportedReadCase& read_case : read_cases) {
-            result.push_back({writer_prefix, read_case});
+            bool is_time = read_case.table_suffix == "time_types";
+            if (is_time && param.file_format == "parquet") {
+                continue;
+            }
+            // Java Avro cannot create TIME(6/9), so its negative table contains TIME(0/3) only.
+            if (param.file_format == "avro" &&
+                (read_case.name == "TimePrecision6" || read_case.name == "TimePrecision9")) {
+                continue;
+            }
+            auto expected_case = read_case;
+            if (is_time) {
+                expected_case.expected_error = param.file_format == "orc"
+                                                   ? "Unknown or unsupported Arrow type: time32[ms]"
+                                                   : "invalid avro logical type";
+            }
+            result.push_back({param.file_format, param.writer_prefix, expected_case});
         }
     }
     return result;
@@ -526,7 +615,8 @@ std::vector<UnsupportedReadParam> UnsupportedReadParams() {
 INSTANTIATE_TEST_SUITE_P(UnsupportedTypes, PaimonUnsupportedTypeInteTest,
                          ::testing::ValuesIn(UnsupportedReadParams()),
                          [](const ::testing::TestParamInfo<UnsupportedReadParam>& info) {
-                             return info.param.writer_prefix + info.param.read_case.name;
+                             return info.param.file_format + "_" + info.param.writer_prefix + "_" +
+                                    info.param.read_case.name;
                          });
 
 }  // namespace paimon::test

@@ -47,6 +47,36 @@
 namespace paimon::orc {
 namespace {
 
+bool IsStringTypeCompatible(const ::orc::Type* src_type, const ::orc::Type* target_type) {
+    ::orc::TypeKind src_kind = src_type->getKind();
+    return (src_kind == ::orc::TypeKind::CHAR || src_kind == ::orc::TypeKind::VARCHAR) &&
+           target_type->getKind() == ::orc::TypeKind::STRING;
+}
+
+bool IsCompleteTypeCompatible(const ::orc::Type* src_type, const ::orc::Type* target_type) {
+    ::orc::TypeKind src_kind = src_type->getKind();
+    ::orc::TypeKind target_kind = target_type->getKind();
+    if (IsStringTypeCompatible(src_type, target_type)) {
+        return true;
+    }
+    if (src_kind != target_kind || src_type->getSubtypeCount() != target_type->getSubtypeCount()) {
+        return false;
+    }
+    if (src_type->getSubtypeCount() == 0) {
+        return src_type->toString() == target_type->toString();
+    }
+    for (uint64_t i = 0; i < src_type->getSubtypeCount(); i++) {
+        if (src_kind == ::orc::TypeKind::STRUCT &&
+            src_type->getFieldName(i) != target_type->getFieldName(i)) {
+            return false;
+        }
+        if (!IsCompleteTypeCompatible(src_type->getSubtype(i), target_type->getSubtype(i))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void CollectAllColumnIds(const ::orc::Type* type, std::vector<uint64_t>* column_ids) {
     column_ids->push_back(type->getColumnId());
     for (uint64_t i = 0; i < type->getSubtypeCount(); ++i) {
@@ -208,7 +238,7 @@ Status OrcFileBatchReader::CollectTargetColumnIds(const ::orc::Type* src_type,
                                                   std::vector<uint64_t>* target_column_ids) {
     auto src_kind = src_type->getKind();
     auto target_kind = target_type->getKind();
-    if (src_kind != target_kind) {
+    if (src_kind != target_kind && !IsStringTypeCompatible(src_type, target_type)) {
         return Status::Invalid(fmt::format("type kind mismatch: src {} vs target {}",
                                            src_type->toString(), target_type->toString()));
     }
@@ -235,7 +265,7 @@ Status OrcFileBatchReader::CollectTargetColumnIds(const ::orc::Type* src_type,
             // Partial field recall inside list/map types is unsupported, so the target must match
             // the complete source subtree. Include the container and every descendant because all
             // of their streams are recalled by the ORC reader.
-            if (src_type->toString() != target_type->toString()) {
+            if (!IsCompleteTypeCompatible(src_type, target_type)) {
                 return Status::Invalid(fmt::format("type mismatch: src {} vs target {}",
                                                    src_type->toString(), target_type->toString()));
             }

@@ -20,6 +20,7 @@
 #include "paimon/format/parquet/page_filtered_row_group_reader.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <optional>
 
@@ -44,11 +45,15 @@ namespace paimon::parquet {
 
 namespace {
 
-/// Ceiling on the value bytes a leaf may reserve up front from column chunk metadata alone.
-/// The estimate it caps is a heuristic over footer fields, which are attacker-controlled and
-/// need not describe the pages this read touches, so it must not turn into an unbounded eager
-/// allocation. Past this size the builder's doubling is already amortized against a large read.
-constexpr int64_t kMaxMetadataValueBytesReservation = int64_t{16} * 1024 * 1024;
+/// Multiple of a column chunk's compressed size that a leaf may reserve up front in value bytes.
+/// The estimate is a heuristic over footer fields, and `total_uncompressed_size` is a bare claim a
+/// forged footer can inflate to make a leaf eagerly allocate gigabytes for a near-empty file.
+/// `total_compressed_size` is instead checked against the file length before any read (Arrow's
+/// ComputeColumnChunkRange, and GetDataPageLayout below, bound a chunk and its pages by it), so a
+/// factor of it is bounded by bytes that physically exist. A leaf decompressing within the factor
+/// is reserved in full; a more compressible one is capped and left to the builder's amortized
+/// doubling, which is cheap against the I/O and decode of a read that large.
+constexpr int64_t kMaxReservationDecompressionFactor = 8;
 
 struct DataPageLayout {
     int64_t column_chunk_offset;
@@ -297,10 +302,10 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
     int64_t row_group_row_count, ::parquet::arrow::FileReader* arrow_file_reader) {
     // Factory: set a direct data page read plan on every leaf (per-leaf OffsetIndex).
     // The plan lets Arrow jump over unselected page headers as well as page bodies.
-    auto factory =
-        [row_group_index, &rg_page_index_reader, &row_ranges, row_group_row_count](
-            int col_idx,
-            ::parquet::ParquetFileReader* reader) -> ::parquet::arrow::FileColumnIterator* {
+    std::unordered_set<int> direct_read_columns;
+    auto factory = [row_group_index, &rg_page_index_reader, &row_ranges, row_group_row_count,
+                    &direct_read_columns](int col_idx, ::parquet::ParquetFileReader* reader)
+        -> ::parquet::arrow::FileColumnIterator* {
         bool has_data_page_read_plan = false;
         int64_t first_data_page_offset = 0;
         std::vector<::parquet::DataPageReadPlanEntry> data_pages;
@@ -315,6 +320,7 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
                     first_data_page_offset = plan->first_data_page_offset;
                     data_pages = std::move(plan->data_pages);
                     has_data_page_read_plan = true;
+                    direct_read_columns.insert(col_idx);
                 }
             }
         }
@@ -354,15 +360,12 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
             auto row_group_metadata =
                 arrow_file_reader->parquet_reader()->metadata()->RowGroup(row_group_index);
             column_chunk = row_group_metadata->ColumnChunk(col_idx);
-            if (rg_page_index_reader) {
+            if (direct_read_columns.count(col_idx)) {
                 auto offset_index = rg_page_index_reader->GetOffsetIndex(col_idx);
-                if (offset_index && MakeDataPageReadPlan(row_ranges, offset_index, *column_chunk,
-                                                         row_group_row_count)) {
-                    auto [compressed, total] =
-                        ComputeCompressedRowRanges(row_ranges, offset_index, row_group_row_count);
-                    effective_ranges = std::move(compressed);
-                    effective_total = total;
-                }
+                auto [compressed, total] =
+                    ComputeCompressedRowRanges(row_ranges, offset_index, row_group_row_count);
+                effective_ranges = std::move(compressed);
+                effective_total = total;
             }
         }
 
@@ -373,6 +376,8 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
         const int64_t reserve_values = effective_ranges.RowCount();
         int64_t reserve_value_bytes = 0;
         const int64_t chunk_bytes = column_chunk ? column_chunk->total_uncompressed_size() : 0;
+        const int64_t chunk_compressed_bytes =
+            column_chunk ? column_chunk->total_compressed_size() : 0;
         const int64_t chunk_values = column_chunk ? column_chunk->num_values() : 0;
         if (chunk_bytes > 0 && chunk_values > 0 && reserve_values > 0) {
             // A heuristic, not a bound. total_uncompressed_size is uncompressed but still
@@ -383,11 +388,16 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
             // including the pages this selection skips, so it misleads when wide values sit in
             // skipped pages. Either direction only costs performance — the reservation is a
             // hint the builder grows past when short — but they are why the result is capped
-            // instead of trusted. Fixed-width leaves ignore the byte count entirely.
+            // instead of trusted, by a factor of the file-bounded compressed size rather than the
+            // forgeable uncompressed one (see kMaxReservationDecompressionFactor). Fixed-width
+            // leaves ignore the byte count entirely.
             const double avg = static_cast<double>(chunk_bytes) / static_cast<double>(chunk_values);
             reserve_value_bytes = std::min(
                 {SaturatingDoubleToInteger<int64_t>(avg * static_cast<double>(reserve_values)),
-                 chunk_bytes, kMaxMetadataValueBytesReservation});
+                 chunk_bytes,
+                 SaturatingDoubleToInteger<int64_t>(
+                     static_cast<double>(chunk_compressed_bytes) *
+                     static_cast<double>(kMaxReservationDecompressionFactor))});
         }
 
         PAIMON_RETURN_NOT_OK(ExecuteSkipReadPattern(col_idx, effective_ranges, effective_total,

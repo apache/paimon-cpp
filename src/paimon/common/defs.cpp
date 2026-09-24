@@ -97,6 +97,7 @@ const char Options::FALLBACK_DEDUPLICATE_IGNORE_DELETE[] = "deduplicate.ignore-d
 const char Options::FALLBACK_PARTIAL_UPDATE_IGNORE_DELETE[] = "partial-update.ignore-delete";
 const char Options::FIELDS_DEFAULT_AGG_FUNC[] = "fields.default-aggregate-function";
 const char Options::DELETION_VECTORS_ENABLED[] = "deletion-vectors.enabled";
+const char Options::PK_CLUSTERING_OVERRIDE[] = "pk-clustering-override";
 const char Options::DELETION_VECTOR_INDEX_FILE_TARGET_SIZE[] =
     "deletion-vector.index-file.target-size";
 const char Options::DELETION_VECTOR_BITMAP64[] = "deletion-vectors.bitmap64";
@@ -104,6 +105,8 @@ const char Options::CHANGELOG_PRODUCER[] = "changelog-producer";
 const char Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE[] = "changelog-producer.row-deduplicate";
 const char Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS[] =
     "changelog-producer.row-deduplicate-ignore-fields";
+const char Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE[] =
+    "changelog-producer.input.parallel-write";
 const char Options::CHANGELOG_FILE_PREFIX[] = "changelog-file.prefix";
 const char Options::CHANGELOG_FILE_FORMAT[] = "changelog-file.format";
 const char Options::CHANGELOG_FILE_COMPRESSION[] = "changelog-file.compression";

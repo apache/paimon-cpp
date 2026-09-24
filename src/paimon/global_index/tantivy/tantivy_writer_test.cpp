@@ -132,7 +132,8 @@ class TantivyGlobalIndexWriterTest : public ::testing::Test {
         const std::map<std::string, std::string>& options,
         const std::shared_ptr<arrow::Array>& array) {
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_writer = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         PAIMON_ASSIGN_OR_RAISE(auto writer, TantivyGlobalIndexWriter::Create(
                                                 "f0", data_type, file_writer, options, pool_));
         ::ArrowArray c_array;
@@ -240,7 +241,8 @@ TEST_F(TantivyGlobalIndexWriterTest, RejectsHmmTokenizeMode) {
     auto root_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(root_dir);
     auto path_factory = std::make_shared<FakeIndexPathFactory>(root_dir->Str());
-    auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+    auto file_writer = std::make_shared<GlobalIndexFileManager>(
+        fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
     // hmm rejection only fires when the jieba tokenizer is actually constructed,
     // so this test must explicitly opt into jieba (default tokenizer skips
     // jieba construction entirely).

@@ -339,4 +339,9 @@ Result<bool> RestApi::CommitSnapshot(const Identifier& identifier,
     return entity.IsSuccess();
 }
 
+Result<GetTableTokenResponse> RestApi::LoadTableToken(const Identifier& identifier) const {
+    return GetEntity<GetTableTokenResponse>(
+        resource_paths_.TableToken(identifier.GetDatabaseName(), identifier.GetTableName()), {});
+}
+
 }  // namespace paimon

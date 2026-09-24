@@ -22,8 +22,11 @@
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/status.h"
@@ -33,6 +36,15 @@
 #include "rapidjson/rapidjson.h"
 
 namespace paimon::test {
+
+namespace {
+
+void CheckFieldId(const std::shared_ptr<arrow::Field>& field, int32_t expected_id) {
+    ASSERT_OK_AND_ASSIGN(DataField data_field, DataField::ConvertArrowFieldToDataField(field));
+    ASSERT_EQ(data_field.Id(), expected_id);
+}
+
+}  // namespace
 
 TEST(DataTypeJsonParserTest, ParseTypeArrayTypeSuccess) {
     const std::string name = "array_field";
@@ -127,6 +139,13 @@ TEST(DataTypeJsonParserTest, ParseTypeRowTypeSuccess) {
         "id" : 4,
         "name" : "sub4",
         "type" : "BYTES"
+      }, {
+        "id" : 7,
+        "name" : "sub7",
+        "type" : {
+          "type" : "ROW",
+          "fields" : [ { "id" : 9, "name" : "nested", "type" : "INT" } ]
+        }
       }]})";
     rapidjson::Document doc;
     doc.Parse(json);
@@ -134,6 +153,116 @@ TEST(DataTypeJsonParserTest, ParseTypeRowTypeSuccess) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> field,
                          DataTypeJsonParser::ParseType(name, doc));
     ASSERT_NE(field, nullptr);
+    ASSERT_EQ(field->type()->num_fields(), 3);
+    ASSERT_NO_FATAL_FAILURE(CheckFieldId(field->type()->field(0), 1));
+    ASSERT_NO_FATAL_FAILURE(CheckFieldId(field->type()->field(1), 4));
+    ASSERT_NO_FATAL_FAILURE(CheckFieldId(field->type()->field(2), 7));
+    ASSERT_NO_FATAL_FAILURE(CheckFieldId(field->type()->field(2)->type()->field(0), 9));
+}
+
+TEST(DataTypeJsonParserTest, ParseTypeRowTypeGeneratesMissingFieldIds) {
+    const char* json = R"({
+      "type" : "ROW",
+      "fields" : [ {
+        "name" : "payload",
+        "type" : {
+          "type" : "ROW",
+          "fields" : [ {
+            "name" : "age",
+            "type" : "INT"
+          }, {
+            "name" : "profile",
+            "type" : {
+              "type" : "ROW",
+              "fields" : [ { "name" : "city", "type" : "STRING" } ]
+            }
+          } ]
+        }
+      }, {
+        "name" : "tags",
+        "type" : {
+          "type" : "ARRAY",
+          "element" : {
+            "type" : "ROW",
+            "fields" : [ { "name" : "tag", "type" : "STRING" } ]
+          }
+        }
+      }, {
+        "name" : "props",
+        "type" : {
+          "type" : "MAP",
+          "key" : {
+            "type" : "ROW",
+            "fields" : [ { "name" : "code", "type" : "STRING" } ]
+          },
+          "value" : {
+            "type" : "ROW",
+            "fields" : [ { "name" : "weight", "type" : "DOUBLE" } ]
+          }
+        }
+      } ]})";
+    rapidjson::Document doc;
+    doc.Parse(json);
+
+    for (int32_t attempt = 0; attempt < 2; ++attempt) {
+        SCOPED_TRACE(attempt);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> field,
+                             DataTypeJsonParser::ParseType("row_field", doc));
+        const std::shared_ptr<arrow::DataType>& row = field->type();
+        ASSERT_EQ(row->num_fields(), 3);
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(row->field(0), 0));
+        const std::shared_ptr<arrow::DataType>& payload = row->field(0)->type();
+        ASSERT_EQ(payload->num_fields(), 2);
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(payload->field(0), 1));
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(payload->field(1), 2));
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(payload->field(1)->type()->field(0), 3));
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(row->field(1), 4));
+        const std::shared_ptr<arrow::DataType>& element = row->field(1)->type()->field(0)->type();
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(element->field(0), 5));
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(row->field(2), 6));
+        const std::shared_ptr<arrow::DataType>& entries = row->field(2)->type()->field(0)->type();
+        const std::shared_ptr<arrow::DataType>& map_key = entries->field(0)->type();
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(map_key->field(0), 7));
+        const std::shared_ptr<arrow::DataType>& map_value = entries->field(1)->type();
+        ASSERT_NO_FATAL_FAILURE(CheckFieldId(map_value->field(0), 8));
+    }
+}
+
+TEST(DataTypeJsonParserTest, ParseTypeComplexTypeFailure) {
+    const std::vector<std::pair<const char*, const char*>> test_cases = {
+        {R"({"type":"ROW"})", "row data type must have fields"},
+        {R"({"type":"ROW","fields":{}})", "row data type must have fields"},
+        {R"({"type":"ROW","fields":[null]})", "data field must be an object"},
+        {R"({"type":"ROW","fields":[{"name":"a","type":"INT"},
+                                    {"id":1,"name":"b","type":"INT"}]})",
+         "Partial field id is not allowed."},
+        {R"({"type":"ROW","fields":[{"id":0,"name":"a","type":"INT"},
+                                    {"name":"b","type":"INT"}]})",
+         "Partial field id is not allowed."},
+        {R"({"type":"ROW","fields":[{"id":0,"name":"a","type":{
+               "type":"ROW","fields":[{"name":"b","type":"INT"}]}}]})",
+         "Partial field id is not allowed."},
+        {R"({"type":"ROW","fields":[{"name":"a","type":{
+               "type":"ROW","fields":[{"id":1,"name":"b","type":"INT"}]}}]})",
+         "Partial field id is not allowed."},
+        {R"({"type":"ROW","fields":[{"name":"a","type":{"type":"ARRAY",
+               "element":{"type":"ROW","fields":[{"id":1,"name":"b","type":"INT"}]}}}]})",
+         "Partial field id is not allowed."},
+        {R"({"type":"MAP",
+               "key":{"type":"ROW","fields":[{"id":0,"name":"a","type":"INT"}]},
+               "value":{"type":"ROW","fields":[{"name":"b","type":"INT"}]}})",
+         "Partial field id is not allowed."},
+        {R"({"type":"MAP",
+               "key":{"type":"ROW","fields":[{"name":"a","type":"INT"}]},
+               "value":{"type":"ROW","fields":[{"id":1,"name":"b","type":"INT"}]}})",
+         "Partial field id is not allowed."},
+    };
+    for (const auto& [json, error_msg] : test_cases) {
+        SCOPED_TRACE(json);
+        rapidjson::Document doc;
+        doc.Parse(json);
+        ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("row_field", doc), error_msg);
+    }
 }
 
 TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
@@ -226,6 +355,37 @@ TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
         rapidjson::Value value("TIMESTAMP(8) WITH LOCAL TIME ZONE", invalid_doc.GetAllocator());
         ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
                             "only support precision 0/3/6/9 in timestamp type");
+    }
+}
+
+TEST(DataTypeJsonParserTest, ParseTimeType) {
+    std::vector<std::string> types = {"TIME", "TIME WITHOUT TIME ZONE"};
+    for (int32_t precision = 0; precision <= 9; ++precision) {
+        types.push_back(fmt::format("TIME({})", precision));
+        types.push_back(fmt::format("TIME({}) WITHOUT TIME ZONE", precision));
+    }
+    for (const auto& type : types) {
+        for (bool nullable : {true, false}) {
+            std::string type_str = nullable ? type : type + " NOT NULL";
+            SCOPED_TRACE(type_str);
+            rapidjson::Document doc;
+            rapidjson::Value value(type_str.data(), doc.GetAllocator());
+            ASSERT_OK_AND_ASSIGN(auto field, DataTypeJsonParser::ParseType("time", value));
+            ASSERT_TRUE(field->type()->Equals(arrow::time32(arrow::TimeUnit::MILLI)));
+            ASSERT_EQ(field->nullable(), nullable);
+            auto logical_type = DataType::Create(field->type(), nullable, field->metadata());
+            ASSERT_OK_AND_ASSIGN(auto serialized, logical_type->ToJsonString());
+            int32_t precision = type.find('(') == std::string::npos ? 0 : type[5] - '0';
+            ASSERT_EQ(serialized,
+                      fmt::format("\"TIME({}){}\"", precision, nullable ? "" : " NOT NULL"));
+        }
+    }
+    for (const char* type : {"TIME(-1)", "TIME(10)", "TIME(2147483648)", "TIME()", "TIME(3, 0)",
+                             "TIME WITH TIME ZONE", "TIME(3) WITHOUT TIME"}) {
+        SCOPED_TRACE(type);
+        rapidjson::Document doc;
+        rapidjson::Value value(type, doc.GetAllocator());
+        ASSERT_NOK(DataTypeJsonParser::ParseType("time", value));
     }
 }
 

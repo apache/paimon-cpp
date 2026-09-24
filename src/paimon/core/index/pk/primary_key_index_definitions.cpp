@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/defs.h"
@@ -35,7 +36,6 @@ namespace paimon {
 namespace {
 using IndexOptions = std::map<std::string, std::string>;
 
-constexpr char kBTreeIndexType[] = "btree";
 constexpr char kBitmapIndexType[] = "bitmap";
 constexpr char kFullTextIndexType[] = "full-text";
 constexpr char kBTreeOptionFamily[] = "pk-btree";
@@ -185,7 +185,7 @@ Result<PrimaryKeyIndexDefinitions> PrimaryKeyIndexDefinitions::Create(const Tabl
             PAIMON_ASSIGN_OR_RAISE(
                 IndexOptions definition_options,
                 SortedIndexOptions(options, column, kBTreeOptionFamily, kBTreeAlgorithmPrefix));
-            definitions.emplace_back(column, field.Id(), kBTreeIndexType,
+            definitions.emplace_back(column, field.Id(), BtreeDefs::kIdentifier,
                                      PrimaryKeyIndexDefinition::Family::BTREE,
                                      std::move(definition_options));
         } else if (ObjectUtils::Contains(bitmap_columns, column)) {

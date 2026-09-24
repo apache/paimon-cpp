@@ -91,14 +91,6 @@ class MergeFileSplitRead : public AbstractSplitRead {
         force_keep_delete_ = force_keep_delete;
     }
 
-    Result<std::unique_ptr<FileBatchReader>> ApplyIndexAndDvReaderIfNeeded(
-        std::unique_ptr<FileBatchReader>&& file_reader, const std::shared_ptr<DataFileMeta>& file,
-        const std::shared_ptr<arrow::Schema>& data_schema,
-        const std::shared_ptr<arrow::Schema>& read_schema,
-        const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
-        const std::optional<std::vector<Range>>& ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const override;
-
     Result<std::unique_ptr<SortMergeReader>> CreateSortMergeReaderForSection(
         const std::vector<SortedRun>& section, const BinaryRow& partition,
         DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,

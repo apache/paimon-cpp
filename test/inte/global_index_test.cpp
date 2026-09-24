@@ -159,11 +159,12 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
                       const std::string& index_field_name, const std::string& index_type,
                       const std::map<std::string, std::string>& options, const Range& range) {
         PAIMON_ASSIGN_OR_RAISE(auto split, ScanData(table_path, partition_filters));
-        PAIMON_ASSIGN_OR_RAISE(auto index_commit_msg, GlobalIndexWriteTask::WriteIndex(
-                                                          table_path, index_field_name, index_type,
-                                                          std::make_shared<IndexedSplitImpl>(
-                                                              split, std::vector<Range>({range})),
-                                                          options, pool_, fs_));
+        PAIMON_ASSIGN_OR_RAISE(
+            auto index_commit_msg,
+            GlobalIndexWriteTask::WriteIndex(
+                table_path, index_field_name, index_type,
+                std::make_shared<IndexedSplitImpl>(split, std::vector<Range>({range})), options,
+                /*task_id=*/std::nullopt, pool_, fs_));
         return Commit(table_path, {index_commit_msg});
     }
 
@@ -292,7 +293,8 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndex) {
                                                     table_path, "f1", "lumina",
                                                     std::make_shared<IndexedSplitImpl>(
                                                         split, std::vector<Range>({Range(0, 3)})),
-                                                    /*options=*/lumina_options, pool_));
+                                                    /*options=*/lumina_options,
+                                                    /*task_id=*/std::nullopt, pool_));
     auto index_commit_msg_impl = std::dynamic_pointer_cast<CommitMessageImpl>(index_commit_msg);
     ASSERT_TRUE(index_commit_msg_impl);
 
@@ -311,6 +313,67 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndex) {
         /*partition=*/BinaryRow::EmptyRow(), /*bucket=*/0, /*total_buckets=*/std::nullopt,
         expected_data_increment, CompactIncrement({}, {}, {}));
     ASSERT_TRUE(expected_commit_message->TEST_Equal(*index_commit_msg_impl));
+}
+
+TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithCheckpoint) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
+                                 arrow::field("f1", arrow::list(arrow::float32()))};
+    auto schema = arrow::schema(fields);
+    std::map<std::string, std::string> lumina_options = {
+        {"lumina.index.dimension", "4"},
+        {"lumina.index.type", "bruteforce"},
+        {"lumina.distance.metric", "l2"},
+        {"lumina.encoding.type", "rawf32"},
+        {"lumina.extension.build.ckpt.count", "1"},
+        {"lumina.extension.build.ckpt.threshold", "1"},
+        {"lumina.search.parallel_number", "10"}};
+
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"}};
+
+    CreateTable(/*partition_keys=*/{}, schema, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    std::vector<std::string> write_cols = schema->field_names();
+    auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        ["a", [0.0, 0.0, 0.0, 0.0]],
+        ["b", [0.0, 1.0, 0.0, 1.0]],
+        ["c", [1.0, 0.0, 1.0, 0.0]],
+        ["d", [1.0, 1.0, 1.0, 1.0]]
+
+    ])")
+                         .ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs, WriteArray(table_path, write_cols, src_array));
+    ASSERT_OK(Commit(table_path, commit_msgs));
+
+    ASSERT_OK_AND_ASSIGN(auto split, ScanData(table_path, /*partition_filters=*/{}));
+    std::shared_ptr<FileSystem> checkpoint_fs = dir_->GetFileSystem();
+    std::string task_id = "task-1";
+    std::string checkpoint_dir = PathUtil::JoinPath(table_path, "index/checkpoint");
+    ASSERT_OK(checkpoint_fs->Mkdirs(checkpoint_dir));
+    auto checkpoint_path = [&](const std::string& task, int64_t id) {
+        return PathUtil::JoinPath(
+            checkpoint_dir, fmt::format("lumina-global-index-f1-0-3-{}-{}.index.ckpt", task, id));
+    };
+    std::string matching_checkpoint = checkpoint_path(task_id, 9);
+    ASSERT_OK(checkpoint_fs->WriteFile(matching_checkpoint, "invalid checkpoint",
+                                       /*overwrite=*/false));
+    std::string unrelated_checkpoint = checkpoint_path("another-task", 999);
+    ASSERT_OK(checkpoint_fs->WriteFile(unrelated_checkpoint, "another task",
+                                       /*overwrite=*/false));
+
+    ASSERT_OK(GlobalIndexWriteTask::WriteIndex(
+        table_path, "f1", "lumina",
+        std::make_shared<IndexedSplitImpl>(split, std::vector<Range>{Range(0, 3)}), lumina_options,
+        task_id, pool_));
+    std::vector<BasicFileStatus> checkpoint_files;
+    ASSERT_OK(checkpoint_fs->ListDir(checkpoint_dir, &checkpoint_files));
+    ASSERT_EQ(checkpoint_files.size(), 1);
+    ASSERT_EQ(PathUtil::GetName(checkpoint_files[0].GetPath()),
+              PathUtil::GetName(unrelated_checkpoint));
 }
 
 TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithMismatchedDimension) {
@@ -438,11 +501,12 @@ TEST_P(GlobalIndexTest, TestWriteIndex) {
     ASSERT_OK(Commit(table_path, commit_msgs));
 
     ASSERT_OK_AND_ASSIGN(auto split, ScanData(table_path, /*partition_filters=*/{}));
-    ASSERT_OK_AND_ASSIGN(auto index_commit_msg, GlobalIndexWriteTask::WriteIndex(
-                                                    table_path, "f0", "bitmap",
-                                                    std::make_shared<IndexedSplitImpl>(
-                                                        split, std::vector<Range>({Range(0, 7)})),
-                                                    /*options=*/{}, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto index_commit_msg,
+        GlobalIndexWriteTask::WriteIndex(
+            table_path, "f0", "bitmap",
+            std::make_shared<IndexedSplitImpl>(split, std::vector<Range>({Range(0, 7)})),
+            /*options=*/{}, /*task_id=*/std::nullopt, pool_));
     auto index_commit_msg_impl = std::dynamic_pointer_cast<CommitMessageImpl>(index_commit_msg);
     ASSERT_TRUE(index_commit_msg_impl);
 
@@ -466,7 +530,7 @@ TEST_P(GlobalIndexTest, TestWriteIndex) {
             GlobalIndexWriteTask::WriteIndex(
                 table_path, "f0", "invalid",
                 std::make_shared<IndexedSplitImpl>(split, std::vector<Range>({Range(0, 7)})),
-                /*options=*/{}, pool_),
+                /*options=*/{}, /*task_id=*/std::nullopt, pool_),
             "Unknown index type invalid, may not registered");
     }
     {
@@ -475,7 +539,7 @@ TEST_P(GlobalIndexTest, TestWriteIndex) {
                                 table_path, "f0", "bitmap",
                                 std::make_shared<IndexedSplitImpl>(
                                     split, std::vector<Range>({Range(0, 6), Range(7, 7)})),
-                                /*options=*/{}, pool_),
+                                /*options=*/{}, /*task_id=*/std::nullopt, pool_),
                             "GlobalIndexWriteTask only supports a single contiguous range.");
     }
 }
@@ -517,7 +581,7 @@ TEST_P(GlobalIndexTest, TestWriteIndexWithPartition) {
                 GlobalIndexWriteTask::WriteIndex(
                     table_path, "f0", "bitmap",
                     std::make_shared<IndexedSplitImpl>(split, std::vector<Range>({expected_range})),
-                    /*options=*/{}, pool_));
+                    /*options=*/{}, /*task_id=*/std::nullopt, pool_));
             auto index_commit_msg_impl =
                 std::dynamic_pointer_cast<CommitMessageImpl>(index_commit_msg);
             ASSERT_TRUE(index_commit_msg_impl);
@@ -1273,7 +1337,7 @@ TEST_P(GlobalIndexTest, TestWriteAndQueryLuminaIndexWithTagNullAndEmptyValues) {
         GlobalIndexWriteTask::WriteIndex(
             table_path, "embedding", "lumina",
             std::make_shared<IndexedSplitImpl>(split, std::vector<Range>({Range(0, 4)})),
-            /*options=*/lumina_options, pool_, fs_));
+            /*options=*/lumina_options, /*task_id=*/std::nullopt, pool_, fs_));
 
     std::shared_ptr<CommitMessageImpl> index_commit_msg_impl =
         std::dynamic_pointer_cast<CommitMessageImpl>(index_commit_msg);

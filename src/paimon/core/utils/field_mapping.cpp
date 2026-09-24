@@ -177,11 +177,6 @@ Result<std::vector<std::shared_ptr<CastExecutor>>> FieldMappingBuilder::CreateDa
     std::vector<std::shared_ptr<CastExecutor>> cast_executors;
     cast_executors.reserve(read_fields.size());
     for (size_t i = 0; i < read_fields.size(); i++) {
-        PAIMON_ASSIGN_OR_RAISE(FieldType read_type,
-                               FieldTypeUtils::ConvertToFieldType(read_fields[i].Type()->id()));
-        PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
-                               FieldTypeUtils::ConvertToFieldType(data_fields[i].Type()->id()));
-
         if (!read_fields[i].Type()->Equals(data_fields[i].Type())) {
             auto read_type_id = read_fields[i].Type()->id();
             if (read_type_id == arrow::Type::STRUCT || read_type_id == arrow::Type::LIST ||
@@ -191,6 +186,10 @@ Result<std::vector<std::shared_ptr<CastExecutor>>> FieldMappingBuilder::CreateDa
                 cast_executors.push_back(nullptr);
                 continue;
             }
+            PAIMON_ASSIGN_OR_RAISE(FieldType read_type,
+                                   FieldTypeUtils::ConvertToFieldType(read_fields[i].Type()->id()));
+            PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
+                                   FieldTypeUtils::ConvertToFieldType(data_fields[i].Type()->id()));
             auto executor_factory = CastExecutorFactory::GetCastExecutorFactory();
             auto cast_executor =
                 executor_factory->GetCastExecutor(/*src=*/data_type, /*target=*/read_type);

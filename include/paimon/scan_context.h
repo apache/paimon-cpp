@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "paimon/cache/cache.h"
+#include "paimon/catalog/identifier.h"
 #include "paimon/global_index/global_index_result.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
@@ -34,6 +35,7 @@
 namespace paimon {
 class ScanContextBuilder;
 class ScanFilter;
+class Catalog;
 class Executor;
 class FormatTable;
 class MemoryPool;
@@ -221,6 +223,16 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ScanContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Plans a native table through its own file system - including the per-table temporary
+    /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.
+    /// This is a shorthand for `WithFileSystem(catalog->GetTableFileSystem(identifier))`; an
+    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked.
+    /// @param catalog Non-null catalog, read when `Finish()` builds the context.
+    /// @param identifier The native table to scan.
+    /// @return Reference to this builder for method chaining.
+    ScanContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                    const Identifier& identifier);
 
     /// Set the table schema as a string to avoid schema loading I/O operations.
     ///

@@ -198,10 +198,10 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
 
     std::shared_ptr<DataFileMeta> ReconstructDataFileMeta(
         const std::shared_ptr<DataFileMeta>& file_meta) const {
-        if (GetParam() != "avro" && GetParam() != "mosaic") {
+        if (GetParam() != "avro" && GetParam() != "mosaic" && GetParam() != "lance") {
             return file_meta;
         }
-        // Avro and Mosaic without configured statistics have null statistics.
+        // Avro, Lance, and Mosaic without configured statistics have null statistics.
         auto new_meta = std::make_shared<DataFileMeta>(
             file_meta->file_name, file_meta->file_size, file_meta->row_count, file_meta->min_key,
             file_meta->max_key, file_meta->key_stats, file_meta->value_stats,
@@ -386,6 +386,9 @@ std::vector<std::string> GetTestValuesForWriteInteTest() {
     values.emplace_back("parquet");
 #ifdef PAIMON_ENABLE_MOSAIC
     values.emplace_back("mosaic");
+#endif
+#ifdef PAIMON_ENABLE_LANCE
+    values.emplace_back("lance");
 #endif
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
@@ -812,7 +815,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithPartitionAndMultiBuckets) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWriteWithComplexType) {
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -1644,7 +1647,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
 }
 
 TEST_P(WriteInteTest, TestPkTableWriteWithComplexType) {
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -2499,7 +2502,7 @@ TEST_P(WriteInteTest, TestWriteAndCommitIOException) {
 
 TEST_P(WriteInteTest, TestWriteWithFieldId) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
     // prepare write schema and write data
@@ -3101,7 +3104,7 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
 }
 
 TEST_P(WriteInteTest, TestWriteWithNestedSchema) {
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     arrow::FieldVector fields = {
@@ -3366,7 +3369,7 @@ TEST_P(WriteInteTest, TestWriteMemoryUse) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWithAllNull) {
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -3614,6 +3617,74 @@ TEST_F(WriteInteTest, TestBranchWrite) {
         BinaryRowGenerator::GenerateRow({std::string("20240725")}, pool_.get()), /*bucket=*/0,
         /*total_bucket=*/-1, data_increment_1, CompactIncrement({}, {}, {}));
     ASSERT_TRUE(expected_commit_message_1->TEST_Equal(*result_commit_msgs1));
+}
+
+TEST_F(WriteInteTest, TestBranchCommitAndRead) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
+                                 arrow::field("f1", arrow::int32())};
+    auto schema = arrow::schema(fields);
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::BUCKET, "-1"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> main_helper,
+                         TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{},
+                                            /*primary_keys=*/{}, options,
+                                            /*is_streaming_mode=*/false));
+    std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> main_batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["main", 1]])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(main_helper->WriteAndCommit(std::move(main_batch), /*commit_identifier=*/0,
+                                          /*expected_commit_messages=*/std::nullopt));
+
+    SchemaManager branch_schema_manager(file_system_, table_path, "dev");
+    ASSERT_OK(branch_schema_manager.CreateTable(schema, /*partition_keys=*/{},
+                                                /*primary_keys=*/{}, options));
+
+    std::map<std::string, std::string> branch_options = options;
+    branch_options[Options::BRANCH] = "dev";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> branch_helper,
+        TestHelper::Create(table_path, branch_options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> branch_batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["dev", 2]])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(branch_helper->WriteAndCommit(std::move(branch_batch), /*commit_identifier=*/1,
+                                            /*expected_commit_messages=*/std::nullopt));
+
+    std::string branch_snapshots = PathUtil::JoinPath(table_path, "branch/branch-dev/snapshot");
+    ASSERT_OK_AND_ASSIGN(bool branch_snapshot_exists,
+                         file_system_->Exists(PathUtil::JoinPath(branch_snapshots, "snapshot-1")));
+    ASSERT_TRUE(branch_snapshot_exists);
+    ASSERT_OK_AND_ASSIGN(bool branch_hint_exists,
+                         file_system_->Exists(PathUtil::JoinPath(branch_snapshots, "LATEST")));
+    ASSERT_TRUE(branch_hint_exists);
+    ASSERT_OK_AND_ASSIGN(bool main_snapshot_exists, file_system_->Exists(PathUtil::JoinPath(
+                                                        table_path, "snapshot/snapshot-1")));
+    ASSERT_TRUE(main_snapshot_exists);
+    ASSERT_OK_AND_ASSIGN(bool main_holds_branch_snapshot, file_system_->Exists(PathUtil::JoinPath(
+                                                              table_path, "snapshot/snapshot-2")));
+    ASSERT_FALSE(main_holds_branch_snapshot);
+
+    arrow::FieldVector fields_with_row_kind = fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    auto data_type = arrow::struct_(fields_with_row_kind);
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<Split>> branch_splits,
+        branch_helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool branch_read, branch_helper->ReadAndCheckResult(
+                                               data_type, branch_splits, R"([[0, "dev", 2]])"));
+    ASSERT_TRUE(branch_read);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<Split>> main_splits,
+        main_helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool main_read, main_helper->ReadAndCheckResult(data_type, main_splits,
+                                                                         R"([[0, "main", 1]])"));
+    ASSERT_TRUE(main_read);
 }
 
 TEST_P(WriteInteTest, TestDataEvolutionWrite) {
@@ -4044,7 +4115,7 @@ TEST_P(WriteInteTest, TestNullabilityCheck) {
 
 TEST_P(WriteInteTest, TestPkSpillableMapSharedShreddingReadWrite) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
 

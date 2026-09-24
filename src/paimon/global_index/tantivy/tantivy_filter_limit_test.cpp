@@ -76,7 +76,8 @@ class TantivyFilterLimitTest : public ::testing::Test {
         std::string root = root_dir->Str();
         kept_dirs_.push_back(std::move(root_dir));
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto fm = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto fm = std::make_shared<GlobalIndexFileManager>(fs_, path_factory,
+                                                           /*checkpoint_path_factory=*/nullptr);
         auto data_type = arrow::struct_({arrow::field("f0", arrow::utf8())});
         EXPECT_OK_AND_ASSIGN(auto writer_res, TantivyGlobalIndexWriter::Create(
                                                   "f0", data_type, fm, options, GetDefaultPool()));

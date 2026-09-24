@@ -396,6 +396,12 @@ struct PAIMON_EXPORT Options {
     /// a table is never compacted.
     static const char DELETION_VECTORS_ENABLED[];
 
+    /// "pk-clustering-override" - Enables clustering by non-primary key fields. When set to true,
+    /// the physical sort order of data files is determined by the configured 'clustering.columns'
+    /// instead of the primary key, optimizing query performance for non-PK columns.
+    /// Default value is false. The C++ commit path does not support this mode.
+    static const char PK_CLUSTERING_OVERRIDE[];
+
     /// "deletion-vector.index-file.target-size" - The target size of deletion vector index file.
     /// Default value is 2MB.
     static const char DELETION_VECTOR_INDEX_FILE_TARGET_SIZE[];
@@ -420,6 +426,11 @@ struct PAIMON_EXPORT Options {
     /// comparing rows for changelog deduplication. This option is only valid when
     /// "changelog-producer.row-deduplicate" is "true".
     static const char CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS[];
+
+    /// "changelog-producer.input.parallel-write" - Whether data and changelog files are
+    /// written in parallel for input mode changelog producer. Default value is "true".This
+    /// configuration is specific to cpp paimon.
+    static const char CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE[];
 
     /// "changelog-file.prefix" - Specify the file name prefix of changelog files. Default value is
     /// "changelog-".
@@ -506,7 +517,9 @@ struct PAIMON_EXPORT Options {
     static const char MAP_SHARED_SHREDDING_COLUMN_PLACEMENT_POLICY[];
 
     /// "variant.shreddingSchema" - The Variant shredding schema for writing: a ROW type JSON
-    /// whose fields map variant column names to their shredding types. No default value.
+    /// whose fields map variant column names to their shredding types. All ROW fields, including
+    /// nested fields, must all specify 'id' or all omit it. Omitted IDs are assigned in preorder
+    /// starting at 0. No default value.
     static const char VARIANT_SHREDDING_SCHEMA[];
     /// "parquet.variant.shreddingSchema" - Fallback key of "variant.shreddingSchema".
     static const char PARQUET_VARIANT_SHREDDING_SCHEMA[];

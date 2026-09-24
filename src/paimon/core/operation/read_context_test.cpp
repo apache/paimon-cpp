@@ -24,15 +24,57 @@
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/io/cache/lru_cache.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/status.h"
+#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+TEST(ReadContextTest, TestWithCatalogResolvesTableFileSystem) {
+    // WithCatalog is a shorthand for WithFileSystem(catalog->GetTableFileSystem(identifier)); it
+    // resolves the per-table file system when Finish() builds the context and sets nothing else.
+    auto table_fs = std::make_shared<MockFileSystem>();
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(table_fs);
+
+    ReadContextBuilder builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+    ASSERT_EQ(ctx->GetSpecificFileSystem(), table_fs);
+    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
+    ASSERT_EQ(catalog->TableFileSystemRequests().front(), Identifier("db1", "t1"));
+
+    // Finish() resets the builder, so the next context reads without the catalog.
+    ASSERT_OK_AND_ASSIGN(auto next_ctx, builder.Finish());
+    ASSERT_FALSE(next_ctx->GetSpecificFileSystem());
+    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
+}
+
+TEST(ReadContextTest, TestWithFileSystemOverridesCatalog) {
+    // A file system the caller gave is the one that is used, and the catalog is not asked for one.
+    auto table_fs = std::make_shared<MockFileSystem>();
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(table_fs);
+    auto given_fs = std::make_shared<MockFileSystem>();
+
+    ReadContextBuilder builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(
+        auto ctx,
+        builder.WithCatalog(catalog, Identifier("db1", "t1")).WithFileSystem(given_fs).Finish());
+    ASSERT_EQ(ctx->GetSpecificFileSystem(), given_fs);
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
+}
+
+TEST(ReadContextTest, TestWithCatalogNullRejected) {
+    ReadContextBuilder builder("table_root_path");
+    ASSERT_NOK_WITH_MSG(builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),
+                        "cannot read through a null catalog");
+}
+
 TEST(ReadContextTest, TestDefaultValue) {
     ReadContextBuilder builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
@@ -46,7 +88,7 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_FALSE(ctx->EnablePredicateFilter());
     ASSERT_FALSE(ctx->EnablePrefetch());
     ASSERT_TRUE(ctx->ReadAheadCacheEnabled());
-    ASSERT_EQ(WarmupLevel::DECODED, ctx->GetWarmupLevel());
+    ASSERT_EQ(WarmupLevel::RAW, ctx->GetWarmupLevel());
     ASSERT_EQ(600, ctx->GetPrefetchBatchCount());
     ASSERT_EQ(3, ctx->GetPrefetchMaxParallelNum());
     ASSERT_FALSE(ctx->EnableMultiThreadRowToBatch());
@@ -74,7 +116,7 @@ TEST(ReadContextTest, TestSetContent) {
     builder.EnablePredicateFilter(true);
     builder.EnablePrefetch(true);
     builder.SetReadAheadCacheEnabled(false);
-    builder.SetWarmupLevel(WarmupLevel::RAW);
+    builder.SetWarmupLevel(WarmupLevel::DECODED);
     builder.SetPrefetchBatchCount(1200);
     builder.SetPrefetchMaxParallelNum(6);
     builder.EnableMultiThreadRowToBatch(true);
@@ -100,7 +142,7 @@ TEST(ReadContextTest, TestSetContent) {
     ASSERT_TRUE(ctx->EnablePredicateFilter());
     ASSERT_TRUE(ctx->EnablePrefetch());
     ASSERT_FALSE(ctx->ReadAheadCacheEnabled());
-    ASSERT_EQ(WarmupLevel::RAW, ctx->GetWarmupLevel());
+    ASSERT_EQ(WarmupLevel::DECODED, ctx->GetWarmupLevel());
     ASSERT_EQ(1200, ctx->GetPrefetchBatchCount());
     ASSERT_EQ(6, ctx->GetPrefetchMaxParallelNum());
     ASSERT_TRUE(ctx->EnableMultiThreadRowToBatch());
@@ -135,7 +177,7 @@ TEST(ReadContextTest, TestSetWarmupLevel) {
     ASSERT_OK_AND_ASSIGN(auto first_ctx, builder.Finish());
     ASSERT_EQ(WarmupLevel::NONE, first_ctx->GetWarmupLevel());
     ASSERT_OK_AND_ASSIGN(auto second_ctx, builder.Finish());
-    ASSERT_EQ(WarmupLevel::DECODED, second_ctx->GetWarmupLevel());
+    ASSERT_EQ(WarmupLevel::RAW, second_ctx->GetWarmupLevel());
 }
 
 TEST(ReadContextTest, TestSetOptionsOverridesAddedOptions) {
@@ -149,18 +191,35 @@ TEST(ReadContextTest, TestSetOptionsOverridesAddedOptions) {
     ASSERT_EQ(expected_options, ctx->GetOptions());
 }
 
-TEST(ReadContextTest, TestRejectBranchLeavingTablePath) {
-    // The branch names a directory under the table path, so a value that is not a single path
-    // component is rejected when the context is built.
-    ReadContextBuilder builder("table_root_path");
-    builder.WithBranch("rt/../../../../../outside");
-    ASSERT_NOK_WITH_MSG(builder.Finish(), "branch name cannot contain path separators");
+TEST(ReadContextTest, TestBranch) {
+    ReadContextBuilder option_builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(auto option_ctx, option_builder.AddOption(Options::BRANCH, "rt").Finish());
+    ASSERT_EQ("rt", option_ctx->GetBranch());
+
+    ReadContextBuilder agreeing_builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(
+        auto agreeing_ctx,
+        agreeing_builder.WithBranch("rt").AddOption(Options::BRANCH, "rt").Finish());
+    ASSERT_EQ("rt", agreeing_ctx->GetBranch());
+
+    ReadContextBuilder mixed_builder("table_root_path");
+    ASSERT_NOK_WITH_MSG(mixed_builder.WithBranch("rt").AddOption(Options::BRANCH, "dev").Finish(),
+                        "but both 'dev' and 'rt' were named");
 
     // An empty branch selects the main branch and stays accepted.
     ReadContextBuilder main_builder("table_root_path");
     main_builder.WithBranch("");
     ASSERT_OK_AND_ASSIGN(auto ctx, main_builder.Finish());
-    ASSERT_EQ("", ctx->GetBranch());
+    ASSERT_EQ(BranchManager::DEFAULT_MAIN_BRANCH, ctx->GetBranch());
+    ReadContextBuilder empty_builder("table_root_path");
+    ASSERT_NOK_WITH_MSG(empty_builder.WithBranch("").AddOption(Options::BRANCH, "dev").Finish(),
+                        "but both 'dev' and 'main' were named");
+
+    // The branch names a directory under the table path, so a value that is not a single path
+    // component is rejected when the context is built.
+    ReadContextBuilder escaping_builder("table_root_path");
+    escaping_builder.WithBranch("rt/../../../../../outside");
+    ASSERT_NOK_WITH_MSG(escaping_builder.Finish(), "branch name cannot contain path separators");
 }
 
 TEST(ReadContextTest, TestFileSystemAndSchemeMapConflict) {

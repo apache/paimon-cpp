@@ -23,12 +23,12 @@
 #include <utility>
 
 #include "arrow/c/bridge.h"
-#include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/stream_utils.h"
+#include "paimon/data/blob_descriptor.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/status.h"
 

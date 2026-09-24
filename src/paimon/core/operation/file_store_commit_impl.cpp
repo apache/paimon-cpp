@@ -77,6 +77,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/partition_utils.h"
@@ -94,7 +95,6 @@ namespace {
 
 constexpr const char* kCommitStrictModeLastSafeSnapshot = "commit.strict-mode.last-safe-snapshot";
 constexpr const char* kSequenceSnapshotOrdering = "sequence.snapshot-ordering";
-constexpr const char* kPkClusteringOverride = "pk-clustering-override";
 
 }  // namespace
 
@@ -108,8 +108,8 @@ Status FileStoreCommitImpl::ValidateCommitOptions(const CoreOptions& options) {
     if (raw_options.find(kSequenceSnapshotOrdering) != raw_options.end()) {
         unsupported_options.emplace_back(kSequenceSnapshotOrdering);
     }
-    if (raw_options.find(kPkClusteringOverride) != raw_options.end()) {
-        unsupported_options.emplace_back(kPkClusteringOverride);
+    if (raw_options.find(Options::PK_CLUSTERING_OVERRIDE) != raw_options.end()) {
+        unsupported_options.emplace_back(Options::PK_CLUSTERING_OVERRIDE);
     }
 
     if (!unsupported_options.empty()) {
@@ -568,8 +568,9 @@ Status FileStoreCommitImpl::Overwrite(
     std::optional<int64_t> watermark) {
     std::shared_ptr<ManifestCommittable> committable =
         CreateManifestCommittable(identifier, commit_messages, watermark, /*properties=*/{});
-    PAIMON_LOG_INFO(logger_, "Ready to overwrite to table %s, number of commit messages: %zu",
-                    table_name_.c_str(), committable->FileCommittables().size());
+    PAIMON_LOG_INFO(logger_, "Ready to overwrite to table %s%s, number of commit messages: %zu",
+                    table_name_.c_str(), CommitTargetSuffix().c_str(),
+                    committable->FileCommittables().size());
     PAIMON_ASSIGN_OR_RAISE(std::string committable_str, committable->ToString());
     std::string partition_str = fmt::format("{}", partition);
     std::string properties_str = fmt::format("{}", committable->Properties());
@@ -593,8 +594,8 @@ Status FileStoreCommitImpl::Overwrite(
     report_changes.append_changelog.clear();
     report_changes.compact_changelog.clear();
     ScopeGuard report_guard([&]() {
-        PAIMON_LOG_INFO(logger_, "Finished overwrite to table %s, duration %ld ms",
-                        table_name_.c_str(), duration.Get());
+        PAIMON_LOG_INFO(logger_, "Finished overwrite to table %s%s, duration %ld ms",
+                        table_name_.c_str(), CommitTargetSuffix().c_str(), duration.Get());
         ReportCommit(report_changes, duration.Get(), generated_snapshot, attempt);
     });
 
@@ -609,8 +610,9 @@ Result<int32_t> FileStoreCommitImpl::FilterAndOverwrite(
     std::optional<int64_t> watermark) {
     std::shared_ptr<ManifestCommittable> committable =
         CreateManifestCommittable(identifier, commit_messages, watermark, /*properties=*/{});
-    PAIMON_LOG_INFO(logger_, "Ready to overwrite to table %s, number of commit messages: %zu",
-                    table_name_.c_str(), committable->FileCommittables().size());
+    PAIMON_LOG_INFO(logger_, "Ready to overwrite to table %s%s, number of commit messages: %zu",
+                    table_name_.c_str(), CommitTargetSuffix().c_str(),
+                    committable->FileCommittables().size());
     PAIMON_ASSIGN_OR_RAISE(std::string committable_str, committable->ToString());
     std::string partition_str = fmt::format("{}", partition);
     std::string properties_str = fmt::format("{}", committable->Properties());
@@ -639,8 +641,8 @@ Result<int32_t> FileStoreCommitImpl::FilterAndOverwrite(
         report_changes.append_changelog.clear();
         report_changes.compact_changelog.clear();
         ScopeGuard report_guard([&]() {
-            PAIMON_LOG_INFO(logger_, "Finished overwrite to table %s, duration %ld ms",
-                            table_name_.c_str(), duration.Get());
+            PAIMON_LOG_INFO(logger_, "Finished overwrite to table %s%s, duration %ld ms",
+                            table_name_.c_str(), CommitTargetSuffix().c_str(), duration.Get());
             ReportCommit(report_changes, duration.Get(), generated_snapshot, attempt);
         });
 
@@ -650,8 +652,8 @@ Result<int32_t> FileStoreCommitImpl::FilterAndOverwrite(
     } else {
         // Align with Java: filtered duplicate is treated as one resolved commit attempt.
         attempt = 1;
-        PAIMON_LOG_INFO(logger_, "Finished overwrite to table %s, duration %ld ms",
-                        table_name_.c_str(), duration.Get());
+        PAIMON_LOG_INFO(logger_, "Finished overwrite to table %s%s, duration %ld ms",
+                        table_name_.c_str(), CommitTargetSuffix().c_str(), duration.Get());
     }
     return actual_committables.size();
 }
@@ -858,8 +860,9 @@ Result<int32_t> FileStoreCommitImpl::TryOverwrite(
 Status FileStoreCommitImpl::Commit(
     const std::shared_ptr<ManifestCommittable>& committable, bool check_append_files,
     bool retry_on_conflict, const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges) {
-    PAIMON_LOG_INFO(logger_, "Ready to commit to table %s, number of commit messages: %zu",
-                    table_name_.c_str(), committable->FileCommittables().size());
+    PAIMON_LOG_INFO(logger_, "Ready to commit to table %s%s, number of commit messages: %zu",
+                    table_name_.c_str(), CommitTargetSuffix().c_str(),
+                    committable->FileCommittables().size());
     PAIMON_ASSIGN_OR_RAISE(std::string committable_str, committable->ToString());
     PAIMON_LOG_DEBUG(logger_, "Ready to commit\n%s", committable_str.c_str());
 
@@ -871,8 +874,8 @@ Status FileStoreCommitImpl::Commit(
                            CollectChanges(committable->FileCommittables()));
     ScopeGuard report_guard([&]() {
         PAIMON_LOG_INFO(logger_,
-                        "Finished (Uncertain of success) commit to table %s, duration %ld ms",
-                        table_name_.c_str(), duration.Get());
+                        "Finished (Uncertain of success) commit to table %s%s, duration %ld ms",
+                        table_name_.c_str(), CommitTargetSuffix().c_str(), duration.Get());
         ReportCommit(changes, duration.Get(), generated_snapshot, attempt);
     });
 
@@ -1346,9 +1349,12 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
         latest_snapshot ? latest_snapshot.value().Statistics() : std::nullopt;
     std::optional<int64_t> changelog_record_count =
         ManifestEntry::NullableRecordCount(changelog_entries);
-    // Reload on each attempt to account for concurrent schema changes.
+    // Reload on each attempt to account for concurrent schema changes. A branch publishes the
+    // schema this commit writes with under the branch, which is also where a read of the branch
+    // resolves the id recorded here, so it is read there rather than from the catalog; only the
+    // main branch may have a current schema the catalog alone holds.
     int64_t schema_id = table_schema_->Id();
-    if (schema_id_loader_) {
+    if (schema_id_loader_ && BranchManager::IsMainBranch(snapshot_manager_->Branch())) {
         PAIMON_ASSIGN_OR_RAISE(schema_id, schema_id_loader_());
     } else {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
@@ -1448,7 +1454,17 @@ Status FileStoreCommitImpl::CheckRowIdSchemasArePublished(
 }
 
 std::string FileStoreCommitImpl::CommitTargetSuffix() const {
-    const std::string target = snapshot_commit_->DescribeTarget();
+    // The snapshot manager's branch is the one handed to `SnapshotCommit::Commit()`, so a log
+    // line names the branch the snapshot went to rather than the one the commit was built around.
+    std::string target;
+    const std::string& branch = snapshot_manager_->Branch();
+    if (!BranchManager::IsMainBranch(branch)) {
+        target = "branch " + branch;
+    }
+    const std::string described = snapshot_commit_->DescribeTarget();
+    if (!described.empty()) {
+        target = target.empty() ? described : target + ", " + described;
+    }
     return target.empty() ? std::string() : " (" + target + ")";
 }
 
@@ -1471,8 +1487,8 @@ Result<bool> FileStoreCommitImpl::CommitSnapshotImpl(
     }
     std::optional<std::string> base_snapshot_uuid =
         base_snapshot ? base_snapshot.value().Uuid() : std::nullopt;
-    Result<bool> commit_result =
-        snapshot_commit_->Commit(base_snapshot_uuid, new_snapshot, statistics);
+    Result<bool> commit_result = snapshot_commit_->Commit(base_snapshot_uuid, new_snapshot,
+                                                          snapshot_manager_->Branch(), statistics);
     if (!commit_result.ok()) {
         // An error leaves publication uncertain; preserve metadata and report the attempted UUID.
         return Status::Invalid(fmt::format(

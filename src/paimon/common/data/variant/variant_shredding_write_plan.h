@@ -75,7 +75,8 @@ class VariantShreddingWritePlan {
 
     /// Creates a plan from the `variant.shreddingSchema` option value: a ROW type JSON whose
     /// fields map top-level variant column names to their shredding types (nested variant
-    /// columns cannot be configured, as in Java).
+    /// columns cannot be configured, as in Java). All ROW fields, including nested fields, must
+    /// all specify 'id' or all omit it. Omitted IDs are assigned in preorder starting at 0.
     static Result<std::shared_ptr<VariantShreddingWritePlan>> FromConfiguredSchema(
         const std::shared_ptr<arrow::Schema>& logical_schema,
         const std::string& configured_schema_json);

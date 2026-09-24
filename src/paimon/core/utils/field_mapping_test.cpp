@@ -677,4 +677,22 @@ TEST_F(FieldMappingTest, TestMapSelectedKeysMetadataPropagatedToDataSchema) {
     ASSERT_FALSE(custom_metadata_result.ok());
 }
 
+TEST_F(FieldMappingTest, TestTimeWithoutCast) {
+    std::vector<DataField> fields = {
+        DataField(0, arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI)))};
+    auto schema = DataField::ConvertDataFieldsToArrowSchema(fields);
+    ASSERT_OK_AND_ASSIGN(auto builder, FieldMappingBuilder::Create(schema, /*partition_keys=*/{},
+                                                                   /*predicate=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(auto mapping, builder->CreateFieldMapping(fields));
+    const auto& info = mapping->non_partition_info;
+    ASSERT_EQ(info.non_partition_read_schema, fields);
+    ASSERT_EQ(info.non_partition_data_schema, fields);
+    ASSERT_EQ(info.cast_executors.size(), 1);
+    ASSERT_EQ(info.cast_executors[0], nullptr);
+
+    std::vector<DataField> int_fields = {DataField(0, arrow::field("time", arrow::int32()))};
+    ASSERT_NOK(FieldMappingBuilder::CreateDataCastExecutors(fields, int_fields));
+    ASSERT_NOK(FieldMappingBuilder::CreateDataCastExecutors(int_fields, fields));
+}
+
 }  // namespace paimon::test

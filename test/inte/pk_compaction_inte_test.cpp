@@ -444,7 +444,7 @@ TEST_F(PkCompactionInteTest, TestMetadataOnlyLevelUpgradeKeepsValueStats) {
 // Verify shared-shredding MAP can be read correctly after PK full compaction.
 TEST_P(PkCompactionInteTest, TestKeyValueTableFullCompactionWithMapSharedShredding) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
 
@@ -516,7 +516,7 @@ TEST_P(PkCompactionInteTest, TestKeyValueTableFullCompactionWithMapSharedShreddi
 
 TEST_P(PkCompactionInteTest, TestKeyValueTableDvCompactionWithMapSharedShredding) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
 
@@ -1882,9 +1882,9 @@ TEST_F(PkCompactionInteTest, DeduplicateWithRowKindAndDV) {
     }
 }
 
-// Test: write and compact on branch.
-// Copies append_table_with_rt_branch.db to a temp dir, writes data to branch-rt, then compacts.
-// Since we don't support branch commit and scan, we only verify the commit messages.
+// Test: write, compact and commit on branch.
+// Copies append_table_with_rt_branch.db to a temp dir, writes data to branch-rt, compacts, commits
+// to that branch and scans it back.
 TEST_F(PkCompactionInteTest, WriteAndCompactWithBranch) {
     // Step 1: Copy the table with branch to a temp directory.
     std::string src_table_path =
@@ -1954,35 +1954,78 @@ TEST_F(PkCompactionInteTest, WriteAndCompactWithBranch) {
     ASSERT_EQ(compact_after[0]->level, 5);
     ASSERT_EQ(compact_after[0]->row_count, 2);
 
-    // Step 4: Fake a DataSplit from compact_after to read and verify the compacted data.
-    {
-        ReadContextBuilder read_context_builder(table_path);
-        read_context_builder.WithBranch("rt");
-        ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    // Step 4: Commit to branch-rt.
+    CommitContextBuilder commit_builder(table_path, "commit_user_1");
+    commit_builder.AddOption(Options::FILE_SYSTEM, "local").AddOption(Options::BRANCH, "rt");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> file_store_commit,
+                         FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK(file_store_commit->Commit(commit_msgs));
 
-        // Build a fake DataSplit using the compact_after file metadata.
-        auto fake_split = BuildSplit(commit_msgs, /*snapshot_id=*/1);
-        ASSERT_OK_AND_ASSIGN(auto batch_reader,
-                             table_read->CreateReader(std::shared_ptr<Split>(fake_split)));
-        ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(std::move(batch_reader)));
+    auto fs = std::make_shared<LocalFileSystem>();
+    ASSERT_OK_AND_ASSIGN(
+        bool branch_append_snapshot,
+        fs->Exists(PathUtil::JoinPath(table_path, "branch/branch-rt/snapshot/snapshot-2")));
+    ASSERT_TRUE(branch_append_snapshot);
+    ASSERT_OK_AND_ASSIGN(
+        bool branch_compact_snapshot,
+        fs->Exists(PathUtil::JoinPath(table_path, "branch/branch-rt/snapshot/snapshot-3")));
+    ASSERT_TRUE(branch_compact_snapshot);
+    ASSERT_OK_AND_ASSIGN(bool main_snapshot_exists,
+                         fs->Exists(PathUtil::JoinPath(table_path, "snapshot/snapshot-2")));
+    ASSERT_FALSE(main_snapshot_exists);
 
-        arrow::FieldVector fields_with_row_kind = fields;
-        fields_with_row_kind.insert(fields_with_row_kind.begin(),
-                                    arrow::field("_VALUE_KIND", arrow::int8()));
-        auto result_type = arrow::struct_(fields_with_row_kind);
+    // Step 5: Scan and read branch-rt.
+    std::map<std::string, std::string> branch_options = {{Options::FILE_SYSTEM, "local"},
+                                                         {Options::BRANCH, "rt"}};
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.WithStreamingMode(false)
+        .SetOptions(branch_options)
+        .AddOption(Options::SCAN_MODE, StartupMode::LatestFull().ToString());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
-        std::shared_ptr<arrow::ChunkedArray> expected_array;
-        auto status = arrow::ipc::internal::json::ChunkedArrayFromJSON(result_type, {R"([
-[0, "20240726", "cherry", 30],
-[0, "20240726", "grape", 40]
-])"},
-                                                                       &expected_array);
-        ASSERT_TRUE(status.ok());
-        ASSERT_TRUE(result_array);
-        ASSERT_TRUE(result_array->Equals(*expected_array));
+    std::vector<std::shared_ptr<Split>> splits = plan->Splits();
+    ASSERT_FALSE(splits.empty());
+    for (const std::shared_ptr<Split>& split : splits) {
+        auto* split_impl = dynamic_cast<DataSplitImpl*>(split.get());
+        ASSERT_NE(split_impl, nullptr);
+        ASSERT_EQ(split_impl->SnapshotId(), 3);
     }
+
+    ReadContextBuilder read_context_builder(table_path);
+    read_context_builder.SetOptions(branch_options);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         table_read->CreateReader(splits));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+    ASSERT_TRUE(result_array);
+
+    arrow::FieldVector fields_with_row_kind = fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    auto result_type = arrow::struct_(fields_with_row_kind);
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto status = arrow::ipc::internal::json::ChunkedArrayFromJSON(result_type, {R"([
+[0, "20240725", "apple", 4],
+[0, "20240725", "peach", 10],
+[0, "20240726", "cherry", 30],
+[0, "20240726", "grape", 40],
+[0, "20240726", "pear", 6]
+])"},
+                                                                   &expected_array);
+    ASSERT_TRUE(status.ok());
+    auto result_schema = std::make_shared<arrow::Schema>(fields_with_row_kind);
+    ASSERT_OK_AND_ASSIGN(expected_array,
+                         ReadResultCollector::SortArray(expected_array, result_schema));
+    ASSERT_OK_AND_ASSIGN(result_array, ReadResultCollector::SortArray(result_array, result_schema));
+    ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
 }
 
 TEST_F(PkCompactionInteTest, TestPartialUpdateNoDv) {
@@ -3234,7 +3277,7 @@ TEST_F(PkCompactionInteTest, RemoteLookupFileWithSchemaEvolution) {
 //   6. ScanAndVerify after full compact
 TEST_P(PkCompactionInteTest, TestLookupCompatibility) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
     // Step 1: Copy pk_compact_lookup table to temp dir.
@@ -3598,6 +3641,9 @@ std::vector<std::string> GetTestValuesForCompactionInteTest() {
     values.emplace_back("parquet");
 #ifdef PAIMON_ENABLE_MOSAIC
     values.emplace_back("mosaic");
+#endif
+#ifdef PAIMON_ENABLE_LANCE
+    values.emplace_back("lance");
 #endif
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");

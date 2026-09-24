@@ -238,6 +238,11 @@ class PAIMON_EXPORT WriteContextBuilder {
     WriteContextBuilder& WithWriteId(int32_t write_id);
 
     /// Write to specific branch, default is main.
+    ///
+    /// The identifier of `WithCatalog()` and the `branch` option may name the branch too; naming
+    /// two different ones is refused rather than silently resolved. An empty name is the main
+    /// branch.
+    /// @param branch Name of the branch to write to.
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithBranch(const std::string& branch);
 
@@ -258,9 +263,12 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// snapshot. Use the same catalog and identifier as `CommitContextBuilder` to restore and
     /// refresh real-time progress.
     ///
-    /// Only the main branch is supported. Data, manifests and historical metadata remain on the
-    /// file system. The catalog supplies that file system unless overridden
-    /// by `WithFileSystem()` or `WithFileSystemSchemeToIdentifierMap()`.
+    /// A branch is addressed by the identifier, as `tbl$branch_dev`, so that the catalog answers
+    /// for that branch. Its schema is read from the branch directory rather than from the catalog,
+    /// just as a read of that branch reads it.
+    /// Data, manifests and historical metadata remain on the file system. The catalog supplies
+    /// that file system unless overridden by `WithFileSystem()` or
+    /// `WithFileSystemSchemeToIdentifierMap()`.
     /// @param catalog Non-null catalog, kept alive while the writer uses its snapshot loader.
     /// @param identifier The native table to write to.
     /// @return Reference to this builder for method chaining.

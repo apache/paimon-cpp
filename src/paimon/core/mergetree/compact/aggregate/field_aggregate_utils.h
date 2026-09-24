@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <cassert>
+#include <cstddef>
 #include <memory>
 
 #include "arrow/type_fwd.h"
@@ -62,6 +64,36 @@ class FieldAggregateUtils {
     /// @return Whether the values are equal, or an error Status.
     static Result<bool> Equals(const VariantType& lhs, const VariantType& rhs,
                                const std::shared_ptr<arrow::DataType>& type);
+
+    /// Return whether values of this logical type have a hash compatible with Equals().
+    static bool IsHashableType(const std::shared_ptr<arrow::DataType>& type);
+
+    /// Hash a value according to the equality semantics of its logical type.
+    ///
+    /// The caller must first check IsHashableType(type).
+    static size_t Hash(const VariantType& value, const std::shared_ptr<arrow::DataType>& type);
 };
+
+namespace detail {
+
+struct SemanticHash {
+    std::shared_ptr<arrow::DataType> type;
+
+    size_t operator()(const VariantType& value) const {
+        return FieldAggregateUtils::Hash(value, type);
+    }
+};
+
+struct SemanticEqual {
+    std::shared_ptr<arrow::DataType> type;
+
+    bool operator()(const VariantType& lhs, const VariantType& rhs) const {
+        Result<bool> equal = FieldAggregateUtils::Equals(lhs, rhs, type);
+        assert(equal.ok());
+        return equal.value();
+    }
+};
+
+}  // namespace detail
 
 }  // namespace paimon

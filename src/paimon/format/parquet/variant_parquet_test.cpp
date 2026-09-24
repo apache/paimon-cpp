@@ -484,6 +484,56 @@ constexpr const char* kAgeCityShreddingSchema = R"({
     } ]
 })";
 
+constexpr const char* kNestedShreddingSchema = R"({
+    "type": "ROW",
+    "fields": [ {
+        "id": 0,
+        "name": "v",
+        "type": {
+            "type": "ROW",
+            "fields": [
+                {"id": 3, "name": "age", "type": "INT"},
+                {"id": 4, "name": "addr", "type": {
+                    "type": "ROW",
+                    "fields": [ {"id": 5, "name": "city", "type": "STRING"} ]
+                }},
+                {"id": 6, "name": "tags", "type": {"type": "ARRAY", "element": "STRING"}}
+            ]
+        }
+    } ]
+})";
+
+constexpr const char* kNestedShreddingSchemaWithoutIds = R"({
+    "type": "ROW",
+    "fields": [ {
+        "name": "v",
+        "type": {
+            "type": "ROW",
+            "fields": [
+                {"name": "age", "type": "INT"},
+                {"name": "addr", "type": {
+                    "type": "ROW",
+                    "fields": [ {"name": "city", "type": "STRING"} ]
+                }},
+                {"name": "tags", "type": {"type": "ARRAY", "element": "STRING"}}
+            ]
+        }
+    } ]
+})";
+
+void CollectFieldIds(const ::parquet::schema::Node& node, const std::string& prefix,
+                     std::map<std::string, int32_t>* field_ids) {
+    std::string path = prefix.empty() ? node.name() : prefix + "." + node.name();
+    (*field_ids)[path] = node.field_id();
+    if (!node.is_group()) {
+        return;
+    }
+    const auto& group = checked_cast<const ::parquet::schema::GroupNode&>(node);
+    for (int32_t i = 0; i < group.field_count(); ++i) {
+        CollectFieldIds(*group.field(i), path, field_ids);
+    }
+}
+
 }  // namespace
 
 TEST_F(VariantParquetTest, PhysicalLayoutMatchesJava) {
@@ -495,10 +545,11 @@ TEST_F(VariantParquetTest, PhysicalLayoutMatchesJava) {
     // reader is required because these parquet-level properties (repetition, physical types,
     // field ids, the absence of a logical-type annotation) are not visible in the Arrow schema
     // surfaced by the paimon reader.
-    auto file = arrow::io::ReadableFile::Open(file_path_, arrow_pool_.get());
-    ASSERT_TRUE(file.ok());
+    auto file = arrow::io::ReadableFile::Open(file_path_, arrow::default_memory_pool());
+    ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
-    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    auto status =
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::SchemaDescriptor* schema = reader->parquet_reader()->metadata()->schema();
     ASSERT_EQ(schema->num_columns(), 3);
@@ -541,12 +592,14 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
 
     {
         // Sanity-check the raw file through the plain parquet-arrow reader: the struct child
-        // arrays must align with the logical rows.
-        auto file = arrow::io::ReadableFile::Open(file_path_, arrow_pool_.get());
-        ASSERT_TRUE(file.ok());
+        // arrays must align with the logical rows. Use the process-wide pool: pre-buffered reads
+        // may release their buffers on Arrow IO threads after this fixture's pool is destroyed.
+        auto file = arrow::io::ReadableFile::Open(file_path_, arrow::default_memory_pool());
+        ASSERT_TRUE(file.ok()) << file.status().ToString();
         std::unique_ptr<::parquet::arrow::FileReader> raw_reader;
         ASSERT_TRUE(
-            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &raw_reader).ok());
+            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &raw_reader)
+                .ok());
         std::shared_ptr<arrow::Table> table;
         ASSERT_TRUE(raw_reader->ReadTable(&table).ok());
         auto raw_variant = checked_pointer_cast<arrow::StructArray>(table->column(1)->chunk(0));
@@ -611,46 +664,115 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
 
 TEST_F(VariantParquetTest, ShreddedWriteAndReadRoundTrip) {
     std::vector<const char*> jsons = {
-        R"({"age": 35, "city": "Hangzhou"})",
+        R"({"age": 35, "addr": {"city": "Hangzhou"}, "tags": ["x", "y"]})",
         nullptr,
         R"({"age": "not a number", "extra": [1, 2]})",
         "[\"top level array\"]",
     };
-    WriteShreddedFile(jsons, kAgeCityShreddingSchema);
-
-    {
-        std::unique_ptr<FileBatchReader> file_reader;
-        std::shared_ptr<arrow::Schema> file_schema;
-        OpenFile(&file_reader, &file_schema);
-        auto file_variant_field = file_schema->GetFieldByName("v");
-        ASSERT_NE(file_variant_field, nullptr);
-        ASSERT_TRUE(VariantShreddingUtils::IsShreddedFileType(file_variant_field->type()))
-            << file_variant_field->type()->ToString();
-        file_reader->Close();
-    }
-
-    // Reading the column as a plain VARIANT reassembles every physical shape back to the
-    // original logical value.
-    std::shared_ptr<arrow::StructArray> variant_column;
-    ReadVariantColumn(paimon_schema_, &variant_column);
-    ASSERT_EQ(variant_column->length(), static_cast<int64_t>(jsons.size()));
-    auto value_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
-    auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
-    for (size_t i = 0; i < jsons.size(); ++i) {
-        SCOPED_TRACE("row " + std::to_string(i));
-        if (jsons[i] == nullptr) {
-            ASSERT_TRUE(variant_column->IsNull(i));
-            continue;
+    const std::map<std::string, std::map<std::string, int32_t>> expected_object_ids = {
+        {"configured", {{"age", 3}, {"addr", 4}, {"city", 5}, {"tags", 6}}},
+        {"configured-without-ids", {{"age", 1}, {"addr", 2}, {"city", 3}, {"tags", 4}}},
+        {"per-file", {{"age", 1}, {"addr", 0}, {"city", 0}, {"tags", 2}}},
+        {"adaptive", {{"age", 1}, {"addr", 0}, {"city", 0}, {"tags", 2}}}};
+    for (const auto& [mode, object_ids] : expected_object_ids) {
+        SCOPED_TRACE(mode);
+        const bool configured = mode == "configured" || mode == "configured-without-ids";
+        std::map<std::string, std::string> option_map;
+        if (configured) {
+            option_map[Options::VARIANT_SHREDDING_SCHEMA] =
+                mode == "configured" ? kNestedShreddingSchema : kNestedShreddingSchemaWithoutIds;
+        } else {
+            option_map[Options::VARIANT_INFER_SHREDDING_SCHEMA] = "true";
+            option_map[Options::VARIANT_SHREDDING_INFERENCE_MODE] = mode;
         }
-        ASSERT_FALSE(variant_column->IsNull(i));
-        ASSERT_OK_AND_ASSIGN(
-            std::shared_ptr<GenericVariant> variant,
-            GenericVariant::Create(value_column->GetView(i), metadata_column->GetView(i), pool_));
-        ASSERT_OK_AND_ASSIGN(std::string actual_json, variant->ToJson());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> expected,
-                             GenericVariant::FromJson(jsons[i], pool_));
-        ASSERT_OK_AND_ASSIGN(std::string expected_json, expected->ToJson());
-        ASSERT_EQ(actual_json, expected_json);
+        ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(option_map));
+        auto factory = VariantShreddingWritePlanFactory::Create(options, paimon_schema_, pool_);
+        std::vector<std::shared_ptr<arrow::Array>> samples = {BuildArray({jsons[0]})};
+        const int32_t file_count = mode == "adaptive" ? 2 : 1;
+        for (int32_t file_index = 0; file_index < file_count; ++file_index) {
+            SCOPED_TRACE(file_index);
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ShreddingBatchConverter> converter,
+                                 factory->CreateConverter("parquet", samples));
+            ASSERT_NE(converter, nullptr);
+            auto logical = BuildArray(jsons);
+            auto c_logical = std::make_unique<ArrowArray>();
+            ASSERT_TRUE(arrow::ExportArray(*logical, c_logical.get()).ok());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowArray> c_physical,
+                                 converter->Convert(c_logical.get()));
+            ASSERT_NO_FATAL_FAILURE(WriteFile(converter->GetPhysicalSchema(), c_physical.get()));
+            ASSERT_OK(factory->OnFileCompleted(converter));
+            samples.clear();
+
+            {
+                std::unique_ptr<FileBatchReader> file_reader;
+                std::shared_ptr<arrow::Schema> file_schema;
+                ASSERT_NO_FATAL_FAILURE(OpenFile(&file_reader, &file_schema));
+                auto file_variant_field = file_schema->GetFieldByName("v");
+                ASSERT_NE(file_variant_field, nullptr);
+                ASSERT_TRUE(VariantShreddingUtils::IsShreddedFileType(file_variant_field->type()))
+                    << file_variant_field->type()->ToString();
+                file_reader->Close();
+            }
+
+            {
+                auto file = arrow::io::ReadableFile::Open(file_path_, arrow::default_memory_pool());
+                ASSERT_TRUE(file.ok()) << file.status().ToString();
+                std::unique_ptr<::parquet::arrow::FileReader> reader;
+                auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(),
+                                                         arrow::default_memory_pool(), &reader);
+                ASSERT_TRUE(status.ok()) << status.ToString();
+                const auto* root = reader->parquet_reader()->metadata()->schema()->group_node();
+                ASSERT_EQ(root->field_count(), 2);
+                std::map<std::string, int32_t> field_ids;
+                CollectFieldIds(*root->field(1), "", &field_ids);
+                const std::map<std::string, int32_t> expected = {
+                    {"v", 2},
+                    {"v.metadata", 0},
+                    {"v.value", 1},
+                    {"v.typed_value", 2},
+                    {"v.typed_value.age", object_ids.at("age")},
+                    {"v.typed_value.age.value", 0},
+                    {"v.typed_value.age.typed_value", 1},
+                    {"v.typed_value.addr", object_ids.at("addr")},
+                    {"v.typed_value.addr.value", 0},
+                    {"v.typed_value.addr.typed_value", 1},
+                    {"v.typed_value.addr.typed_value.city", object_ids.at("city")},
+                    {"v.typed_value.addr.typed_value.city.value", 0},
+                    {"v.typed_value.addr.typed_value.city.typed_value", 1},
+                    {"v.typed_value.tags", object_ids.at("tags")},
+                    {"v.typed_value.tags.value", 0},
+                    {"v.typed_value.tags.typed_value", 1},
+                    {"v.typed_value.tags.typed_value.list", -1},
+                    {"v.typed_value.tags.typed_value.list.element", 536871936},
+                    {"v.typed_value.tags.typed_value.list.element.value", 0},
+                    {"v.typed_value.tags.typed_value.list.element.typed_value", 1},
+                };
+                ASSERT_EQ(field_ids, expected);
+            }
+
+            std::shared_ptr<arrow::StructArray> variant_column;
+            ASSERT_NO_FATAL_FAILURE(ReadVariantColumn(paimon_schema_, &variant_column));
+            ASSERT_EQ(variant_column->length(), static_cast<int64_t>(jsons.size()));
+            auto value_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
+            auto metadata_column =
+                checked_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
+            for (size_t i = 0; i < jsons.size(); ++i) {
+                SCOPED_TRACE(i);
+                if (jsons[i] == nullptr) {
+                    ASSERT_TRUE(variant_column->IsNull(i));
+                    continue;
+                }
+                ASSERT_FALSE(variant_column->IsNull(i));
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> variant,
+                                     GenericVariant::Create(value_column->GetView(i),
+                                                            metadata_column->GetView(i), pool_));
+                ASSERT_OK_AND_ASSIGN(std::string actual_json, variant->ToJson());
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> expected,
+                                     GenericVariant::FromJson(jsons[i], pool_));
+                ASSERT_OK_AND_ASSIGN(std::string expected_json, expected->ToJson());
+                ASSERT_EQ(actual_json, expected_json);
+            }
+        }
     }
 }
 

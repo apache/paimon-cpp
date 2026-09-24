@@ -31,6 +31,8 @@
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_defs.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/table/special_fields.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
@@ -42,14 +44,34 @@ Status InvalidVariantShreddingSchema(const std::shared_ptr<arrow::DataType>& typ
         fmt::format("Invalid variant shredding schema: {}", type ? type->ToString() : "null"));
 }
 
+std::shared_ptr<arrow::KeyValueMetadata> FieldIdMetadata(int32_t field_id) {
+    return arrow::KeyValueMetadata::Make({DataField::FIELD_ID}, {std::to_string(field_id)});
+}
+
+// Preserve configured IDs; inferred object fields use their positions, as in Java RowType.
+Result<int32_t> GetObjectFieldId(const std::shared_ptr<arrow::Field>& field, int32_t index) {
+    if (!field->metadata() || !field->metadata()->Contains(DataField::FIELD_ID)) {
+        return index;
+    }
+    PAIMON_ASSIGN_OR_RAISE(DataField data_field, DataField::ConvertArrowFieldToDataField(field));
+    return data_field.Id();
+}
+
 // Mirrors the Java `PaimonShreddingUtils.variantShreddingSchema(dataType, isTopLevel,
 // isObjectField)`.
 Result<std::shared_ptr<arrow::DataType>> VariantShreddingSchemaImpl(
     const std::shared_ptr<arrow::DataType>& data_type, bool is_top_level, bool is_object_field) {
     arrow::FieldVector fields;
+    // Java's Parquet reader requires field IDs; RowType.builder() numbers each row from zero.
+    int32_t next_field_id = 0;
+    auto shredded_field = [&next_field_id](const std::string& name,
+                                           const std::shared_ptr<arrow::DataType>& type,
+                                           bool nullable) {
+        return arrow::field(name, type, nullable, FieldIdMetadata(next_field_id++));
+    };
     if (is_top_level) {
-        fields.push_back(arrow::field(VariantDefs::kMetadataFieldName, arrow::binary(),
-                                      /*nullable=*/false));
+        fields.push_back(shredded_field(VariantDefs::kMetadataFieldName, arrow::binary(),
+                                        /*nullable=*/false));
     }
     switch (data_type->id()) {
         case arrow::Type::LIST: {
@@ -58,10 +80,15 @@ Result<std::shared_ptr<arrow::DataType>> VariantShreddingSchemaImpl(
                                    VariantShreddingSchemaImpl(list_type->value_type(),
                                                               /*is_top_level=*/false,
                                                               /*is_object_field=*/false));
-            fields.push_back(
-                arrow::field(VariantDefs::kValueFieldName, arrow::binary(), /*nullable=*/true));
-            fields.push_back(arrow::field(VariantDefs::kTypedValueFieldName,
-                                          arrow::list(element_type), /*nullable=*/true));
+            fields.push_back(shredded_field(VariantDefs::kValueFieldName, arrow::binary(),
+                                            /*nullable=*/true));
+            // Java resets collection depth at each ROW; every shredded array element is a ROW.
+            const int32_t element_id =
+                SpecialFields::GetArrayElementFieldId(next_field_id, /*depth=*/1);
+            std::shared_ptr<arrow::Field> element_field =
+                arrow::list(element_type)->field(0)->WithMetadata(FieldIdMetadata(element_id));
+            fields.push_back(shredded_field(VariantDefs::kTypedValueFieldName,
+                                            arrow::list(element_field), /*nullable=*/true));
             break;
         }
         case arrow::Type::STRUCT: {
@@ -70,18 +97,21 @@ Result<std::shared_ptr<arrow::DataType>> VariantShreddingSchemaImpl(
             // "value" and "typed_value" to null.
             const auto& struct_type = checked_pointer_cast<arrow::StructType>(data_type);
             arrow::FieldVector shredded_fields;
-            for (const auto& field : struct_type->fields()) {
+            for (int32_t index = 0; index < struct_type->num_fields(); ++index) {
+                const std::shared_ptr<arrow::Field>& field = struct_type->field(index);
+                PAIMON_ASSIGN_OR_RAISE(int32_t field_id, GetObjectFieldId(field, index));
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> field_type,
                                        VariantShreddingSchemaImpl(field->type(),
                                                                   /*is_top_level=*/false,
                                                                   /*is_object_field=*/true));
-                shredded_fields.push_back(
-                    arrow::field(field->name(), field_type, /*nullable=*/false));
+                shredded_fields.push_back(arrow::field(field->name(), field_type,
+                                                       /*nullable=*/false,
+                                                       FieldIdMetadata(field_id)));
             }
-            fields.push_back(
-                arrow::field(VariantDefs::kValueFieldName, arrow::binary(), /*nullable=*/true));
-            fields.push_back(arrow::field(VariantDefs::kTypedValueFieldName,
-                                          arrow::struct_(shredded_fields), /*nullable=*/true));
+            fields.push_back(shredded_field(VariantDefs::kValueFieldName, arrow::binary(),
+                                            /*nullable=*/true));
+            fields.push_back(shredded_field(VariantDefs::kTypedValueFieldName,
+                                            arrow::struct_(shredded_fields), /*nullable=*/true));
             break;
         }
         case arrow::Type::NA: {
@@ -89,8 +119,8 @@ Result<std::shared_ptr<arrow::DataType>> VariantShreddingSchemaImpl(
             // need a typed column. If there is no typed column, value is required for array
             // elements or top-level fields, but optional for objects (where a null represents a
             // missing field).
-            fields.push_back(arrow::field(VariantDefs::kValueFieldName, arrow::binary(),
-                                          /*nullable=*/is_object_field));
+            fields.push_back(shredded_field(VariantDefs::kValueFieldName, arrow::binary(),
+                                            /*nullable=*/is_object_field));
             break;
         }
         case arrow::Type::STRING:
@@ -103,10 +133,10 @@ Result<std::shared_ptr<arrow::DataType>> VariantShreddingSchemaImpl(
         case arrow::Type::INT64:
         case arrow::Type::FLOAT:
         case arrow::Type::DOUBLE: {
-            fields.push_back(
-                arrow::field(VariantDefs::kValueFieldName, arrow::binary(), /*nullable=*/true));
-            fields.push_back(arrow::field(VariantDefs::kTypedValueFieldName, data_type,
-                                          /*nullable=*/true));
+            fields.push_back(shredded_field(VariantDefs::kValueFieldName, arrow::binary(),
+                                            /*nullable=*/true));
+            fields.push_back(shredded_field(VariantDefs::kTypedValueFieldName, data_type,
+                                            /*nullable=*/true));
             break;
         }
         default:

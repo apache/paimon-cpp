@@ -77,6 +77,7 @@ set(PAIMON_COMMON_SRCS
     common/format/file_format_factory.cpp
     common/fs/file_system.cpp
     common/fs/resolving_file_system.cpp
+    common/fs/credential_provider_factory.cpp
     common/fs/file_system_factory.cpp
     common/global_index/union_global_index_reader.cpp
     common/global_index/offset_global_index_reader.cpp
@@ -188,6 +189,7 @@ set(PAIMON_COMMON_SRCS
     common/utils/range.cpp
     common/utils/read_ahead_cache.cpp
     common/utils/byte_range_combiner.cpp
+    common/utils/optimized_roaring_bitmap64.cpp
     common/utils/roaring_bitmap32.cpp
     common/utils/roaring_bitmap64.cpp
     common/utils/row_range_index.cpp
@@ -270,8 +272,11 @@ set(PAIMON_CORE_SRCS
     core/index/index_file_meta_serializer.cpp
     core/index/pk/primary_key_index_source_meta.cpp
     core/index/pk/primary_key_index_definitions.cpp
+    core/index/pk/bucketed_primary_key_index_maintainer.cpp
     core/index/pksorted/pk_sorted_index_group.cpp
     core/index/pksorted/pk_sorted_bucket_index_state.cpp
+    core/index/pksorted/pk_sorted_data_file_reader.cpp
+    core/index/pksorted/pk_sorted_index_builder.cpp
     core/index/pksorted/pk_sorted_index_file.cpp
     core/io/generic_row_to_arrow_array_converter.cpp
     core/io/meta_to_arrow_array_converter.cpp
@@ -487,6 +492,8 @@ if(PAIMON_ENABLE_REST)
          rest/dlf_auth.cpp
          rest/rest_catalog.cpp
          rest/rest_messages.cpp
+         rest/rest_token_file_system.cpp
+         rest/rest_credential_provider.cpp
          rest/rest_util.cpp)
 endif()
 
@@ -690,6 +697,7 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/murmurhash_utils_test.cpp
                     common/utils/object_utils_test.cpp
                     common/utils/options_utils_test.cpp
+                    common/utils/optimized_roaring_bitmap64_test.cpp
                     common/utils/path_util_test.cpp
                     common/utils/preconditions_test.cpp
                     common/utils/rapidjson_util_test.cpp
@@ -793,6 +801,7 @@ if(PAIMON_BUILD_TESTS)
                     core/index/index_file_meta_serializer_test.cpp
                     core/index/pk/primary_key_index_source_meta_test.cpp
                     core/index/pk/primary_key_index_definitions_test.cpp
+                    core/index/pk/bucketed_primary_key_index_maintainer_test.cpp
                     core/index/pksorted/pk_sorted_bucket_index_state_test.cpp
                     core/index/index_file_handler_test.cpp
                     core/io/compact_increment_test.cpp
@@ -815,6 +824,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/file_index_evaluator_test.cpp
                     core/io/single_file_writer_test.cpp
                     core/io/rolling_blob_file_writer_test.cpp
+                    core/global_index/global_index_file_manager_test.cpp
                     core/global_index/global_index_evaluator_impl_test.cpp
                     core/global_index/indexed_split_test.cpp
                     core/manifest/file_source_test.cpp
@@ -904,7 +914,6 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/row_tracking_commit_utils_test.cpp
                     core/operation/commit/realtime_commit_properties_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp
-                    core/operation/commit/retry_waiter_test.cpp
                     core/operation/key_value_file_store_write_test.cpp
                     core/operation/internal_read_context_test.cpp
                     core/operation/abstract_split_read_test.cpp
@@ -1010,6 +1019,7 @@ if(PAIMON_BUILD_TESTS)
     add_paimon_test(fs_test
                     SOURCES
                     common/fs/file_system_test.cpp
+                    common/fs/credential_provider_factory_test.cpp
                     common/fs/resolving_file_system_test.cpp
                     ${PAIMON_OBJECT_STORE_FS_TEST_SOURCES}
                     fs/local/local_file_test.cpp
@@ -1032,6 +1042,8 @@ if(PAIMON_BUILD_TESTS)
                         rest/dlf_auth_test.cpp
                         rest/rest_catalog_test.cpp
                         rest/rest_messages_test.cpp
+                        rest/rest_token_file_system_test.cpp
+                        rest/rest_credential_provider_test.cpp
                         rest/rest_util_test.cpp
                         STATIC_LINK_LIBS
                         paimon_shared

@@ -29,6 +29,7 @@
 #include "paimon/common/data/variant/variant_defs.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -74,6 +75,39 @@ TEST(ArrowSchemaValidatorTest, TestVectorElementType) {
         ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchema(*arrow::schema({vector})),
                             "Invalid element type for vector");
     }
+}
+
+TEST(ArrowSchemaValidatorTest, TestTimeType) {
+    for (const auto& type :
+         {arrow::time32(arrow::TimeUnit::MILLI), arrow::time32(arrow::TimeUnit::SECOND),
+          arrow::time64(arrow::TimeUnit::MICRO), arrow::time64(arrow::TimeUnit::NANO)}) {
+        SCOPED_TRACE(type->ToString());
+        for (const auto& field_type : {type, arrow::list(type)}) {
+            auto schema = DataField::ConvertDataFieldsToArrowSchema(
+                {DataField(0, arrow::field("time", field_type))});
+            if (type->Equals(arrow::time32(arrow::TimeUnit::MILLI))) {
+                ASSERT_OK(ArrowSchemaValidator::ValidateSchema(*schema));
+                ASSERT_OK(ArrowSchemaValidator::ValidateSchemaWithFieldId(*schema));
+            } else {
+                ASSERT_NOK(ArrowSchemaValidator::ValidateSchema(*schema));
+                ASSERT_NOK(ArrowSchemaValidator::ValidateSchemaWithFieldId(*schema));
+            }
+        }
+    }
+}
+
+TEST(ArrowSchemaValidatorTest, TestInvalidTimePrecision) {
+    for (const char* precision : {"", "-1", "10", "3x", "1.5", "2147483648"}) {
+        SCOPED_TRACE(precision);
+        auto field =
+            arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI), true,
+                         arrow::KeyValueMetadata::Make({DataType::kTimePrecision}, {precision}));
+        ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchema(*arrow::schema({field})),
+                            "Invalid TIME precision metadata");
+        ASSERT_NOK_WITH_MSG(DataField(0, field).ToJsonString(), "Invalid TIME precision metadata");
+    }
+    auto seconds = DataType::Create(arrow::time32(arrow::TimeUnit::SECOND), true, nullptr);
+    ASSERT_NOK_WITH_MSG(seconds->ToJsonString(), "Only millisecond TIME is supported");
 }
 
 TEST(ArrowSchemaValidatorTest, TestValidateNoRedundantFields) {

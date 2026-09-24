@@ -31,11 +31,21 @@
 #include "paimon/common/data/variant/variant_schema.h"
 #include "paimon/common/data/variant/variant_shredding_utils.h"
 #include "paimon/common/data/variant/variant_shredding_writer.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+namespace {
+
+int32_t ShreddedFieldId(const std::shared_ptr<arrow::Field>& field) {
+    Result<DataField> data_field = DataField::ConvertArrowFieldToDataField(field);
+    return data_field.ok() ? data_field.value().Id() : -1;
+}
+
+}  // namespace
 
 class VariantShreddingTest : public ::testing::Test {
  public:
@@ -215,6 +225,102 @@ TEST_F(VariantShreddingTest, ShreddingSchemaShape) {
     ASSERT_NOK(VariantShreddingUtils::VariantShreddingSchema(arrow::date32()));
     ASSERT_NOK(
         VariantShreddingUtils::VariantShreddingSchema(arrow::map(arrow::utf8(), arrow::int32())));
+}
+
+TEST_F(VariantShreddingTest, ShreddingSchemaFieldIds) {
+    auto shredding_type = arrow::struct_(
+        {arrow::field("a", arrow::int32()), arrow::field("b", arrow::list(arrow::utf8())),
+         arrow::field("c", arrow::struct_({arrow::field("d", arrow::null())}))});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::DataType> physical,
+                         VariantShreddingUtils::VariantShreddingSchema(shredding_type));
+    ASSERT_EQ(physical->num_fields(), 3);
+    ASSERT_EQ(ShreddedFieldId(physical->field(0)), 0);
+    ASSERT_EQ(ShreddedFieldId(physical->field(1)), 1);
+    ASSERT_EQ(ShreddedFieldId(physical->field(2)), 2);
+
+    const std::shared_ptr<arrow::DataType>& object = physical->field(2)->type();
+    ASSERT_EQ(object->num_fields(), 3);
+    ASSERT_EQ(ShreddedFieldId(object->field(0)), 0);
+    ASSERT_EQ(ShreddedFieldId(object->field(1)), 1);
+    ASSERT_EQ(ShreddedFieldId(object->field(2)), 2);
+
+    const std::shared_ptr<arrow::DataType>& scalar = object->field(0)->type();
+    ASSERT_EQ(scalar->num_fields(), 2);
+    ASSERT_EQ(ShreddedFieldId(scalar->field(0)), 0);
+    ASSERT_EQ(ShreddedFieldId(scalar->field(1)), 1);
+
+    const std::shared_ptr<arrow::DataType>& array = object->field(1)->type();
+    ASSERT_EQ(array->num_fields(), 2);
+    ASSERT_EQ(ShreddedFieldId(array->field(0)), 0);
+    ASSERT_EQ(ShreddedFieldId(array->field(1)), 1);
+    ASSERT_EQ(array->field(1)->type()->id(), arrow::Type::LIST);
+    const std::shared_ptr<arrow::Field>& element = array->field(1)->type()->field(0);
+    ASSERT_EQ(ShreddedFieldId(element), 536871936);
+    ASSERT_EQ(element->type()->num_fields(), 2);
+    ASSERT_EQ(ShreddedFieldId(element->type()->field(0)), 0);
+    ASSERT_EQ(ShreddedFieldId(element->type()->field(1)), 1);
+
+    const std::shared_ptr<arrow::DataType>& nested = object->field(2)->type();
+    ASSERT_EQ(nested->num_fields(), 2);
+    ASSERT_EQ(ShreddedFieldId(nested->field(0)), 0);
+    ASSERT_EQ(ShreddedFieldId(nested->field(1)), 1);
+    const std::shared_ptr<arrow::DataType>& nested_object = nested->field(1)->type();
+    ASSERT_EQ(nested_object->num_fields(), 1);
+    ASSERT_EQ(ShreddedFieldId(nested_object->field(0)), 0);
+    const std::shared_ptr<arrow::DataType>& untyped = nested_object->field(0)->type();
+    ASSERT_EQ(untyped->num_fields(), 1);
+    ASSERT_EQ(ShreddedFieldId(untyped->field(0)), 0);
+
+    auto configured = arrow::struct_(
+        {arrow::field("a", arrow::int32(), true,
+                      arrow::KeyValueMetadata::Make({DataField::FIELD_ID}, {"7"})),
+         arrow::field("b", arrow::utf8(), true,
+                      arrow::KeyValueMetadata::Make({DataField::DESCRIPTION}, {"description"}))});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::DataType> configured_physical,
+                         VariantShreddingUtils::VariantShreddingSchema(configured));
+    ASSERT_EQ(configured_physical->num_fields(), 3);
+    ASSERT_EQ(configured_physical->field(2)->type()->num_fields(), 2);
+    ASSERT_EQ(ShreddedFieldId(configured_physical->field(2)->type()->field(0)), 7);
+    ASSERT_EQ(ShreddedFieldId(configured_physical->field(2)->type()->field(1)), 1);
+}
+
+TEST_F(VariantShreddingTest, ShreddingSchemaRejectsInvalidFieldIds) {
+    for (const std::string field_id : {"invalid", "", "2147483648"}) {
+        SCOPED_TRACE(field_id);
+        auto shredding_type = arrow::struct_(
+            {arrow::field("a", arrow::int32(), true,
+                          arrow::KeyValueMetadata::Make({DataField::FIELD_ID}, {field_id}))});
+        ASSERT_NOK_WITH_MSG(VariantShreddingUtils::VariantShreddingSchema(shredding_type),
+                            "cannot cast field id");
+    }
+}
+
+TEST_F(VariantShreddingTest, ShreddingArraySchemaFieldIds) {
+    for (const auto& leaf_type : {arrow::utf8(), arrow::null()}) {
+        SCOPED_TRACE(leaf_type->ToString());
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::DataType> physical,
+            VariantShreddingUtils::VariantShreddingSchema(arrow::list(arrow::list(leaf_type))));
+        ASSERT_EQ(physical->num_fields(), 3);
+        ASSERT_EQ(ShreddedFieldId(physical->field(0)), 0);
+        ASSERT_EQ(ShreddedFieldId(physical->field(1)), 1);
+        ASSERT_EQ(ShreddedFieldId(physical->field(2)), 2);
+        ASSERT_EQ(physical->field(2)->type()->id(), arrow::Type::LIST);
+        const auto& outer_element = physical->field(2)->type()->field(0);
+        ASSERT_EQ(ShreddedFieldId(outer_element), 536872960);
+        ASSERT_EQ(outer_element->type()->num_fields(), 2);
+        ASSERT_EQ(ShreddedFieldId(outer_element->type()->field(0)), 0);
+        ASSERT_EQ(ShreddedFieldId(outer_element->type()->field(1)), 1);
+        const auto& inner_array = outer_element->type()->field(1)->type();
+        ASSERT_EQ(inner_array->id(), arrow::Type::LIST);
+        const auto& inner_element = inner_array->field(0);
+        ASSERT_EQ(ShreddedFieldId(inner_element), 536871936);
+        ASSERT_EQ(inner_element->type()->num_fields(), leaf_type->id() == arrow::Type::NA ? 1 : 2);
+        ASSERT_EQ(ShreddedFieldId(inner_element->type()->field(0)), 0);
+        if (leaf_type->id() != arrow::Type::NA) {
+            ASSERT_EQ(ShreddedFieldId(inner_element->type()->field(1)), 1);
+        }
+    }
 }
 
 TEST_F(VariantShreddingTest, ShredObject) {

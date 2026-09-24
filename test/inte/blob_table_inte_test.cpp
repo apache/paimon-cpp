@@ -45,7 +45,6 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/blob_defs.h"
-#include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/factories/io_hook.h"
@@ -61,6 +60,7 @@
 #include "paimon/core/utils/file_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/data/blob.h"
+#include "paimon/data/blob_descriptor.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_write.h"
 #include "paimon/format/mosaic/mosaic_format_defs.h"
@@ -977,8 +977,8 @@ TEST_P(BlobTableInteTest, TestBasic) {
     // read with row tracking
     auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_({fields_[1], fields_[0], SpecialFields::SequenceNumber().field_,
-                            SpecialFields::RowId().field_, fields_[2]}),
+            arrow::struct_({fields_[1], fields_[0], SpecialFields::SequenceNumber().ArrowField(),
+                            SpecialFields::RowId().ArrowField(), fields_[2]}),
             R"([
         ["new_blob", 1, 2, 0, "c"]
     ])")
@@ -1138,8 +1138,8 @@ TEST_P(BlobTableInteTest, TestMultipleAppends) {
                                                       fields_[0],
                                                       fields_[1],
                                                       fields_[2],
-                                                      SpecialFields::RowId().field_,
-                                                      SpecialFields::SequenceNumber().field_,
+                                                      SpecialFields::RowId().ArrowField(),
+                                                      SpecialFields::SequenceNumber().ArrowField(),
                                                   }),
                                                   R"([
         [1, "a", "b", 0, 1],
@@ -1206,7 +1206,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobOnlyWriteWithFirstRowId) {
 
     auto expected_with_row_id = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_({fields[0], fields[1], fields[2], SpecialFields::RowId().field_}),
+            arrow::struct_({fields[0], fields[1], fields[2], SpecialFields::RowId().ArrowField()}),
             R"([
         [1, "a", "new_blob_0", 0],
         [2, "b", "new_blob_1", 1]
@@ -1300,7 +1300,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateFallback) {
     // row ids still come from the data files and stay aligned with the fallback result
     auto expected_with_row_id = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_({fields[0], fields[1], fields[2], SpecialFields::RowId().field_}),
+            arrow::struct_({fields[0], fields[1], fields[2], SpecialFields::RowId().ArrowField()}),
             R"([
         [1, "a", null, 0],
         [2, "b", "updated_b", 1],
@@ -1449,7 +1449,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateWithDeletionVectors)
 
     auto expected_with_row_id = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_({fields[0], fields[1], fields[2], SpecialFields::RowId().field_}),
+            arrow::struct_({fields[0], fields[1], fields[2], SpecialFields::RowId().ArrowField()}),
             R"([
         [1, "a", "update1_0", 0],
         [3, "c", "blob_2", 2]
@@ -1977,8 +1977,8 @@ TEST_P(BlobTableInteTest, TestMultipleAppendsDifferentFirstRowIds) {
                                                       fields_[0],
                                                       fields_[1],
                                                       fields_[2],
-                                                      SpecialFields::RowId().field_,
-                                                      SpecialFields::SequenceNumber().field_,
+                                                      SpecialFields::RowId().ArrowField(),
+                                                      SpecialFields::SequenceNumber().ArrowField(),
                                                   }),
                                                   R"([
         [1, "a", "b", 0, 1],
@@ -2125,8 +2125,8 @@ TEST_P(BlobTableInteTest, TestExternalPath) {
     // read with row tracking
     auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_({fields_[1], fields_[0], fields_[2], SpecialFields::RowId().field_,
-                            SpecialFields::SequenceNumber().field_}),
+            arrow::struct_({fields_[1], fields_[0], fields_[2], SpecialFields::RowId().ArrowField(),
+                            SpecialFields::SequenceNumber().ArrowField()}),
             R"([
         ["a", 10, "b", 0, 2],
         ["c", 20, "d", 1, 2]
@@ -2241,8 +2241,9 @@ TEST_P(BlobTableInteTest, TestPartitionWithPredicate) {
 
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(
-                arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_,
-                                SpecialFields::SequenceNumber().field_}),
+                arrow::struct_({fields_[0], fields_[1], fields_[2],
+                                SpecialFields::RowId().ArrowField(),
+                                SpecialFields::SequenceNumber().ArrowField()}),
                 R"([
         [11, "2024", "a", 0, 1],
         [11, "2025", "b", 1, 1],
@@ -2382,8 +2383,8 @@ TEST_P(BlobTableInteTest, TestIOException) {
     bool read_run_complete = false;
     auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_({fields_[1], fields_[0], SpecialFields::SequenceNumber().field_,
-                            SpecialFields::RowId().field_, fields_[2]}),
+            arrow::struct_({fields_[1], fields_[0], SpecialFields::SequenceNumber().ArrowField(),
+                            SpecialFields::RowId().ArrowField(), fields_[2]}),
             R"([
         ["a", 100, 2, 0, "c"],
         ["aa", 200, 2, 1, "cc"],

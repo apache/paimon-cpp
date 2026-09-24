@@ -322,6 +322,16 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(new PrefetchFileBatchReaderImpl(
         readers, batch_size, prefetch_queue_capacity, enable_adaptive_prefetch_strategy, executor,
         cache, io_metrics, warmup_level, arrow_pool));
+    for (const auto& sub_reader : reader->readers_) {
+        // The sub-readers whose byte ranges only become known once they have read some data (the
+        // late-materialization payload pass) report them here instead of through PreBufferRange(),
+        // which is asked once per read-range generation before any read. Capturing the impl raw is
+        // safe: it owns readers_, and CleanUp() joins the background thread before it goes away.
+        sub_reader->SetPreBufferRangeCallback(
+            [impl = reader.get()](std::vector<std::pair<uint64_t, uint64_t>>&& ranges) {
+                impl->RegisterLatePreBufferRanges(std::move(ranges));
+            });
+    }
     if (initialize_read_ranges) {
         // normally initialize read ranges should be false, as set read schema will refresh read
         // ranges, and set read schema will always be called before read.
@@ -356,6 +366,7 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
 
 PrefetchFileBatchReaderImpl::~PrefetchFileBatchReaderImpl() {
     (void)CleanUp();
+    ClearPreBufferRangeCallbacks();
 }
 
 Status PrefetchFileBatchReaderImpl::SetReadSchema(
@@ -510,7 +521,9 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
     current_batch_global_row_ids_.clear();
     read_ranges_freshed_ = false;
     // SetReadSchema()/RefreshReadRanges() call cache_->Reset() right after CleanUp(), clearing the
-    // cache's initialized state, so the next read-range generation must be allowed to Init again.
+    // cache's registered ranges, so the next read-range generation must be allowed to Init again.
+    // Clearing the flag also ends this generation's mid-read reports: a sub-reader reporting from
+    // here on registers nothing until the next generation warms the cache again.
     cache_warmed_.store(false);
     clean_prefetch_queue();
     prefetch_metrics_->queue_depth.store(0, kMetricsMemoryOrder);
@@ -766,10 +779,10 @@ void PrefetchFileBatchReaderImpl::WarmCacheOnce() {
     if (!cache_) {
         return;
     }
-    // Init() is not idempotent (a second call returns Invalid), so at most one warmup may run per
-    // read-range generation. A RAW Warmup() and the Workloop() call are ordered by the reader's own
-    // thread, which warms first and only then starts the background thread, so the loser of this
-    // exchange never continues on a cache another thread is still initializing.
+    // At most one warmup may run per read-range generation. A RAW Warmup() and the Workloop() call
+    // are ordered by the reader's own thread, which warms first and only then starts the background
+    // thread, so the loser of this exchange never continues on a cache another thread is still
+    // initializing.
     if (cache_warmed_.exchange(true)) {
         return;
     }
@@ -782,14 +795,51 @@ void PrefetchFileBatchReaderImpl::WarmCacheOnce() {
     for (const auto& read_range : read_ranges.value()) {
         ranges.emplace_back(read_range.first, read_range.second);
     }
-    Status s = cache_->Init(std::move(ranges));
-    if (!s.ok()) {
-        SetReadStatus(s);
+    Result<std::optional<uint64_t>> registered = cache_->AddRanges(std::move(ranges));
+    if (!registered.ok()) {
+        SetReadStatus(registered.status());
         return;
     }
-    // Init() only registers the ranges, so without this the first cache fetch races the readers'
-    // first reads instead of running ahead of them.
+    // AddRanges() only registers the ranges, so without this the first cache fetch races the
+    // readers' first reads instead of running ahead of them.
     cache_->Warmup();
+}
+
+void PrefetchFileBatchReaderImpl::RegisterLatePreBufferRanges(
+    std::vector<std::pair<uint64_t, uint64_t>>&& read_ranges) {
+    if (!cache_ || read_ranges.empty()) {
+        return;
+    }
+    if (!cache_warmed_.load()) {
+        // The read-range generation these ranges belong to has ended, so nothing is going to read
+        // them. WarmCacheOnce() warms the next generation.
+        return;
+    }
+    std::vector<ByteRange> ranges;
+    ranges.reserve(read_ranges.size());
+    for (const auto& read_range : read_ranges) {
+        ranges.emplace_back(read_range.first, read_range.second);
+    }
+    Result<std::optional<uint64_t>> first_added = cache_->AddRanges(std::move(ranges));
+    if (!first_added.ok()) {
+        SetReadStatus(first_added.status());
+        return;
+    }
+    if (!first_added.value().has_value()) {
+        // Every range was already registered, so there is nothing new to fetch.
+        return;
+    }
+    // Fetch from the first new range rather than from the start: the ranges registered before it
+    // belong to the pass that has already run.
+    cache_->Warmup(first_added.value().value());
+}
+
+void PrefetchFileBatchReaderImpl::ClearPreBufferRangeCallbacks() {
+    // Belt and braces: the callbacks capture this, and by now CleanUp() has joined the background
+    // thread, so no sub-reader can report a range any more.
+    for (const auto& sub_reader : readers_) {
+        sub_reader->SetPreBufferRangeCallback(nullptr);
+    }
 }
 
 void PrefetchFileBatchReaderImpl::Warmup() {
@@ -1032,6 +1082,7 @@ void PrefetchFileBatchReaderImpl::Close() {
     for (const auto& reader : readers_) {
         reader->Close();
     }
+    ClearPreBufferRangeCallbacks();
 }
 
 }  // namespace paimon

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <memory>
@@ -39,6 +40,8 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/global_index/btree/btree_defs.h"
+#include "paimon/common/options/memory_size.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -51,6 +54,8 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/index/pk/primary_key_index_definition.h"
+#include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/options/changelog_producer.h"
 #include "paimon/core/options/expire_config.h"
 #include "paimon/core/options/map_storage_layout.h"
@@ -67,6 +72,8 @@
 
 namespace paimon {
 namespace {
+
+constexpr char kDeletionVectorsMergeOnRead[] = "deletion-vectors.merge-on-read";
 
 bool ContainsBlobField(const std::shared_ptr<arrow::Field>& field) {
     if (BlobUtils::IsBlobField(field)) {
@@ -111,9 +118,10 @@ Status ValidateSharedShreddingFileFormat(const std::string& option_key,
 }
 
 Status ValidateVectorFileFormat(const std::string& option_key, const std::string& file_format) {
-    if (!StringUtils::EqualsIgnoreCase(file_format, "parquet")) {
+    if (!StringUtils::EqualsIgnoreCase(file_format, "parquet") &&
+        !StringUtils::EqualsIgnoreCase(file_format, "lance")) {
         return Status::Invalid(
-            fmt::format("VECTOR currently only supports parquet data files, but {} is {}.",
+            fmt::format("VECTOR currently only supports parquet/lance data files, but {} is {}.",
                         option_key, file_format));
     }
     return Status::OK();
@@ -143,6 +151,45 @@ Status ValidateVectorComparatorField(const TableSchema& schema, const std::strin
     if (VectorUtils::ContainsVectorField(field.ArrowField())) {
         return Status::Invalid(
             fmt::format("VECTOR field '{}' cannot be used as {}.", field_name, role));
+    }
+    return Status::OK();
+}
+
+bool IsSupportedBTreeIndexType(const std::shared_ptr<arrow::DataType>& type) {
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::INT64:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::STRING:
+        case arrow::Type::DATE32:
+        case arrow::Type::TIMESTAMP:
+        case arrow::Type::DECIMAL128:
+            return true;
+        default:
+            return false;
+    }
+}
+
+Status ValidateBTreeIndexerOptions(const std::map<std::string, std::string>& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::string cache_size, OptionsUtils::GetValueFromMap<std::string>(
+                                                       options, BtreeDefs::kBtreeIndexCacheSize,
+                                                       BtreeDefs::kDefaultBtreeIndexCacheSize));
+    Result<int64_t> parsed_cache_size = MemorySize::ParseBytes(cache_size);
+    if (!parsed_cache_size.ok()) {
+        return parsed_cache_size.status().WithMessage(fmt::format(
+            "Invalid BTree cache size '{}': {}", cache_size, parsed_cache_size.status().message()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        double high_priority_pool_ratio,
+        OptionsUtils::GetValueFromMap<double>(options, BtreeDefs::kBtreeIndexHighPriorityPoolRatio,
+                                              BtreeDefs::kDefaultBtreeIndexHighPriorityPoolRatio));
+    if (!std::isfinite(high_priority_pool_ratio) || high_priority_pool_ratio < 0.0 ||
+        high_priority_pool_ratio >= 1.0) {
+        return Status::Invalid("The BTree high priority pool ratio should be in the range [0, 1).");
     }
     return Status::OK();
 }
@@ -335,10 +382,12 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     if (options.DeletionVectorsEnabled()) {
         PAIMON_RETURN_NOT_OK(ValidateForDeletionVectors(options));
     }
+    PAIMON_RETURN_NOT_OK(ValidatePrimaryKeyBTreeIndexes(schema, options));
 
     PAIMON_RETURN_NOT_OK(ValidateRowTracking(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateBlobFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMosaicDataFields(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateLanceDataFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
     return Status::OK();
@@ -395,6 +444,10 @@ Status SchemaValidation::ValidateNotContainSpecificType(
         auto it = fields_map.find(field_name);
         if (it != fields_map.end()) {
             auto field = it->second;
+            if (field->type()->id() == arrow::Type::TIME32) {
+                return Status::Invalid(
+                    fmt::format("partition field {} cannot be TIME", field_name));
+            }
             if (IsComplexType(field)) {
                 return Status::Invalid(
                     fmt::format("partition field {} cannot be TIMESTAMP/DECIMAL/BLOB", field_name));
@@ -507,6 +560,63 @@ Status SchemaValidation::ValidateForDeletionVectors(const CoreOptions& options) 
         options.GetMergeEngine() != MergeEngine::FIRST_ROW,
         "First row merge engine does not need deletion vectors because there is "
         "no deletion of old data in this merge engine.");
+}
+
+Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schema,
+                                                        const CoreOptions& options) {
+    std::vector<std::string> index_columns = options.GetPrimaryKeyBTreeIndexColumns();
+    if (index_columns.empty()) {
+        return Status::OK();
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexDefinitions definitions,
+                           PrimaryKeyIndexDefinitions::Create(schema));
+    if (!options.DeletionVectorsEnabled()) {
+        return Status::Invalid(
+            "Primary-key BTree indexes require deletion-vectors.enabled = true.");
+    }
+    if (schema.PrimaryKeys().empty()) {
+        return Status::Invalid("Primary-key BTree indexes require a primary-key table.");
+    }
+    if (options.GetBucket() <= 0 && !IsPostponeBucketTable(schema, options.GetBucket())) {
+        return Status::Invalid(
+            fmt::format("Primary-key BTree indexes require fixed or postpone bucket mode "
+                        "(bucket > 0 or bucket = -2), but bucket is {}.",
+                        options.GetBucket()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        bool deletion_vectors_merge_on_read,
+        OptionsUtils::GetValueFromMap<bool>(schema.Options(), kDeletionVectorsMergeOnRead, false));
+    if (deletion_vectors_merge_on_read) {
+        return Status::Invalid(
+            "Primary-key BTree indexes require deletion-vectors.merge-on-read = false.");
+    }
+    if (options.PkClusteringOverrideEnabled()) {
+        return Status::Invalid(
+            "pk-clustering-override is currently unsupported by the C++ commit path, including "
+            "tables with primary-key BTree indexes.");
+    }
+
+    for (const std::string& column : index_columns) {
+        auto field_iter =
+            std::find_if(schema.Fields().begin(), schema.Fields().end(),
+                         [&column](const DataField& field) { return field.Name() == column; });
+        if (field_iter == schema.Fields().end()) {
+            return Status::Invalid(fmt::format("{} entry '{}' must reference an existing column.",
+                                               Options::PK_BTREE_INDEX_COLUMNS, column));
+        }
+        if (!IsSupportedBTreeIndexType(field_iter->Type())) {
+            return Status::Invalid(fmt::format("{} entry '{}' has unsupported type {}.",
+                                               Options::PK_BTREE_INDEX_COLUMNS, column,
+                                               field_iter->Type()->ToString()));
+        }
+    }
+    for (const PrimaryKeyIndexDefinition& definition : definitions.Definitions()) {
+        if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE) {
+            PAIMON_RETURN_NOT_OK(ValidateBTreeIndexerOptions(definition.Options()));
+        }
+    }
+    return Status::OK();
 }
 
 Status SchemaValidation::ValidateSequenceGroup(const TableSchema& schema,
@@ -802,6 +912,84 @@ Status SchemaValidation::ValidateMosaicDataFields(const TableSchema& schema,
     return Status::OK();
 }
 
+Status SchemaValidation::ValidateLanceDataField(const std::shared_ptr<arrow::Field>& field) {
+    if (VariantTypeUtils::IsVariantField(field)) {
+        return Status::Invalid("Lance file format does not support type VARIANT");
+    }
+    if (BlobUtils::IsBlobField(field)) {
+        return Status::Invalid("Lance file format does not support type BLOB");
+    }
+
+    const std::shared_ptr<arrow::DataType>& type = field->type();
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::INT64:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::DATE32:
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+        case arrow::Type::DECIMAL128:
+        case arrow::Type::FIXED_SIZE_LIST:
+            return Status::OK();
+        case arrow::Type::TIMESTAMP: {
+            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*type);
+            if (!timestamp_type.timezone().empty()) {
+                return Status::Invalid(
+                    "Lance file format does not support type LOCAL_ZONED_TIMESTAMP");
+            }
+            return Status::OK();
+        }
+        case arrow::Type::LIST:
+            return ValidateLanceDataField(type->field(0));
+        case arrow::Type::STRUCT:
+            for (const std::shared_ptr<arrow::Field>& child : type->fields()) {
+                PAIMON_RETURN_NOT_OK(ValidateLanceDataField(child));
+            }
+            return Status::OK();
+        case arrow::Type::MAP:
+            return Status::Invalid("Lance file format does not support type MAP");
+        default:
+            break;
+    }
+    return Status::Invalid(
+        fmt::format("Lance file format does not support type {}", type->ToString()));
+}
+
+Status SchemaValidation::ValidateLanceDataFields(const TableSchema& schema,
+                                                 const CoreOptions& options) {
+    const std::vector<std::string> inline_blob_fields = options.GetBlobInlineFields();
+    const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
+                                                      inline_blob_fields.end());
+    auto validate_format = [&](const std::string&, const std::string& file_format) -> Status {
+        if (!StringUtils::EqualsIgnoreCase(file_format, "lance")) {
+            return Status::OK();
+        }
+        for (const DataField& field : schema.Fields()) {
+            if (BlobUtils::IsBlobField(field.ArrowField()) &&
+                inline_blob_field_set.count(field.Name()) == 0) {
+                continue;
+            }
+            PAIMON_RETURN_NOT_OK(ValidateLanceDataField(field.ArrowField()));
+        }
+        return Status::OK();
+    };
+
+    PAIMON_RETURN_NOT_OK(
+        validate_format(Options::FILE_FORMAT, options.GetFileFormat()->Identifier()));
+    PAIMON_RETURN_NOT_OK(
+        ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL, validate_format));
+    std::shared_ptr<FileFormat> changelog_format = options.GetChangelogFileFormat();
+    if (changelog_format) {
+        PAIMON_RETURN_NOT_OK(
+            validate_format(Options::CHANGELOG_FILE_FORMAT, changelog_format->Identifier()));
+    }
+    return Status::OK();
+}
+
 Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
                                                   const CoreOptions& options) {
     // Extract all field names that have map.storage-layout configured from options
@@ -927,8 +1115,14 @@ Status SchemaValidation::ValidateVectorFields(const TableSchema& schema,
     }
     PAIMON_RETURN_NOT_OK(
         ValidateVectorFileFormat(Options::FILE_FORMAT, options.GetFileFormat()->Identifier()));
-    return ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL,
-                                  ValidateVectorFileFormat);
+    PAIMON_RETURN_NOT_OK(ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL,
+                                                ValidateVectorFileFormat));
+    std::shared_ptr<FileFormat> changelog_format = options.GetChangelogFileFormat();
+    if (changelog_format) {
+        PAIMON_RETURN_NOT_OK(ValidateVectorFileFormat(Options::CHANGELOG_FILE_FORMAT,
+                                                      changelog_format->Identifier()));
+    }
+    return Status::OK();
 }
 
 }  // namespace paimon

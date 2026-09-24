@@ -65,21 +65,13 @@ rapidjson::Value DataField::ToJson(rapidjson::Document::AllocatorType* allocator
 }
 
 void DataField::FromJson(const rapidjson::Value& obj) noexcept(false) {
-    id_ = RapidJsonUtil::DeserializeKeyValue<int32_t>(obj, "id");
-    auto name = RapidJsonUtil::DeserializeKeyValue<std::string>(obj, "name");
-    assert(obj.IsObject());
-    if (!obj.HasMember("type")) {
-        throw std::invalid_argument("key 'type' must exist");
-    }
-    auto field_result = DataTypeJsonParser::ParseType(name, obj["type"]);
+    // Serialized table schemas require explicit IDs for projection and schema evolution.
+    Result<DataField> field_result = DataTypeJsonParser::ParseDataField(obj);
     if (!field_result.ok()) {
-        throw std::invalid_argument(
-            fmt::format("parse data type failed, error msg: {}", field_result.status().ToString()));
+        throw std::invalid_argument(field_result.status().ToString());
     }
-    field_ = field_result.value();
+    *this = std::move(field_result).value();
     assert(field_);
-    description_ = RapidJsonUtil::DeserializeKeyValue<std::optional<std::string>>(
-        obj, "description", description_);
 }
 
 std::shared_ptr<arrow::Field> DataField::ConvertDataFieldToArrowField(const DataField& field) {

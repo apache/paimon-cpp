@@ -2870,6 +2870,12 @@ TEST(FormatTableTest, TestAContextBuiltFromAFormatTableRefusesASecondAnswer) {
     ASSERT_NOK_WITH_MSG(
         write_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish(),
         "WithCatalog() requires a native table");
+    ReadContextBuilder read_catalog_builder(table);
+    ASSERT_NOK_WITH_MSG(read_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish(),
+                        "WithCatalog() cannot be used with one");
+    ScanContextBuilder scan_catalog_builder(table);
+    ASSERT_NOK_WITH_MSG(scan_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish(),
+                        "WithCatalog() cannot be used with one");
     catalog->SetTableSchema(latest.value());
     WriteContextBuilder path_catalog_builder(dir->Str(), "test-user");
     ASSERT_OK_AND_ASSIGN(

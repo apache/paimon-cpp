@@ -19,22 +19,37 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/uuid.h"
+#include "paimon/core/index/index_checkpoint_path_factory.h"
 #include "paimon/core/index/index_path_factory.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/global_index/io/global_index_checkpoint_file_manager.h"
 #include "paimon/global_index/io/global_index_file_reader.h"
 #include "paimon/global_index/io/global_index_file_writer.h"
 
 namespace paimon {
 /// Helper class for managing global index files.
-class GlobalIndexFileManager : public GlobalIndexFileReader, public GlobalIndexFileWriter {
+/// Checkpoint storage is optional and is never accessed by construction or ordinary index I/O.
+class GlobalIndexFileManager : public GlobalIndexFileReader,
+                               public GlobalIndexFileWriter,
+                               public GlobalIndexCheckpointFileManager {
  public:
     GlobalIndexFileManager(const std::shared_ptr<FileSystem>& fs,
-                           const std::shared_ptr<IndexPathFactory>& path_factory)
-        : fs_(fs), path_factory_(path_factory) {}
+                           const std::shared_ptr<IndexPathFactory>& path_factory,
+                           std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory)
+        : fs_(fs),
+          path_factory_(path_factory),
+          checkpoint_path_factory_(std::move(checkpoint_path_factory)) {}
 
     Result<std::unique_ptr<InputStream>> GetInputStream(
         const std::string& file_path) const override {
@@ -71,8 +86,110 @@ class GlobalIndexFileManager : public GlobalIndexFileReader, public GlobalIndexF
         return path_factory_->IsExternalPath();
     }
 
+    bool SupportsCheckpoint() const override {
+        return checkpoint_path_factory_ != nullptr;
+    }
+
+    Result<std::unique_ptr<OutputStream>> CreateCheckpointOutputStream() const override {
+        if (!SupportsCheckpoint()) {
+            return Status::Invalid("global index checkpoint storage is not configured");
+        }
+        PAIMON_ASSIGN_OR_RAISE(int64_t file_id, NextCheckpointFileId());
+        PAIMON_RETURN_NOT_OK(fs_->Mkdirs(checkpoint_path_factory_->GetDirectoryPath()));
+        return fs_->Create(checkpoint_path_factory_->NewPath(file_id), /*overwrite=*/false);
+    }
+
+    Result<std::unique_ptr<InputStream>> OpenCheckpointInputStream() const override {
+        if (!SupportsCheckpoint()) {
+            return Status::Invalid("global index checkpoint storage is not configured");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::optional<CheckpointFile> checkpoint_file,
+                               LatestCheckpointFile());
+        if (!checkpoint_file) {
+            return Status::NotExist("global index checkpoint file does not exist");
+        }
+        return fs_->Open(checkpoint_file->path);
+    }
+
+    Result<bool> CheckpointExists() const override {
+        if (!SupportsCheckpoint()) {
+            return Status::Invalid("global index checkpoint storage is not configured");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::optional<CheckpointFile> checkpoint_file,
+                               LatestCheckpointFile());
+        return checkpoint_file.has_value();
+    }
+
+    Status DeleteCheckpoint() const override {
+        if (!SupportsCheckpoint()) {
+            return Status::Invalid("global index checkpoint storage is not configured");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::vector<CheckpointFile> checkpoint_files, ListCheckpointFiles());
+        Status first_error = Status::OK();
+        for (const CheckpointFile& checkpoint_file : checkpoint_files) {
+            Status status = fs_->Delete(checkpoint_file.path, /*recursive=*/false);
+            if (!status.ok() && first_error.ok()) {
+                first_error = std::move(status);
+            }
+        }
+        return first_error;
+    }
+
  private:
+    struct CheckpointFile {
+        int64_t id;
+        std::string path;
+    };
+
+    Result<int64_t> NextCheckpointFileId() const {
+        if (!last_checkpoint_file_id_) {
+            PAIMON_ASSIGN_OR_RAISE(std::optional<CheckpointFile> checkpoint_file,
+                                   LatestCheckpointFile());
+            last_checkpoint_file_id_ = checkpoint_file ? checkpoint_file->id : -1;
+        }
+        if (last_checkpoint_file_id_.value() == std::numeric_limits<int64_t>::max()) {
+            return Status::Invalid("checkpoint file id exceeds int64 max");
+        }
+        return ++last_checkpoint_file_id_.value();
+    }
+
+    Result<std::vector<CheckpointFile>> ListCheckpointFiles() const {
+        std::vector<BasicFileStatus> file_statuses;
+        PAIMON_RETURN_NOT_OK(
+            fs_->ListDir(checkpoint_path_factory_->GetDirectoryPath(), &file_statuses));
+        std::vector<CheckpointFile> checkpoint_files;
+        for (const BasicFileStatus& file_status : file_statuses) {
+            if (file_status.IsDir()) {
+                continue;
+            }
+            std::string file_name = PathUtil::GetName(file_status.GetPath());
+            std::optional<int64_t> id = checkpoint_path_factory_->GetCheckpointId(file_name);
+            if (!id) {
+                continue;
+            }
+            checkpoint_files.push_back(
+                CheckpointFile{id.value(), checkpoint_path_factory_->ToPath(file_name)});
+        }
+        return checkpoint_files;
+    }
+
+    Result<std::optional<CheckpointFile>> LatestCheckpointFile() const {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<CheckpointFile> checkpoint_files, ListCheckpointFiles());
+        if (checkpoint_files.empty()) {
+            return std::optional<CheckpointFile>();
+        }
+        CheckpointFile latest =
+            *std::max_element(checkpoint_files.begin(), checkpoint_files.end(),
+                              [](const CheckpointFile& left, const CheckpointFile& right) {
+                                  return left.id < right.id;
+                              });
+        return std::optional<CheckpointFile>(std::move(latest));
+    }
+
     std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<IndexPathFactory> path_factory_;
+    std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory_;
+    // Historical ids are loaded only on the first successful file id allocation scan.
+    mutable std::optional<int64_t> last_checkpoint_file_id_;
 };
 }  // namespace paimon

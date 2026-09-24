@@ -74,6 +74,17 @@ struct SpecialFields {
         return data_field;
     }
 
+    /// Field ID range and stride used by Java SpecialFields for structured types.
+    static constexpr int32_t STRUCTURED_TYPE_FIELD_ID_BASE =
+        std::numeric_limits<int32_t>::max() / 4;
+    static constexpr int32_t STRUCTURED_TYPE_FIELD_DEPTH_LIMIT = 1 << 10;
+
+    /// Match Java's Parquet array-element IDs. Depth starts at 1 and resets at each ROW.
+    static constexpr int32_t GetArrayElementFieldId(int32_t array_field_id, int32_t depth) {
+        return STRUCTURED_TYPE_FIELD_ID_BASE + array_field_id * STRUCTURED_TYPE_FIELD_DEPTH_LIMIT +
+               depth;
+    }
+
     static bool IsSystemField(const std::string& field_name) {
         if (StringUtils::StartsWith(field_name, KEY_FIELD_PREFIX)) {
             return true;

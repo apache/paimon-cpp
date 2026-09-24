@@ -34,9 +34,10 @@ class SnapshotCommit {
 
     /// @param base_snapshot_uuid Base snapshot UUID; null for an absent or legacy snapshot.
     /// @param snapshot Snapshot to be committed.
+    /// @param branch Branch to publish the snapshot on; an empty name is the main branch.
     /// @param statistics Partition statistics for this change.
     virtual Result<bool> Commit(const std::optional<std::string>& base_snapshot_uuid,
-                                const Snapshot& snapshot,
+                                const Snapshot& snapshot, const std::string& branch,
                                 const std::vector<PartitionStatistics>& statistics) = 0;
 
     virtual Result<std::string> GetLastCommitTableRequest() = 0;

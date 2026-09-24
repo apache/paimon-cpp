@@ -26,6 +26,7 @@
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -195,22 +196,32 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot commit through a null catalog");
     }
-    // Validate both branch sources: metadata paths are built for the main branch.
-    if (impl_->catalog_ != nullptr) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
-                               impl_->identifier_.value().GetBranchName());
-        auto branch_option = impl_->options_.find(Options::BRANCH);
-        std::optional<std::string> option_branch =
-            branch_option == impl_->options_.end()
-                ? std::nullopt
-                : std::optional<std::string>(branch_option->second);
-        for (const std::optional<std::string>& branch : {identifier_branch, option_branch}) {
-            if (branch &&
-                !BranchManager::IsMainBranch(BranchManager::NormalizeBranch(branch.value()))) {
+    if (impl_->identifier_) {
+        // Before the branch is read out of the identifier: the branch of `tbl$branch_dev$options`
+        // reads back as `dev`, so a commit built for such a name would be aimed at another branch.
+        PAIMON_RETURN_NOT_OK(
+            CatalogUtils::CheckNotSystemTable(impl_->identifier_.value(), "commit"));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::string branch, BranchManager::ResolveBranch(
+                                                   impl_->identifier_, impl_->options_,
+                                                   /*explicit_branch=*/std::nullopt, "commit"));
+    if (!BranchManager::IsMainBranch(branch)) {
+        // A commit which goes to a catalog, or is handed back as a request for one, names its
+        // branch by an object name, so the branch has to be one that reads back as itself.
+        // Refused here rather than at the commit, which writes metadata before publishing it.
+        if (impl_->catalog_ != nullptr || impl_->use_rest_catalog_commit_) {
+            PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
+        }
+        if (impl_->catalog_ != nullptr) {
+            PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
+                                   impl_->identifier_.value().GetBranchName());
+            if (!identifier_branch) {
+                PAIMON_ASSIGN_OR_RAISE(std::string table_name,
+                                       impl_->identifier_.value().GetDataTableName());
                 return Status::Invalid(fmt::format(
-                    "a commit through a catalog reads the main branch of the table, so it cannot "
-                    "be aimed at branch '{}'",
-                    branch.value()));
+                    "a commit through a catalog addresses a branch by the table identifier, so "
+                    "name branch '{}' there as '{}$branch_{}' rather than only in the '{}' option",
+                    branch, table_name, branch, Options::BRANCH));
             }
         }
     }

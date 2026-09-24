@@ -73,4 +73,9 @@ std::string ResourcePaths::TableSnapshot(const std::string& database_name,
     return Table(database_name, table_name) + "/snapshot";
 }
 
+std::string ResourcePaths::TableToken(const std::string& database_name,
+                                      const std::string& table_name) const {
+    return Table(database_name, table_name) + "/token";
+}
+
 }  // namespace paimon

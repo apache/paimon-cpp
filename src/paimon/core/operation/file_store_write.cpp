@@ -18,18 +18,26 @@
 
 #include "paimon/file_store_write.h"
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
+#include "paimon/common/utils/string_utils.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/disk/io_manager.h"
+#include "paimon/core/index/index_file_handler.h"
+#include "paimon/core/index/pk/bucketed_primary_key_index_maintainer.h"
+#include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/mergetree/compact/lookup_merge_function.h"
 #include "paimon/core/mergetree/compact/merge_function.h"
@@ -46,10 +54,12 @@
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/format/format_table_file_store_write.h"
 #include "paimon/core/table/format/format_table_loader.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/defs.h"
 #include "paimon/format/file_format.h"
 #include "paimon/result.h"
 #include "paimon/schema/schema.h"
@@ -118,6 +128,28 @@ Result<std::unique_ptr<FileStoreWrite>> NewFormatTableWrite(
     return std::unique_ptr<FileStoreWrite>(std::move(format_write));
 }
 
+Result<bool> HasHistoricalPrimaryKeyBTreeDefinition(
+    const std::shared_ptr<SchemaManager>& schema_manager, int64_t current_schema_id) {
+    if (current_schema_id <= TableSchema::FIRST_SCHEMA_ID) {
+        return false;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> schema_ids, schema_manager->ListAllIds());
+    for (int64_t schema_id : schema_ids) {
+        if (schema_id >= current_schema_id) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> historical_schema,
+                               schema_manager->ReadSchema(schema_id));
+        const auto& historical_options = historical_schema->Options();
+        auto option = historical_options.find(Options::PK_BTREE_INDEX_COLUMNS);
+        if (option != historical_options.end() &&
+            !StringUtils::IsNullOrWhitespaceOnly(option->second)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 Result<std::vector<RealtimeCommitProgress>> FileStoreWrite::PrepareCommitWithProgress(int64_t) {
@@ -154,21 +186,39 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
     if (specific_fs == nullptr && ctx->GetFileSystemSchemeToIdentifierMap().empty() &&
         ctx->GetCatalog() != nullptr) {
-        specific_fs = ctx->GetCatalog()->GetFileSystem();
+        if (!ctx->GetIdentifier()) {
+            return Status::Invalid("a catalog write requires a table identifier");
+        }
+        // A catalog issuing per-table temporary credentials only hands them out through
+        // GetTableFileSystem, so the write uses the credentials of this table.
+        PAIMON_ASSIGN_OR_RAISE(specific_fs,
+                               ctx->GetCatalog()->GetTableFileSystem(ctx->GetIdentifier().value()));
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs,
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
+    std::string branch = ctx->GetBranch();
+    std::optional<Identifier> catalog_identifier;
+    if (ctx->GetIdentifier()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            Identifier branch_identifier,
+            CatalogUtils::BranchIdentifier(ctx->GetIdentifier().value(), branch));
+        catalog_identifier.emplace(std::move(branch_identifier));
+    }
+    // Only the main branch may have a current schema the catalog alone holds. A branch publishes
+    // its own under `branch/branch-<name>`, which is where the load below and a read of the branch
+    // both read it, so a catalog answering for no branch schema does not fail a write to one.
     std::optional<std::string> catalog_table_schema;
     if (ctx->GetCatalog() != nullptr) {
-        if (!ctx->GetIdentifier()) {
+        if (!catalog_identifier) {
             return Status::Invalid("a catalog write requires a table identifier");
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
-                               ctx->GetCatalog()->LoadTableSchema(ctx->GetIdentifier().value()));
-        PAIMON_ASSIGN_OR_RAISE(catalog_table_schema, schema->GetJsonSchema());
+        if (BranchManager::IsMainBranch(branch)) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
+                                   ctx->GetCatalog()->LoadTableSchema(catalog_identifier.value()));
+            PAIMON_ASSIGN_OR_RAISE(catalog_table_schema, schema->GetJsonSchema());
+        }
     }
-    std::string branch = ctx->GetBranch();
     // A format table writes plain data files into a directory, so it never reaches the manifest
     // path below.
     auto schema_manager =
@@ -185,7 +235,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     // The schema the dispatch above already read through `schema_manager`, rather than a second
     // read of the same file.
     if (latest_schema == nullptr) {
-        return Status::Invalid(fmt::format("cannot found latest schema in branch {}", branch));
+        return Status::Invalid(fmt::format("not found latest schema in branch {}", branch));
     }
     const std::shared_ptr<TableSchema>& schema = latest_schema;
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
@@ -194,6 +244,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;
     }
+    // The metadata paths above are built for this branch, so what reads through these options,
+    // whose cache keys are scoped by it, has to read the same one.
+    opts[Options::BRANCH] = branch;
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions options,
         CoreOptions::FromMap(opts, specific_fs, ctx->GetFileSystemSchemeToIdentifierMap()));
@@ -216,7 +269,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         std::make_shared<SnapshotManager>(options.GetFileSystem(), ctx->GetRootPath(), branch);
     if (VersionManagedCatalog* versioned = AsVersionManaged(ctx->GetCatalog())) {
         std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
-        Identifier identifier = ctx->GetIdentifier().value();
+        Identifier identifier = catalog_identifier.value();
         // Keep the catalog alive while the writer uses its snapshot loader.
         snapshot_manager->SetSnapshotLoader(
             [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
@@ -352,18 +405,63 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             PrimaryKeyTableUtils::CreateSequenceFieldsComparator(schema->Fields(), options));
 
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
-        if (options.DeletionVectorsEnabled()) {
+        PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexDefinitions primary_key_index_definitions,
+                               PrimaryKeyIndexDefinitions::Create(*schema));
+        bool has_btree_index = false;
+        for (const PrimaryKeyIndexDefinition& definition :
+             primary_key_index_definitions.Definitions()) {
+            if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE) {
+                has_btree_index = true;
+                break;
+            }
+        }
+        std::optional<Snapshot> latest_snapshot;
+        bool has_existing_index_manifest = false;
+        if (!has_btree_index) {
+            PAIMON_ASSIGN_OR_RAISE(
+                bool has_historical_btree_index,
+                HasHistoricalPrimaryKeyBTreeDefinition(schema_manager, schema->Id()));
+            if (has_historical_btree_index) {
+                PAIMON_ASSIGN_OR_RAISE(latest_snapshot, snapshot_manager->LatestSnapshot());
+                has_existing_index_manifest =
+                    latest_snapshot.has_value() && latest_snapshot->IndexManifest().has_value();
+            }
+        }
+        std::shared_ptr<IndexFileHandler> index_file_handler;
+        if (options.DeletionVectorsEnabled() || has_btree_index || has_existing_index_manifest) {
             PAIMON_ASSIGN_OR_RAISE(
                 std::unique_ptr<IndexManifestFile> index_manifest_file,
                 IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                           options.GetManifestCompression(), file_store_path_factory,
                                           options.GetBucket(), ctx->GetMemoryPool(), options));
-            auto index_file_handler = std::make_shared<IndexFileHandler>(
+            index_file_handler = std::make_shared<IndexFileHandler>(
                 options.GetFileSystem(), std::move(index_manifest_file),
                 std::make_shared<IndexFilePathFactories>(file_store_path_factory),
                 options.DeletionVectorsBitmap64(), ctx->GetMemoryPool());
+        }
+        bool has_restored_btree_index = false;
+        if (!has_btree_index && has_existing_index_manifest) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::vector<IndexManifestEntry> restored_btree_entries,
+                index_file_handler->Scan(
+                    latest_snapshot.value(), [](const IndexManifestEntry& entry) -> bool {
+                        return entry.index_file->IndexType() == BtreeDefs::kIdentifier &&
+                               IndexFileHandler::IsPrimaryKeySourceIndex(*entry.index_file);
+                    }));
+            has_restored_btree_index = !restored_btree_entries.empty();
+        }
+        if (options.DeletionVectorsEnabled()) {
             dv_maintainer_factory =
                 std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
+        }
+        std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>
+            primary_key_index_maintainer_factory;
+        if (has_btree_index || has_restored_btree_index) {
+            primary_key_index_maintainer_factory =
+                std::make_shared<BucketedPrimaryKeyIndexMaintainer::Factory>(
+                    ctx->GetRootPath(), branch, schema, primary_key_index_definitions.Definitions(),
+                    file_store_path_factory, index_file_handler, options, io_manager,
+                    ctx->EnableMultiThreadSpill(), ctx->GetExecutor(), ctx->GetMemoryPool());
         }
 
         std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
@@ -377,10 +475,10 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         return std::make_unique<KeyValueFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
             ctx->GetRootPath(), schema, arrow_schema, realtime_schema_layout, partition_schema,
-            dv_maintainer_factory, io_manager, key_comparator, sequence_fields_comparator,
-            merge_function_wrapper, options, ignore_previous_files, ctx->IsStreamingMode(),
-            ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(), ctx->GetRealtimeContext(),
-            ctx->GetExecutor(), ctx->GetMemoryPool());
+            dv_maintainer_factory, primary_key_index_maintainer_factory, io_manager, key_comparator,
+            sequence_fields_comparator, merge_function_wrapper, options, ignore_previous_files,
+            ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(),
+            ctx->GetRealtimeContext(), ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 }
 

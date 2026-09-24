@@ -31,6 +31,20 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+Result<std::unique_ptr<TableSchema>> MakePrimaryKeyBTreeSchema(
+    std::map<std::string, std::string> options,
+    const std::vector<std::string>& primary_keys = {"id"},
+    const std::shared_ptr<arrow::DataType>& value_type = arrow::int32()) {
+    options.emplace(Options::PK_BTREE_INDEX_COLUMNS, "value");
+    auto schema = arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/false),
+                                 arrow::field("value", value_type)});
+    return TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{}, primary_keys,
+                               options);
+}
+
+}  // namespace
 
 TEST(SchemaValidationTest, TestSimple) {
     auto f0 = arrow::field("f0", arrow::utf8());
@@ -78,7 +92,18 @@ TEST(SchemaValidationTest, TestVectorType) {
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, orc_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR currently only supports parquet data files");
+                        "VECTOR currently only supports parquet/lance data files");
+
+    std::map<std::string, std::string> changelog_options = {
+        {Options::BUCKET, "1"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::CHANGELOG_FILE_FORMAT, "orc"},
+    };
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{"id"}, changelog_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "changelog-file.format is orc");
 
     std::map<std::string, std::string> primary_key_options = {{Options::BUCKET, "1"}};
     ASSERT_OK_AND_ASSIGN(table_schema,
@@ -168,7 +193,7 @@ TEST(SchemaValidationTest, TestVectorType) {
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, data_evolution_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR currently only supports parquet data files");
+                        "VECTOR currently only supports parquet/lance data files");
 }
 
 #ifdef PAIMON_ENABLE_MOSAIC
@@ -237,6 +262,87 @@ TEST(SchemaValidationTest, TestMosaicDataTypes) {
                             arrow::schema({arrow::field("id", arrow::int32()), blob_field}),
                             /*partition_keys=*/{}, /*primary_keys=*/{}, blob_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type BLOB");
+}
+#endif
+
+#ifdef PAIMON_ENABLE_LANCE
+TEST(SchemaValidationTest, TestLanceDataTypes) {
+    std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                  {Options::FILE_FORMAT, "lance"}};
+    arrow::FieldVector supported_fields = {
+        arrow::field("boolean", arrow::boolean()),
+        arrow::field("tinyint", arrow::int8()),
+        arrow::field("smallint", arrow::int16()),
+        arrow::field("integer", arrow::int32()),
+        arrow::field("bigint", arrow::int64()),
+        arrow::field("float", arrow::float32()),
+        arrow::field("double", arrow::float64()),
+        arrow::field("string", arrow::utf8()),
+        arrow::field("binary", arrow::binary()),
+        arrow::field("date", arrow::date32()),
+        arrow::field("timestamp", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("decimal", arrow::decimal128(38, 2)),
+        arrow::field("array", arrow::list(arrow::float32())),
+        arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32())}),
+                     /*nullable=*/false),
+        arrow::field("nullable_row", arrow::struct_({arrow::field("value", arrow::int32())})),
+        arrow::field("nested_nullable_row",
+                     arrow::struct_({arrow::field(
+                         "child", arrow::struct_({arrow::field("value", arrow::int32())}))}),
+                     /*nullable=*/false),
+        arrow::field("row_array",
+                     arrow::list(arrow::struct_({arrow::field("value", arrow::int32())}))),
+        arrow::field("vector", arrow::fixed_size_list(arrow::float32(), 3)),
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(/*schema_id=*/0, arrow::schema(supported_fields),
+                                             /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    arrow::FieldVector unsupported_fields = {
+        arrow::field("map", arrow::map(arrow::int32(), arrow::utf8())),
+        arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")),
+        VariantTypeUtils::ToArrowField("variant"),
+        arrow::field("time_millis", arrow::time32(arrow::TimeUnit::MILLI)),
+        arrow::field("nested_time",
+                     arrow::struct_({arrow::field(
+                         "values", arrow::list(arrow::time32(arrow::TimeUnit::MILLI)))})),
+    };
+    std::vector<std::string> expected_errors = {"type MAP", "LOCAL_ZONED_TIMESTAMP", "type VARIANT",
+                                                "type time32", "type time32"};
+    for (size_t i = 0; i < unsupported_fields.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(/*schema_id=*/0, arrow::schema({unsupported_fields[i]}),
+                                /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            expected_errors[i]);
+    }
+
+    for (const auto& field : arrow::FieldVector{
+             arrow::field("time_seconds", arrow::time32(arrow::TimeUnit::SECOND)),
+             arrow::field("nested_time",
+                          arrow::struct_({arrow::field(
+                              "values", arrow::list(arrow::time32(arrow::TimeUnit::SECOND)))}))}) {
+        ASSERT_NOK_WITH_MSG(
+            TableSchema::Create(/*schema_id=*/0, arrow::schema({field}),
+                                /*partition_keys=*/{}, /*primary_keys=*/{}, options),
+            "Only millisecond TIME is supported");
+    }
+
+    for (const auto& [option_key, option_value] : std::vector<std::pair<std::string, std::string>>{
+             {Options::FILE_FORMAT_PER_LEVEL, "1:lance"},
+             {Options::CHANGELOG_FILE_FORMAT, "lance"}}) {
+        std::map<std::string, std::string> alternate_format_options = {
+            {Options::BUCKET, "-1"}, {Options::FILE_FORMAT, "parquet"}, {option_key, option_value}};
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(
+                /*schema_id=*/0,
+                arrow::schema({arrow::field("map", arrow::map(arrow::int32(), arrow::utf8()))}),
+                /*partition_keys=*/{}, /*primary_keys=*/{}, alternate_format_options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type MAP");
+    }
 }
 #endif
 
@@ -602,6 +708,23 @@ TEST(SchemaValidationTest, TestSpecificPartitionKey) {
     }
 }
 
+TEST(SchemaValidationTest, TestTimePartitionKey) {
+    auto schema = arrow::schema({arrow::field("id", arrow::int32()),
+                                 arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI))});
+    for (const std::vector<std::string>& partition_keys :
+         {std::vector<std::string>{}, std::vector<std::string>{"time"}}) {
+        ASSERT_OK_AND_ASSIGN(auto table_schema,
+                             TableSchema::Create(0, schema, partition_keys, {},
+                                                 {{"file.format", "parquet"}, {"bucket", "-1"}}));
+        if (partition_keys.empty()) {
+            ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+        } else {
+            ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                                "partition field time cannot be TIME");
+        }
+    }
+}
+
 TEST(SchemaValidationTest, TestComplexPartitionKeyWithBlob) {
     auto f0 = arrow::field("f0", arrow::utf8());
     auto f1 = BlobUtils::ToArrowField("f1");
@@ -793,6 +916,102 @@ TEST(SchemaValidationTest, ValidateDeletionVector) {
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                             "First row merge engine does not need deletion vectors because there "
                             "is no deletion of old data in this merge engine.");
+    }
+}
+
+TEST(SchemaValidationTest, ValidatePrimaryKeyBTreeIndexes) {
+    {
+        std::map<std::string, std::string> options = {
+            {Options::BUCKET, "1"},
+            {Options::DELETION_VECTORS_ENABLED, "true"},
+            {"fields.value.pk-btree.index.options", R"({"cache-size":"16 mb"})"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*schema));
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "-2"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*schema));
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "require deletion-vectors.enabled = true");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                      {Options::BUCKET_KEY, "id"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options, /*primary_keys=*/{}));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "require a primary-key table");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "require fixed or postpone bucket mode");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"},
+                                                      {"deletion-vectors.merge-on-read", "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "require deletion-vectors.merge-on-read = false");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"},
+                                                      {Options::PK_CLUSTERING_OVERRIDE, "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "unsupported by the C++ commit path");
+    }
+}
+
+TEST(SchemaValidationTest, ValidatePrimaryKeyBTreeIndexColumnsAndOptions) {
+    std::map<std::string, std::string> valid_options = {
+        {Options::BUCKET, "1"}, {Options::DELETION_VECTORS_ENABLED, "true"}};
+    {
+        std::map<std::string, std::string> options = valid_options;
+        options.emplace(Options::PK_BTREE_INDEX_COLUMNS, "missing");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "entry 'missing' must reference an existing column");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableSchema> schema,
+            MakePrimaryKeyBTreeSchema(valid_options, /*primary_keys=*/{"id"}, arrow::binary()));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "entry 'value' has unsupported type binary");
+    }
+    {
+        std::map<std::string, std::string> options = valid_options;
+        options.emplace(Options::PK_BTREE_INDEX_COLUMNS, "value,value");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "contains duplicate column 'value'");
+    }
+    {
+        std::map<std::string, std::string> options = valid_options;
+        options.emplace("fields.value.pk-btree.index.options", R"({"cache-size":"not-a-size"})");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema), "not-a-size");
     }
 }
 

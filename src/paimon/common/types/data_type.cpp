@@ -41,6 +41,27 @@
 
 namespace paimon {
 
+Result<int32_t> DataType::GetTimePrecision(const arrow::Field& field) {
+    return GetTimePrecision(field.type(), field.metadata());
+}
+
+Result<int32_t> DataType::GetTimePrecision(
+    const std::shared_ptr<arrow::DataType>& type,
+    const std::shared_ptr<const arrow::KeyValueMetadata>& metadata) {
+    if (type->id() != arrow::Type::TIME32 ||
+        checked_cast<const arrow::Time32Type&>(*type).unit() != arrow::TimeUnit::MILLI) {
+        return Status::Invalid("Only millisecond TIME is supported: ", type->ToString());
+    }
+    if (!metadata || !metadata->Contains(kTimePrecision)) {
+        return 0;
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::string precision, metadata->Get(kTimePrecision));
+    if (precision.size() != 1 || precision[0] < '0' || precision[0] > '9') {
+        return Status::Invalid("Invalid TIME precision metadata: ", precision);
+    }
+    return precision[0] - '0';
+}
+
 DataType::DataType(const std::shared_ptr<arrow::DataType>& type, bool nullable,
                    const std::shared_ptr<const arrow::KeyValueMetadata>& metadata)
     : type_(type), nullable_(nullable), metadata_(metadata) {}
@@ -112,6 +133,13 @@ std::string DataType::DataTypeToString(const std::shared_ptr<arrow::DataType>& t
             return "BYTES";
         case arrow::Type::type::DATE32:
             return "DATE";
+        case arrow::Type::type::TIME32: {
+            auto precision = GetTimePrecision(type, metadata_);
+            if (!precision.ok()) {
+                throw std::invalid_argument(precision.status().ToString());
+            }
+            return fmt::format("TIME({})", precision.value());
+        }
         case arrow::Type::type::DECIMAL128: {
             auto status = DecimalUtils::CheckDecimalType(*type);
             if (!status.ok()) {

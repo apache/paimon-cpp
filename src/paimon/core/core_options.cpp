@@ -443,10 +443,12 @@ struct CoreOptions::Impl {
     bool write_only = false;
     bool bucket_append_ordered = false;
     bool deletion_vectors_enabled = false;
+    bool pk_clustering_override = false;
     bool deletion_vectors_bitmap64 = false;
     bool force_lookup = false;
     bool lookup_wait = true;
     bool changelog_row_deduplicate = false;
+    bool input_changelog_parallel_write_enabled = true;
     bool partial_update_remove_record_on_delete = false;
     bool aggregation_remove_record_on_delete = false;
     bool table_read_sequence_number_enabled = false;
@@ -752,6 +754,10 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.ParseList<std::string>(
             Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, Options::FIELDS_SEPARATOR,
             &changelog_row_deduplicate_ignore_fields, /*need_trim=*/true));
+        // Parse changelog-producer.input.parallel-write - write data and input changelog
+        // files in parallel, default true.
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE,
+                                                &input_changelog_parallel_write_enabled));
         // Parse partial-update.remove-record-on-delete - remove whole row on delete
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE,
                                                 &partial_update_remove_record_on_delete));
@@ -775,6 +781,8 @@ struct CoreOptions::Impl {
         // Parse deletion-vectors.enabled - whether to enable deletion vectors mode, default false
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::DELETION_VECTORS_ENABLED, &deletion_vectors_enabled));
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::PK_CLUSTERING_OVERRIDE, &pk_clustering_override));
         // Parse deletion-vector.index-file.target-size - target size of dv index file, default 2MB
         PAIMON_RETURN_NOT_OK(parser.ParseMemorySize(Options::DELETION_VECTOR_INDEX_FILE_TARGET_SIZE,
                                                     &deletion_vector_target_file_size));
@@ -1611,6 +1619,22 @@ bool CoreOptions::DeletionVectorsEnabled() const {
     return impl_->deletion_vectors_enabled;
 }
 
+bool CoreOptions::PkClusteringOverrideEnabled() const {
+    return impl_->pk_clustering_override;
+}
+
+std::vector<std::string> CoreOptions::GetPrimaryKeyBTreeIndexColumns() const {
+    auto iter = ToMap().find(Options::PK_BTREE_INDEX_COLUMNS);
+    if (iter == ToMap().end()) {
+        return {};
+    }
+    std::vector<std::string> columns = StringUtils::Split(iter->second, ",", false);
+    for (std::string& column : columns) {
+        StringUtils::Trim(&column);
+    }
+    return columns;
+}
+
 bool CoreOptions::DeletionVectorsBitmap64() const {
     return impl_->deletion_vectors_bitmap64;
 }
@@ -1628,6 +1652,10 @@ bool CoreOptions::ChangelogRowDeduplicate() const {
 
 const std::vector<std::string>& CoreOptions::GetChangelogRowDeduplicateIgnoreFields() const {
     return impl_->changelog_row_deduplicate_ignore_fields;
+}
+
+bool CoreOptions::InputChangelogParallelWriteEnabled() const {
+    return impl_->input_changelog_parallel_write_enabled;
 }
 
 std::string CoreOptions::ChangelogFilePrefix() const {

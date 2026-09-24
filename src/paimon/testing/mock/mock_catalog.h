@@ -104,15 +104,19 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     }
 
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier) const override {
-        ++load_table_schema_calls_;
+        load_table_schema_identifiers_.push_back(identifier);
         if (table_schema_ == nullptr) {
             return Status::NotExist(identifier.ToString() + " not exist");
         }
         return table_schema_;
     }
 
+    const std::vector<Identifier>& LoadTableSchemaIdentifiers() const {
+        return load_table_schema_identifiers_;
+    }
+
     size_t LoadTableSchemaCalls() const {
-        return load_table_schema_calls_;
+        return load_table_schema_identifiers_.size();
     }
 
     Result<std::optional<Snapshot>> LoadSnapshot(const Identifier& identifier) const override {
@@ -223,6 +227,27 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     std::shared_ptr<FileSystem> GetFileSystem() const override {
         return file_system_;
     }
+
+    /// Records what was asked and serves the per-table file system when one was set, so a
+    /// test can tell it apart from the catalog-wide one; falls back to `GetFileSystem()`,
+    /// matching the base default, when none was set.
+    Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
+        const Identifier& identifier) const override {
+        table_file_system_requests_.push_back(identifier);
+        if (table_file_system_ != nullptr) {
+            return table_file_system_;
+        }
+        return GetFileSystem();
+    }
+
+    void SetTableFileSystem(const std::shared_ptr<FileSystem>& file_system) {
+        table_file_system_ = file_system;
+    }
+
+    const std::vector<Identifier>& TableFileSystemRequests() const {
+        return table_file_system_requests_;
+    }
+
     const std::map<std::string, std::string>& GetOptions() const override {
         return options_;
     }
@@ -240,6 +265,8 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     std::string table_uuid_;
     std::shared_ptr<Schema> table_schema_;
     std::shared_ptr<FileSystem> file_system_;
+    std::shared_ptr<FileSystem> table_file_system_;
+    mutable std::vector<Identifier> table_file_system_requests_;
     bool supports_version_management_ = true;
     std::function<void()> on_commit_;
     bool check_table_uuid_ = false;
@@ -248,7 +275,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     std::optional<std::string> current_snapshot_uuid_;
     std::vector<Snapshot> accepted_;
     mutable size_t get_table_calls_ = 0;
-    mutable size_t load_table_schema_calls_ = 0;
+    mutable std::vector<Identifier> load_table_schema_identifiers_;
     mutable std::vector<Identifier> load_snapshot_identifiers_;
     bool serve_snapshots_ = false;
     Status load_snapshot_status_;

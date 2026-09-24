@@ -3123,6 +3123,167 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
+TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(nullptr, dir);
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                       arrow::field("indexed_value", arrow::int32()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    const std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::COMMIT_FORCE_COMPACT, "true"},
+        {Options::FILE_INDEX_READ_ENABLED, "true"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"},
+        {"file-index.bitmap.columns", "indexed_value"},
+    };
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                           options, /*is_streaming_mode=*/true, /*ignore_if_exists=*/false,
+                           PathUtil::JoinPath(dir->Str(), "tmp")));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([[1, 10, "one"], [2, 20, "two"], [3, 30, "three"]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, /*row_kinds=*/{}));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> commit_messages,
+        helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0, std::nullopt));
+    ASSERT_FALSE(commit_messages.empty());
+
+    // 15 falls inside the file's [10, 30] min/max range, so statistics alone must retain the
+    // file. Disabling file-index reads verifies that baseline explicitly.
+    const std::shared_ptr<Predicate> absent_predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"indexed_value", FieldType::INT, Literal(15));
+    ScanContextBuilder stats_only_scan_builder(table_path);
+    stats_only_scan_builder.SetOptions(options)
+        .AddOption(Options::FILE_INDEX_READ_ENABLED, "false")
+        .SetPredicate(absent_predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> stats_only_scan_context,
+                         stats_only_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> stats_only_scan,
+                         TableScan::Create(std::move(stats_only_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> stats_only_plan, stats_only_scan->CreatePlan());
+    ASSERT_FALSE(stats_only_plan->Splits().empty());
+
+    // The embedded bitmap knows that 15 is absent and eliminates the file during scan planning.
+    ScanContextBuilder indexed_scan_builder(table_path);
+    indexed_scan_builder.SetOptions(options).SetPredicate(absent_predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> indexed_scan_context,
+                         indexed_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> indexed_scan,
+                         TableScan::Create(std::move(indexed_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> indexed_plan, indexed_scan->CreatePlan());
+    ASSERT_TRUE(indexed_plan->Splits().empty());
+
+    // For a present value, scan retains the embedded-index file and read applies its precise
+    // bitmap. Residual predicate filtering stays disabled so only file-index selection can remove
+    // the other rows.
+    const std::shared_ptr<Predicate> present_predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"indexed_value", FieldType::INT, Literal(20));
+    ScanContextBuilder retained_scan_builder(table_path);
+    retained_scan_builder.SetOptions(options).SetPredicate(present_predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> retained_scan_context,
+                         retained_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> retained_scan,
+                         TableScan::Create(std::move(retained_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> retained_plan, retained_scan->CreatePlan());
+    ASSERT_FALSE(retained_plan->Splits().empty());
+
+    ReadContextBuilder read_context_builder(table_path);
+    read_context_builder.SetOptions(options)
+        .SetPredicate(present_predicate)
+        .EnablePredicateFilter(false);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         table_read->CreateReader(retained_plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+    const std::shared_ptr<arrow::DataType> result_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int32()),
+         arrow::field("indexed_value", arrow::int32()), arrow::field("payload", arrow::utf8())});
+    const std::shared_ptr<arrow::ChunkedArray> expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(result_type, R"([[0, 2, 20, "two"]])")
+            .ValueOrDie());
+    ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
+}
+
+TEST(ScanAndReadFileIndexInteTest, TestPkDvReconstructsFileIndexPredicateAfterSchemaEvolution) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(nullptr, dir);
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                       arrow::field("indexed_value", arrow::int32()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::COMMIT_FORCE_COMPACT, "true"},
+        {Options::FILE_INDEX_READ_ENABLED, "true"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"},
+        {"file-index.bitmap.columns", "indexed_value"},
+    };
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                           options, /*is_streaming_mode=*/true, /*ignore_if_exists=*/false,
+                           PathUtil::JoinPath(dir->Str(), "tmp")));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([[1, 10, "one"], [2, 20, "two"], [3, 30, "three"]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, /*row_kinds=*/{}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0, std::nullopt));
+    helper.reset();
+
+    // Keep field IDs and types unchanged while renaming the indexed value field. The old file and
+    // its embedded bitmap still use "indexed_value", whereas scans use "renamed_value".
+    options["file-index.bitmap.columns"] = "renamed_value";
+    const std::vector<DataField> evolved_fields = {
+        DataField(0, arrow::field("id", arrow::int32(), /*nullable=*/false)),
+        DataField(1, arrow::field("renamed_value", arrow::int32())),
+        DataField(2, arrow::field("payload", arrow::utf8()))};
+    ASSERT_OK(TestHelper::WriteNextSchema(dir->GetFileSystem(), table_path, evolved_fields,
+                                          /*highest_field_id=*/2, options));
+
+    const std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"renamed_value", FieldType::INT, Literal(15));
+
+    // The evolved min/max range is still [10, 30], so statistics alone retain the old file.
+    ScanContextBuilder stats_only_scan_builder(table_path);
+    stats_only_scan_builder.SetOptions(options)
+        .AddOption(Options::FILE_INDEX_READ_ENABLED, "false")
+        .SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> stats_only_scan_context,
+                         stats_only_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> stats_only_scan,
+                         TableScan::Create(std::move(stats_only_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> stats_only_plan, stats_only_scan->CreatePlan());
+    ASSERT_FALSE(stats_only_plan->Splits().empty());
+
+    // Reconstructing the predicate to schema-0 lets its embedded bitmap prove that 15 is absent.
+    ScanContextBuilder indexed_scan_builder(table_path);
+    indexed_scan_builder.SetOptions(options).SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> indexed_scan_context,
+                         indexed_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> indexed_scan,
+                         TableScan::Create(std::move(indexed_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> indexed_plan, indexed_scan->CreatePlan());
+    ASSERT_TRUE(indexed_plan->Splits().empty());
+}
+
 TEST_P(ScanAndReadInteTest, TestPkDvTableIndexInDataAndWithExternalPath) {
     auto file_format = FileFormat();
     std::string table_path =
@@ -3262,6 +3423,181 @@ TEST_P(ScanAndReadInteTest, TestCastTimestampType) {
     ASSERT_TRUE(expected);
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
+
+#ifdef PAIMON_ENABLE_LANCE
+TEST_F(ScanAndReadInteTest, TestLanceJavaCompatibility) {
+    TimezoneGuard timezone_guard("UTC");
+    auto nested_type = arrow::struct_(
+        {arrow::field("number", arrow::int32()), arrow::field("label", arrow::utf8())});
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        arrow::field("f_boolean", arrow::boolean()),
+        arrow::field("f_tinyint", arrow::int8()),
+        arrow::field("f_smallint", arrow::int16()),
+        arrow::field("f_bigint", arrow::int64()),
+        arrow::field("f_float", arrow::float32()),
+        arrow::field("f_double", arrow::float64()),
+        arrow::field("f_char", arrow::utf8()),
+        arrow::field("f_string", arrow::utf8()),
+        arrow::field("f_binary", arrow::binary()),
+        arrow::field("f_varbinary", arrow::binary()),
+        arrow::field("f_date", arrow::date32()),
+        arrow::field("f_ts_0", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        arrow::field("f_ts_3", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        arrow::field("f_ts_6", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("f_ts_9", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f_decimal_1_0", arrow::decimal128(1, 0)),
+        arrow::field("f_decimal_18_2", arrow::decimal128(18, 2)),
+        arrow::field("f_decimal_19_2", arrow::decimal128(19, 2)),
+        arrow::field("f_decimal_38_18", arrow::decimal128(38, 18)),
+        arrow::field("f_array_int", arrow::list(arrow::int32())),
+        arrow::field("f_array_array_int", arrow::list(arrow::list(arrow::int32()))),
+        arrow::field("f_struct", nested_type),
+        arrow::field("f_nullable_struct", nested_type),
+        arrow::field("f_vector", arrow::fixed_size_list(arrow::float32(), 3)),
+    };
+    // Nullable-declared ROW is readable when every parent is valid. Null children are distinct
+    // from null parents; see the README alongside the Java compatibility table.
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[0, 1, true, -5, -1000, 10000000001, 1.25, -2.5, "char0001", "value-1", "bin1", "\u0000\u0001\u0002\u007f", -1, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [1, null, -1], [[1, null], null, []], [1, "required"], [1, "nullable"], [1.0, -1.5, 0.25]],
+[0, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, [null, null], [null, null], null],
+[0, 10, false, -5, -1000, 10000000010, 1.25, -2.5, "char0001", "", "bin1", "\u0000\u0001\u0002\u007f", 20000, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [], [[10, null], null, []], [10, "required"], [10, "nullable"], [10.0, -1.5, 0.25]],
+[0, 11, true, -5, -1000, 10000000011, 1.25, -2.5, "char0001", "value-11", "bin1", "\u0000\u0001\u0002\u007f", 20000, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [11, null, -11], [[11, null], null, []], [11, "required"], [11, "nullable"], [11.0, -1.5, 0.25]]
+])")
+            .ValueOrDie());
+    const std::string table_path = GetDataDir() + "/lance/append_java_compat.db/append_java_compat";
+    auto check = [&](const std::shared_ptr<Predicate>& predicate,
+                     const std::vector<std::string>& projection,
+                     const std::shared_ptr<arrow::ChunkedArray>& expected_result,
+                     bool exact_filter = false) {
+        ScanContextBuilder scan_builder(table_path);
+        ReadContextBuilder read_builder(table_path);
+        if (predicate) {
+            scan_builder.SetPredicate(predicate);
+            if (projection.empty()) {
+                read_builder.SetPredicate(predicate);
+            }
+        }
+        if (!projection.empty()) {
+            // The scan predicate uses table field indexes, not reordered projection indexes.
+            read_builder.SetReadFieldNames(projection);
+        }
+        read_builder.EnablePredicateFilter(exact_filter);
+        read_builder.AddOption("read.batch-size", "1");
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+        ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(2));
+        ASSERT_FALSE(plan->Splits().empty());
+        ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(expected_result->Equals(actual))
+            << "actual: " << actual->ToString() << "\nexpected: " << expected_result->ToString();
+    };
+    check(/*predicate=*/nullptr, /*projection=*/{}, expected);
+    auto predicate = PredicateBuilder::GreaterOrEqual(0, "id", FieldType::INT, Literal(10));
+    // Missing statistics retain both files; exact filtering is opt-in above the format layer.
+    check(predicate, /*projection=*/{}, expected);
+    check(predicate, /*projection=*/{}, expected->Slice(2, 2), /*exact_filter=*/true);
+    auto predicate_without_stats = PredicateBuilder::GreaterOrEqual(
+        4, "f_bigint", FieldType::BIGINT, Literal(int64_t{10000000010LL}));
+    check(predicate_without_stats, /*projection=*/{}, expected);
+
+    auto projected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields[0], fields[24], fields[1], fields[25]}), R"([
+[0, [1, "nullable"], 1, [1.0, -1.5, 0.25]],
+[0, [null, null], 2, null],
+[0, [10, "nullable"], 10, [10.0, -1.5, 0.25]],
+[0, [11, "nullable"], 11, [11.0, -1.5, 0.25]]
+])")
+            .ValueOrDie());
+    check(predicate, {"f_nullable_struct", "id", "f_vector"}, projected);
+}
+
+TEST_F(ScanAndReadInteTest, TestLancePythonCompatibility) {
+    TimezoneGuard timezone_guard("UTC");
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        arrow::field("f_boolean", arrow::boolean()),
+        arrow::field("f_tinyint", arrow::int8()),
+        arrow::field("f_smallint", arrow::int16()),
+        arrow::field("f_bigint", arrow::int64()),
+        arrow::field("f_float", arrow::float32()),
+        arrow::field("f_double", arrow::float64()),
+        arrow::field("f_string", arrow::utf8()),
+        arrow::field("f_binary", arrow::binary()),
+        arrow::field("f_date", arrow::date32()),
+        arrow::field("f_ts_0", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        arrow::field("f_ts_3", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        arrow::field("f_ts_6", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("f_ts_9", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f_decimal_1_0", arrow::decimal128(1, 0)),
+        arrow::field("f_decimal_18_2", arrow::decimal128(18, 2)),
+        arrow::field("f_decimal_19_2", arrow::decimal128(19, 2)),
+        arrow::field("f_decimal_38_18", arrow::decimal128(38, 18)),
+        arrow::field("f_array_int", arrow::list(arrow::int32())),
+        arrow::field("f_array_array_int", arrow::list(arrow::list(arrow::int32()))),
+        arrow::field("f_struct", arrow::struct_({arrow::field("number", arrow::int32()),
+                                                 arrow::field("label", arrow::utf8())})),
+        arrow::field("f_vector", arrow::fixed_size_list(arrow::float32(), 3)),
+    };
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[0, 1, true, -5, -1000, 10000000001, 1.25, -2.5, "value-1", "\u0000\u0001\u0002\u007f", -1, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [1, null, -1], [[1, null], null, []], [1, "row-1"], [1.0, -1.5, 0.25]],
+[0, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, [null, null], null],
+[0, 10, false, -5, -1000, 10000000010, 1.25, -2.5, "", "\u0000\u0001\u0002\u007f", 20000, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [], [[10, null], null, []], [10, "row-10"], [10.0, -1.5, 0.25]],
+[0, 11, true, -5, -1000, 10000000011, 1.25, -2.5, "value-11", "\u0000\u0001\u0002\u007f", 20000, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [11, null, -11], [[11, null], null, []], [11, "row-11"], [11.0, -1.5, 0.25]]
+])")
+            .ValueOrDie());
+    const std::string table_path =
+        GetDataDir() + "/lance/append_python_compat.db/append_python_compat";
+    auto check = [&](int64_t snapshot_id, const std::vector<std::string>& projection,
+                     const std::shared_ptr<arrow::ChunkedArray>& expected_result) {
+        SCOPED_TRACE("snapshot " + std::to_string(snapshot_id));
+        ScanContextBuilder scan_builder(table_path);
+        scan_builder.AddOption(Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id));
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+        ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(snapshot_id));
+        ASSERT_FALSE(plan->Splits().empty());
+
+        ReadContextBuilder read_builder(table_path);
+        read_builder.AddOption("read.batch-size", "1");
+        if (!projection.empty()) {
+            read_builder.SetReadFieldNames(projection);
+        }
+        ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(expected_result->Equals(actual))
+            << "actual: " << actual->ToString() << "\nexpected: " << expected_result->ToString();
+    };
+    // These are independently committed Paimon snapshots, not standalone Lance datasets.
+    check(1, /*projection=*/{}, expected->Slice(0, 2));
+    check(2, /*projection=*/{}, expected);
+    auto projected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields[0], fields[21], fields[1], fields[22], fields[19]}), R"([
+[0, [1, "row-1"], 1, [1.0, -1.5, 0.25], [1, null, -1]],
+[0, [null, null], 2, null, null],
+[0, [10, "row-10"], 10, [10.0, -1.5, 0.25], []],
+[0, [11, "row-11"], 11, [11.0, -1.5, 0.25], [11, null, -11]]
+])")
+            .ValueOrDie());
+    check(1, {"f_struct", "id", "f_vector", "f_array_int"}, projected->Slice(0, 2));
+    check(2, {"f_struct", "id", "f_vector", "f_array_int"}, projected);
+}
+#endif
 
 #ifdef PAIMON_ENABLE_MOSAIC
 TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {

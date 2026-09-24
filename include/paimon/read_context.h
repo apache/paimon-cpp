@@ -27,6 +27,7 @@
 
 #include "arrow/c/abi.h"
 #include "paimon/cache/cache.h"
+#include "paimon/catalog/identifier.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
@@ -34,6 +35,7 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
+class Catalog;
 class Executor;
 class FormatTable;
 class MemoryPool;
@@ -362,7 +364,7 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Warmup overlaps remote-storage latency with the read of the current file. Higher levels hide
     /// more latency but use more memory, and may warm files that a query never reads (for example
     /// when a LIMIT stops the scan early).
-    /// @param level The warmup level to use (default: WarmupLevel::DECODED).
+    /// @param level The warmup level to use (default: WarmupLevel::RAW).
     /// @return Reference to this builder for method chaining.
     /// @note WarmupLevel::RAW warms the read-ahead cache, so it has no effect and behaves like
     /// WarmupLevel::NONE when the cache is off (see SetReadAheadCacheEnabled()).
@@ -443,9 +445,12 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Paimon supports branching for data versioning and time travel queries.
     /// This method allows reading from a specific branch instead of the main branch.
     ///
+    /// The `branch` option names the branch too, as it does for a scan of one branch; naming two
+    /// different branches is refused rather than silently resolved.
+    ///
     /// @param branch Name of the branch to read from.
     /// @return Reference to this builder for method chaining.
-    /// @note Default branch is "main" if not specified.
+    /// @note Default branch is "main" if not specified. An empty name is the main branch.
     ReadContextBuilder& WithBranch(const std::string& branch);
 
     /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
@@ -474,6 +479,16 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ReadContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Reads a native table through its own file system - including the per-table temporary
+    /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.
+    /// This is a shorthand for `WithFileSystem(catalog->GetTableFileSystem(identifier))`; an
+    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked.
+    /// @param catalog Non-null catalog, read when `Finish()` builds the context.
+    /// @param identifier The native table to read.
+    /// @return Reference to this builder for method chaining.
+    ReadContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
+                                    const Identifier& identifier);
 
     /// Inject a cache for read operations. Passing nullptr disables cache.
     /// @return Reference to this builder for method chaining.

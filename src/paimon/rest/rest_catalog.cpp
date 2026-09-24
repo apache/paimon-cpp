@@ -27,6 +27,7 @@
 #include "paimon/catalog_options.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -38,6 +39,8 @@
 #include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/rest/rest_credential_provider.h"
+#include "paimon/rest/rest_token_file_system.h"
 #include "paimon/rest/rest_util.h"
 #include "paimon/table/format/format_table.h"
 #include "rapidjson/document.h"
@@ -60,50 +63,52 @@ std::optional<std::string> NormalizeBranch(std::optional<std::string> branch) {
     return branch;
 }
 
-// Builds the "<table>$branch_<branch>" object name addressing `branch` of `table_name`
-// on the rest server.
-std::string BranchObjectName(std::string table_name, const std::string& branch) {
-    table_name.append(Identifier::kSystemTableSplitter);
-    table_name.append(Identifier::kSystemBranchPrefix);
-    table_name.append(branch);
-    return table_name;
-}
-
 // Builds the identifier sent to the rest server: the system table suffix is stripped
 // while the branch stays in the object name, so the server resolves the branch itself and
 // returns the branch's own schema. The path the server reports is the data table root in
 // either case; the branch subdirectory is derived downstream from the branch option and
 // must not be applied twice (see `ToTableSchema`).
 Result<Identifier> ToLoadIdentifier(const Identifier& identifier) {
-    PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
-    branch = NormalizeBranch(std::move(branch));
-    std::string object_name = branch ? BranchObjectName(std::move(data_table_name), branch.value())
-                                     : std::move(data_table_name);
-    return Identifier(identifier.GetDatabaseName(), object_name);
+    return CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string()));
 }
 
 }  // namespace
 
-RestCatalog::RestCatalog(std::unique_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
-                         const std::string& warehouse)
+RestCatalog::RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
+                         const std::string& warehouse, bool data_token_enabled,
+                         bool fs_explicitly_supplied,
+                         const std::map<std::string, std::string>& fs_scheme_to_identifier_map)
     : api_(std::move(api)),
       fs_(fs),
       warehouse_(warehouse),
+      data_token_enabled_(data_token_enabled),
+      fs_explicitly_supplied_(fs_explicitly_supplied),
       table_default_options_(RestUtil::ExtractPrefixMap(
           api_->GetMergedOptions(), CatalogOptions::TABLE_DEFAULT_OPTION_PREFIX)),
-      logger_(Logger::GetLogger("RestCatalog")) {}
+      fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
+      logger_(Logger::GetLogger("RestCatalog")) {
+    if (data_token_enabled_) {
+        token_fs_cache_ = RestTokenFileSystem::CreateFileSystemCache();
+    }
+}
 
 Result<std::unique_ptr<RestCatalog>> RestCatalog::Create(
     const std::string& warehouse, const std::map<std::string, std::string>& options,
-    const std::shared_ptr<FileSystem>& file_system, const RestHttpClient::Config& http_config) {
+    const std::shared_ptr<FileSystem>& file_system, const RestHttpClient::Config& http_config,
+    const std::map<std::string, std::string>& fs_scheme_to_identifier_map) {
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RestApi> api,
         RestApi::Create(options, warehouse, /*config_required=*/true, http_config));
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                           CoreOptions::FromMap(api->GetMergedOptions(), file_system));
-    return std::unique_ptr<RestCatalog>(
-        new RestCatalog(std::move(api), core_options.GetFileSystem(), warehouse));
+    PAIMON_ASSIGN_OR_RAISE(
+        CoreOptions core_options,
+        CoreOptions::FromMap(api->GetMergedOptions(), file_system, fs_scheme_to_identifier_map));
+    PAIMON_ASSIGN_OR_RAISE(bool data_token_enabled,
+                           OptionsUtils::GetValueFromMap<bool>(
+                               api->GetMergedOptions(), CatalogOptions::DATA_TOKEN_ENABLED, false));
+    return std::unique_ptr<RestCatalog>(new RestCatalog(
+        std::move(api), core_options.GetFileSystem(), warehouse, data_token_enabled,
+        /*fs_explicitly_supplied=*/file_system != nullptr, fs_scheme_to_identifier_map));
 }
 
 const std::map<std::string, std::string>& RestCatalog::GetOptions() const {
@@ -404,6 +409,10 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         if (branch) {
             dynamic_options[Options::BRANCH] = branch.value();
         }
+        // The file system is only used to build the system table, whose schema does not
+        // read any file, so the catalog wide one is enough here. The credentials of the
+        // table are applied when its rows are read, through the file system of the read or
+        // scan context.
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
                                                        latest_schema, dynamic_options));
@@ -451,16 +460,41 @@ std::shared_ptr<FileSystem> RestCatalog::GetFileSystem() const {
     return fs_;
 }
 
+Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
+    const Identifier& identifier) const {
+    // A file system the caller supplied to `Catalog::Create` authenticates its own accesses
+    // and is used as-is, so it is handed out even when the server issues data tokens:
+    // rebuilding a delegate from the options would discard it together with the
+    // `CredentialProvider` it signs with, and could send a custom scheme to the default
+    // backend. Without data tokens the catalog-wide file system serves the data as well.
+    if (!data_token_enabled_ || fs_explicitly_supplied_) {
+        return fs_;
+    }
+    // The credentials are issued for the data table, so a system table shares those of
+    // the table it belongs to.
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+    // Building the file system asks the server for nothing, the credentials are loaded on
+    // the first access, so nothing is keyed by the table here: the file systems built from
+    // the credentials are what a cache reuses and bounds. Keying an instance by its table
+    // would keep serving the credentials of a dropped table to a table recreated at another
+    // location.
+    //
+    // The shared cache is keyed by the credentials alone and holds the file systems built
+    // from the catalog options, which every table agrees on, so a rotation rebuilds them.
+    const std::map<std::string, std::string>& catalog_options = api_->GetMergedOptions();
+    std::shared_ptr<RestCredentialProvider> provider =
+        std::make_shared<RestCredentialProvider>(api_, load_identifier);
+    return std::make_shared<RestTokenFileSystem>(std::move(provider), catalog_options,
+                                                 token_fs_cache_, fs_scheme_to_identifier_map_);
+}
+
 Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& identifier,
                                                              const std::string& branch) const {
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotBranch(identifier, "listSnapshots"));
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "listSnapshots"));
-    std::optional<std::string> normalized_branch =
-        NormalizeBranch(branch.empty() ? std::nullopt : std::make_optional(branch));
-    std::string object_name =
-        normalized_branch ? BranchObjectName(identifier.GetTableName(), normalized_branch.value())
-                          : identifier.GetTableName();
-    Identifier load_identifier(identifier.GetDatabaseName(), object_name);
+    // `CheckNotBranch` and `CheckNotSystemTable` above leave the table name bare, so the branch
+    // this is asked for is the only one the object name can carry.
+    Identifier load_identifier(identifier.GetDatabaseName(), identifier.GetTableName(), branch);
     // The Catalog interface has no pagination, so all pages are fetched; the server
     // does not order snapshots across pages while the contract requires ascending ids.
     PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> snapshots, api_->ListSnapshots(load_identifier));

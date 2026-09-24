@@ -73,6 +73,7 @@ class SchemaManager;
 class SimpleStatsEvolution;
 class SnapshotManager;
 class TableSchema;
+struct DataFileMeta;
 
 /// Scan operation which produces a plan.
 class FileStoreScan {
@@ -256,6 +257,13 @@ class FileStoreScan {
     static Result<std::shared_ptr<Predicate>> ReconstructPredicateWithNonCastedFields(
         const std::shared_ptr<Predicate>& predicate,
         const std::shared_ptr<SimpleStatsEvolution>& evolution);
+
+    /// Tests only an index embedded in DataFileMeta. External index files are evaluated while
+    /// reading the retained files.
+    Result<bool> TestFileIndex(const std::shared_ptr<Predicate>& predicate,
+                               const std::shared_ptr<DataFileMeta>& meta,
+                               const std::shared_ptr<SimpleStatsEvolution>& evolution,
+                               const std::shared_ptr<TableSchema>& data_schema) const;
 
  private:
     Status ReadManifests(std::optional<Snapshot>* snapshot_ptr,

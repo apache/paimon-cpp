@@ -21,6 +21,7 @@
 #include <cstdint>
 
 #include "gtest/gtest.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
@@ -68,21 +69,85 @@ TEST(WriteContextTest, TestWithCatalog) {
                         "cannot write through a null catalog");
 }
 
-TEST(WriteContextTest, TestCatalogRequiresMainBranch) {
+TEST(WriteContextTest, TestCatalogAddressesBranchByIdentifier) {
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    for (int32_t branch_source = 0; branch_source < 3; ++branch_source) {
-        SCOPED_TRACE(branch_source);
-        WriteContextBuilder builder("table_root_path", "commit_user_1");
-        builder.WithCatalog(catalog, Identifier("db1", branch_source == 0 ? "t1$branch_dev" : "t1"))
-            .WithBranch(branch_source == 1 ? "dev" : "main")
-            .AddOption(Options::BRANCH, branch_source == 2 ? "dev" : "main");
-        ASSERT_NOK_WITH_MSG(builder.Finish(), "requires the main branch");
-    }
     WriteContextBuilder builder("table_root_path", "commit_user_1");
-    ASSERT_OK(builder.WithCatalog(catalog, Identifier("db1", "t1$branch_main"))
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1$branch_dev"))
+                                       .WithBranch("dev")
+                                       .AddOption(Options::BRANCH, "dev")
+                                       .Finish());
+    ASSERT_EQ(ctx->GetBranch(), "dev");
+
+    WriteContextBuilder identifier_builder("table_root_path", "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(
+        auto identifier_ctx,
+        identifier_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_dev")).Finish());
+    ASSERT_EQ(identifier_ctx->GetBranch(), "dev");
+
+    for (int32_t branch_source = 0; branch_source < 2; ++branch_source) {
+        SCOPED_TRACE(branch_source);
+        WriteContextBuilder option_only_builder("table_root_path", "commit_user_1");
+        option_only_builder.WithCatalog(catalog, Identifier("db1", "t1"));
+        if (branch_source == 0) {
+            option_only_builder.WithBranch("dev");
+        } else {
+            option_only_builder.AddOption(Options::BRANCH, "dev");
+        }
+        ASSERT_NOK_WITH_MSG(option_only_builder.Finish(),
+                            "name branch 'dev' there as 't1$branch_dev'");
+    }
+
+    WriteContextBuilder mixed_builder("table_root_path", "commit_user_1");
+    ASSERT_NOK_WITH_MSG(mixed_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_dev"))
+                            .WithBranch("release")
+                            .Finish(),
+                        "but both 'dev' and 'release' were named");
+
+    WriteContextBuilder main_builder("table_root_path", "commit_user_1");
+    ASSERT_OK(main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_main"))
                   .WithBranch("")
                   .AddOption(Options::BRANCH, "main")
                   .Finish());
+
+    WriteContextBuilder upper_main_builder("table_root_path", "commit_user_1");
+    ASSERT_NOK_WITH_MSG(
+        upper_main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_MAIN")).Finish(),
+        "a catalog names branch 'MAIN' as it names the main branch");
+
+    WriteContextBuilder constructed_builder("table_root_path", "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(
+        auto constructed_ctx,
+        constructed_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).Finish());
+    ASSERT_EQ(constructed_ctx->GetBranch(), "dev");
+    WriteContextBuilder system_table_builder("table_root_path", "commit_user_1");
+    ASSERT_NOK_WITH_MSG(
+        system_table_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev$options")).Finish(),
+        "Cannot 'write' for system table");
+}
+
+TEST(WriteContextTest, TestBranch) {
+    WriteContextBuilder option_builder("table_root_path", "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(auto option_ctx, option_builder.AddOption(Options::BRANCH, "rt").Finish());
+    ASSERT_EQ("rt", option_ctx->GetBranch());
+
+    WriteContextBuilder upper_main_builder("table_root_path", "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(auto upper_main_ctx, upper_main_builder.WithBranch("MAIN").Finish());
+    ASSERT_EQ("MAIN", upper_main_ctx->GetBranch());
+
+    // An empty branch selects the main branch and stays accepted.
+    WriteContextBuilder main_builder("table_root_path", "commit_user_1");
+    main_builder.WithBranch("");
+    ASSERT_OK_AND_ASSIGN(auto ctx, main_builder.Finish());
+    ASSERT_EQ(BranchManager::DEFAULT_MAIN_BRANCH, ctx->GetBranch());
+    WriteContextBuilder empty_builder("table_root_path", "commit_user_1");
+    ASSERT_NOK_WITH_MSG(empty_builder.WithBranch("").AddOption(Options::BRANCH, "dev").Finish(),
+                        "but both 'dev' and 'main' were named");
+
+    // The branch names a directory under the root path, so a value that is not a single path
+    // component is rejected when the context is built.
+    WriteContextBuilder escaping_builder("table_root_path", "commit_user_1");
+    escaping_builder.WithBranch("rt/../../../../../outside");
+    ASSERT_NOK_WITH_MSG(escaping_builder.Finish(), "branch name cannot contain path separators");
 }
 
 TEST(WriteContextTest, TestSetContent) {
@@ -135,20 +200,6 @@ TEST(WriteContextTest, TestSetOptionsOverridesAddedOptions) {
 
     std::map<std::string, std::string> expected_options = {{"key1", "value1"}, {"key2", "value2"}};
     ASSERT_EQ(expected_options, ctx->GetOptions());
-}
-
-TEST(WriteContextTest, TestRejectBranchLeavingRootPath) {
-    // The branch names a directory under the root path, so a value that is not a single path
-    // component is rejected when the context is built.
-    WriteContextBuilder builder("table_root_path", "commit_user_1");
-    builder.WithBranch("rt/../../../../../outside");
-    ASSERT_NOK_WITH_MSG(builder.Finish(), "branch name cannot contain path separators");
-
-    // An empty branch selects the main branch and stays accepted.
-    WriteContextBuilder main_builder("table_root_path", "commit_user_1");
-    main_builder.WithBranch("");
-    ASSERT_OK_AND_ASSIGN(auto ctx, main_builder.Finish());
-    ASSERT_EQ("", ctx->GetBranch());
 }
 
 TEST(WriteContextTest, TestSetWriteBufferSpillThreadNumber) {

@@ -25,11 +25,75 @@
 
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/common/types/data_type.h"
+#include "paimon/common/types/data_type_json_parser.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+TEST(SchemaManagerTest, TimePrecisionRoundTrip) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = std::make_shared<LocalFileSystem>();
+    SchemaManager manager(fs, dir->Str());
+    arrow::FieldVector fields;
+    for (int32_t precision = 0; precision <= 9; ++precision) {
+        for (bool nullable : {true, false}) {
+            std::string name = "t" + std::to_string(fields.size());
+            std::string type =
+                "TIME(" + std::to_string(precision) + ")" + (nullable ? "" : " NOT NULL");
+            rapidjson::Document doc;
+            rapidjson::Value value(type.c_str(), doc.GetAllocator());
+            ASSERT_OK_AND_ASSIGN(auto field, DataTypeJsonParser::ParseType(name, value));
+            fields.push_back(field);
+        }
+    }
+    fields.push_back(arrow::field("default_time", arrow::time32(arrow::TimeUnit::MILLI)));
+    fields.push_back(arrow::field("times", arrow::list(fields[6]->WithName("item"))));
+    fields.push_back(
+        arrow::field("mapping", std::make_shared<arrow::MapType>(fields[13]->WithName("key"),
+                                                                 fields[18]->WithName("value"))));
+    fields.push_back(arrow::field("nested", arrow::struct_({fields[6], fields[13], fields[18]})));
+    ASSERT_OK_AND_ASSIGN(auto created,
+                         manager.CreateTable(arrow::schema(fields), {}, {},
+                                             {{"file.format", "parquet"}, {"bucket", "-1"}}));
+    ASSERT_OK_AND_ASSIGN(auto serialized, created->ToJsonString());
+    SchemaManager reloaded_manager(fs, dir->Str());
+    ASSERT_OK_AND_ASSIGN(auto reloaded, reloaded_manager.ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(auto reserialized, reloaded->ToJsonString());
+    ASSERT_EQ(serialized, reserialized);
+    const auto& restored_fields = reloaded->Fields();
+    for (int32_t i = 0; i < 20; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto precision,
+                             DataType::GetTimePrecision(*restored_fields[i].ArrowField()));
+        ASSERT_EQ(precision, i / 2);
+        ASSERT_EQ(restored_fields[i].ArrowField()->nullable(), i % 2 == 0);
+    }
+    ASSERT_OK_AND_ASSIGN(auto default_precision,
+                         DataType::GetTimePrecision(*restored_fields[20].ArrowField()));
+    ASSERT_EQ(default_precision, 0);
+    for (int32_t i = 21; i < 24; ++i) {
+        SCOPED_TRACE(i);
+        ASSERT_TRUE(DataField::ConvertDataFieldToArrowField(created->Fields()[i])
+                        ->Equals(DataField::ConvertDataFieldToArrowField(restored_fields[i]),
+                                 /*check_metadata=*/true));
+    }
+}
+
+TEST(SchemaManagerTest, RejectTimePartitionKey) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    SchemaManager manager(std::make_shared<LocalFileSystem>(), dir->Str());
+    auto schema = arrow::schema({arrow::field("id", arrow::int32()),
+                                 arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI))});
+    ASSERT_NOK_WITH_MSG(
+        manager.CreateTable(schema, {"time"}, {}, {{"file.format", "parquet"}, {"bucket", "-1"}}),
+        "partition field time cannot be TIME");
+    ASSERT_OK_AND_ASSIGN(auto latest, manager.Latest());
+    ASSERT_FALSE(latest.has_value());
+}
 
 TEST(SchemaManagerTest, ConcurrentHistoricalSchemaReads) {
     SchemaManager manager(

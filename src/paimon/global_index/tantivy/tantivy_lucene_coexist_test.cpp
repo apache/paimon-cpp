@@ -101,7 +101,8 @@ class TantivyLuceneCoexistTest : public ::testing::Test {
             return Status::Invalid(fmt::format("factory returned null for {}", impl.factory_id));
         }
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_writer = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<GlobalIndexWriter> w,
             indexer->CreateWriter("f0", CreateArrowSchema(data_type).get(), file_writer, pool_));
@@ -127,7 +128,8 @@ class TantivyLuceneCoexistTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GlobalIndexer> indexer,
                                GlobalIndexerFactory::Get(impl.factory_id, options));
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_reader = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_reader = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         return indexer->CreateReader(CreateArrowSchema(data_type).get(), file_reader, {meta},
                                      pool_);
     }

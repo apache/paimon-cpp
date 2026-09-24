@@ -121,27 +121,29 @@ Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
 Status RealtimeAppendOnlyWriter::SealCurrentSegment() {
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
                            realtime_store_->SealForCommit());
-    if (segment) {
-        if (!segment.value()) {
-            return Status::Invalid("append real-time store sealed a null segment");
-        }
-        sealed_segments_.push_back(std::move(segment.value()));
-        has_building_data_ = false;
+    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
+    if (!segment) {
+        return Status::OK();
     }
+    if (!segment.value()) {
+        return Status::Invalid("append real-time store sealed a null segment");
+    }
+    has_building_data_ = next_offset_ > segment.value()->GetOffsetRange().end;
+    sealed_segments_.push_back(std::move(segment.value()));
     return Status::OK();
 }
 
 Status RealtimeAppendOnlyWriter::Seal() {
-    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
+    std::lock_guard<std::mutex> lock(prepare_mutex_);
     return SealCurrentSegment();
 }
 
 Result<CommitIncrement> RealtimeAppendOnlyWriter::PrepareCommit(bool wait_compaction) {
     std::lock_guard<std::mutex> lock(prepare_mutex_);
+    PAIMON_RETURN_NOT_OK(SealCurrentSegment());
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
     {
         std::lock_guard<std::mutex> realtime_store_lock(realtime_store_mutex_);
-        PAIMON_RETURN_NOT_OK(SealCurrentSegment());
         segments.swap(sealed_segments_);
     }
     for (const std::shared_ptr<RealtimeSegmentHandle>& segment : segments) {

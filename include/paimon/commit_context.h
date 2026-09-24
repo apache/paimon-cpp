@@ -195,8 +195,11 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// `Expire()` manages file-system snapshots after confirming that the catalog's current
     /// snapshot and retained history are published there. Configure writers with the same catalog
     /// via `WriteContextBuilder::WithCatalog()`.
+    /// A branch is addressed by the identifier, as `tbl$branch_dev`, so that the catalog answers
+    /// for that branch. Its schema is read from the branch directory rather than from the catalog,
+    /// just as a read of that branch reads it. Configure the writer with the same identifier.
     /// @param catalog Non-null catalog, kept alive by this context.
-    /// @param identifier Table to commit to. Only the main branch is supported.
+    /// @param identifier Table to commit to, naming a branch of it as `tbl$branch_dev`.
     /// @return Reference to this builder for method chaining.
     CommitContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
                                       const Identifier& identifier);

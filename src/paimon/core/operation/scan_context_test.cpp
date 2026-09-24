@@ -26,10 +26,51 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/status.h"
+#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+TEST(ScanContextTest, TestWithCatalogResolvesTableFileSystem) {
+    // WithCatalog is a shorthand for WithFileSystem(catalog->GetTableFileSystem(identifier)); it
+    // resolves the per-table file system when Finish() builds the context and sets nothing else.
+    auto table_fs = std::make_shared<MockFileSystem>();
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(table_fs);
+
+    ScanContextBuilder builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+    ASSERT_EQ(ctx->GetSpecificFileSystem(), table_fs);
+    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
+    ASSERT_EQ(catalog->TableFileSystemRequests().front(), Identifier("db1", "t1"));
+
+    // Finish() resets the builder, so the next context scans without the catalog.
+    ASSERT_OK_AND_ASSIGN(auto next_ctx, builder.Finish());
+    ASSERT_FALSE(next_ctx->GetSpecificFileSystem());
+    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
+}
+
+TEST(ScanContextTest, TestWithFileSystemOverridesCatalog) {
+    // A file system the caller gave is the one that is used, and the catalog is not asked for one.
+    auto table_fs = std::make_shared<MockFileSystem>();
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(table_fs);
+    auto given_fs = std::make_shared<MockFileSystem>();
+
+    ScanContextBuilder builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(
+        auto ctx,
+        builder.WithCatalog(catalog, Identifier("db1", "t1")).WithFileSystem(given_fs).Finish());
+    ASSERT_EQ(ctx->GetSpecificFileSystem(), given_fs);
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
+}
+
+TEST(ScanContextTest, TestWithCatalogNullRejected) {
+    ScanContextBuilder builder("table_root_path");
+    ASSERT_NOK_WITH_MSG(builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),
+                        "cannot scan through a null catalog");
+}
+
 TEST(ScanContextTest, TestDefaultValue) {
     ScanContextBuilder builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
