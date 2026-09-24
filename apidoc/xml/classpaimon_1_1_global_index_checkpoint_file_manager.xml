@@ -1,0 +1,112 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_global_index_checkpoint_file_manager" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::GlobalIndexCheckpointFileManager</compoundname>
+    <includes refid="global__index__checkpoint__file__manager_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_global_index_checkpoint_file_manager_1a1d06e9ddca244dbae8faf2dfbdbe1a00" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::GlobalIndexCheckpointFileManager::~GlobalIndexCheckpointFileManager</definition>
+        <argsstring>()=default</argsstring>
+        <name>~GlobalIndexCheckpointFileManager</name>
+        <qualifiedname>paimon::GlobalIndexCheckpointFileManager::~GlobalIndexCheckpointFileManager</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h" line="35" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_global_index_checkpoint_file_manager_1aec54289c20cc06339188d9e74bb47c32" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>virtual bool paimon::GlobalIndexCheckpointFileManager::SupportsCheckpoint</definition>
+        <argsstring>() const =0</argsstring>
+        <name>SupportsCheckpoint</name>
+        <qualifiedname>paimon::GlobalIndexCheckpointFileManager::SupportsCheckpoint</qualifiedname>
+        <briefdescription>
+<para>Returns whether checkpoint storage is configured, without accessing storage. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h" line="38" column="18"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_global_index_checkpoint_file_manager_1a30dd2383fc451b6413831efc74a55bab" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_output_stream" kindref="compound">OutputStream</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::unique_ptr&lt; OutputStream &gt; &gt; paimon::GlobalIndexCheckpointFileManager::CreateCheckpointOutputStream</definition>
+        <argsstring>() const =0</argsstring>
+        <name>CreateCheckpointOutputStream</name>
+        <qualifiedname>paimon::GlobalIndexCheckpointFileManager::CreateCheckpointOutputStream</qualifiedname>
+        <briefdescription>
+<para>Creates a new checkpoint file and opens it for writing. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h" line="41" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_global_index_checkpoint_file_manager_1ad19bbd1317bed8b551008de99db57090" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_input_stream" kindref="compound">InputStream</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::unique_ptr&lt; InputStream &gt; &gt; paimon::GlobalIndexCheckpointFileManager::OpenCheckpointInputStream</definition>
+        <argsstring>() const =0</argsstring>
+        <name>OpenCheckpointInputStream</name>
+        <qualifiedname>paimon::GlobalIndexCheckpointFileManager::OpenCheckpointInputStream</qualifiedname>
+        <briefdescription>
+<para>Opens the matching checkpoint with the largest numeric id for reading. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h" line="44" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_global_index_checkpoint_file_manager_1a513fa9a71c96722e37aae1feceb96fb4" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref> &gt;</type>
+        <definition>virtual Result&lt; bool &gt; paimon::GlobalIndexCheckpointFileManager::CheckpointExists</definition>
+        <argsstring>() const =0</argsstring>
+        <name>CheckpointExists</name>
+        <qualifiedname>paimon::GlobalIndexCheckpointFileManager::CheckpointExists</qualifiedname>
+        <briefdescription>
+<para>Returns whether the checkpoint file exists. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h" line="47" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_global_index_checkpoint_file_manager_1ad61f736e85b5422afd774f4cd7e82024" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::GlobalIndexCheckpointFileManager::DeleteCheckpoint</definition>
+        <argsstring>() const =0</argsstring>
+        <name>DeleteCheckpoint</name>
+        <qualifiedname>paimon::GlobalIndexCheckpointFileManager::DeleteCheckpoint</qualifiedname>
+        <briefdescription>
+<para>Deletes all matching checkpoint files. Deleting missing checkpoints succeeds. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h" line="50" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Abstract interface for managing checkpoints belonging to one global index build identity. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h" line="33" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_checkpoint_file_manager.h" bodystart="33" bodyend="51"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_global_index_checkpoint_file_manager_1a513fa9a71c96722e37aae1feceb96fb4" prot="public" virt="pure-virtual"><scope>paimon::GlobalIndexCheckpointFileManager</scope><name>CheckpointExists</name></member>
+      <member refid="classpaimon_1_1_global_index_checkpoint_file_manager_1a30dd2383fc451b6413831efc74a55bab" prot="public" virt="pure-virtual"><scope>paimon::GlobalIndexCheckpointFileManager</scope><name>CreateCheckpointOutputStream</name></member>
+      <member refid="classpaimon_1_1_global_index_checkpoint_file_manager_1ad61f736e85b5422afd774f4cd7e82024" prot="public" virt="pure-virtual"><scope>paimon::GlobalIndexCheckpointFileManager</scope><name>DeleteCheckpoint</name></member>
+      <member refid="classpaimon_1_1_global_index_checkpoint_file_manager_1ad19bbd1317bed8b551008de99db57090" prot="public" virt="pure-virtual"><scope>paimon::GlobalIndexCheckpointFileManager</scope><name>OpenCheckpointInputStream</name></member>
+      <member refid="classpaimon_1_1_global_index_checkpoint_file_manager_1aec54289c20cc06339188d9e74bb47c32" prot="public" virt="pure-virtual"><scope>paimon::GlobalIndexCheckpointFileManager</scope><name>SupportsCheckpoint</name></member>
+      <member refid="classpaimon_1_1_global_index_checkpoint_file_manager_1a1d06e9ddca244dbae8faf2dfbdbe1a00" prot="public" virt="virtual"><scope>paimon::GlobalIndexCheckpointFileManager</scope><name>~GlobalIndexCheckpointFileManager</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
