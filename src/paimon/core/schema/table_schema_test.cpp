@@ -1366,6 +1366,15 @@ TEST_F(TableSchemaTest, CreatingMapBlobSchemaIsRejected) {
         "not supported by the C++ writer");
 }
 
+TEST_F(TableSchemaTest, CreatingArrayBlobSchemaIsRejected) {
+    auto array_type = arrow::list(BlobUtils::ToArrowField("item", /*nullable=*/true));
+    ASSERT_NOK_WITH_MSG(
+        TableSchema::Create(/*schema_id=*/0,
+                            arrow::schema({arrow::field("blob_array", array_type)}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}),
+        "Writing a table with ARRAY<BLOB> is not supported by the C++ writer");
+}
+
 TEST_F(TableSchemaTest, MapKeysSortedIsNormalized) {
     auto sorted_map =
         std::make_shared<arrow::MapType>(arrow::field("key", arrow::utf8(), /*nullable=*/false),

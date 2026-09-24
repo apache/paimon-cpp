@@ -112,7 +112,8 @@ Result<int64_t> BlobFallbackBatchReader::FillWindow(size_t group_idx, int64_t wa
             const std::shared_ptr<arrow::StructArray>& front = cursor.pending.front();
             int64_t available = front->length() - cursor.pending_pos;
             int64_t take = std::min(available, want - collected);
-            chunks->push_back(Chunk{front, cursor.pending_pos, take, {}});
+            chunks->push_back(
+                Chunk{front, cursor.pending_pos, take, {}});  // NOLINT(modernize-use-emplace)
             cursor.pending_pos += take;
             collected += take;
             if (cursor.pending_pos == front->length()) {

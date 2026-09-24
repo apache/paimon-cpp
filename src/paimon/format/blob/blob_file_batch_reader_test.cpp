@@ -64,6 +64,15 @@ std::string MapBlobGoldenBytes() {
         "00000000000000248fe4237a7b44180400000001");
 }
 
+std::string ArrayBlobGoldenBytes() {
+    // Java-compatible ARRAY<BLOB> golden file. Rows are:
+    // [], ["inline", null, "", "descriptor"], null, placeholder.
+    return HexToBytes(
+        "cf114e58424342410100000000000000001d000000000000009bd49157cf114e"
+        "58424342410104000000696e6c696e6564657363726970746f720c0d02140400"
+        "00003100000000000000d08307713a2863010400000001");
+}
+
 }  // namespace
 
 TEST(BlobReaderBuilderTest, RejectsNullMemoryPool) {
@@ -141,9 +150,9 @@ class BlobFileBatchReaderTest : public testing::Test, public ::testing::WithPara
         }
     }
 
-    Result<std::string> ReadMapBlobValue(const std::shared_ptr<arrow::LargeBinaryArray>& blob_array,
-                                         int64_t index, bool blob_as_descriptor,
-                                         const std::shared_ptr<FileSystem>& file_system) {
+    Result<std::string> ReadBlobValue(const std::shared_ptr<arrow::LargeBinaryArray>& blob_array,
+                                      int64_t index, bool blob_as_descriptor,
+                                      const std::shared_ptr<FileSystem>& file_system) {
         std::string stored_value = blob_array->GetString(index);
         if (!blob_as_descriptor) {
             return stored_value;
@@ -175,6 +184,27 @@ class BlobFileBatchReaderTest : public testing::Test, public ::testing::WithPara
                              BlobFileBatchReader::Create(
                                  input, /*batch_size=*/1, /*blob_as_descriptor=*/false,
                                  /*emit_placeholder_sentinel=*/false, pool_, GetArrowPool(pool_)));
+        ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
+        ASSERT_NOK_WITH_MSG(reader->NextBatch(), expected_message);
+    }
+
+    void CheckArrayBlobReadFails(const std::string& file_bytes,
+                                 const std::string& expected_message) {
+        auto dir = paimon::test::UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        const std::string file_path = dir->Str() + "/corrupt-array.blob";
+        std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
+        ASSERT_OK(file_system->WriteFile(file_path, file_bytes, /*overwrite=*/true));
+
+        auto array_type = arrow::list(BlobUtils::ToArrowField("item", /*nullable=*/true));
+        auto schema = arrow::schema({arrow::field("blob_array", array_type)});
+        ::ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system->Open(file_path));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                             BlobFileBatchReader::Create(
+                                 input, /*batch_size=*/16, /*blob_as_descriptor=*/false,
+                                 /*emit_placeholder_sentinel=*/true, pool_, GetArrowPool(pool_)));
         ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
         ASSERT_NOK_WITH_MSG(reader->NextBatch(), expected_message);
     }
@@ -246,7 +276,7 @@ TEST_P(BlobFileBatchReaderTest, TestMapBlob) {
             continue;
         }
         ASSERT_OK_AND_ASSIGN(std::string value,
-                             ReadMapBlobValue(values, i, blob_as_descriptor, file_system));
+                             ReadBlobValue(values, i, blob_as_descriptor, file_system));
         ASSERT_TRUE(normalized_values_builder.Append(value).ok());
     }
     std::shared_ptr<arrow::Array> normalized_values;
@@ -264,6 +294,73 @@ TEST_P(BlobFileBatchReaderTest, TestMapBlob) {
                                                  .ValueOrDie();
     ASSERT_TRUE(expected->Equals(normalized_map))
         << "expected: " << expected->ToString() << "\nactual: " << normalized_map->ToString();
+}
+
+TEST_P(BlobFileBatchReaderTest, TestArrayBlob) {
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::string file_path = dir->Str() + "/array-blob.blob";
+    std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
+    ASSERT_OK(file_system->WriteFile(file_path, ArrayBlobGoldenBytes(), /*overwrite=*/true));
+
+    auto array_type = arrow::list(BlobUtils::ToArrowField("item", /*nullable=*/true));
+    auto schema = arrow::schema({arrow::field("blob_array", array_type)});
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system->Open(file_path));
+    const bool blob_as_descriptor = GetParam();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                         BlobFileBatchReader::Create(input, /*batch_size=*/2, blob_as_descriptor,
+                                                     /*emit_placeholder_sentinel=*/true, pool_,
+                                                     GetArrowPool(pool_)));
+    ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> chunked_array,
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
+    std::shared_ptr<arrow::Array> combined_array =
+        arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
+
+    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(combined_array);
+    ASSERT_TRUE(struct_array);
+    auto list_array = std::dynamic_pointer_cast<arrow::ListArray>(struct_array->field(0));
+    ASSERT_TRUE(list_array);
+    std::shared_ptr<arrow::ListArray> normalized_list = list_array;
+    if (blob_as_descriptor) {
+        auto values = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(list_array->values());
+        ASSERT_TRUE(values);
+        arrow::LargeBinaryBuilder normalized_values_builder;
+        for (int64_t i = 0; i < values->length(); ++i) {
+            if (values->IsNull(i)) {
+                ASSERT_TRUE(normalized_values_builder.AppendNull().ok());
+                continue;
+            }
+            const std::string_view stored_value = values->GetView(i);
+            if (BlobDefs::IsPlaceholderSentinel(stored_value.data(), stored_value.size())) {
+                ASSERT_TRUE(normalized_values_builder.Append(stored_value).ok());
+                continue;
+            }
+            ASSERT_OK_AND_ASSIGN(
+                std::string value,
+                ReadBlobValue(values, i, /*blob_as_descriptor=*/true, file_system));
+            ASSERT_TRUE(normalized_values_builder.Append(value).ok());
+        }
+        std::shared_ptr<arrow::Array> normalized_values;
+        ASSERT_TRUE(normalized_values_builder.Finish(&normalized_values).ok());
+        normalized_list = std::make_shared<arrow::ListArray>(
+            list_array->type(), list_array->length(), list_array->value_offsets(),
+            normalized_values, list_array->null_bitmap(), list_array->null_count(),
+            list_array->offset());
+    }
+    const std::string expected_json = R"([
+        [],
+        ["inline", null, "", "descriptor"],
+        null,
+        ["_PAIMON_BLOB_PLACEHOLDER"]
+    ])";
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(array_type, expected_json).ValueOrDie();
+    ASSERT_TRUE(expected->Equals(normalized_list))
+        << "expected: " << expected->ToString() << "\nactual: " << normalized_list->ToString();
 }
 
 TEST_P(BlobFileBatchReaderTest, MapBlobFallbackAcrossSequenceLayers) {
@@ -329,8 +426,8 @@ TEST_P(BlobFileBatchReaderTest, MapBlobFallbackAcrossSequenceLayers) {
     ASSERT_OK(old_reader->SetReadSchema(&old_schema, nullptr, std::nullopt));
 
     std::vector<std::vector<BlobFallbackBatchReader::Segment>> groups(2);
-    groups[0].push_back({std::move(new_reader), {}});
-    groups[1].push_back({std::move(old_reader), {}});
+    groups[0].push_back({std::move(new_reader), {}});  // NOLINT(modernize-use-emplace)
+    groups[1].push_back({std::move(old_reader), {}});  // NOLINT(modernize-use-emplace)
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<BlobFallbackBatchReader> fallback,
         BlobFallbackBatchReader::Create(std::move(groups), map_schema, /*read_batch_size=*/2,
@@ -352,9 +449,9 @@ TEST_P(BlobFileBatchReaderTest, MapBlobFallbackAcrossSequenceLayers) {
     ASSERT_EQ("alpha", keys->GetString(0));
     ASSERT_EQ("omega", keys->GetString(3));
     ASSERT_OK_AND_ASSIGN(std::string first_value,
-                         ReadMapBlobValue(values, 0, blob_as_descriptor, file_system));
+                         ReadBlobValue(values, 0, blob_as_descriptor, file_system));
     ASSERT_OK_AND_ASSIGN(std::string last_value,
-                         ReadMapBlobValue(values, 3, blob_as_descriptor, file_system));
+                         ReadBlobValue(values, 3, blob_as_descriptor, file_system));
     ASSERT_EQ("hello", first_value);
     ASSERT_EQ("world", last_value);
 }
@@ -479,6 +576,49 @@ TEST_F(BlobFileBatchReaderTest, RejectsCorruptMapPayloadMetadata) {
     corrupted = golden;
     std::copy_n(corrupted.begin() + 13, 5, corrupted.begin() + 18);
     CheckMapBlobReadFails(corrupted, arrow::utf8(), "payload: duplicate key");
+}
+
+TEST_F(BlobFileBatchReaderTest, RejectsCorruptArrayPayloadMetadata) {
+    // The first empty-array record starts at byte 0. Its ARRAY payload occupies [4, 17): header
+    // [4, 13) and the index length [13, 17). The second record starts at byte 29; its payload has
+    // header [33, 42), data [42, 58), index [58, 62), and index length [62, 66).
+    const std::string golden = ArrayBlobGoldenBytes();
+
+    std::string corrupted = golden;
+    corrupted[4] = 0;
+    CheckArrayBlobReadFails(corrupted, "invalid ARRAY<BLOB> payload magic number");
+
+    corrupted = golden;
+    corrupted[8] = 2;
+    CheckArrayBlobReadFails(corrupted, "unsupported ARRAY<BLOB> payload version");
+
+    corrupted = golden;
+    std::fill(corrupted.begin() + 9, corrupted.begin() + 13, static_cast<char>(0xFF));
+    CheckArrayBlobReadFails(corrupted, "invalid ARRAY<BLOB> element count");
+
+    corrupted = golden;
+    std::fill(corrupted.begin() + 13, corrupted.begin() + 17, static_cast<char>(0xFF));
+    CheckArrayBlobReadFails(corrupted, "invalid ARRAY<BLOB> element index length");
+
+    corrupted = golden;
+    corrupted[9] = 1;
+    CheckArrayBlobReadFails(corrupted, "element count exceeds element index length");
+
+    corrupted = golden;
+    corrupted[38] = 3;
+    CheckArrayBlobReadFails(corrupted, "element count does not match element index length");
+
+    corrupted = golden;
+    corrupted[59] = 0x0F;
+    CheckArrayBlobReadFails(corrupted, "invalid ARRAY<BLOB> element length");
+
+    corrupted = golden;
+    corrupted[61] = 0x16;
+    CheckArrayBlobReadFails(corrupted, "element lengths exceed the payload data length");
+
+    corrupted = golden;
+    corrupted[61] = 0x12;
+    CheckArrayBlobReadFails(corrupted, "element lengths do not match the payload data length");
 }
 
 TEST_P(BlobFileBatchReaderTest, TestPushdownBitmap) {

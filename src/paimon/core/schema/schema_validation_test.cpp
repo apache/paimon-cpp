@@ -20,6 +20,8 @@
 #include "paimon/core/schema/schema_validation.h"
 
 #include <map>
+#include <string>
+#include <vector>
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
@@ -42,6 +44,40 @@ Result<std::unique_ptr<TableSchema>> MakePrimaryKeyBTreeSchema(
                                  arrow::field("value", value_type)});
     return TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{}, primary_keys,
                                options);
+}
+
+const std::vector<std::string>& ContainerBlobTypeJsons() {
+    static const std::vector<std::string> container_blob_types = {
+        R"({"type":"ARRAY","element":"BLOB"})",
+        R"({"type":"MAP","key":"STRING","value":"BLOB"})",
+    };
+    return container_blob_types;
+}
+
+Result<std::unique_ptr<TableSchema>> MakeContainerBlobSchema(const std::string& blob_type_json,
+                                                             const std::string& partition_keys_json,
+                                                             const std::string& options_json) {
+    const std::string schema_json =
+        R"({
+            "version": 3,
+            "id": 0,
+            "fields": [
+                {"id": 0, "name": "id", "type": "INT"},
+                {"id": 1, "name": "blob", "type": )" +
+        blob_type_json +
+        R"(}
+            ],
+            "highestFieldId": 1,
+            "partitionKeys": )" +
+        partition_keys_json +
+        R"(,
+            "primaryKeys": [],
+            "options": )" +
+        options_json +
+        R"(,
+            "timeMillis": 0
+        })";
+    return TableSchema::CreateFromJson(schema_json);
 }
 
 }  // namespace
@@ -255,6 +291,18 @@ TEST(SchemaValidationTest, TestMosaicDataTypes) {
                             /*partition_keys=*/{}, /*primary_keys=*/{}, blob_options));
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 
+    for (const std::string& blob_type_json : ContainerBlobTypeJsons()) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> container_blob_schema,
+                             MakeContainerBlobSchema(blob_type_json, "[]",
+                                                     R"({
+                    "bucket": "-1",
+                    "file.format": "mosaic",
+                    "row-tracking.enabled": "true",
+                    "data-evolution.enabled": "true"
+                })"));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*container_blob_schema));
+    }
+
     blob_options[Options::BLOB_DESCRIPTOR_FIELD] = "blob";
     ASSERT_OK_AND_ASSIGN(
         table_schema,
@@ -298,6 +346,18 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
                          TableSchema::Create(/*schema_id=*/0, arrow::schema(supported_fields),
                                              /*partition_keys=*/{}, /*primary_keys=*/{}, options));
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    for (const std::string& blob_type_json : ContainerBlobTypeJsons()) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> container_blob_schema,
+                             MakeContainerBlobSchema(blob_type_json, "[]",
+                                                     R"({
+                    "bucket": "-1",
+                    "file.format": "lance",
+                    "row-tracking.enabled": "true",
+                    "data-evolution.enabled": "true"
+                })"));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*container_blob_schema));
+    }
 
     arrow::FieldVector unsupported_fields = {
         arrow::field("map", arrow::map(arrow::int32(), arrow::utf8())),
@@ -373,6 +433,32 @@ TEST(SchemaValidationTest, TestRowTracking) {
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*deletion_vector_table_schema));
 }
 
+TEST(SchemaValidationTest, TestContainerBlobRowTracking) {
+    for (const std::string& blob_type_json : ContainerBlobTypeJsons()) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> table_schema,
+                             MakeContainerBlobSchema(blob_type_json, "[]",
+                                                     R"({
+                    "bucket": "-1",
+                    "row-tracking.enabled": "true",
+                    "data-evolution.enabled": "false"
+                })"));
+        ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(table_schema->Options()));
+        ASSERT_NOK_WITH_MSG(
+            SchemaValidation::ValidateRowTracking(*table_schema, options),
+            "Data evolution config must be enabled for table with BLOB type column.");
+
+        ASSERT_OK_AND_ASSIGN(table_schema, MakeContainerBlobSchema(blob_type_json, R"(["blob"])",
+                                                                   R"({
+                    "bucket": "-1",
+                    "row-tracking.enabled": "true",
+                    "data-evolution.enabled": "true"
+                })"));
+        ASSERT_OK_AND_ASSIGN(options, CoreOptions::FromMap(table_schema->Options()));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateRowTracking(*table_schema, options),
+                            "Blob field blob cannot be a partition key.");
+    }
+}
+
 TEST(SchemaValidationTest, TestWithBlobField) {
     auto f0 = arrow::field("f0", arrow::utf8());
     auto f1 = arrow::field("f1", arrow::int32());
@@ -392,6 +478,32 @@ TEST(SchemaValidationTest, TestWithBlobField) {
             std::shared_ptr<TableSchema> table_schema,
             TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
         ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    for (const std::string& blob_type_json : ContainerBlobTypeJsons()) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> table_schema,
+                             MakeContainerBlobSchema(blob_type_json, "[]",
+                                                     R"({
+                    "bucket": "-1",
+                    "row-tracking.enabled": "true",
+                    "data-evolution.enabled": "true",
+                    "blob-field": "blob"
+                })"));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    const std::vector<std::pair<std::string, std::string>> inline_blob_options = {
+        {std::string(Options::BLOB_DESCRIPTOR_FIELD),
+         R"({"bucket":"-1","row-tracking.enabled":"true","data-evolution.enabled":"true","blob-descriptor-field":"blob"})"},
+        {std::string(Options::BLOB_VIEW_FIELD),
+         R"({"bucket":"-1","row-tracking.enabled":"true","data-evolution.enabled":"true","blob-view-field":"blob"})"},
+    };
+    for (const std::string& blob_type_json : ContainerBlobTypeJsons()) {
+        for (const auto& [option_key, options_json] : inline_blob_options) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> table_schema,
+                                 MakeContainerBlobSchema(blob_type_json, "[]", options_json));
+            ASSERT_NOK_WITH_MSG(
+                SchemaValidation::ValidateTableSchema(*table_schema),
+                "Field 'blob' in '" + option_key + "' must be a BLOB field in table schema.");
+        }
     }
     {
         // a blob table with data evolution may also enable deletion vectors

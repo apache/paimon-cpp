@@ -1,6 +1,3 @@
-Generated with Apache Paimon Java bundle paimon-bundle-2.2-20260923.220659-14.jar
-(writer commit 91ee13f838e066c399810ca8160f64f2c204fd01).
-
 Schema:
 id INT
 array_payloads ARRAY<BLOB>

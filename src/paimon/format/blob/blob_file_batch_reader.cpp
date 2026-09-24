@@ -404,17 +404,17 @@ Result<BlobFileBatchReader::ArrayBlobPayload> BlobFileBatchReader::ReadArrayBlob
 
     std::array<uint8_t, kArrayBlobHeaderLength> header;
     PAIMON_RETURN_NOT_OK(ReadBlobContentAt(payload_offset, header.size(), header.data()));
-    const int32_t magic_number = ReadLittleEndian<int32_t>(header.data());
+    const auto magic_number = ReadLittleEndian<int32_t>(header.data());
     if (magic_number != kArrayBlobMagicNumber) {
         return Status::Invalid(
             fmt::format("invalid ARRAY<BLOB> payload magic number: {}", magic_number));
     }
-    const int8_t version = static_cast<int8_t>(header[4]);
+    const auto version = static_cast<int8_t>(header[4]);
     if (version != kArrayBlobVersion) {
         return Status::NotImplemented(
             fmt::format("unsupported ARRAY<BLOB> payload version: {}", version));
     }
-    const int32_t element_count = ReadLittleEndian<int32_t>(header.data() + 5);
+    const auto element_count = ReadLittleEndian<int32_t>(header.data() + 5);
     if (element_count < 0) {
         return Status::Invalid(fmt::format("invalid ARRAY<BLOB> element count: {}", element_count));
     }
@@ -423,7 +423,7 @@ Result<BlobFileBatchReader::ArrayBlobPayload> BlobFileBatchReader::ReadArrayBlob
     std::array<uint8_t, kArrayBlobIndexLengthSize> index_length_bytes;
     PAIMON_RETURN_NOT_OK(ReadBlobContentAt(index_length_offset, index_length_bytes.size(),
                                            index_length_bytes.data()));
-    const int32_t index_length = ReadLittleEndian<int32_t>(index_length_bytes.data());
+    const auto index_length = ReadLittleEndian<int32_t>(index_length_bytes.data());
     const int64_t maximum_index_length = payload_length - kArrayBlobMinPayloadLength;
     if (index_length < 0 || index_length > maximum_index_length) {
         return Status::Invalid(

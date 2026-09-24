@@ -21,6 +21,7 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/data/blob_defs.h"
@@ -76,6 +77,56 @@ TEST_F(BlobUtilsTest, IsBlobField) {
     auto binary_field_wrong_meta =
         arrow::field("b_wrong_meta", arrow::large_binary(), false, wrong_meta);
     ASSERT_FALSE(BlobUtils::IsBlobField(binary_field_wrong_meta));
+}
+
+TEST_F(BlobUtilsTest, IsArrayBlobField) {
+    auto array_blob_field =
+        arrow::field("array_blob", arrow::list(BlobUtils::ToArrowField("item", true)));
+    ASSERT_TRUE(BlobUtils::IsArrayBlobField(array_blob_field));
+    ASSERT_TRUE(BlobUtils::IsBlobFileField(array_blob_field));
+
+    ASSERT_FALSE(BlobUtils::IsArrayBlobField(nullptr));
+    ASSERT_FALSE(BlobUtils::IsArrayBlobField(
+        arrow::field("plain_binary", arrow::list(arrow::large_binary()))));
+    ASSERT_FALSE(BlobUtils::IsArrayBlobField(
+        arrow::field("nested", arrow::list(arrow::list(BlobUtils::ToArrowField("item", true))))));
+}
+
+TEST_F(BlobUtilsTest, IsArrayBlobPlaceholder) {
+    const std::string json = R"([
+        ["_PAIMON_BLOB_PLACEHOLDER"],
+        null,
+        [],
+        [null],
+        ["_PAIMON_BLOB_PLACEHOLDER", "_PAIMON_BLOB_PLACEHOLDER"],
+        ["user-value"]
+    ])";
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::list(arrow::large_binary()), json)
+            .ValueOrDie();
+    const auto& list_array = checked_cast<const arrow::ListArray&>(*array);
+    ASSERT_TRUE(BlobUtils::IsArrayBlobPlaceholder(list_array, 0));
+    for (int64_t i = 1; i < list_array.length(); ++i) {
+        ASSERT_FALSE(BlobUtils::IsArrayBlobPlaceholder(list_array, i));
+    }
+}
+
+TEST_F(BlobUtilsTest, IsMapBlobPlaceholder) {
+    auto map_type = arrow::map(arrow::utf8(), arrow::large_binary());
+    std::shared_ptr<arrow::Array> array = arrow::ipc::internal::json::ArrayFromJSON(map_type, R"([
+            [["same", null], ["same", null]],
+            null,
+            [],
+            [["same", null]],
+            [["left", null], ["right", null]],
+            [["same", "value"], ["same", null]]
+        ])")
+                                              .ValueOrDie();
+    const auto& map_array = checked_cast<const arrow::MapArray&>(*array);
+    ASSERT_TRUE(BlobUtils::IsMapBlobPlaceholder(map_array, 0));
+    for (int64_t i = 1; i < map_array.length(); ++i) {
+        ASSERT_FALSE(BlobUtils::IsMapBlobPlaceholder(map_array, i));
+    }
 }
 
 TEST_F(BlobUtilsTest, SeparateBlobSchema) {
