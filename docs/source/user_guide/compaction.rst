@@ -118,9 +118,10 @@ one is read as ordinary values, and the writer takes both. A high-cardinality
 column that started dictionary-encoded and fell back to plain encoding therefore
 does not qualify, even though it still carries a dictionary page. ``BINARY`` is
 not forwarded although Parquet stores it in the same physical type and
-dictionary-encodes it the same way, because the value accessors cannot read a
-``BINARY`` dictionary. The rewrite also overrides the option back to ``false``
-when the table writes a format other than Parquet, when
+dictionary-encodes it the same way; this option only selects ``STRING`` columns.
+A file with a serialized Arrow dictionary schema can independently produce a
+``BINARY`` dictionary, which the value accessors also support. The rewrite also
+overrides the option back to ``false`` when the table writes a format other than Parquet, when
 ``parquet.enable-dictionary`` is ``false`` because the writer would only expand
 the values again, or when variant/map shredding is configured because those
 writers reshape each batch against a fixed physical schema. Setting the option

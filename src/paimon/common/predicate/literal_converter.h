@@ -134,17 +134,12 @@ class PAIMON_EXPORT LiteralConverter {
                 literals.emplace_back(literal_type);
             } else {
                 int64_t dict_index = indices->Value(i);
-                if constexpr (std::is_same_v<DictArrayType, arrow::StringArray>) {
-                    int32_t length = 0;
-                    const uint8_t* value = dictionary->GetValue(dict_index, &length);
-                    literals.emplace_back(literal_type, reinterpret_cast<const char*>(value),
-                                          length, own_data);
-                } else {
-                    int64_t length = 0;
-                    const uint8_t* value = dictionary->GetValue(dict_index, &length);
-                    literals.emplace_back(literal_type, reinterpret_cast<const char*>(value),
-                                          length, own_data);
+                if (dictionary->IsNull(dict_index)) {
+                    literals.emplace_back(literal_type);
+                    continue;
                 }
+                auto value = dictionary->GetView(dict_index);
+                literals.emplace_back(literal_type, value.data(), value.size(), own_data);
             }
         }
         return literals;
