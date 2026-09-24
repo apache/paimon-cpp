@@ -22,9 +22,9 @@
 #include "lumina/core/Types.h"
 #include "lumina/extensions/SearchWithFilterExtension.h"
 #include "paimon/fs/local/local_file_system.h"
-#include "paimon/global_index/lumina/lumina_file_reader.h"
-#include "paimon/global_index/lumina/lumina_file_writer.h"
-#include "paimon/global_index/lumina/lumina_memory_pool.h"
+#include "paimon/indexer/lumina/lumina_file_reader.h"
+#include "paimon/indexer/lumina/lumina_file_writer.h"
+#include "paimon/indexer/lumina/lumina_memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::lumina::test {
 class LuminaInterfaceTest : public ::testing::Test {

@@ -18,45 +18,27 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "arrow/api.h"
-#include "lumina/api/LuminaSearcher.h"
 #include "lumina/api/Options.h"
-#include "lumina/extensions/SearchWithFilterExtension.h"
 #include "lumina/extensions/experimental/DatasetWithTag.h"
-#include "lumina/extensions/experimental/SearchWithTagExtension.h"
-#include "lumina/extensions/experimental/TagFilter.h"
-#include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/global_indexer.h"
-#include "paimon/global_index/lumina/lumina_memory_pool.h"
-#include "paimon/global_index/lumina/lumina_utils.h"
+#include "paimon/global_index/io/global_index_checkpoint_file_manager.h"
+#include "paimon/indexer/lumina/lumina_index_accumulator.h"
+#include "paimon/indexer/lumina/lumina_index_options.h"
+#include "paimon/indexer/lumina/lumina_index_searcher.h"
+#include "paimon/indexer/lumina/lumina_memory_pool.h"
+#include "paimon/indexer/lumina/lumina_tag_utils.h"
+#include "paimon/indexer/lumina/lumina_utils.h"
 
 namespace paimon::lumina {
-struct LuminaTagField {
-    enum class Type {
-        ENUM,
-        RANGE,
-    };
-
-    enum class ValueType {
-        INT32,
-        INT64,
-        FLOAT,
-        DOUBLE,
-        STRING,
-    };
-
-    std::string name;
-    Type type;
-    ValueType value_type;
-};
 
 /// @note When enabling the lumina global index in `paimon-cpp`, all configuration parameters
 ///       specific to Lumina **must be prefixed with `lumina.`**.
@@ -73,6 +55,8 @@ struct LuminaTagField {
 ///           lumina.diskann.build.thread_count:64
 ///           lumina.diskann.build.ef_construction:1024
 ///           lumina.diskann.build.neighbor_count:64
+///           lumina.extension.build.ckpt.threshold:10000
+///           lumina.extension.build.ckpt.count:3
 ///
 ///       - **Index Reader:**
 ///           No configuration required at load time — settings are stored in the index metadata,
@@ -87,8 +71,14 @@ class LuminaGlobalIndex : public GlobalIndexer {
     explicit LuminaGlobalIndex(const std::map<std::string, std::string>& options)
         : options_(options) {}
 
+    bool SupportsCheckpoint() const override {
+        return true;
+    }
+
     Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const override;
 
+    /// With checkpoints enabled, file_writer must implement GlobalIndexCheckpointFileManager and
+    /// return true from SupportsCheckpoint().
     Result<std::shared_ptr<GlobalIndexWriter>> CreateWriter(
         const std::string& field_name, ::ArrowSchema* arrow_schema,
         const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
@@ -100,38 +90,26 @@ class LuminaGlobalIndex : public GlobalIndexer {
         const std::shared_ptr<MemoryPool>& pool) const override;
 
  private:
-    static Result<std::vector<LuminaTagField>> ParseTagSchema(
-        const std::map<std::string, std::string>& lumina_options);
-
-    static Status ValidateTagFields(const arrow::StructType& struct_type,
-                                    const std::vector<LuminaTagField>& tag_fields);
-
     std::map<std::string, std::string> options_;
 };
 
 class LuminaIndexWriter : public GlobalIndexWriter {
  public:
-    LuminaIndexWriter(const std::string& field_name,
-                      const std::shared_ptr<arrow::DataType>& arrow_type, uint32_t dimension,
-                      const std::shared_ptr<GlobalIndexFileWriter>& file_manager,
-                      ::lumina::api::BuilderOptions&& builder_options,
-                      ::lumina::api::IOOptions&& io_options,
-                      const std::map<std::string, std::string>& lumina_options,
-                      std::vector<LuminaTagField>&& tag_fields,
-                      const std::shared_ptr<LuminaMemoryPool>& pool);
+    LuminaIndexWriter(
+        const std::string& field_name, const std::shared_ptr<arrow::DataType>& arrow_type,
+        uint32_t dimension, const std::shared_ptr<GlobalIndexFileWriter>& file_manager,
+        ::lumina::api::BuilderOptions&& builder_options, ::lumina::api::IOOptions&& io_options,
+        const std::map<std::string, std::string>& lumina_options,
+        std::vector<LuminaTagField>&& tag_fields,
+        const std::shared_ptr<GlobalIndexCheckpointFileManager>& checkpoint_file_manager,
+        const std::shared_ptr<LuminaMemoryPool>& pool);
 
     Status AddBatch(::ArrowArray* arrow_array, std::vector<int64_t>&& relative_row_ids) override;
 
     Result<std::vector<GlobalIndexIOMeta>> Finish() override;
 
  private:
-    static Result<std::vector<::lumina::extensions::experimental::TagDimensionData>>
-    ExtractTagDataForSegment(const std::shared_ptr<arrow::StructArray>& struct_array,
-                             const std::vector<LuminaTagField>& tag_fields, int64_t segment_start,
-                             int64_t segment_len);
-
     int64_t count_ = 0;
-    int64_t indexed_count_ = 0;
     std::shared_ptr<LuminaMemoryPool> pool_;
     std::string field_name_;
     std::shared_ptr<arrow::DataType> arrow_type_;
@@ -141,30 +119,17 @@ class LuminaIndexWriter : public GlobalIndexWriter {
     ::lumina::api::IOOptions io_options_;
     std::map<std::string, std::string> lumina_options_;
     std::vector<LuminaTagField> tag_fields_;
-    std::vector<std::shared_ptr<arrow::FloatArray>> array_vec_;
-    std::vector<int64_t> array_start_ids_;
-    std::vector<std::vector<::lumina::extensions::experimental::TagDimensionData>> tag_data_vec_;
+    std::shared_ptr<GlobalIndexCheckpointFileManager> checkpoint_file_manager_;
+    LuminaIndexAccumulator accumulator_;
 };
 
 class LuminaIndexReader : public GlobalIndexReader {
  public:
-    struct IndexInfo {
-        uint32_t dimension;
-        std::string index_type;
-        VectorSearch::DistanceType distance_type;
-        bool has_tag;
-    };
+    using IndexInfo = LuminaIndexInfo;
 
-    LuminaIndexReader(
-        const IndexInfo& index_info, std::unique_ptr<::lumina::api::LuminaSearcher>&& searcher,
-        std::unique_ptr<::lumina::extensions::SearchWithFilterExtension>&& searcher_with_filter,
-        std::unique_ptr<::lumina::extensions::experimental::SearchWithTagExtension>&&
-            searcher_with_tag,
-        const std::shared_ptr<LuminaMemoryPool>& pool);
+    explicit LuminaIndexReader(std::unique_ptr<LuminaIndexSearcher>&& searcher);
 
-    ~LuminaIndexReader() override {
-        [[maybe_unused]] auto status = searcher_->Close();
-    }
+    ~LuminaIndexReader() override = default;
 
     /// @note `VisitVectorSearch` is thread-safe (not coroutine-safe) while other `VisitXXX` is not
     /// thread-safe.
@@ -246,13 +211,6 @@ class LuminaIndexReader : public GlobalIndexReader {
     static Result<LuminaIndexReader::IndexInfo> GetIndexInfo(const GlobalIndexIOMeta& io_meta);
 
  private:
-    static Result<::lumina::extensions::experimental::TagFilter> PredicateToTagFilter(
-        const std::shared_ptr<Predicate>& predicate);
-
-    LuminaIndexReader::IndexInfo index_info_;
-    std::shared_ptr<LuminaMemoryPool> pool_;
-    std::unique_ptr<::lumina::api::LuminaSearcher> searcher_;
-    std::unique_ptr<::lumina::extensions::SearchWithFilterExtension> searcher_with_filter_;
-    std::unique_ptr<::lumina::extensions::experimental::SearchWithTagExtension> searcher_with_tag_;
+    std::unique_ptr<LuminaIndexSearcher> searcher_;
 };
 }  // namespace paimon::lumina

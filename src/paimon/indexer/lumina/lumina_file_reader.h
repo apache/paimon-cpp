@@ -25,7 +25,7 @@
 #include "lumina/io/FileReader.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/global_index/lumina/lumina_utils.h"
+#include "paimon/indexer/lumina/lumina_utils.h"
 namespace paimon::lumina {
 class LuminaFileReader : public ::lumina::io::FileReader {
  public:

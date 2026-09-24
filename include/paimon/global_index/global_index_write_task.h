@@ -21,6 +21,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "paimon/global_index/indexed_split.h"
@@ -45,7 +46,13 @@ class PAIMON_EXPORT GlobalIndexWriteTask {
     ///                     The range must be fully contained within the data covered
     ///                     by the given `indexed_split`.
     /// @param options      Index-specific configuration (e.g., false positive rate for bloom
-    /// filters).
+    ///                     filters).
+    /// @param task_id      When checkpoints are enabled, the caller must provide a non-empty task
+    ///                     identifier that uniquely identifies an index build task. Reuse it when
+    ///                     retrying the same build. If the source data, build configuration, or
+    ///                     build source code changes, the caller must use a new identifier;
+    ///                     otherwise, the index build may fail. Pass nullopt when checkpoints are
+    ///                     disabled. Index types without checkpoint support ignore this value.
     /// @param pool         Memory pool for temporary allocations during index construction.
     ///                     If `nullptr`, the system's default memory pool will be used.
     /// @param file_system  Specifies the file system for file operations.
@@ -55,7 +62,8 @@ class PAIMON_EXPORT GlobalIndexWriteTask {
     static Result<std::shared_ptr<CommitMessage>> WriteIndex(
         const std::string& table_path, const std::string& field_name, const std::string& index_type,
         const std::shared_ptr<IndexedSplit>& indexed_split,
-        const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool,
+        const std::map<std::string, std::string>& options,
+        const std::optional<std::string>& task_id, const std::shared_ptr<MemoryPool>& pool,
         const std::shared_ptr<FileSystem>& file_system = nullptr);
 };
 

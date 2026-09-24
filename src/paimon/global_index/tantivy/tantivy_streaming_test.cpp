@@ -106,7 +106,8 @@ class StreamingTestFixture : public ::testing::Test {
         EXPECT_TRUE(arrow::ExportType(*data_type, c_schema.get()).ok());
         auto global_index = std::make_shared<TantivyGlobalIndex>(options);
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_writer = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_writer = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         EXPECT_OK_AND_ASSIGN(auto w,
                              global_index->CreateWriter("f0", c_schema.get(), file_writer, pool_));
         ::ArrowArray c_array;
@@ -132,7 +133,8 @@ class StreamingTestFixture : public ::testing::Test {
         EXPECT_TRUE(arrow::ExportType(*data_type, c_schema.get()).ok());
         auto global_index = std::make_shared<TantivyGlobalIndex>(options);
         auto path_factory = std::make_shared<FakeIndexPathFactory>(root);
-        auto file_reader = std::make_shared<GlobalIndexFileManager>(fs_, path_factory);
+        auto file_reader = std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         EXPECT_OK_AND_ASSIGN(
             auto reader, global_index->CreateReader(c_schema.get(), file_reader, {meta}, pool_));
         return reader;

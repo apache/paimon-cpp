@@ -33,6 +33,7 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/index/index_checkpoint_path_factory.h"
 #include "paimon/core/index/index_path_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
@@ -47,6 +48,7 @@ class DataFilePathFactory;
 class ExternalPathProvider;
 class PathFactory;
 class MemoryPool;
+struct Range;
 
 class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFactory> {
  public:
@@ -76,6 +78,9 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
     Result<std::unique_ptr<IndexPathFactory>> CreateIndexFileFactory(const BinaryRow& partition,
                                                                      int32_t bucket);
     std::unique_ptr<IndexPathFactory> CreateGlobalIndexFileFactory();
+    Result<std::unique_ptr<IndexCheckpointPathFactory>> CreateGlobalIndexCheckpointPathFactory(
+        const std::string& index_type, const std::string& field_name, const Range& range,
+        const std::string& task_id);
     Result<std::shared_ptr<DataFilePathFactory>> CreateDataFilePathFactory(
         const BinaryRow& partition, int32_t bucket) const;
     Result<BinaryRow> ToBinaryRow(const std::map<std::string, std::string>& partition) const;

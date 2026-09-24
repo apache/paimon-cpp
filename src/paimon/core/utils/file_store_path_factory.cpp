@@ -20,8 +20,11 @@
 
 #include <cassert>
 
+#include "fmt/format.h"
 #include "paimon/common/fs/external_path_provider.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/uuid.h"
+#include "paimon/core/index/index_checkpoint_path_factory.h"
 #include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/index/index_in_data_file_dir_path_factory.h"
 #include "paimon/core/io/data_file_path_factory.h"
@@ -31,6 +34,7 @@
 #include "paimon/macros.h"
 #include "paimon/memory/memory_segment.h"
 #include "paimon/status.h"
+#include "paimon/utils/range.h"
 
 namespace arrow {
 class Schema;
@@ -38,6 +42,31 @@ class Schema;
 
 namespace paimon {
 class MemoryPool;
+
+namespace {
+
+constexpr char kIndexCheckpointFileSuffix[] = ".index.ckpt";
+
+std::optional<int64_t> ParseCheckpointId(const std::string& file_name,
+                                         const std::string& file_name_prefix) {
+    if (!StringUtils::StartsWith(file_name, file_name_prefix) ||
+        !StringUtils::EndsWith(file_name, kIndexCheckpointFileSuffix)) {
+        return std::nullopt;
+    }
+    size_t suffix_pos =
+        file_name.size() - std::char_traits<char>::length(kIndexCheckpointFileSuffix);
+    if (suffix_pos <= file_name_prefix.size()) {
+        return std::nullopt;
+    }
+    std::optional<int64_t> id = StringUtils::StringToValue<int64_t>(
+        file_name.substr(file_name_prefix.size(), suffix_pos - file_name_prefix.size()));
+    if (!id || id.value() < 0) {
+        return std::nullopt;
+    }
+    return id;
+}
+
+}  // namespace
 
 FileStorePathFactory::FileStorePathFactory(
     const std::string& root, const std::string& format_identifier,
@@ -181,6 +210,50 @@ std::unique_ptr<IndexPathFactory> FileStorePathFactory::CreateGlobalIndexFileFac
         std::shared_ptr<FileStorePathFactory> factory_;
     };
     return std::make_unique<IndexPathFactoryImpl>(shared_from_this());
+}
+
+Result<std::unique_ptr<IndexCheckpointPathFactory>>
+FileStorePathFactory::CreateGlobalIndexCheckpointPathFactory(const std::string& index_type,
+                                                             const std::string& field_name,
+                                                             const Range& range,
+                                                             const std::string& task_id) {
+    class IndexCheckpointPathFactoryImpl : public IndexCheckpointPathFactory {
+     public:
+        IndexCheckpointPathFactoryImpl(const std::string& directory,
+                                       const std::string& file_name_prefix)
+            : directory_(directory), file_name_prefix_(file_name_prefix) {}
+
+        std::string NewPath(int64_t checkpoint_id) const override {
+            assert(checkpoint_id >= 0);
+            std::string file_name =
+                fmt::format("{}{}{}", file_name_prefix_, checkpoint_id, kIndexCheckpointFileSuffix);
+            return ToPath(file_name);
+        }
+
+        std::string ToPath(const std::string& file_name) const override {
+            return PathUtil::JoinPath(directory_, file_name);
+        }
+
+        const std::string& GetDirectoryPath() const override {
+            return directory_;
+        }
+
+        std::optional<int64_t> GetCheckpointId(const std::string& file_name) const override {
+            return ParseCheckpointId(file_name, file_name_prefix_);
+        }
+
+     private:
+        std::string directory_;
+        std::string file_name_prefix_;
+    };
+    PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint index type", index_type));
+    PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint field", field_name));
+    PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint task id", task_id));
+    std::string directory = PathUtil::JoinPath(IndexPath(root_), "checkpoint");
+    std::string file_name_prefix = fmt::format("{}-global-index-{}-{}-{}-{}-", index_type,
+                                               field_name, range.from, range.to, task_id);
+    return std::unique_ptr<IndexCheckpointPathFactory>(
+        std::make_unique<IndexCheckpointPathFactoryImpl>(directory, file_name_prefix));
 }
 
 Result<std::shared_ptr<DataFilePathFactory>> FileStorePathFactory::CreateDataFilePathFactory(

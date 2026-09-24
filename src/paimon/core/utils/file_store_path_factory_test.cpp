@@ -19,6 +19,7 @@
 #include "paimon/core/utils/file_store_path_factory.h"
 
 #include <atomic>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -28,14 +29,20 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/data_define.h"
+#include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/global_index/global_index_file_manager.h"
+#include "paimon/core/index/index_checkpoint_path_factory.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
+#include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/utils/range.h"
 
 namespace paimon::test {
 
@@ -581,5 +588,125 @@ TEST_F(FileStorePathFactoryTest, TestCreateIndexFileFactory) {
             /*global_index_meta=*/std::nullopt);
         ASSERT_EQ(index_path_factory->ToPath(index_file_meta), "/tmp/external-path/bitmap.index");
     }
+}
+
+TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactory) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<FileStorePathFactory> file_store_path_factory = CreateFactory(dir->Str());
+    std::shared_ptr<FileSystem> file_system = dir->GetFileSystem();
+
+    std::string prefix = "lumina-global-index-vector-10-20-task-1-";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory,
+                         file_store_path_factory->CreateGlobalIndexCheckpointPathFactory(
+                             "lumina", "vector", Range(10, 20), "task-1"));
+    std::string checkpoint_dir = PathUtil::JoinPath(dir->Str(), "index/checkpoint");
+    ASSERT_EQ(checkpoint_path_factory->GetDirectoryPath(), checkpoint_dir);
+    std::string first_path = checkpoint_path_factory->NewPath(0);
+    ASSERT_EQ(first_path, PathUtil::JoinPath(checkpoint_dir, prefix + "0.index.ckpt"));
+    std::string second_path = checkpoint_path_factory->NewPath(1);
+    ASSERT_EQ(second_path, PathUtil::JoinPath(checkpoint_dir, prefix + "1.index.ckpt"));
+    ASSERT_EQ(checkpoint_path_factory->ToPath("checkpoint"),
+              PathUtil::JoinPath(checkpoint_dir, "checkpoint"));
+    ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(prefix + "9.index.ckpt"), 9);
+    ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(
+                  "lumina-global-index-other-10-20-task-1-9.index.ckpt"),
+              std::nullopt);
+    ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(prefix + "invalid-10.index.ckpt"),
+              std::nullopt);
+    ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(prefix + "-1.index.ckpt"), std::nullopt);
+    ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(
+                  prefix + "00000000-0000-0000-0000-000000000000-9.index.ckpt"),
+              std::nullopt);
+    ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(
+                  "lumina-global-index-7-vector-10_20-0000000000000000-"
+                  "00000000-0000-0000-0000-000000000000-9.index.ckpt"),
+              std::nullopt);
+    ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(
+                  "lumina-global-index-field=vector-range=10_20-task=task-1-"
+                  "00000000-0000-0000-0000-000000000000-9.index.ckpt"),
+              std::nullopt);
+
+    ASSERT_OK_AND_ASSIGN(bool exists, file_system->Exists(checkpoint_dir));
+    ASSERT_FALSE(exists);
+}
+
+TEST_F(FileStorePathFactoryTest, TestCheckpointFileIdPath) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto factory = CreateFactory(dir->Str());
+    for (int64_t file_id : {int64_t{9}, std::numeric_limits<int64_t>::max() - 1,
+                            std::numeric_limits<int64_t>::max()}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_factory,
+                             factory->CreateGlobalIndexCheckpointPathFactory(
+                                 "lumina", "vector", Range(10, 20), "task-1"));
+        std::string path = checkpoint_factory->NewPath(file_id);
+        ASSERT_EQ(checkpoint_factory->GetCheckpointId(PathUtil::GetName(path)), file_id);
+        ASSERT_OK_AND_ASSIGN(bool exists,
+                             dir->GetFileSystem()->Exists(checkpoint_factory->GetDirectoryPath()));
+        ASSERT_FALSE(exists);
+    }
+}
+
+TEST_F(FileStorePathFactoryTest, TestCheckpointTaskIsolation) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    std::shared_ptr<FileStorePathFactory> factory = CreateFactory(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> own_factory,
+                         factory->CreateGlobalIndexCheckpointPathFactory("lumina", "vector",
+                                                                         Range(10, 20), "task-1"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> other_factory,
+                         factory->CreateGlobalIndexCheckpointPathFactory("lumina", "vector",
+                                                                         Range(10, 20), "task-2"));
+    ASSERT_EQ(own_factory->GetDirectoryPath(), other_factory->GetDirectoryPath());
+    ASSERT_OK(fs->Mkdirs(own_factory->GetDirectoryPath()));
+    std::string own_path = own_factory->NewPath(0);
+    ASSERT_OK(fs->WriteFile(own_path, "checkpoint", /*overwrite=*/false));
+    std::string other_path = other_factory->NewPath(100);
+    ASSERT_OK(fs->WriteFile(other_path, "foreign", /*overwrite=*/false));
+    ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(own_path)), 0);
+    ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(other_path)), std::nullopt);
+
+    GlobalIndexFileManager manager(fs, factory->CreateGlobalIndexFileFactory(),
+                                   std::move(own_factory));
+    ASSERT_OK_AND_ASSIGN(bool exists, manager.CheckpointExists());
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, manager.OpenCheckpointInputStream());
+    char buffer[10];
+    ASSERT_OK_AND_ASSIGN(int64_t read, input->Read(buffer, sizeof(buffer)));
+    ASSERT_EQ(read, 10);
+    ASSERT_EQ(std::string(buffer, sizeof(buffer)), "checkpoint");
+    ASSERT_OK(input->Close());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output,
+                         manager.CreateCheckpointOutputStream());
+    ASSERT_OK_AND_ASSIGN(std::string uri, output->GetUri());
+    ASSERT_TRUE(StringUtils::EndsWith(uri, "-1.index.ckpt"));
+    ASSERT_OK(output->Close());
+    ASSERT_OK(manager.DeleteCheckpoint());
+    ASSERT_OK_AND_ASSIGN(exists, manager.CheckpointExists());
+    ASSERT_FALSE(exists);
+    ASSERT_NOK_WITH_MSG(manager.OpenCheckpointInputStream(), "checkpoint file does not exist");
+    ASSERT_OK(manager.DeleteCheckpoint());
+    ASSERT_OK_AND_ASSIGN(exists, fs->Exists(other_path));
+    ASSERT_TRUE(exists);
+}
+
+TEST_F(FileStorePathFactoryTest, TestCheckpointRejectsInvalidPathComponents) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto factory = CreateFactory(dir->Str());
+    for (const std::string& invalid : std::vector<std::string>{"", ".", "..", " ", "a/b", "a\\b",
+                                                               "a\nb", std::string("a\0b", 3)}) {
+        ASSERT_NOK(factory->CreateGlobalIndexCheckpointPathFactory(invalid, "vector", Range(10, 20),
+                                                                   "task"));
+        ASSERT_NOK(factory->CreateGlobalIndexCheckpointPathFactory("lumina", invalid, Range(10, 20),
+                                                                   "task"));
+        ASSERT_NOK(factory->CreateGlobalIndexCheckpointPathFactory("lumina", "vector",
+                                                                   Range(10, 20), invalid));
+    }
+    ASSERT_OK_AND_ASSIGN(bool exists, dir->GetFileSystem()->Exists(
+                                          PathUtil::JoinPath(dir->Str(), "index/checkpoint")));
+    ASSERT_FALSE(exists);
 }
 }  // namespace paimon::test

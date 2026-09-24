@@ -142,10 +142,13 @@ class ParquetFormatWriterTest : public ::testing::Test {
 
     void CheckResult(const std::string& file_path, int32_t row_count,
                      int32_t row_group_count) const {
-        auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
-        ASSERT_TRUE(file.ok());
+        // Use the process-wide pool: pre-buffered reads may release their buffers on Arrow IO
+        // threads after this fixture's pool is destroyed.
+        auto file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
+        ASSERT_TRUE(file.ok()) << file.status().ToString();
         std::unique_ptr<::parquet::arrow::FileReader> reader;
-        auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+        auto status =
+            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
         ASSERT_TRUE(status.ok()) << status.ToString();
         const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
         const ::parquet::SchemaDescriptor* schema = metadata->schema();
@@ -266,10 +269,11 @@ class ParquetFormatWriterTest : public ::testing::Test {
 
     void CheckEncodedResult(const std::string& file_path, int32_t row_count,
                             bool null_in_dictionary) const {
-        auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
-        ASSERT_TRUE(file.ok());
+        auto file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
+        ASSERT_TRUE(file.ok()) << file.status().ToString();
         std::unique_ptr<::parquet::arrow::FileReader> reader;
-        auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+        auto status =
+            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
         ASSERT_TRUE(status.ok()) << status.ToString();
         const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
         ASSERT_EQ(metadata->num_rows(), row_count);
@@ -636,10 +640,11 @@ TEST_F(ParquetFormatWriterTest, TestWriteDictionaryChangingAcrossBatches) {
     ASSERT_OK(out->Flush());
     ASSERT_OK(out->Close());
 
-    auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
-    ASSERT_TRUE(file.ok());
+    auto file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
+    ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
-    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    auto status =
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
     ASSERT_EQ(3 * kBatchRows, metadata->num_rows());
@@ -708,10 +713,11 @@ TEST_F(ParquetFormatWriterTest, TestWriteDictionaryWithNullRows) {
     ASSERT_OK(out->Flush());
     ASSERT_OK(out->Close());
 
-    auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
-    ASSERT_TRUE(file.ok());
+    auto file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
+    ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
-    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    auto status =
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
     ASSERT_EQ(6, metadata->num_rows());
@@ -766,10 +772,11 @@ TEST_F(ParquetFormatWriterTest, TestWriteDictionaryWithDuplicateValues) {
     ASSERT_OK(out->Flush());
     ASSERT_OK(out->Close());
 
-    auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
-    ASSERT_TRUE(file.ok());
+    auto file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
+    ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
-    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    auto status =
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
     ASSERT_EQ(4, metadata->num_rows());
@@ -889,10 +896,11 @@ TEST_F(ParquetFormatWriterTest, TestWriteDictionaryOfBinaryColumn) {
     ASSERT_OK(out->Flush());
     ASSERT_OK(out->Close());
 
-    auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
-    ASSERT_TRUE(file.ok());
+    auto file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
+    ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
-    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    auto status =
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
     ASSERT_EQ(4, metadata->num_rows());
