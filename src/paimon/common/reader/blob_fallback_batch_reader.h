@@ -55,7 +55,8 @@ namespace paimon {
 ///    through the row ids the caller leaves in a gap segment's `gap_selected_ranges`.
 /// 3. Each output row takes the first group, in max-sequence order, whose row is not a
 ///    placeholder. The blob format reader emits placeholders as BlobDefs::kPlaceholderSentinel
-///    bytes for scalar BLOBs, or as a two-entry map with duplicate keys for MAP<..., BLOB>.
+///    bytes for scalar BLOBs, as a one-element sentinel array for ARRAY<BLOB>, or as a two-entry
+///    map with duplicate keys for MAP<..., BLOB>.
 /// 4. A row that is a placeholder in every group degrades to a null blob: it keeps its
 ///    _ROW_ID, reports -1 as its _SEQUENCE_NUMBER, and returns null for every other field.
 class BlobFallbackBatchReader : public BatchReader {

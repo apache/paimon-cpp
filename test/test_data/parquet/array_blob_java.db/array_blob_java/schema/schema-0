@@ -1,0 +1,26 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "id",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "array_payloads",
+    "type" : {
+      "type" : "ARRAY",
+      "element" : "BLOB"
+    }
+  } ],
+  "highestFieldId" : 1,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "data-evolution.enabled" : "true",
+    "file.format" : "parquet",
+    "row-tracking.enabled" : "true"
+  },
+  "timeMillis" : 1790220836832
+}

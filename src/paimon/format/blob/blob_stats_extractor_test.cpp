@@ -97,7 +97,7 @@ TEST_F(BlobStatsExtractorTest, TestInvalidCase) {
         auto non_blob_schema = arrow::schema({string_field});
         BlobStatsExtractor extractor(non_blob_schema);
         ASSERT_NOK_WITH_MSG(extractor.ExtractWithFileInfo(fs_, blob_file_path, pool_),
-                            "field string_field: string is not BLOB");
+                            "field string_field: string is not a blob-file field");
     }
     // Should fail because file doesn't exist
     {

@@ -57,7 +57,7 @@ Result<std::unique_ptr<TableSchema>> TableSchema::Create(
     for (const auto& primary_key : primary_keys) {
         primary_key_set.insert(primary_key);
     }
-    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateMapBlobWriteSchema(schema));
+    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateContainerBlobWriteSchema(schema));
     for (const auto& field : schema->fields()) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> field_with_id,
                                AssignFieldIdsRecursively(field, /*set_field_id=*/true, &field_id));

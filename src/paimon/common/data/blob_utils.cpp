@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <set>
+#include <string_view>
 #include <vector>
 
 #include "arrow/api.h"
@@ -98,6 +99,9 @@ Result<BlobUtils::SeparatedStructArrays> BlobUtils::SeparateBlobArray(
 }
 
 bool BlobUtils::IsBlobField(const std::shared_ptr<arrow::Field>& field) {
+    if (field == nullptr) {
+        return false;
+    }
     const auto& type = field->type();
     if (type->id() != arrow::Type::LARGE_BINARY) {
         return false;
@@ -106,6 +110,16 @@ bool BlobUtils::IsBlobField(const std::shared_ptr<arrow::Field>& field) {
         return false;
     }
     return IsBlobMetadata(field->metadata());
+}
+
+bool BlobUtils::IsArrayBlobField(const std::shared_ptr<arrow::Field>& field) {
+    if (field == nullptr || field->type()->id() != arrow::Type::LIST) {
+        return false;
+    }
+    const auto& list_type = checked_cast<const arrow::ListType&>(*field->type());
+    // Arrow's C schema importer passes MakeChildField(0) directly to ListType, retaining the
+    // element field's metadata.
+    return IsBlobField(list_type.value_field());
 }
 
 bool BlobUtils::IsMapBlobField(const std::shared_ptr<arrow::Field>& field) {
@@ -118,11 +132,49 @@ bool BlobUtils::IsMapBlobField(const std::shared_ptr<arrow::Field>& field) {
     return map_type.item_type()->id() == arrow::Type::LARGE_BINARY;
 }
 
-Status BlobUtils::ValidateMapBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema) {
+bool BlobUtils::IsBlobFileField(const std::shared_ptr<arrow::Field>& field) {
+    return IsBlobField(field) || IsArrayBlobField(field) || IsMapBlobField(field);
+}
+
+bool BlobUtils::IsArrayBlobPlaceholder(const arrow::ListArray& array, int64_t row) {
+    if (array.IsNull(row) || array.value_length(row) != 1) {
+        return false;
+    }
+    const std::shared_ptr<arrow::Array>& values = array.values();
+    if (values->type_id() != arrow::Type::LARGE_BINARY) {
+        return false;
+    }
+    const int64_t value_index = array.value_offset(row);
+    if (values->IsNull(value_index)) {
+        return false;
+    }
+    const auto& binary_values = checked_cast<const arrow::LargeBinaryArray&>(*values);
+    const std::string_view value = binary_values.GetView(value_index);
+    return BlobDefs::IsPlaceholderSentinel(value.data(), value.size());
+}
+
+bool BlobUtils::IsMapBlobPlaceholder(const arrow::MapArray& array, int64_t row) {
+    if (array.IsNull(row) || array.value_length(row) != 2) {
+        return false;
+    }
+    const int64_t entry_index = array.value_offset(row);
+    const std::shared_ptr<arrow::Array>& items = array.items();
+    if (!items->IsNull(entry_index) || !items->IsNull(entry_index + 1)) {
+        return false;
+    }
+    const std::shared_ptr<arrow::Array>& keys = array.keys();
+    return keys->RangeEquals(entry_index, entry_index + 1, entry_index + 1, *keys);
+}
+
+Status BlobUtils::ValidateContainerBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema) {
     for (const auto& field : schema->fields()) {
         if (IsMapBlobField(field)) {
             return Status::NotImplemented(
                 "Writing a table with MAP<..., BLOB> is not supported by the C++ writer.");
+        }
+        if (IsArrayBlobField(field)) {
+            return Status::NotImplemented(
+                "Writing a table with ARRAY<BLOB> is not supported by the C++ writer.");
         }
     }
     return Status::OK();

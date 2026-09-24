@@ -775,7 +775,7 @@ Status SchemaValidation::ValidateRowTracking(const TableSchema& table_schema,
 
     std::vector<std::string> blob_names;
     for (const auto& field : table_schema.Fields()) {
-        if (BlobUtils::IsBlobField(field.ArrowField())) {
+        if (BlobUtils::IsBlobFileField(field.ArrowField())) {
             blob_names.push_back(field.Name());
         }
     }
@@ -809,26 +809,32 @@ Status SchemaValidation::ValidateBlobFields(const TableSchema& schema, const Cor
     }
 
     auto validate_blob_fields = [&](const std::vector<std::string>& field_names,
-                                    const std::string& option_key) -> Status {
+                                    const std::string& option_key,
+                                    bool allow_container_blob) -> Status {
         if (field_names.empty()) {
             return Status::OK();
         }
         PAIMON_RETURN_NOT_OK(ValidateNoDuplicateField(field_names, option_key));
         PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> blob_fields, schema.GetFields(field_names));
         for (const auto& blob_field : blob_fields) {
-            if (!BlobUtils::IsBlobField(blob_field.ArrowField())) {
+            bool is_blob = allow_container_blob
+                               ? BlobUtils::IsBlobFileField(blob_field.ArrowField())
+                               : BlobUtils::IsBlobField(blob_field.ArrowField());
+            if (!is_blob) {
+                const std::string expected_type =
+                    allow_container_blob ? "BLOB, ARRAY<BLOB> or MAP<..., BLOB>" : "BLOB";
                 return Status::Invalid(
-                    fmt::format("Field '{}' in '{}' must be a BLOB field in table schema.",
-                                blob_field.Name(), option_key));
+                    fmt::format("Field '{}' in '{}' must be a {} field in table schema.",
+                                blob_field.Name(), option_key, expected_type));
             }
         }
         return Status::OK();
     };
 
-    PAIMON_RETURN_NOT_OK(validate_blob_fields(configured_blob_names, Options::BLOB_FIELD));
+    PAIMON_RETURN_NOT_OK(validate_blob_fields(configured_blob_names, Options::BLOB_FIELD, true));
     PAIMON_RETURN_NOT_OK(
-        validate_blob_fields(blob_descriptor_names, Options::BLOB_DESCRIPTOR_FIELD));
-    PAIMON_RETURN_NOT_OK(validate_blob_fields(blob_view_names, Options::BLOB_VIEW_FIELD));
+        validate_blob_fields(blob_descriptor_names, Options::BLOB_DESCRIPTOR_FIELD, false));
+    PAIMON_RETURN_NOT_OK(validate_blob_fields(blob_view_names, Options::BLOB_VIEW_FIELD, false));
 
     std::set<std::string> blob_descriptor_name_set(blob_descriptor_names.begin(),
                                                    blob_descriptor_names.end());
@@ -900,10 +906,10 @@ Status SchemaValidation::ValidateMosaicDataFields(const TableSchema& schema,
     const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
                                                       inline_blob_fields.end());
     // Match Java SchemaValidation by validating only fields stored in the normal data file.
-    // Top-level BLOB fields stored in separate files are skipped; descriptor and view fields are
-    // inline, so Mosaic must reject them here.
+    // Top-level blob-file fields stored in separate files are skipped; descriptor and view fields
+    // are inline, so Mosaic must reject them here.
     for (const DataField& field : schema.Fields()) {
-        if (BlobUtils::IsBlobField(field.ArrowField()) &&
+        if (BlobUtils::IsBlobFileField(field.ArrowField()) &&
             inline_blob_field_set.count(field.Name()) == 0) {
             continue;
         }
@@ -969,7 +975,7 @@ Status SchemaValidation::ValidateLanceDataFields(const TableSchema& schema,
             return Status::OK();
         }
         for (const DataField& field : schema.Fields()) {
-            if (BlobUtils::IsBlobField(field.ArrowField()) &&
+            if (BlobUtils::IsBlobFileField(field.ArrowField()) &&
                 inline_blob_field_set.count(field.Name()) == 0) {
                 continue;
             }

@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <set>
 #include <string>
@@ -31,6 +32,8 @@
 namespace arrow {
 class Field;
 class KeyValueMetadata;
+class ListArray;
+class MapArray;
 class Schema;
 class StructArray;
 }  // namespace arrow
@@ -73,10 +76,18 @@ class PAIMON_EXPORT BlobUtils {
         const std::set<std::string>& inline_fields);
 
     static bool IsBlobField(const std::shared_ptr<arrow::Field>& field);
+    /// Returns whether the field is a top-level ARRAY whose elements are BLOBs.
+    static bool IsArrayBlobField(const std::shared_ptr<arrow::Field>& field);
     /// Returns whether the field is a top-level MAP whose values are BLOBs.
     static bool IsMapBlobField(const std::shared_ptr<arrow::Field>& field);
-    /// Rejects schemas that the C++ writer cannot safely mutate.
-    static Status ValidateMapBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema);
+    /// Returns whether the field is stored in a standalone blob file.
+    static bool IsBlobFileField(const std::shared_ptr<arrow::Field>& field);
+    /// Returns whether an ARRAY<BLOB> row is the internal fallback sentinel.
+    static bool IsArrayBlobPlaceholder(const arrow::ListArray& array, int64_t row);
+    /// Returns whether a MAP<..., BLOB> row is the internal fallback sentinel.
+    static bool IsMapBlobPlaceholder(const arrow::MapArray& array, int64_t row);
+    /// Rejects container BLOB types, which are currently supported by the C++ reader only.
+    static Status ValidateContainerBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema);
     static bool IsBlobMetadata(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata);
     static bool IsBlobFile(const std::string& file_name);
 

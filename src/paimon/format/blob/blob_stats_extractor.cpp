@@ -46,9 +46,9 @@ BlobStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& file_
         return Status::Invalid(
             fmt::format("schema field number {} is not 1", write_schema_->num_fields()));
     }
-    if (!BlobUtils::IsBlobField(write_schema_->field(0))) {
+    if (!BlobUtils::IsBlobFileField(write_schema_->field(0))) {
         return Status::Invalid(
-            fmt::format("field {} is not BLOB", write_schema_->field(0)->ToString()));
+            fmt::format("field {} is not a blob-file field", write_schema_->field(0)->ToString()));
     }
 
     // The reader only serves footer metadata (GetNumberOfRows); NextBatch is never called, so

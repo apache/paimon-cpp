@@ -14,4 +14,5 @@ Add: (1, ["blob-array-0", null, "blob-array-2"])
 Add: (2, null)
 Add: (3, [])
 
-Paimon C++ is expected to reject this table while ARRAY<BLOB> is unsupported.
+Paimon Rust stores these values inline as Parquet binary; Java and C++ intentionally reject that
+representation as a Paimon BLOB array.

@@ -48,6 +48,12 @@
 namespace paimon::blob {
 namespace {
 
+constexpr int32_t kArrayBlobMagicNumber = 1094861634;
+constexpr int8_t kArrayBlobVersion = 1;
+constexpr int32_t kArrayBlobHeaderLength = 9;
+constexpr int32_t kArrayBlobIndexLengthSize = 4;
+constexpr int32_t kArrayBlobMinPayloadLength = kArrayBlobHeaderLength + kArrayBlobIndexLengthSize;
+
 constexpr int32_t kMapBlobMagicNumber = 0x4D424342;
 constexpr int8_t kMapBlobVersion = 1;
 constexpr int32_t kMapBlobHeaderLength = 9;
@@ -258,9 +264,9 @@ Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
             fmt::format("read schema field number {} is not 1", arrow_schema->num_fields()));
     }
     std::shared_ptr<arrow::Field> read_field = arrow_schema->field(0);
-    if (!BlobUtils::IsBlobField(read_field) && !BlobUtils::IsMapBlobField(read_field)) {
-        return Status::Invalid(
-            fmt::format("field {} must be BLOB or MAP<..., BLOB>", read_field->ToString()));
+    if (!BlobUtils::IsBlobFileField(read_field)) {
+        return Status::Invalid(fmt::format("field {} must be BLOB, ARRAY<BLOB> or MAP<..., BLOB>",
+                                           read_field->ToString()));
     }
     if (BlobUtils::IsMapBlobField(read_field)) {
         const auto& map_type = static_cast<const arrow::MapType&>(*read_field->type());
@@ -380,6 +386,153 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildContentArray(
     std::shared_ptr<arrow::ArrayData> struct_array_data =
         arrow::ArrayData::Make(target_type_, large_binary_array->length(), {nullptr}, child_data);
     return std::make_shared<arrow::StructArray>(struct_array_data);
+}
+
+Result<BlobFileBatchReader::ArrayBlobPayload> BlobFileBatchReader::ReadArrayBlobPayload(
+    size_t row_index) const {
+    if (target_blob_lengths_[row_index] < 0) {
+        return Status::Invalid(fmt::format("unsupported ARRAY<BLOB> record length: {}",
+                                           target_blob_lengths_[row_index]));
+    }
+
+    const int64_t payload_offset = GetTargetContentOffset(row_index);
+    const int64_t payload_length = GetTargetContentLength(row_index);
+    if (payload_length < kArrayBlobMinPayloadLength) {
+        return Status::Invalid(
+            fmt::format("invalid ARRAY<BLOB> payload length: {}", payload_length));
+    }
+
+    std::array<uint8_t, kArrayBlobHeaderLength> header;
+    PAIMON_RETURN_NOT_OK(ReadBlobContentAt(payload_offset, header.size(), header.data()));
+    const int32_t magic_number = ReadLittleEndian<int32_t>(header.data());
+    if (magic_number != kArrayBlobMagicNumber) {
+        return Status::Invalid(
+            fmt::format("invalid ARRAY<BLOB> payload magic number: {}", magic_number));
+    }
+    const int8_t version = static_cast<int8_t>(header[4]);
+    if (version != kArrayBlobVersion) {
+        return Status::NotImplemented(
+            fmt::format("unsupported ARRAY<BLOB> payload version: {}", version));
+    }
+    const int32_t element_count = ReadLittleEndian<int32_t>(header.data() + 5);
+    if (element_count < 0) {
+        return Status::Invalid(fmt::format("invalid ARRAY<BLOB> element count: {}", element_count));
+    }
+
+    const int64_t index_length_offset = payload_offset + payload_length - kArrayBlobIndexLengthSize;
+    std::array<uint8_t, kArrayBlobIndexLengthSize> index_length_bytes;
+    PAIMON_RETURN_NOT_OK(ReadBlobContentAt(index_length_offset, index_length_bytes.size(),
+                                           index_length_bytes.data()));
+    const int32_t index_length = ReadLittleEndian<int32_t>(index_length_bytes.data());
+    const int64_t maximum_index_length = payload_length - kArrayBlobMinPayloadLength;
+    if (index_length < 0 || index_length > maximum_index_length) {
+        return Status::Invalid(
+            fmt::format("invalid ARRAY<BLOB> element index length: {}", index_length));
+    }
+    if (element_count > index_length) {
+        return Status::Invalid("ARRAY<BLOB> element count exceeds element index length");
+    }
+
+    const int64_t index_offset = index_length_offset - index_length;
+    std::vector<char> index_bytes(index_length);
+    PAIMON_RETURN_NOT_OK(ReadBlobContentAt(index_offset, index_length,
+                                           reinterpret_cast<uint8_t*>(index_bytes.data())));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> element_lengths,
+                           DeltaVarintCompressor::Decompress(index_bytes));
+    if (element_lengths.size() != static_cast<size_t>(element_count)) {
+        return Status::Invalid("ARRAY<BLOB> element count does not match element index length");
+    }
+
+    const int64_t data_offset = payload_offset + kArrayBlobHeaderLength;
+    const int64_t data_length = index_offset - data_offset;
+    int64_t total_element_length = 0;
+    for (int64_t element_length : element_lengths) {
+        if (element_length == BlobDefs::kNullBinLength) {
+            continue;
+        }
+        if (element_length < 0) {
+            return Status::Invalid(
+                fmt::format("invalid ARRAY<BLOB> element length: {}", element_length));
+        }
+        if (!blob_as_descriptor_ && element_length > std::numeric_limits<int32_t>::max()) {
+            return Status::Invalid(
+                fmt::format("ARRAY<BLOB> inline element is too large: {}", element_length));
+        }
+        if (element_length > data_length - total_element_length) {
+            return Status::Invalid("ARRAY<BLOB> element lengths exceed the payload data length");
+        }
+        total_element_length += element_length;
+    }
+    if (total_element_length != data_length) {
+        return Status::Invalid("ARRAY<BLOB> element lengths do not match the payload data length");
+    }
+    return ArrayBlobPayload{std::move(element_lengths), data_offset};
+}
+
+Status BlobFileBatchReader::AppendArrayBlobValues(const ArrayBlobPayload& payload,
+                                                  arrow::LargeBinaryBuilder* blob_builder) const {
+    int64_t element_offset = payload.data_offset;
+    for (int64_t element_length : payload.element_lengths) {
+        if (element_length == BlobDefs::kNullBinLength) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->AppendNull());
+            continue;
+        }
+        if (blob_as_descriptor_) {
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
+                                   Blob::FromPath(file_path_, element_offset, element_length));
+            PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                blob_builder->Append(descriptor->data(), descriptor->size()));
+        } else {
+            PAIMON_UNIQUE_PTR<Bytes> element_bytes =
+                Bytes::AllocateBytes(static_cast<size_t>(element_length), pool_.get());
+            if (element_length > 0) {
+                PAIMON_RETURN_NOT_OK(
+                    ReadBlobContentAt(element_offset, element_length,
+                                      reinterpret_cast<uint8_t*>(element_bytes->data())));
+            }
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                blob_builder->Append(element_bytes->data(), element_length));
+        }
+        element_offset += element_length;
+    }
+    return Status::OK();
+}
+
+Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildArrayBlobArray(
+    int32_t rows_to_read) const {
+    const auto& struct_type = checked_cast<const arrow::StructType&>(*target_type_);
+    const std::shared_ptr<arrow::Field>& list_field = struct_type.field(0);
+    const std::shared_ptr<arrow::ListType> list_type =
+        checked_pointer_cast<arrow::ListType>(list_field->type());
+    if (list_type->value_type()->id() != arrow::Type::LARGE_BINARY) {
+        return Status::Invalid("ARRAY<BLOB> element type must be large binary");
+    }
+
+    std::unique_ptr<arrow::ArrayBuilder> array_builder;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        arrow::MakeBuilder(arrow_pool_.get(), list_type, &array_builder));
+    auto* list_builder = checked_cast<arrow::ListBuilder*>(array_builder.get());
+    auto* blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(list_builder->value_builder());
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Reserve(rows_to_read));
+    for (int32_t k = 0; k < rows_to_read; ++k) {
+        const size_t row_index = current_pos_ + k;
+        const bool is_null = IsTargetNull(row_index);
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Append(!is_null));
+        if (IsTargetPlaceholder(row_index)) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->Append(
+                BlobDefs::kPlaceholderSentinel, BlobDefs::kPlaceholderSentinelLength));
+        } else if (!is_null) {
+            PAIMON_ASSIGN_OR_RAISE(ArrayBlobPayload payload, ReadArrayBlobPayload(row_index));
+            PAIMON_RETURN_NOT_OK(AppendArrayBlobValues(payload, blob_builder));
+        }
+    }
+
+    std::shared_ptr<arrow::Array> list_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Finish(&list_array));
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
+                                      arrow::StructArray::Make({list_array}, {list_field}));
+    return struct_array;
 }
 
 Result<BlobFileBatchReader::MapBlobPayload> BlobFileBatchReader::ReadMapBlobPayload(
@@ -620,6 +773,9 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildMapBlobArray(
 Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildTargetArray(
     int32_t rows_to_read) const {
     const auto& struct_type = static_cast<const arrow::StructType&>(*target_type_);
+    if (struct_type.field(0)->type()->id() == arrow::Type::LIST) {
+        return BuildArrayBlobArray(rows_to_read);
+    }
     if (struct_type.field(0)->type()->id() == arrow::Type::MAP) {
         return BuildMapBlobArray(rows_to_read);
     }

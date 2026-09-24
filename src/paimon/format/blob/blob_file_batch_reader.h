@@ -104,8 +104,9 @@ class BlobFileBatchReader : public FileBatchReader {
     /// `emit_placeholder_sentinel` controls how placeholder entries (bin_length ==
     /// BlobDefs::kPlaceholderBinLength) are read: when false they fail the read, as resolving
     /// them requires the data-evolution blob fallback path; when true they are returned as the
-    /// non-null BlobDefs::kPlaceholderSentinel bytes for scalar BLOB, or a two-entry map with
-    /// duplicate keys for MAP<..., BLOB>. The fallback path removes these internal values.
+    /// non-null BlobDefs::kPlaceholderSentinel bytes for scalar BLOB, a one-element sentinel
+    /// array for ARRAY<BLOB>, or a two-entry map with duplicate keys for MAP<..., BLOB>. The
+    /// fallback path removes these internal values.
     static Result<std::unique_ptr<BlobFileBatchReader>> Create(
         const std::shared_ptr<InputStream>& input_stream, int32_t batch_size,
         bool blob_as_descriptor, bool emit_placeholder_sentinel,
@@ -154,6 +155,11 @@ class BlobFileBatchReader : public FileBatchReader {
     }
 
  private:
+    struct ArrayBlobPayload {
+        std::vector<int64_t> element_lengths;
+        int64_t data_offset;
+    };
+
     struct MapBlobPayload {
         std::vector<int64_t> key_lengths;
         std::vector<int64_t> value_lengths;
@@ -179,6 +185,10 @@ class BlobFileBatchReader : public FileBatchReader {
     /// Builds a null bitmap buffer for the given rows. Returns nullptr if no nulls.
     Result<std::shared_ptr<arrow::Buffer>> BuildNullBitmap(int32_t rows_to_read) const;
     Result<std::shared_ptr<arrow::Array>> BuildContentArray(int32_t rows_to_read) const;
+    Result<ArrayBlobPayload> ReadArrayBlobPayload(size_t row_index) const;
+    Status AppendArrayBlobValues(const ArrayBlobPayload& payload,
+                                 arrow::LargeBinaryBuilder* blob_builder) const;
+    Result<std::shared_ptr<arrow::Array>> BuildArrayBlobArray(int32_t rows_to_read) const;
     Result<MapBlobPayload> ReadMapBlobPayload(size_t row_index, int32_t fixed_key_length) const;
     Status AppendMapBlobKeys(const MapBlobPayload& payload,
                              const std::shared_ptr<arrow::DataType>& key_type,

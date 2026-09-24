@@ -530,7 +530,8 @@ TEST(SchemaValidationTest, TestWithBlobField) {
             std::shared_ptr<TableSchema> table_schema,
             TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                            "Field 'f0' in 'blob-field' must be a BLOB field in table schema.");
+                            "Field 'f0' in 'blob-field' must be a BLOB, ARRAY<BLOB> or "
+                            "MAP<..., BLOB> field in table schema.");
     }
     {
         arrow::FieldVector fields = {f0, f1, f2, f3};
@@ -1428,8 +1429,9 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {
     auto nested_blob_map = arrow::map(
         arrow::utf8(), arrow::field("value", arrow::struct_({BlobUtils::ToArrowField("blob")})));
     std::map<std::string, std::string> options = {
-        {Options::BUCKET, "1"},
-        {Options::BUCKET_KEY, "f0"},
+        {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
         {"fields.f1.map.storage-layout", "shared-shredding"},
     };
 
@@ -1445,8 +1447,9 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {
         "partitionKeys": [],
         "primaryKeys": [],
         "options": {
-            "bucket": "1",
-            "bucket-key": "f0",
+            "bucket": "-1",
+            "row-tracking.enabled": "true",
+            "data-evolution.enabled": "true",
             "fields.f1.map.storage-layout": "shared-shredding"
         },
         "timeMillis": 0
@@ -1464,8 +1467,8 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {
     });
     ASSERT_NOK_WITH_MSG(TableSchema::Create(/*schema_id=*/0, nested_schema,
                                             /*partition_keys=*/{}, /*primary_keys=*/{}, options),
-                        "BLOB field must be a top-level field or the direct value of a "
-                        "top-level MAP field.");
+                        "BLOB field must be a top-level field or the direct element/value of a "
+                        "top-level ARRAY/MAP field.");
 }
 
 TEST(SchemaValidationTest, TestMapSharedShreddingCompression) {
