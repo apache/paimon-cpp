@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/memory/memory_slice_input.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -140,5 +141,54 @@ TEST(VarLengthIntUtilsTest, TestEncodeLongBytesNumber) {
                              VarLengthIntUtils::EncodeLong(values[i], buffer));
         ASSERT_EQ(encoded_length, i + 1) << values[i];
     }
+}
+
+TEST(VarLengthIntUtilsTest, TestReadVarLenInt) {
+    const std::vector<int32_t> values = {0, 127, 128, 16384, std::numeric_limits<int32_t>::max()};
+    for (int32_t value : values) {
+        char buffer[VarLengthIntUtils::kMaxVarIntSize];
+        ASSERT_OK_AND_ASSIGN(int32_t encoded_length, VarLengthIntUtils::EncodeInt(value, buffer));
+        MemorySliceInput input{MemorySlice::Wrap(MemorySegment::WrapView(buffer, encoded_length))};
+        ASSERT_OK_AND_ASSIGN(int32_t actual, VarLengthIntUtils::ReadVarLenInt(&input));
+        ASSERT_EQ(value, actual);
+        ASSERT_EQ(0, input.Available());
+    }
+
+    const char truncated[] = {static_cast<char>(0x80)};
+    MemorySliceInput truncated_input{MemorySlice::Wrap(
+        MemorySegment::WrapView(truncated, static_cast<int32_t>(sizeof(truncated))))};
+    ASSERT_NOK(VarLengthIntUtils::ReadVarLenInt(&truncated_input));
+
+    const char malformed[] = {static_cast<char>(0x80), static_cast<char>(0x80),
+                              static_cast<char>(0x80), static_cast<char>(0x80),
+                              static_cast<char>(0x80)};
+    MemorySliceInput malformed_input{MemorySlice::Wrap(
+        MemorySegment::WrapView(malformed, static_cast<int32_t>(sizeof(malformed))))};
+    ASSERT_NOK(VarLengthIntUtils::ReadVarLenInt(&malformed_input));
+}
+
+TEST(VarLengthIntUtilsTest, TestReadVarLenLong) {
+    const std::vector<int64_t> values = {0, 127, 128, 16384, std::numeric_limits<int64_t>::max()};
+    for (int64_t value : values) {
+        char buffer[VarLengthIntUtils::kMaxVarLongSize];
+        ASSERT_OK_AND_ASSIGN(int32_t encoded_length, VarLengthIntUtils::EncodeLong(value, buffer));
+        MemorySliceInput input{MemorySlice::Wrap(MemorySegment::WrapView(buffer, encoded_length))};
+        ASSERT_OK_AND_ASSIGN(int64_t actual, VarLengthIntUtils::ReadVarLenLong(&input));
+        ASSERT_EQ(value, actual);
+        ASSERT_EQ(0, input.Available());
+    }
+
+    const char truncated[] = {static_cast<char>(0x80)};
+    MemorySliceInput truncated_input{MemorySlice::Wrap(
+        MemorySegment::WrapView(truncated, static_cast<int32_t>(sizeof(truncated))))};
+    ASSERT_NOK(VarLengthIntUtils::ReadVarLenLong(&truncated_input));
+
+    const char malformed[] = {
+        static_cast<char>(0x80), static_cast<char>(0x80), static_cast<char>(0x80),
+        static_cast<char>(0x80), static_cast<char>(0x80), static_cast<char>(0x80),
+        static_cast<char>(0x80), static_cast<char>(0x80), static_cast<char>(0x80)};
+    MemorySliceInput malformed_input{MemorySlice::Wrap(
+        MemorySegment::WrapView(malformed, static_cast<int32_t>(sizeof(malformed))))};
+    ASSERT_NOK(VarLengthIntUtils::ReadVarLenLong(&malformed_input));
 }
 }  // namespace paimon::test

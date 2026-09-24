@@ -252,15 +252,17 @@ Result<BitmapGlobalIndexFormat::DictionaryBlockMeta> BitmapGlobalIndexFormat::Wr
     if (entries.empty()) {
         return Status::Invalid("Cannot write an empty bitmap dictionary block.");
     }
-    int64_t estimated_size = 5;
+    PAIMON_RETURN_NOT_OK(
+        ValidateValueInRange<int32_t>(entries.size(), "bitmap dictionary block entry count"));
+    PAIMON_ASSIGN_OR_RAISE(int32_t entry_count_size,
+                           EstimatedVarLenIntSize(static_cast<int32_t>(entries.size())));
+    int64_t estimated_size = entry_count_size;
     for (const DictionaryEntry& entry : entries) {
         PAIMON_ASSIGN_OR_RAISE(int32_t entry_size, entry.EstimatedSize());
         estimated_size += entry_size;
     }
     PAIMON_RETURN_NOT_OK(
         ValidateValueInRange<int32_t>(estimated_size, "bitmap dictionary block size"));
-    PAIMON_RETURN_NOT_OK(
-        ValidateValueInRange<int32_t>(entries.size(), "bitmap dictionary block entry count"));
     MemorySliceOutput output(static_cast<int32_t>(estimated_size), pool);
     PAIMON_RETURN_NOT_OK(output.WriteVarLenInt(static_cast<int32_t>(entries.size())));
     for (const DictionaryEntry& entry : entries) {
@@ -304,7 +306,7 @@ Result<BitmapGlobalIndexFormat::BlockInfo> BitmapGlobalIndexFormat::WriteCompres
     uint32_t crc = CRC32C::calculate(encoding.bytes->data(), encoding.length);
     char compression_value =
         static_cast<char>(static_cast<int32_t>(encoding.compression_type) & 0xFF);
-    crc = CRC32C::calculate(&compression_value, 1, crc);
+    crc = CRC32C::calculate(&compression_value, sizeof(compression_value), crc);
     BlockTrailer trailer(static_cast<int8_t>(encoding.compression_type), static_cast<int32_t>(crc));
     MemorySlice trailer_slice = trailer.WriteBlockTrailer(pool);
     PAIMON_RETURN_NOT_OK(WriteAll(trailer_slice.Data(), trailer_slice.Length(), output_stream));
@@ -496,7 +498,7 @@ Result<std::shared_ptr<Bytes>> BitmapGlobalIndexFormat::ReadCompressibleBlock(
                            SstFileUtils::From(trailer->CompressionType()));
     uint32_t crc = CRC32C::calculate(block_slice.Data(), block_slice.Length());
     auto compression_value = static_cast<char>(static_cast<int32_t>(compression_type) & 0xFF);
-    crc = CRC32C::calculate(&compression_value, 1, crc);
+    crc = CRC32C::calculate(&compression_value, sizeof(compression_value), crc);
     if (trailer->Crc32c() != static_cast<int32_t>(crc)) {
         return Status::Invalid(
             fmt::format("Expected CRC32C({:#x}) but found CRC32C({:#x}) for bitmap index block.",

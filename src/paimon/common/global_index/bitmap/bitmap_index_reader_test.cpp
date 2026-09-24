@@ -38,6 +38,9 @@ namespace paimon::test {
 
 class BitmapIndexReaderTest : public ::testing::Test {
  protected:
+    // Use a small threshold to exercise dictionary block rollover and cross-block reads.
+    static constexpr int32_t kBitmapDictionaryBlockSize = 24;
+
     static Literal StringLiteral(const std::string& value) {
         return Literal(FieldType::STRING, value.data(), value.size());
     }
@@ -63,7 +66,8 @@ class BitmapIndexReaderTest : public ::testing::Test {
     }
 
     Result<std::shared_ptr<BitmapGlobalIndexWriter>> CreateWriter(
-        const std::shared_ptr<arrow::Field>& field, int32_t dictionary_block_size = 24) {
+        const std::shared_ptr<arrow::Field>& field,
+        int32_t dictionary_block_size = kBitmapDictionaryBlockSize) const {
         std::shared_ptr<arrow::StructType> struct_type =
             std::static_pointer_cast<arrow::StructType>(arrow::struct_({field}));
         return BitmapGlobalIndexWriter::Create(field->name(), struct_type, file_manager_,
@@ -71,7 +75,7 @@ class BitmapIndexReaderTest : public ::testing::Test {
     }
 
     Result<std::shared_ptr<BitmapIndexReader>> CreateReader(
-        const std::shared_ptr<arrow::DataType>& type, const GlobalIndexIOMeta& meta) {
+        const std::shared_ptr<arrow::DataType>& type, const GlobalIndexIOMeta& meta) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeySerializer> serializer,
                                KeySerializer::Create(type, pool_));
         return BitmapIndexReader::Create(serializer, file_manager_, meta, pool_);
