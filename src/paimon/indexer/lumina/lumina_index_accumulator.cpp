@@ -120,6 +120,9 @@ Result<std::unique_ptr<LuminaIndexBuildContext>> LuminaIndexAccumulator::Build(
     // insert data
     if (!with_tag) {
         LuminaDataset insert_data(indexed_count_, dimension, arrays_, array_start_ids_);
+        if (!context->checkpoint_extension) {
+            std::vector<std::shared_ptr<arrow::FloatArray>>().swap(arrays_);
+        }
         PAIMON_RETURN_NOT_OK_FROM_LUMINA(context->builder.InsertFrom(insert_data));
     } else {
         LuminaDatasetWithTag insert_data(indexed_count_, dimension, arrays_, array_start_ids_,
@@ -128,14 +131,13 @@ Result<std::unique_ptr<LuminaIndexBuildContext>> LuminaIndexAccumulator::Build(
             PAIMON_RETURN_NOT_OK_FROM_LUMINA(
                 context->checkpoint_tag_extension->InsertFromWithTag(insert_data));
         } else {
+            std::vector<std::shared_ptr<arrow::FloatArray>>().swap(arrays_);
+            std::vector<std::vector<::lumina::extensions::experimental::TagDimensionData>>().swap(
+                tag_data_vec_);
             PAIMON_RETURN_NOT_OK_FROM_LUMINA(
                 context->tag_extension->InsertFromWithTag(insert_data));
         }
     }
-
-    std::vector<std::shared_ptr<arrow::FloatArray>>().swap(arrays_);
-    std::vector<std::vector<::lumina::extensions::experimental::TagDimensionData>>().swap(
-        tag_data_vec_);
     return context;
 }
 
