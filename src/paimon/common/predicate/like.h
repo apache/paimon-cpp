@@ -47,6 +47,5 @@ class Like : public StringLeafBinaryFunction {
     Like() = default;
 };
 
-PAIMON_EXPORT Result<bool> TestLikeString(const std::string& field,
-                                          const std::string& pattern);
+PAIMON_EXPORT Result<bool> TestLikeString(const std::string& field, const std::string& pattern);
 }  // namespace paimon
