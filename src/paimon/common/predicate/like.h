@@ -22,6 +22,7 @@
 
 #include "paimon/common/predicate/string_leaf_binary_function.h"
 #include "paimon/result.h"
+#include "paimon/visibility.h"
 
 namespace paimon {
 /// A `StringLeafBinaryFunction` to eval filter like.
@@ -45,4 +46,6 @@ class Like : public StringLeafBinaryFunction {
  private:
     Like() = default;
 };
+
+PAIMON_EXPORT Result<bool> TestLikeString(const std::string& field, const std::string& pattern);
 }  // namespace paimon

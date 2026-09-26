@@ -166,4 +166,8 @@ Result<bool> Like::TestString(const std::string& field, const std::string& patte
     }
     return static_cast<bool>(dp[n]);
 }
+
+Result<bool> TestLikeString(const std::string& field, const std::string& pattern) {
+    return Like::Instance().TestString(field, pattern);
+}
 }  // namespace paimon
