@@ -30,6 +30,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/commit_context.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/defs.h"
@@ -534,6 +535,22 @@ TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnLoadedMapBlobTable) {
     ASSERT_NOK_WITH_MSG(
         AppendCompactCoordinator::Run(TablePath(), /*options=*/{}, /*partitions=*/{}, fs, pool_),
         "Writing a table with MAP<..., BLOB> is not supported by the C++ writer");
+}
+
+TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnArrayBlobTable) {
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    arrow::FieldVector fields = {
+        arrow::field("f0", arrow::int32()),
+        arrow::field("a0", arrow::list(BlobUtils::ToArrowField("item", /*nullable=*/true)))};
+    CreateTable(fields, /*partition_keys=*/{}, options);
+
+    ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::Run(TablePath(), options, /*partitions=*/{},
+                                                      /*file_system=*/nullptr, pool_),
+                        "Compacting a table with ARRAY<BLOB> is not supported by the C++ writer");
 }
 
 /// Test that compact output files are written to external path when configured.

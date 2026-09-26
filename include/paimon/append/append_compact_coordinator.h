@@ -37,8 +37,9 @@ class MemoryPool;
 /// and generates compaction tasks using a bin-packing algorithm. It then synchronously
 /// executes all tasks and returns the resulting commit messages.
 ///
-/// @note This implementation does not support deletion vectors or streaming mode.
-///       It only scans the current latest snapshot (batch mode).
+/// @note This implementation does not support deletion vectors, streaming mode, or tables with
+///       ARRAY<BLOB> or MAP<..., BLOB> columns. It only scans the current latest snapshot (batch
+///       mode).
 class PAIMON_EXPORT AppendCompactCoordinator {
  public:
     AppendCompactCoordinator() = delete;

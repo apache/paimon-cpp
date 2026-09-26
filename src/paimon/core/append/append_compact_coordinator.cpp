@@ -203,6 +203,15 @@ Status ValidateTable(const std::shared_ptr<TableSchema>& table_schema,
                      const std::shared_ptr<arrow::Schema>& arrow_schema,
                      const CoreOptions& core_options) {
     PAIMON_RETURN_NOT_OK(BlobUtils::ValidateContainerBlobWriteSchema(arrow_schema));
+    // The rewrite reads and writes plain append files, which can neither merge data-evolution
+    // blob layers nor write blob files; Java compacts these through its data-evolution
+    // compaction instead.
+    for (const auto& field : arrow_schema->fields()) {
+        if (BlobUtils::IsArrayBlobField(field)) {
+            return Status::NotImplemented(
+                "Compacting a table with ARRAY<BLOB> is not supported by the C++ writer.");
+        }
+    }
     if (!table_schema->PrimaryKeys().empty() || core_options.GetBucket() != -1) {
         return Status::Invalid(
             "AppendCompactCoordinator only supports append-only tables "

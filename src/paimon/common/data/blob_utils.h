@@ -65,12 +65,14 @@ class PAIMON_EXPORT BlobUtils {
     };
 
     /// Separates schema with inline field awareness.
-    /// BLOB fields in inline_fields stay in main_schema; others go to blob_schema.
+    /// BLOB fields in inline_fields stay in main_schema; other BLOB, ARRAY<BLOB> and
+    /// MAP<..., BLOB> fields go to blob_schema.
     static SeparatedSchemas SeparateBlobSchema(const std::shared_ptr<arrow::Schema>& schema,
                                                const std::set<std::string>& inline_fields);
 
     /// Separates array with inline field awareness.
-    /// BLOB fields in inline_fields stay in main_array; others go to blob_array.
+    /// BLOB fields in inline_fields stay in main_array; other BLOB, ARRAY<BLOB> and
+    /// MAP<..., BLOB> fields go to blob_array.
     static Result<SeparatedStructArrays> SeparateBlobArray(
         const std::shared_ptr<arrow::StructArray>& struct_array,
         const std::set<std::string>& inline_fields);
@@ -86,7 +88,7 @@ class PAIMON_EXPORT BlobUtils {
     static bool IsArrayBlobPlaceholder(const arrow::ListArray& array, int64_t row);
     /// Returns whether a MAP<..., BLOB> row is the internal fallback sentinel.
     static bool IsMapBlobPlaceholder(const arrow::MapArray& array, int64_t row);
-    /// Rejects container BLOB types, which are currently supported by the C++ reader only.
+    /// Rejects MAP<..., BLOB>, which is currently supported by the C++ reader only.
     static Status ValidateContainerBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema);
     static bool IsBlobMetadata(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata);
     static bool IsBlobFile(const std::string& file_name);

@@ -573,15 +573,18 @@ struct PAIMON_EXPORT Options {
     /// Blob View is enabled, cpp paimon cannot automatically obtain the upstream table warehouse
     /// path and requires manual configuration by the user. No default value.
     static const char BLOB_VIEW_UPSTREAM_WAREHOUSE[];
-    /// "blob-write-null-on-missing-file" - Whether to write NULL for a descriptor BLOB value when
-    /// the referenced file does not exist at write time. When false, a missing file is treated
-    /// like any other fetch failure, following "blob-write-null-on-fetch-failure". Default value
-    /// is "false".
+    /// "blob-write-null-on-missing-file" - Whether to write NULL for a descriptor BLOB value,
+    /// including an ARRAY<BLOB> element, when the referenced file does not exist at write time.
+    /// When false, a missing file is treated like any other fetch failure, following
+    /// "blob-write-null-on-fetch-failure". Default value is "false".
     static const char BLOB_WRITE_NULL_ON_MISSING_FILE[];
-    /// "blob-write-null-on-fetch-failure" - Whether to write NULL for a descriptor BLOB value when
-    /// the referenced data cannot be fetched at write time (e.g. invalid descriptor or invalid
+    /// "blob-write-null-on-fetch-failure" - Whether to write NULL for a descriptor BLOB value,
+    /// including an ARRAY<BLOB> element, when the referenced data cannot be reached at write time,
+    /// i.e. the descriptor cannot be deserialized or the data cannot be opened (e.g. invalid
     /// offset). A missing file is handled by "blob-write-null-on-missing-file" when that option is
-    /// enabled. When false, the write fails when the descriptor is read. Default value is "false".
+    /// enabled. When false, such a failure fails the write. A failure after the copy of the data
+    /// starts, such as a read error or data ending early, always fails the write. Default value is
+    /// "false".
     static const char BLOB_WRITE_NULL_ON_FETCH_FAILURE[];
     /// "global-index.enabled" - Whether to enable global index for scan. Default value is "true".
     static const char GLOBAL_INDEX_ENABLED[];

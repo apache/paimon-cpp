@@ -37,11 +37,12 @@ class CoreOptions;
 ///   - descriptor_fields: stored as BlobDescriptor bytes inline in the main data file.
 ///   - view_fields: stored as BlobViewStruct bytes inline in the main data file.
 ///   - inline_fields: descriptor_fields ∪ view_fields. These stay in the main data file.
-///   - blob_file_fields: BLOB fields that are NOT inline. These go into separate .blob files.
+///   - blob_file_fields: BLOB, ARRAY<BLOB> and MAP<..., BLOB> fields that are NOT inline. These
+///     go into separate .blob files.
 class BlobFileContext {
  public:
     /// Creates a BlobFileContext from schema and options.
-    /// Returns nullptr if the schema has no BLOB fields at all.
+    /// Returns nullptr if the schema has no BLOB, ARRAY<BLOB> or MAP<..., BLOB> field.
     /// Otherwise always returns a valid context (even if all blobs are inline).
     static std::unique_ptr<BlobFileContext> Create(const std::shared_ptr<arrow::Schema>& schema,
                                                    const CoreOptions& options);

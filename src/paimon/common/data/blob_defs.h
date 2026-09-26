@@ -60,9 +60,10 @@ class BlobDefs {
     /// Sentinel bytes standing for a placeholder blob value in two internal channels:
     ///
     /// - Write channel: a data-evolution partial update (a blob-only column write, see
-    ///   kWritePlaceholderKey) marks a not-updated row with these bytes, and the blob format
-    ///   writer persists it as a bin_length -2 entry. Use PlaceholderSentinelView() to build
-    ///   such write arrays. Outside that mode the writer never interprets values, so arbitrary
+    ///   kWritePlaceholderKey) marks a not-updated row with these bytes, directly for a scalar
+    ///   BLOB or as the only element of an ARRAY<BLOB>, and the blob format writer persists it
+    ///   as a bin_length -2 entry. Use PlaceholderSentinelView() to build such write arrays.
+    ///   Outside that mode the writer never interprets a value as a placeholder, so arbitrary
     ///   user bytes can never be turned into a placeholder entry.
     /// - Read channel: a placeholder-aware reader (see kEmitPlaceholderSentinelKey) emits these
     ///   bytes directly for a scalar BLOB, or as the only element of an ARRAY<BLOB>, so the
@@ -77,7 +78,7 @@ class BlobDefs {
     /// rejects loudly (no older layer can resolve it); left untouched in an older layer under a
     /// later partial update it reads as a placeholder in every layer and silently degrades to a
     /// null blob. The marker is distinctive enough that these collisions are accepted as
-    /// negligibly improbable. Sentinel bytes are never stored in blob files.
+    /// negligibly improbable.
     static constexpr char kPlaceholderSentinel[] = "_PAIMON_BLOB_PLACEHOLDER";
     /// Byte length of kPlaceholderSentinel, excluding the literal's terminating NUL.
     static constexpr int32_t kPlaceholderSentinelLength = sizeof(kPlaceholderSentinel) - 1;
@@ -86,13 +87,15 @@ class BlobDefs {
     /// Only the data-evolution blob fallback read path sets this.
     static constexpr char kEmitPlaceholderSentinelKey[] = "blob.internal.emit-placeholder-sentinel";
     /// Internal (non user-facing) format option, "false" by default: when "true", the blob
-    /// format writer persists a value exactly equal to kPlaceholderSentinel as a bin_length -2
-    /// entry. Only set for data-evolution partial updates, i.e. blob-only column writes of a
-    /// table with data evolution enabled; all other writes store bytes verbatim.
+    /// format writer persists a value exactly equal to kPlaceholderSentinel (or an ARRAY<BLOB>
+    /// whose only element is kPlaceholderSentinel) as a bin_length -2 entry. Only set for
+    /// data-evolution partial updates, i.e. blob-only column writes of a table with data evolution
+    /// enabled; no other write interprets a value as a placeholder.
     static constexpr char kWritePlaceholderKey[] = "blob.internal.write-placeholder";
 
-    /// The sentinel bytes for building a data-evolution partial-update write array: a row equal
-    /// to this view is persisted as a placeholder entry (see kWritePlaceholderKey).
+    /// The sentinel bytes for building a data-evolution partial-update write array: a BLOB row
+    /// equal to this view, or an ARRAY<BLOB> row holding only it, is persisted as a placeholder
+    /// entry (see kWritePlaceholderKey).
     static std::string_view PlaceholderSentinelView() {
         return {kPlaceholderSentinel, static_cast<size_t>(kPlaceholderSentinelLength)};
     }
@@ -121,6 +124,11 @@ class BlobDefs {
     static constexpr int32_t kTotalMetaLength = 16;
     /// Blob file footer length: index_len(4) + version(1) = 5.
     static constexpr uint32_t kBlobFileFooterLength = 5;
+
+    /// Magic number identifying the nested payload of an ARRAY<BLOB> entry.
+    static constexpr int32_t kArrayBlobMagicNumber = 1094861634;
+    /// ARRAY<BLOB> nested payload version.
+    static constexpr int8_t kArrayBlobVersion = 1;
 };
 
 }  // namespace paimon

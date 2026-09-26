@@ -38,14 +38,14 @@ BlobFileContext::BlobFileContext(std::set<std::string> descriptor_fields,
 
 std::unique_ptr<BlobFileContext> BlobFileContext::Create(
     const std::shared_ptr<arrow::Schema>& schema, const CoreOptions& options) {
-    // Collect the BLOB field names that are present in the given schema. The schema may
-    // only contain a subset of the table columns (e.g. a projected read/write schema), so all
-    // field categories below must be derived from this set rather than from the options
-    // alone, which describe the full table.
+    // Collect the BLOB, ARRAY<BLOB> and MAP<..., BLOB> field names present in the given schema.
+    // The schema may only contain a subset of the table columns (e.g. a projected read/write
+    // schema), so all field categories below must be derived from this set rather than from the
+    // options alone, which describe the full table.
     std::set<std::string> schema_blob_fields;
     for (int i = 0; i < schema->num_fields(); ++i) {
         const auto& field = schema->field(i);
-        if (BlobUtils::IsBlobField(field)) {
+        if (BlobUtils::IsAnyBlobField(field)) {
             schema_blob_fields.insert(field->name());
         }
     }

@@ -27,8 +27,8 @@ compaction is therefore a trade-off between write throughput and read efficiency
    - There can only be one job working on the same partition's compaction,
      otherwise it will cause conflicts.
    - Paimon C++ does not support producing changelog for now.
-   - Compaction is disabled when ``write-only`` is set to ``true``, or when the
-     table uses dynamic bucketing (``bucket = -1``) for append-only tables.
+   - Automatic compaction is disabled when ``write-only`` is set to ``true``,
+     or when an append-only table uses unaware-bucket mode (``bucket = -1``).
    - For a complete list of compaction-related configurations, see the
      :ref:`Options API Reference <cpp-api-options>`.
 
@@ -43,9 +43,12 @@ to improve read efficiency. The compaction is performed asynchronously and does
 not block writes.
 
 .. note::
-   Append-only table compaction is only available for fixed-bucket mode
-   (``bucket > 0``). Dynamic bucketing (``bucket = -1``) does not support
-   compaction. Tables with blob columns also skip compaction.
+   Automatic append-only table compaction is only available for fixed-bucket
+   mode (``bucket > 0``). Writers of unaware-bucket tables (``bucket = -1``) do
+   not compact, and tables with blob columns also skip automatic compaction.
+   ``AppendCompactCoordinator::Run`` explicitly compacts ``bucket = -1``
+   tables, but rejects tables with ``ARRAY<BLOB>`` columns, since its rewrite
+   cannot merge data-evolution blob files.
 
 .. _data-evolution-deletion-vectors-compaction:
 

@@ -290,3 +290,31 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        projection built by ``paimon::VariantAccessBuilder`` (e.g. ``$.a.b`` as
        BIGINT). For shredded files only the required typed sub-columns are
        read.
+
+   * - ``BLOB``
+
+       ``ARRAY<BLOB>``
+     - LargeBinary
+
+       List<LargeBinary>
+     - Data type of a binary large object, such as an image or a video, stored
+       in dedicated ``.blob`` files instead of the normal data files. A BLOB
+       column listed in ``blob-descriptor-field`` or ``blob-view-field`` instead
+       keeps a serialized reference in the data file, so the referenced data
+       must remain available.
+
+       A BLOB field is a ``LargeBinary`` field marked with Paimon-specific
+       field metadata; use ``paimon::Blob::ArrowField`` to construct such a
+       field. An ``ARRAY<BLOB>`` field is a top-level ``List`` field whose
+       element field is a BLOB field, which stores an ordered collection of
+       objects (e.g. the frames of one sample) in a single blob entry. Both the
+       array and its elements may be null.
+
+       Tables with BLOB or ``ARRAY<BLOB>`` columns must enable
+       ``row-tracking.enabled`` and ``data-evolution.enabled``, and must have
+       at least one non-BLOB column. These columns cannot be partition keys.
+       ``ARRAY<BLOB>`` cannot be nested inside other types or listed in
+       ``blob-descriptor-field`` or ``blob-view-field``. Paimon C++ does not
+       support compacting tables with ``ARRAY<BLOB>`` columns yet, and can read
+       but not write ``MAP<kt, BLOB>`` columns. See :doc:`write` for writing
+       BLOB columns.

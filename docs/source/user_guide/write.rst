@@ -71,6 +71,71 @@ RecordBatch Construction
   - Prefer batch sizes tuned for I/O throughput (e.g., tens to hundreds of MB per flush, depending on filesystem and cluster configuration).
   - Maintain stable sort orders within a batch only if required by downstream merge or compaction logic; otherwise avoid unnecessary ordering costs.
 
+Writing BLOB Columns
+~~~~~~~~~~~~~~~~~~~~
+
+A ``BLOB`` column is a ``LargeBinary`` field carrying Paimon's BLOB field
+metadata, and an ``ARRAY<BLOB>`` column is a top-level ``List`` field whose
+element field carries it. Build the BLOB field with ``paimon::Blob::ArrowField``
+and import it into Arrow; the element field of an ``ARRAY<BLOB>`` column must
+keep that metadata:
+
+.. code-block:: cpp
+
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> c_element,
+                          paimon::Blob::ArrowField("element", /*nullable=*/true));
+   arrow::Result<std::shared_ptr<arrow::Field>> element = arrow::ImportField(c_element.get());
+   if (!element.ok()) {
+       return paimon::Status::Invalid(element.status().ToString());
+   }
+   std::shared_ptr<arrow::Schema> schema = arrow::schema(
+       {arrow::field("id", arrow::int32()), arrow::field("frames", arrow::list(*element))});
+
+For a column stored in blob files, which includes every ``ARRAY<BLOB>`` column,
+each value or element holds either the raw bytes or a serialized
+``paimon::BlobDescriptor`` produced by ``paimon::Blob::ToDescriptor``; the writer
+copies the referenced data into the blob file. A BLOB column listed in
+``blob-descriptor-field`` or ``blob-view-field`` keeps the reference in the data
+file instead, so the referenced data must remain available.
+
+If the referenced data cannot be reached, the write fails unless a write-null
+option covers the failure: ``blob-write-null-on-missing-file`` covers a
+referenced file that does not exist, and ``blob-write-null-on-fetch-failure``
+covers any other failure to resolve the descriptor or open the data, including
+a missing file when the former is disabled. A covered value is written as NULL;
+in an ``ARRAY<BLOB>`` only that element becomes NULL, not the array. A failure
+while copying the data or writing the blob file always fails the write.
+See :doc:`data_types` for the table requirements and restrictions.
+
+A data-evolution write that carries only columns stored in blob files updates
+those columns of existing rows. A BLOB column listed in ``blob-descriptor-field``
+or ``blob-view-field`` is stored in the data file, so a write that carries one
+is not such an update. The write does not locate the updated rows itself:
+before the commit, each file in its commit messages must be assigned the first
+row id of the rows it covers, and committing without it fails. Paimon C++ does
+not assign that id and its public API cannot set it, so the commit messages
+must be updated outside Paimon C++, for example by Paimon Java after
+``CommitMessage::Serialize``. The serialized payload does not carry its
+serialization version, so send ``CommitMessage::CurrentVersion()`` with it,
+and pass ``CommitMessage::Deserialize`` the version the returned payload was
+serialized with.
+
+A row the update leaves unchanged is marked with the reserved bytes
+``_PAIMON_BLOB_PLACEHOLDER``: as the value itself for a BLOB column, or as the
+only element of the array for an ``ARRAY<BLOB>`` column. Such a row keeps its
+value from the older files when read, so a value equal to the reserved bytes is
+not supported in a table that receives such updates.
+
+.. note::
+   The C++ writer differs from Paimon Java in these respects:
+
+   - A placeholder is identified by the reserved bytes; Java uses a dedicated
+     placeholder object, which cannot collide with a user value.
+   - A missing file is detected with ``FileSystem::Exists``. Java detects a
+     missing file for an ``ARRAY<BLOB>`` element only from an HTTP 404, and
+     does not write NULL for a 404 under ``blob-write-null-on-fetch-failure``
+     alone.
+
 Prepare Commit
 ----------------
 

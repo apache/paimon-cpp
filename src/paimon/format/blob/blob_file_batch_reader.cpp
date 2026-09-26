@@ -48,8 +48,6 @@
 namespace paimon::blob {
 namespace {
 
-constexpr int32_t kArrayBlobMagicNumber = 1094861634;
-constexpr int8_t kArrayBlobVersion = 1;
 constexpr int32_t kArrayBlobHeaderLength = 9;
 constexpr int32_t kArrayBlobIndexLengthSize = 4;
 constexpr int32_t kArrayBlobMinPayloadLength = kArrayBlobHeaderLength + kArrayBlobIndexLengthSize;
@@ -405,12 +403,12 @@ Result<BlobFileBatchReader::ArrayBlobPayload> BlobFileBatchReader::ReadArrayBlob
     std::array<uint8_t, kArrayBlobHeaderLength> header;
     PAIMON_RETURN_NOT_OK(ReadBlobContentAt(payload_offset, header.size(), header.data()));
     const auto magic_number = ReadLittleEndian<int32_t>(header.data());
-    if (magic_number != kArrayBlobMagicNumber) {
+    if (magic_number != BlobDefs::kArrayBlobMagicNumber) {
         return Status::Invalid(
             fmt::format("invalid ARRAY<BLOB> payload magic number: {}", magic_number));
     }
     const auto version = static_cast<int8_t>(header[4]);
-    if (version != kArrayBlobVersion) {
+    if (version != BlobDefs::kArrayBlobVersion) {
         return Status::NotImplemented(
             fmt::format("unsupported ARRAY<BLOB> payload version: {}", version));
     }
