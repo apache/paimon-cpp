@@ -941,7 +941,7 @@ TEST_P(GlobalIndexTest, TestMultipleIndexFilesPrunedByKeyRange) {
                          WriteArray(table_path, {{"f1", "20"}}, write_cols, second_array));
     ASSERT_OK(Commit(table_path, second_commit_messages));
 
-    for (const std::string& index_type : {"bitmap", "btree"}) {
+    for (const std::string index_type : {"bitmap", "btree"}) {
         ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{{{"f1", "10"}}}, "f0", index_type,
                              /*options=*/{}, Range(0, 1)));
         ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{{{"f1", "20"}}}, "f0", index_type,
