@@ -22,10 +22,11 @@
 
 #include "paimon/common/predicate/string_leaf_binary_function.h"
 #include "paimon/result.h"
+#include "paimon/visibility.h"
 
 namespace paimon {
 /// A `StringLeafBinaryFunction` to eval filter like.
-class Like : public StringLeafBinaryFunction {
+class PAIMON_EXPORT Like : public StringLeafBinaryFunction {
  public:
     static const Like& Instance() {
         static const Like instance = Like();
