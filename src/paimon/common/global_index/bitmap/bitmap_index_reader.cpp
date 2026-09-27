@@ -382,7 +382,7 @@ Result<RoaringBitmap64> BitmapIndexReader::Like(const Literal& literal) {
         if (key.GetType() != FieldType::STRING) {
             return false;
         }
-        return paimon::TestLikeString(key.GetValue<std::string>(), pattern);
+        return paimon::Like::MatchString(key.GetValue<std::string>(), pattern);
     });
 }
 
