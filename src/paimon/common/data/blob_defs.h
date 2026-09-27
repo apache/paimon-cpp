@@ -65,8 +65,9 @@ class BlobDefs {
     ///   such write arrays. Outside that mode the writer never interprets values, so arbitrary
     ///   user bytes can never be turned into a placeholder entry.
     /// - Read channel: a placeholder-aware reader (see kEmitPlaceholderSentinelKey) emits these
-    ///   bytes for -2 entries so the fallback merge can identify placeholders after the batch
-    ///   has passed through schema-mapping readers.
+    ///   bytes directly for a scalar BLOB, or as the only element of an ARRAY<BLOB>, so the
+    ///   fallback merge can identify -2 entries after the batch has passed through schema-mapping
+    ///   readers.
     ///
     /// Both channels identify a placeholder by exact byte equality with this internal reserved
     /// value (IsPlaceholderSentinel), and the fallback merge byte-compares every layer of a

@@ -25,7 +25,11 @@
 
 namespace paimon {
 DataOutputStream::DataOutputStream(const std::shared_ptr<OutputStream>& output_stream)
-    : output_stream_(output_stream) {
+    : owned_output_stream_(output_stream), output_stream_(owned_output_stream_.get()) {
+    assert(output_stream_);
+}
+
+DataOutputStream::DataOutputStream(OutputStream* output_stream) : output_stream_(output_stream) {
     assert(output_stream_);
 }
 

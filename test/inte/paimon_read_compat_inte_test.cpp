@@ -488,6 +488,32 @@ TEST_P(PaimonReadCompatInteTest, ReadsBlobValues) {
     ASSERT_EQ(inline_descriptor->Offset(), 7);
     ASSERT_EQ(inline_descriptor->Length(), 11);
 
+    // Python and Java store ARRAY<BLOB> values in standard separate BLOB files. Validate resolved
+    // payloads, a null element, a null array, and an empty array. Rust stores raw values inline in
+    // Parquet, which is not a compatible Paimon BLOB representation and is asserted separately.
+    if (param.writer_prefix != "rust") {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> array_blob_result,
+                             ReadTable(param, param.writer_prefix + "_array_blob_types",
+                                       {"id", "f_array_blob"}, blob_value_options));
+        std::shared_ptr<arrow::StructArray> array_blob_rows = GetOnlyStructChunk(array_blob_result);
+        ASSERT_TRUE(array_blob_rows);
+        ASSERT_EQ(array_blob_rows->length(), 3);
+        AssertFieldEqualsJson(array_blob_rows, "id", arrow::int32(), "[1, 2, 3]");
+
+        std::string expected_array_blob_json;
+        if (param.file_format == "parquet") {
+            expected_array_blob_json = R"([["blob-array-0", null, "blob-array-2"], null, []])";
+        } else if (param.file_format == "orc") {
+            expected_array_blob_json =
+                R"([["blob-array-left", null, "blob-array-right"], null, []])";
+        } else {
+            ASSERT_EQ(param.file_format, "avro");
+            expected_array_blob_json = R"([["array-blob-value", null, ""], null, []])";
+        }
+        AssertFieldEqualsJson(array_blob_rows, "f_array_blob", arrow::list(arrow::large_binary()),
+                              expected_array_blob_json);
+    }
+
     // Python and Java store MAP<STRING, BLOB> values in standard separate BLOB files. Validate
     // resolved payloads, null values, and an empty map. Rust stores raw values inline in Parquet,
     // which is not a compatible Paimon BLOB representation and is asserted separately below.
@@ -510,6 +536,12 @@ TEST(PaimonReadCompatInteStandaloneTest, RejectsNonStandardRustMapBlob) {
     ASSERT_NOK_WITH_MSG(
         ReadTable("parquet", "rust_map_blob_types", {"f_map_blob"}),
         "Parquet does not support partial projection inside list/map: src map<string, binary");
+}
+
+TEST(PaimonReadCompatInteStandaloneTest, RejectsNonStandardRustArrayBlob) {
+    ASSERT_NOK_WITH_MSG(
+        ReadTable("parquet", "rust_array_blob_types", {"f_array_blob"}),
+        "Parquet does not support partial projection inside list/map: src list<element: binary");
 }
 
 TEST_P(PaimonReadCompatInteTest, ReadsVectorValues) {
@@ -581,8 +613,6 @@ TEST_P(PaimonUnsupportedTypeInteTest, ReportsExpectedError) {
 
 std::vector<UnsupportedReadParam> UnsupportedReadParams() {
     const std::vector<UnsupportedReadCase> read_cases = {
-        {"ArrayBlob", "array_blob_types", "f_array_blob",
-         "BLOB field must be a top-level field or the direct value of a top-level MAP field"},
         {"TimePrecision0", "time_types", "f_time_0", ""},
         {"TimePrecision3", "time_types", "f_time_3", ""},
         {"TimePrecision6", "time_types", "f_time_6", ""},

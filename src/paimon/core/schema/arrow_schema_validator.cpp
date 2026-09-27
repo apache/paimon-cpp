@@ -128,8 +128,11 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
             return Status::OK();
         case arrow::Type::type::LIST: {
             const auto& value_field = checked_cast<arrow::BaseListType*>(type.get())->value_field();
-            PAIMON_RETURN_NOT_OK(ValidateDataTypeWithFieldId(
-                value_field->type(), value_field->metadata(), /*allow_blob=*/false, field_id_set));
+            bool allow_direct_blob_element =
+                allow_blob && value_field->type()->id() == arrow::Type::LARGE_BINARY;
+            PAIMON_RETURN_NOT_OK(
+                ValidateDataTypeWithFieldId(value_field->type(), value_field->metadata(),
+                                            allow_direct_blob_element, field_id_set));
             break;
         }
         case arrow::Type::type::FIXED_SIZE_LIST: {
@@ -176,8 +179,8 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
             if (BlobUtils::IsBlobMetadata(key_value_metadata)) {
                 if (!allow_blob) {
                     return Status::Invalid(
-                        "BLOB field must be a top-level field or the direct value of a "
-                        "top-level MAP field.");
+                        "BLOB field must be a top-level field or the direct element/value of a "
+                        "top-level ARRAY/MAP field.");
                 }
                 break;
             }
@@ -219,7 +222,9 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
         case arrow::Type::type::LIST: {
             const auto& value_field =
                 checked_cast<const arrow::BaseListType&>(*field->type()).value_field();
-            PAIMON_RETURN_NOT_OK(ValidateField(value_field, /*allow_blob=*/false));
+            bool allow_direct_blob_element =
+                allow_blob && value_field->type()->id() == arrow::Type::LARGE_BINARY;
+            PAIMON_RETURN_NOT_OK(ValidateField(value_field, allow_direct_blob_element));
             break;
         }
         case arrow::Type::type::FIXED_SIZE_LIST: {
@@ -266,8 +271,8 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
             if (BlobUtils::IsBlobField(field)) {
                 if (!allow_blob) {
                     return Status::Invalid(
-                        "BLOB field must be a top-level field or the direct value of a "
-                        "top-level MAP field.");
+                        "BLOB field must be a top-level field or the direct element/value of a "
+                        "top-level ARRAY/MAP field.");
                 }
                 break;
             }

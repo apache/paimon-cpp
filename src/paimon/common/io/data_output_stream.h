@@ -40,6 +40,7 @@ class OutputStream;
 class PAIMON_EXPORT DataOutputStream {
  public:
     explicit DataOutputStream(const std::shared_ptr<OutputStream>& output_stream);
+    explicit DataOutputStream(OutputStream* output_stream);
 
     template <typename T>
     Status WriteValue(const T& value) {
@@ -71,7 +72,8 @@ class PAIMON_EXPORT DataOutputStream {
     bool NeedSwap() const;
 
  private:
-    std::shared_ptr<OutputStream> output_stream_;
+    std::shared_ptr<OutputStream> owned_output_stream_;
+    OutputStream* output_stream_;
 
     ByteOrder byte_order_ = ByteOrder::PAIMON_BIG_ENDIAN;
 };

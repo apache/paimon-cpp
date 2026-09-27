@@ -202,7 +202,7 @@ Result<std::pair<std::shared_ptr<TableSchema>, CoreOptions>> LoadSchemaAndOption
 Status ValidateTable(const std::shared_ptr<TableSchema>& table_schema,
                      const std::shared_ptr<arrow::Schema>& arrow_schema,
                      const CoreOptions& core_options) {
-    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateMapBlobWriteSchema(arrow_schema));
+    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateContainerBlobWriteSchema(arrow_schema));
     if (!table_schema->PrimaryKeys().empty() || core_options.GetBucket() != -1) {
         return Status::Invalid(
             "AppendCompactCoordinator only supports append-only tables "
