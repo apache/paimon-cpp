@@ -220,8 +220,7 @@ TEST_F(BitmapGlobalIndexTest, HighCardinality) {
 
     arrow::StructBuilder struct_builder(arrow::struct_({field}), arrow::default_memory_pool(),
                                         {std::make_shared<arrow::StringBuilder>()});
-    arrow::StringBuilder* string_builder =
-        checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+    auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
     std::vector<int64_t> row_ids;
     row_ids.reserve(rows.size());
     for (const Row& row : rows) {

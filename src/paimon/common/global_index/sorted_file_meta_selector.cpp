@@ -323,7 +323,7 @@ Result<MemorySlice> SortedFileMetaSelector::SerializeLiteral(const Literal& lite
 std::shared_ptr<Bytes> SortedFileMetaSelector::PrefixUpperBound(const MemorySlice& prefix,
                                                                 MemoryPool* pool) {
     for (int32_t index = prefix.Length() - 1; index >= 0; --index) {
-        uint8_t value = static_cast<uint8_t>(prefix.ReadByte(index));
+        auto value = static_cast<uint8_t>(prefix.ReadByte(index));
         if (value == 0xff) {
             continue;
         }

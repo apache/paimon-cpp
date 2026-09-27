@@ -162,7 +162,8 @@ TEST_F(LazyFilteredBitmapReaderTest, FallbackBudgetUsesSelectedFiles) {
 
 TEST_F(LazyFilteredBitmapReaderTest, FallbackScanDisabledDoesNotDisableDirectLookup) {
     GlobalIndexIOMeta meta = WriteSingleFile(R"([["alpha"], ["alphabet"], ["beta"]])", {0, 1, 2});
-    std::shared_ptr<LazyFilteredBitmapReader> reader = CreateReader({meta}, /*max_size=*/0);
+    std::shared_ptr<LazyFilteredBitmapReader> reader =
+        CreateReader({meta}, /*fallback_scan_max_size=*/0);
 
     CheckResult(reader->VisitEqual(StringLiteral("beta")), {2});
     CheckResult(reader->VisitStartsWith(StringLiteral("alpha")), {0, 1});
