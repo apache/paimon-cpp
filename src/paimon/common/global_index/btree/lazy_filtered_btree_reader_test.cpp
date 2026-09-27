@@ -19,6 +19,7 @@
 
 #include "paimon/common/global_index/btree/lazy_filtered_btree_reader.h"
 
+#include <limits>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -136,13 +137,15 @@ class LazyFilteredBTreeReaderTest : public ::testing::Test {
     }
 
     std::shared_ptr<LazyFilteredBTreeReader> CreateReader(
-        const std::shared_ptr<Executor>& executor = nullptr) const {
+        const std::shared_ptr<Executor>& executor = nullptr,
+        int64_t fallback_scan_max_size = std::numeric_limits<int64_t>::max()) const {
         auto file_reader = std::make_shared<FakeLazyFileReader>(fs_, base_path_);
         auto cache_manager = std::make_shared<CacheManager>(1024 * 1024, 0.5);
-        EXPECT_OK_AND_ASSIGN(std::shared_ptr<LazyFilteredBTreeReader> reader,
-                             LazyFilteredBTreeReader::Create(
-                                 /*read_buffer_size=*/std::nullopt, all_metas_, arrow::int32(),
-                                 file_reader, cache_manager, pool_, executor));
+        EXPECT_OK_AND_ASSIGN(
+            std::shared_ptr<LazyFilteredBTreeReader> reader,
+            LazyFilteredBTreeReader::Create(
+                /*read_buffer_size=*/std::nullopt, all_metas_, arrow::int32(), file_reader,
+                cache_manager, fallback_scan_max_size, pool_, executor));
         return reader;
     }
 
@@ -230,6 +233,18 @@ TEST_F(LazyFilteredBTreeReaderTest, TestVisitLessThanNoMatch) {
     Literal literal_1(1);
     ASSERT_OK_AND_ASSIGN(auto result, reader->VisitLessThan(literal_1));
     CheckEmpty(result);
+}
+
+TEST_F(LazyFilteredBTreeReaderTest, FallbackScanDisabledDoesNotDisableDirectLookup) {
+    std::shared_ptr<LazyFilteredBTreeReader> reader =
+        CreateReader(/*executor=*/nullptr, /*fallback_scan_max_size=*/0);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> equal, reader->VisitEqual(Literal(1)));
+    CheckResult(equal, {0, 1});
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> less_than,
+                         reader->VisitLessThan(Literal(5)));
+    ASSERT_EQ(nullptr, less_than);
 }
 
 // --- VisitLessOrEqual ---
@@ -383,11 +398,11 @@ TEST_F(LazyFilteredBTreeReaderTest, TestEmptyFilesList) {
     std::vector<GlobalIndexIOMeta> empty_metas;
     auto file_reader = std::make_shared<FakeLazyFileReader>(fs_, base_path_);
     auto cache_manager = std::make_shared<CacheManager>(1024 * 1024, 0.5);
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<LazyFilteredBTreeReader> reader,
-        LazyFilteredBTreeReader::Create(/*read_buffer_size=*/std::nullopt, empty_metas,
-                                        arrow::int32(), file_reader, cache_manager, pool_,
-                                        /*executor=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<LazyFilteredBTreeReader> reader,
+                         LazyFilteredBTreeReader::Create(
+                             /*read_buffer_size=*/std::nullopt, empty_metas, arrow::int32(),
+                             file_reader, cache_manager, std::numeric_limits<int64_t>::max(), pool_,
+                             /*executor=*/nullptr));
 
     // Any query on empty files should return empty bitmap
     Literal literal_1(1);
@@ -477,10 +492,11 @@ TEST_F(LazyFilteredBTreeReaderTest, TestParallelEmptyFilesList) {
     std::vector<GlobalIndexIOMeta> empty_metas;
     auto file_reader = std::make_shared<FakeLazyFileReader>(fs_, base_path_);
     auto cache_manager = std::make_shared<CacheManager>(1024 * 1024, 0.5);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<LazyFilteredBTreeReader> reader,
-                         LazyFilteredBTreeReader::Create(/*read_buffer_size=*/std::nullopt,
-                                                         empty_metas, arrow::int32(), file_reader,
-                                                         cache_manager, pool_, executor));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<LazyFilteredBTreeReader> reader,
+        LazyFilteredBTreeReader::Create(/*read_buffer_size=*/std::nullopt, empty_metas,
+                                        arrow::int32(), file_reader, cache_manager,
+                                        std::numeric_limits<int64_t>::max(), pool_, executor));
     Literal literal_1(1);
     ASSERT_OK_AND_ASSIGN(auto result, reader->VisitEqual(literal_1));
     CheckEmpty(result);
@@ -493,7 +509,7 @@ TEST_F(LazyFilteredBTreeReaderTest, RejectsMalformedFileMetadata) {
         GlobalIndexIOMeta("invalid", 1, /*metadata=*/nullptr)};
     ASSERT_NOK(LazyFilteredBTreeReader::Create(
         /*read_buffer_size=*/std::nullopt, invalid_metas, arrow::int32(), file_reader,
-        cache_manager, pool_, /*executor=*/nullptr));
+        cache_manager, std::numeric_limits<int64_t>::max(), pool_, /*executor=*/nullptr));
 }
 
 }  // namespace paimon::test

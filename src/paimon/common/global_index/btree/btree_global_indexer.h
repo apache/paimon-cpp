@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -70,11 +71,15 @@ class BTreeGlobalIndexer : public GlobalIndexer {
 
  private:
     BTreeGlobalIndexer(const std::shared_ptr<CacheManager>& cache_manager,
+                       int64_t fallback_scan_max_size,
                        const std::map<std::string, std::string>& options)
-        : cache_manager_(cache_manager), options_(options) {}
+        : cache_manager_(cache_manager),
+          fallback_scan_max_size_(fallback_scan_max_size),
+          options_(options) {}
 
  private:
     std::shared_ptr<CacheManager> cache_manager_;
+    int64_t fallback_scan_max_size_;
     std::map<std::string, std::string> options_;
 };
 

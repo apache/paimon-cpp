@@ -19,6 +19,8 @@
 
 #include "paimon/common/global_index/sorted_file_meta_selector.h"
 
+#include <cstring>
+
 #include "fmt/format.h"
 #include "paimon/common/memory/memory_slice.h"
 
@@ -90,6 +92,9 @@ Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitIsNull() {
 }
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitEqual(const Literal& literal) {
+    if (literal.IsNull()) {
+        return std::vector<GlobalIndexIOMeta>();
+    }
     PAIMON_ASSIGN_OR_RAISE(MemorySlice literal_slice, SerializeLiteral(literal));
     return Filter([this, &literal_slice](const SortedIndexFileMeta& meta) -> Result<bool> {
         if (meta.OnlyNulls()) {
@@ -101,11 +106,18 @@ Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitEqual(const 
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitNotEqual(
     const Literal& literal) {
-    return Filter([](const SortedIndexFileMeta& meta) -> Result<bool> { return true; });
+    if (literal.IsNull()) {
+        return std::vector<GlobalIndexIOMeta>();
+    }
+    return Filter(
+        [](const SortedIndexFileMeta& meta) -> Result<bool> { return !meta.OnlyNulls(); });
 }
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitLessThan(
     const Literal& literal) {
+    if (literal.IsNull()) {
+        return std::vector<GlobalIndexIOMeta>();
+    }
     // file.minKey < literal
     PAIMON_ASSIGN_OR_RAISE(MemorySlice literal_slice, SerializeLiteral(literal));
     return Filter([this, &literal_slice](const SortedIndexFileMeta& meta) -> Result<bool> {
@@ -119,6 +131,9 @@ Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitLessThan(
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitLessOrEqual(
     const Literal& literal) {
+    if (literal.IsNull()) {
+        return std::vector<GlobalIndexIOMeta>();
+    }
     // file.minKey <= literal
     PAIMON_ASSIGN_OR_RAISE(MemorySlice literal_slice, SerializeLiteral(literal));
     return Filter([this, &literal_slice](const SortedIndexFileMeta& meta) -> Result<bool> {
@@ -132,6 +147,9 @@ Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitLessOrEqual(
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitGreaterThan(
     const Literal& literal) {
+    if (literal.IsNull()) {
+        return std::vector<GlobalIndexIOMeta>();
+    }
     // file.maxKey > literal
     PAIMON_ASSIGN_OR_RAISE(MemorySlice literal_slice, SerializeLiteral(literal));
     return Filter([this, &literal_slice](const SortedIndexFileMeta& meta) -> Result<bool> {
@@ -145,6 +163,9 @@ Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitGreaterThan(
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitGreaterOrEqual(
     const Literal& literal) {
+    if (literal.IsNull()) {
+        return std::vector<GlobalIndexIOMeta>();
+    }
     // file.maxKey >= literal
     PAIMON_ASSIGN_OR_RAISE(MemorySlice literal_slice, SerializeLiteral(literal));
     return Filter([this, &literal_slice](const SortedIndexFileMeta& meta) -> Result<bool> {
@@ -161,6 +182,9 @@ Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitIn(
     std::vector<MemorySlice> literal_slices;
     literal_slices.reserve(literals.size());
     for (const auto& literal : literals) {
+        if (literal.IsNull()) {
+            continue;
+        }
         PAIMON_ASSIGN_OR_RAISE(MemorySlice slice, SerializeLiteral(literal));
         literal_slices.push_back(std::move(slice));
     }
@@ -180,27 +204,63 @@ Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitIn(
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitNotIn(
     const std::vector<Literal>& literals) {
-    // Cannot filter any file by NOT IN condition
-    return Filter([](const SortedIndexFileMeta& meta) -> Result<bool> { return true; });
+    for (const Literal& literal : literals) {
+        if (literal.IsNull()) {
+            return std::vector<GlobalIndexIOMeta>();
+        }
+    }
+    return Filter(
+        [](const SortedIndexFileMeta& meta) -> Result<bool> { return !meta.OnlyNulls(); });
 }
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitStartsWith(
     const Literal& prefix) {
-    return Filter([](const SortedIndexFileMeta& meta) -> Result<bool> { return true; });
+    if (prefix.IsNull()) {
+        return std::vector<GlobalIndexIOMeta>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(MemorySlice prefix_slice, SerializeLiteral(prefix));
+    if (prefix_slice.Length() == 0) {
+        return Filter(
+            [](const SortedIndexFileMeta& meta) -> Result<bool> { return !meta.OnlyNulls(); });
+    }
+    std::shared_ptr<Bytes> upper_bound =
+        PrefixUpperBound(prefix_slice, key_serializer_->GetMemoryPool());
+    return Filter(
+        [this, &prefix_slice, &upper_bound](const SortedIndexFileMeta& meta) -> Result<bool> {
+            if (meta.OnlyNulls()) {
+                return false;
+            }
+            PAIMON_ASSIGN_OR_RAISE(int32_t lower_comparison, CompareLastKey(meta, prefix_slice));
+            if (lower_comparison < 0) {
+                return false;
+            }
+            if (upper_bound == nullptr) {
+                return true;
+            }
+            PAIMON_ASSIGN_OR_RAISE(int32_t upper_comparison,
+                                   CompareFirstKey(meta, MemorySlice::Wrap(upper_bound)));
+            return upper_comparison < 0;
+        });
 }
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitEndsWith(
     const Literal& suffix) {
-    return Filter([](const SortedIndexFileMeta& meta) -> Result<bool> { return true; });
+    return Filter([&suffix](const SortedIndexFileMeta& meta) -> Result<bool> {
+        return !suffix.IsNull() && !meta.OnlyNulls();
+    });
 }
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitContains(
     const Literal& literal) {
-    return Filter([](const SortedIndexFileMeta& meta) -> Result<bool> { return true; });
+    return Filter([&literal](const SortedIndexFileMeta& meta) -> Result<bool> {
+        return !literal.IsNull() && !meta.OnlyNulls();
+    });
 }
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::VisitLike(const Literal& literal) {
-    return Filter([](const SortedIndexFileMeta& meta) -> Result<bool> { return true; });
+    return Filter([&literal](const SortedIndexFileMeta& meta) -> Result<bool> {
+        return !literal.IsNull() && !meta.OnlyNulls();
+    });
 }
 
 Result<std::vector<GlobalIndexIOMeta>> SortedFileMetaSelector::Filter(
@@ -258,6 +318,23 @@ Result<MemorySlice> SortedFileMetaSelector::SerializeLiteral(const Literal& lite
     MemorySlice slice = MemorySlice::Wrap(bytes);
     PAIMON_RETURN_NOT_OK(key_serializer_->ValidateSerializedKey(slice));
     return slice;
+}
+
+std::shared_ptr<Bytes> SortedFileMetaSelector::PrefixUpperBound(const MemorySlice& prefix,
+                                                                MemoryPool* pool) {
+    for (int32_t index = prefix.Length() - 1; index >= 0; --index) {
+        uint8_t value = static_cast<uint8_t>(prefix.ReadByte(index));
+        if (value == 0xff) {
+            continue;
+        }
+        std::shared_ptr<Bytes> upper_bound = Bytes::AllocateBytes(index + 1, pool);
+        if (index > 0) {
+            std::memcpy(upper_bound->data(), prefix.Data(), index);
+        }
+        upper_bound->data()[index] = static_cast<char>(value + 1);
+        return upper_bound;
+    }
+    return nullptr;
 }
 
 }  // namespace paimon

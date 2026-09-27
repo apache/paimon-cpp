@@ -326,14 +326,14 @@ TEST_F(ManifestListTest, TestReadWithMinAndMaxRowId) {
     auto pool = GetDefaultPool();
     // test read meta from java
     auto manifest_file_metas = ReadManifestFileMeta(
-        "orc",
+        "avro",
         paimon::test::GetDataDir() + "orc/append_with_global_index.db/append_with_global_index/",
-        "manifest-list-2bccccf8-9f5e-48f2-b706-5b33f8c3bfc0-0", pool);
+        "manifest-list-a00a75de-6936-4f0c-bc49-4f4bd0f0e368-0", pool);
     ASSERT_EQ(manifest_file_metas.size(), 1);
 
     std::vector<ManifestFileMeta> expected_manifest_file_metas;
     auto expected_meta =
-        ManifestFileMeta("manifest-65b0d403-a1bc-4157-b242-bff73c46596d-0", /*file_size=*/2779,
+        ManifestFileMeta("manifest-83b95c83-4ff8-439b-80db-331c7289ef31-0", /*file_size=*/2222,
                          /*num_added_files=*/1, /*num_deleted_files=*/0, SimpleStats::EmptyStats(),
                          /*schema_id=*/0, /*min_bucket=*/0, /*max_bucket=*/0,
                          /*min_level=*/0, /*max_level=*/0,
