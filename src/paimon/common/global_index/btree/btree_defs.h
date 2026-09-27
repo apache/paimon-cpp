@@ -44,6 +44,12 @@ struct BtreeDefs {
     static inline const char kBtreeIndexHighPriorityPoolRatio[] =
         "btree-index.high-priority-pool-ratio";
 
+    /// "btree-index.fallback-scan-max-size" - The maximum total BTree global index file size to
+    /// allow fallback index scans for predicates that cannot use direct lookup. Default value is
+    /// 256 MB. Set to 0 bytes to disable fallback scans.
+    static inline const char kBtreeIndexFallbackScanMaxSize[] =
+        "btree-index.fallback-scan-max-size";
+
     /// "btree-index.read-buffer-size" - Optional. Specifies the read buffer size for the B-tree
     /// index. This setting can be tuned based on query patterns:
     ///   - For range queries (e.g., `VisitLessThan`, `VisitGreaterOrEqual`), increasing the buffer
@@ -57,6 +63,7 @@ struct BtreeDefs {
     static inline const char kDefaultBtreeIndexBlockSize[] = "64KB";
     static inline const char kDefaultBtreeIndexCompression[] = "none";
     static inline const char kDefaultBtreeIndexCacheSize[] = "128MB";
+    static inline const char kDefaultBtreeIndexFallbackScanMaxSize[] = "256MB";
     static inline const int32_t kDefaultBtreeIndexCompressionLevel = 1;
     static inline const double kDefaultBtreeIndexHighPriorityPoolRatio = 0.1;
 };

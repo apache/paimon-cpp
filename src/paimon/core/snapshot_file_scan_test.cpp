@@ -337,14 +337,14 @@ TEST(SnapshotFileScanTest, TestGlobalIndex) {
 
     ASSERT_OK_AND_ASSIGN(std::set<std::string> files, ListFiles(table_path, /*snapshot_id=*/4));
     ASSERT_EQ(ExpectedFiles(table_path,
-                            {"bucket-0/data-2430f01c-b947-48dc-82a8-7c60aaa348e4-0.orc",
-                             "index/bitmap-global-index-0c950cb6-e6e9-46cd-a9a9-cfcd55f870d3.index",
-                             "index/bitmap-global-index-21ac35d9-200a-489d-b649-ec241f832345.index",
-                             "index/bitmap-global-index-8b1bed37-31c5-4288-8c46-3d0d30fbd302.index",
-                             "manifest/index-manifest-795a9d8a-60bf-401d-ab02-6f13f8ca1098-0",
-                             "manifest/manifest-65b0d403-a1bc-4157-b242-bff73c46596d-0",
-                             "manifest/manifest-list-2bccccf8-9f5e-48f2-b706-5b33f8c3bfc0-0",
-                             "manifest/manifest-list-2bccccf8-9f5e-48f2-b706-5b33f8c3bfc0-1",
+                            {"bucket-0/data-676f2916-e7e8-4526-b12b-3cdbf11a971d-0.orc",
+                             "index/bitmap-global-index-288183d2-1791-41e5-9cf6-b4a969cddef4.index",
+                             "index/bitmap-global-index-3203c244-7bf4-4590-a5cc-023b3cff418e.index",
+                             "index/bitmap-global-index-687cfbd0-b5f8-4694-aaab-76940e814b29.index",
+                             "manifest/index-manifest-e8231543-9909-450f-bcd6-ddc263d24e7e-0",
+                             "manifest/manifest-83b95c83-4ff8-439b-80db-331c7289ef31-0",
+                             "manifest/manifest-list-a00a75de-6936-4f0c-bc49-4f4bd0f0e368-0",
+                             "manifest/manifest-list-a00a75de-6936-4f0c-bc49-4f4bd0f0e368-1",
                              "schema/schema-0", "snapshot/snapshot-4"}),
               files);
 }
