@@ -69,7 +69,7 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     /// for its lifetime. Custom stores may ignore this hint.
     std::shared_ptr<FileSystem> file_system = nullptr;
     /// User-defined key field names when key-based deduplication is configured; empty otherwise.
-    std::vector<std::string> deduplicate_key_fields;
+    std::vector<std::string> deduplicate_key_fields = {};
 };
 
 /// A record batch and its application-assigned offset bounds.
