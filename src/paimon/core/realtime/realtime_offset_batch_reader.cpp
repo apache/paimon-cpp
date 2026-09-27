@@ -36,8 +36,9 @@
 
 namespace paimon {
 RealtimeOffsetBatchReader::RealtimeOffsetBatchReader(std::unique_ptr<BatchReader>&& reader,
-                                                     const OffsetRange& visible_offsets)
-    : reader_(std::move(reader)), visible_offsets_(visible_offsets) {}
+                                                     const OffsetRange& visible_offsets,
+                                                     bool keep_offset)
+    : reader_(std::move(reader)), visible_offsets_(visible_offsets), keep_offset_(keep_offset) {}
 
 Result<BatchReader::ReadBatch> RealtimeOffsetBatchReader::NextBatch() {
     return Status::Invalid(
@@ -91,9 +92,12 @@ Result<BatchReader::ReadBatchWithBitmap> RealtimeOffsetBatchReader::NextBatchWit
         if (output_bitmap.IsEmpty()) {
             continue;
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> output,
-                               ArrowUtils::RemoveFieldFromStructArray(
-                                   struct_array, SpecialFields::RealtimeOffset().Name()));
+        std::shared_ptr<arrow::StructArray> output = struct_array;
+        if (!keep_offset_) {
+            PAIMON_ASSIGN_OR_RAISE(output,
+                                   ArrowUtils::RemoveFieldFromStructArray(
+                                       struct_array, SpecialFields::RealtimeOffset().Name()));
+        }
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*output, c_array.get(), c_schema.get()));
         return ReadBatchWithBitmap(std::move(batch), std::move(output_bitmap));
     }

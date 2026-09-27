@@ -25,7 +25,6 @@ set(PAIMON_GLOBAL_INDEX_SRC
     sorted_file_meta_selector.cpp
     sorted_index_file_meta.cpp
     btree/lazy_filtered_btree_reader.cpp
-    key_serializer.cpp
     rangebitmap/range_bitmap_global_index.cpp
     rangebitmap/range_bitmap_global_index_factory.cpp
     offset_global_index_reader.cpp

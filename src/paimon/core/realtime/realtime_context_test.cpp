@@ -28,8 +28,16 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "paimon/common/table/special_fields.h"
+#include "paimon/core/core_options.h"
+#include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/realtime/arrow_deduplicate_realtime_store.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_deduplicate_state.h"
+#include "paimon/core/realtime/realtime_offset_file_index_lookup.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/realtime/arrow_realtime_store_factory.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -95,6 +103,8 @@ class TestingRealtimeStoreFactory : public RealtimeStoreFactory {
         if (!request.write_schema || !request.write_schema->release) {
             return Status::Invalid("testing write schema is null");
         }
+        requested_modes.push_back(request.mode);
+        requested_deduplicate_key_fields.push_back(request.deduplicate_key_fields);
         ArrowSchemaRelease(request.write_schema.get());
         if (return_null_store) {
             return std::shared_ptr<RealtimeStore>();
@@ -106,6 +116,8 @@ class TestingRealtimeStoreFactory : public RealtimeStoreFactory {
 
     bool return_null_store = false;
     std::vector<std::shared_ptr<TestingRealtimeStore>> stores;
+    std::vector<RealtimeStoreMode> requested_modes;
+    std::vector<std::vector<std::string>> requested_deduplicate_key_fields;
 };
 
 std::unique_ptr<ArrowSchema> MakeWriteSchema(
@@ -116,6 +128,20 @@ std::unique_ptr<ArrowSchema> MakeWriteSchema(
         arrow::ExportSchema(*arrow::schema({arrow::field("id", id_type)}, metadata), schema.get())
             .ok());
     return schema;
+}
+
+std::shared_ptr<arrow::Schema> MakeDeduplicateSchema() {
+    return arrow::schema({
+        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
+        arrow::field("id", arrow::int64()),
+        arrow::field("value", arrow::utf8()),
+    });
+}
+
+std::unique_ptr<ArrowSchema> ExportSchema(const std::shared_ptr<arrow::Schema>& schema) {
+    auto exported = std::make_unique<ArrowSchema>();
+    EXPECT_TRUE(arrow::ExportSchema(*schema, exported.get()).ok());
+    return exported;
 }
 
 Result<std::shared_ptr<RealtimeContextImpl>> CreateContext(
@@ -137,6 +163,8 @@ Result<RealtimeStoreState> GetOrCreateAppendStore(
     return context->GetOrCreateRealtimeStore(std::move(request),
                                              RealtimePartitionBucket(partition, bucket));
 }
+
+}  // namespace
 
 TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
     auto factory = std::make_shared<TestingRealtimeStoreFactory>();
@@ -334,6 +362,75 @@ TEST(RealtimeContextTest, TestCommittedProgressIsMonotonicAndSelective) {
     ASSERT_EQ(std::vector<int64_t>({8}), factory->stores[1]->committed_offsets);
 }
 
+TEST(RealtimeContextTest, TestDeduplicateStoreWrapsAppendDelegateFromFactory) {
+    auto factory = std::make_shared<TestingRealtimeStoreFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+    RealtimeStoreCreateRequest request{ExportSchema(MakeDeduplicateSchema()), /*options=*/{},
+                                       GetDefaultPool(), RealtimeStoreMode::DEDUPLICATE};
+    request.deduplicate_key_fields = {"id"};
+
+    ASSERT_OK_AND_ASSIGN(
+        RealtimeStoreState state,
+        context->GetOrCreateRealtimeStore(std::move(request),
+                                          RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
+    ASSERT_NE(nullptr, std::dynamic_pointer_cast<ArrowDeduplicateRealtimeStore>(state.store));
+    ASSERT_NE(nullptr, state.deduplicate_state);
+    ASSERT_EQ(1, factory->stores.size());
+    ASSERT_EQ((std::vector<RealtimeStoreMode>{RealtimeStoreMode::APPEND_ONLY}),
+              factory->requested_modes);
+    ASSERT_EQ((std::vector<std::vector<std::string>>{{"id"}}),
+              factory->requested_deduplicate_key_fields);
+
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context->AcquireReadState());
+    ASSERT_EQ(1, read_state.views.size());
+    ASSERT_EQ(RealtimeStoreMode::DEDUPLICATE, read_state.views[0].mode);
+    ASSERT_NE(nullptr, read_state.views[0].offset_deletions);
+}
+
+TEST(RealtimeContextTest, TestNewDeduplicateSnapshotRefreshesLookupAtSameOffset) {
+    auto factory = std::make_shared<ArrowRealtimeStoreFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+    std::shared_ptr<arrow::Schema> schema = MakeDeduplicateSchema();
+    const std::map<std::string, std::string> options = {
+        {"file-index.bitmap.columns", SpecialFields::RealtimeOffset().Name()}};
+    RealtimeStoreCreateRequest request{ExportSchema(schema), options, GetDefaultPool(),
+                                       RealtimeStoreMode::DEDUPLICATE};
+    request.deduplicate_key_fields = {"id"};
+    const RealtimePartitionBucket partition_bucket(/*partition=*/{}, /*bucket=*/0);
+    ASSERT_OK_AND_ASSIGN(RealtimeStoreState store_state,
+                         context->GetOrCreateRealtimeStore(std::move(request), partition_bucket));
+    ASSERT_TRUE(store_state.deduplicate_state);
+
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    auto file_system = std::make_shared<LocalFileSystem>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
+                         RealtimeOffsetFileIndexLookup::Create(
+                             schema, schema->GetFieldByName("id"), /*data_files=*/{}, path_factory,
+                             file_system, GetDefaultPool(), core_options));
+    ASSERT_OK(
+        store_state.deduplicate_state->AttachFileIndexLookup(initial_lookup, store_state.store));
+
+    const RealtimeOffsetMap committed_offsets = {{partition_bucket, /*offset=*/10}};
+    ASSERT_OK(context->AdvanceCommittedProgress(/*snapshot_id=*/5, committed_offsets,
+                                                /*committed_data_files=*/{}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> snapshot_5_lookup,
+                         store_state.deduplicate_state->AcquireCommittedFileLookup());
+    ASSERT_NE(initial_lookup, snapshot_5_lookup);
+
+    ASSERT_OK(context->AdvanceCommittedProgress(/*snapshot_id=*/5, committed_offsets,
+                                                /*committed_data_files=*/{}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> duplicate_snapshot_lookup,
+                         store_state.deduplicate_state->AcquireCommittedFileLookup());
+    ASSERT_EQ(snapshot_5_lookup, duplicate_snapshot_lookup);
+
+    ASSERT_OK(context->AdvanceCommittedProgress(/*snapshot_id=*/6, committed_offsets,
+                                                /*committed_data_files=*/{}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> snapshot_6_lookup,
+                         store_state.deduplicate_state->AcquireCommittedFileLookup());
+    ASSERT_NE(snapshot_5_lookup, snapshot_6_lookup);
+}
+
 TEST(RealtimeContextTest, TestRemovedInactivePartitionDoesNotRequireReopen) {
     auto factory = std::make_shared<TestingRealtimeStoreFactory>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
@@ -489,5 +586,4 @@ TEST(RealtimeContextTest, TestRejectsNullPluginResults) {
     ASSERT_NOK_WITH_MSG(context->AcquireReadState(), "real-time store returned a null read view");
 }
 
-}  // namespace
 }  // namespace paimon::test

@@ -55,7 +55,7 @@ TEST(RealtimeOffsetBatchReaderTest, TestFilterBitmapAndRemoveOffset) {
     input_bitmap.AddRange(0, static_cast<int32_t>(data->length()));
     auto input =
         std::make_unique<MockFileBatchReader>(data, type, input_bitmap, /*read_batch_size=*/2);
-    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(2, 5));
+    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(2, 5), /*keep_offset=*/false);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadResultCollector::CollectResult(&reader));
@@ -76,7 +76,7 @@ TEST(RealtimeOffsetBatchReaderTest, TestRejectsPartialBitmap) {
     auto input =
         std::make_unique<MockFileBatchReader>(data, type, input_bitmap, /*read_batch_size=*/2);
     input->EnableRandomizeBatchSize(false);
-    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(0, 2));
+    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(0, 2), /*keep_offset=*/false);
 
     ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(&reader),
                         "must cover every raw transport row");
@@ -87,7 +87,7 @@ TEST(RealtimeOffsetBatchReaderTest, TestFilterWithoutInputBitmap) {
     std::shared_ptr<arrow::Array> data =
         MakeArray(type, R"([[10, 0], [11, 1], [12, 2], [13, 3], [14, 4]])");
     auto input = std::make_unique<MockFileBatchReader>(data, type, /*read_batch_size=*/3);
-    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(1, 4));
+    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(1, 4), /*keep_offset=*/false);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadResultCollector::CollectResult(&reader));
@@ -104,7 +104,7 @@ TEST(RealtimeOffsetBatchReaderTest, TestRejectsNullOffsetInBatch) {
     std::shared_ptr<arrow::DataType> type = MakeDataType(/*offset_nullable=*/true);
     std::shared_ptr<arrow::Array> data = MakeArray(type, R"([[10, 0], [11, null]])");
     auto input = std::make_unique<MockFileBatchReader>(data, type, /*read_batch_size=*/2);
-    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(0, 1));
+    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(0, 1), /*keep_offset=*/false);
 
     ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(&reader), "offset column contains null");
 }
@@ -113,7 +113,7 @@ TEST(RealtimeOffsetBatchReaderTest, TestNextBatchIsUnsupported) {
     std::shared_ptr<arrow::DataType> type = MakeDataType();
     std::shared_ptr<arrow::Array> data = MakeArray(type, R"([[10, 0]])");
     auto input = std::make_unique<MockFileBatchReader>(data, type, /*read_batch_size=*/1);
-    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(0, 1));
+    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(0, 1), /*keep_offset=*/false);
 
     ASSERT_NOK_WITH_MSG(reader.NextBatch(), "should use NextBatchWithBitmap");
 }

@@ -170,6 +170,7 @@ const char Options::REALTIME_ENABLED[] = "realtime.enabled";
 const char Options::REALTIME_SPILL_ENABLED[] = "realtime.spill-enabled";
 const char Options::REALTIME_READ_VIEW_TTL[] = "realtime.read-view-ttl";
 const char Options::REALTIME_STORE_STATS_MODE[] = "realtime.store.stats-mode";
+const char Options::REALTIME_DEDUPLICATE_KEY_FIELDS[] = "realtime.deduplicate-key-fields";
 const char Options::SCAN_TIMESTAMP[] = "scan.timestamp";
 const char Options::SCAN_TAG_NAME[] = "scan.tag-name";
 const char Options::WRITE_ONLY[] = "write-only";

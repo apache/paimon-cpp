@@ -72,6 +72,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_FALSE(core_options.RealtimeEnabled());
     ASSERT_FALSE(core_options.RealtimeSpillEnabled());
     ASSERT_EQ(StatisticsMode::NONE, core_options.GetRealtimeStoreStatisticsMode());
+    ASSERT_TRUE(core_options.GetRealtimeDeduplicateKeyFields().empty());
     ASSERT_EQ("zstd", core_options.GetFileCompression());
     ASSERT_EQ(std::nullopt, core_options.GetChangelogFileCompression());
     ASSERT_EQ("zstd", core_options.GetWriteFileCompression(0));
@@ -341,6 +342,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"},
         {Options::REALTIME_ENABLED, "true"},
         {Options::REALTIME_SPILL_ENABLED, "true"},
+        {Options::REALTIME_DEDUPLICATE_KEY_FIELDS, " id, tenant_id "},
         {Options::BUCKET_FUNCTION_TYPE, "mod"},
         {"fields.metrics.map.storage-layout", "shared-shredding"},
         {"fields.metrics.map.shared-shredding.max-columns", "128"},
@@ -512,6 +514,8 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.KeyValueSequenceNumberEnabled());
     ASSERT_TRUE(core_options.RealtimeEnabled());
     ASSERT_TRUE(core_options.RealtimeSpillEnabled());
+    ASSERT_EQ((std::vector<std::string>{"id", "tenant_id"}),
+              core_options.GetRealtimeDeduplicateKeyFields());
     ASSERT_TRUE(core_options.LookupRemoteFileEnabled());
     ASSERT_EQ(core_options.GetLookupRemoteLevelThreshold(), 2);
     ASSERT_EQ(BucketFunctionType::MOD, core_options.GetBucketFunctionType());

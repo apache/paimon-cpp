@@ -53,6 +53,7 @@
 #include "paimon/core/operation/restore_files.h"
 #include "paimon/core/realtime/realtime_append_only_writer.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_deduplicate_writer.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
@@ -132,14 +133,29 @@ Status AppendOnlyFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, latest && latest->Id() == snapshot_id
                                                   ? Result<Snapshot>(latest.value())
                                                   : snapshot_manager_->LoadSnapshot(snapshot_id));
-    PAIMON_ASSIGN_OR_RAISE(
-        RealtimeOffsetMap committed_offsets,
-        RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(std::move(snapshot)),
-                                              options_.GetFileSystem()));
+    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap committed_offsets,
+                           RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(snapshot),
+                                                                 options_.GetFileSystem()));
+    auto scan_filter = std::make_shared<ScanFilter>(
+        /*predicate=*/nullptr, std::vector<std::map<std::string, std::string>>{},
+        /*bucket_filter=*/std::nullopt);
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreScan> scan, CreateFileStoreScan(scan_filter));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan::RawPlan> plan,
+                           scan->WithSnapshot(snapshot)->CreatePlan());
+    RealtimeDataFileMap committed_data_files;
+    for (const ManifestEntry& entry : plan->Files()) {
+        std::vector<std::pair<std::string, std::string>> partition_values;
+        PAIMON_ASSIGN_OR_RAISE(
+            partition_values, file_store_path_factory_->GeneratePartitionVector(entry.Partition()));
+        std::map<std::string, std::string> partition(partition_values.begin(),
+                                                     partition_values.end());
+        committed_data_files[RealtimePartitionBucket(std::move(partition), entry.Bucket())]
+            .push_back(entry.File());
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                            RealtimeContextImpl::Cast(realtime_context_));
-    PAIMON_RETURN_NOT_OK(
-        realtime_context_impl->AdvanceCommittedProgress(snapshot_id, committed_offsets));
+    PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
+        snapshot_id, committed_offsets, committed_data_files));
     return Status::OK();
 }
 
@@ -301,6 +317,14 @@ Result<std::shared_ptr<BatchWriter>> AppendOnlyFileStoreWrite::CreateWriter(
                            file_store_path_factory_->GeneratePartitionVector(partition));
     std::map<std::string, std::string> partition_map(partition_values.begin(),
                                                      partition_values.end());
+    const std::vector<std::string>& deduplicate_key_fields =
+        options_.GetRealtimeDeduplicateKeyFields();
+    if (!deduplicate_key_fields.empty()) {
+        return RealtimeDeduplicateWriter::Create(
+            partition_map, bucket, realtime_context_, writer, realtime_schema_layout_,
+            deduplicate_key_fields, restore_data_files, data_file_path_factory, dv_maintainer,
+            options_, io_manager_ ? io_manager_->GetTempDir() : "", pool_);
+    }
     return RealtimeAppendOnlyWriter::Create(partition_map, bucket, realtime_context_, writer,
                                             realtime_schema_layout_, options_,
                                             io_manager_ ? io_manager_->GetTempDir() : "", pool_);

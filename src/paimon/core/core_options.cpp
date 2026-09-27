@@ -375,6 +375,7 @@ struct CoreOptions::Impl {
     std::vector<std::string> blob_fields;
     std::vector<std::string> blob_descriptor_fields;
     std::vector<std::string> blob_view_fields;
+    std::vector<std::string> realtime_deduplicate_key_fields;
 
     std::string partition_default_name = "__DEFAULT_PARTITION__";
     StartupMode startup_mode = StartupMode::Default();
@@ -858,6 +859,9 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::REALTIME_ENABLED, &realtime_enabled));
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::REALTIME_SPILL_ENABLED, &realtime_spill_enabled));
+        PAIMON_RETURN_NOT_OK(parser.ParseList<std::string>(
+            Options::REALTIME_DEDUPLICATE_KEY_FIELDS, Options::FIELDS_SEPARATOR,
+            &realtime_deduplicate_key_fields, /*need_trim=*/true));
         PAIMON_RETURN_NOT_OK(parser.ParseTimeDuration(Options::REALTIME_READ_VIEW_TTL,
                                                       &realtime_read_view_ttl_millis));
         if (realtime_read_view_ttl_millis <= 0) {
@@ -1207,6 +1211,10 @@ int64_t CoreOptions::GetRealtimeReadViewTtlMillis() const {
 
 StatisticsMode CoreOptions::GetRealtimeStoreStatisticsMode() const {
     return impl_->realtime_store_statistics_mode;
+}
+
+const std::vector<std::string>& CoreOptions::GetRealtimeDeduplicateKeyFields() const {
+    return impl_->realtime_deduplicate_key_fields;
 }
 
 int32_t CoreOptions::GetScanManifestEntryCacheMaxSnapshots() const {
