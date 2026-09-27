@@ -28,6 +28,9 @@ namespace paimon {
 /// A `StringLeafBinaryFunction` to eval filter like.
 class PAIMON_EXPORT Like : public StringLeafBinaryFunction {
  public:
+    PAIMON_EXPORT static Result<bool> MatchString(const std::string& field,
+                                                  const std::string& pattern);
+
     static const Like& Instance() {
         static const Like instance = Like();
         return instance;
