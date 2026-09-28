@@ -701,7 +701,7 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildArrayBlobArray(
             if (IsTargetNull(row_index)) {
                 arrow::bit_util::ClearBit(list_null_bitmap->mutable_data(), k);
             } else if (IsTargetPlaceholder(row_index)) {
-                PAIMON_ASSIGN_OR_RAISE(uint8_t * target,
+                PAIMON_ASSIGN_OR_RAISE(auto* target,
                                        value_builder->Append(BlobDefs::kPlaceholderSentinelLength));
                 memcpy(target, BlobDefs::kPlaceholderSentinel,
                        BlobDefs::kPlaceholderSentinelLength);
@@ -714,7 +714,7 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildArrayBlobArray(
                         PAIMON_RETURN_NOT_OK(value_builder->AppendNull());
                         continue;
                     }
-                    PAIMON_ASSIGN_OR_RAISE(uint8_t * target, value_builder->Append(element_length));
+                    PAIMON_ASSIGN_OR_RAISE(auto* target, value_builder->Append(element_length));
                     if (row_target == nullptr && element_length > 0) {
                         row_target = target;
                     }
@@ -1041,7 +1041,7 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildMapBlobArray(
                         PAIMON_RETURN_NOT_OK(value_builder->AppendNull());
                         continue;
                     }
-                    PAIMON_ASSIGN_OR_RAISE(uint8_t * target, value_builder->Append(value_length));
+                    PAIMON_ASSIGN_OR_RAISE(auto* target, value_builder->Append(value_length));
                     if (row_target == nullptr && value_length > 0) {
                         row_target = target;
                     }
