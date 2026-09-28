@@ -23,9 +23,9 @@
 #include "arrow/array/util.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
-#include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -59,25 +59,43 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionFileReader::Create
 }
 
 Result<BatchReader::ReadBatchWithBitmap> DataEvolutionFileReader::NextBatchWithBitmap() {
+    int64_t array_length = read_batch_size_;
+    bool has_active_reader = false;
+    bool has_available_array = false;
+    bool has_eof_reader = false;
+    for (size_t i = 0; i < readers_.size(); i++) {
+        if (!readers_[i]) {
+            continue;
+        }
+        has_active_reader = true;
+        PAIMON_ASSIGN_OR_RAISE(bool has_cached_array, EnsureCachedArray(i));
+        if (!has_cached_array) {
+            has_eof_reader = true;
+            continue;
+        }
+        has_available_array = true;
+        array_length = std::min(array_length, CalculateCachedArrayLength(i));
+    }
+    if (!has_active_reader) {
+        return Status::Invalid("data evolution reader has no active inner reader");
+    }
+    if (has_eof_reader) {
+        if (has_available_array) {
+            return Status::Invalid("array for single reader length mismatch others");
+        }
+        return BatchReader::MakeEofBatchWithBitmap();
+    }
+
     std::vector<std::shared_ptr<arrow::StructArray>> array_for_each_reader;
     array_for_each_reader.reserve(readers_.size());
-    int64_t array_length = -1;
     for (size_t i = 0; i < readers_.size(); i++) {
         if (!readers_[i]) {
             // no read field from readers_[i]
             array_for_each_reader.push_back(nullptr);
             continue;
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> array, NextBatchForSingleReader(i));
-        if (array == nullptr) {
-            // read eof
-            return BatchReader::MakeEofBatchWithBitmap();
-        }
-        if (array_length == -1) {
-            array_length = array->length();
-        } else if (array_length != array->length()) {
-            return Status::Invalid("array for single reader length mismatch others");
-        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> array,
+                               TakeCachedArray(i, array_length));
         auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
         array_for_each_reader.push_back(struct_array);
     }
@@ -132,24 +150,19 @@ int64_t DataEvolutionFileReader::CalculateCachedArrayLength(size_t reader_idx) c
     return total_length;
 }
 
-Result<std::shared_ptr<arrow::Array>> DataEvolutionFileReader::NextBatchForSingleReader(
-    size_t reader_idx) {
-    int64_t total_array_length = CalculateCachedArrayLength(reader_idx);
-    if (total_array_length >= read_batch_size_) {
-        assert(false);
-        return Status::Invalid(fmt::format(
-            "Unexpected: the length of cached array in last turn {} exceed read batch size {}",
-            total_array_length, read_batch_size_));
+Result<bool> DataEvolutionFileReader::EnsureCachedArray(size_t reader_idx) {
+    if (!cached_array_vec_[reader_idx].empty()) {
+        return true;
     }
-    // array left for last turn
-    arrow::ArrayVector concat_array_vec = std::move(cached_array_vec_[reader_idx]);
-    cached_array_vec_[reader_idx].clear();
-    while (total_array_length < read_batch_size_) {
+    if (reader_eof_[reader_idx]) {
+        return false;
+    }
+    while (cached_array_vec_[reader_idx].empty()) {
         PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap src_array_with_bitmap,
                                readers_[reader_idx]->NextBatchWithBitmap());
         if (BatchReader::IsEofBatch(src_array_with_bitmap)) {
-            // read finish
-            break;
+            reader_eof_[reader_idx] = true;
+            return false;
         }
         auto& [read_batch, bitmap] = src_array_with_bitmap;
         auto& [c_array, c_schema] = read_batch;
@@ -158,36 +171,39 @@ Result<std::shared_ptr<arrow::Array>> DataEvolutionFileReader::NextBatchForSingl
         PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector selected_array_vec,
                                ReaderUtils::GenerateFilteredArrayVector(src_array, bitmap));
         for (const auto& selected_array : selected_array_vec) {
-            if (total_array_length + selected_array->length() > read_batch_size_) {
-                // need truncate current array to align read_batch_size_
-                int64_t truncated_length = read_batch_size_ - total_array_length;
-                if (truncated_length == 0) {
-                    // total_array_length equals to read_batch_size_, all selected_array left will
-                    // be added to cached_array_vec_
-                    cached_array_vec_[reader_idx].push_back(selected_array);
-                } else {
-                    concat_array_vec.push_back(selected_array->Slice(0, truncated_length));
-                    cached_array_vec_[reader_idx].push_back(
-                        selected_array->Slice(truncated_length));
-                    total_array_length += truncated_length;
-                }
-            } else {
-                concat_array_vec.push_back(selected_array);
-                total_array_length += selected_array->length();
+            if (selected_array->length() > 0) {
+                cached_array_vec_[reader_idx].push_back(selected_array);
             }
         }
     }
-    if (concat_array_vec.empty()) {
-        return std::shared_ptr<arrow::Array>();
+    return true;
+}
+
+Result<std::shared_ptr<arrow::Array>> DataEvolutionFileReader::TakeCachedArray(
+    size_t reader_idx, int64_t array_length) {
+    assert(array_length > 0);
+    assert(CalculateCachedArrayLength(reader_idx) >= array_length);
+    arrow::ArrayVector selected_array_vec;
+    int64_t remaining_length = array_length;
+    auto& cached_array_vec = cached_array_vec_[reader_idx];
+    while (remaining_length > 0) {
+        const auto& cached_array = cached_array_vec.front();
+        if (cached_array->length() <= remaining_length) {
+            selected_array_vec.push_back(cached_array);
+            remaining_length -= cached_array->length();
+            cached_array_vec.erase(cached_array_vec.begin());
+        } else {
+            selected_array_vec.push_back(cached_array->Slice(0, remaining_length));
+            cached_array_vec.front() = cached_array->Slice(remaining_length);
+            remaining_length = 0;
+        }
     }
-    if (concat_array_vec.size() == 1 && concat_array_vec[0]->offset() == 0) {
-        // Avoid data copy when the array is already normalized.
-        return concat_array_vec[0];
+    if (selected_array_vec.size() == 1) {
+        return ArrowUtils::NormalizeArrayOffsets(selected_array_vec[0], arrow_pool_.get());
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> concat_array,
-                                      arrow::Concatenate(concat_array_vec, arrow_pool_.get()));
-    assert(concat_array->length() == total_array_length);
-    assert(concat_array->length() <= read_batch_size_);
+                                      arrow::Concatenate(selected_array_vec, arrow_pool_.get()));
+    assert(concat_array->length() == array_length);
     return concat_array;
 }
 
