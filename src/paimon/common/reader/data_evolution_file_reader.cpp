@@ -181,8 +181,12 @@ Result<bool> DataEvolutionFileReader::EnsureCachedArray(size_t reader_idx) {
 
 Result<std::shared_ptr<arrow::Array>> DataEvolutionFileReader::TakeCachedArray(
     size_t reader_idx, int64_t array_length) {
-    assert(array_length > 0);
-    assert(CalculateCachedArrayLength(reader_idx) >= array_length);
+    if (array_length <= 0) {
+        return Status::Invalid("array length must be larger than zero");
+    }
+    if (CalculateCachedArrayLength(reader_idx) < array_length) {
+        return Status::Invalid("requested array length exceeds cached array length");
+    }
     arrow::ArrayVector selected_array_vec;
     int64_t remaining_length = array_length;
     auto& cached_array_vec = cached_array_vec_[reader_idx];
@@ -203,7 +207,9 @@ Result<std::shared_ptr<arrow::Array>> DataEvolutionFileReader::TakeCachedArray(
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> concat_array,
                                       arrow::Concatenate(selected_array_vec, arrow_pool_.get()));
-    assert(concat_array->length() == array_length);
+    if (concat_array->length() != array_length) {
+        return Status::Invalid("concatenated array length does not match requested array length");
+    }
     return concat_array;
 }
 

@@ -387,6 +387,14 @@ BlobFileBatchReader::BlobFileBatchReader(
     std::iota(target_blob_row_indexes_.begin(), target_blob_row_indexes_.end(), 0);
 }
 
+Result<int64_t> BlobFileBatchReader::GetOrCreateSerializedDescriptorSize() const {
+    if (serialized_descriptor_size_ < 0) {
+        PAIMON_ASSIGN_OR_RAISE(serialized_descriptor_size_,
+                               GetSerializedDescriptorSize(file_path_, pool_));
+    }
+    return serialized_descriptor_size_;
+}
+
 Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
                                           const std::shared_ptr<Predicate>& predicate,
                                           const std::optional<RoaringBitmap32>& selection_bitmap) {
@@ -674,8 +682,7 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildArrayBlobArray(
         payloads.emplace_back(std::move(payload));
     }
     if (descriptor_count > 0) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size,
-                               GetSerializedDescriptorSize(file_path_, pool_));
+        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size, GetOrCreateSerializedDescriptorSize());
         PAIMON_RETURN_NOT_OK(AddBuilderCapacityProduct(descriptor_count, descriptor_size,
                                                        &value_data_length,
                                                        "ARRAY<BLOB> descriptor data size"));
@@ -989,8 +996,7 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildMapBlobArray(
         payloads.emplace_back(std::move(payload));
     }
     if (descriptor_count > 0) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size,
-                               GetSerializedDescriptorSize(file_path_, pool_));
+        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size, GetOrCreateSerializedDescriptorSize());
         PAIMON_RETURN_NOT_OK(AddBuilderCapacityProduct(descriptor_count, descriptor_size,
                                                        &value_data_length,
                                                        "MAP<..., BLOB> descriptor data size"));
@@ -1154,8 +1160,7 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildTargetArray(
         }
     }
     if (descriptor_count > 0) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size,
-                               GetSerializedDescriptorSize(file_path_, pool_));
+        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size, GetOrCreateSerializedDescriptorSize());
         PAIMON_RETURN_NOT_OK(AddBuilderCapacityProduct(
             descriptor_count, descriptor_size, &value_data_length, "BLOB descriptor data size"));
     }

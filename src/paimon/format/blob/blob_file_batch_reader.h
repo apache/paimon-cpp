@@ -178,6 +178,8 @@ class BlobFileBatchReader : public FileBatchReader {
                         const std::shared_ptr<MemoryPool>& pool,
                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
+    Result<int64_t> GetOrCreateSerializedDescriptorSize() const;
+
     Status ReadBlobContentAt(const int64_t offset, const int64_t length, uint8_t* content) const;
 
     Result<std::shared_ptr<arrow::Buffer>> NextBlobOffsets(int32_t rows_to_read) const;
@@ -242,6 +244,7 @@ class BlobFileBatchReader : public FileBatchReader {
     const bool emit_placeholder_sentinel_;
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    mutable int64_t serialized_descriptor_size_ = -1;
 
     std::shared_ptr<arrow::DataType> target_type_;
     std::shared_ptr<Metrics> metrics_;
