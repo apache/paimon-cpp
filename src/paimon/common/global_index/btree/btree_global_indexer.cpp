@@ -55,8 +55,15 @@ Result<std::unique_ptr<BTreeGlobalIndexer>> BTreeGlobalIndexer::Create(
         double high_priority_pool_ratio,
         OptionsUtils::GetValueFromMap<double>(options, BtreeDefs::kBtreeIndexHighPriorityPoolRatio,
                                               BtreeDefs::kDefaultBtreeIndexHighPriorityPoolRatio));
+    PAIMON_ASSIGN_OR_RAISE(std::string fallback_scan_max_size_str,
+                           OptionsUtils::GetValueFromMap<std::string>(
+                               options, BtreeDefs::kBtreeIndexFallbackScanMaxSize,
+                               BtreeDefs::kDefaultBtreeIndexFallbackScanMaxSize));
+    PAIMON_ASSIGN_OR_RAISE(int64_t fallback_scan_max_size,
+                           MemorySize::ParseBytes(fallback_scan_max_size_str));
     auto cache_manager = std::make_shared<CacheManager>(cache_size, high_priority_pool_ratio);
-    return std::unique_ptr<BTreeGlobalIndexer>(new BTreeGlobalIndexer(cache_manager, options));
+    return std::unique_ptr<BTreeGlobalIndexer>(
+        new BTreeGlobalIndexer(cache_manager, fallback_scan_max_size, options));
 }
 
 Result<std::optional<std::vector<std::string>>> BTreeGlobalIndexer::GetExtraFieldNames() const {
@@ -133,7 +140,7 @@ Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<LazyFilteredBTreeReader> reader,
         LazyFilteredBTreeReader::Create(read_buffer_size, files, key_type, file_reader,
-                                        cache_manager_, pool, executor));
+                                        cache_manager_, fallback_scan_max_size_, pool, executor));
     return std::shared_ptr<GlobalIndexReader>(std::move(reader));
 }
 
