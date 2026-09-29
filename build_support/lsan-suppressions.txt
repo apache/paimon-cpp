@@ -17,3 +17,8 @@
 
 # False positive from atexit() registration in libc
 leak:*__new_exitfn*
+
+# Vortex links an un-instrumented Rust staticlib whose runtime keeps allocations alive at process
+# exit; these are not paimon leaks. Rust crate frames are prefixed vortex_<crate>, which does not
+# match paimon::vortex:: C++ frames, so genuine paimon leaks are still reported.
+leak:vortex_
