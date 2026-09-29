@@ -61,6 +61,7 @@
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_format_reader_builder.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
@@ -754,7 +755,9 @@ TEST(AppendOnlyFileStoreScanTest, TestDropStatsAfterFiltering) {
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     TimezoneGuard guard("Asia/Shanghai");
     std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
-    auto cache = std::make_shared<LruCache>(/*max_weight=*/16 * 1024 * 1024);
+    auto cache = std::make_shared<CountingRoutingCache>(
+        std::map<CacheKind, int64_t>{{CacheKind::MANIFEST, 16 * 1024 * 1024},
+                                     {CacheKind::SNAPSHOT_LIVE_MANIFEST, 16 * 1024 * 1024}});
 
     // First scan on snapshot 5: cache miss, entries rebuilt from all manifests.
     auto scan_first = BuildScan(table_path, cache, /*bucket=*/0);
@@ -778,6 +781,11 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     ASSERT_EQ(first_cache_hit, 0);
     ASSERT_EQ(first_cache_misses, 1);
 
+    const int64_t manifest_gets = cache->GetCount(CacheKind::MANIFEST);
+    ASSERT_GT(manifest_gets, 0);
+    ASSERT_OK_AND_ASSIGN(uint64_t first_skipped,
+                         first_metrics->GetCounter(ScanMetrics::LAST_SCAN_SKIPPED_TABLE_FILES));
+
     // Second scan on the same snapshot should read the same bucket live entries from cache.
     auto scan_second = BuildScan(table_path, cache, /*bucket=*/0);
     scan_second->WithSnapshot(snapshot_5);
@@ -794,9 +802,36 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
         uint64_t materialized_rows,
         second_metrics->GetCounter(ScanMetrics::LAST_LAZY_DECODE_MATERIALIZED_ROWS));
     ASSERT_EQ(second_cache_hit, 1);
+    ASSERT_EQ(cache->GetCount(CacheKind::MANIFEST), manifest_gets);
+    ASSERT_OK_AND_ASSIGN(uint64_t second_scanned,
+                         second_metrics->GetCounter(ScanMetrics::LAST_SCANNED_MANIFESTS));
+    ASSERT_OK_AND_ASSIGN(uint64_t second_skipped,
+                         second_metrics->GetCounter(ScanMetrics::LAST_SCAN_SKIPPED_TABLE_FILES));
+    ASSERT_EQ(second_scanned, 0);
+    ASSERT_EQ(second_skipped, first_skipped);
     ASSERT_EQ(second_cache_hits, 1);
     ASSERT_GE(scanned_rows, materialized_rows);
     ASSERT_OK(second_metrics->GetHistogramStats(ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION));
+
+    // A different predicate must still filter the cached, unfiltered bucket entries.
+    std::shared_ptr<Predicate> predicate =
+        PredicateBuilder::Equal(0, "f0", FieldType::STRING, Literal(FieldType::STRING, "David", 5));
+    auto filtered = BuildScan(table_path, cache, /*bucket=*/0, predicate);
+    filtered->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto filtered_plan, filtered->CreatePlan());
+    auto expected = BuildScan(table_path, nullptr, /*bucket=*/0, predicate);
+    expected->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto expected_plan, expected->CreatePlan());
+    ASSERT_EQ(SortedFileNames(filtered_plan->Files()), SortedFileNames(expected_plan->Files()));
+    ASSERT_EQ(cache->GetCount(CacheKind::MANIFEST), manifest_gets);
+
+    // Eviction must rebuild from source; an exact-hit shortcut cannot survive invalidation.
+    cache->InvalidateAll();
+    auto rebuilt = BuildScan(table_path, cache, /*bucket=*/0);
+    rebuilt->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto rebuilt_plan, rebuilt->CreatePlan());
+    ASSERT_EQ(first_file_names, SortedFileNames(rebuilt_plan->Files()));
+    ASSERT_GT(cache->GetCount(CacheKind::MANIFEST), manifest_gets);
 }
 
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {

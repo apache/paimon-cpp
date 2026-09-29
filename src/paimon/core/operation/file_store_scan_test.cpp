@@ -251,8 +251,8 @@ TEST_F(FileStoreScanTest, TestSnapshotLiveManifestEntriesSerialization) {
     manifest_entries.emplace_back(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0,
                                   /*total_buckets=*/1, file1);
     SnapshotLiveManifestEntries entries(/*max_snapshots=*/2);
-    entries.Put(/*snapshot_id=*/1, std::move(manifest_entries));
-    entries.Put(/*snapshot_id=*/3, {});
+    entries.Put(/*snapshot_id=*/1, std::move(manifest_entries), /*total_data_files=*/17);
+    entries.Put(/*snapshot_id=*/3, {}, /*total_data_files=*/0);
 
     ASSERT_OK_AND_ASSIGN(auto bytes, entries.Serialize(GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(auto deserialized,
@@ -262,9 +262,11 @@ TEST_F(FileStoreScanTest, TestSnapshotLiveManifestEntriesSerialization) {
     auto hit = deserialized.LatestBeforeOrEqual(/*snapshot_id=*/2);
     ASSERT_TRUE(hit);
     ASSERT_EQ(hit->snapshot_id, 1);
+    ASSERT_EQ(hit->total_data_files, 17);
     ASSERT_EQ(hit->entries->size(), 1);
     ASSERT_EQ((*hit->entries)[0].FileName(), "file-1");
     ASSERT_EQ(deserialized.LatestBeforeOrEqual(/*snapshot_id=*/4)->snapshot_id, 3);
+    ASSERT_EQ(deserialized.LatestBeforeOrEqual(/*snapshot_id=*/4)->total_data_files, 0);
 
     ASSERT_OK_AND_ASSIGN(auto evicted_deserialized, SnapshotLiveManifestEntries::Deserialize(
                                                         MemorySegment::Wrap(bytes),
