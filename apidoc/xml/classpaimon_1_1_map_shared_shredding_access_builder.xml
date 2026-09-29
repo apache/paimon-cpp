@@ -1,0 +1,146 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_map_shared_shredding_access_builder" kind="class" language="C++" prot="public">
+    <compoundname>paimon::MapSharedShreddingAccessBuilder</compoundname>
+    <includes refid="map__shared__shredding__schema__utils_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h</includes>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_map_shared_shredding_access_builder_1a4dc796ad394482ffcaeae366d6a6e978" prot="private" static="no" mutable="no">
+        <type>std::unique_ptr&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">Impl</ref> &gt;</type>
+        <definition>std::unique_ptr&lt;Impl&gt; paimon::MapSharedShreddingAccessBuilder::impl_</definition>
+        <argsstring></argsstring>
+        <name>impl_</name>
+        <qualifiedname>paimon::MapSharedShreddingAccessBuilder::impl_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" line="98" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" bodystart="98" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_map_shared_shredding_access_builder_1a46594d36c3b4a55c91c17e4a3b975d8a" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_map_shared_shredding_access_builder" kindref="compound">MapSharedShreddingAccessBuilder</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::unique_ptr&lt; MapSharedShreddingAccessBuilder &gt; &gt; paimon::MapSharedShreddingAccessBuilder::Create</definition>
+        <argsstring>(struct ArrowSchema *map_field)</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::MapSharedShreddingAccessBuilder::Create</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">struct</ref> <ref refid="struct_arrow_schema" kindref="compound">ArrowSchema</ref> *</type>
+          <declname>map_field</declname>
+        </param>
+        <briefdescription>
+<para>Creates a builder bound to the original MAP field. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The field must be a MAP with STRING keys. Its name, nullability, and value type are retained for the selected-key projection. Ownership of the Arrow C schema resources is transferred to this method. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" line="80" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_map_shared_shredding_access_builder_1af66b3758202a6eec886d6f23b5ef4ced" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::MapSharedShreddingAccessBuilder::~MapSharedShreddingAccessBuilder</definition>
+        <argsstring>()</argsstring>
+        <name>~MapSharedShreddingAccessBuilder</name>
+        <qualifiedname>paimon::MapSharedShreddingAccessBuilder::~MapSharedShreddingAccessBuilder</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" line="83" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_map_shared_shredding_access_builder_1af52e3e5031b760cabb8b93b177c5faa7" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>Status paimon::MapSharedShreddingAccessBuilder::AddKey</definition>
+        <argsstring>(const std::string &amp;key)</argsstring>
+        <name>AddKey</name>
+        <qualifiedname>paimon::MapSharedShreddingAccessBuilder::AddKey</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>key</declname>
+        </param>
+        <briefdescription>
+<para>Adds a selected MAP key. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>key</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The string MAP key. Keys are returned in insertion order. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" line="88" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_map_shared_shredding_access_builder_1aa28273586da72bf411a0e24dc53df3db" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">struct</ref> <ref refid="struct_arrow_schema" kindref="compound">ArrowSchema</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::unique_ptr&lt; struct ArrowSchema &gt; &gt; paimon::MapSharedShreddingAccessBuilder::Build</definition>
+        <argsstring>() const</argsstring>
+        <name>Build</name>
+        <qualifiedname>paimon::MapSharedShreddingAccessBuilder::Build</qualifiedname>
+        <briefdescription>
+<para>Builds a STRUCT projection field which retains the original MAP field&apos;s name and nullability. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Every selected-key child uses the complete MAP value type and is nullable. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" line="92" column="12"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-func">
+      <memberdef kind="function" id="classpaimon_1_1_map_shared_shredding_access_builder_1a09411236747dde9272871fc55b8b5e6b" prot="private" static="no" const="no" explicit="yes" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::MapSharedShreddingAccessBuilder::MapSharedShreddingAccessBuilder</definition>
+        <argsstring>(std::unique_ptr&lt; Impl &gt; &amp;&amp;impl)</argsstring>
+        <name>MapSharedShreddingAccessBuilder</name>
+        <qualifiedname>paimon::MapSharedShreddingAccessBuilder::MapSharedShreddingAccessBuilder</qualifiedname>
+        <param>
+          <type>std::unique_ptr&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">Impl</ref> &gt; &amp;&amp;</type>
+          <declname>impl</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" line="96" column="14"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Builds a selected-key projection field for a top-level shared-shredding MAP column. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>The built field is a STRUCT which replaces the MAP field in the read schema. Each child corresponds to one selected key and contains that key&apos;s MAP value, or NULL when the key is absent. Children use the selected keys as their names and preserve insertion order.</para>
+<para>Example: read keys &quot;age&quot; and &quot;score&quot; from MAP column <computeroutput>attributes</computeroutput>: <verbatim>auto builder = MapSharedShreddingAccessBuilder::Create(attributes_field);
+builder-&gt;AddKey(&quot;age&quot;);
+builder-&gt;AddKey(&quot;score&quot;);
+auto field = builder-&gt;Build();
+</verbatim> Use the returned field in <computeroutput><ref refid="classpaimon_1_1_read_context_builder_1a2a665df8a4b9252578ddfebf6e698a3a" kindref="member">ReadContextBuilder::SetReadSchema</ref></computeroutput>. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" line="73" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/shredding/map_shared_shredding_schema_utils.h" bodystart="73" bodyend="99"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_map_shared_shredding_access_builder_1af52e3e5031b760cabb8b93b177c5faa7" prot="public" virt="non-virtual"><scope>paimon::MapSharedShreddingAccessBuilder</scope><name>AddKey</name></member>
+      <member refid="classpaimon_1_1_map_shared_shredding_access_builder_1aa28273586da72bf411a0e24dc53df3db" prot="public" virt="non-virtual"><scope>paimon::MapSharedShreddingAccessBuilder</scope><name>Build</name></member>
+      <member refid="classpaimon_1_1_map_shared_shredding_access_builder_1a46594d36c3b4a55c91c17e4a3b975d8a" prot="public" virt="non-virtual"><scope>paimon::MapSharedShreddingAccessBuilder</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_map_shared_shredding_access_builder_1a4dc796ad394482ffcaeae366d6a6e978" prot="private" virt="non-virtual"><scope>paimon::MapSharedShreddingAccessBuilder</scope><name>impl_</name></member>
+      <member refid="classpaimon_1_1_map_shared_shredding_access_builder_1a09411236747dde9272871fc55b8b5e6b" prot="private" virt="non-virtual"><scope>paimon::MapSharedShreddingAccessBuilder</scope><name>MapSharedShreddingAccessBuilder</name></member>
+      <member refid="classpaimon_1_1_map_shared_shredding_access_builder_1af66b3758202a6eec886d6f23b5ef4ced" prot="public" virt="non-virtual"><scope>paimon::MapSharedShreddingAccessBuilder</scope><name>~MapSharedShreddingAccessBuilder</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

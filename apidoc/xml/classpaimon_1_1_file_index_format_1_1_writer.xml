@@ -1,0 +1,68 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_file_index_format_1_1_writer" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::FileIndexFormat::Writer</compoundname>
+    <includes refid="file__index__format_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_file_index_format_1_1_writer_1a45bfbe7085ced2aac66a8eedc10af540" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::FileIndexFormat::Writer::~Writer</definition>
+        <argsstring>()=default</argsstring>
+        <name>~Writer</name>
+        <qualifiedname>paimon::FileIndexFormat::Writer::~Writer</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="128" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_index_format_1_1_writer_1a763f09adfea149329963a4f632aa49dd" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::FileIndexFormat::Writer::WriteColumnIndexes</definition>
+        <argsstring>(const FileIndexFormat::ColumnIndexes &amp;indexes)=0</argsstring>
+        <name>WriteColumnIndexes</name>
+        <qualifiedname>paimon::FileIndexFormat::Writer::WriteColumnIndexes</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_file_index_format_1a105c22cb9157270769bfa40878545ed7" kindref="member">FileIndexFormat::ColumnIndexes</ref> &amp;</type>
+          <declname>indexes</declname>
+        </param>
+        <briefdescription>
+<para>Writes all column indexes. This is a terminal, one-shot operation. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="131" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_index_format_1_1_writer_1a106ea86f615a3d5d874bb3e067b9e8dc" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::FileIndexFormat::Writer::Close</definition>
+        <argsstring>()=0</argsstring>
+        <name>Close</name>
+        <qualifiedname>paimon::FileIndexFormat::Writer::Close</qualifiedname>
+        <briefdescription>
+<para>Flushes and closes the output stream supplied to <computeroutput><ref refid="classpaimon_1_1_file_index_format_1aa07c944db15f48e4cc6c81c84d86c729" kindref="member">CreateWriter()</ref></computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="134" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para><ref refid="classpaimon_1_1_file_index_format_1_1_writer" kindref="compound">Writer</ref> for file index file. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="126" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" bodystart="126" bodyend="135"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_file_index_format_1_1_writer_1a106ea86f615a3d5d874bb3e067b9e8dc" prot="public" virt="pure-virtual"><scope>paimon::FileIndexFormat::Writer</scope><name>Close</name></member>
+      <member refid="classpaimon_1_1_file_index_format_1_1_writer_1a763f09adfea149329963a4f632aa49dd" prot="public" virt="pure-virtual"><scope>paimon::FileIndexFormat::Writer</scope><name>WriteColumnIndexes</name></member>
+      <member refid="classpaimon_1_1_file_index_format_1_1_writer_1a45bfbe7085ced2aac66a8eedc10af540" prot="public" virt="virtual"><scope>paimon::FileIndexFormat::Writer</scope><name>~Writer</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

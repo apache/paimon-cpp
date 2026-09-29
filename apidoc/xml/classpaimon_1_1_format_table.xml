@@ -1,0 +1,727 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_format_table" kind="class" language="C++" prot="public">
+    <compoundname>paimon::FormatTable</compoundname>
+    <includes refid="format__table_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h</includes>
+    <sectiondef kind="public-type">
+      <memberdef kind="enum" id="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aaf" prot="public" static="no" strong="yes">
+        <type></type>
+        <name>Format</name>
+        <qualifiedname>paimon::FormatTable::Format</qualifiedname>
+        <enumvalue id="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aafa7bb7c37684110cabfa71e442f9283f89" prot="public">
+          <name>PARQUET</name>
+          <briefdescription>
+          </briefdescription>
+          <detaileddescription>
+          </detaileddescription>
+        </enumvalue>
+        <enumvalue id="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aafa6d8e87b2e81c11252ad12520596a0ee1" prot="public">
+          <name>ORC</name>
+          <briefdescription>
+          </briefdescription>
+          <detaileddescription>
+          </detaileddescription>
+        </enumvalue>
+        <briefdescription>
+<para>Formats a format table&apos;s files can be in. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="59" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="59" bodyend="62"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1aca9b647a865a9f94e2ae407753fcf55d" prot="private" static="no" mutable="no">
+        <type>std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt;</type>
+        <definition>std::shared_ptr&lt;FileSystem&gt; paimon::FormatTable::file_system_</definition>
+        <argsstring></argsstring>
+        <name>file_system_</name>
+        <qualifiedname>paimon::FormatTable::file_system_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="195" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="195" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1a11f2fe3d2aa89f00a852ae76800c3b8e" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FormatTable::location_</definition>
+        <argsstring></argsstring>
+        <name>location_</name>
+        <qualifiedname>paimon::FormatTable::location_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="196" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="196" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1a704242beccf0fe4b532921bc7df2d578" prot="private" static="no" mutable="no">
+        <type><ref refid="classpaimon_1_1_identifier" kindref="compound">Identifier</ref></type>
+        <definition>Identifier paimon::FormatTable::identifier_</definition>
+        <argsstring></argsstring>
+        <name>identifier_</name>
+        <qualifiedname>paimon::FormatTable::identifier_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="197" column="16" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="197" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1aad1a37e05586573d0e491eaab6a312b5" prot="private" static="no" mutable="no">
+        <type>std::shared_ptr&lt; <ref refid="classpaimon_1_1_data_schema" kindref="compound">DataSchema</ref> &gt;</type>
+        <definition>std::shared_ptr&lt;DataSchema&gt; paimon::FormatTable::schema_</definition>
+        <argsstring></argsstring>
+        <name>schema_</name>
+        <qualifiedname>paimon::FormatTable::schema_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="198" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="198" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1a28a7735cecde596a287b9d800a0e8617" prot="private" static="no" mutable="no">
+        <type>std::map&lt; std::string, std::string &gt;</type>
+        <definition>std::map&lt;std::string, std::string&gt; paimon::FormatTable::options_</definition>
+        <argsstring></argsstring>
+        <name>options_</name>
+        <qualifiedname>paimon::FormatTable::options_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="199" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="199" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1a1357abb74ab11ca61604ae0dc7ef4545" prot="private" static="no" mutable="no">
+        <type><ref refid="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aaf" kindref="member">Format</ref></type>
+        <definition>Format paimon::FormatTable::format_</definition>
+        <argsstring></argsstring>
+        <name>format_</name>
+        <qualifiedname>paimon::FormatTable::format_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="200" column="12" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="200" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1ade6ce3386b31ac0b87a7083679db87e6" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FormatTable::file_compression_</definition>
+        <argsstring></argsstring>
+        <name>file_compression_</name>
+        <qualifiedname>paimon::FormatTable::file_compression_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="201" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="201" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1a88cb678809b9b6fb0c5a07b3335cbd9b" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FormatTable::partition_default_name_</definition>
+        <argsstring></argsstring>
+        <name>partition_default_name_</name>
+        <qualifiedname>paimon::FormatTable::partition_default_name_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="202" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="202" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1a4425b1a8647eec340a13587e8fa42612" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::FormatTable::partition_only_value_in_path_</definition>
+        <argsstring></argsstring>
+        <name>partition_only_value_in_path_</name>
+        <qualifiedname>paimon::FormatTable::partition_only_value_in_path_</qualifiedname>
+        <initializer>= <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">false</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="203" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="203" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_format_table_1ad931287f9703ec8288da1a877b2bf869" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::FormatTable::location_carries_paimon_metadata_</definition>
+        <argsstring></argsstring>
+        <name>location_carries_paimon_metadata_</name>
+        <qualifiedname>paimon::FormatTable::location_carries_paimon_metadata_</qualifiedname>
+        <initializer>= <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">false</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="204" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="204" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1ab8d2302e0255af3e4f0c509be4ad1026" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aaf" kindref="member">Format</ref> &gt;</type>
+        <definition>static Result&lt; Format &gt; paimon::FormatTable::ParseFormat</definition>
+        <argsstring>(const std::string &amp;file_format)</argsstring>
+        <name>ParseFormat</name>
+        <qualifiedname>paimon::FormatTable::ParseFormat</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>file_format</declname>
+        </param>
+        <briefdescription>
+<para>Parses the <computeroutput>file.format</computeroutput> option, case-insensitively. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>A format this library has no reader for is rejected by name, instead of failing later with a missing-format-factory error. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="66" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1af5f12036973f37684e3d9abc837d5c2c" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type>std::string</type>
+        <definition>static std::string paimon::FormatTable::FormatToString</definition>
+        <argsstring>(Format format)</argsstring>
+        <name>FormatToString</name>
+        <qualifiedname>paimon::FormatTable::FormatToString</qualifiedname>
+        <param>
+          <type><ref refid="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aaf" kindref="member">Format</ref></type>
+          <declname>format</declname>
+        </param>
+        <briefdescription>
+<para>The identifier of a format, as it appears in <computeroutput>file.format</computeroutput> and as a file extension. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="69" column="24"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1ae783dc7de67a608a1f6b70eec54526db" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_format_table" kindref="compound">FormatTable</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::shared_ptr&lt; FormatTable &gt; &gt; paimon::FormatTable::Create</definition>
+        <argsstring>(const std::shared_ptr&lt; FileSystem &gt; &amp;file_system, const std::string &amp;table_path, const Identifier &amp;identifier, const std::map&lt; std::string, std::string &gt; &amp;dynamic_options)</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::FormatTable::Create</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt; &amp;</type>
+          <declname>file_system</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>table_path</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_identifier" kindref="compound">Identifier</ref> &amp;</type>
+          <declname>identifier</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>dynamic_options</declname>
+        </param>
+        <briefdescription>
+<para>Loads a format table from its directory, reading the schema stored under it. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>This needs a schema file under the table directory, which a table created through <computeroutput>SchemaManager</computeroutput> or a file system catalog has. A table whose schema lives in a metastore has none, and is loaded through <computeroutput><ref refid="classpaimon_1_1_catalog_1a82b118dfa0594678a13814e07e02984e" kindref="member">Catalog::GetFormatTable()</ref></computeroutput> instead.</para>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>file_system</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>File system holding the table directory. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>table_path</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Root path of the table, which is also its data location. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>identifier</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Logical table identifier, used for naming and error messages. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>dynamic_options</parametername>
+</parameternamelist>
+<parameterdescription>
+<para><ref refid="structpaimon_1_1_options" kindref="compound">Options</ref> given at the call, which win over the ones stored in the schema. Empty when the caller has none. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para>A result containing the format table, or an error status. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="83" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1aa5adfd5449a02314cc83efb014c19dff" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_format_table" kindref="compound">FormatTable</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::shared_ptr&lt; FormatTable &gt; &gt; paimon::FormatTable::Create</definition>
+        <argsstring>(const std::shared_ptr&lt; FileSystem &gt; &amp;file_system, const std::string &amp;location, const Identifier &amp;identifier, const std::shared_ptr&lt; DataSchema &gt; &amp;schema, bool location_carries_paimon_metadata, const std::map&lt; std::string, std::string &gt; &amp;dynamic_options)</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::FormatTable::Create</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt; &amp;</type>
+          <declname>file_system</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>location</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_identifier" kindref="compound">Identifier</ref> &amp;</type>
+          <declname>identifier</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_data_schema" kindref="compound">DataSchema</ref> &gt; &amp;</type>
+          <declname>schema</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+          <declname>location_carries_paimon_metadata</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>dynamic_options</declname>
+        </param>
+        <briefdescription>
+<para>Builds a format table from a schema that is already loaded, for a caller that has one in hand, such as a catalog that just created the table. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>location</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Directory the data files live in. It may not be empty: every path this table reads or writes is checked against it, and an empty one is a prefix of nothing. A trailing separator names the same directory as none. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>location_carries_paimon_metadata</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>See <computeroutput><ref refid="classpaimon_1_1_format_table_1a4d2d0158fa89bc0194dcb86c011f6a36" kindref="member">LocationCarriesPaimonMetadata()</ref></computeroutput>. Only the caller knows: a file system catalog puts metadata there, a REST or Hive catalog keeps it in the metastore. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>dynamic_options</parametername>
+</parameternamelist>
+<parameterdescription>
+<para><ref refid="structpaimon_1_1_options" kindref="compound">Options</ref> given at the call, which win over the ones stored in the schema. Empty when the caller has none. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para>A result containing the format table, or an error status. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="99" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1aa6f7b5a9fab50b042ab296843ff52145" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_format_table" kindref="compound">FormatTable</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::shared_ptr&lt; FormatTable &gt; &gt; paimon::FormatTable::Copy</definition>
+        <argsstring>(const std::shared_ptr&lt; FormatTable &gt; &amp;table, const std::map&lt; std::string, std::string &gt; &amp;dynamic_options)</argsstring>
+        <name>Copy</name>
+        <qualifiedname>paimon::FormatTable::Copy</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_format_table" kindref="compound">FormatTable</ref> &gt; &amp;</type>
+          <declname>table</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>dynamic_options</declname>
+        </param>
+        <briefdescription>
+<para>Copies <computeroutput>table</computeroutput> with <computeroutput>dynamic_options</computeroutput> on top of the options it already carries, which is the precedence every context builder promises for a table it was handed rather than loaded itself. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><computeroutput>table</computeroutput> comes back as it is when there is nothing to add.</para>
+<para><computeroutput>type</computeroutput> is not overridable: it is structural and is read from the schema alone.</para>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>table</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The table to copy. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>dynamic_options</parametername>
+</parameternamelist>
+<parameterdescription>
+<para><ref refid="structpaimon_1_1_options" kindref="compound">Options</ref> given at the call. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para>A result containing the copied table, or an error status. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="114" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a4e93af96bccf08809a3bf26ee6ec735e" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::FormatTable::~FormatTable</definition>
+        <argsstring>()</argsstring>
+        <name>~FormatTable</name>
+        <qualifiedname>paimon::FormatTable::~FormatTable</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="118" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1ae60a23987d78468025acd002b23af529" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+        <definition>const std::string &amp; paimon::FormatTable::Location</definition>
+        <argsstring>() const</argsstring>
+        <name>Location</name>
+        <qualifiedname>paimon::FormatTable::Location</qualifiedname>
+        <briefdescription>
+<para>Directory the data files live in. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="121" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="121" bodyend="123"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1aa0ae5176bdcdb2f82ca89e8e4e31ed96" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aaf" kindref="member">Format</ref></type>
+        <definition>Format paimon::FormatTable::GetFormat</definition>
+        <argsstring>() const</argsstring>
+        <name>GetFormat</name>
+        <qualifiedname>paimon::FormatTable::GetFormat</qualifiedname>
+        <briefdescription>
+<para>Format of every data file in the directory. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="126" column="12" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="126" bodyend="128"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1afe9cdb6cc76c637a67d9379f9957b07a" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::vector&lt; std::string &gt; &amp;</type>
+        <definition>const std::vector&lt; std::string &gt; &amp; paimon::FormatTable::PartitionKeys</definition>
+        <argsstring>() const</argsstring>
+        <name>PartitionKeys</name>
+        <qualifiedname>paimon::FormatTable::PartitionKeys</qualifiedname>
+        <briefdescription>
+<para>Fields the table is partitioned by, in the order their directories nest. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="131" column="23"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a45b68b4a5956c8845e558253ec31ca03" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+        <definition>const std::string &amp; paimon::FormatTable::FileCompression</definition>
+        <argsstring>() const</argsstring>
+        <name>FileCompression</name>
+        <qualifiedname>paimon::FormatTable::FileCompression</qualifiedname>
+        <briefdescription>
+<para>Compression new data files are written with. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>It is resolved from <computeroutput>file.compression</computeroutput>, then <computeroutput>format-table.file.compression</computeroutput>, then the bare <computeroutput>compression</computeroutput> key an engine&apos;s own writer reads, then what the table&apos;s format writes by default. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="136" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="136" bodyend="138"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a51b21f1e211e3c01a890b5a314ed5d6a" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+        <definition>const std::string &amp; paimon::FormatTable::PartitionDefaultName</definition>
+        <argsstring>() const</argsstring>
+        <name>PartitionDefaultName</name>
+        <qualifiedname>paimon::FormatTable::PartitionDefaultName</qualifiedname>
+        <briefdescription>
+<para>Directory name standing for a null partition value, from <computeroutput>partition.default-name</computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="141" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="141" bodyend="143"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1ac9074d698944be78ad983eb21c89eb35" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::FormatTable::PartitionOnlyValueInPath</definition>
+        <argsstring>() const</argsstring>
+        <name>PartitionOnlyValueInPath</name>
+        <qualifiedname>paimon::FormatTable::PartitionOnlyValueInPath</qualifiedname>
+        <briefdescription>
+<para>Whether a partition directory is named by its value alone (<computeroutput>2025/01/</computeroutput>) instead of <computeroutput>key=value</computeroutput> (<computeroutput>year=2025/month=01/</computeroutput>), from <computeroutput>format-table.partition-path-only-value</computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The value-only layout carries no field names, so the nesting order of the table&apos;s partition keys alone says which key a directory belongs to. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="149" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="149" bodyend="151"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a23690cced467fe44dd8a7c3c204bad42" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+        <definition>const std::map&lt; std::string, std::string &gt; &amp; paimon::FormatTable::Options</definition>
+        <argsstring>() const</argsstring>
+        <name>Options</name>
+        <qualifiedname>paimon::FormatTable::Options</qualifiedname>
+        <briefdescription>
+<para><ref refid="classpaimon_1_1_table" kindref="compound">Table</ref> options: the ones stored in the schema, with any given at the call on top. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="154" column="20" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="154" bodyend="156"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a34322b7d9fc4d24717f6ab3bf55d5275" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string paimon::FormatTable::Name</definition>
+        <argsstring>() const</argsstring>
+        <name>Name</name>
+        <qualifiedname>paimon::FormatTable::Name</qualifiedname>
+        <briefdescription>
+<para>A name to identify this table. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="159" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="159" bodyend="161"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a08904ab2d93117600422a5fe42a30213" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string paimon::FormatTable::FullName</definition>
+        <argsstring>() const</argsstring>
+        <name>FullName</name>
+        <qualifiedname>paimon::FormatTable::FullName</qualifiedname>
+        <briefdescription>
+<para>Full name of the table, database.tableName. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="164" column="17"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a2cfdd066868a99b95720875ad1283319" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type>std::shared_ptr&lt; <ref refid="classpaimon_1_1_data_schema" kindref="compound">DataSchema</ref> &gt;</type>
+        <definition>std::shared_ptr&lt; DataSchema &gt; paimon::FormatTable::LatestSchema</definition>
+        <argsstring>() const</argsstring>
+        <name>LatestSchema</name>
+        <qualifiedname>paimon::FormatTable::LatestSchema</qualifiedname>
+        <briefdescription>
+<para><ref refid="classpaimon_1_1_schema" kindref="compound">Schema</ref> of the table, including its partition fields. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="167" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="167" bodyend="169"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1afcacc335160bd7d39dcf88ff2706ae2e" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt;<ref refid="struct_arrow_schema" kindref="compound">::ArrowSchema</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::unique_ptr&lt;::ArrowSchema &gt; &gt; paimon::FormatTable::GetArrowSchema</definition>
+        <argsstring>() const</argsstring>
+        <name>GetArrowSchema</name>
+        <qualifiedname>paimon::FormatTable::GetArrowSchema</qualifiedname>
+        <briefdescription>
+<para><ref refid="classpaimon_1_1_schema" kindref="compound">Schema</ref> of the table as an arrow schema, including its partition fields. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="172" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1afdf86c63ab744ac68012862b53b2e307" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type>std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt;</type>
+        <definition>std::shared_ptr&lt; FileSystem &gt; paimon::FormatTable::GetFileSystem</definition>
+        <argsstring>() const</argsstring>
+        <name>GetFileSystem</name>
+        <qualifiedname>paimon::FormatTable::GetFileSystem</qualifiedname>
+        <briefdescription>
+<para>File system holding the table directory. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="175" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="175" bodyend="177"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a4d2d0158fa89bc0194dcb86c011f6a36" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::FormatTable::LocationCarriesPaimonMetadata</definition>
+        <argsstring>() const</argsstring>
+        <name>LocationCarriesPaimonMetadata</name>
+        <qualifiedname>paimon::FormatTable::LocationCarriesPaimonMetadata</qualifiedname>
+        <briefdescription>
+<para>Whether this table&apos;s own metadata lives under its location, as told by whoever loaded it. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Only then are the <computeroutput>schema</computeroutput> and <computeroutput>branch</computeroutput> directories below the location table metadata rather than table content. For a table whose schema lives in a metastore they are data, and are read and written like any other directory. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="184" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="184" bodyend="186"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-func">
+      <memberdef kind="function" id="classpaimon_1_1_format_table_1a31e8278ef32e81dace14c2fee9170b4f" prot="private" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::FormatTable::FormatTable</definition>
+        <argsstring>(const std::shared_ptr&lt; FileSystem &gt; &amp;file_system, const std::string &amp;location, const Identifier &amp;identifier, const std::shared_ptr&lt; DataSchema &gt; &amp;schema, const std::map&lt; std::string, std::string &gt; &amp;options, Format format, const std::string &amp;file_compression, const std::string &amp;partition_default_name, bool partition_only_value_in_path, bool location_carries_paimon_metadata)</argsstring>
+        <name>FormatTable</name>
+        <qualifiedname>paimon::FormatTable::FormatTable</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt; &amp;</type>
+          <declname>file_system</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>location</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_identifier" kindref="compound">Identifier</ref> &amp;</type>
+          <declname>identifier</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_data_schema" kindref="compound">DataSchema</ref> &gt; &amp;</type>
+          <declname>schema</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>options</declname>
+        </param>
+        <param>
+          <type><ref refid="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aaf" kindref="member">Format</ref></type>
+          <declname>format</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>file_compression</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>partition_default_name</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+          <declname>partition_only_value_in_path</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+          <declname>location_carries_paimon_metadata</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="189" column="5"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>A table that is a directory of data files of one format, laid out like a standard Hive table. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>It carries no snapshots and no manifests: the files under its location are the table, and a partitioned table&apos;s partitions are the <computeroutput>key=value</computeroutput> directories below that location, or the bare-value ones under <computeroutput>format-table.partition-path-only-value</computeroutput>. A table is a format table when its <computeroutput>type</computeroutput> option is <computeroutput>format-table</computeroutput>; <computeroutput>file.format</computeroutput> then names the format of every file in it, defaulting to <computeroutput>parquet</computeroutput>.</para>
+<para>Writes only insert - there is nowhere to record an update or a delete - so a read fills <computeroutput>_VALUE_KIND</computeroutput> with inserts throughout.</para>
+<para>Reading and writing go through the entry points every other table uses: <computeroutput><ref refid="classpaimon_1_1_table_scan" kindref="compound">TableScan</ref></computeroutput>, <computeroutput><ref refid="classpaimon_1_1_table_read" kindref="compound">TableRead</ref></computeroutput>, <computeroutput><ref refid="classpaimon_1_1_file_store_write" kindref="compound">FileStoreWrite</ref></computeroutput> and <computeroutput><ref refid="classpaimon_1_1_file_store_commit" kindref="compound">FileStoreCommit</ref></computeroutput>. Each recognises a format table from the schema under the table path, or takes one already loaded through the <computeroutput><ref refid="classpaimon_1_1_format_table" kindref="compound">FormatTable</ref></computeroutput> constructor every context builder has, which is how a table whose schema lives in a metastore is reached.</para>
+<para>See <computeroutput>docs/source/user_guide/format_table.rst</computeroutput> for what is not supported yet. </para>
+    </detaileddescription>
+    <collaborationgraph>
+      <node id="1">
+        <label>paimon::FormatTable</label>
+        <link refid="classpaimon_1_1_format_table"/>
+        <childnode refid="2" relation="usage">
+          <edgelabel>identifier_</edgelabel>
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::Identifier</label>
+        <link refid="classpaimon_1_1_identifier"/>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" line="56" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/format/format_table.h" bodystart="56" bodyend="205"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_format_table_1aa6f7b5a9fab50b042ab296843ff52145" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>Copy</name></member>
+      <member refid="classpaimon_1_1_format_table_1ae783dc7de67a608a1f6b70eec54526db" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_format_table_1aa5adfd5449a02314cc83efb014c19dff" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_format_table_1ade6ce3386b31ac0b87a7083679db87e6" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>file_compression_</name></member>
+      <member refid="classpaimon_1_1_format_table_1aca9b647a865a9f94e2ae407753fcf55d" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>file_system_</name></member>
+      <member refid="classpaimon_1_1_format_table_1a45b68b4a5956c8845e558253ec31ca03" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>FileCompression</name></member>
+      <member refid="classpaimon_1_1_format_table_1a5e64a4c7639c078931d23580a73e7aaf" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>Format</name></member>
+      <member refid="classpaimon_1_1_format_table_1a1357abb74ab11ca61604ae0dc7ef4545" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>format_</name></member>
+      <member refid="classpaimon_1_1_format_table_1a31e8278ef32e81dace14c2fee9170b4f" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>FormatTable</name></member>
+      <member refid="classpaimon_1_1_format_table_1af5f12036973f37684e3d9abc837d5c2c" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>FormatToString</name></member>
+      <member refid="classpaimon_1_1_format_table_1a08904ab2d93117600422a5fe42a30213" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>FullName</name></member>
+      <member refid="classpaimon_1_1_format_table_1afcacc335160bd7d39dcf88ff2706ae2e" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>GetArrowSchema</name></member>
+      <member refid="classpaimon_1_1_format_table_1afdf86c63ab744ac68012862b53b2e307" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>GetFileSystem</name></member>
+      <member refid="classpaimon_1_1_format_table_1aa0ae5176bdcdb2f82ca89e8e4e31ed96" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>GetFormat</name></member>
+      <member refid="classpaimon_1_1_format_table_1a704242beccf0fe4b532921bc7df2d578" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>identifier_</name></member>
+      <member refid="classpaimon_1_1_format_table_1a2cfdd066868a99b95720875ad1283319" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>LatestSchema</name></member>
+      <member refid="classpaimon_1_1_format_table_1ae60a23987d78468025acd002b23af529" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>Location</name></member>
+      <member refid="classpaimon_1_1_format_table_1a11f2fe3d2aa89f00a852ae76800c3b8e" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>location_</name></member>
+      <member refid="classpaimon_1_1_format_table_1ad931287f9703ec8288da1a877b2bf869" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>location_carries_paimon_metadata_</name></member>
+      <member refid="classpaimon_1_1_format_table_1a4d2d0158fa89bc0194dcb86c011f6a36" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>LocationCarriesPaimonMetadata</name></member>
+      <member refid="classpaimon_1_1_format_table_1a34322b7d9fc4d24717f6ab3bf55d5275" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>Name</name></member>
+      <member refid="classpaimon_1_1_format_table_1a23690cced467fe44dd8a7c3c204bad42" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>Options</name></member>
+      <member refid="classpaimon_1_1_format_table_1a28a7735cecde596a287b9d800a0e8617" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>options_</name></member>
+      <member refid="classpaimon_1_1_format_table_1ab8d2302e0255af3e4f0c509be4ad1026" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>ParseFormat</name></member>
+      <member refid="classpaimon_1_1_format_table_1a88cb678809b9b6fb0c5a07b3335cbd9b" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>partition_default_name_</name></member>
+      <member refid="classpaimon_1_1_format_table_1a4425b1a8647eec340a13587e8fa42612" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>partition_only_value_in_path_</name></member>
+      <member refid="classpaimon_1_1_format_table_1a51b21f1e211e3c01a890b5a314ed5d6a" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>PartitionDefaultName</name></member>
+      <member refid="classpaimon_1_1_format_table_1afe9cdb6cc76c637a67d9379f9957b07a" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>PartitionKeys</name></member>
+      <member refid="classpaimon_1_1_format_table_1ac9074d698944be78ad983eb21c89eb35" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>PartitionOnlyValueInPath</name></member>
+      <member refid="classpaimon_1_1_format_table_1aad1a37e05586573d0e491eaab6a312b5" prot="private" virt="non-virtual"><scope>paimon::FormatTable</scope><name>schema_</name></member>
+      <member refid="classpaimon_1_1_format_table_1a4e93af96bccf08809a3bf26ee6ec735e" prot="public" virt="non-virtual"><scope>paimon::FormatTable</scope><name>~FormatTable</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
