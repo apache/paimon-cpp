@@ -125,7 +125,8 @@ TEST(RenamingSnapshotCommitTest, TestAtomicStoreErrorWithMatchingSnapshotIsSucce
     Snapshot snapshot = BuildTestSnapshot(1);
     AtomicStoreMockFileSystem* fs_ptr = fs.get();
 
-    EXPECT_CALL(*fs, AtomicStore(testing::_, testing::_))
+    EXPECT_CALL(*fs,
+                AtomicStore(testing::A<const std::string&>(), testing::A<const std::string&>()))
         .WillOnce(testing::Invoke(
             [fs_ptr](const std::string& path, const std::string& content) -> Status {
                 PAIMON_RETURN_NOT_OK(fs_ptr->FileSystem::AtomicStore(path, content));
@@ -150,7 +151,8 @@ TEST(RenamingSnapshotCommitTest, TestAtomicStoreErrorWithConflictingSnapshotRetu
     ASSERT_OK_AND_ASSIGN(std::string conflicting_json, BuildTestSnapshot(2).ToJsonString());
     AtomicStoreMockFileSystem* fs_ptr = fs.get();
 
-    EXPECT_CALL(*fs, AtomicStore(testing::_, testing::_))
+    EXPECT_CALL(*fs,
+                AtomicStore(testing::A<const std::string&>(), testing::A<const std::string&>()))
         .WillOnce(testing::Invoke(
             [fs_ptr, &conflicting_json](const std::string& path, const std::string&) -> Status {
                 PAIMON_RETURN_NOT_OK(fs_ptr->FileSystem::AtomicStore(path, conflicting_json));
@@ -173,7 +175,8 @@ TEST(RenamingSnapshotCommitTest, TestAtomicStoreErrorWithMissingSnapshotReturnsE
     auto commit = std::make_shared<RenamingSnapshotCommit>(fs, snapshot_manager);
     Snapshot snapshot = BuildTestSnapshot(1);
 
-    EXPECT_CALL(*fs, AtomicStore(testing::_, testing::_))
+    EXPECT_CALL(*fs,
+                AtomicStore(testing::A<const std::string&>(), testing::A<const std::string&>()))
         .WillOnce(testing::Return(Status::IOError("atomic store failed")));
 
     ASSERT_NOK_WITH_MSG(
