@@ -879,7 +879,9 @@ Status FileStoreCommitImpl::Commit(
         ReportCommit(changes, duration.Get(), generated_snapshot, attempt);
     });
 
-    if (!ignore_empty_commit_ || changes.HasAppendChanges()) {
+    // A real-time commit may carry only durable offset progress, for example when an insert and
+    // delete cancel before either row is persisted. Such a commit still needs a snapshot.
+    if (!ignore_empty_commit_ || changes.HasAppendChanges() || !realtime_ranges.empty()) {
         Snapshot::CommitKind commit_kind = Snapshot::CommitKind::Append();
         if (append_commit_check_conflict_) {
             check_append_files = true;

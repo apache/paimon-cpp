@@ -61,6 +61,7 @@
 #include "paimon/core/options/map_storage_layout.h"
 #include "paimon/core/options/merge_engine.h"
 #include "paimon/core/options/table_type.h"
+#include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -299,6 +300,10 @@ Status SchemaValidation::ValidateFormatTableSchema(
     // place. `target-file-row-num` is validated there, so it needs no check of its own here.
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(effective_options, file_system));
+    if (core_options.RealtimeEnabled() || core_options.RealtimeSpillEnabled() ||
+        !core_options.GetRealtimeDeduplicateKeyFields().empty()) {
+        return Status::Invalid("a format table does not support real-time options");
+    }
 
     // A format table has no branches: its data is the files under its one location, which is
     // where a read or a write would go whatever this named. Refused wherever the option comes
@@ -358,6 +363,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
 
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(schema.Options()));
     PAIMON_RETURN_NOT_OK(ValidateBucket(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateRealtime(schema, options));
     // PAIMON_RETURN_NOT_OK(ValidateDefaultValues(schema));
     // PAIMON_RETURN_NOT_OK(ValidateStartupMode(options));
     PAIMON_RETURN_NOT_OK(ValidateFieldsPrefix(schema, options));
@@ -617,6 +623,45 @@ Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schem
         }
     }
     return Status::OK();
+}
+
+Status SchemaValidation::ValidateRealtime(const TableSchema& schema, const CoreOptions& options) {
+    const std::vector<std::string>& deduplicate_key_fields =
+        options.GetRealtimeDeduplicateKeyFields();
+    if (!options.RealtimeEnabled()) {
+        PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+            deduplicate_key_fields.empty(), "'{}' requires '{}=true'.",
+            Options::REALTIME_DEDUPLICATE_KEY_FIELDS, Options::REALTIME_ENABLED));
+        return Preconditions::CheckState(
+            !options.RealtimeSpillEnabled(), "'{}' requires '{}=true'.",
+            Options::REALTIME_SPILL_ENABLED, Options::REALTIME_ENABLED);
+    }
+
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        options.GetBucket() > 0, "Real-time mode requires a fixed positive bucket count."));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        !options.DataEvolutionEnabled(), "Real-time mode does not support data evolution."));
+
+    if (deduplicate_key_fields.empty()) {
+        return Status::OK();
+    }
+
+    PAIMON_RETURN_NOT_OK(
+        Preconditions::CheckState(schema.PrimaryKeys().empty(),
+                                  "'{}' is only supported on append tables without primary keys.",
+                                  Options::REALTIME_DEDUPLICATE_KEY_FIELDS));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        options.DeletionVectorsEnabled(),
+        "Real-time deduplicate mode requires 'deletion-vectors.enabled=true'."));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        !options.RealtimeSpillEnabled(),
+        "Real-time deduplicate mode does not support 'realtime.spill-enabled=true'."));
+
+    const std::shared_ptr<arrow::Schema> arrow_schema =
+        DataField::ConvertDataFieldsToArrowSchema(schema.Fields());
+    PAIMON_RETURN_NOT_OK(
+        RealtimeUtils::ValidateDeduplicateSchema(arrow_schema, deduplicate_key_fields));
+    return RealtimeUtils::ValidateDeduplicateFileIndex(options);
 }
 
 Status SchemaValidation::ValidateSequenceGroup(const TableSchema& schema,

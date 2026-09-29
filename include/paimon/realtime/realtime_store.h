@@ -46,20 +46,19 @@ class Predicate;
 enum class PAIMON_EXPORT RealtimeStoreMode {
     APPEND_ONLY,
     PRIMARY_KEY,
+    DEDUPLICATE,
 };
 
-/// Parameters used by a `RealtimeStoreFactory` to create a store.
+/// Parameters used to create a real-time store.
 struct PAIMON_EXPORT RealtimeStoreCreateRequest {
-    /// Schema whose ownership is transferred to the factory. Append mode receives the complete
-    /// append store-write schema: [_REALTIME_OFFSET, table write fields]. Primary-key mode receives
-    /// the real-time primary-key store-write schema:
-    /// [_SEQUENCE_NUMBER, _VALUE_KIND, _REALTIME_OFFSET, table write fields].
+    /// Physical write schema whose ownership is transferred to the consumer. Its layout is
+    /// mode-specific and contains a non-null int64 `_REALTIME_OFFSET` field.
     std::unique_ptr<::ArrowSchema> write_schema;
     /// Table options available to the store implementation.
     std::map<std::string, std::string> options;
     /// Memory pool for allocations retained by the store.
     std::shared_ptr<MemoryPool> memory_pool;
-    /// Table mode implemented by the store.
+    /// Requested store mode.
     RealtimeStoreMode mode = RealtimeStoreMode::APPEND_ONLY;
     /// Statistics collected by the store for query pruning.
     StatisticsMode statistics_mode = StatisticsMode::NONE;
@@ -69,6 +68,8 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     /// File system used to access `temp_directory`. The default store retains shared ownership
     /// for its lifetime. Custom stores may ignore this hint.
     std::shared_ptr<FileSystem> file_system = nullptr;
+    /// User-defined key field names when key-based deduplication is configured; empty otherwise.
+    std::vector<std::string> deduplicate_key_fields = {};
 };
 
 /// A record batch and its application-assigned offset bounds.
@@ -77,9 +78,9 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
 /// [_REALTIME_OFFSET, table write fields], and offsets are strictly increasing before the batch
 /// enters the store. Primary-key batches use the real-time primary-key store-write schema, are
 /// sorted by full primary key then sequence number, and retain the original offset in
-/// `_REALTIME_OFFSET`. `offset_range` is the left-closed, right-open envelope from the first
-/// application offset through one past the last; offsets may have gaps, so its count is not the
-/// batch row count.
+/// `_REALTIME_OFFSET`.
+/// `offset_range` is the left-closed, right-open envelope from the first application offset through
+/// one past the last; offsets may have gaps, so its count is not the batch row count.
 struct PAIMON_EXPORT RealtimeWriteBatch {
     /// Input batch whose ownership is transferred to `RealtimeStore::Write`.
     std::unique_ptr<RecordBatch> batch;
@@ -170,9 +171,8 @@ class PAIMON_EXPORT RealtimeStore {
     /// Creates readers that expose all rows in a sealed segment for Paimon file writing.
     ///
     /// The returned readers collectively expose every sealed row exactly once. Append-mode readers
-    /// preserve write order and contain `_REALTIME_OFFSET` followed by the table write fields.
-    /// Primary-key readers contain the real-time primary-key store fields; each reader's complete
-    /// stream is sorted by full primary key then sequence number.
+    /// preserve write order. Primary-key reader streams are sorted by full primary key then
+    /// sequence number. Returned batches match the mode-specific physical write schema.
     /// Returned readers have independent mutable read state and may be operated concurrently with
     /// one another without external synchronization.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
@@ -215,7 +215,6 @@ class PAIMON_EXPORT RealtimeStoreFactory {
     virtual ~RealtimeStoreFactory() = default;
 
     /// Creates a store configured with the supplied schema, statistics, options, and memory pool.
-    /// Creates a store for the requested table mode.
     /// The factory consumes `request`, including ownership of `request.write_schema`.
     virtual Result<std::shared_ptr<RealtimeStore>> Create(RealtimeStoreCreateRequest&& request) = 0;
 };

@@ -19,29 +19,35 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
+#include <vector>
 
-#include "paimon/reader/batch_reader.h"
-#include "paimon/realtime/offset_range.h"
+#include "paimon/result.h"
 
 namespace paimon {
 
-class RealtimeOffsetBatchReader final : public BatchReader {
+class RealtimeStore;
+struct DataFileMeta;
+
+class RealtimeOffsetFileIndexLookup;
+
+/// Coordinates committed Snapshot `.offset` lookup installation and in-memory reclamation.
+class RealtimeDeduplicateState {
  public:
-    RealtimeOffsetBatchReader(std::unique_ptr<BatchReader>&& reader,
-                              const OffsetRange& visible_offsets, bool keep_offset);
+    Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> AttachFileIndexLookup(
+        const std::shared_ptr<RealtimeOffsetFileIndexLookup>& file_lookup,
+        const std::shared_ptr<RealtimeStore>& store);
 
-    Result<ReadBatch> NextBatch() override;
+    Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> AcquireCommittedFileLookup() const;
 
-    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override;
-
-    std::shared_ptr<Metrics> GetReaderMetrics() const override;
-
-    void Close() override;
+    Status InstallCommittedSnapshot(
+        int64_t committed_end_offset,
+        const std::vector<std::shared_ptr<DataFileMeta>>& active_data_files,
+        const std::shared_ptr<RealtimeStore>& store);
 
  private:
-    std::unique_ptr<BatchReader> reader_;
-    OffsetRange visible_offsets_;
-    bool keep_offset_;
+    mutable std::mutex mutex_;
+    std::shared_ptr<RealtimeOffsetFileIndexLookup> committed_file_lookup_;
 };
 
 }  // namespace paimon

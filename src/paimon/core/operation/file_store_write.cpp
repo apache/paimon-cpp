@@ -297,17 +297,13 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 fmt::format("not support bucket {} in append table", options.GetBucket()));
         }
         if (ctx->GetRealtimeContext()) {
-            if (options.GetBucket() <= 0) {
-                return Status::Invalid("real-time append write requires fixed bucket mode");
-            }
-            if (options.DataEvolutionEnabled() || !ctx->GetWriteSchema().empty()) {
-                return Status::Invalid("real-time append write does not support data evolution");
-            }
-            if (options.DeletionVectorsEnabled()) {
-                return Status::Invalid("real-time append write does not support deletion vectors");
+            if (!ctx->GetWriteSchema().empty()) {
+                return Status::Invalid("real-time append write does not support a custom schema");
             }
             PAIMON_RETURN_NOT_OK(RestoreRealtimeCommittedProgress(ctx->GetRealtimeContext(),
                                                                   snapshot_manager, options));
+        } else if (!options.GetRealtimeDeduplicateKeyFields().empty()) {
+            return Status::Invalid("real-time deduplicate write requires a real-time context");
         }
         std::shared_ptr<arrow::Schema> write_schema = arrow_schema;
         const auto& write_field_names = ctx->GetWriteSchema();
@@ -328,9 +324,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 
         std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
         if (ctx->GetRealtimeContext()) {
-            PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<RealtimeSchemaLayout> layout,
-                RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, write_schema));
+            const RealtimeStoreMode mode = options.GetRealtimeDeduplicateKeyFields().empty()
+                                               ? RealtimeStoreMode::APPEND_ONLY
+                                               : RealtimeStoreMode::DEDUPLICATE;
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeSchemaLayout> layout,
+                                   RealtimeSchemaLayout::Create(mode, write_schema));
             realtime_schema_layout = std::move(layout);
         }
 

@@ -118,6 +118,7 @@ class SchemaValidation {
     static Status ValidateForDeletionVectors(const CoreOptions& options);
     static Status ValidatePrimaryKeyBTreeIndexes(const TableSchema& schema,
                                                  const CoreOptions& options);
+    static Status ValidateRealtime(const TableSchema& schema, const CoreOptions& options);
 
     static Status ValidateRowTracking(const TableSchema& table_schema, const CoreOptions& options);
 

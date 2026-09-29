@@ -86,6 +86,7 @@ set(PAIMON_COMMON_SRCS
     common/global_index/bitmap_global_index_result.cpp
     common/global_index/global_index_result.cpp
     common/global_index/global_indexer_factory.cpp
+    common/global_index/key_serializer.cpp
     common/io/buffered_input_stream.cpp
     common/io/byte_array_input_stream.cpp
     common/io/byte_array_output_stream.cpp
@@ -398,7 +399,12 @@ set(PAIMON_CORE_SRCS
     core/operation/write_context.cpp
     core/operation/write_restore.cpp
     core/realtime/arrow_realtime_store.cpp
+    core/realtime/arrow_deduplicate_realtime_store.cpp
     core/realtime/arrow_realtime_store_factory.cpp
+    core/realtime/realtime_key_offset_index.cpp
+    core/realtime/realtime_offset_file_index_lookup.cpp
+    core/realtime/realtime_deduplicate_state.cpp
+    core/realtime/realtime_deduplicate_writer.cpp
     core/realtime/realtime_offset_batch_reader.cpp
     core/realtime/realtime_primary_key_reader.cpp
     core/realtime/realtime_append_only_writer.cpp
@@ -840,14 +846,19 @@ if(PAIMON_BUILD_TESTS)
                     core/manifest/index_manifest_entry_serializer_test.cpp
                     core/manifest/index_manifest_file_handler_test.cpp
                     core/memory/writer_memory_manager_test.cpp
+                    core/realtime/arrow_deduplicate_realtime_store_test.cpp
                     core/realtime/arrow_realtime_store_test.cpp
                     core/realtime/primary_key_realtime_store_test.cpp
+                    core/realtime/realtime_deduplicate_state_test.cpp
+                    core/realtime/realtime_key_offset_index_test.cpp
                     core/realtime/realtime_offset_batch_reader_test.cpp
+                    core/realtime/realtime_offset_file_index_lookup_test.cpp
                     core/realtime/realtime_store_read_pipeline_test.cpp
                     core/realtime/realtime_schema_layout_test.cpp
                     core/realtime/realtime_primary_key_reader_test.cpp
                     core/realtime/realtime_context_test.cpp
                     core/realtime/realtime_reader_test.cpp
+                    core/realtime/realtime_utils_test.cpp
                     core/mergetree/levels_test.cpp
                     core/mergetree/lookup_file_test.cpp
                     core/mergetree/lookup_levels_test.cpp

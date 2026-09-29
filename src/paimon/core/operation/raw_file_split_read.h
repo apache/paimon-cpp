@@ -82,6 +82,16 @@ class RawFileSplitRead : public AbstractSplitRead {
         const std::vector<std::shared_ptr<DataFileMeta>>& files, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& local_row_ranges);
 
+    /// Reads with a query-local schema and predicate. Realtime deduplicate uses this to add the
+    /// durable offset field and its pinned visibility predicate without mutating the shared read
+    /// context.
+    Result<std::unique_ptr<BatchReader>> CreateReader(
+        const BinaryRow& partition, int32_t bucket,
+        const std::vector<std::shared_ptr<DataFileMeta>>& files, DeletionVector::Factory dv_factory,
+        const std::optional<std::vector<Range>>& local_row_ranges,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const std::shared_ptr<Predicate>& predicate);
+
     Result<bool> Match(const std::shared_ptr<Split>& split, bool force_keep_delete) const override;
 };
 

@@ -115,14 +115,26 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     const BinaryRow& partition, int32_t bucket,
     const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& local_row_ranges) {
+    return CreateReader(partition, bucket, data_files, std::move(dv_factory), local_row_ranges,
+                        raw_read_schema_, context_->GetPredicate());
+}
+
+Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
+    const BinaryRow& partition, int32_t bucket,
+    const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+    DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& local_row_ranges,
+    const std::shared_ptr<arrow::Schema>& read_schema,
+    const std::shared_ptr<Predicate>& predicate) {
     PAIMON_RETURN_NOT_OK(ValidateFileLocalRowRanges(data_files, local_row_ranges));
-    const auto& predicate = context_->GetPredicate();
+    if (!read_schema) {
+        return Status::Invalid("raw file read schema is null");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                            path_factory_->CreateDataFilePathFactory(partition, bucket));
 
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
-        CreateRawFileReaders(partition, data_files, raw_read_schema_, predicate, dv_factory,
+        CreateRawFileReaders(partition, data_files, read_schema, predicate, dv_factory,
                              local_row_ranges, data_file_path_factory,
                              /*extra_format_options=*/{}));
 

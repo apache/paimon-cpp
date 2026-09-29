@@ -47,17 +47,26 @@ namespace paimon {
 
 class RealtimeStore;
 class RealtimeReadView;
+class RealtimeDeduplicateState;
+struct DataFileMeta;
 class MemoryPool;
+class RoaringBitmap64;
+
+using RealtimeDataFileMap =
+    std::map<RealtimePartitionBucket, std::vector<std::shared_ptr<DataFileMeta>>>;
 
 struct RealtimeStoreState {
     std::shared_ptr<RealtimeStore> store;
     int64_t initial_offset;
+    std::shared_ptr<RealtimeDeduplicateState> deduplicate_state;
 };
 
 struct RealtimePartitionBucketView {
     RealtimePartitionBucket partition_bucket;
     std::shared_ptr<RealtimeStore> store;
     std::shared_ptr<RealtimeReadView> read_view;
+    RealtimeStoreMode mode = RealtimeStoreMode::APPEND_ONLY;
+    std::shared_ptr<const RoaringBitmap64> offset_deletions;
 };
 
 struct RealtimeReadState {
@@ -102,6 +111,9 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     Status AdvanceCommittedProgress(int64_t snapshot_id,
                                     const RealtimeOffsetMap& committed_offsets);
 
+    Status AdvanceCommittedProgress(int64_t snapshot_id, const RealtimeOffsetMap& committed_offsets,
+                                    const RealtimeDataFileMap& committed_data_files);
+
  private:
     static constexpr std::chrono::milliseconds kReadViewReleaseCheckInterval{100};
 
@@ -115,6 +127,8 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
         std::shared_ptr<arrow::Schema> write_schema;
         RealtimeStoreMode mode;
         std::string temp_directory;
+        std::vector<std::string> deduplicate_key_fields;
+        std::shared_ptr<RealtimeDeduplicateState> deduplicate_state;
         int64_t materialized_max_sequence_number = -1;
     };
 
@@ -130,8 +144,12 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     std::map<RealtimePartitionBucket, StoreEntry> stores_;
     // Full-table progress used as the initial offset when a store is created lazily.
     RealtimeOffsetMap committed_offsets_;
+    // Active files from the same Snapshot as `committed_offsets_`.
+    RealtimeDataFileMap committed_data_files_;
     // Progress already reflected in stores owned by this context.
     RealtimeOffsetMap reclaimed_offsets_;
+    // DEDUPLICATE lookups have to follow Snapshot changes even when the offset does not advance.
+    std::map<RealtimePartitionBucket, int64_t> installed_snapshot_ids_;
     std::optional<int64_t> last_refreshed_snapshot_id_;
     std::mutex read_views_mutex_;
     std::condition_variable read_views_cv_;
