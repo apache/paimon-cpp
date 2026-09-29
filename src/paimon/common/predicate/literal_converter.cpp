@@ -214,17 +214,26 @@ Result<std::vector<Literal>> LiteralConverter::ConvertLiteralsFromArray(const ar
             auto* dict_type = checked_cast<arrow::DictionaryType*>(dict_array.type().get());
             auto value_type_id = dict_type->value_type()->id();
             auto index_type_id = dict_type->index_type()->id();
-            if (value_type_id == arrow::Type::type::STRING &&
+            if ((value_type_id == arrow::Type::type::STRING ||
+                 value_type_id == arrow::Type::type::BINARY) &&
                 index_type_id == arrow::Type::type::INT32) {
-                return GetLiteralFromDictionaryArray<arrow::StringArray, arrow::Int32Array>(
-                    dict_array, FieldType::STRING, own_data);
-            } else if (value_type_id == arrow::Type::type::LARGE_STRING &&
+                FieldType literal_type = value_type_id == arrow::Type::type::STRING
+                                             ? FieldType::STRING
+                                             : FieldType::BINARY;
+                return GetLiteralFromDictionaryArray<arrow::BinaryArray, arrow::Int32Array>(
+                    dict_array, literal_type, own_data);
+            } else if ((value_type_id == arrow::Type::type::LARGE_STRING ||
+                        value_type_id == arrow::Type::type::LARGE_BINARY) &&
                        index_type_id == arrow::Type::type::INT64) {
-                return GetLiteralFromDictionaryArray<arrow::LargeStringArray, arrow::Int64Array>(
-                    dict_array, FieldType::STRING, own_data);
+                FieldType literal_type = value_type_id == arrow::Type::type::LARGE_STRING
+                                             ? FieldType::STRING
+                                             : FieldType::BINARY;
+                return GetLiteralFromDictionaryArray<arrow::LargeBinaryArray, arrow::Int64Array>(
+                    dict_array, literal_type, own_data);
             } else {
                 return Status::Invalid(
-                    "only support [STRING, INT32] or [LARGE_STRING, INT64] for DictionaryArray");
+                    "only support [STRING|BINARY, INT32] or "
+                    "[LARGE_STRING|LARGE_BINARY, INT64] for DictionaryArray");
             }
         }
         default:

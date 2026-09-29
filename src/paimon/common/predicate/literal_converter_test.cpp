@@ -449,6 +449,59 @@ TEST_F(LiteralConverterTest, TestDictType) {
                      Literal(FieldType::STRING, "foo", 3), Literal(FieldType::STRING)}));
 }
 
+TEST_F(LiteralConverterTest, TestDictionaryValueAndIndexTypes) {
+    const std::vector<std::pair<std::shared_ptr<arrow::DataType>, std::shared_ptr<arrow::DataType>>>
+        types = {{arrow::utf8(), arrow::int32()},
+                 {arrow::binary(), arrow::int32()},
+                 {arrow::large_utf8(), arrow::int64()},
+                 {arrow::large_binary(), arrow::int64()}};
+    for (const auto& [value_type, index_type] : types) {
+        SCOPED_TRACE(value_type->ToString());
+        const FieldType literal_type =
+            arrow::is_string(value_type->id()) ? FieldType::STRING : FieldType::BINARY;
+        auto dictionary = arrow::ipc::internal::json::ArrayFromJSON(
+                              value_type, R"(["unused", "a\u0000b", "", null, "tail"])")
+                              .ValueOrDie()
+                              ->Slice(1);
+        const std::vector<Literal> expected = {
+            Literal(literal_type, "a\0b", 3), Literal(literal_type),
+            Literal(literal_type, "", 0),     Literal(literal_type),
+            Literal(literal_type, "tail", 4), Literal(literal_type, "a\0b", 3)};
+        SCOPED_TRACE(index_type->ToString());
+        auto indices =
+            arrow::ipc::internal::json::ArrayFromJSON(index_type, "[3, 0, null, 1, 2, 3, 0]")
+                .ValueOrDie();
+        auto array = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie();
+        ASSERT_TRUE(array->ValidateFull().ok());
+        auto sliced = array->Slice(1);
+        for (bool own_data : {false, true}) {
+            SCOPED_TRACE(own_data);
+            ASSERT_OK_AND_ASSIGN(std::vector<Literal> actual,
+                                 LiteralConverter::ConvertLiteralsFromArray(*sliced, own_data));
+            ASSERT_EQ(expected, actual);
+        }
+    }
+}
+
+TEST_F(LiteralConverterTest, TestBinaryDictionaryPreservesBytes) {
+    const std::string bytes("\x00\xff\x80", 3);
+    arrow::BinaryBuilder builder;
+    ASSERT_TRUE(builder.Append(bytes).ok());
+    std::shared_ptr<arrow::Array> dictionary;
+    ASSERT_TRUE(builder.Finish(&dictionary).ok());
+    auto indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, null, 0]").ValueOrDie();
+    auto array = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::vector<Literal> actual,
+                         LiteralConverter::ConvertLiteralsFromArray(*array, /*own_data=*/true));
+    array.reset();
+    dictionary.reset();
+    ASSERT_EQ(actual,
+              std::vector<Literal>({Literal(FieldType::BINARY, bytes.data(), bytes.size()),
+                                    Literal(FieldType::BINARY),
+                                    Literal(FieldType::BINARY, bytes.data(), bytes.size())}));
+}
+
 TEST_F(LiteralConverterTest, TestLiteralsToArray) {
     // Every writable field type converts to an array and back, the null literal included, so each
     // case asserts `ConvertLiteralsToArray` and `ConvertLiteralsFromArray` agree on every type.

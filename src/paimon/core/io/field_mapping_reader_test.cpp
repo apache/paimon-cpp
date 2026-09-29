@@ -611,6 +611,50 @@ TEST_F(FieldMappingReaderTest, TestSchemaEvolutionWithModifyTypeWithDict) {
                 partition, expected_array);
 }
 
+TEST_F(FieldMappingReaderTest, TestBinaryDictionaryWithSchemaEvolution) {
+    const std::vector<DataField> data_fields = {
+        DataField(0, arrow::field("payload", arrow::binary()))};
+    auto read_schema = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(0, arrow::field("payload", arrow::utf8()))});
+    const std::string bytes("a\0\xff\x80", 4);
+    arrow::BinaryBuilder builder;
+    ASSERT_TRUE(builder.Append(bytes).ok());
+    ASSERT_TRUE(builder.Append("").ok());
+    ASSERT_TRUE(builder.AppendNull().ok());
+    std::shared_ptr<arrow::Array> dictionary;
+    ASSERT_TRUE(builder.Finish(&dictionary).ok());
+    auto indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[1, 0, null, 1, 2, 0]")
+            .ValueOrDie();
+    auto encoded = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie()->Slice(1);
+    auto data = arrow::StructArray::Make({encoded}, {"payload"}).ValueOrDie();
+    auto file_type = arrow::struct_({arrow::field("payload", arrow::binary())});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldMappingBuilder> mapping_builder,
+                         FieldMappingBuilder::Create(read_schema, /*partition_keys=*/{},
+                                                     /*predicate=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldMapping> mapping,
+                         mapping_builder->CreateFieldMapping(data_fields));
+    auto mock = std::make_unique<MockFileBatchReader>(data, file_type, /*read_batch_size=*/8);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldMappingReader> reader,
+                         FieldMappingReader::Create(
+                             1, std::move(mock), BinaryRow::EmptyRow(), std::move(mapping),
+                             /*skip_map_selected_keys_filter_field_ids=*/{}, GetArrowPool(pool_)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    arrow::StringBuilder expected_builder;
+    // BINARY -> STRING intentionally permits invalid UTF-8, just as the non-dictionary path does.
+    ASSERT_TRUE(expected_builder.Append(bytes).ok());
+    ASSERT_TRUE(expected_builder.AppendNull().ok());
+    ASSERT_TRUE(expected_builder.Append("").ok());
+    ASSERT_TRUE(expected_builder.AppendNull().ok());
+    ASSERT_TRUE(expected_builder.Append(bytes).ok());
+    std::shared_ptr<arrow::Array> expected_values;
+    ASSERT_TRUE(expected_builder.Finish(&expected_values).ok());
+    auto expected = arrow::StructArray::Make({expected_values}, {"payload"}).ValueOrDie();
+    ASSERT_TRUE(result->Equals(arrow::ChunkedArray(arrow::ArrayVector({expected}))))
+        << result->ToString();
+}
+
 TEST_F(FieldMappingReaderTest, TestSchemaEvolutionWithModifyTypeWithPredicate) {
     std::vector<DataField> data_fields = {DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::float32())),

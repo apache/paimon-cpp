@@ -53,6 +53,59 @@ TEST_F(CastingUtilsTest, TestDictionaryToString) {
     ASSERT_TRUE(result_array->Equals(string_array));
 }
 
+TEST_F(CastingUtilsTest, TestDecodeDictionaryPreservesValueType) {
+    for (const auto& value_type : {arrow::utf8(), arrow::large_utf8(), arrow::binary(),
+                                   arrow::large_binary(), arrow::int32()}) {
+        SCOPED_TRACE(value_type->ToString());
+        const bool is_integer = value_type->id() == arrow::Type::INT32;
+        auto dictionary =
+            arrow::ipc::internal::json::ArrayFromJSON(
+                value_type, is_integer ? "[10, null, 20]" : R"(["a\u0000b", null, ""])")
+                .ValueOrDie();
+        const auto target_type =
+            value_type->id() == arrow::Type::LARGE_STRING ? arrow::utf8() : value_type;
+        auto expected = arrow::ipc::internal::json::ArrayFromJSON(
+                            target_type, is_integer ? "[10, null, null, 20, 10]"
+                                                    : R"(["a\u0000b", null, null, "", "a\u0000b"])")
+                            .ValueOrDie();
+        for (const auto& index_type :
+             {arrow::int8(), arrow::int16(), arrow::int32(), arrow::int64()}) {
+            SCOPED_TRACE(index_type->ToString());
+            auto indices =
+                arrow::ipc::internal::json::ArrayFromJSON(index_type, "[2, 0, null, 1, 2, 0]")
+                    .ValueOrDie();
+            auto array = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie();
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<arrow::Array> decoded,
+                CastingUtils::DecodeDictionary(array->Slice(1), arrow_pool_.get()));
+            ASSERT_TRUE(decoded->ValidateFull().ok());
+            ASSERT_TRUE(decoded->Equals(expected)) << decoded->ToString();
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> unchanged,
+                             CastingUtils::DecodeDictionary(dictionary, arrow_pool_.get()));
+        ASSERT_EQ(unchanged, dictionary);
+    }
+}
+
+TEST_F(CastingUtilsTest, TestDecodeBinaryDictionaryPreservesNonUtf8) {
+    const std::string bytes("\x00\xff\x80", 3);
+    arrow::BinaryBuilder builder;
+    ASSERT_TRUE(builder.Append(bytes).ok());
+    std::shared_ptr<arrow::Array> dictionary;
+    ASSERT_TRUE(builder.Finish(&dictionary).ok());
+    auto indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, null, 0]").ValueOrDie();
+    auto array = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> decoded,
+                         CastingUtils::DecodeDictionary(array, arrow_pool_.get()));
+    ASSERT_TRUE(decoded->ValidateFull().ok());
+    ASSERT_EQ(decoded->type_id(), arrow::Type::BINARY);
+    auto binary = checked_pointer_cast<arrow::BinaryArray>(decoded);
+    ASSERT_EQ(bytes, binary->GetView(0));
+    ASSERT_TRUE(binary->IsNull(1));
+    ASSERT_EQ(bytes, binary->GetView(2));
+}
+
 TEST_F(CastingUtilsTest, TestTimestampToTimestampWithTimezone) {
     // local no tz -> utc tz
     auto src_array = arrow::ipc::internal::json::ArrayFromJSON(

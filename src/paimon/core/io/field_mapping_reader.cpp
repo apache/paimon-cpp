@@ -132,24 +132,17 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::CastNonPartitionArrayI
     for (int32_t i = 0; i < field_count; i++) {
         std::shared_ptr<arrow::Array> column;
         if (non_partition_info_.cast_executors[i] != nullptr) {
-            auto single_column_array = struct_array->field(i);
-            // if src array is dict, cast to string first
-            auto dict_array =
-                std::dynamic_pointer_cast<arrow::DictionaryArray>(single_column_array);
-            if (dict_array) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    single_column_array,
-                    CastingUtils::Cast(dict_array, /*target_type=*/arrow::utf8(),
-                                       arrow::compute::CastOptions::Safe(), arrow_pool_.get()));
-            }
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<arrow::Array> single_column_array,
+                CastingUtils::DecodeDictionary(struct_array->field(i), arrow_pool_.get()));
             PAIMON_ASSIGN_OR_RAISE(
                 column,
                 non_partition_info_.cast_executors[i]->Cast(
                     single_column_array, non_partition_info_.non_partition_read_schema[i].Type(),
                     arrow_pool_.get()));
         } else {
-            // read and data type may both be string type, but after adapter transform, type may be
-            // dictionary, need reconstruct struct type
+            // The reader may return a dictionary for an unchanged logical type, so reconstruct
+            // the struct type from the actual column.
             column = struct_array->field(i);
         }
         // Null-fill nested fields added by schema evolution. Only when the data and

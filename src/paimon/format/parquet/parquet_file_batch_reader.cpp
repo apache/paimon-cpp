@@ -210,15 +210,9 @@ std::set<int32_t> ParquetFileBatchReader::ResolveFullyDictionaryEncodedColumns(
         // Arrow only reads BYTE_ARRAY leaves as dictionaries, and only a top-level column can be
         // forwarded to the writer without rebuilding the nesting around it.
         //
-        // `is_string()` narrows that further to STRING, leaving out the other BYTE_ARRAY leaf,
-        // BINARY. This is the reader's restriction, not the format's: the writer takes
-        // `dictionary(int32, binary)` and ArrowUtils::IsDictionaryLayoutRecoverableValueType()
-        // accepts it, but the option applies to every read of the table and the value accessors
-        // cannot read one. ColumnarUtils::GetView() asserts on a dictionary whose values are
-        // neither STRING nor LARGE_STRING and returns an empty view in a release build, and
-        // LiteralConverter rejects it. Every consumer here understands a STRING dictionary because
-        // the ORC reader has always produced one under lazy decoding; none was ever handed a
-        // BINARY one. Widening this needs those consumers first, not just the gate.
+        // Keep passthrough opt-in limited to STRING. This is an output policy, not a Parquet
+        // restriction: Arrow can also return BINARY dictionaries, including when restoring a
+        // dictionary type from a file's serialized Arrow schema.
         if (schema->Column(i)->physical_type() == ::parquet::Type::BYTE_ARRAY &&
             schema->Column(i)->logical_type()->is_string() &&
             schema->GetColumnRoot(i)->is_primitive()) {

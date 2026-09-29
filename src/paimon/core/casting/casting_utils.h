@@ -47,6 +47,12 @@ class PAIMON_EXPORT CastingUtils {
         const std::shared_ptr<arrow::DataType>& target_type,
         const arrow::compute::CastOptions& options, arrow::MemoryPool* pool);
 
+    /// Decodes a dictionary to its value type, normalizing LARGE_STRING to STRING for readers
+    /// that widen string offsets. Other value types, including binary offsets, are preserved.
+    /// Returns a non-dictionary array unchanged.
+    static Result<std::shared_ptr<arrow::Array>> DecodeDictionary(
+        const std::shared_ptr<arrow::Array>& array, arrow::MemoryPool* pool);
+
     template <typename SrcScalar, typename SrcDataType, typename TargetScalar,
               typename TargetDataType>
     static Result<Literal> Cast(const Literal& literal,
