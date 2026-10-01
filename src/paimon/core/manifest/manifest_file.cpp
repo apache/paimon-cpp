@@ -19,22 +19,27 @@
 #include "paimon/core/manifest/manifest_file.h"
 
 #include <cassert>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <utility>
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "arrow/io/memory.h"
+#include "arrow/ipc/api.h"
 #include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/reader/late_materializing_file_batch_reader.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/rolling_file_writer.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_entry_serializer.h"
 #include "paimon/core/manifest/manifest_entry_writer_factory.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
+#include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/object_serializer.h"
 #include "paimon/core/utils/path_factory.h"
@@ -44,6 +49,8 @@
 #include "paimon/format/writer_builder.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/status.h"
+#include "paimon/table/source/scan_metrics.h"
+#include "paimon/utils/row_range_index.h"
 
 namespace arrow {
 class DataType;
@@ -57,6 +64,31 @@ namespace {
 constexpr int32_t kVersionFieldIndex = 0;
 constexpr int32_t kBucketFieldIndex = 3;
 constexpr int32_t kTotalBucketsFieldIndex = 4;
+
+// Separate the representation from the raw manifest's PositionCacheKey, while sharing the
+// caller's existing manifest cache budget and routing. No query or mutable snapshot state is
+// part of the key: manifest files have unique, immutable paths.
+class ManifestArrowCacheKey : public CacheKey {
+ public:
+    explicit ManifestArrowCacheKey(const std::string& path)
+        : CacheKey(CacheKind::MANIFEST), path_(path) {}
+
+    bool IsIndex() const override {
+        return false;
+    }
+
+    bool Equals(const CacheKey& other) const override {
+        const auto* rhs = dynamic_cast<const ManifestArrowCacheKey*>(&other);
+        return rhs && path_ == rhs->path_;
+    }
+
+    size_t HashCode() const override {
+        return std::hash<std::string>{}(path_);
+    }
+
+ private:
+    const std::string path_;
+};
 }  // namespace
 
 ManifestFile::ManifestFile(const std::shared_ptr<FileSystem>& file_system,
@@ -131,6 +163,176 @@ Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t buc
         [this, bucket, expected_total_buckets](std::unique_ptr<FileBatchReader>* reader) {
             return PrepareBucketRead(bucket, expected_total_buckets, reader);
         });
+}
+
+Status ManifestFile::ReadRowRangeEntries(
+    const std::string& file_name, const RowRangeIndex& row_ranges,
+    const std::function<Result<bool>(const ManifestEntry&)>& filter,
+    std::optional<int64_t> file_size, std::vector<ManifestEntry>* entries) const {
+    uint64_t scanned = 0;
+    uint64_t pruned = 0;
+    uint64_t materialized = 0;
+    Duration duration;
+    auto metrics = std::make_shared<MetricsImpl>();
+    // Merge once per file rather than locking a shared metric for every entry. ScopeGuard
+    // also accounts for work completed before an I/O or filter error.
+    ScopeGuard record_metrics([&]() {
+        metrics->SetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_SCANNED, scanned);
+        metrics->SetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_PRUNED, pruned);
+        metrics->SetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_MATERIALIZED, materialized);
+        metrics->ObserveHistogram(ScanMetrics::ROW_RANGE_MANIFEST_READ_DURATION,
+                                  static_cast<double>(duration.Get()));
+        read_metrics_->Merge(metrics);
+    });
+    return ReadRowRangeBatches(
+        file_name, file_size,
+        [this, &row_ranges, &filter, &scanned, &pruned, &materialized,
+         entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+            // ManifestMetaReader has aligned both the entry and its nested file schema. Probe
+            // the two range columns without allocating DataFileMeta, stats or binary keys.
+            constexpr int32_t kFileFieldIndex = 5;
+            constexpr int32_t kRowCountFieldIndex = 2;
+            constexpr int32_t kFirstRowIdFieldIndex = 18;
+            const auto& file_column = batch->field(kFileFieldIndex);
+            if (file_column->type_id() != arrow::Type::STRUCT) {
+                return Status::Invalid("Manifest entry file metadata must be a struct");
+            }
+            auto files = checked_pointer_cast<arrow::StructArray>(file_column);
+            const auto& count_column = files->field(kRowCountFieldIndex);
+            const auto& first_column = files->field(kFirstRowIdFieldIndex);
+            if (count_column->type_id() != arrow::Type::INT64 ||
+                first_column->type_id() != arrow::Type::INT64) {
+                return Status::Invalid("Manifest entry row range must contain int64 fields");
+            }
+            auto counts = checked_pointer_cast<arrow::Int64Array>(count_column);
+            auto first_ids = checked_pointer_cast<arrow::Int64Array>(first_column);
+            ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
+            for (int64_t i = 0; i < batch->length(); ++i) {
+                ++scanned;
+                row.SetRowId(i);
+                PAIMON_RETURN_NOT_OK(
+                    ManifestEntrySerializer::ValidateVersion(row.GetInt(kVersionFieldIndex)));
+                if (files->IsNull(i)) {
+                    return Status::Invalid(
+                        "ManifestEntry convert from row failed, with null DataFileMeta");
+                }
+                if (!first_ids->IsNull(i) && !counts->IsNull(i)) {
+                    const int64_t first = first_ids->Value(i);
+                    const int64_t count = counts->Value(i);
+                    // Missing or invalid ranges cannot prove an entry is irrelevant. In
+                    // particular, do not overflow when computing the inclusive upper bound.
+                    if (first >= 0 && count > 0 &&
+                        first <= std::numeric_limits<int64_t>::max() - (count - 1) &&
+                        !row_ranges.Intersects(first, first + (count - 1))) {
+                        ++pruned;
+                        continue;
+                    }
+                }
+                PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
+                ++materialized;
+                if (filter) {
+                    PAIMON_ASSIGN_OR_RAISE(bool keep, filter(entry));
+                    if (!keep) {
+                        continue;
+                    }
+                }
+                entries->push_back(std::move(entry));
+            }
+            return Status::OK();
+        },
+        metrics.get());
+}
+
+Result<std::shared_ptr<CacheValue>> ManifestFile::SerializeArrowBatches(
+    const std::string& file_name, std::optional<int64_t> file_size) const {
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::io::BufferOutputStream> output,
+        arrow::io::BufferOutputStream::Create(4096, arrow_pool_.get()));
+    auto write_options = arrow::ipc::IpcWriteOptions::Defaults();
+    write_options.memory_pool = arrow_pool_.get();
+    write_options.use_threads = false;
+    const auto schema = arrow::schema(serializer_->GetDataType()->fields());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::ipc::RecordBatchWriter> writer,
+                                      arrow::ipc::MakeStreamWriter(output, schema, write_options));
+    PAIMON_RETURN_NOT_OK(ReadArrowBatches(
+        file_name, file_size,
+        [&writer, &schema](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+            auto record_batch = arrow::RecordBatch::Make(schema, batch->length(), batch->fields());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(writer->WriteRecordBatch(*record_batch));
+            return Status::OK();
+        },
+        /*prepare_reader=*/nullptr));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(writer->Close());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Buffer> buffer, output->Finish());
+    if (buffer->size() > std::numeric_limits<int32_t>::max()) {
+        return Status::Invalid("Manifest Arrow cache entry exceeds the memory segment limit");
+    }
+    // CacheValue accounts for the serialized bytes. Retain their allocator when the cache
+    // outlives this scan; Bytes itself only stores a raw MemoryPool pointer.
+    struct OwnedBytes {
+        OwnedBytes(int64_t size, const std::shared_ptr<MemoryPool>& owner)
+            : pool(owner), bytes(size, owner.get()) {}
+        std::shared_ptr<MemoryPool> pool;
+        Bytes bytes;
+    };
+    auto owner = std::make_shared<OwnedBytes>(buffer->size(), pool_);
+    std::memcpy(owner->bytes.data(), buffer->data(), buffer->size());
+    auto* bytes = &owner->bytes;
+    auto segment = MemorySegment::Wrap(std::shared_ptr<Bytes>(std::move(owner), bytes));
+    return std::make_shared<CacheValue>(segment, CacheCallback());
+}
+
+Status ManifestFile::ReadRowRangeBatches(
+    const std::string& file_name, std::optional<int64_t> file_size,
+    const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
+    Metrics* metrics) const {
+    const auto& cache = options_.GetCache();
+    if (!cache) {
+        return ReadArrowBatches(file_name, file_size, consumer, /*prepare_reader=*/nullptr);
+    }
+    // Manifest paths identify immutable files, independent of a query or the latest snapshot.
+    // Keep IPC bytes in the caller's bounded cache, never readers or query-specific results.
+    auto key = std::make_shared<ManifestArrowCacheKey>(path_factory_->ToPath(file_name));
+    bool loaded = false;
+    auto cached =
+        cache->Get(key, [this, &file_name, file_size, &loaded](const std::shared_ptr<CacheKey>&) {
+            loaded = true;
+            return SerializeArrowBatches(file_name, file_size);
+        });
+    if (!cached.ok() || !cached.value() || !cached.value()->GetSegment().Data()) {
+        metrics->SetCounter(ScanMetrics::MANIFEST_ARROW_CACHE_FALLBACKS, 1);
+        // An optional cache failure must not prevent an ordinary manifest read.
+        return ReadArrowBatches(file_name, file_size, consumer, /*prepare_reader=*/nullptr);
+    }
+    metrics->SetCounter(
+        loaded ? ScanMetrics::MANIFEST_ARROW_CACHE_MISSES : ScanMetrics::MANIFEST_ARROW_CACHE_HITS,
+        1);
+    const auto& segment = cached.value()->GetSegment();
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
+                                                  segment.Size());
+    auto input = std::make_shared<arrow::io::BufferReader>(buffer);
+    auto read_options = arrow::ipc::IpcReadOptions::Defaults();
+    read_options.memory_pool = arrow_pool_.get();
+    read_options.use_threads = false;
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::ipc::RecordBatchStreamReader> reader,
+        arrow::ipc::RecordBatchStreamReader::Open(input, read_options));
+    const auto schema = arrow::schema(serializer_->GetDataType()->fields());
+    if (!reader->schema()->Equals(*schema)) {
+        return Status::Invalid("Cached manifest Arrow schema does not match the entry schema");
+    }
+    while (true) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::RecordBatch> batch,
+                                          reader->Next());
+        if (!batch) {
+            break;
+        }
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array,
+                                          batch->ToStructArray());
+        PAIMON_RETURN_NOT_OK(consumer(array));
+    }
+    // The cache handle remains alive until all zero-copy arrays have been consumed.
+    return Status::OK();
 }
 
 Status ManifestFile::PrepareBucketRead(int32_t bucket,

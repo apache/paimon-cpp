@@ -114,3 +114,20 @@ These metrics are C++-only and have no counterparts in Java Paimon.
    "io.async.pending", "gauge", "requests", "Asynchronous callbacks not yet completed"
    "io.async.latency.count", "counter", "requests", "Completed asynchronous callback latency samples"
    "io.async.latency.sum-us", "counter", "microseconds", "Sum of asynchronous callback latency"
+
+Row-range manifest reads
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Data-evolution scans with row ID ranges prune non-overlapping entries before
+materializing file metadata. Unknown ranges are retained. When a caller cache is
+provided, aligned immutable manifest batches share its existing bounded budget;
+no mutable snapshot selection or query result is cached.
+
+The scan metrics additionally expose cumulative ``rowRangeManifestEntriesScanned``,
+``rowRangeManifestEntriesPruned`` and ``rowRangeManifestEntriesMaterialized``.
+Materialized entries are counted before the ordinary entry filter.
+``manifestArrowCacheHits``, ``manifestArrowCacheMisses`` and
+``manifestArrowCacheFallbacks`` describe the decoded manifest cache path.
+``rowRangeManifestReadDuration`` is a per-file duration histogram in milliseconds,
+including cache access, filtering and materialization, also on failed reads.
+Parallel file durations overlap and must not be added to obtain request latency.

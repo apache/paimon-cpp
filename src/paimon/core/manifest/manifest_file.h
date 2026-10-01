@@ -19,12 +19,14 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "arrow/api.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/stats/simple_stats_collector.h"
@@ -46,6 +48,7 @@ class WriterBuilder;
 class PathFactory;
 class ManifestFileMeta;
 class ManifestEntry;
+class RowRangeIndex;
 class MemoryPool;
 
 /// This file includes several `ManifestEntry`s, representing the additional changes since last
@@ -76,7 +79,29 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
                              std::optional<int64_t> file_size,
                              std::vector<ManifestEntry>* entries) const;
 
+    /// Read entries intersecting row ID ranges before constructing their file metadata.
+    /// Unknown row ranges are retained. Add and Delete entries use the same selection, and
+    /// the ordinary entry filter still runs on every retained entry.
+    Status ReadRowRangeEntries(const std::string& file_name, const RowRangeIndex& row_ranges,
+                               const std::function<Result<bool>(const ManifestEntry&)>& filter,
+                               std::optional<int64_t> file_size,
+                               std::vector<ManifestEntry>* entries) const;
+
+    /// Cumulative row-range read work for this manifest reader, including concurrent reads.
+    std::shared_ptr<Metrics> GetReadMetrics() const {
+        auto snapshot = std::make_shared<MetricsImpl>();
+        snapshot->Overwrite(read_metrics_);
+        return snapshot;
+    }
+
  private:
+    Status ReadRowRangeBatches(
+        const std::string& file_name, std::optional<int64_t> file_size,
+        const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
+        Metrics* metrics) const;
+    Result<std::shared_ptr<CacheValue>> SerializeArrowBatches(
+        const std::string& file_name, std::optional<int64_t> file_size) const;
+
     Status PrepareBucketRead(int32_t bucket, const std::optional<int32_t>& expected_total_buckets,
                              std::unique_ptr<FileBatchReader>* reader) const;
 
@@ -88,6 +113,7 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
                  const std::shared_ptr<MemoryPool>& pool, const CoreOptions& options,
                  const std::shared_ptr<arrow::Schema>& partition_type);
 
+    std::shared_ptr<MetricsImpl> read_metrics_ = std::make_shared<MetricsImpl>();
     int64_t target_file_size_;
     CoreOptions options_;
     std::shared_ptr<arrow::Schema> partition_type_;
