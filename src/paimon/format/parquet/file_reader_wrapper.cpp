@@ -292,7 +292,7 @@ Result<std::shared_ptr<arrow::RecordBatch>> FileReaderWrapper::NextPageFiltered(
             PageFilteredRowGroupReader::ReadFilteredRowGroup(
                 target_rg, target_column_indices_, file_reader_->properties().cache_options(),
                 pre_buffered, page_ranges, max_chunksize, row_group_page_index_reader, pool_,
-                file_reader_.get()));
+                file_reader_.get(), metrics_.get()));
         current_filtered_row_ranges_ = target_rg.GetRowRanges();
         current_filtered_rg_start_ = all_row_group_ranges_[rg_id].first;
         filtered_global_offset_ = 0;

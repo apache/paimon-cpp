@@ -114,3 +114,23 @@ These metrics are C++-only and have no counterparts in Java Paimon.
    "io.async.pending", "gauge", "requests", "Asynchronous callbacks not yet completed"
    "io.async.latency.count", "counter", "requests", "Completed asynchronous callback latency samples"
    "io.async.latency.sum-us", "counter", "microseconds", "Sum of asynchronous callback latency"
+
+Filtered Parquet decoding
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When threaded Parquet reading is enabled, independent selected fields in a
+sparse row group can be decoded on the existing Arrow CPU pool. Offset indexes
+are prepared serially before dispatch because page-index readers have mutable
+lazy initialization. Projection order is preserved. Encrypted files, a single
+field, empty ranges and callers already on that pool use serial decoding.
+
+``parquet.read.filtered.parallel-row-groups`` and
+``parquet.read.filtered.serial-row-groups`` count attempted decode groups;
+``parquet.read.filtered.fields`` counts their projected fields. The
+``parquet.read.filtered.index-prepare-duration-ms`` and
+``parquet.read.filtered.decode-duration-ms`` histograms observe per-group wall
+clock time, including queueing for decode, rather than summed worker time.
+Decode samples include failures after dispatch and are recorded after submitted
+tasks have finished. Metrics survive reader close. Small requests can incur more
+scheduling overhead than they save; evaluate both AVG and P99 for the workload
+before increasing ``parquet.read.executor.thread-count``.

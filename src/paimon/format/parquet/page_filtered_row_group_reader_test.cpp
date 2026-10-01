@@ -39,6 +39,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/io/api.h"
 #include "arrow/ipc/json_simple.h"
+#include "arrow/util/thread_pool.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -218,12 +219,15 @@ class PageFilteredRowGroupReaderTest : public ::testing::Test {
     }
 
     /// Read back a Parquet file with a predicate, a bitmap, and page index filter enabled.
-    void ReadWithPredicateAndBitmapImpl(
-        const std::string& file_name, const std::shared_ptr<arrow::Schema>& read_schema,
-        const std::shared_ptr<Predicate>& predicate, const RoaringBitmap32& bitmap,
-        std::shared_ptr<arrow::ChunkedArray>* out,
-        const std::map<std::string, std::string> options = {}, int32_t batch_size = 1024,
-        std::vector<arrow::io::ReadRange>* read_at_ranges = nullptr) {
+    void ReadWithPredicateAndBitmapImpl(const std::string& file_name,
+                                        const std::shared_ptr<arrow::Schema>& read_schema,
+                                        const std::shared_ptr<Predicate>& predicate,
+                                        const RoaringBitmap32& bitmap,
+                                        std::shared_ptr<arrow::ChunkedArray>* out,
+                                        const std::map<std::string, std::string> options = {},
+                                        int32_t batch_size = 1024,
+                                        std::vector<arrow::io::ReadRange>* read_at_ranges = nullptr,
+                                        std::shared_ptr<Metrics>* metrics = nullptr) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
         ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
         std::shared_ptr<ReadAtTrackingInputStream> tracking_in;
@@ -247,7 +251,12 @@ class PageFilteredRowGroupReaderTest : public ::testing::Test {
             tracking_in->ClearReadAtRanges();
         }
         ASSERT_OK_AND_ASSIGN(
-            *out, paimon::test::ReadResultCollector::CollectResult(std::move(batch_reader)));
+            *out, paimon::test::ReadResultCollector::CollectResult(batch_reader.get(), 0));
+        if (metrics) {
+            *metrics = batch_reader->GetReaderMetrics();
+            batch_reader->Close();
+            ASSERT_EQ((*metrics)->ToString(), batch_reader->GetReaderMetrics()->ToString());
+        }
         if (tracking_in) {
             *read_at_ranges = tracking_in->GetReadAtRanges();
         }
@@ -471,6 +480,79 @@ TEST_F(PageFilteredRowGroupReaderTest, MultipleRowGroupsPartialPageMatch) {
 ///
 /// 100 rows, a[i] = i, b[i] = i*10. 10 rows per page.
 /// Predicate on "a": a >= 50. After filtering, b should be b[50..99] = {500, 510, ..., 990}.
+TEST_F(PageFilteredRowGroupReaderTest, ThreadedSparseReadsPreserveProjectionAndAlignment) {
+    std::string file_name = dir_->Str() + "/threaded_sparse.parquet";
+    auto data = MakeTwoColumnData(100);
+    WriteTestFile(file_name, data, /*write_batch_size=*/7, /*max_row_group_length=*/100,
+                  /*enable_dictionary=*/true);
+    // Reverse projection order and select disjoint pages, including a partial final page.
+    auto schema =
+        arrow::schema({arrow::field("b", arrow::int32()), arrow::field("a", arrow::int32())});
+    RoaringBitmap32 bitmap;
+    for (uint32_t row : {1, 28, 63, 99}) {
+        bitmap.Add(row);
+    }
+    std::shared_ptr<arrow::ChunkedArray> sequential;
+    ReadWithPredicateAndBitmapImpl(file_name, schema, nullptr, bitmap, &sequential,
+                                   {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "0"},
+                                    {PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIMIT, "0"}});
+    ASSERT_TRUE(sequential);
+    for (int32_t repeat = 0; repeat < 8; ++repeat) {
+        std::shared_ptr<arrow::ChunkedArray> parallel;
+        ReadWithPredicateAndBitmapImpl(file_name, schema, nullptr, bitmap, &parallel,
+                                       {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "4"},
+                                        {PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIMIT, "0"}});
+        ASSERT_TRUE(parallel);
+        ASSERT_TRUE(parallel->Equals(*sequential));
+        ASSERT_EQ(parallel->length(), 4);
+    }
+}
+
+TEST_F(PageFilteredRowGroupReaderTest, DecodeMetricsAndNestedExecutorFallback) {
+    std::string path = dir_->Str() + "/decode_metrics.parquet";
+    auto data = MakeTwoColumnData(100);
+    WriteTestFile(path, data, 7, 100, true);
+    auto schema = arrow::schema(data->struct_type()->fields());
+    RoaringBitmap32 bitmap;
+    for (uint32_t row : {1, 28, 63, 99}) {
+        bitmap.Add(row);
+    }
+    const std::map<std::string, std::string> options = {
+        {PARQUET_READ_EXECUTOR_THREAD_COUNT, "4"},
+        {PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIMIT, "0"}};
+    std::shared_ptr<Metrics> metrics;
+    std::shared_ptr<arrow::ChunkedArray> result;
+    ReadWithPredicateAndBitmapImpl(path, schema, nullptr, bitmap, &result, options, 1024, nullptr,
+                                   &metrics);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t groups,
+                         metrics->GetCounter(ParquetMetrics::FILTERED_PARALLEL_ROW_GROUPS));
+    ASSERT_EQ(1, groups);
+    ASSERT_OK_AND_ASSIGN(uint64_t fields, metrics->GetCounter(ParquetMetrics::FILTERED_FIELDS));
+    ASSERT_EQ(2, fields);
+    ASSERT_OK_AND_ASSIGN(HistogramStats stats,
+                         metrics->GetHistogramStats(ParquetMetrics::FILTERED_DECODE_DURATION));
+    ASSERT_EQ(1, stats.count);
+    // A caller already executing on the Arrow CPU pool must not synchronously submit
+    // nested work to that same bounded pool; its sparse decode falls back to serial.
+    std::shared_ptr<arrow::ChunkedArray> nested;
+    std::shared_ptr<Metrics> nested_metrics;
+    auto submitted = arrow::internal::GetCpuThreadPool()->Submit([&]() {
+        ReadWithPredicateAndBitmapImpl(path, schema, nullptr, bitmap, &nested, options, 1024,
+                                       nullptr, &nested_metrics);
+        return arrow::Status::OK();
+    });
+    ASSERT_TRUE(submitted.ok());
+    ASSERT_TRUE(submitted.ValueOrDie().status().ok());
+    ASSERT_TRUE(nested);
+    ASSERT_TRUE(nested_metrics);
+    ASSERT_TRUE(nested->Equals(*result));
+    ASSERT_OK_AND_ASSIGN(uint64_t serial,
+                         nested_metrics->GetCounter(ParquetMetrics::FILTERED_SERIAL_ROW_GROUPS));
+    ASSERT_EQ(1, serial);
+}
+
 TEST_F(PageFilteredRowGroupReaderTest, MultiColumnAlignment) {
     std::string file_name = dir_->Str() + "/multi_col.parquet";
     auto data = MakeTwoColumnData(100);
@@ -2590,6 +2672,33 @@ TEST_F(PageFilteredRowGroupReaderTest, NestedColumnsWithNullsMisalignedPagesMult
         expected.push_back(i);
     }
     ASSERT_EQ(keys, expected);
+}
+
+TEST_F(PageFilteredRowGroupReaderTest, ThreadedNestedNullsAndPartialProjectionMatchSequential) {
+    std::string path = dir_->Str() + "/threaded_nested.parquet";
+    auto data = MakeMisalignedNestedDataWithNulls(100);
+    WriteTestFile(path, data, /*write_batch_size=*/1, /*max_row_group_length=*/50,
+                  /*enable_dictionary=*/true, /*data_page_size=*/64);
+    auto schema =
+        arrow::schema({arrow::field("props", arrow::map(arrow::utf8(), arrow::int32())),
+                       arrow::field("s", arrow::struct_({arrow::field("x", arrow::int32())})),
+                       arrow::field("tags", arrow::list(arrow::field("item", arrow::int32())))});
+    RoaringBitmap32 bitmap;
+    for (uint32_t row : {1, 8, 17, 44, 56, 71, 99}) {
+        bitmap.Add(row);
+    }
+    std::shared_ptr<arrow::ChunkedArray> sequential;
+    ReadWithPredicateAndBitmapImpl(path, schema, nullptr, bitmap, &sequential,
+                                   {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "0"},
+                                    {PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIMIT, "0"}});
+    ASSERT_TRUE(sequential);
+    std::shared_ptr<arrow::ChunkedArray> parallel;
+    ReadWithPredicateAndBitmapImpl(path, schema, nullptr, bitmap, &parallel,
+                                   {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "4"},
+                                    {PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIMIT, "0"}});
+    ASSERT_TRUE(parallel);
+    ASSERT_TRUE(parallel->Equals(*sequential));
+    ASSERT_EQ(parallel->length(), 7);
 }
 
 }  // namespace paimon::parquet::test

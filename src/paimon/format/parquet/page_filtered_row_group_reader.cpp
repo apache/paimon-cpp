@@ -31,10 +31,15 @@
 #include "arrow/io/interfaces.h"
 #include "arrow/table.h"
 #include "arrow/util/future.h"
+#include "arrow/util/thread_pool.h"
 #include "fmt/format.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/saturating_cast.h"
+#include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/utils/duration.h"
+#include "paimon/format/parquet/parquet_format_defs.h"
 #include "parquet/arrow/reader.h"
 #include "parquet/arrow/reader_internal.h"
 #include "parquet/arrow/schema.h"
@@ -296,21 +301,21 @@ Status PageFilteredRowGroupReader::WaitForPreBuffer(
 }
 
 Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFilteredField(
-    const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
-    int32_t row_group_index, int32_t field_index,
+    const OffsetIndexes& offset_indexes, int32_t row_group_index, int32_t field_index,
     std::shared_ptr<std::unordered_set<int>> column_indices, const RowRanges& row_ranges,
     int64_t row_group_row_count, ::parquet::arrow::FileReader* arrow_file_reader) {
     // Factory: set a direct data page read plan on every leaf (per-leaf OffsetIndex).
     // The plan lets Arrow jump over unselected page headers as well as page bodies.
     std::unordered_set<int> direct_read_columns;
-    auto factory = [row_group_index, &rg_page_index_reader, &row_ranges, row_group_row_count,
-                    &direct_read_columns](int col_idx, ::parquet::ParquetFileReader* reader)
-        -> ::parquet::arrow::FileColumnIterator* {
+    auto factory =
+        [row_group_index, &offset_indexes, &row_ranges, row_group_row_count, &direct_read_columns](
+            int col_idx,
+            ::parquet::ParquetFileReader* reader) -> ::parquet::arrow::FileColumnIterator* {
         bool has_data_page_read_plan = false;
         int64_t first_data_page_offset = 0;
         std::vector<::parquet::DataPageReadPlanEntry> data_pages;
-        if (rg_page_index_reader) {
-            auto offset_index = rg_page_index_reader->GetOffsetIndex(col_idx);
+        if (auto iter = offset_indexes.find(col_idx); iter != offset_indexes.end()) {
+            const auto& offset_index = iter->second;
             if (offset_index) {
                 auto row_group_metadata = reader->metadata()->RowGroup(row_group_index);
                 auto column_chunk = row_group_metadata->ColumnChunk(col_idx);
@@ -361,7 +366,7 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
                 arrow_file_reader->parquet_reader()->metadata()->RowGroup(row_group_index);
             column_chunk = row_group_metadata->ColumnChunk(col_idx);
             if (direct_read_columns.count(col_idx)) {
-                auto offset_index = rg_page_index_reader->GetOffsetIndex(col_idx);
+                const auto& offset_index = offset_indexes.at(col_idx);
                 auto [compressed, total] =
                     ComputeCompressedRowRanges(row_ranges, offset_index, row_group_row_count);
                 effective_ranges = std::move(compressed);
@@ -418,7 +423,8 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
     const ::arrow::io::CacheOptions& cache_options, bool pre_buffered,
     const std::vector<::arrow::io::ReadRange>& page_ranges, int64_t max_chunksize,
     const std::shared_ptr<::parquet::RowGroupPageIndexReader>& row_group_page_index_reader,
-    std::shared_ptr<::arrow::MemoryPool> pool, ::parquet::arrow::FileReader* arrow_file_reader) {
+    std::shared_ptr<::arrow::MemoryPool> pool, ::parquet::arrow::FileReader* arrow_file_reader,
+    Metrics* metrics) {
     auto parquet_reader = arrow_file_reader->parquet_reader();
     const auto& row_ranges = target_row_group.GetRowRanges();
     int32_t row_group_index = target_row_group.GetRowGroupIndex();
@@ -438,26 +444,93 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
         std::vector<int> field_indices,
         manifest.GetFieldIndices(std::vector<int>(column_indices.begin(), column_indices.end())));
 
-    std::vector<std::shared_ptr<arrow::ChunkedArray>> result_arrays;
-    result_arrays.reserve(field_indices.size());
-
-    std::shared_ptr<std::unordered_set<int>> col_indices_set =
-        std::make_shared<std::unordered_set<int>>(column_indices.begin(), column_indices.end());
-    // TODO(zhouhongfeng.zhf): This loop could be parallelized.
-    for (int field_idx : field_indices) {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<arrow::ChunkedArray> chunked_array,
-            ReadFilteredField(row_group_page_index_reader, row_group_index, field_idx,
-                              col_indices_set, row_ranges, row_group_row_count, arrow_file_reader));
-
-        if (chunked_array->length() != expected_rows) {
-            return Status::Invalid(
-                fmt::format("PageFilteredRowGroupReader: field {} produced {} rows but expected {} "
-                            "(row_group={})",
-                            field_idx, chunked_array->length(), expected_rows, row_group_index));
+    Duration index_duration;
+    // Page-index readers initialize shared buffers lazily and are not thread-safe. Resolve
+    // offset indexes on the caller before parallel work, then share only immutable indexes.
+    OffsetIndexes offset_indexes;
+    if (row_group_page_index_reader && !row_ranges.IsEmpty()) {
+        for (int32_t column : column_indices) {
+            offset_indexes.emplace(column, row_group_page_index_reader->GetOffsetIndex(column));
         }
-
-        result_arrays.push_back(std::move(chunked_array));
+    }
+    if (metrics) {
+        metrics->ObserveHistogram(ParquetMetrics::FILTERED_INDEX_PREPARE_DURATION,
+                                  static_cast<double>(index_duration.Get()));
+    }
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> result_arrays(field_indices.size());
+    auto col_indices_set =
+        std::make_shared<std::unordered_set<int>>(column_indices.begin(), column_indices.end());
+    auto read_field = [&](size_t i) -> Status {
+        try {
+            int32_t field_idx = field_indices[i];
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<arrow::ChunkedArray> chunked_array,
+                ReadFilteredField(offset_indexes, row_group_index, field_idx, col_indices_set,
+                                  row_ranges, row_group_row_count, arrow_file_reader));
+            if (chunked_array->length() != expected_rows) {
+                return Status::Invalid(fmt::format(
+                    "PageFilteredRowGroupReader: field {} produced {} rows but expected {} "
+                    "(row_group={})",
+                    field_idx, chunked_array->length(), expected_rows, row_group_index));
+            }
+            result_arrays[i] = std::move(chunked_array);
+            return Status::OK();
+        }
+        PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ReadFilteredField")
+    };
+    auto* executor = arrow::internal::GetCpuThreadPool();
+    const bool plaintext =
+        !parquet_reader->metadata()->is_encryption_algorithm_set() &&
+        std::all_of(column_indices.begin(), column_indices.end(), [&](int32_t column) {
+            return !rg_metadata->ColumnChunk(column)->crypto_metadata();
+        });
+    const bool parallel = arrow_file_reader->properties().use_threads() &&
+                          field_indices.size() > 1 && !row_ranges.IsEmpty() && plaintext &&
+                          !executor->OwnsThisThread();
+    Duration decode_duration;
+    ScopeGuard record_metrics([&]() {
+        if (metrics) {
+            auto delta = std::make_shared<MetricsImpl>();
+            delta->SetCounter(parallel ? ParquetMetrics::FILTERED_PARALLEL_ROW_GROUPS
+                                       : ParquetMetrics::FILTERED_SERIAL_ROW_GROUPS,
+                              1);
+            delta->SetCounter(ParquetMetrics::FILTERED_FIELDS, field_indices.size());
+            delta->ObserveHistogram(ParquetMetrics::FILTERED_DECODE_DURATION,
+                                    static_cast<double>(decode_duration.Get()));
+            metrics->Merge(delta);
+        }
+    });
+    if (parallel) {
+        // Keep the configured Arrow CPU pool and projection order. Drain every submitted
+        // task even if submission or decoding fails before releasing the captured locals.
+        std::vector<arrow::Future<>> futures;
+        futures.reserve(field_indices.size());
+        ScopeGuard drain_tasks([&]() {
+            for (const auto& future : futures) {
+                future.Wait();
+            }
+        });
+        Status first_error;
+        for (size_t i = 0; i < field_indices.size(); ++i) {
+            auto submitted =
+                executor->Submit([&read_field, i]() { return ToArrowStatus(read_field(i)); });
+            if (!submitted.ok()) {
+                first_error = ToPaimonStatus(submitted.status());
+                break;
+            }
+            futures.push_back(std::move(submitted).ValueUnsafe());
+        }
+        for (const auto& future : futures) {
+            const auto& status = future.status();
+            if (!status.ok() && first_error.ok()) {
+                first_error = ToPaimonStatus(status);
+            }
+        }
+        PAIMON_RETURN_NOT_OK(first_error);
+    } else {
+        for (size_t i = 0; i < field_indices.size(); ++i) {
+            PAIMON_RETURN_NOT_OK(read_field(i));
+        }
     }
 
     std::vector<std::shared_ptr<arrow::Field>> result_fields;

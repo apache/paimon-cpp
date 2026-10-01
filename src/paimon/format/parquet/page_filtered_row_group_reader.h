@@ -23,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -33,6 +34,7 @@
 #include "arrow/type.h"
 #include "paimon/format/parquet/row_ranges.h"
 #include "paimon/format/parquet/target_row_group.h"
+#include "paimon/metrics.h"
 #include "paimon/result.h"
 #include "parquet/arrow/reader.h"
 #include "parquet/column_reader.h"
@@ -60,13 +62,15 @@ class PageFilteredRowGroupReader {
     /// @param row_group_page_index_reader Reusable page-index reader for the target row group
     /// @param pool Memory pool
     /// @param arrow_file_reader The Arrow FileReader for ColumnReader tree creation
+    /// @param metrics Optional receiver for per-row-group decode work and duration metrics.
     /// @return A RecordBatchReader streaming the filtered rows.
     static Result<std::unique_ptr<arrow::RecordBatchReader>> ReadFilteredRowGroup(
         const TargetRowGroup& target_row_group, const std::vector<int32_t>& column_indices,
         const ::arrow::io::CacheOptions& cache_options, bool pre_buffered,
         const std::vector<::arrow::io::ReadRange>& page_ranges, int64_t max_chunksize,
         const std::shared_ptr<::parquet::RowGroupPageIndexReader>& row_group_page_index_reader,
-        std::shared_ptr<::arrow::MemoryPool> pool, ::parquet::arrow::FileReader* arrow_file_reader);
+        std::shared_ptr<::arrow::MemoryPool> pool, ::parquet::arrow::FileReader* arrow_file_reader,
+        Metrics* metrics = nullptr);
 
     /// Compute the byte ranges of pages that overlap with the given RowRanges.
     /// Uses OffsetIndex to determine per-page file offsets and sizes.
@@ -119,6 +123,8 @@ class PageFilteredRowGroupReader {
                                          int64_t reserve_values, int64_t reserve_value_bytes,
                                          ::parquet::arrow::ColumnReader* column_reader);
 
+    using OffsetIndexes = std::unordered_map<int32_t, std::shared_ptr<::parquet::OffsetIndex>>;
+
     /// Read a field (flat or nested) using ColumnReader tree.
     /// Sets a direct page read plan on all leaves via factory, then drives each leaf
     /// independently via ResetLeaf/SkipRecords/ReadRecords using its own
@@ -126,8 +132,7 @@ class PageFilteredRowGroupReader {
     /// `column_indices` holds `int` rather than `int32_t` because the set is
     /// handed straight to Arrow's `FileReader::GetColumn` (to avoid reconstruction and deep copy)
     static Result<std::shared_ptr<arrow::ChunkedArray>> ReadFilteredField(
-        const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
-        int32_t row_group_index, int32_t field_index,
+        const OffsetIndexes& offset_indexes, int32_t row_group_index, int32_t field_index,
         std::shared_ptr<std::unordered_set<int>> column_indices, const RowRanges& row_ranges,
         int64_t row_group_row_count, ::parquet::arrow::FileReader* arrow_file_reader);
 };

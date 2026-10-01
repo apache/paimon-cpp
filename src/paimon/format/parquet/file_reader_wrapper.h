@@ -34,6 +34,7 @@
 #include "arrow/record_batch.h"
 #include "arrow/type.h"
 #include "arrow/type_fwd.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/format/parquet/row_ranges.h"
 #include "paimon/format/parquet/target_row_group.h"
@@ -57,6 +58,12 @@ namespace paimon::parquet {
 class FileReaderWrapper {
  public:
     ~FileReaderWrapper();
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const {
+        auto snapshot = std::make_shared<MetricsImpl>();
+        snapshot->Overwrite(metrics_);
+        return snapshot;
+    }
 
     static Result<std::unique_ptr<FileReaderWrapper>> Create(
         std::unique_ptr<::parquet::arrow::FileReader>&& reader, int64_t batch_size,
@@ -159,6 +166,8 @@ class FileReaderWrapper {
     Result<std::vector<std::pair<uint64_t, uint64_t>>> GetPreBufferRanges();
 
  private:
+    std::shared_ptr<MetricsImpl> metrics_ = std::make_shared<MetricsImpl>();
+
     FileReaderWrapper(std::unique_ptr<::parquet::arrow::FileReader>&& file_reader,
                       const std::vector<std::pair<uint64_t, uint64_t>>& all_row_group_ranges,
                       uint64_t num_rows, int64_t batch_size,

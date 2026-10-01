@@ -130,6 +130,16 @@ static constexpr uint32_t DEFAULT_PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIM
 
 class ParquetMetrics {
  public:
+    static inline const char FILTERED_PARALLEL_ROW_GROUPS[] =
+        "parquet.read.filtered.parallel-row-groups";
+    static inline const char FILTERED_SERIAL_ROW_GROUPS[] =
+        "parquet.read.filtered.serial-row-groups";
+    static inline const char FILTERED_FIELDS[] = "parquet.read.filtered.fields";
+    // Per row-group wall-clock histograms, in milliseconds, not sums of worker times.
+    static inline const char FILTERED_INDEX_PREPARE_DURATION[] =
+        "parquet.read.filtered.index-prepare-duration-ms";
+    static inline const char FILTERED_DECODE_DURATION[] =
+        "parquet.read.filtered.decode-duration-ms";
     static inline const char WRITE_RECORD_COUNT[] = "parquet.write.record.count";
 
     // read

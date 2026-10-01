@@ -139,11 +139,17 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
         uint64_t storage = storage_read_bytes_ ? storage_read_bytes_->load() : 0;
         metrics_->SetCounter(ParquetMetrics::READ_STORAGE_BYTES, storage);
-        return metrics_;
+        auto snapshot = std::make_shared<MetricsImpl>();
+        snapshot->Overwrite(metrics_);
+        if (reader_) {
+            snapshot->Merge(reader_->GetReaderMetrics());
+        }
+        return snapshot;
     }
 
     void Close() override {
         if (reader_) {
+            metrics_->Merge(reader_->GetReaderMetrics());
             auto status = reader_->Close();
             reader_.reset();
             (void)status;
