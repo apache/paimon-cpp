@@ -136,11 +136,7 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
         return reader_->ApplyReadRanges(read_ranges);
     }
 
-    std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        uint64_t storage = storage_read_bytes_ ? storage_read_bytes_->load() : 0;
-        metrics_->SetCounter(ParquetMetrics::READ_STORAGE_BYTES, storage);
-        return metrics_;
-    }
+    std::shared_ptr<Metrics> GetReaderMetrics() const override;
 
     void Close() override {
         if (reader_) {
@@ -286,6 +282,7 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
     std::vector<std::pair<uint64_t, uint64_t>> read_ranges_;
 
     std::shared_ptr<Metrics> metrics_;
+    std::shared_ptr<struct ParquetDataCacheMetrics> data_cache_metrics_;
     // storageReadBytes counter shared with the underlying ArrowInputStreamAdapter.
     std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes_;
     std::unique_ptr<Logger> logger_;

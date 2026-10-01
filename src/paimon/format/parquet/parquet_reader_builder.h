@@ -33,6 +33,7 @@
 #include "paimon/cache/cache.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/format/parquet/parquet_file_batch_reader.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
 #include "paimon/format/parquet/parquet_input_stream.h"
@@ -89,8 +90,20 @@ class ParquetReaderBuilder : public ReaderBuilder {
                     file_uri = std::move(file_uri_result).value();
                 }
             }
-            auto input_stream = std::make_shared<ParquetInputStream>(path, file_length, arrow_pool_,
-                                                                     pool_, cache_, file_uri);
+            PAIMON_ASSIGN_OR_RAISE(
+                bool enable_data_cache,
+                OptionsUtils::GetValueFromMap<bool>(options_, PARQUET_READ_ENABLE_DATA_CACHE,
+                                                    DEFAULT_PARQUET_READ_ENABLE_DATA_CACHE));
+            PAIMON_ASSIGN_OR_RAISE(int64_t max_cache_range_bytes,
+                                   OptionsUtils::GetValueFromMap<int64_t>(
+                                       options_, PARQUET_READ_DATA_CACHE_MAX_RANGE_BYTES,
+                                       DEFAULT_PARQUET_READ_DATA_CACHE_MAX_RANGE_BYTES));
+            if (max_cache_range_bytes <= 0) {
+                return Status::Invalid("Parquet data cache max range bytes must be positive");
+            }
+            auto input_stream = std::make_shared<ParquetInputStream>(
+                path, file_length, arrow_pool_, pool_, cache_, file_uri, enable_data_cache,
+                max_cache_range_bytes);
             auto storage_read_bytes = input_stream->StorageReadBytes();
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<::parquet::FileMetaData> file_metadata,
                                    GetCachedParquetMetadata(input_stream, file_uri, arrow_pool_));

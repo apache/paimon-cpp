@@ -275,6 +275,53 @@ static std::shared_ptr<arrow::StructArray> MakeSequentialIntData(int32_t num_row
     return arrow::StructArray::Make({val_array}, {field}).ValueOrDie();
 }
 
+TEST_F(ParquetFileBatchReaderTest, DataRangeCacheMetricsSurviveClose) {
+    WriteArray(file_path_, struct_array_, schema_, struct_array_->length(), false,
+               struct_array_->length());
+    auto cache = std::make_shared<LruCache>(1024 * 1024);
+    for (int32_t round = 0; round < 2; ++round) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        ParquetReaderBuilder builder(
+            {{PARQUET_READ_ENABLE_DATA_CACHE, "true"}, {PARQUET_READ_ENABLE_PRE_BUFFER, "true"}},
+            batch_size_);
+        builder.WithCache(cache);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder.Build(input));
+        ArrowSchema schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema_, &schema).ok());
+        ASSERT_OK(reader->SetReadSchema(&schema, nullptr, std::nullopt));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             paimon::test::ReadResultCollector::CollectResult(reader.get(), 0));
+        ASSERT_TRUE(actual);
+        ASSERT_EQ(struct_array_->length(), actual->length());
+        auto metrics = reader->GetReaderMetrics();
+        ASSERT_OK_AND_ASSIGN(uint64_t hits, metrics->GetCounter(ParquetMetrics::DATA_CACHE_HITS));
+        ASSERT_OK_AND_ASSIGN(uint64_t misses,
+                             metrics->GetCounter(ParquetMetrics::DATA_CACHE_MISSES));
+        if (round == 0) {
+            ASSERT_GT(misses, 0);
+            ASSERT_EQ(0, hits);
+        } else {
+            ASSERT_GT(hits, 0);
+            ASSERT_EQ(0, misses);
+            ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
+                                 metrics->GetCounter(ParquetMetrics::DATA_CACHE_HIT_BYTES));
+            ASSERT_GT(hit_bytes, 0);
+        }
+        reader->Close();
+        ASSERT_EQ(metrics->ToString(), reader->GetReaderMetrics()->ToString());
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, InvalidDataCacheRangeLimitIsRejected) {
+    WriteArray(file_path_, struct_array_, schema_, struct_array_->length(), false,
+               struct_array_->length());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+    ParquetReaderBuilder builder(
+        {{PARQUET_READ_ENABLE_DATA_CACHE, "true"}, {PARQUET_READ_DATA_CACHE_MAX_RANGE_BYTES, "0"}},
+        batch_size_);
+    ASSERT_NOK_WITH_MSG(builder.Build(input), "must be positive");
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestParquetMetadataCacheReusesSerializedFooter) {
     WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/struct_array_->length(),
                /*enable_dictionary=*/false,

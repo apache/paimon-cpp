@@ -103,6 +103,13 @@ static inline const char PARQUET_READ_ENABLE_PAGE_INDEX_FILTER[] =
 static inline const char PARQUET_READ_ENABLE_OFFSET_INDEX_CACHE[] =
     "parquet.read.enable-offset-index-cache";
 
+// Opt-in reuse of immutable data-file byte ranges in the caller's bounded cache.
+static inline const char PARQUET_READ_ENABLE_DATA_CACHE[] = "parquet.read.enable-data-cache";
+static constexpr bool DEFAULT_PARQUET_READ_ENABLE_DATA_CACHE = false;
+static inline const char PARQUET_READ_DATA_CACHE_MAX_RANGE_BYTES[] =
+    "parquet.read.data-cache.max-range-bytes";
+static constexpr int64_t DEFAULT_PARQUET_READ_DATA_CACHE_MAX_RANGE_BYTES = 4 * 1024 * 1024;
+
 // Default is true.
 static inline const char PARQUET_READ_ENABLE_PRE_BUFFER[] = "parquet.read.enable-pre-buffer";
 
@@ -130,6 +137,14 @@ static constexpr uint32_t DEFAULT_PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIM
 
 class ParquetMetrics {
  public:
+    static inline const char DATA_CACHE_HITS[] = "parquet.read.data-cache.hits";
+    static inline const char DATA_CACHE_MISSES[] = "parquet.read.data-cache.misses";
+    static inline const char DATA_CACHE_BYPASSES[] = "parquet.read.data-cache.bypasses";
+    static inline const char DATA_CACHE_HIT_BYTES[] = "parquet.read.data-cache.hit-bytes";
+    static inline const char DATA_CACHE_ADMISSION_BYTES[] =
+        "parquet.read.data-cache.admission-bytes";
+    static inline const char DATA_CACHE_ADMISSION_FAILURES[] =
+        "parquet.read.data-cache.admission-failures";
     static inline const char WRITE_RECORD_COUNT[] = "parquet.write.record.count";
 
     // read

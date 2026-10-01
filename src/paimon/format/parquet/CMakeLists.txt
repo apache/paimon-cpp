@@ -58,6 +58,7 @@ if(PAIMON_BUILD_TESTS)
                     parquet_vector_io_test.cpp
                     parquet_field_id_converter_test.cpp
                     parquet_file_batch_reader_test.cpp
+                    parquet_input_stream_test.cpp
                     parquet_format_writer_test.cpp
                     parquet_stats_extractor_test.cpp
                     parquet_writer_builder_test.cpp

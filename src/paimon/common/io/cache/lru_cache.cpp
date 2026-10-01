@@ -42,6 +42,10 @@ Result<std::shared_ptr<CacheValue>> LruCache::Get(
     return inner_cache_.Get(key, std::move(supplier));
 }
 
+Result<std::shared_ptr<CacheValue>> LruCache::GetIfPresent(const std::shared_ptr<CacheKey>& key) {
+    return inner_cache_.GetIfPresent(key).value_or(nullptr);
+}
+
 Status LruCache::Put(const std::shared_ptr<CacheKey>& key,
                      const std::shared_ptr<CacheValue>& value) {
     return inner_cache_.Put(key, value);

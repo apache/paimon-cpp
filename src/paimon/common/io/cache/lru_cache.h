@@ -45,6 +45,8 @@ class PAIMON_EXPORT LruCache : public Cache {
         std::function<Result<std::shared_ptr<CacheValue>>(const std::shared_ptr<CacheKey>&)>
             supplier) override;
 
+    Result<std::shared_ptr<CacheValue>> GetIfPresent(const std::shared_ptr<CacheKey>& key) override;
+
     Status Put(const std::shared_ptr<CacheKey>& key,
                const std::shared_ptr<CacheValue>& value) override;
 

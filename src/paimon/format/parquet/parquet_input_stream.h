@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -26,8 +27,10 @@
 #include <string>
 
 #include "paimon/cache/cache.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/format/parquet/parquet_format_defs.h"
 #include "paimon/memory/memory_pool.h"
 #include "parquet/metadata.h"
 #include "parquet/page_index.h"
@@ -48,6 +51,32 @@ inline MemorySegment AllocateParquetCacheSegment(int32_t size,
     return MemorySegment::Wrap(std::shared_ptr<Bytes>(std::move(owner), bytes));
 }
 
+// Shared independently of the stream so in-flight reads can finish after the reader closes.
+// Counters describe requests, not cache residency; bytes retained by consumers may outlive
+// eviction.
+struct ParquetDataCacheMetrics {
+    std::atomic<uint64_t> hits{0};
+    std::atomic<uint64_t> misses{0};
+    std::atomic<uint64_t> bypasses{0};
+    std::atomic<uint64_t> hit_bytes{0};
+    std::atomic<uint64_t> admission_bytes{0};
+    std::atomic<uint64_t> admission_failures{0};
+
+    void Collect(Metrics* metrics) const {
+        metrics->SetCounter(ParquetMetrics::DATA_CACHE_HITS, hits.load(std::memory_order_relaxed));
+        metrics->SetCounter(ParquetMetrics::DATA_CACHE_MISSES,
+                            misses.load(std::memory_order_relaxed));
+        metrics->SetCounter(ParquetMetrics::DATA_CACHE_BYPASSES,
+                            bypasses.load(std::memory_order_relaxed));
+        metrics->SetCounter(ParquetMetrics::DATA_CACHE_HIT_BYTES,
+                            hit_bytes.load(std::memory_order_relaxed));
+        metrics->SetCounter(ParquetMetrics::DATA_CACHE_ADMISSION_BYTES,
+                            admission_bytes.load(std::memory_order_relaxed));
+        metrics->SetCounter(ParquetMetrics::DATA_CACHE_ADMISSION_FAILURES,
+                            admission_failures.load(std::memory_order_relaxed));
+    }
+};
+
 // Cache immutable page-index bytes, not Arrow readers: the latter borrow their
 // input stream, reader properties and decryptor from the current file reader.
 class ParquetInputStream : public ArrowInputStreamAdapter {
@@ -55,14 +84,21 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
     ParquetInputStream(const std::shared_ptr<paimon::InputStream>& input, int64_t file_size,
                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                        const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<Cache>& cache,
-                       const std::string& file_uri)
+                       const std::string& file_uri, bool enable_data_cache = false,
+                       int64_t max_cache_range_bytes = 4 * 1024 * 1024)
         : ArrowInputStreamAdapter(input, file_size, arrow_pool),
           pool_(pool),
           cache_(cache),
-          file_uri_(file_uri) {}
+          file_uri_(file_uri),
+          enable_data_cache_(enable_data_cache),
+          max_cache_range_bytes_(max_cache_range_bytes) {}
+
+    const std::shared_ptr<ParquetDataCacheMetrics>& DataCacheMetrics() const {
+        return data_cache_metrics_;
+    }
 
     // Called before the stream is published to the file reader. Only index
-    // ranges described by its footer are eligible; data pages remain uncached.
+    // ranges described by its footer are eligible for the metadata cache.
     void SetPageIndexRanges(const ::parquet::FileMetaData& metadata) {
         for (int32_t rg = 0; rg < metadata.num_row_groups(); ++rg) {
             auto ranges = ::parquet::PageIndexReader::DeterminePageIndexRangesInRowGroup(
@@ -73,6 +109,62 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
                 }
             }
         }
+    }
+
+    // Data-file paths must identify immutable bytes. Only asynchronous pre-buffer ranges
+    // are cached; cold reads retain the underlying filesystem's asynchronous behavior.
+    arrow::Future<std::shared_ptr<arrow::Buffer>> ReadAsync(const arrow::io::IOContext& io_context,
+                                                            int64_t position,
+                                                            int64_t nbytes) override {
+        if (!enable_data_cache_ || !cache_ || file_uri_.empty() || position < 0 || nbytes <= 0 ||
+            nbytes > max_cache_range_bytes_ || nbytes > std::numeric_limits<int32_t>::max()) {
+            data_cache_metrics_->bypasses.fetch_add(1, std::memory_order_relaxed);
+            return ArrowInputStreamAdapter::ReadAsync(io_context, position, nbytes);
+        }
+        auto key = CacheKey::ForPosition(file_uri_, position, static_cast<int32_t>(nbytes),
+                                         /*is_index=*/false);
+        auto lookup = cache_->GetIfPresent(key);
+        if (!lookup.ok()) {
+            data_cache_metrics_->bypasses.fetch_add(1, std::memory_order_relaxed);
+            return ArrowInputStreamAdapter::ReadAsync(io_context, position, nbytes);
+        }
+        std::shared_ptr<CacheValue> cached = std::move(lookup).value();
+        if (cached && cached->GetSegment().Data() && cached->GetSegment().Size() == nbytes) {
+            data_cache_metrics_->hits.fetch_add(1, std::memory_order_relaxed);
+            data_cache_metrics_->hit_bytes.fetch_add(nbytes, std::memory_order_relaxed);
+            struct CachedBuffer {
+                explicit CachedBuffer(std::shared_ptr<CacheValue> value)
+                    : owner(std::move(value)),
+                      buffer(reinterpret_cast<const uint8_t*>(owner->GetSegment().Data()),
+                             owner->GetSegment().Size()) {}
+                std::shared_ptr<CacheValue> owner;
+                arrow::Buffer buffer;
+            };
+            auto owner = std::make_shared<CachedBuffer>(std::move(cached));
+            auto* buffer = &owner->buffer;
+            return arrow::Future<std::shared_ptr<arrow::Buffer>>::MakeFinished(
+                std::shared_ptr<arrow::Buffer>(std::move(owner), buffer));
+        }
+        data_cache_metrics_->misses.fetch_add(1, std::memory_order_relaxed);
+        // Capture owners rather than this: completion may run after this adapter is released.
+        return ArrowInputStreamAdapter::ReadAsync(io_context, position, nbytes)
+            .Then([cache = cache_, pool = pool_, metrics = data_cache_metrics_, key,
+                   nbytes](const std::shared_ptr<arrow::Buffer>& buffer)
+                      -> std::shared_ptr<arrow::Buffer> {
+                if (buffer->size() == nbytes) {
+                    MemorySegment segment =
+                        AllocateParquetCacheSegment(static_cast<int32_t>(nbytes), pool);
+                    std::memcpy(segment.MutableData(), buffer->data(), nbytes);
+                    // Admission failure (including an undersized cache) does not fail a read.
+                    metrics->admission_bytes.fetch_add(nbytes, std::memory_order_relaxed);
+                    Status status =
+                        cache->Put(key, std::make_shared<CacheValue>(segment, CacheCallback()));
+                    if (!status.ok()) {
+                        metrics->admission_failures.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                return buffer;
+            });
     }
 
     using ArrowInputStreamAdapter::ReadAt;
@@ -122,6 +214,10 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
     std::shared_ptr<Cache> cache_;
     std::string file_uri_;
     std::map<int64_t, int64_t> index_ranges_;
+    std::shared_ptr<ParquetDataCacheMetrics> data_cache_metrics_ =
+        std::make_shared<ParquetDataCacheMetrics>();
+    bool enable_data_cache_;
+    int64_t max_cache_range_bytes_;
 };
 
 }  // namespace paimon::parquet

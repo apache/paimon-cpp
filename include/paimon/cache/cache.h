@@ -76,6 +76,14 @@ class PAIMON_EXPORT Cache {
         std::function<Result<std::shared_ptr<CacheValue>>(const std::shared_ptr<CacheKey>&)>
             supplier) = 0;
 
+    /// Look up an existing value without invoking a loader or waiting for storage I/O.
+    /// Returns nullptr on a miss. The default reports NotImplemented so optional cache
+    /// consumers can bypass caching when an implementation lacks this capability.
+    virtual Result<std::shared_ptr<CacheValue>> GetIfPresent(
+        const std::shared_ptr<CacheKey>& /*key*/) {
+        return Status::NotImplemented("Cache does not support non-loading lookup");
+    }
+
     virtual Status Put(const std::shared_ptr<CacheKey>& key,
                        const std::shared_ptr<CacheValue>& value) = 0;
 

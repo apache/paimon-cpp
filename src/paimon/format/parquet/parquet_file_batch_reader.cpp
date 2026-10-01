@@ -54,6 +54,7 @@
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/format/parquet/parquet_field_id_converter.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
+#include "paimon/format/parquet/parquet_input_stream.h"
 #include "paimon/format/parquet/parquet_read_type_adapter.h"
 #include "paimon/format/parquet/parquet_schema_util.h"
 #include "paimon/format/parquet/predicate_converter.h"
@@ -197,7 +198,24 @@ ParquetFileBatchReader::ParquetFileBatchReader(
       read_ranges_(reader_->GetAllRowGroupRanges()),
       metrics_(std::make_shared<MetricsImpl>()),
       storage_read_bytes_(std::move(storage_read_bytes)),
-      logger_(Logger::GetLogger("ParquetFileBatchReader")) {}
+      logger_(Logger::GetLogger("ParquetFileBatchReader")) {
+    // Direct Arrow callers can supply a different stream implementation.
+    auto stream = std::dynamic_pointer_cast<ParquetInputStream>(input_stream_);
+    if (stream) {
+        data_cache_metrics_ = stream->DataCacheMetrics();
+    }
+}
+
+std::shared_ptr<Metrics> ParquetFileBatchReader::GetReaderMetrics() const {
+    auto snapshot = std::make_shared<MetricsImpl>();
+    snapshot->Overwrite(metrics_);
+    snapshot->SetCounter(ParquetMetrics::READ_STORAGE_BYTES,
+                         storage_read_bytes_ ? storage_read_bytes_->load() : 0);
+    if (data_cache_metrics_) {
+        data_cache_metrics_->Collect(snapshot.get());
+    }
+    return snapshot;
+}
 
 std::set<int32_t> ParquetFileBatchReader::ResolveFullyDictionaryEncodedColumns(
     const ::parquet::FileMetaData& metadata) {
