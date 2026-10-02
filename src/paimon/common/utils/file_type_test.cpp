@@ -59,9 +59,8 @@ TEST(FileTypeTest, TestIndexTypes) {
     ASSERT_EQ(
         FileTypeUtils::Classify("dfs://cluster/db/index/lumina-vector-ann-global-index-a1b2.index"),
         FileType::kGlobalIndex);
-    ASSERT_EQ(
-        FileTypeUtils::Classify("dfs://cluster/db/index/tantivy-fulltext-global-index-a1b2.index"),
-        FileType::kGlobalIndex);
+    ASSERT_EQ(FileTypeUtils::Classify("dfs://cluster/db/index/full-text-global-index-a1b2.index"),
+              FileType::kGlobalIndex);
     ASSERT_EQ(FileTypeUtils::Classify("dfs://cluster/db/p=1/bucket-0/index-abcdef-1"),
               FileType::kBucketIndex);
 }

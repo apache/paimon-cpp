@@ -2639,6 +2639,133 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadLuceneIndexWithPartition) {
 }
 #endif
 
+#ifdef PAIMON_ENABLE_FULL_TEXT
+TEST_P(GlobalIndexTest, TestFullTextWriteCommitScanReadIndex) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
+                                 arrow::field("f1", arrow::int32())};
+    std::map<std::string, std::string> full_text_options = {{"full-text.tokenizer", "default"}};
+    auto schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    CreateTable(/*partition_keys=*/{}, schema, options);
+
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    std::vector<std::string> write_cols = schema->field_names();
+
+    auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+["This is an test document.", 0],
+["This is an new document document document.", 1],
+["Document document document document test.", 2],
+["unordered user-defined doc id", 3],
+[null, 4]
+    ])")
+                         .ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs, WriteArray(table_path, write_cols, src_array));
+    ASSERT_OK(Commit(table_path, commit_msgs));
+
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", "full-text",
+                         /*options=*/full_text_options, Range(0, 4)));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                 /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                                 /*executor=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(auto index_readers,
+                         global_index_scan->CreateReaders("f0", /*row_range_index=*/std::nullopt));
+    ASSERT_EQ(index_readers.size(), 1u);
+    auto index_reader = index_readers[0];
+    auto search = [&](const std::string& query, const std::optional<RoaringBitmap64>& pre_filter,
+                      const std::string& expected) {
+        ASSERT_OK_AND_ASSIGN(
+            auto index_result,
+            index_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
+                "f0",
+                /*limit=*/10, query, FullTextSearch::SearchType::UNKNOWN, pre_filter)));
+        ASSERT_EQ(index_result->ToString(), expected) << query;
+    };
+    search(R"({"match":{"query":"document"}})", std::nullopt, "{0,1,2}");
+    search(R"({"match":{"query":"document"}})", RoaringBitmap64::From({1, 2, 3}), "{1,2}");
+    search(R"({"match":{"query":"new document","operator":"And"}})", std::nullopt, "{1}");
+    search(R"({"match_phrase":{"query":"test document"}})", std::nullopt, "{0}");
+    search(R"({"match":{"query":"unordered"}})", std::nullopt, "{3}");
+}
+
+TEST_P(GlobalIndexTest, TestWriteCommitScanReadFullTextIndexWithPartition) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
+                                 arrow::field("f1", arrow::int32())};
+    std::map<std::string, std::string> full_text_options = {{"full-text.tokenizer", "default"}};
+    auto schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    CreateTable(/*partition_keys=*/{"f1"}, schema, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    std::vector<std::string> write_cols = schema->field_names();
+    auto write_data_and_index = [&](const std::shared_ptr<arrow::Array>& src_array,
+                                    const std::map<std::string, std::string>& partition,
+                                    const Range& expected_range) {
+        ASSERT_OK_AND_ASSIGN(auto commit_msgs,
+                             WriteArray(table_path, partition, write_cols, src_array));
+        ASSERT_OK(Commit(table_path, commit_msgs));
+        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{partition}, "f0", "full-text",
+                             /*options=*/full_text_options, expected_range));
+    };
+
+    auto src_array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+["This is an test document.", 10],
+["This is an new document document document.", 10]
+    ])")
+                          .ValueOrDie();
+    write_data_and_index(src_array1, {{"f1", "10"}}, Range(0, 1));
+
+    auto src_array2 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+["Document document document document test.", 20],
+["unordered user-defined doc id", 20]
+    ])")
+                          .ValueOrDie();
+    write_data_and_index(src_array2, {{"f1", "20"}}, Range(2, 3));
+
+    auto scan_and_check_result = [&](const std::map<std::string, std::string>& partition,
+                                     const std::optional<RowRangeIndex>& row_range_index,
+                                     const std::optional<RoaringBitmap64>& pre_filter,
+                                     const std::string& index_expected) {
+        std::vector<std::map<std::string, std::string>> partitions = {partition};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<GlobalIndexScan> global_index_scan,
+            GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt, partitions,
+                                    /*options=*/{}, fs_, /*executor=*/nullptr, pool_));
+        ASSERT_OK_AND_ASSIGN(auto readers, global_index_scan->CreateReaders("f0", row_range_index));
+        ASSERT_EQ(readers.size(), 1u);
+        ASSERT_OK_AND_ASSIGN(auto index_result,
+                             readers[0]->VisitFullTextSearch(std::make_shared<FullTextSearch>(
+                                 "f0",
+                                 /*limit=*/10, R"({"match":{"query":"document"}})",
+                                 FullTextSearch::SearchType::UNKNOWN, pre_filter)));
+        ASSERT_EQ(index_result->ToString(), index_expected);
+    };
+
+    {
+        auto filter = RoaringBitmap64::From(std::vector<int64_t>({0l}));
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(0, 1)}));
+        scan_and_check_result({{"f1", "10"}}, row_range_index, filter, "{0}");
+    }
+    {
+        auto filter = RoaringBitmap64::From(std::vector<int64_t>({2l}));
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(2, 3)}));
+        scan_and_check_result({{"f1", "20"}}, row_range_index, filter, "{2}");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(2, 3)}));
+        scan_and_check_result({{"f1", "20"}}, row_range_index, std::nullopt, "{2}");
+    }
+}
+#endif
+
 TEST_P(GlobalIndexTest, TestBTreeWriteCommitScanReadIndex) {
     // BTreeGlobalIndexWriter requires keys to be written in monotonically increasing order.
     // Therefore the source data must be pre-sorted by the indexed column (f0, string).

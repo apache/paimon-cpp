@@ -19,7 +19,7 @@
 
 cmake_minimum_required(VERSION 3.22)
 # 3.22 is the minimum required by Corrosion-rs (used for the Rust<->C++ FFI
-# integration, see crates/tantivy_ffi). Ubuntu 24.04 ships CMake 3.28 and
+# integration, see crates/lance_ffi). Ubuntu 24.04 ships CMake 3.28 and
 # CentOS 8+/RHEL 9+ ship 3.20+, so older distributions need a newer CMake
 # installation.
 message(STATUS "Building using CMake version: ${CMAKE_VERSION}")
@@ -69,8 +69,8 @@ option(PAIMON_ENABLE_NETWORK_TESTS
        "Whether to enable tests that access real remote services over the network" OFF)
 option(PAIMON_ENABLE_LUMINA "Whether to enable lumina vector index" OFF)
 option(PAIMON_ENABLE_LUCENE "Whether to enable lucene index" OFF)
-option(PAIMON_ENABLE_TANTIVY
-       "Whether to enable tantivy-fulltext global index (Rust FFI, experimental)" OFF)
+option(PAIMON_ENABLE_FULL_TEXT
+       "Whether to enable full-text global index (Rust FFI, experimental)" OFF)
 option(PAIMON_ENABLE_REST
        "Whether to enable the rest catalog (requires libcurl and OpenSSL)" OFF)
 if(PAIMON_ENABLE_ORC)
@@ -126,8 +126,8 @@ if(PAIMON_ENABLE_LUCENE)
     add_definitions(-DPAIMON_ENABLE_LUCENE)
 endif()
 
-if(PAIMON_ENABLE_TANTIVY)
-    add_definitions(-DPAIMON_ENABLE_TANTIVY)
+if(PAIMON_ENABLE_FULL_TEXT)
+    add_definitions(-DPAIMON_ENABLE_FULL_TEXT)
 endif()
 
 add_definitions(-DSNAPPY_CODEC_AVAILABLE)
@@ -333,7 +333,7 @@ add_subdirectory(third_party/roaring_bitmap EXCLUDE_FROM_ALL)
 add_subdirectory(third_party/xxhash EXCLUDE_FROM_ALL)
 
 # ---- Rust FFI crates via Corrosion-rs -------------------------------------------
-if(PAIMON_ENABLE_LANCE OR PAIMON_ENABLE_TANTIVY)
+if(PAIMON_ENABLE_LANCE)
     include(CorrosionFetch)
 endif()
 
@@ -344,13 +344,6 @@ if(PAIMON_ENABLE_LANCE)
     corrosion_experimental_cbindgen(TARGET paimon_lance_ffi HEADER_NAME
                                     paimon_lance_ffi.h)
     corrosion_set_env_vars(paimon_lance_ffi "PROTOC=${PAIMON_LANCE_PROTOC}")
-endif()
-
-if(PAIMON_ENABLE_TANTIVY)
-    corrosion_import_crate(MANIFEST_PATH crates/tantivy_ffi/Cargo.toml CRATES
-                           paimon_tantivy_ffi)
-    corrosion_experimental_cbindgen(TARGET paimon_tantivy_ffi HEADER_NAME
-                                    paimon_tantivy_ffi.h)
 endif()
 
 if(PAIMON_ENABLE_LUCENE)
@@ -532,6 +525,13 @@ if(PAIMON_BUILD_TESTS)
                                            paimon_lucene_index_shared)
         list(APPEND TEST_STATIC_LINK_LIBS ${TEST_PLUGIN_LINK_LIBS})
     endif()
+    if(PAIMON_ENABLE_FULL_TEXT)
+        paimon_link_libraries_whole_archive(PAIMON_FULL_TEXT_INDEX_STATIC_LINK_LIBS
+                                            paimon_full_text_index_static)
+        paimon_link_libraries_no_as_needed(TEST_PLUGIN_LINK_LIBS
+                                           paimon_full_text_index_shared)
+        list(APPEND TEST_STATIC_LINK_LIBS ${TEST_PLUGIN_LINK_LIBS})
+    endif()
 endif()
 
 if(PAIMON_BUILD_BENCHMARKS)
@@ -586,8 +586,8 @@ if(PAIMON_ENABLE_LUMINA)
     add_subdirectory(src/paimon/indexer/lumina)
 endif()
 add_subdirectory(src/paimon/global_index/lucene)
-if(PAIMON_ENABLE_TANTIVY)
-    add_subdirectory(src/paimon/global_index/tantivy)
+if(PAIMON_ENABLE_FULL_TEXT)
+    add_subdirectory(src/paimon/global_index/full_text)
 endif()
 add_subdirectory(src/paimon/testing/mock)
 add_subdirectory(src/paimon/testing/utils)

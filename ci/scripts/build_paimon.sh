@@ -18,7 +18,7 @@
 set -eux
 
 usage() {
-    echo "Usage: $0 --source_dir <path> [--enable_asan] [--enable_ubsan] [--enable_tsan] [--check_clang_tidy] [--build_type <type>] [--lint_git_target_commit <commit-or-branch>] [--install_smoke]"
+    echo "Usage: $0 --source_dir <path> [--enable_asan] [--enable_ubsan] [--enable_tsan] [--check_clang_tidy] [--build_type <type>] [--lint_git_target_commit <commit-or-branch>] [--install_smoke] [--verify_full_text_archives]"
 }
 
 source_dir=""
@@ -29,6 +29,7 @@ check_clang_tidy="false"
 build_type="Debug"
 lint_git_target_commit="origin/main"
 install_smoke="false"
+verify_full_text_archives="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -77,6 +78,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --install_smoke)
             install_smoke="true"
+            shift
+            ;;
+        --verify_full_text_archives)
+            verify_full_text_archives="true"
             shift
             ;;
         -h | --help)
@@ -128,21 +133,25 @@ mkdir -p "${build_dir}"
 pushd "${build_dir}"
 
 ENABLE_LUMINA="ON"
-ENABLE_TANTIVY="ON"
+ENABLE_FULL_TEXT="ON"
 ENABLE_LANCE="ON"
 if [[ "${CC:-}" == *"gcc-8"* ]] || [[ "${CXX:-}" == *"g++-8"* ]]; then
     ENABLE_LUMINA="OFF"
-    ENABLE_TANTIVY="OFF" # tantivy-fts (Rust FFI) is not built on the gcc-8 image.
+    ENABLE_FULL_TEXT="OFF" # The full-text index (Rust FFI) is not built on the gcc-8 image.
 fi
 if [[ "${enable_tsan}" == "true" ]]; then
-    ENABLE_TANTIVY="OFF" # Tantivy's Rust library is not TSAN-instrumented.
-    ENABLE_LANCE="OFF"   # Lance's Rust library is not TSAN-instrumented.
+    ENABLE_FULL_TEXT="OFF" # The full-text Rust library is not TSAN-instrumented.
+    ENABLE_LANCE="OFF"     # Lance's Rust library is not TSAN-instrumented.
 fi
 # CI always builds natively, so the host architecture is the target architecture.
 host_arch=$(uname -m)
 if [[ "${host_arch}" != "x86_64" ]]; then
     ENABLE_LUMINA="OFF"
     echo "=== Lumina disabled: no prebuilt artifacts for ${host_arch} ==="
+fi
+if [[ "${verify_full_text_archives}" == "true" && "${ENABLE_FULL_TEXT}" != "ON" ]]; then
+    echo "--verify_full_text_archives requires the full-text index, which this build disables" >&2
+    exit 1
 fi
 
 CMAKE_ARGS=(
@@ -156,7 +165,7 @@ CMAKE_ARGS=(
     "-DPAIMON_ENABLE_S3=ON"
     "-DPAIMON_ENABLE_LUMINA=${ENABLE_LUMINA}"
     "-DPAIMON_ENABLE_LUCENE=ON"
-    "-DPAIMON_ENABLE_TANTIVY=${ENABLE_TANTIVY}"
+    "-DPAIMON_ENABLE_FULL_TEXT=${ENABLE_FULL_TEXT}"
     "-DPAIMON_ENABLE_REST=ON"
     "-DPAIMON_LINT_GIT_TARGET_COMMIT=${lint_git_target_commit}"
 )
@@ -173,7 +182,24 @@ fi
 
 cmake "${CMAKE_ARGS[@]}" "${source_dir}"
 cmake --build . -- -j "${build_jobs}"
+if [[ "${verify_full_text_archives}" == "true" ]]; then
+    # TestCrossReadFixtures copies the full-text archives written by Paimon C++ here.
+    full_text_archive_dir="${build_dir}/full_text_archives"
+    mkdir -p "${full_text_archive_dir}"
+    export PAIMON_FULL_TEXT_ARCHIVE_OUTPUT_DIR="${full_text_archive_dir}"
+fi
 ctest --output-on-failure -j "${build_jobs}"
+
+if [[ "${verify_full_text_archives}" == "true" ]]; then
+    # Read them with the Python binding of the same engine and compare the search results with
+    # those of the checked-in fixtures.
+    full_text_venv="${build_dir}/full_text_venv"
+    python3 -m venv "${full_text_venv}"
+    "${full_text_venv}/bin/pip" install paimon-ftindex==0.1.0
+    "${full_text_venv}/bin/python" \
+        "${source_dir}/test/test_data/full_text_fixtures/generate_fixtures.py" \
+        --verify "${full_text_archive_dir}"
+fi
 
 if [[ "${check_clang_tidy}" == "true" ]]; then
     cmake --build . --target check-clang-tidy
