@@ -1890,7 +1890,7 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithAtomicWriteSnapshotTimeoutAndActua
                               "/parquet/append_09.db/append_09/commit_messages/commit_messages-01",
                           /*version=*/3);
     ASSERT_GT(msgs.size(), 0);
-    ASSERT_NOK(commit->Commit(msgs, /*commit_identifier=*/1));
+    ASSERT_OK(commit->Commit(msgs, /*commit_identifier=*/1));
     ASSERT_OK_AND_ASSIGN(
         bool exist, file_system_->Exists(PathUtil::JoinPath(table_path, "snapshot/snapshot-6")));
     ASSERT_TRUE(exist);

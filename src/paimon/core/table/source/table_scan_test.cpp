@@ -26,6 +26,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/defs.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/metrics.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
@@ -74,6 +75,57 @@ TEST(TableScanTest, TestNonExistTable) {
     builder.AddOption(Options::FILE_FORMAT, "orc");
     ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
     ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(context)), "not found latest schema");
+}
+
+TEST(TableScanTest, TestStreamingSnapshotsRemoved) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_TRUE(dir);
+    ASSERT_TRUE(TestUtil::CopyDirectory(GetDataDir() + "/orc/append_09.db/append_09", dir->Str()));
+    ScanContextBuilder builder(dir->Str());
+    builder.AddOption(Options::FILE_FORMAT, "orc")
+        .AddOption(Options::SCAN_MODE, "latest")
+        .WithStreamingMode(true);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> initial_plan, table_scan->CreatePlan());
+    ASSERT_TRUE(initial_plan->Splits().empty());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> waiting_plan, table_scan->CreatePlan());
+    ASSERT_TRUE(waiting_plan->Splits().empty());
+
+    LocalFileSystem fs;
+    ASSERT_OK(fs.Delete(dir->Str() + "/snapshot", /*recursive=*/true));
+    ASSERT_NOK_WITH_MSG(table_scan->CreatePlan(),
+                        "The next snapshot id is 6, while the latest snapshot id is null");
+}
+
+TEST(TableScanTest, TestStreamingNextSnapshotBoundary) {
+    std::string path = GetDataDir() + "/orc/append_09.db/append_09";
+    for (const std::string next_snapshot_id : {"6", "7"}) {
+        SCOPED_TRACE(next_snapshot_id);
+        ScanContextBuilder builder(path);
+        builder.AddOption(Options::FILE_FORMAT, "orc")
+            .AddOption(Options::SCAN_MODE, "from-snapshot")
+            .AddOption(Options::SCAN_SNAPSHOT_ID, next_snapshot_id)
+            .WithStreamingMode(true);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                             TableScan::Create(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> initial_plan, table_scan->CreatePlan());
+        ASSERT_TRUE(initial_plan->Splits().empty());
+
+        auto result = table_scan->CreatePlan();
+        if (next_snapshot_id == "6") {
+            ASSERT_OK(result);
+            ASSERT_TRUE(result.value()->Splits().empty());
+            ASSERT_FALSE(result.value()->SnapshotId());
+        } else {
+            ASSERT_FALSE(result.ok());
+            ASSERT_TRUE(result.status().IsInvalid());
+            ASSERT_NOK_WITH_MSG(result,
+                                "The next snapshot id is 7, while the latest snapshot id is 5");
+        }
+    }
 }
 
 TEST(TableScanTest, TestPkSchemaEvolutionScan) {

@@ -18,12 +18,19 @@
 
 #include "paimon/format/blob/blob_format_writer.h"
 
+#include <functional>
+#include <limits>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "arrow/c/bridge.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/common/data/blob_defs.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -112,6 +119,125 @@ class VanishingFileSystem : public LocalFileSystem {
     mutable int64_t exists_call_count_ = 0;
 };
 
+/// A file system that counts Exists(), Open() and the Close() calls on the streams it opens, which
+/// return `close_status`. It delegates to a separate LocalFileSystem, whose Open() calls Exists().
+class CountingFileSystem : public LocalFileSystem {
+ public:
+    explicit CountingFileSystem(Status close_status = Status::OK())
+        : close_status_(std::move(close_status)) {}
+
+    Result<bool> Exists(const std::string& path) const override {
+        ++exists_call_count_;
+        return real_fs_.Exists(path);
+    }
+
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        ++open_call_count_;
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input, real_fs_.Open(path));
+        return std::unique_ptr<InputStream>(
+            std::make_unique<CloseCountingInputStream>(std::move(input), this));
+    }
+
+    int64_t ExistsCallCount() const {
+        return exists_call_count_;
+    }
+
+    int64_t OpenCallCount() const {
+        return open_call_count_;
+    }
+
+    int64_t CloseCallCount() const {
+        return close_call_count_;
+    }
+
+ private:
+    class CloseCountingInputStream : public InputStream {
+     public:
+        CloseCountingInputStream(std::unique_ptr<InputStream> input, const CountingFileSystem* fs)
+            : input_(std::move(input)), fs_(fs) {}
+
+        Status Seek(int64_t offset, SeekOrigin origin) override {
+            return input_->Seek(offset, origin);
+        }
+
+        Result<int64_t> GetPos() const override {
+            return input_->GetPos();
+        }
+
+        Result<int64_t> Read(char* buffer, int64_t size) override {
+            return input_->Read(buffer, size);
+        }
+
+        Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+            return input_->Read(buffer, size, offset);
+        }
+
+        void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                       std::function<void(Status)>&& callback) override {
+            input_->ReadAsync(buffer, size, offset, std::move(callback));
+        }
+
+        Result<std::string> GetUri() const override {
+            return input_->GetUri();
+        }
+
+        Result<int64_t> Length() const override {
+            return input_->Length();
+        }
+
+        Status Close() override {
+            ++fs_->close_call_count_;
+            PAIMON_RETURN_NOT_OK(input_->Close());
+            return fs_->close_status_;
+        }
+
+     private:
+        std::unique_ptr<InputStream> input_;
+        const CountingFileSystem* fs_;
+    };
+
+    Status close_status_;
+    LocalFileSystem real_fs_;
+    mutable int64_t exists_call_count_ = 0;
+    mutable int64_t open_call_count_ = 0;
+    mutable int64_t close_call_count_ = 0;
+};
+
+class FailingOutputStream : public OutputStream {
+ public:
+    FailingOutputStream(int64_t write_limit, bool short_write, bool fail_flush)
+        : write_limit_(write_limit), short_write_(short_write), fail_flush_(fail_flush) {}
+
+    Result<int64_t> Write(const char* buffer, int64_t size) override {
+        if (pos_ + size > write_limit_) {
+            if (!short_write_) {
+                return Status::IOError("mock write error");
+            }
+            size = write_limit_ - pos_;
+        }
+        pos_ += size;
+        return size;
+    }
+    Status Flush() override {
+        return fail_flush_ ? Status::IOError("mock flush error") : Status::OK();
+    }
+    Result<int64_t> GetPos() const override {
+        return pos_;
+    }
+    Result<std::string> GetUri() const override {
+        return std::string("mock.blob");
+    }
+    Status Close() override {
+        return Status::OK();
+    }
+
+ private:
+    int64_t write_limit_;
+    bool short_write_;
+    bool fail_flush_;
+    int64_t pos_ = 0;
+};
+
 class BlobFormatWriterTestBase : public ::testing::Test {
  public:
     void SetUp() override {
@@ -133,16 +259,7 @@ class BlobFormatWriterTestBase : public ::testing::Test {
     Result<std::unique_ptr<BlobFormatWriter>> CreateDefaultWriter() const {
         return BlobFormatWriter::Create(output_stream_, struct_type_,
                                         /*write_null_on_missing_file=*/false,
-                                        /*write_null_on_fetch_failure=*/false,
-                                        /*write_placeholder=*/false, file_system_, pool_);
-    }
-
-    /// Create a writer in placeholder mode, as used by data-evolution partial updates.
-    Result<std::unique_ptr<BlobFormatWriter>> CreatePlaceholderWriter() const {
-        return BlobFormatWriter::Create(output_stream_, struct_type_,
-                                        /*write_null_on_missing_file=*/false,
-                                        /*write_null_on_fetch_failure=*/false,
-                                        /*write_placeholder=*/true, file_system_, pool_);
+                                        /*write_null_on_fetch_failure=*/false, file_system_, pool_);
     }
 
     Status AddBatchOnce(const std::shared_ptr<BlobFormatWriter>& format_writer,
@@ -171,13 +288,19 @@ class BlobFormatWriterTestBase : public ::testing::Test {
     }
 
     Result<std::shared_ptr<arrow::StructArray>> ReadBackAsData() const {
+        return ReadBack(/*blob_as_descriptor=*/false, /*emit_placeholder_sentinel=*/false,
+                        "file.blob");
+    }
+
+    Result<std::shared_ptr<arrow::StructArray>> ReadBack(bool blob_as_descriptor,
+                                                         bool emit_placeholder_sentinel,
+                                                         const std::string& file_name) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
-                               file_system_->Open(dir_->Str() + "/file.blob"));
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BlobFileBatchReader> reader,
-                               BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
-                                                           /*blob_as_descriptor=*/false,
-                                                           /*emit_placeholder_sentinel=*/false,
-                                                           pool_, GetArrowPool(pool_)));
+                               file_system_->Open(dir_->Str() + "/" + file_name));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<BlobFileBatchReader> reader,
+            BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024, blob_as_descriptor,
+                                        emit_placeholder_sentinel, pool_, GetArrowPool(pool_)));
         auto schema = arrow::schema(struct_type_->fields());
         ::ArrowSchema c_schema;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &c_schema));
@@ -188,6 +311,12 @@ class BlobFormatWriterTestBase : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> concat_array,
                                           arrow::Concatenate(chunked_array->chunks()));
         return checked_pointer_cast<arrow::StructArray>(concat_array);
+    }
+
+    std::string WriteSourceFile(const std::string& name, const std::string& content) const {
+        std::string path = dir_->Str() + "/" + name;
+        EXPECT_OK(file_system_->WriteFile(path, content, /*overwrite=*/true));
+        return path;
     }
 
  protected:
@@ -299,48 +428,59 @@ TEST_P(BlobFormatWriterTest, TestCreateWithInvalidParameters) {
     // Test with nullptr output stream
     ASSERT_NOK_WITH_MSG(
         BlobFormatWriter::Create(nullptr, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, file_system_, pool_),
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_),
         "blob format writer create failed. out is nullptr");
 
     // Test with nullptr data type
     ASSERT_NOK_WITH_MSG(
         BlobFormatWriter::Create(output_stream_, nullptr, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, file_system_, pool_),
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_),
         "blob format writer create failed. data_type is nullptr");
 
     // Test with nullptr memory pool
     ASSERT_NOK_WITH_MSG(
         BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, file_system_, nullptr),
+                                 /*write_null_on_fetch_failure=*/false, file_system_, nullptr),
         "blob format writer create failed. pool is nullptr");
 
     // Test with nullptr file system
     ASSERT_NOK_WITH_MSG(
         BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, nullptr, pool_),
+                                 /*write_null_on_fetch_failure=*/false, nullptr, pool_),
         "blob format writer create failed. fs is nullptr");
 
     // Test with invalid field count (more than 1 field)
     auto multi_field_type = arrow::struct_(
         {arrow::field("blob_col1", arrow::binary()), arrow::field("blob_col2", arrow::binary())});
-    ASSERT_NOK_WITH_MSG(BlobFormatWriter::Create(output_stream_, multi_field_type,
-                                                 /*write_null_on_missing_file=*/false,
-                                                 /*write_null_on_fetch_failure=*/false,
-                                                 /*write_placeholder=*/false, file_system_, pool_),
-                        "blob data type field number 2 is not 1");
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, multi_field_type,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_),
+        "blob data type field number 2 is not 1");
 
     // Test with non-blob field (missing blob metadata)
     auto non_blob_field = arrow::field("regular_col", arrow::binary());
     auto non_blob_type = arrow::struct_({non_blob_field});
-    ASSERT_NOK_WITH_MSG(BlobFormatWriter::Create(output_stream_, non_blob_type,
-                                                 /*write_null_on_missing_file=*/false,
-                                                 /*write_null_on_fetch_failure=*/false,
-                                                 /*write_placeholder=*/false, file_system_, pool_),
-                        "field regular_col: binary is not BLOB");
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, non_blob_type,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_),
+        "field regular_col: binary is not BLOB or ARRAY<BLOB>");
+
+    auto plain_binary_array_type =
+        arrow::struct_({arrow::field("array_col", arrow::list(arrow::large_binary()))});
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, plain_binary_array_type,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_),
+        "is not BLOB or ARRAY<BLOB>");
+    auto nested_array_type = arrow::struct_({arrow::field(
+        "nested_col", arrow::list(arrow::list(BlobUtils::ToArrowField("item", true))))});
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, nested_array_type,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_),
+        "is not BLOB or ARRAY<BLOB>");
 }
 
 TEST_P(BlobFormatWriterTest, TestInvalidCase) {
@@ -548,8 +688,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnMissingFile) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<BlobFormatWriter> writer,
         BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, file_system_, pool_));
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> missing_blob,
                          Blob::FromPath(dir_->Str() + "/not_exist_file", /*offset=*/0,
@@ -561,9 +700,11 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnMissingFile) {
     // rejected row leaves the writer usable.
     std::string file = paimon::test::GetDataDir() + "/xxhash.data";
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> bad_offset_blob,
-                         Blob::FromPath(file, /*offset=*/1 << 20, /*length=*/10));
+                         Blob::FromPath(file, /*offset=*/1 << 20, /*length=*/-1));
     ASSERT_OK_AND_ASSIGN(auto bad_offset_array, PrepareDescriptorArray(bad_offset_blob));
-    ASSERT_NOK_WITH_MSG(AddBatchOnce(writer, bad_offset_array), "exceed total length");
+    Status status = AddBatchOnce(writer, bad_offset_array);
+    ASSERT_NOK_WITH_MSG(status, "for BLOB field blob_col in row 1 of blob file");
+    ASSERT_NOK_WITH_MSG(status, "exceed total length");
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> blob, Blob::FromPath(file));
     ASSERT_OK_AND_ASSIGN(auto array, PrepareDescriptorArray(blob));
@@ -586,12 +727,11 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnFetchFailure) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<BlobFormatWriter> writer,
         BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, file_system_, pool_));
+                                 /*write_null_on_fetch_failure=*/true, file_system_, pool_));
 
     std::string file = paimon::test::GetDataDir() + "/xxhash.data";
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> bad_offset_blob,
-                         Blob::FromPath(file, /*offset=*/1 << 20, /*length=*/10));
+                         Blob::FromPath(file, /*offset=*/1 << 20, /*length=*/-1));
     ASSERT_OK_AND_ASSIGN(auto bad_offset_array, PrepareDescriptorArray(bad_offset_blob));
     ASSERT_OK(AddBatchOnce(writer, bad_offset_array));
 
@@ -626,8 +766,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnBothOptionsEnabled) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<BlobFormatWriter> writer,
         BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, file_system_, pool_));
+                                 /*write_null_on_fetch_failure=*/true, file_system_, pool_));
 
     // Row 0: missing file -> NULL.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> missing_blob,
@@ -639,7 +778,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnBothOptionsEnabled) {
     // Row 1: fetch failure (offset beyond EOF) -> NULL.
     std::string file = paimon::test::GetDataDir() + "/xxhash.data";
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> bad_offset_blob,
-                         Blob::FromPath(file, /*offset=*/1 << 20, /*length=*/10));
+                         Blob::FromPath(file, /*offset=*/1 << 20, /*length=*/-1));
     ASSERT_OK_AND_ASSIGN(auto bad_offset_array, PrepareDescriptorArray(bad_offset_blob));
     ASSERT_OK(AddBatchOnce(writer, bad_offset_array));
 
@@ -672,6 +811,33 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnBothOptionsEnabled) {
               std::string_view(expected_data->data(), expected_data->size()));
 }
 
+TEST_F(BlobFormatWriterWriteNullTest, TestDataEndingEarlyFailsWrite) {
+    const std::string source_path = WriteSourceFile("source.bin", "0123456789");
+    struct Case {
+        int64_t offset;
+        int64_t length;
+        std::string expected_error;
+    };
+    const std::vector<Case> cases = {{5, 10, "read size 5 != expected 10"},
+                                     {11, 1, "read size 0 != expected 1"}};
+    for (const Case& c : cases) {
+        SCOPED_TRACE(fmt::format("offset={}, length={}", c.offset, c.length));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<BlobFormatWriter> writer,
+            BlobFormatWriter::Create(
+                std::make_shared<FailingOutputStream>(std::numeric_limits<int64_t>::max(),
+                                                      /*short_write=*/false, /*fail_flush=*/false),
+                struct_type_, /*write_null_on_missing_file=*/true,
+                /*write_null_on_fetch_failure=*/true, file_system_, pool_));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> blob,
+                             Blob::FromPath(source_path, c.offset, c.length));
+        ASSERT_OK_AND_ASSIGN(auto array, PrepareDescriptorArray(blob));
+        Status status = AddBatchOnce(writer, array);
+        ASSERT_NOK_WITH_MSG(status, "failed to copy BLOB field blob_col in row 0 of blob file");
+        ASSERT_NOK_WITH_MSG(status, c.expected_error);
+    }
+}
+
 TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
     // Each case needs its own option pair and therefore its own writer, so none of them finishes
     // the shared output stream: this test only asserts how a failure is classified. That the
@@ -691,8 +857,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, io_error_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/false, io_error_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, missing_array));
         ASSERT_EQ(io_error_fs->OpenCallCount(), 0);
     }
@@ -701,8 +866,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, io_error_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/false, io_error_fs, pool_));
         ASSERT_NOK_WITH_MSG(AddBatchOnce(writer, existing_array), "mock io error");
     }
     // The same fetch failure, now converted to NULL.
@@ -710,8 +874,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, io_error_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/true, io_error_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, existing_array));
     }
     // Missing file with only fetch-failure enabled: no existence check runs, so the file is
@@ -722,8 +885,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, io_error_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/true, io_error_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, missing_array));
         ASSERT_EQ(io_error_fs->OpenCallCount(), open_calls_before + 1);
         ASSERT_OK_AND_ASSIGN(
@@ -741,8 +903,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, vanishing_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/false, vanishing_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, existing_array));
         // One check before the open and one after it.
         ASSERT_EQ(vanishing_fs->ExistsCallCount(), 2);
@@ -762,8 +923,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, vanishing_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/true, vanishing_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, existing_array));
         ASSERT_EQ(vanishing_fs->ExistsCallCount(), 2);
         ASSERT_OK_AND_ASSIGN(
@@ -782,8 +942,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, vanishing_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/true, vanishing_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, existing_array));
         ASSERT_EQ(vanishing_fs->ExistsCallCount(), 0);
     }
@@ -793,8 +952,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullClassifiesByExistence) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, vanishing_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/false, vanishing_fs, pool_));
         ASSERT_NOK_WITH_MSG(AddBatchOnce(writer, existing_array), "mock io error");
         ASSERT_EQ(vanishing_fs->ExistsCallCount(), 0);
     }
@@ -817,16 +975,14 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnInvalidDescriptor) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, file_system_, pool_));
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_));
         ASSERT_NOK_WITH_MSG(AddBatchOnce(writer, array), "invalid blob descriptor");
     }
     {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, file_system_, pool_));
+                                 /*write_null_on_fetch_failure=*/true, file_system_, pool_));
         ASSERT_OK(AddBatchOnce(writer, array));
         ASSERT_OK(writer->Flush());
         ASSERT_OK(writer->Finish());
@@ -854,8 +1010,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnExistsCheckFailure) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, exists_fail_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/true, exists_fail_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, array));
         ASSERT_EQ(exists_fail_fs->ExistsCallCount(), 1);
         ASSERT_OK(writer->Flush());
@@ -884,8 +1039,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnExistsCheckFailure) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, exists_fail_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/false, exists_fail_fs, pool_));
         // The reported failure names the check and keeps the underlying status message.
         Status check_status = AddBatchOnce(writer, array);
         ASSERT_NOK_WITH_MSG(check_status, "failed to check existence of blob file");
@@ -899,8 +1053,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnExistsCheckFailure) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, exists_fail_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/true, exists_fail_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, array));
         // One check before the open and one after it failed.
         ASSERT_EQ(exists_fail_fs->ExistsCallCount(), 2);
@@ -920,8 +1073,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnExistsCheckFailure) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
                              BlobFormatWriter::Create(
                                  side_stream, struct_type_, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/true,
-                                 /*write_placeholder=*/false, exists_fail_fs, pool_));
+                                 /*write_null_on_fetch_failure=*/true, exists_fail_fs, pool_));
         ASSERT_OK(AddBatchOnce(writer, array));
         ASSERT_EQ(exists_fail_fs->ExistsCallCount(), 0);
         ASSERT_OK_AND_ASSIGN(
@@ -978,7 +1130,7 @@ std::string PlaceholderSentinelBytes() {
 }
 
 TEST_F(BlobFormatWriterPlaceholderTest, TestWritePlaceholderGoldenBytes) {
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreatePlaceholderWriter());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
 
     // row 0: inline bytes "inline"; row 1: null; row 2: placeholder
     ASSERT_OK_AND_ASSIGN(auto inline_array, MakeBlobArrayFromBytes("inline"));
@@ -1024,7 +1176,7 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestWritePlaceholderGoldenBytes) {
 }
 
 TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderStrictAndAwareModes) {
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreatePlaceholderWriter());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
     ASSERT_OK_AND_ASSIGN(auto inline_array, MakeBlobArrayFromBytes("inline"));
     ASSERT_OK(AddBatchOnce(writer, inline_array));
     ASSERT_OK_AND_ASSIGN(auto placeholder_array,
@@ -1098,7 +1250,7 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderStrictAndAwareModes) 
 }
 
 TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderWithSelectionBitmap) {
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreatePlaceholderWriter());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
     ASSERT_OK_AND_ASSIGN(auto array0, MakeBlobArrayFromBytes("first"));
     ASSERT_OK(AddBatchOnce(writer, array0));
     ASSERT_OK_AND_ASSIGN(auto array1, MakeBlobArrayFromBytes(PlaceholderSentinelBytes()));
@@ -1132,42 +1284,11 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderWithSelectionBitmap) 
     ASSERT_EQ(binary_array->GetString(1), "third");
 }
 
-TEST_F(BlobFormatWriterPlaceholderTest, TestSentinelBytesVerbatimWithoutPlaceholderMode) {
-    // outside placeholder mode a user blob whose bytes equal the sentinel is a normal value: it
-    // must be stored as a real entry (not persisted as bin_length -2) and read back unchanged
+TEST_F(BlobFormatWriterPlaceholderTest, TestSentinelPrefixedValueVerbatim) {
+    // placeholders are identified by exact equality only: a real value that merely starts with
+    // the sentinel bytes is stored verbatim and read back unchanged in both strict and
+    // placeholder-aware modes
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
-    ASSERT_OK_AND_ASSIGN(auto sentinel_array, MakeBlobArrayFromBytes(PlaceholderSentinelBytes()));
-    ASSERT_OK(AddBatchOnce(writer, sentinel_array));
-    ASSERT_OK(writer->Flush());
-    ASSERT_OK(writer->Finish());
-
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
-                         file_system_->Open(dir_->Str() + "/file.blob"));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
-                         BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
-                                                     /*blob_as_descriptor=*/false,
-                                                     /*emit_placeholder_sentinel=*/false, pool_,
-                                                     GetArrowPool(pool_)));
-    auto schema = arrow::schema(struct_type_->fields());
-    ::ArrowSchema c_schema;
-    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
-    ASSERT_OK(reader->SetReadSchema(&c_schema, /*predicate=*/nullptr,
-                                    /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto chunked_array,
-                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
-    auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-    auto struct_array = checked_pointer_cast<arrow::StructArray>(concat_array);
-    ASSERT_EQ(struct_array->length(), 1);
-    auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
-    ASSERT_FALSE(binary_array->IsNull(0));
-    ASSERT_EQ(binary_array->GetString(0), PlaceholderSentinelBytes());
-}
-
-TEST_F(BlobFormatWriterPlaceholderTest, TestSentinelPrefixedValueVerbatimInPlaceholderMode) {
-    // placeholders are identified by exact equality only: even in placeholder mode a real
-    // value that merely starts with the sentinel bytes is stored verbatim and read back
-    // unchanged in both strict and placeholder-aware modes
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreatePlaceholderWriter());
     std::string sentinel = PlaceholderSentinelBytes();
     ASSERT_OK_AND_ASSIGN(auto doubled_sentinel_array, MakeBlobArrayFromBytes(sentinel + sentinel));
     ASSERT_OK(AddBatchOnce(writer, doubled_sentinel_array));
@@ -1197,6 +1318,449 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestSentinelPrefixedValueVerbatimInPlace
         ASSERT_EQ(struct_array->length(), 2);
         ASSERT_EQ(binary_array->GetString(0), sentinel + sentinel);
         ASSERT_EQ(binary_array->GetString(1), sentinel + "suffix");
+    }
+}
+
+class BlobFormatWriterArrayBlobTest : public BlobFormatWriterTestBase {
+ public:
+    using BlobElements = std::vector<std::optional<std::string>>;
+
+    void SetUp() override {
+        BlobFormatWriterTestBase::SetUp();
+        struct_type_ = arrow::struct_({arrow::field(
+            "array_blob_col", arrow::list(BlobUtils::ToArrowField("item", true)), true)});
+    }
+
+    Result<std::shared_ptr<arrow::Array>> MakeArrayBlobRow(
+        const std::optional<BlobElements>& elements) const {
+        auto list_type = checked_pointer_cast<arrow::ListType>(struct_type_->field(0)->type());
+        auto list_builder = std::make_shared<arrow::ListBuilder>(
+            arrow::default_memory_pool(), std::make_shared<arrow::LargeBinaryBuilder>(), list_type);
+        arrow::StructBuilder struct_builder(struct_type_, arrow::default_memory_pool(),
+                                            {list_builder});
+        auto blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(list_builder->value_builder());
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Append());
+        if (!elements) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->AppendNull());
+        } else {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Append());
+            for (const std::optional<std::string>& element : *elements) {
+                if (element) {
+                    PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->Append(*element));
+                } else {
+                    PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->AppendNull());
+                }
+            }
+        }
+        std::shared_ptr<arrow::Array> array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Finish(&array));
+        return array;
+    }
+
+    Status AddArrayBlobRow(const std::shared_ptr<BlobFormatWriter>& writer,
+                           const std::optional<BlobElements>& elements) const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> array, MakeArrayBlobRow(elements));
+        return AddBatchOnce(writer, array);
+    }
+
+    Result<std::string> DescriptorOf(const std::string& path, int64_t offset = 0,
+                                     int64_t length = -1) const {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob, Blob::FromPath(path, offset, length));
+        PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
+        return std::string(descriptor->data(), descriptor->size());
+    }
+
+    Result<std::shared_ptr<arrow::ListArray>> ReadBackArrays(
+        bool blob_as_descriptor, bool emit_placeholder_sentinel,
+        const std::string& file_name = "file.blob") const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> struct_array,
+                               ReadBack(blob_as_descriptor, emit_placeholder_sentinel, file_name));
+        return checked_pointer_cast<arrow::ListArray>(struct_array->field(0));
+    }
+
+    Result<std::vector<std::optional<BlobElements>>> ToElements(const arrow::ListArray& list_array,
+                                                                bool blob_as_descriptor) const {
+        const auto& values = checked_cast<const arrow::LargeBinaryArray&>(*list_array.values());
+        std::vector<std::optional<BlobElements>> rows;
+        for (int64_t row = 0; row < list_array.length(); ++row) {
+            if (list_array.IsNull(row)) {
+                rows.emplace_back(std::nullopt);
+                continue;
+            }
+            BlobElements elements;
+            for (int64_t i = list_array.value_offset(row); i < list_array.value_offset(row + 1);
+                 ++i) {
+                if (values.IsNull(i)) {
+                    elements.emplace_back(std::nullopt);
+                    continue;
+                }
+                std::string_view stored = values.GetView(i);
+                if (!blob_as_descriptor) {
+                    elements.emplace_back(std::string(stored));
+                    continue;
+                }
+                PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
+                                       Blob::FromDescriptor(stored.data(), stored.size()));
+                PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> data,
+                                       blob->ToData(file_system_, pool_));
+                elements.emplace_back(std::string(data->data(), data->size()));
+            }
+            rows.emplace_back(std::move(elements));
+        }
+        return rows;
+    }
+};
+
+TEST_F(BlobFormatWriterArrayBlobTest, TestArrayBlobGoldenBytes) {
+    ASSERT_OK_AND_ASSIGN(std::string descriptor,
+                         DescriptorOf(WriteSourceFile("source.bin", "descriptor")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
+
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{}));
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{"inline", std::nullopt, "", descriptor}));
+    ASSERT_OK(AddArrayBlobRow(writer, std::nullopt));
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{PlaceholderSentinelBytes()}));
+    ASSERT_OK(writer->Finish());
+
+    std::vector<uint8_t> expected = {
+        0xcf, 0x11, 0x4e, 0x58, 0x42, 0x43, 0x42, 0x41, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9b, 0xd4, 0x91, 0x57, 0xcf,
+        0x11, 0x4e, 0x58, 0x42, 0x43, 0x42, 0x41, 0x01, 0x04, 0x00, 0x00, 0x00, 0x69, 0x6e, 0x6c,
+        0x69, 0x6e, 0x65, 0x64, 0x65, 0x73, 0x63, 0x72, 0x69, 0x70, 0x74, 0x6f, 0x72, 0x0c, 0x0d,
+        0x02, 0x14, 0x04, 0x00, 0x00, 0x00, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd0,
+        0x83, 0x07, 0x71, 0x3a, 0x28, 0x63, 0x01, 0x04, 0x00, 0x00, 0x00, 0x01};
+    std::string content;
+    ASSERT_OK(file_system_->ReadFile(dir_->Str() + "/file.blob", &content));
+    ASSERT_EQ(std::vector<uint8_t>(content.begin(), content.end()), expected)
+        << "expected bytes of Java BlobFormatWriterTest#testArrayBlobGoldenBytes "
+           "(apache/paimon#8635)";
+}
+
+TEST_F(BlobFormatWriterArrayBlobTest, TestArrayBlobRoundTrip) {
+    std::string xxhash_file = paimon::test::GetDataDir() + "/xxhash.data";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> blob_slice,
+                         Blob::FromPath(xxhash_file, /*offset=*/92, /*length=*/85));
+    PAIMON_UNIQUE_PTR<Bytes> slice_descriptor = blob_slice->ToDescriptor(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> slice_data,
+                         blob_slice->ToData(file_system_, pool_));
+    const std::string slice_bytes(slice_data->data(), slice_data->size());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
+    const std::vector<std::optional<BlobElements>> rows = {
+        BlobElements{"first", std::nullopt, "", "last"},
+        std::nullopt,
+        BlobElements{},
+        BlobElements{std::nullopt},
+        BlobElements{std::string(slice_descriptor->data(), slice_descriptor->size()), "tail"},
+        BlobElements{std::string((1 << 20) + 7, 'x'), "small"},
+    };
+    for (const std::optional<BlobElements>& row : rows) {
+        ASSERT_OK(AddArrayBlobRow(writer, row));
+    }
+    ASSERT_OK(writer->Finish());
+
+    std::vector<std::optional<BlobElements>> expected = rows;
+    expected[4] = BlobElements{slice_bytes, "tail"};
+    for (bool blob_as_descriptor : {false, true}) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ListArray> list_array,
+                             ReadBackArrays(blob_as_descriptor,
+                                            /*emit_placeholder_sentinel=*/false));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::optional<BlobElements>> actual,
+                             ToElements(*list_array, blob_as_descriptor));
+        ASSERT_EQ(actual, expected) << "blob_as_descriptor: " << blob_as_descriptor;
+    }
+}
+
+TEST_F(BlobFormatWriterArrayBlobTest, TestArrayBlobPlaceholder) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
+    const std::string sentinel = PlaceholderSentinelBytes();
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{"value"}));
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{sentinel}));
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{sentinel, sentinel}));
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{sentinel + "x"}));
+    ASSERT_OK(writer->Finish());
+
+    ASSERT_NOK_WITH_MSG(ReadBackArrays(/*blob_as_descriptor=*/false,
+                                       /*emit_placeholder_sentinel=*/false),
+                        "placeholder");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ListArray> list_array,
+                         ReadBackArrays(/*blob_as_descriptor=*/false,
+                                        /*emit_placeholder_sentinel=*/true));
+    const std::vector<std::optional<BlobElements>> expected = {
+        BlobElements{"value"},
+        BlobElements{sentinel},
+        BlobElements{sentinel, sentinel},
+        BlobElements{sentinel + "x"},
+    };
+    ASSERT_OK_AND_ASSIGN(std::vector<std::optional<BlobElements>> actual,
+                         ToElements(*list_array, /*blob_as_descriptor=*/false));
+    ASSERT_EQ(actual, expected);
+}
+
+TEST_F(BlobFormatWriterArrayBlobTest, TestArrayBlobWriteNullOnUnreachableElements) {
+    ASSERT_OK_AND_ASSIGN(const std::string missing_descriptor,
+                         DescriptorOf(dir_->Str() + "/not_exist_file"));
+    std::string xxhash_file = paimon::test::GetDataDir() + "/xxhash.data";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> bad_offset_blob,
+                         Blob::FromPath(xxhash_file, /*offset=*/1 << 20, /*length=*/-1));
+    PAIMON_UNIQUE_PTR<Bytes> bad_offset_bytes = bad_offset_blob->ToDescriptor(pool_);
+    const std::string bad_offset_descriptor(bad_offset_bytes->data(), bad_offset_bytes->size());
+    ASSERT_OK_AND_ASSIGN(const std::string valid_descriptor, DescriptorOf(xxhash_file));
+    const std::string truncated_descriptor =
+        valid_descriptor.substr(0, valid_descriptor.size() - 8);
+    ASSERT_OK_AND_ASSIGN(
+        const std::string bad_length_descriptor,
+        DescriptorOf(WriteSourceFile("source.bin", "0123456789"), /*offset=*/5, /*length=*/10));
+
+    const BlobElements all_unreachable = {
+        "first", missing_descriptor,   "second", bad_offset_descriptor,
+        "third", truncated_descriptor, "last"};
+
+    struct Case {
+        bool write_null_on_missing_file;
+        bool write_null_on_fetch_failure;
+        BlobElements elements;
+        std::string expected_error;
+        uint64_t expected_missing_nulls;
+        uint64_t expected_fetch_failure_nulls;
+    };
+    const std::vector<Case> cases = {
+        {false, false, {"first", missing_descriptor}, "not exists", 0, 0},
+        {false, false, {"first", bad_offset_descriptor}, "exceed total length", 0, 0},
+        {false, false, {"first", truncated_descriptor}, "invalid blob descriptor", 0, 0},
+        {true, false, {"first", bad_offset_descriptor}, "exceed total length", 0, 0},
+        {true, false, {"first", missing_descriptor, "last"}, "", 1, 0},
+        {false, true, all_unreachable, "", 0, 3},
+        {true, true, all_unreachable, "", 1, 2},
+        {true, true, {"first", bad_length_descriptor}, "read size 5 != expected 10", 0, 0}};
+    for (size_t i = 0; i < cases.size(); ++i) {
+        const Case& c = cases[i];
+        SCOPED_TRACE(
+            fmt::format("case {}: write_null_on_missing_file={}, "
+                        "write_null_on_fetch_failure={}",
+                        i, c.write_null_on_missing_file, c.write_null_on_fetch_failure));
+        const std::string file_name = fmt::format("array_{}.blob", i);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                             file_system_->Create(dir_->Str() + "/" + file_name,
+                                                  /*overwrite=*/true));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<BlobFormatWriter> writer,
+            BlobFormatWriter::Create(out, struct_type_, c.write_null_on_missing_file,
+                                     c.write_null_on_fetch_failure, file_system_, pool_));
+        Status status = AddArrayBlobRow(writer, c.elements);
+        if (!c.expected_error.empty()) {
+            ASSERT_NOK_WITH_MSG(
+                status, "element 1 of ARRAY<BLOB> field array_blob_col in row 0 of blob file");
+            ASSERT_NOK_WITH_MSG(status, c.expected_error);
+            ASSERT_OK(out->Close());
+            continue;
+        }
+        ASSERT_OK(status);
+        ASSERT_OK_AND_ASSIGN(
+            uint64_t missing_nulls,
+            writer->GetWriterMetrics()->GetCounter(BlobMetrics::WRITE_NULL_ON_MISSING_FILE_COUNT));
+        ASSERT_EQ(missing_nulls, c.expected_missing_nulls);
+        ASSERT_OK_AND_ASSIGN(
+            uint64_t fetch_failure_nulls,
+            writer->GetWriterMetrics()->GetCounter(BlobMetrics::WRITE_NULL_ON_FETCH_FAILURE_COUNT));
+        ASSERT_EQ(fetch_failure_nulls, c.expected_fetch_failure_nulls);
+        ASSERT_OK(writer->Finish());
+        ASSERT_OK(out->Close());
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ListArray> list_array,
+                             ReadBackArrays(/*blob_as_descriptor=*/false,
+                                            /*emit_placeholder_sentinel=*/false, file_name));
+        BlobElements expected_elements;
+        for (const std::optional<std::string>& element : c.elements) {
+            const bool unreachable = element == missing_descriptor ||
+                                     element == bad_offset_descriptor ||
+                                     element == truncated_descriptor;
+            expected_elements.push_back(unreachable ? std::optional<std::string>() : element);
+        }
+        const std::vector<std::optional<BlobElements>> expected = {expected_elements};
+        ASSERT_OK_AND_ASSIGN(std::vector<std::optional<BlobElements>> actual,
+                             ToElements(*list_array, /*blob_as_descriptor=*/false));
+        ASSERT_EQ(actual, expected);
+    }
+}
+
+TEST_F(BlobFormatWriterArrayBlobTest, TestReuseSourceStreamAcrossDescriptors) {
+    const std::string first_path = WriteSourceFile("first.bin", "0123456789");
+    const std::string second_path = WriteSourceFile("second.bin", "abcdef");
+    ASSERT_OK_AND_ASSIGN(std::string first_0_4, DescriptorOf(first_path, 0, 4));
+    ASSERT_OK_AND_ASSIGN(std::string first_6_4, DescriptorOf(first_path, 6, 4));
+    ASSERT_OK_AND_ASSIGN(std::string first_2_3, DescriptorOf(first_path, 2, 3));
+    ASSERT_OK_AND_ASSIGN(std::string first_4_2, DescriptorOf(first_path, 4, 2));
+    ASSERT_OK_AND_ASSIGN(std::string first_10_0, DescriptorOf(first_path, 10, 0));
+    ASSERT_OK_AND_ASSIGN(std::string first_0_10, DescriptorOf(first_path, 0, 10));
+    ASSERT_OK_AND_ASSIGN(std::string second_0_6, DescriptorOf(second_path, 0, 6));
+
+    auto counting_fs = std::make_shared<CountingFileSystem>();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlobFormatWriter> writer,
+        BlobFormatWriter::Create(output_stream_, struct_type_,
+                                 /*write_null_on_missing_file=*/true,
+                                 /*write_null_on_fetch_failure=*/false, counting_fs, pool_));
+    ASSERT_OK(AddArrayBlobRow(writer,
+                              BlobElements{first_0_4, "inline", first_6_4, first_2_3, first_10_0}));
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{first_4_2, second_0_6}));
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{first_0_10}));
+    ASSERT_OK(writer->Finish());
+    ASSERT_EQ(counting_fs->OpenCallCount(), 3);
+    ASSERT_EQ(counting_fs->ExistsCallCount(), 3);
+    ASSERT_EQ(counting_fs->CloseCallCount(), 3);
+
+    for (bool blob_as_descriptor : {false, true}) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ListArray> list_array,
+                             ReadBackArrays(blob_as_descriptor,
+                                            /*emit_placeholder_sentinel=*/false));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::optional<BlobElements>> actual,
+                             ToElements(*list_array, blob_as_descriptor));
+        const std::vector<std::optional<BlobElements>> expected = {
+            BlobElements{"0123", "inline", "6789", "234", ""}, BlobElements{"45", "abcdef"},
+            BlobElements{"0123456789"}};
+        ASSERT_EQ(actual, expected) << "blob_as_descriptor: " << blob_as_descriptor;
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::string first_overflowing,
+                         DescriptorOf(first_path, std::numeric_limits<int64_t>::max(), 1));
+    ASSERT_OK_AND_ASSIGN(std::string first_2_2, DescriptorOf(first_path, 2, 2));
+    const std::string file_name = "overflowing.blob";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                         file_system_->Create(dir_->Str() + "/" + file_name, /*overwrite=*/true));
+    auto fetch_failure_fs = std::make_shared<CountingFileSystem>();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlobFormatWriter> fetch_failure_writer,
+        BlobFormatWriter::Create(out, struct_type_,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/true, fetch_failure_fs, pool_));
+    ASSERT_OK(AddArrayBlobRow(fetch_failure_writer,
+                              BlobElements{first_0_4, first_overflowing, first_2_2}));
+    ASSERT_OK(fetch_failure_writer->Finish());
+    ASSERT_OK(out->Close());
+    ASSERT_EQ(fetch_failure_fs->OpenCallCount(), 3);
+    ASSERT_EQ(fetch_failure_fs->ExistsCallCount(), 0);
+    ASSERT_EQ(fetch_failure_fs->CloseCallCount(), 3);
+    ASSERT_OK_AND_ASSIGN(uint64_t fetch_failure_nulls,
+                         fetch_failure_writer->GetWriterMetrics()->GetCounter(
+                             BlobMetrics::WRITE_NULL_ON_FETCH_FAILURE_COUNT));
+    ASSERT_EQ(fetch_failure_nulls, 1);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ListArray> list_array,
+                         ReadBackArrays(/*blob_as_descriptor=*/false,
+                                        /*emit_placeholder_sentinel=*/false, file_name));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::optional<BlobElements>> actual,
+                         ToElements(*list_array, /*blob_as_descriptor=*/false));
+    const std::vector<std::optional<BlobElements>> expected = {
+        BlobElements{"0123", std::nullopt, "23"}};
+    ASSERT_EQ(actual, expected);
+}
+
+TEST_F(BlobFormatWriterArrayBlobTest, TestDynamicLengthElementReadsGrownFile) {
+    const std::string source_path = WriteSourceFile("source.bin", "0123");
+    ASSERT_OK_AND_ASSIGN(std::string head, DescriptorOf(source_path, 0, 2));
+    ASSERT_OK_AND_ASSIGN(std::string whole, DescriptorOf(source_path));
+    auto counting_fs = std::make_shared<CountingFileSystem>();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlobFormatWriter> writer,
+        BlobFormatWriter::Create(output_stream_, struct_type_,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false, counting_fs, pool_));
+
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{head, whole}));
+    WriteSourceFile("source.bin", "012345");
+    ASSERT_OK(AddArrayBlobRow(writer, BlobElements{whole, head}));
+    ASSERT_OK(writer->Finish());
+    ASSERT_EQ(counting_fs->OpenCallCount(), 3);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ListArray> list_array,
+                         ReadBackArrays(/*blob_as_descriptor=*/false,
+                                        /*emit_placeholder_sentinel=*/false));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::optional<BlobElements>> actual,
+                         ToElements(*list_array, /*blob_as_descriptor=*/false));
+    const std::vector<std::optional<BlobElements>> expected = {BlobElements{"01", "0123"},
+                                                               BlobElements{"012345", "01"}};
+    ASSERT_EQ(actual, expected);
+}
+
+TEST_F(BlobFormatWriterArrayBlobTest, TestSourceCloseFailureFailsWrite) {
+    const std::string first_path = WriteSourceFile("first.bin", "0123");
+    ASSERT_OK_AND_ASSIGN(std::string first, DescriptorOf(first_path, 0, 4));
+    ASSERT_OK_AND_ASSIGN(std::string first_overflowing,
+                         DescriptorOf(first_path, std::numeric_limits<int64_t>::max(), 1));
+    ASSERT_OK_AND_ASSIGN(std::string first_dynamic, DescriptorOf(first_path));
+    ASSERT_OK_AND_ASSIGN(std::string second,
+                         DescriptorOf(WriteSourceFile("second.bin", "abcd"), 0, 4));
+    auto close_fail_fs = std::make_shared<CountingFileSystem>(Status::IOError("mock close error"));
+    auto create_writer = [&]() {
+        return BlobFormatWriter::Create(
+            std::make_shared<FailingOutputStream>(std::numeric_limits<int64_t>::max(),
+                                                  /*short_write=*/false, /*fail_flush=*/false),
+            struct_type_, /*write_null_on_missing_file=*/true,
+            /*write_null_on_fetch_failure=*/true, close_fail_fs, pool_);
+    };
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> switch_writer, create_writer());
+    Status status = AddArrayBlobRow(switch_writer, BlobElements{first, second});
+    ASSERT_NOK_WITH_MSG(status, "failed to close blob source file");
+    ASSERT_NOK_WITH_MSG(status, "mock close error");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> reopen_writer, create_writer());
+    ASSERT_NOK_WITH_MSG(AddArrayBlobRow(reopen_writer, BlobElements{first, first_overflowing}),
+                        "failed to close blob source file");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> finish_writer, create_writer());
+    ASSERT_OK(AddArrayBlobRow(finish_writer, BlobElements{first}));
+    ASSERT_NOK_WITH_MSG(finish_writer->Finish(), "failed to close blob source file");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> dynamic_writer, create_writer());
+    ASSERT_NOK_WITH_MSG(AddArrayBlobRow(dynamic_writer, BlobElements{first_dynamic}),
+                        "failed to close blob source file for element 0 of ARRAY<BLOB> field "
+                        "array_blob_col in row 0");
+    ASSERT_EQ(close_fail_fs->CloseCallCount(), 4);
+}
+
+TEST_F(BlobFormatWriterArrayBlobTest, TestArrayBlobOutputFailureFailsWrite) {
+    struct Case {
+        int64_t write_limit;
+        bool short_write;
+        bool fail_flush;
+        bool fails_on_finish;
+        std::string expected_error;
+    };
+    const int64_t array_header_end = 13;
+    const int64_t element_data_end = 18;
+    const int64_t entry_end = 35;
+    const std::string write_error = "failed to write blob file mock.blob: mock write error";
+    const std::vector<Case> cases = {
+        {0, false, false, false, write_error},
+        {2, true, false, false,
+         "failed to write blob file mock.blob: unexpected actual length 2 not match with expect 4"},
+        {array_header_end, false, false, false,
+         "failed to copy element 0 of ARRAY<BLOB> field array_blob_col in row 0 of blob file "
+         "mock.blob: " +
+             write_error},
+        {element_data_end, false, false, false, write_error},
+        {entry_end, false, false, true, write_error},
+        {std::numeric_limits<int64_t>::max(), false, true, true,
+         "failed to flush blob file mock.blob: mock flush error"}};
+    for (size_t i = 0; i < cases.size(); ++i) {
+        const Case& c = cases[i];
+        SCOPED_TRACE(fmt::format("case {}: write_limit={}, short_write={}, fail_flush={}", i,
+                                 c.write_limit, c.short_write, c.fail_flush));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<BlobFormatWriter> writer,
+            BlobFormatWriter::Create(
+                std::make_shared<FailingOutputStream>(c.write_limit, c.short_write, c.fail_flush),
+                struct_type_,
+                /*write_null_on_missing_file=*/false, /*write_null_on_fetch_failure=*/false,
+                file_system_, pool_));
+        Status status = AddArrayBlobRow(writer, BlobElements{"value"});
+        if (c.fails_on_finish) {
+            ASSERT_OK(status);
+            status = writer->Finish();
+        }
+        ASSERT_NOK_WITH_MSG(status, c.expected_error);
     }
 }
 

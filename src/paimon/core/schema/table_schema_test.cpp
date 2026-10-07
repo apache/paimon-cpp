@@ -1366,13 +1366,21 @@ TEST_F(TableSchemaTest, CreatingMapBlobSchemaIsRejected) {
         "not supported by the C++ writer");
 }
 
-TEST_F(TableSchemaTest, CreatingArrayBlobSchemaIsRejected) {
+TEST_F(TableSchemaTest, CreatingArrayBlobSchemaIsAllowed) {
     auto array_type = arrow::list(BlobUtils::ToArrowField("item", /*nullable=*/true));
-    ASSERT_NOK_WITH_MSG(
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> table_schema,
         TableSchema::Create(/*schema_id=*/0,
-                            arrow::schema({arrow::field("blob_array", array_type)}),
-                            /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}),
-        "Writing a table with ARRAY<BLOB> is not supported by the C++ writer");
+                            arrow::schema({arrow::field("id", arrow::int32()),
+                                           arrow::field("blob_array", array_type)}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}));
+    ASSERT_TRUE(BlobUtils::IsArrayBlobField(
+        DataField::ConvertDataFieldToArrowField(table_schema->Fields()[1])));
+    ASSERT_OK_AND_ASSIGN(std::string serialized, table_schema->ToJsonString());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> restored,
+                         TableSchema::CreateFromJson(serialized));
+    ASSERT_TRUE(BlobUtils::IsArrayBlobField(
+        DataField::ConvertDataFieldToArrowField(restored->Fields()[1])));
 }
 
 TEST_F(TableSchemaTest, MapKeysSortedIsNormalized) {

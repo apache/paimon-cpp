@@ -30,6 +30,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/commit_context.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/defs.h"
@@ -511,29 +512,37 @@ TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnDvTable) {
                         "not support for dv in UNAWARE_BUCKET mode");
 }
 
-TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnLoadedMapBlobTable) {
-    auto fs = dir_->GetFileSystem();
-    SchemaManager schema_manager(fs, TablePath());
-    std::string schema_json = R"json({
-        "version" : 3,
-        "id" : 0,
-        "fields" : [ {
-            "id" : 0,
-            "name" : "blob_map",
-            "type" : {"type":"MAP", "key":"STRING", "value":"BLOB"}
-        } ],
-        "highestFieldId" : 0,
-        "partitionKeys" : [],
-        "primaryKeys" : [],
-        "options" : {"bucket":"-1"},
-        "timeMillis" : 1721614341162
-    })json";
-    ASSERT_OK(fs->AtomicStore(PathUtil::JoinPath(schema_manager.SchemaDirectory(), "schema-0"),
-                              schema_json));
+TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnDataEvolutionTable) {
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"}};
 
-    ASSERT_NOK_WITH_MSG(
-        AppendCompactCoordinator::Run(TablePath(), /*options=*/{}, /*partitions=*/{}, fs, pool_),
-        "Writing a table with MAP<..., BLOB> is not supported by the C++ writer");
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 arrow::field("f1", arrow::utf8())};
+    CreateTable(fields, /*partition_keys=*/{}, options);
+
+    ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::Run(TablePath(), options, /*partitions=*/{},
+                                                      /*file_system=*/nullptr, pool_),
+                        "not support for data evolution in UNAWARE_BUCKET mode");
+}
+
+TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnArrayBlobTable) {
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"}};
+
+    arrow::FieldVector fields = {
+        arrow::field("f0", arrow::int32()),
+        arrow::field("a0", arrow::list(BlobUtils::ToArrowField("item", /*nullable=*/true)))};
+    CreateTable(fields, /*partition_keys=*/{}, options);
+
+    ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::Run(TablePath(), options, /*partitions=*/{},
+                                                      /*file_system=*/nullptr, pool_),
+                        "not support for data evolution in UNAWARE_BUCKET mode");
 }
 
 /// Test that compact output files are written to external path when configured.

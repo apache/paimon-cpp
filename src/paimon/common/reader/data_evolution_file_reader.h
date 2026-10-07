@@ -85,11 +85,14 @@ class DataEvolutionFileReader : public BatchReader {
           reader_offsets_(reader_offsets),
           field_offsets_(field_offsets),
           cached_array_vec_(readers_.size()),
+          reader_eof_(readers_.size(), false),
           non_exist_array_vec_(read_schema->num_fields(), nullptr) {}
 
     int64_t CalculateCachedArrayLength(size_t reader_idx) const;
 
-    Result<std::shared_ptr<arrow::Array>> NextBatchForSingleReader(size_t reader_idx);
+    Result<bool> EnsureCachedArray(size_t reader_idx);
+
+    Result<std::shared_ptr<arrow::Array>> TakeCachedArray(size_t reader_idx, int64_t array_length);
 
     Result<std::shared_ptr<arrow::Array>> GetOrCreateNonExistArray(int32_t field_idx,
                                                                    int64_t array_length);
@@ -102,6 +105,7 @@ class DataEvolutionFileReader : public BatchReader {
     std::vector<int32_t> reader_offsets_;
     std::vector<int32_t> field_offsets_;
     std::vector<arrow::ArrayVector> cached_array_vec_;
+    std::vector<bool> reader_eof_;
     arrow::ArrayVector non_exist_array_vec_;
 };
 }  // namespace paimon

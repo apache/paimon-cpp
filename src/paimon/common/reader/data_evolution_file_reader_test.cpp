@@ -93,50 +93,20 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
         }
     }
 
-    void CheckNextBatchForSingleReader(int32_t inner_batch_size, int32_t read_batch_size,
-                                       const std::shared_ptr<arrow::Array>& src_array,
-                                       const std::optional<RoaringBitmap32>& selection_bitmap,
-                                       const std::shared_ptr<arrow::Array>& expected_array) const {
-        std::unique_ptr<MockFileBatchReader> file_batch_reader;
-        if (selection_bitmap) {
-            file_batch_reader = std::make_unique<MockFileBatchReader>(
-                src_array, src_array->type(), selection_bitmap.value(), inner_batch_size);
-        } else {
-            file_batch_reader = std::make_unique<MockFileBatchReader>(src_array, src_array->type(),
-                                                                      inner_batch_size);
+    Result<std::shared_ptr<arrow::Array>> ReadNextOutput(DataEvolutionFileReader* reader) const {
+        PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
+                               reader->NextBatchWithBitmap());
+        if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+            return std::shared_ptr<arrow::Array>();
         }
-        auto enable_randomize_batch_size = GetParam();
-        file_batch_reader->EnableRandomizeBatchSize(enable_randomize_batch_size);
-        std::vector<std::unique_ptr<BatchReader>> readers;
-        readers.push_back(std::move(file_batch_reader));
-        DataEvolutionFileReader fake_data_evolution_reader(
-            std::move(readers), /*read_schema=*/arrow::schema({}), read_batch_size,
-            /*reader_offsets=*/{}, /*field_offsets=*/{}, GetArrowPool(pool_));
-        arrow::ArrayVector result_array_vec;
-        while (true) {
-            ASSERT_OK_AND_ASSIGN(auto result_array,
-                                 fake_data_evolution_reader.NextBatchForSingleReader(0));
-            if (result_array == nullptr) {
-                break;
-            }
-            ASSERT_EQ(result_array->offset(), 0);
-            result_array_vec.push_back(result_array);
+        auto& [batch, bitmap] = batch_with_bitmap;
+        auto& [c_array, c_schema] = batch;
+        if (bitmap.Cardinality() != c_array->length) {
+            return Status::Invalid("data evolution output bitmap should select every row");
         }
-        ASSERT_EQ(result_array_vec.size(),
-                  std::ceil(static_cast<double>(expected_array->length()) / read_batch_size));
-        // except for last batch, the length each array is expected to be aligned to read_batch_size
-        for (size_t i = 0; i < result_array_vec.size() - 1; i++) {
-            ASSERT_EQ(result_array_vec[i]->length(), read_batch_size);
-        }
-        if (expected_array->length() % read_batch_size == 0) {
-            ASSERT_EQ(result_array_vec.back()->length(), read_batch_size);
-        } else {
-            ASSERT_EQ(result_array_vec.back()->length(),
-                      expected_array->length() % read_batch_size);
-        }
-        auto result_chunk_array = std::make_shared<arrow::ChunkedArray>(result_array_vec);
-        auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expected_array);
-        ASSERT_TRUE(result_chunk_array->Equals(expected_chunk_array));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                          arrow::ImportArray(c_array.get(), c_schema.get()));
+        return array;
     }
 
  private:
@@ -201,130 +171,103 @@ TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
     }
 }
 
-TEST_P(DataEvolutionFileReaderTest, TestNextBatchForSingleReader) {
-    auto prepare_array = [](int64_t array_length) -> std::shared_ptr<arrow::Array> {
-        auto array_builder = std::make_shared<arrow::Int32Builder>();
-        for (int32_t i = 0; i < array_length; ++i) {
-            EXPECT_TRUE(array_builder->Append(i).ok());
-        }
-        std::shared_ptr<arrow::Array> array;
-        EXPECT_TRUE(array_builder->Finish(&array).ok());
-        return array;
-    };
-    auto prepare_array_with_bitmap =
-        [](const RoaringBitmap32& bitmap) -> std::shared_ptr<arrow::Array> {
-        auto array_builder = std::make_shared<arrow::Int32Builder>();
-        for (auto iter = bitmap.Begin(); iter != bitmap.End(); ++iter) {
-            EXPECT_TRUE(array_builder->Append(*iter).ok());
-        }
-        std::shared_ptr<arrow::Array> array;
-        EXPECT_TRUE(array_builder->Finish(&array).ok());
-        return array;
-    };
-    {
-        // src array length = 10, read batch size = 10
-        auto src_array = prepare_array(10);
-        for (int32_t inner_batch_size : arrow::internal::Iota(1, 10)) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/10, src_array,
-                                          /*selection_bitmap=*/std::nullopt,
-                                          /*expected_array=*/src_array);
-        }
+TEST_F(DataEvolutionFileReaderTest, TestNoActiveReader) {
+    auto read_schema = arrow::schema({arrow::field("missing", arrow::int32())});
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    readers.push_back(nullptr);
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         DataEvolutionFileReader::Create(
+                             std::move(readers), read_schema, /*read_batch_size=*/10,
+                             /*reader_offsets=*/{-1}, /*field_offsets=*/{-1}, GetArrowPool(pool_)));
+    ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(),
+                        "data evolution reader has no active inner reader");
+}
+
+TEST_F(DataEvolutionFileReaderTest, TestDifferentInnerBatchSizes) {
+    auto f0 = arrow::field("f0", arrow::int32());
+    auto f1 = arrow::field("f1", arrow::int32());
+    auto array0 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({f0}), R"([
+        [0], [1], [2], [3], [4], [5]
+    ])")
+                      .ValueOrDie();
+    auto array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({f1}), R"([
+        [10], [11], [12], [13], [14], [15]
+    ])")
+                      .ValueOrDie();
+
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    auto reader0 = std::make_unique<MockFileBatchReader>(array0, array0->type(),
+                                                         /*read_batch_size=*/5);
+    reader0->EnableRandomizeBatchSize(false);
+    readers.push_back(std::move(reader0));
+    auto reader1 = std::make_unique<MockFileBatchReader>(array1, array1->type(),
+                                                         /*read_batch_size=*/2);
+    reader1->EnableRandomizeBatchSize(false);
+    readers.push_back(std::move(reader1));
+    ASSERT_OK_AND_ASSIGN(auto reader, DataEvolutionFileReader::Create(
+                                          std::move(readers), arrow::schema({f0, f1}),
+                                          /*read_batch_size=*/10, /*reader_offsets=*/{0, 1},
+                                          /*field_offsets=*/{0, 0}, GetArrowPool(pool_)));
+
+    arrow::ArrayVector batches;
+    for (int64_t expected_length : {2, 2, 1, 1}) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> batch, ReadNextOutput(reader.get()));
+        ASSERT_NE(batch, nullptr);
+        ASSERT_EQ(batch->length(), expected_length);
+        ASSERT_EQ(batch->offset(), 0);
+        auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(batch);
+        ASSERT_TRUE(struct_array);
+        ASSERT_EQ(struct_array->field(0)->offset(), 0);
+        ASSERT_EQ(struct_array->field(1)->offset(), 0);
+        batches.push_back(std::move(batch));
     }
-    {
-        // src array length = 10, read batch size = 6
-        auto src_array = prepare_array(10);
-        for (int32_t inner_batch_size : arrow::internal::Iota(1, 6)) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/6, src_array,
-                                          /*selection_bitmap=*/std::nullopt,
-                                          /*expected_array=*/src_array);
-        }
-    }
-    {
-        // src array length = 10, read batch size = 15
-        auto src_array = prepare_array(10);
-        for (int32_t inner_batch_size : arrow::internal::Iota(1, 15)) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/15, src_array,
-                                          /*selection_bitmap=*/std::nullopt,
-                                          /*expected_array=*/src_array);
-        }
-    }
-    {
-        // test bulk data, src array length = 10000, read batch size = 1024
-        auto src_array = prepare_array(10000);
-        for (int32_t inner_batch_size : {1, 2, 8, 16, 20, 100, 1024}) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/1024, src_array,
-                                          /*selection_bitmap=*/std::nullopt,
-                                          /*expected_array=*/src_array);
-        }
-    }
-    {
-        // src array length = 10, selection bitmap = {1, 3, 5}
-        auto src_array = prepare_array(10);
-        RoaringBitmap32 selected_bitmap = RoaringBitmap32::From({1, 3, 5});
-        auto expected_array = prepare_array_with_bitmap(selected_bitmap);
-        for (int32_t inner_batch_size : arrow::internal::Iota(1, 15)) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/15, src_array,
-                                          selected_bitmap, expected_array);
-        }
-    }
-    {
-        // src array length = 10, selection all
-        auto src_array = prepare_array(10);
-        RoaringBitmap32 selected_bitmap = RoaringBitmap32::From({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
-        for (int32_t inner_batch_size : arrow::internal::Iota(1, 15)) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/15, src_array,
-                                          selected_bitmap, /*expected_array=*/src_array);
-        }
-    }
-    {
-        // src array length = 10, selection first
-        auto src_array = prepare_array(10);
-        RoaringBitmap32 selected_bitmap = RoaringBitmap32::From({0});
-        auto expected_array = prepare_array_with_bitmap(selected_bitmap);
-        for (int32_t inner_batch_size : arrow::internal::Iota(1, 15)) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/15, src_array,
-                                          selected_bitmap, expected_array);
-        }
-    }
-    {
-        // src array length = 10, selection first
-        auto src_array = prepare_array(10);
-        RoaringBitmap32 selected_bitmap = RoaringBitmap32::From({9});
-        auto expected_array = prepare_array_with_bitmap(selected_bitmap);
-        for (int32_t inner_batch_size : arrow::internal::Iota(1, 15)) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/15, src_array,
-                                          selected_bitmap, expected_array);
-        }
-    }
-    {
-        // src array length = 10, selection consecutive positions
-        auto src_array = prepare_array(10);
-        RoaringBitmap32 selected_bitmap = RoaringBitmap32::From({2, 3, 4, 5});
-        auto expected_array = prepare_array_with_bitmap(selected_bitmap);
-        for (int32_t inner_batch_size : arrow::internal::Iota(1, 15)) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/15, src_array,
-                                          selected_bitmap, expected_array);
-        }
-    }
-    {
-        auto src_array = prepare_array(10);
-        RoaringBitmap32 selected_bitmap = RoaringBitmap32::From({0, 1, 2, 3, 4, 5, 7, 8, 9});
-        auto expected_array = prepare_array_with_bitmap(selected_bitmap);
-        // inner batch: [0, 1, 2, 3] | [4, 5] [7, 8] | [9]
-        CheckNextBatchForSingleReader(/*inner_batch_size=*/4, /*read_batch_size=*/5, src_array,
-                                      selected_bitmap, expected_array);
-    }
-    {
-        // test bulk data, src array length = 10000, read batch size = 1024
-        auto src_array = prepare_array(10000);
-        RoaringBitmap32 selected_bitmap =
-            RoaringBitmap32::From({0, 10, 1000, 2333, 4566, 7838, 8787, 9999});
-        auto expected_array = prepare_array_with_bitmap(selected_bitmap);
-        for (int32_t inner_batch_size : {1, 2, 8, 16, 20, 100, 1024}) {
-            CheckNextBatchForSingleReader(inner_batch_size, /*read_batch_size=*/1024, src_array,
-                                          selected_bitmap, expected_array);
-        }
-    }
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> eof, ReadNextOutput(reader.get()));
+    ASSERT_EQ(eof, nullptr);
+    ASSERT_OK_AND_ASSIGN(eof, ReadNextOutput(reader.get()));
+    ASSERT_EQ(eof, nullptr);
+
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({f0, f1}), R"([
+        [0, 10], [1, 11], [2, 12], [3, 13], [4, 14], [5, 15]
+    ])")
+                        .ValueOrDie();
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(batches)->Equals(
+        std::make_shared<arrow::ChunkedArray>(expected)));
+}
+
+TEST_F(DataEvolutionFileReaderTest, TestBitmapSkipsWholeBatches) {
+    auto f0 = arrow::field("f0", arrow::int32());
+    auto f1 = arrow::field("f1", arrow::int32());
+    auto array0 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({f0}), R"([
+        [0], [1], [2], [3], [4], [5], [6], [7]
+    ])")
+                      .ValueOrDie();
+    auto array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({f1}), R"([
+        [100], [101], [102], [103], [104], [105], [106], [107]
+    ])")
+                      .ValueOrDie();
+    RoaringBitmap32 bitmap = RoaringBitmap32::From({4, 7});
+
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    auto reader0 = std::make_unique<MockFileBatchReader>(array0, array0->type(), bitmap,
+                                                         /*read_batch_size=*/2);
+    reader0->EnableRandomizeBatchSize(false);
+    readers.push_back(std::move(reader0));
+    auto reader1 = std::make_unique<MockFileBatchReader>(array1, array1->type(), bitmap,
+                                                         /*read_batch_size=*/3);
+    reader1->EnableRandomizeBatchSize(false);
+    readers.push_back(std::move(reader1));
+    ASSERT_OK_AND_ASSIGN(auto reader, DataEvolutionFileReader::Create(
+                                          std::move(readers), arrow::schema({f0, f1}),
+                                          /*read_batch_size=*/10, /*reader_offsets=*/{0, 1},
+                                          /*field_offsets=*/{0, 0}, GetArrowPool(pool_)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({f0, f1}), R"([
+        [4, 104], [7, 107]
+    ])")
+                        .ValueOrDie();
+    ASSERT_TRUE(actual->Equals(std::make_shared<arrow::ChunkedArray>(expected)));
 }
 
 TEST_P(DataEvolutionFileReaderTest, TestSimple) {

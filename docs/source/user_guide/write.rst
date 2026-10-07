@@ -71,6 +71,81 @@ RecordBatch Construction
   - Prefer batch sizes tuned for I/O throughput (e.g., tens to hundreds of MB per flush, depending on filesystem and cluster configuration).
   - Maintain stable sort orders within a batch only if required by downstream merge or compaction logic; otherwise avoid unnecessary ordering costs.
 
+Writing BLOB Columns
+~~~~~~~~~~~~~~~~~~~~
+
+A ``BLOB`` column is a ``LargeBinary`` field carrying Paimon's BLOB field
+metadata, and an ``ARRAY<BLOB>`` column is a top-level ``List`` field whose
+element field carries it. Build the BLOB field with ``paimon::Blob::ArrowField``
+and import it into Arrow; the element field of an ``ARRAY<BLOB>`` column must
+keep that metadata:
+
+.. code-block:: cpp
+
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> c_element,
+                          paimon::Blob::ArrowField("element", /*nullable=*/true));
+   PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Field> element,
+                                     arrow::ImportField(c_element.get()));
+   std::shared_ptr<arrow::Schema> schema = arrow::schema(
+       {arrow::field("id", arrow::int32()), arrow::field("frames", arrow::list(element))});
+
+For a column stored in blob files, which includes every ``ARRAY<BLOB>`` column,
+each value or element holds either the raw bytes or a serialized
+``paimon::BlobDescriptor`` produced by ``paimon::Blob::ToDescriptor``; the writer
+copies the referenced data into the blob file. A BLOB column listed in
+``blob-descriptor-field`` or ``blob-view-field`` keeps the reference in the data
+file instead, so the referenced data must remain available.
+
+If the referenced data cannot be reached, the write fails unless a write-null
+option covers the failure: ``blob-write-null-on-missing-file`` covers a
+referenced file that does not exist, and ``blob-write-null-on-fetch-failure``
+covers any other failure to resolve the descriptor or open the data, including
+a missing file when the former is disabled and an offset past the end of the
+file for a descriptor with a dynamic length (``-1``). A covered value is written
+as NULL; in an ``ARRAY<BLOB>`` only that element becomes NULL, not the array.
+Any other failure fails the write, such as a failure to write the blob file or
+to close a referenced file. As in Paimon Java, this includes a file too short
+for the range of a descriptor with a known length, which is only detected while
+the data is copied.
+See :doc:`data_types` for the table requirements and restrictions.
+
+A data-evolution write can update columns of existing rows. The write does not
+locate the updated rows itself: before the commit, each file in its commit
+messages must be assigned the first row id of the rows it covers. A write that
+carries only columns stored in blob files is always such an update, and
+committing it without that id fails. A BLOB column listed in
+``blob-descriptor-field`` or ``blob-view-field`` is stored in the data file
+instead. Paimon C++ does not assign that id and its public API cannot set it,
+so the commit messages must be updated outside Paimon C++, for example by
+Paimon Java after ``CommitMessage::Serialize``. The serialized payload does not
+carry its serialization version, so send ``CommitMessage::CurrentVersion()``
+with it, and pass ``CommitMessage::Deserialize`` the version the returned
+payload was serialized with.
+
+In such an update, a row whose BLOB or ``ARRAY<BLOB>`` value stays unchanged is
+marked with the reserved bytes ``_PAIMON_BLOB_PLACEHOLDER``: as the value itself
+for a BLOB column, or as the only element of the array for an ``ARRAY<BLOB>``
+column. As in Paimon Java, the marker works whatever other columns the update
+carries. Such a row keeps its value from the older files when read. Every write
+stores a value equal to the reserved bytes as such a marker, so that value is
+not supported.
+
+.. note::
+   The C++ writer differs from Paimon Java in these respects:
+
+   - A placeholder is identified by the reserved bytes; Java uses a dedicated
+     placeholder object, which cannot collide with a user value.
+   - A missing file is detected with ``FileSystem::Exists``. Java detects a
+     missing file for an ``ARRAY<BLOB>`` element only from an HTTP 404, and
+     does not write NULL for a 404 under ``blob-write-null-on-fetch-failure``
+     alone.
+   - A descriptor with a dynamic length is copied up to the file length read
+     when it is opened, so data appended to the file during the copy is left
+     out, and a file truncated during the copy fails the write. Java reads it
+     until the end of the file. Its offset past the end of the file also fails
+     to open, whereas Java writes an empty value for it when the file system
+     can seek past the end of a file, as the local one can.
+
 Prepare Commit
 ----------------
 

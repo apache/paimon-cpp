@@ -25,7 +25,6 @@
 #include <vector>
 
 #include "paimon/common/data/binary_row.h"
-#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/core/append/append_compact_task.h"
@@ -198,11 +197,9 @@ Result<std::pair<std::shared_ptr<TableSchema>, CoreOptions>> LoadSchemaAndOption
     return std::make_pair(table_schema, std::move(core_options));
 }
 
-/// Validate that the table is an append-only unaware-bucket table without DV.
+/// Validate that the table is an append-only unaware-bucket table without DV or data evolution.
 Status ValidateTable(const std::shared_ptr<TableSchema>& table_schema,
-                     const std::shared_ptr<arrow::Schema>& arrow_schema,
                      const CoreOptions& core_options) {
-    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateContainerBlobWriteSchema(arrow_schema));
     if (!table_schema->PrimaryKeys().empty() || core_options.GetBucket() != -1) {
         return Status::Invalid(
             "AppendCompactCoordinator only supports append-only tables "
@@ -211,6 +208,12 @@ Status ValidateTable(const std::shared_ptr<TableSchema>& table_schema,
     if (core_options.DeletionVectorsEnabled()) {
         return Status::NotImplemented(
             "AppendCompactCoordinator not support for dv in UNAWARE_BUCKET mode");
+    }
+    // The rewrite reads and writes plain append files, so it can merge neither the column layers
+    // nor the blob files of a data-evolution table.
+    if (core_options.DataEvolutionEnabled()) {
+        return Status::NotImplemented(
+            "AppendCompactCoordinator not support for data evolution in UNAWARE_BUCKET mode");
     }
     return Status::OK();
 }
@@ -327,7 +330,7 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> AppendCompactCoordinator::Ru
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
 
     // Validate table type
-    PAIMON_RETURN_NOT_OK(ValidateTable(table_schema, arrow_schema, core_options));
+    PAIMON_RETURN_NOT_OK(ValidateTable(table_schema, core_options));
 
     // Build shared objects
     PAIMON_ASSIGN_OR_RAISE(

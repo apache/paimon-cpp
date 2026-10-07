@@ -51,7 +51,7 @@ inline bool IsJavaRegexLineTerminator(const std::string& code_point) {
 
 }  // namespace
 
-Result<bool> Like::TestString(const std::string& field, const std::string& pattern) const {
+Result<bool> Like::MatchString(const std::string& field, const std::string& pattern) {
     if (pattern.empty()) {
         return field.empty();
     }
@@ -165,5 +165,9 @@ Result<bool> Like::TestString(const std::string& field, const std::string& patte
         }
     }
     return static_cast<bool>(dp[n]);
+}
+
+Result<bool> Like::TestString(const std::string& field, const std::string& pattern) const {
+    return MatchString(field, pattern);
 }
 }  // namespace paimon

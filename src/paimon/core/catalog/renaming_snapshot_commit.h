@@ -65,14 +65,21 @@ class RenamingSnapshotCommit : public SnapshotCommit {
         if (is_exist) {
             return false;
         }
-        // To prevent the case where an atomic write times out but actually succeeds,
-        // retrying the commit could lead to the snapshot file being committed multiple times.
-        // Therefore, retries should be handled by the upper layer,
-        // which should call FilterAndCommit to avoid duplicate commits.
-        // Therefore, we should not trigger cleanup here,
-        // as it may delete meta files from a snapshot that was just written by ourselves,
-        // leading to an incomplete or corrupted snapshot.
-        PAIMON_RETURN_NOT_OK(fs_->AtomicStore(snapshot_path, json_str));
+        Status commit_status = fs_->AtomicStore(snapshot_path, json_str);
+        if (!commit_status.ok()) {
+            PAIMON_ASSIGN_OR_RAISE(bool snapshot_exists, fs_->Exists(snapshot_path));
+            if (!snapshot_exists) {
+                return commit_status;
+            }
+
+            std::string committed_json;
+            PAIMON_RETURN_NOT_OK(fs_->ReadFile(snapshot_path, &committed_json));
+            PAIMON_ASSIGN_OR_RAISE(Snapshot committed_snapshot,
+                                   Snapshot::FromJsonString(committed_json));
+            if (!(committed_snapshot == snapshot)) {
+                return false;
+            }
+        }
         PAIMON_RETURN_NOT_OK(snapshot_manager_->CommitLatestHint(snapshot.Id()));
         return true;
     }

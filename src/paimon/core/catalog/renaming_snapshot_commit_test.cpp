@@ -21,6 +21,7 @@
 #include <optional>
 #include <string>
 
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/partition/partition_statistics.h"
@@ -30,6 +31,15 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+class AtomicStoreMockFileSystem : public LocalFileSystem {
+ public:
+    MOCK_METHOD(Status, AtomicStore, (const std::string& path, const std::string& content),
+                (override));
+};
+
+}  // namespace
 
 TEST(RenamingSnapshotCommitTest, TestSimple) {
     auto fs = std::make_shared<LocalFileSystem>();
@@ -104,6 +114,74 @@ TEST(RenamingSnapshotCommitTest, TestBranchHasToMatchSnapshotManager) {
 
     ASSERT_OK_AND_ASSIGN(bool main_success, main_commit->Commit(std::nullopt, snapshot, "", {}));
     ASSERT_TRUE(main_success);
+}
+
+TEST(RenamingSnapshotCommitTest, TestAtomicStoreErrorWithMatchingSnapshotIsSuccess) {
+    auto fs = std::make_shared<AtomicStoreMockFileSystem>();
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto snapshot_manager = std::make_shared<SnapshotManager>(fs, dir->Str());
+    auto commit = std::make_shared<RenamingSnapshotCommit>(fs, snapshot_manager);
+    Snapshot snapshot = BuildTestSnapshot(1);
+    AtomicStoreMockFileSystem* fs_ptr = fs.get();
+
+    EXPECT_CALL(*fs,
+                AtomicStore(testing::A<const std::string&>(), testing::A<const std::string&>()))
+        .WillOnce(testing::Invoke(
+            [fs_ptr](const std::string& path, const std::string& content) -> Status {
+                PAIMON_RETURN_NOT_OK(fs_ptr->FileSystem::AtomicStore(path, content));
+                return Status::IOError("response lost after atomic store");
+            }));
+
+    ASSERT_OK_AND_ASSIGN(bool success, commit->Commit(std::nullopt, snapshot,
+                                                      BranchManager::DEFAULT_MAIN_BRANCH, {}));
+    ASSERT_TRUE(success);
+    std::string latest_hint;
+    ASSERT_OK(fs->ReadFile(PathUtil::JoinPath(dir->Str(), "snapshot/LATEST"), &latest_hint));
+    ASSERT_EQ("1", latest_hint);
+}
+
+TEST(RenamingSnapshotCommitTest, TestAtomicStoreErrorWithConflictingSnapshotReturnsFalse) {
+    auto fs = std::make_shared<AtomicStoreMockFileSystem>();
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto snapshot_manager = std::make_shared<SnapshotManager>(fs, dir->Str());
+    auto commit = std::make_shared<RenamingSnapshotCommit>(fs, snapshot_manager);
+    Snapshot snapshot = BuildTestSnapshot(1);
+    ASSERT_OK_AND_ASSIGN(std::string conflicting_json, BuildTestSnapshot(2).ToJsonString());
+    AtomicStoreMockFileSystem* fs_ptr = fs.get();
+
+    EXPECT_CALL(*fs,
+                AtomicStore(testing::A<const std::string&>(), testing::A<const std::string&>()))
+        .WillOnce(testing::Invoke(
+            [fs_ptr, &conflicting_json](const std::string& path, const std::string&) -> Status {
+                PAIMON_RETURN_NOT_OK(fs_ptr->FileSystem::AtomicStore(path, conflicting_json));
+                return Status::Exist("another writer committed this snapshot id");
+            }));
+
+    ASSERT_OK_AND_ASSIGN(bool success, commit->Commit(std::nullopt, snapshot,
+                                                      BranchManager::DEFAULT_MAIN_BRANCH, {}));
+    ASSERT_FALSE(success);
+    ASSERT_OK_AND_ASSIGN(bool hint_exists,
+                         fs->Exists(PathUtil::JoinPath(dir->Str(), "snapshot/LATEST")));
+    ASSERT_FALSE(hint_exists);
+}
+
+TEST(RenamingSnapshotCommitTest, TestAtomicStoreErrorWithMissingSnapshotReturnsError) {
+    auto fs = std::make_shared<AtomicStoreMockFileSystem>();
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto snapshot_manager = std::make_shared<SnapshotManager>(fs, dir->Str());
+    auto commit = std::make_shared<RenamingSnapshotCommit>(fs, snapshot_manager);
+    Snapshot snapshot = BuildTestSnapshot(1);
+
+    EXPECT_CALL(*fs,
+                AtomicStore(testing::A<const std::string&>(), testing::A<const std::string&>()))
+        .WillOnce(testing::Return(Status::IOError("atomic store failed")));
+
+    ASSERT_NOK_WITH_MSG(
+        commit->Commit(std::nullopt, snapshot, BranchManager::DEFAULT_MAIN_BRANCH, {}),
+        "atomic store failed");
 }
 
 }  // namespace paimon::test

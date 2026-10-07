@@ -93,7 +93,7 @@ TEST_F(BlobWriterBuilderTest, TestWriteNullOptions) {
     ASSERT_OK(data_file_stream->Close());
     // The offset beyond the end of the 9-byte file makes the descriptor a fetch failure.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> bad_offset_blob,
-                         Blob::FromPath(data_file, /*offset=*/100, /*length=*/10));
+                         Blob::FromPath(data_file, /*offset=*/100, /*length=*/-1));
 
     // Both options default to false.
     {
