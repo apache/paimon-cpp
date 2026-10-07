@@ -108,9 +108,6 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     // Returns an error requiring a new context if a newer snapshot removes or moves committed
     // progress backwards for a store created by this context. Progress for inactive stores is
     // only reference state and can be replaced in place.
-    Status AdvanceCommittedProgress(int64_t snapshot_id,
-                                    const RealtimeOffsetMap& committed_offsets);
-
     Status AdvanceCommittedProgress(int64_t snapshot_id, const RealtimeOffsetMap& committed_offsets,
                                     const RealtimeDataFileMap& committed_data_files);
 

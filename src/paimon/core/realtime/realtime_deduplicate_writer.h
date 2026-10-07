@@ -48,15 +48,16 @@ class RealtimeSchemaLayout;
 class RealtimeSegmentHandle;
 struct DataFileMeta;
 
-/// Happy-path writer for an append table whose user-defined key uses last-write-wins semantics.
+/// Writer for an append table whose user-defined deduplicate key uses last-write-wins semantics.
+/// TODO(xinyu.lxy): Currently only the happy path is supported.
 class RealtimeDeduplicateWriter final : public BatchWriter {
  public:
     static Result<std::shared_ptr<RealtimeDeduplicateWriter>> Create(
         const std::map<std::string, std::string>& partition, int32_t bucket,
         const std::shared_ptr<RealtimeContext>& realtime_context,
         const std::shared_ptr<AppendOnlyWriter>& file_writer,
-        const std::shared_ptr<RealtimeSchemaLayout>& schema_layout,
-        const std::vector<std::string>& business_key_fields,
+        const std::shared_ptr<RealtimeSchemaLayout>& schema_layout, int64_t schema_id,
+        const std::vector<std::string>& deduplicate_key_fields,
         const std::vector<std::shared_ptr<DataFileMeta>>& restored_data_files,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer, const CoreOptions& options,
@@ -78,7 +79,7 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
     RealtimeDeduplicateWriter(std::shared_ptr<ArrowDeduplicateRealtimeStore> realtime_store,
                               std::shared_ptr<AppendOnlyWriter> file_writer,
                               std::shared_ptr<RealtimeSchemaLayout> schema_layout,
-                              std::shared_ptr<arrow::Field> business_key_field,
+                              std::shared_ptr<arrow::Field> deduplicate_key_field,
                               std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                               std::shared_ptr<FileSystem> file_system,
                               std::shared_ptr<BucketedDvMaintainer> dv_maintainer,
@@ -94,7 +95,7 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
     std::shared_ptr<ArrowDeduplicateRealtimeStore> realtime_store_;
     std::shared_ptr<AppendOnlyWriter> file_writer_;
     std::shared_ptr<RealtimeSchemaLayout> schema_layout_;
-    std::shared_ptr<arrow::Field> business_key_field_;
+    std::shared_ptr<arrow::Field> deduplicate_key_field_;
     std::shared_ptr<DataFilePathFactory> data_file_path_factory_;
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<BucketedDvMaintainer> dv_maintainer_;

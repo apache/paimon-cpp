@@ -37,7 +37,7 @@ class KeySerializer;
 class MemoryPool;
 struct DataFileMeta;
 
-/// Immutable user-defined key to global realtime-offset lookup.
+/// Immutable user-defined deduplicate key to global realtime-offset lookup.
 class KeyOffsetLookup {
  public:
     virtual ~KeyOffsetLookup() = default;
@@ -94,10 +94,8 @@ class CompositeKeyOffsetLookup final : public KeyOffsetLookup {
 
 /// Buffers one data file's surviving key/offset pairs and writes a temporary `.offset` sidecar.
 /// Segment-level deduplication guarantees at most one offset per key in the resulting data file.
-///
-/// This deliberately does not reuse a production global-index format. The realtime-deduplicate
-/// protocol is still experimental, so its sidecar format must be replaceable without changing the
-/// BTree implementation or its compatibility contract.
+/// TODO(xinyu.lxy): This writer and its `.offset` sidecar format are experimental. The format will
+/// be revised before production use.
 class DataFileKeyOffsetIndexWriter {
  public:
     static Result<std::unique_ptr<DataFileKeyOffsetIndexWriter>> Create(

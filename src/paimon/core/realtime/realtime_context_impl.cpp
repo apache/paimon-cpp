@@ -362,11 +362,6 @@ Status RealtimeContextImpl::ReleaseReadView(const std::string& opaque_ticket) {
     return Status::OK();
 }
 
-Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
-                                                     const RealtimeOffsetMap& committed_offsets) {
-    return AdvanceCommittedProgress(snapshot_id, committed_offsets, RealtimeDataFileMap{});
-}
-
 Status RealtimeContextImpl::AdvanceCommittedProgress(
     int64_t snapshot_id, const RealtimeOffsetMap& committed_offsets,
     const RealtimeDataFileMap& committed_data_files) {

@@ -41,15 +41,16 @@ class MemoryPool;
 
 /// Framework-owned Arrow deduplication semantics over a pluggable append-store delegate.
 ///
-/// The user-defined key is an append-table key, not a Paimon primary key. Every add row keeps its
-/// `_REALTIME_OFFSET` in memory and in the eventual data file. A read view pins one immutable
-/// bitmap, so later writes cannot change the set of rows visible to that query. The delegate owns
-/// physical buffering, readers, and spill; this wrapper always owns key indexes and offset DVs.
+/// The user-defined deduplicate key is an append-table key, not a Paimon primary key. Every add row
+/// keeps its `_REALTIME_OFFSET` in memory and in the eventual data file. A read view pins one
+/// immutable bitmap, so later writes cannot change the set of rows visible to that query. The
+/// delegate owns physical buffering, readers, and spill; this wrapper always owns key indexes and
+/// offset DVs.
 class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
  public:
     static Result<std::shared_ptr<ArrowDeduplicateRealtimeStore>> Create(
         const std::shared_ptr<arrow::Schema>& write_schema,
-        const std::vector<std::string>& business_key_fields,
+        const std::vector<std::string>& deduplicate_key_fields,
         const std::shared_ptr<RealtimeStore>& delegate,
         const std::shared_ptr<MemoryPool>& memory_pool,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);

@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -46,8 +47,8 @@ struct DataFileMeta;
 class RealtimeOffsetFileIndexLookup {
  public:
     static Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> Create(
-        const std::shared_ptr<arrow::Schema>& data_schema,
-        const std::shared_ptr<arrow::Field>& business_key_field,
+        const std::shared_ptr<arrow::Schema>& data_schema, int64_t data_schema_id,
+        const std::shared_ptr<arrow::Field>& deduplicate_key_field,
         const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::shared_ptr<FileSystem>& file_system,
@@ -67,7 +68,8 @@ class RealtimeOffsetFileIndexLookup {
 
  private:
     RealtimeOffsetFileIndexLookup(std::shared_ptr<arrow::Schema> data_schema,
-                                  std::shared_ptr<arrow::Field> business_key_field,
+                                  int64_t data_schema_id,
+                                  std::shared_ptr<arrow::Field> deduplicate_key_field,
                                   std::vector<std::shared_ptr<DataFileMeta>> data_files,
                                   std::shared_ptr<DataFilePathFactory> path_factory,
                                   std::shared_ptr<FileSystem> file_system,
@@ -75,7 +77,8 @@ class RealtimeOffsetFileIndexLookup {
                                   std::map<std::string, std::string> options);
 
     std::shared_ptr<arrow::Schema> data_schema_;
-    std::shared_ptr<arrow::Field> business_key_field_;
+    int64_t data_schema_id_;
+    std::shared_ptr<arrow::Field> deduplicate_key_field_;
     std::vector<std::shared_ptr<DataFileMeta>> data_files_;
     std::shared_ptr<DataFilePathFactory> path_factory_;
     std::shared_ptr<FileSystem> file_system_;

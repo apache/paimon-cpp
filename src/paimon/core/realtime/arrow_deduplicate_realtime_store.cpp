@@ -169,8 +169,10 @@ class ArrowDeduplicateRealtimeStore::OffsetFilteringBatchReader final : public B
           offset_deletions_(std::move(offset_deletions)),
           arrow_pool_(std::move(arrow_pool)) {}
 
+    // TODO(xinyu.lxy): Override NextBatchWithBitmap to compose the inner selection with offset
+    // deletions and avoid materializing an intermediate filtered array.
     Result<ReadBatch> NextBatch() override {
-        while (inner_) {
+        while (true) {
             PAIMON_ASSIGN_OR_RAISE(ReadBatch batch, inner_->NextBatch());
             if (BatchReader::IsEofBatch(batch)) {
                 return batch;
@@ -192,7 +194,6 @@ class ArrowDeduplicateRealtimeStore::OffsetFilteringBatchReader final : public B
                                    ProjectByName(source, output_schema_));
             return ExportBatch(projected, arrow_pool_);
         }
-        return MakeEofBatch();
     }
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
@@ -215,14 +216,14 @@ class ArrowDeduplicateRealtimeStore::OffsetFilteringBatchReader final : public B
 
 Result<std::shared_ptr<ArrowDeduplicateRealtimeStore>> ArrowDeduplicateRealtimeStore::Create(
     const std::shared_ptr<arrow::Schema>& write_schema,
-    const std::vector<std::string>& business_key_fields,
+    const std::vector<std::string>& deduplicate_key_fields,
     const std::shared_ptr<RealtimeStore>& delegate, const std::shared_ptr<MemoryPool>& memory_pool,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (!write_schema || !delegate || !memory_pool || !arrow_pool) {
         return Status::Invalid("real-time deduplicate store is missing a required dependency");
     }
-    PAIMON_ASSIGN_OR_RAISE(int32_t key_position, RealtimeUtils::GetDeduplicateBusinessKeyPosition(
-                                                     write_schema, business_key_fields));
+    PAIMON_ASSIGN_OR_RAISE(int32_t key_position, RealtimeUtils::GetDeduplicateKeyPosition(
+                                                     write_schema, deduplicate_key_fields));
     PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateOffsetField(write_schema));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<MutableKeyOffsetIndex> building_key_index,

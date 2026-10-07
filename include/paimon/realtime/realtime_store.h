@@ -68,7 +68,8 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     /// File system used to access `temp_directory`. The default store retains shared ownership
     /// for its lifetime. Custom stores may ignore this hint.
     std::shared_ptr<FileSystem> file_system = nullptr;
-    /// User-defined key field names when key-based deduplication is configured; empty otherwise.
+    /// User-defined deduplicate key field names when key-based deduplication is configured; empty
+    /// otherwise.
     std::vector<std::string> deduplicate_key_fields = {};
 };
 

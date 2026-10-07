@@ -28,6 +28,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/file_index_options.h"
+#include "paimon/core/schema/arrow_schema_validator.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -37,22 +38,22 @@ class RealtimeUtils {
     RealtimeUtils() = delete;
     ~RealtimeUtils() = delete;
 
-    static Result<int32_t> GetDeduplicateBusinessKeyPosition(
+    static Result<int32_t> GetDeduplicateKeyPosition(
         const std::shared_ptr<arrow::Schema>& schema,
-        const std::vector<std::string>& business_key_fields) {
+        const std::vector<std::string>& deduplicate_key_fields) {
         if (!schema) {
             return Status::Invalid("real-time deduplicate schema must not be null");
         }
-        // TODO(xinyu.lxy): Support multiple user-defined key fields. This requires composite-key
-        // projection and serialization in the configured field order.
-        if (business_key_fields.size() != 1) {
+        // TODO(xinyu.lxy): Support multiple user-defined deduplicate key fields. This requires
+        // composite-key projection and serialization in the configured field order.
+        if (deduplicate_key_fields.size() != 1) {
             return Status::Invalid(
-                "real-time deduplicate currently requires exactly one user-defined key field");
+                "real-time deduplicate currently requires exactly one deduplicate key field");
         }
-        const int32_t key_position = schema->GetFieldIndex(business_key_fields[0]);
+        const int32_t key_position = schema->GetFieldIndex(deduplicate_key_fields[0]);
         if (key_position < 0) {
-            return Status::Invalid("real-time deduplicate user-defined key field does not exist: ",
-                                   business_key_fields[0]);
+            return Status::Invalid("real-time deduplicate key field does not exist: ",
+                                   deduplicate_key_fields[0]);
         }
         return key_position;
     }
@@ -72,19 +73,21 @@ class RealtimeUtils {
 
     static Status ValidateDeduplicateSchema(
         const std::shared_ptr<arrow::Schema>& schema,
-        const std::vector<std::string>& user_defined_key_fields) {
+        const std::vector<std::string>& deduplicate_key_fields) {
         PAIMON_RETURN_NOT_OK(ValidateOffsetField(schema));
         PAIMON_ASSIGN_OR_RAISE(int32_t key_position,
-                               GetDeduplicateBusinessKeyPosition(schema, user_defined_key_fields));
+                               GetDeduplicateKeyPosition(schema, deduplicate_key_fields));
         const std::shared_ptr<arrow::Field>& key_field = schema->field(key_position);
         if (key_field->name() == SpecialFields::RealtimeOffset().Name()) {
-            return Status::Invalid(
-                "real-time offset field cannot be used as the deduplicate user-defined key");
+            return Status::Invalid("real-time offset field cannot be used as the deduplicate key");
         }
         if (key_field->nullable()) {
-            return Status::Invalid(
-                "real-time deduplicate user-defined key field must be non-null: ",
-                key_field->name());
+            return Status::Invalid("real-time deduplicate key field must be non-null: ",
+                                   key_field->name());
+        }
+        if (ArrowSchemaValidator::IsNestedType(key_field->type())) {
+            return Status::Invalid("real-time deduplicate key field must not be nested: ",
+                                   key_field->name());
         }
         return Status::OK();
     }

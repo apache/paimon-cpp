@@ -112,7 +112,7 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetRealtimeReadViewTtlMillis() const;
     /// Returns the statistics mode used by the real-time store.
     StatisticsMode GetRealtimeStoreStatisticsMode() const;
-    /// Returns append-table user-defined key fields used by real-time deduplication.
+    /// Returns append-table user-defined deduplicate key fields used by real-time deduplication.
     const std::vector<std::string>& GetRealtimeDeduplicateKeyFields() const;
     int32_t GetScanManifestEntryCacheMaxSnapshots() const;
     bool ScanManifestEntryLazyDecodeEnabled() const;

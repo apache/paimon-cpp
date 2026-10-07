@@ -81,18 +81,18 @@ class RealtimeOffsetFileIndexLookupTest : public testing::Test {
     }
 
     Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> CreateLookup(
-        const std::vector<std::shared_ptr<DataFileMeta>>& data_files) const {
+        const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+        int64_t data_schema_id = 0) const {
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
                                CoreOptions::FromMap(options_, directory_->GetFileSystem()));
-        return RealtimeOffsetFileIndexLookup::Create(schema_, key_field_, data_files, path_factory_,
-                                                     directory_->GetFileSystem(), GetDefaultPool(),
-                                                     options);
+        return RealtimeOffsetFileIndexLookup::Create(
+            schema_, data_schema_id, key_field_, data_files, path_factory_,
+            directory_->GetFileSystem(), GetDefaultPool(), options);
     }
 
-    Result<std::shared_ptr<DataFileMeta>> CreateIndexedDataFile(const std::string& file_name,
-                                                                const std::string& json,
-                                                                int64_t min_offset,
-                                                                int64_t max_offset) const {
+    Result<std::shared_ptr<DataFileMeta>> CreateIndexedDataFile(
+        const std::string& file_name, const std::string& json, int64_t min_offset,
+        int64_t max_offset, int64_t schema_id = 0, bool name_value_stats = true) const {
         std::shared_ptr<arrow::StructArray> batch = checked_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema_->fields()), json)
                 .ValueOrDie());
@@ -112,15 +112,17 @@ class RealtimeOffsetFileIndexLookupTest : public testing::Test {
         }
         const SimpleStats value_stats = BinaryRowGenerator::GenerateStats(
             {min_offset}, {max_offset}, {0}, GetDefaultPool().get());
+        const std::optional<std::vector<std::string>> value_stats_cols =
+            name_value_stats
+                ? std::optional<std::vector<std::string>>({SpecialFields::RealtimeOffset().Name()})
+                : std::nullopt;
         return std::make_shared<DataFileMeta>(
             file_name, /*file_size=*/0, batch->length(), DataFileMeta::EmptyMinKey(),
             DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), value_stats,
-            /*min_sequence_number=*/0, /*max_sequence_number=*/0, /*schema_id=*/0,
+            /*min_sequence_number=*/0, /*max_sequence_number=*/0, schema_id,
             DataFileMeta::DUMMY_LEVEL, index.extra_files, Timestamp(0, 0),
             /*delete_row_count=*/std::nullopt, index.embedded_index,
-            /*file_source=*/std::nullopt,
-            /*value_stats_cols=*/
-            std::vector<std::string>{SpecialFields::RealtimeOffset().Name()},
+            /*file_source=*/std::nullopt, value_stats_cols,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
             /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
@@ -190,17 +192,36 @@ TEST_F(RealtimeOffsetFileIndexLookupTest, TestCreateAndCloneDataFiles) {
         "invalid data file");
 }
 
+TEST_F(RealtimeOffsetFileIndexLookupTest, TestDifferentSchemaDoesNotUseCurrentStatsPosition) {
+    // These unnamed stats represent another field at position 0 in the old schema. The current
+    // schema has _REALTIME_OFFSET at position 0, so interpreting them with the current layout would
+    // incorrectly prune offset 10 before consulting its bitmap index.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> old_schema_file,
+                         CreateIndexedDataFile("data-0.parquet", R"([[10, 1], [12, 2]])",
+                                               /*min_offset=*/100, /*max_offset=*/200,
+                                               /*schema_id=*/0, /*name_value_stats=*/false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> lookup,
+                         CreateLookup({old_schema_file}, /*data_schema_id=*/1));
+
+    RoaringBitmap64 deleted_offsets;
+    deleted_offsets.Add(10);
+    std::map<std::string, RoaringBitmap32> positions;
+    ASSERT_OK_AND_ASSIGN(positions, lookup->LookupFilePositions(deleted_offsets));
+    ASSERT_EQ(1, positions.size());
+    ASSERT_EQ("{0}", positions.at("data-0.parquet").ToString());
+}
+
 TEST_F(RealtimeOffsetFileIndexLookupTest, TestCreateValidation) {
     ASSERT_OK_AND_ASSIGN(CoreOptions valid_options,
                          CoreOptions::FromMap({{"file-index.bitmap.columns",
                                                 SpecialFields::RealtimeOffset().Name()}}));
     ASSERT_NOK_WITH_MSG(RealtimeOffsetFileIndexLookup::Create(
-                            schema_, key_field_, {nullptr}, path_factory_,
+                            schema_, /*data_schema_id=*/0, key_field_, {nullptr}, path_factory_,
                             directory_->GetFileSystem(), GetDefaultPool(), valid_options),
                         "invalid data file");
-    ASSERT_NOK_WITH_MSG(RealtimeOffsetFileIndexLookup::Create(schema_, key_field_, {}, nullptr,
-                                                              directory_->GetFileSystem(),
-                                                              GetDefaultPool(), valid_options),
+    ASSERT_NOK_WITH_MSG(RealtimeOffsetFileIndexLookup::Create(
+                            schema_, /*data_schema_id=*/0, key_field_, {}, nullptr,
+                            directory_->GetFileSystem(), GetDefaultPool(), valid_options),
                         "missing a dependency");
 }
 

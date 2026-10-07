@@ -31,7 +31,11 @@ struct DataFileMeta;
 
 class RealtimeOffsetFileIndexLookup;
 
-/// Coordinates committed Snapshot `.offset` lookup installation and in-memory reclamation.
+/// Coordinates the two lookup views derived from the same committed snapshot.
+/// `RealtimeOffsetFileIndexLookup` is used by PrepareCommit to map deleted offsets to physical
+/// data-file row positions for deletion-vector generation. Its `KeyOffsetLookup` is installed in
+/// `ArrowDeduplicateRealtimeStore` so writes can find the previously committed offset for a key.
+/// Access is synchronized here so attaching and replacing the committed lookups cannot race.
 class RealtimeDeduplicateState {
  public:
     Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> AttachFileIndexLookup(

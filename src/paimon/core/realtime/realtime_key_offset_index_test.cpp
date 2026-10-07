@@ -102,6 +102,8 @@ TEST(RealtimeKeyOffsetIndexTest, TestMutableIndexValidatesInput) {
                         "input columns are not aligned");
     ASSERT_NOK_WITH_MSG(index->Add(MakeKeys(key_field, R"([[1]])"), MakeOffsets("[-1]")),
                         "offset must not be negative");
+    ASSERT_NOK_WITH_MSG(index->Add(MakeKeys(key_field, R"([[null]])"), MakeOffsets("[10]")),
+                        "deduplicate key must not contain null");
     ASSERT_NOK_WITH_MSG(
         index->LookupOffsets(MakeKeys(arrow::field("id", arrow::utf8()), R"([["1"]])")),
         "exactly the configured key field");
@@ -138,7 +140,7 @@ TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripAndAbort) {
                                              GetDefaultPool(), /*options=*/{}));
     ASSERT_OK(writer->AddBatch(MakeKeys(key_field, R"([[1], [2]])"), MakeOffsets("[7, 9]")));
     ASSERT_NOK_WITH_MSG(writer->AddBatch(MakeKeys(key_field, R"([[2]])"), MakeOffsets("[11]")),
-                        "more than one offset for a user-defined key");
+                        "more than one offset for a deduplicate key");
 
     std::shared_ptr<DataFileMeta> data_file = MakeDataFile("data-0.parquet", /*row_count=*/2);
     ASSERT_OK_AND_ASSIGN(std::string sidecar, writer->Finish(data_file));

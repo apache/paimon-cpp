@@ -329,17 +329,20 @@ TEST(RealtimeContextTest, TestCommittedProgressIsMonotonicAndSelective) {
         GetOrCreateAppendStore(context, partition, 1, MakeWriteSchema(), {}, GetDefaultPool()));
     ASSERT_EQ(2, factory->stores.size());
 
-    ASSERT_NOK_WITH_MSG(context->AdvanceCommittedProgress(-1, {}),
+    ASSERT_NOK_WITH_MSG(context->AdvanceCommittedProgress(-1, {}, /*committed_data_files=*/{}),
                         "snapshot id must not be negative");
     ASSERT_NOK_WITH_MSG(context->AdvanceCommittedProgress(
-                            4, {{RealtimePartitionBucket(partition, /*bucket=*/-1), /*offset=*/3}}),
+                            4, {{RealtimePartitionBucket(partition, /*bucket=*/-1), /*offset=*/3}},
+                            /*committed_data_files=*/{}),
                         "invalid partition-bucket committed offset");
     ASSERT_TRUE(factory->stores[0]->committed_offsets.empty());
     ASSERT_TRUE(factory->stores[1]->committed_offsets.empty());
 
     ASSERT_OK(context->AdvanceCommittedProgress(
-        5, {{RealtimePartitionBucket(partition, /*bucket=*/0), /*offset=*/7},
-            {RealtimePartitionBucket({{"dt", "unknown"}}, /*bucket=*/0), /*offset=*/9}}));
+        5,
+        {{RealtimePartitionBucket(partition, /*bucket=*/0), /*offset=*/7},
+         {RealtimePartitionBucket({{"dt", "unknown"}}, /*bucket=*/0), /*offset=*/9}},
+        /*committed_data_files=*/{}));
     ASSERT_EQ(std::vector<int64_t>({7}), factory->stores[0]->committed_offsets);
     ASSERT_TRUE(factory->stores[1]->committed_offsets.empty());
 
@@ -349,15 +352,18 @@ TEST(RealtimeContextTest, TestCommittedProgressIsMonotonicAndSelective) {
     ASSERT_EQ(9, restored_state.initial_offset);
 
     ASSERT_OK(context->AdvanceCommittedProgress(
-        5, {{RealtimePartitionBucket(partition, /*bucket=*/0), /*offset=*/10}}));
+        5, {{RealtimePartitionBucket(partition, /*bucket=*/0), /*offset=*/10}},
+        /*committed_data_files=*/{}));
     ASSERT_EQ(std::vector<int64_t>({7}), factory->stores[0]->committed_offsets);
-    ASSERT_NOK_WITH_MSG(context->AdvanceCommittedProgress(4, {}),
+    ASSERT_NOK_WITH_MSG(context->AdvanceCommittedProgress(4, {}, /*committed_data_files=*/{}),
                         "committed snapshot cannot move backwards");
 
     ASSERT_OK(context->AdvanceCommittedProgress(
-        6, {{RealtimePartitionBucket(partition, /*bucket=*/0), /*offset=*/7},
-            {RealtimePartitionBucket(partition, /*bucket=*/1), /*offset=*/8},
-            {RealtimePartitionBucket({{"dt", "unknown"}}, /*bucket=*/0), /*offset=*/9}}));
+        6,
+        {{RealtimePartitionBucket(partition, /*bucket=*/0), /*offset=*/7},
+         {RealtimePartitionBucket(partition, /*bucket=*/1), /*offset=*/8},
+         {RealtimePartitionBucket({{"dt", "unknown"}}, /*bucket=*/0), /*offset=*/9}},
+        /*committed_data_files=*/{}));
     ASSERT_EQ(std::vector<int64_t>({7}), factory->stores[0]->committed_offsets);
     ASSERT_EQ(std::vector<int64_t>({8}), factory->stores[1]->committed_offsets);
 }
@@ -404,10 +410,11 @@ TEST(RealtimeContextTest, TestNewDeduplicateSnapshotRefreshesLookupAtSameOffset)
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
     auto path_factory = std::make_shared<DataFilePathFactory>();
     auto file_system = std::make_shared<LocalFileSystem>();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
-                         RealtimeOffsetFileIndexLookup::Create(
-                             schema, schema->GetFieldByName("id"), /*data_files=*/{}, path_factory,
-                             file_system, GetDefaultPool(), core_options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
+        RealtimeOffsetFileIndexLookup::Create(
+            schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
+            /*data_files=*/{}, path_factory, file_system, GetDefaultPool(), core_options));
     ASSERT_OK(
         store_state.deduplicate_state->AttachFileIndexLookup(initial_lookup, store_state.store));
 
@@ -440,13 +447,15 @@ TEST(RealtimeContextTest, TestRemovedInactivePartitionDoesNotRequireReopen) {
     const RealtimePartitionBucket inactive_partition_bucket(inactive_partition, /*bucket=*/0);
 
     ASSERT_OK(context->AdvanceCommittedProgress(
-        5, {{active_partition_bucket, /*offset=*/7}, {inactive_partition_bucket, /*offset=*/9}}));
+        5, {{active_partition_bucket, /*offset=*/7}, {inactive_partition_bucket, /*offset=*/9}},
+        /*committed_data_files=*/{}));
     ASSERT_OK_AND_ASSIGN(RealtimeStoreState active_state,
                          GetOrCreateAppendStore(context, active_partition, 0, MakeWriteSchema(), {},
                                                 GetDefaultPool()));
     ASSERT_EQ(7, active_state.initial_offset);
 
-    ASSERT_OK(context->AdvanceCommittedProgress(6, {{active_partition_bucket, /*offset=*/7}}));
+    ASSERT_OK(context->AdvanceCommittedProgress(6, {{active_partition_bucket, /*offset=*/7}},
+                                                /*committed_data_files=*/{}));
     ASSERT_OK_AND_ASSIGN(RealtimeStoreState inactive_state,
                          GetOrCreateAppendStore(context, inactive_partition, 0, MakeWriteSchema(),
                                                 {}, GetDefaultPool()));
@@ -471,8 +480,9 @@ TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
         {RealtimePartitionBucket(partition, /*bucket=*/0), /*offset=*/7},
         {RealtimePartitionBucket(partition, /*bucket=*/1), /*offset=*/8},
         {RealtimePartitionBucket(partition, /*bucket=*/2), /*offset=*/9}};
-    ASSERT_NOK_WITH_MSG(context->AdvanceCommittedProgress(5, committed_offsets),
-                        "injected committed offset failure");
+    ASSERT_NOK_WITH_MSG(
+        context->AdvanceCommittedProgress(5, committed_offsets, /*committed_data_files=*/{}),
+        "injected committed offset failure");
     ASSERT_EQ(std::vector<int64_t>({7}), factory->stores[0]->committed_offsets);
     ASSERT_TRUE(factory->stores[1]->committed_offsets.empty());
     ASSERT_EQ(std::vector<int64_t>({9}), factory->stores[2]->committed_offsets);
@@ -482,7 +492,7 @@ TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
         GetOrCreateAppendStore(context, partition, 1, MakeWriteSchema(), {}, GetDefaultPool()));
     ASSERT_EQ(8, failed_store_state.initial_offset);
 
-    ASSERT_OK(context->AdvanceCommittedProgress(5, committed_offsets));
+    ASSERT_OK(context->AdvanceCommittedProgress(5, committed_offsets, /*committed_data_files=*/{}));
     ASSERT_EQ(1, factory->stores[0]->advance_count);
     ASSERT_EQ(2, factory->stores[1]->advance_count);
     ASSERT_EQ(1, factory->stores[2]->advance_count);
@@ -502,22 +512,26 @@ TEST(RealtimeContextTest, TestRequiresReopenWhenCommittedProgressMovesBackwards)
     ASSERT_OK(GetOrCreateAppendStore(context, second_partition, 0, MakeWriteSchema(), {},
                                      GetDefaultPool()));
     ASSERT_OK(context->AdvanceCommittedProgress(
-        5, {{first_partition_bucket, /*offset=*/7}, {second_partition_bucket, /*offset=*/9}}));
+        5, {{first_partition_bucket, /*offset=*/7}, {second_partition_bucket, /*offset=*/9}},
+        /*committed_data_files=*/{}));
     ASSERT_EQ(std::vector<int64_t>({7}), factory->stores[0]->committed_offsets);
     ASSERT_EQ(std::vector<int64_t>({9}), factory->stores[1]->committed_offsets);
 
     ASSERT_NOK_WITH_MSG(
         context->AdvanceCommittedProgress(
-            6, {{first_partition_bucket, /*offset=*/6}, {second_partition_bucket, /*offset=*/10}}),
+            6, {{first_partition_bucket, /*offset=*/6}, {second_partition_bucket, /*offset=*/10}},
+            /*committed_data_files=*/{}),
         "recreate RealtimeContext");
     ASSERT_NOK_WITH_MSG(
-        context->AdvanceCommittedProgress(6, {{first_partition_bucket, /*offset=*/10}}),
+        context->AdvanceCommittedProgress(6, {{first_partition_bucket, /*offset=*/10}},
+                                          /*committed_data_files=*/{}),
         "recreate RealtimeContext");
     ASSERT_EQ(std::vector<int64_t>({7}), factory->stores[0]->committed_offsets);
     ASSERT_EQ(std::vector<int64_t>({9}), factory->stores[1]->committed_offsets);
 
     ASSERT_OK(context->AdvanceCommittedProgress(
-        6, {{first_partition_bucket, /*offset=*/10}, {second_partition_bucket, /*offset=*/11}}));
+        6, {{first_partition_bucket, /*offset=*/10}, {second_partition_bucket, /*offset=*/11}},
+        /*committed_data_files=*/{}));
     ASSERT_EQ(std::vector<int64_t>({7, 10}), factory->stores[0]->committed_offsets);
     ASSERT_EQ(std::vector<int64_t>({9, 11}), factory->stores[1]->committed_offsets);
 }

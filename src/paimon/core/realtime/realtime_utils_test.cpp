@@ -49,24 +49,24 @@ TEST(RealtimeUtilsTest, TestValidateOffsetField) {
         "requires non-null int64 _REALTIME_OFFSET");
 }
 
-TEST(RealtimeUtilsTest, TestGetDeduplicateBusinessKeyPosition) {
+TEST(RealtimeUtilsTest, TestGetDeduplicateKeyPosition) {
     const std::shared_ptr<arrow::Schema> schema = arrow::schema({
         DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
         arrow::field("id", arrow::int64()),
         arrow::field("value", arrow::utf8()),
     });
     ASSERT_OK_AND_ASSIGN(int32_t position,
-                         RealtimeUtils::GetDeduplicateBusinessKeyPosition(schema, {"id"}));
+                         RealtimeUtils::GetDeduplicateKeyPosition(schema, {"id"}));
     ASSERT_EQ(1, position);
 
-    ASSERT_NOK_WITH_MSG(RealtimeUtils::GetDeduplicateBusinessKeyPosition(nullptr, {"id"}),
+    ASSERT_NOK_WITH_MSG(RealtimeUtils::GetDeduplicateKeyPosition(nullptr, {"id"}),
                         "schema must not be null");
-    ASSERT_NOK_WITH_MSG(RealtimeUtils::GetDeduplicateBusinessKeyPosition(schema, {}),
-                        "requires exactly one user-defined key field");
-    ASSERT_NOK_WITH_MSG(RealtimeUtils::GetDeduplicateBusinessKeyPosition(schema, {"id", "value"}),
-                        "requires exactly one user-defined key field");
-    ASSERT_NOK_WITH_MSG(RealtimeUtils::GetDeduplicateBusinessKeyPosition(schema, {"missing"}),
-                        "user-defined key field does not exist");
+    ASSERT_NOK_WITH_MSG(RealtimeUtils::GetDeduplicateKeyPosition(schema, {}),
+                        "requires exactly one deduplicate key field");
+    ASSERT_NOK_WITH_MSG(RealtimeUtils::GetDeduplicateKeyPosition(schema, {"id", "value"}),
+                        "requires exactly one deduplicate key field");
+    ASSERT_NOK_WITH_MSG(RealtimeUtils::GetDeduplicateKeyPosition(schema, {"missing"}),
+                        "deduplicate key field does not exist");
 }
 
 TEST(RealtimeUtilsTest, TestValidateDeduplicateSchema) {
@@ -80,10 +80,18 @@ TEST(RealtimeUtilsTest, TestValidateDeduplicateSchema) {
         RealtimeUtils::ValidateDeduplicateSchema(
             arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/true), offset_field}),
             {"id"}),
-        "user-defined key field must be non-null");
+        "deduplicate key field must be non-null");
     ASSERT_NOK_WITH_MSG(RealtimeUtils::ValidateDeduplicateSchema(arrow::schema({offset_field}),
                                                                  {offset_field->name()}),
-                        "offset field cannot be used as the deduplicate user-defined key");
+                        "offset field cannot be used as the deduplicate key");
+    ASSERT_NOK_WITH_MSG(
+        RealtimeUtils::ValidateDeduplicateSchema(
+            arrow::schema(
+                {arrow::field("id", arrow::struct_({arrow::field("nested", arrow::int64())}),
+                              /*nullable=*/false),
+                 offset_field}),
+            {"id"}),
+        "deduplicate key field must not be nested");
 }
 
 TEST(RealtimeUtilsTest, TestValidateDeduplicateFileIndex) {

@@ -60,14 +60,16 @@ TEST(RealtimeDeduplicateStateTest, TestAttachAndInstallSnapshot) {
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
                          CoreOptions::FromMap({{"file-index.bitmap.columns",
                                                 SpecialFields::RealtimeOffset().Name()}}));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
-                         RealtimeOffsetFileIndexLookup::Create(
-                             schema, schema->GetFieldByName("id"), /*data_files=*/{}, path_factory,
-                             directory->GetFileSystem(), pool, options));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> ignored_lookup,
-                         RealtimeOffsetFileIndexLookup::Create(
-                             schema, schema->GetFieldByName("id"), /*data_files=*/{}, path_factory,
-                             directory->GetFileSystem(), pool, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
+        RealtimeOffsetFileIndexLookup::Create(
+            schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
+            /*data_files=*/{}, path_factory, directory->GetFileSystem(), pool, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<RealtimeOffsetFileIndexLookup> ignored_lookup,
+        RealtimeOffsetFileIndexLookup::Create(
+            schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
+            /*data_files=*/{}, path_factory, directory->GetFileSystem(), pool, options));
 
     RealtimeDeduplicateState state;
     ASSERT_NOK_WITH_MSG(state.AcquireCommittedFileLookup(), "lookup is not attached");

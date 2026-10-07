@@ -227,7 +227,7 @@ TEST_F(ArrowDeduplicateRealtimeStoreTest, TestDeleteProducesNoLiveRows) {
 TEST_F(ArrowDeduplicateRealtimeStoreTest, TestValidationAndSpecializedApis) {
     ASSERT_NOK_WITH_MSG(
         ArrowDeduplicateRealtimeStore::Create(schema_, {}, delegate_, pool_, arrow_pool_),
-        "requires exactly one user-defined key field");
+        "requires exactly one deduplicate key field");
     ASSERT_NOK_WITH_MSG(
         ArrowDeduplicateRealtimeStore::Create(arrow::schema({arrow::field("id", arrow::int64())}),
                                               {"id"}, delegate_, pool_, arrow_pool_),

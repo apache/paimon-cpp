@@ -68,8 +68,8 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
     const std::map<std::string, std::string>& partition, int32_t bucket,
     const std::shared_ptr<RealtimeContext>& realtime_context,
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
-    const std::shared_ptr<RealtimeSchemaLayout>& schema_layout,
-    const std::vector<std::string>& business_key_fields,
+    const std::shared_ptr<RealtimeSchemaLayout>& schema_layout, int64_t schema_id,
+    const std::vector<std::string>& deduplicate_key_fields,
     const std::vector<std::shared_ptr<DataFileMeta>>& restored_data_files,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer, const CoreOptions& options,
@@ -79,8 +79,8 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
         return Status::Invalid("deduplicate real-time writer is missing a dependency");
     }
     PAIMON_ASSIGN_OR_RAISE(int32_t key_position,
-                           RealtimeUtils::GetDeduplicateBusinessKeyPosition(
-                               schema_layout->StoreWriteSchema(), business_key_fields));
+                           RealtimeUtils::GetDeduplicateKeyPosition(
+                               schema_layout->StoreWriteSchema(), deduplicate_key_fields));
     PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateOffsetField(schema_layout->StoreWriteSchema()));
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> context,
@@ -91,7 +91,7 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
     RealtimeStoreCreateRequest request{std::move(write_schema), options.ToMap(), memory_pool,
                                        RealtimeStoreMode::DEDUPLICATE,
                                        options.GetRealtimeStoreStatisticsMode()};
-    request.deduplicate_key_fields = business_key_fields;
+    request.deduplicate_key_fields = deduplicate_key_fields;
     if (options.RealtimeSpillEnabled()) {
         request.temp_directory = temp_directory;
         request.file_system = options.GetFileSystem();
@@ -107,9 +107,9 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<RealtimeOffsetFileIndexLookup> created_lookup,
         RealtimeOffsetFileIndexLookup::Create(
-            schema_layout->CommitSchema(), schema_layout->StoreWriteSchema()->field(key_position),
-            restored_data_files, data_file_path_factory, options.GetFileSystem(), memory_pool,
-            options));
+            schema_layout->CommitSchema(), schema_id,
+            schema_layout->StoreWriteSchema()->field(key_position), restored_data_files,
+            data_file_path_factory, options.GetFileSystem(), memory_pool, options));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<RealtimeOffsetFileIndexLookup> committed_lookup,
         store_state.deduplicate_state->AttachFileIndexLookup(created_lookup, store));
@@ -124,7 +124,7 @@ RealtimeDeduplicateWriter::RealtimeDeduplicateWriter(
     std::shared_ptr<ArrowDeduplicateRealtimeStore> realtime_store,
     std::shared_ptr<AppendOnlyWriter> file_writer,
     std::shared_ptr<RealtimeSchemaLayout> schema_layout,
-    std::shared_ptr<arrow::Field> business_key_field,
+    std::shared_ptr<arrow::Field> deduplicate_key_field,
     std::shared_ptr<DataFilePathFactory> data_file_path_factory,
     std::shared_ptr<FileSystem> file_system, std::shared_ptr<BucketedDvMaintainer> dv_maintainer,
     int64_t next_offset, std::shared_ptr<MemoryPool> memory_pool,
@@ -134,7 +134,7 @@ RealtimeDeduplicateWriter::RealtimeDeduplicateWriter(
       realtime_store_(std::move(realtime_store)),
       file_writer_(std::move(file_writer)),
       schema_layout_(std::move(schema_layout)),
-      business_key_field_(std::move(business_key_field)),
+      deduplicate_key_field_(std::move(deduplicate_key_field)),
       data_file_path_factory_(std::move(data_file_path_factory)),
       file_system_(std::move(file_system)),
       dv_maintainer_(std::move(dv_maintainer)),
@@ -163,13 +163,13 @@ Status RealtimeDeduplicateWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
                            RealtimeOffsetUtils::ValidateBatch(
                                batch.get(), schema_layout_->InputSchema(), next_offset_));
     const int32_t key_position =
-        schema_layout_->StoreWriteSchema()->GetFieldIndex(business_key_field_->name());
+        schema_layout_->StoreWriteSchema()->GetFieldIndex(deduplicate_key_field_->name());
     if (key_position < 0) {
-        return Status::Invalid("deduplicate user-defined key field is missing from write data");
+        return Status::Invalid("deduplicate key field is missing from write data");
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::StructArray> keys,
-        arrow::StructArray::Make({validated.data->field(key_position)}, {business_key_field_}));
+        arrow::StructArray::Make({validated.data->field(key_position)}, {deduplicate_key_field_}));
 
     // Pin the complete lookup under the short store lock, then perform sidecar lookup without
     // holding it. The writer mutex keeps application writes ordered while Advance may proceed.
@@ -253,7 +253,7 @@ Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compa
         }
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<DataFileKeyOffsetIndexWriter> offset_index_writer,
-            DataFileKeyOffsetIndexWriter::Create(business_key_field_, data_file_path_factory_,
+            DataFileKeyOffsetIndexWriter::Create(deduplicate_key_field_, data_file_path_factory_,
                                                  file_system_, memory_pool_, options_));
         ScopeGuard offset_index_guard([&offset_index_writer]() {
             if (offset_index_writer) {
@@ -336,8 +336,8 @@ Status RealtimeDeduplicateWriter::FlushSegment(
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::StructArray> keys,
-            arrow::StructArray::Make({data->GetFieldByName(business_key_field_->name())},
-                                     {business_key_field_}));
+            arrow::StructArray::Make({data->GetFieldByName(deduplicate_key_field_->name())},
+                                     {deduplicate_key_field_}));
         PAIMON_RETURN_NOT_OK(offset_index_writer->AddBatch(
             keys, checked_pointer_cast<arrow::Int64Array>(raw_offsets)));
         emitted_rows += data->length();
