@@ -152,7 +152,8 @@ Result<std::unique_ptr<FileBatchReader>> PkSortedDataFileReader::ApplyIndexAndDv
     std::unique_ptr<FileBatchReader>&& file_reader, const std::shared_ptr<DataFileMeta>&,
     const std::shared_ptr<arrow::Schema>&, const std::shared_ptr<arrow::Schema>& read_schema,
     const std::shared_ptr<Predicate>&, DeletionVector::Factory,
-    const std::optional<std::vector<Range>>&, const std::shared_ptr<DataFilePathFactory>&) const {
+    const std::optional<std::vector<Range>>&, const std::shared_ptr<DataFilePathFactory>&,
+    std::vector<float>*) const {
     ::ArrowSchema c_read_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
     PAIMON_RETURN_NOT_OK(file_reader->SetReadSchema(&c_read_schema, /*predicate=*/nullptr,

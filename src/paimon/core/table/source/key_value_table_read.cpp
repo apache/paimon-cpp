@@ -355,6 +355,9 @@ Result<std::unique_ptr<CountReader>> KeyValueTableRead::CreateCountReader(
         return Status::NotImplemented(
             "CreateCountReader with predicate pushdown is not supported yet");
     }
+    if (context_->HasFileIndexSearch()) {
+        return Status::NotImplemented("CreateCountReader with File Index search is not supported");
+    }
 
     if (force_keep_delete_) {
         return Status::NotImplemented("CreateCountReader with force_keep_delete is not supported");

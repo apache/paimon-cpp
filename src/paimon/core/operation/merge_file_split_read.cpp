@@ -405,6 +405,9 @@ Result<std::unique_ptr<MergeFileSplitRead>> MergeFileSplitRead::Create(
 
 Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateReader(
     const std::shared_ptr<Split>& split) {
+    if (context_->HasFileIndexSearch()) {
+        return Status::NotImplemented("File Index search does not support merge file reads yet");
+    }
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
     if (!data_split) {
         return Status::Invalid("cannot cast split to data_split in MergeFileSplitRead");

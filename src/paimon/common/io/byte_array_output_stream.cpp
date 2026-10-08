@@ -22,7 +22,6 @@
 #include <cassert>
 #include <limits>
 #include <utility>
-#include <vector>
 
 #include "paimon/common/memory/memory_segment_utils.h"
 #include "paimon/common/utils/math.h"
@@ -60,21 +59,19 @@ Status ByteArrayOutputStream::Close() {
     return Status::OK();
 }
 
-Result<std::shared_ptr<Bytes>> ByteArrayOutputStream::Finish(MemoryPool* pool) {
+Result<PAIMON_UNIQUE_PTR<Bytes>> ByteArrayOutputStream::Finish(MemoryPool* pool) {
     assert(pool);
-    PAIMON_RETURN_NOT_OK(Close());
-    if (result_) {
-        return result_;
+    if (finished_) {
+        return Status::Invalid("Byte array output stream has already been finished");
     }
+    PAIMON_RETURN_NOT_OK(Close());
     // TODO(jinli.zjw): Support int64_t lengths in MemorySegmentUtils::CopyToBytes and remove this
     // limit.
     const int64_t size = output_->CurrentSize();
     PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(size, "byte array output stream size"));
-    const std::vector<MemorySegment>& segments = output_->Segments();
-    result_ = std::make_shared<Bytes>(static_cast<size_t>(size), pool);
-    MemorySegmentUtils::CopyToBytes(segments, /*offset=*/0, result_.get(),
-                                    /*bytes_offset=*/0, static_cast<int32_t>(size));
-    return result_;
+    finished_ = true;
+    return MemorySegmentUtils::CopyToBytes(output_->Segments(), /*offset=*/0,
+                                           static_cast<int32_t>(size), pool);
 }
 
 }  // namespace paimon

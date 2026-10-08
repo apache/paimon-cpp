@@ -55,4 +55,35 @@ TEST(FileIndexOptionsTest, TestNestedMapColumnSyntax) {
                         "nested map columns is not supported");
 }
 
+TEST(FileIndexOptionsTest, TestPreserveDottedBackendOptionName) {
+    ASSERT_OK_AND_ASSIGN(
+        FileIndexOptions options,
+        FileIndexOptions::FromMap({{"file-index.lumina.columns", "f1"},
+                                   {"file-index.lumina.f1.index.dimension", "128"},
+                                   {"file-index.lumina.f1.distance.metric", "cosine"}}));
+    ASSERT_EQ(1, options.Definitions().size());
+    EXPECT_EQ("128", options.Definitions()[0].options.at("index.dimension"));
+    EXPECT_EQ("cosine", options.Definitions()[0].options.at("distance.metric"));
+    EXPECT_EQ(options.Definitions()[0].options, options.GetIndexerOptions("f1", "lumina"));
+    EXPECT_TRUE(options.GetIndexerOptions("missing", "lumina").empty());
+}
+
+TEST(FileIndexOptionsTest, TestFromMapOnlyParsesFileIndexOptions) {
+    ASSERT_OK_AND_ASSIGN(
+        FileIndexOptions options,
+        FileIndexOptions::FromMap({{Options::FILE_FORMAT, "missing-format"},
+                                   {"manifest.format", "missing-format"},
+                                   {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1KB"},
+                                   {"file-index.bitmap.columns", "f0"}}));
+    ASSERT_EQ(1, options.Definitions().size());
+    EXPECT_EQ("f0", options.Definitions()[0].column_name);
+    EXPECT_EQ("bitmap", options.Definitions()[0].index_type);
+    EXPECT_EQ(1024, options.InManifestThreshold());
+
+    ASSERT_OK_AND_ASSIGN(FileIndexOptions default_options, FileIndexOptions::FromMap({}));
+    EXPECT_EQ(500, default_options.InManifestThreshold());
+    ASSERT_NOK(
+        FileIndexOptions::FromMap({{Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "invalid-size"}}));
+}
+
 }  // namespace paimon::test

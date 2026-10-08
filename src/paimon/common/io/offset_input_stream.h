@@ -30,7 +30,9 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
-/// A `InputStream` wrapping another `InputStream` with offset and length.
+/// An `InputStream` wrapping another `InputStream` with offset and length.
+/// @note Not safe for concurrent or interleaved use with other views of the wrapped stream: Seek
+/// and sequential Read share the wrapped stream's position and may read from the wrong offset.
 class PAIMON_EXPORT OffsetInputStream : public InputStream {
  public:
     static Result<std::unique_ptr<OffsetInputStream>> Create(

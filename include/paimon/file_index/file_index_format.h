@@ -102,10 +102,12 @@ class PAIMON_EXPORT FileIndexFormat {
     /// stream.
     /// @param input_stream Input stream containing serialized index data.
     /// @param pool Memory pool for temporary allocations during reading.
+    /// @param options Table options used to configure File Index backends.
     /// @return A unique pointer to a `Reader` on success, or an error if the stream is invalid
     ///         (e.g., wrong magic, unsupported version, or corrupted data).
     static Result<std::unique_ptr<Reader>> CreateReader(
-        const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool,
+        const std::map<std::string, std::string>& options);
 
     /// Creates a `Writer` which serializes a complete V1 file index container.
     ///

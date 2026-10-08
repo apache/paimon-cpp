@@ -244,6 +244,9 @@ Result<std::unique_ptr<CountReader>> AppendOnlyTableRead::CreateCountReader(
         return Status::NotImplemented(
             "CreateCountReader with predicate pushdown is not supported yet");
     }
+    if (context_->HasFileIndexSearch()) {
+        return Status::NotImplemented("CreateCountReader with File Index search is not supported");
+    }
 
     return std::make_unique<AppendCountReader>(splits, context_->GetCoreOptions().GetFileSystem(),
                                                context_->GetMemoryPool());

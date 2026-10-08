@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/common/global_index/complete_index_score_batch_reader.h"
+#include "paimon/common/reader/complete_index_score_batch_reader.h"
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
@@ -26,6 +26,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/common/reader/complete_index_score_file_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -254,6 +255,80 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestGlobalScoresRequireReturnedRowId) 
     check_error({score}, "[[null]]", "requires an int64 _ROW_ID field");
     check_error({score, arrow::field("_ROW_ID", arrow::int32())}, "[[null, 100]]",
                 "requires an int64 _ROW_ID field");
+}
+
+TEST_F(CompleteIndexScoreBatchReaderTest, TestFileReaderForwardsOperationsAndResetsScores) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
+                                 arrow::field("_INDEX_SCORE", arrow::float32())};
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        ["Alice", null],
+        ["Bob", null]
+    ])")
+                    .ValueOrDie();
+    auto inner_reader = std::make_unique<MockFileBatchReader>(data, data->type(), /*batch_size=*/1);
+    MockFileBatchReader* inner = inner_reader.get();
+    auto reader = std::make_unique<CompleteIndexScoreFileBatchReader>(
+        std::move(inner_reader), std::vector<float>{1.25f, 2.5f}, GetArrowPool(GetDefaultPool()));
+
+    ASSERT_OK_AND_ASSIGN(uint64_t row_count, reader->GetNumberOfRows());
+    EXPECT_EQ(2, row_count);
+    EXPECT_FALSE(reader->SupportPreciseBitmapSelection());
+    reader->Warmup();
+    EXPECT_EQ(1, inner->GetWarmupCount());
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap first, reader->NextBatchWithBitmap());
+    ASSERT_OK_AND_ASSIGN(uint64_t file_row_id, reader->GetPreviousBatchFileRowId(0));
+    EXPECT_EQ(0, file_row_id);
+    auto first_array =
+        arrow::ImportArray(first.first.first.get(), first.first.second.get()).ValueOrDie();
+    auto first_struct = std::dynamic_pointer_cast<arrow::StructArray>(first_array);
+    ASSERT_TRUE(first_struct);
+    auto first_scores =
+        std::dynamic_pointer_cast<arrow::FloatArray>(first_struct->GetFieldByName("_INDEX_SCORE"));
+    ASSERT_TRUE(first_scores);
+    EXPECT_FLOAT_EQ(1.25f, first_scores->Value(0));
+
+    ::ArrowSchema read_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(fields), &read_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&read_schema, /*predicate=*/nullptr,
+                                    /*selection_bitmap=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap restarted, reader->NextBatchWithBitmap());
+    auto restarted_array =
+        arrow::ImportArray(restarted.first.first.get(), restarted.first.second.get()).ValueOrDie();
+    auto restarted_struct = std::dynamic_pointer_cast<arrow::StructArray>(restarted_array);
+    ASSERT_TRUE(restarted_struct);
+    auto restarted_scores = std::dynamic_pointer_cast<arrow::FloatArray>(
+        restarted_struct->GetFieldByName("_INDEX_SCORE"));
+    ASSERT_TRUE(restarted_scores);
+    EXPECT_FLOAT_EQ(1.25f, restarted_scores->Value(0));
+}
+
+TEST_F(CompleteIndexScoreBatchReaderTest, TestFileScoresFollowSelectedRows) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 arrow::field("_INDEX_SCORE", arrow::float32())};
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                          R"([[10, null], [11, null], [12, null]])")
+                    .ValueOrDie();
+    auto selected = RoaringBitmap32::From({0, 2});
+    auto inner = std::make_unique<MockFileBatchReader>(data, data->type(), selected,
+                                                       /*read_batch_size=*/3);
+    inner->EnableRandomizeBatchSize(false);
+    CompleteIndexScoreFileBatchReader reader(std::move(inner), std::vector<float>{1.25f, 2.5f},
+                                             GetArrowPool(pool_));
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, reader.NextBatchWithBitmap());
+    EXPECT_EQ(selected, batch.second);
+    auto array = arrow::ImportArray(batch.first.first.get(), batch.first.second.get()).ValueOrDie();
+    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
+    ASSERT_TRUE(struct_array);
+    auto scores =
+        std::dynamic_pointer_cast<arrow::FloatArray>(struct_array->GetFieldByName("_INDEX_SCORE"));
+    ASSERT_TRUE(scores);
+    EXPECT_FLOAT_EQ(1.25f, scores->Value(0));
+    EXPECT_TRUE(scores->IsNull(1));
+    EXPECT_FLOAT_EQ(2.5f, scores->Value(2));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap eof, reader.NextBatchWithBitmap());
+    EXPECT_TRUE(BatchReader::IsEofBatch(eof));
 }
 
 }  // namespace paimon::test

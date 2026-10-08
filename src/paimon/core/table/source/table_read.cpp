@@ -182,6 +182,9 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     }
     // A table the caller already loaded says what it is, so nothing is read to find out.
     if (context->GetFormatTable() != nullptr) {
+        if (context->HasFileIndexSearch()) {
+            return Status::NotImplemented("File Index search is not supported for format tables");
+        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
                                FormatTable::Copy(context->GetFormatTable(), context->GetOptions()));
         return NewFormatTableRead(format_table, context);
@@ -193,6 +196,9 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
+        if (context->HasFileIndexSearch()) {
+            return Status::NotImplemented("File Index search is not supported for system tables");
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(), context->GetPath(),
@@ -211,6 +217,9 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
                                    context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
+        if (context->HasFileIndexSearch()) {
+            return Status::NotImplemented("File Index search is not supported for format tables");
+        }
         return NewFormatTableRead(format_table, context);
     }
 
