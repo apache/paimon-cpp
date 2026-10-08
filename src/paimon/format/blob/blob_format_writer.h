@@ -139,7 +139,7 @@ class BlobFormatWriter : public FormatWriter {
     struct BlobCopySource {
         std::unique_ptr<InputStream> stream;
         bool reused = false;
-        std::shared_ptr<InputStream> owned_stream;
+        std::shared_ptr<InputStream> owned_stream = nullptr;
     };
 
     /// Open an input stream on a blob value, which is either a serialized BlobDescriptor or the
