@@ -613,6 +613,15 @@ bool FileStoreScan::FilterManifestByRowRanges(const ManifestFileMeta& manifest) 
 
 Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
                                            std::vector<ManifestEntry>* entries) const {
+    if (row_range_index_ && core_options_.DataEvolutionEnabled() &&
+        core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+        return manifest_file_->ReadRowRangeEntries(
+            manifest.FileName(), row_range_index_.value(),
+            [this](const ManifestEntry& entry) -> Result<bool> {
+                return FilterManifestEntry(entry);
+            },
+            manifest.FileSize(), entries);
+    }
     std::vector<ManifestEntry> unfiltered_entries;
     PAIMON_RETURN_NOT_OK(manifest_file_->Read(
         manifest.FileName(),

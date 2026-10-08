@@ -834,6 +834,7 @@ if(PAIMON_BUILD_TESTS)
                     core/manifest/manifest_entry_serializer_test.cpp
                     core/manifest/manifest_file_meta_serializer_test.cpp
                     core/manifest/manifest_file_test.cpp
+                    core/manifest/manifest_row_range_test.cpp
                     core/manifest/manifest_list_test.cpp
                     core/manifest/partition_entry_test.cpp
                     core/manifest/file_entry_test.cpp

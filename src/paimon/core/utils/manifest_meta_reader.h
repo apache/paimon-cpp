@@ -60,12 +60,13 @@ class PAIMON_EXPORT ManifestMetaReader : public BatchReader {
         reader_->Close();
     }
 
- private:
-    // fill non exist field and correct int precision
+    /// Align fields by name, fill missing fields and correct integer precision.
+    /// Other physical types, including timestamp units, are preserved.
     static Result<std::shared_ptr<arrow::Array>> AlignArrayWithSchema(
         const std::shared_ptr<arrow::Array>& src_array,
         const std::shared_ptr<arrow::DataType>& target_type, arrow::MemoryPool* pool);
 
+ private:
     std::unique_ptr<BatchReader> reader_;
     std::shared_ptr<arrow::DataType> target_type_;
     std::shared_ptr<arrow::MemoryPool> pool_;
