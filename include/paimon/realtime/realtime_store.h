@@ -46,6 +46,7 @@ class Predicate;
 enum class PAIMON_EXPORT RealtimeStoreMode {
     APPEND_ONLY,
     PRIMARY_KEY,
+    /// Experimental mode whose persisted data and index formats may change in future releases.
     DEDUPLICATE,
 };
 
