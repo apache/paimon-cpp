@@ -46,8 +46,8 @@ BlobUtils::SeparatedSchemas BlobUtils::SeparateBlobSchema(
     std::vector<std::shared_ptr<arrow::Field>> blob_fields;
     for (int32_t i = 0; i < schema->num_fields(); i++) {
         auto field = schema->field(i);
-        if (IsBlobField(field) && inline_fields.count(field->name()) == 0) {
-            // Non-inline BLOB -> goes to blob file
+        if (IsAnyBlobField(field) && inline_fields.count(field->name()) == 0) {
+            // Non-inline BLOB, ARRAY<BLOB> or MAP<..., BLOB> -> goes to blob file
             blob_fields.emplace_back(field);
         } else {
             // Non-blob fields OR inline BLOB fields -> stay in main
@@ -74,7 +74,7 @@ Result<BlobUtils::SeparatedStructArrays> BlobUtils::SeparateBlobArray(
     arrow::FieldVector blob_fields;
 
     for (size_t i = 0; i < old_fields.size(); i++) {
-        if (IsBlobField(old_fields[i]) && inline_fields.count(old_fields[i]->name()) == 0) {
+        if (IsAnyBlobField(old_fields[i]) && inline_fields.count(old_fields[i]->name()) == 0) {
             blob_fields.push_back(old_fields[i]);
             blob_arrays.push_back(old_arrays[i]);
         } else {
@@ -171,10 +171,6 @@ Status BlobUtils::ValidateContainerBlobWriteSchema(const std::shared_ptr<arrow::
         if (IsMapBlobField(field)) {
             return Status::NotImplemented(
                 "Writing a table with MAP<..., BLOB> is not supported by the C++ writer.");
-        }
-        if (IsArrayBlobField(field)) {
-            return Status::NotImplemented(
-                "Writing a table with ARRAY<BLOB> is not supported by the C++ writer.");
         }
     }
     return Status::OK();

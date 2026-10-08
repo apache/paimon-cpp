@@ -379,11 +379,11 @@ TEST_P(BlobFileBatchReaderTest, MapBlobFallbackAcrossSequenceLayers) {
     auto scalar_struct_type = arrow::struct_({scalar_blob_field});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> new_output,
                          file_system->Create(new_file_path, /*overwrite=*/true));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFormatWriter> writer,
-                         BlobFormatWriter::Create(new_output, scalar_struct_type,
-                                                  /*write_null_on_missing_file=*/false,
-                                                  /*write_null_on_fetch_failure=*/false,
-                                                  /*write_placeholder=*/true, file_system, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<BlobFormatWriter> writer,
+        BlobFormatWriter::Create(new_output, scalar_struct_type,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false, file_system, pool_));
     arrow::LargeBinaryBuilder scalar_builder;
     const std::string sentinel(BlobDefs::PlaceholderSentinelView());
     for (int32_t i = 0; i < 4; i++) {
@@ -783,8 +783,7 @@ TEST_P(BlobFileBatchReaderTest, EmptyFile) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<BlobFormatWriter> writer,
         BlobFormatWriter::Create(output_stream, struct_type, /*write_null_on_missing_file=*/false,
-                                 /*write_null_on_fetch_failure=*/false,
-                                 /*write_placeholder=*/false, file_system, pool_));
+                                 /*write_null_on_fetch_failure=*/false, file_system, pool_));
 
     ASSERT_OK(writer->Flush());
     ASSERT_OK(writer->Finish());

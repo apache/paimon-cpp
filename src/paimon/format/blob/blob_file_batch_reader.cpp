@@ -22,8 +22,9 @@
 #include <array>
 #include <cstring>
 #include <numeric>
-#include <set>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 
 #include "arrow/api.h"
 #include "arrow/array/builder_dict.h"
@@ -48,8 +49,6 @@
 namespace paimon::blob {
 namespace {
 
-constexpr int32_t kArrayBlobMagicNumber = 1094861634;
-constexpr int8_t kArrayBlobVersion = 1;
 constexpr int32_t kArrayBlobHeaderLength = 9;
 constexpr int32_t kArrayBlobIndexLengthSize = 4;
 constexpr int32_t kArrayBlobMinPayloadLength = kArrayBlobHeaderLength + kArrayBlobIndexLengthSize;
@@ -89,6 +88,141 @@ Result<int32_t> GetMapBlobFixedKeyLength(const std::shared_ptr<arrow::DataType>&
                 fmt::format("unsupported MAP<..., BLOB> key type: {}", key_type->ToString()));
     }
 }
+
+Status AddBuilderCapacity(int64_t increment, int64_t* capacity, const char* capacity_name) {
+    if (increment < 0 || increment > std::numeric_limits<int64_t>::max() - *capacity) {
+        return Status::CapacityError(fmt::format("{} exceeds int64 capacity", capacity_name));
+    }
+    *capacity += increment;
+    return Status::OK();
+}
+
+Status AddBuilderCapacityProduct(int64_t count, int64_t element_size, int64_t* capacity,
+                                 const char* capacity_name) {
+    if (count < 0 || element_size < 0 ||
+        (count > 0 && element_size > (std::numeric_limits<int64_t>::max() - *capacity) / count)) {
+        return Status::CapacityError(fmt::format("{} exceeds int64 capacity", capacity_name));
+    }
+    *capacity += count * element_size;
+    return Status::OK();
+}
+
+Result<int64_t> GetSerializedDescriptorSize(const std::string& file_path,
+                                            const std::shared_ptr<MemoryPool>& pool) {
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
+                           Blob::FromPath(file_path, /*offset=*/0, /*length=*/0));
+    PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool);
+    if (!InRange<int64_t>(descriptor->size())) {
+        return Status::CapacityError("serialized BLOB descriptor exceeds int64 capacity");
+    }
+    return static_cast<int64_t>(descriptor->size());
+}
+
+template <typename T>
+Result<std::shared_ptr<arrow::Buffer>> AllocateTypedBuffer(
+    int64_t element_count, const std::shared_ptr<arrow::MemoryPool>& pool) {
+    if (element_count < 0 ||
+        element_count > std::numeric_limits<int64_t>::max() / static_cast<int64_t>(sizeof(T))) {
+        return Status::CapacityError("Arrow buffer exceeds int64 capacity");
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::Buffer> buffer,
+        arrow::AllocateBuffer(element_count * static_cast<int64_t>(sizeof(T)), pool.get()));
+    return buffer;
+}
+
+Result<std::shared_ptr<arrow::Buffer>> AllocateValidityBitmap(
+    int64_t value_count, int64_t null_count, const std::shared_ptr<arrow::MemoryPool>& pool) {
+    if (null_count == 0) {
+        return std::shared_ptr<arrow::Buffer>();
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Buffer> null_bitmap,
+                                      arrow::AllocateBitmap(value_count, pool.get()));
+    memset(null_bitmap->mutable_data(), 0xFF, null_bitmap->size());
+    return null_bitmap;
+}
+
+class PreallocatedLargeBinaryBuilder {
+ public:
+    static Result<std::unique_ptr<PreallocatedLargeBinaryBuilder>> Create(
+        int64_t value_count, int64_t data_length, int64_t null_count,
+        const std::shared_ptr<arrow::MemoryPool>& pool) {
+        if (value_count < 0 || value_count == std::numeric_limits<int64_t>::max() ||
+            data_length < 0 || null_count < 0 || null_count > value_count) {
+            return Status::Invalid("invalid preallocated large binary array capacity");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> offsets,
+                               AllocateTypedBuffer<int64_t>(value_count + 1, pool));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Buffer> data,
+                                          arrow::AllocateBuffer(data_length, pool.get()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> null_bitmap,
+                               AllocateValidityBitmap(value_count, null_count, pool));
+        auto builder =
+            std::unique_ptr<PreallocatedLargeBinaryBuilder>(new PreallocatedLargeBinaryBuilder(
+                value_count, data_length, null_count, std::move(offsets), std::move(data),
+                std::move(null_bitmap)));
+        return builder;
+    }
+
+    Result<uint8_t*> Append(int64_t length) {
+        if (length < 0 || value_index_ >= value_count_ || length > data_length_ - data_offset_) {
+            return Status::Invalid("large binary value exceeds preallocated capacity");
+        }
+        uint8_t* target = length == 0 ? nullptr : data_->mutable_data() + data_offset_;
+        data_offset_ += length;
+        offsets_[++value_index_] = data_offset_;
+        return target;
+    }
+
+    Status AppendNull() {
+        if (value_index_ >= value_count_ || null_bitmap_ == nullptr) {
+            return Status::Invalid("large binary null exceeds preallocated capacity");
+        }
+        arrow::bit_util::ClearBit(null_bitmap_->mutable_data(), value_index_);
+        offsets_[++value_index_] = data_offset_;
+        ++appended_null_count_;
+        return Status::OK();
+    }
+
+    int64_t length() const {
+        return value_index_;
+    }
+
+    Result<std::shared_ptr<arrow::LargeBinaryArray>> Finish() {
+        if (value_index_ != value_count_ || data_offset_ != data_length_ ||
+            appended_null_count_ != null_count_) {
+            return Status::Invalid("large binary output does not match preallocated capacity");
+        }
+        return std::make_shared<arrow::LargeBinaryArray>(value_count_, offsets_buffer_, data_,
+                                                         null_bitmap_, null_count_);
+    }
+
+ private:
+    PreallocatedLargeBinaryBuilder(int64_t value_count, int64_t data_length, int64_t null_count,
+                                   std::shared_ptr<arrow::Buffer> offsets,
+                                   std::shared_ptr<arrow::Buffer> data,
+                                   std::shared_ptr<arrow::Buffer> null_bitmap)
+        : value_count_(value_count),
+          data_length_(data_length),
+          null_count_(null_count),
+          offsets_buffer_(std::move(offsets)),
+          data_(std::move(data)),
+          null_bitmap_(std::move(null_bitmap)),
+          offsets_(reinterpret_cast<int64_t*>(offsets_buffer_->mutable_data())) {
+        offsets_[0] = 0;
+    }
+
+    const int64_t value_count_;
+    const int64_t data_length_;
+    const int64_t null_count_;
+    std::shared_ptr<arrow::Buffer> offsets_buffer_;
+    std::shared_ptr<arrow::Buffer> data_;
+    std::shared_ptr<arrow::Buffer> null_bitmap_;
+    int64_t* offsets_;
+    int64_t value_index_ = 0;
+    int64_t data_offset_ = 0;
+    int64_t appended_null_count_ = 0;
+};
 
 Status AppendMapBlobKey(const std::shared_ptr<arrow::DataType>& key_type, const uint8_t* data,
                         int32_t length, arrow::ArrayBuilder* builder) {
@@ -251,6 +385,14 @@ BlobFileBatchReader::BlobFileBatchReader(
     std::iota(target_blob_row_indexes_.begin(), target_blob_row_indexes_.end(), 0);
 }
 
+Result<int64_t> BlobFileBatchReader::GetOrCreateSerializedDescriptorSize() const {
+    if (serialized_descriptor_size_ < 0) {
+        PAIMON_ASSIGN_OR_RAISE(serialized_descriptor_size_,
+                               GetSerializedDescriptorSize(file_path_, pool_));
+    }
+    return serialized_descriptor_size_;
+}
+
 Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
                                           const std::shared_ptr<Predicate>& predicate,
                                           const std::optional<RoaringBitmap32>& selection_bitmap) {
@@ -405,12 +547,12 @@ Result<BlobFileBatchReader::ArrayBlobPayload> BlobFileBatchReader::ReadArrayBlob
     std::array<uint8_t, kArrayBlobHeaderLength> header;
     PAIMON_RETURN_NOT_OK(ReadBlobContentAt(payload_offset, header.size(), header.data()));
     const auto magic_number = ReadLittleEndian<int32_t>(header.data());
-    if (magic_number != kArrayBlobMagicNumber) {
+    if (magic_number != BlobDefs::kArrayBlobMagicNumber) {
         return Status::Invalid(
             fmt::format("invalid ARRAY<BLOB> payload magic number: {}", magic_number));
     }
     const auto version = static_cast<int8_t>(header[4]);
-    if (version != kArrayBlobVersion) {
+    if (version != BlobDefs::kArrayBlobVersion) {
         return Status::NotImplemented(
             fmt::format("unsupported ARRAY<BLOB> payload version: {}", version));
     }
@@ -469,31 +611,19 @@ Result<BlobFileBatchReader::ArrayBlobPayload> BlobFileBatchReader::ReadArrayBlob
     return ArrayBlobPayload{std::move(element_lengths), data_offset};
 }
 
-Status BlobFileBatchReader::AppendArrayBlobValues(const ArrayBlobPayload& payload,
-                                                  arrow::LargeBinaryBuilder* blob_builder) const {
+Status BlobFileBatchReader::AppendArrayBlobDescriptors(
+    const ArrayBlobPayload& payload, arrow::LargeBinaryBuilder* blob_builder) const {
     int64_t element_offset = payload.data_offset;
     for (int64_t element_length : payload.element_lengths) {
         if (element_length == BlobDefs::kNullBinLength) {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->AppendNull());
             continue;
         }
-        if (blob_as_descriptor_) {
-            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
-                                   Blob::FromPath(file_path_, element_offset, element_length));
-            PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                blob_builder->Append(descriptor->data(), descriptor->size()));
-        } else {
-            PAIMON_UNIQUE_PTR<Bytes> element_bytes =
-                Bytes::AllocateBytes(static_cast<size_t>(element_length), pool_.get());
-            if (element_length > 0) {
-                PAIMON_RETURN_NOT_OK(
-                    ReadBlobContentAt(element_offset, element_length,
-                                      reinterpret_cast<uint8_t*>(element_bytes->data())));
-            }
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                blob_builder->Append(element_bytes->data(), element_length));
-        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
+                               Blob::FromPath(file_path_, element_offset, element_length));
+        PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(
+            blob_builder->Append(descriptor->data(), descriptor->size()));
         element_offset += element_length;
     }
     return Status::OK();
@@ -509,12 +639,118 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildArrayBlobArray(
         return Status::Invalid("ARRAY<BLOB> element type must be large binary");
     }
 
+    std::vector<ArrayBlobPayload> payloads;
+    payloads.reserve(rows_to_read);
+    int64_t value_count = 0;
+    int64_t value_data_length = 0;
+    int64_t descriptor_count = 0;
+    int64_t list_null_count = 0;
+    int64_t value_null_count = 0;
+    for (int32_t k = 0; k < rows_to_read; ++k) {
+        const size_t row_index = current_pos_ + k;
+        if (IsTargetPlaceholder(row_index)) {
+            PAIMON_RETURN_NOT_OK(AddBuilderCapacity(1, &value_count, "ARRAY<BLOB> element count"));
+            PAIMON_RETURN_NOT_OK(AddBuilderCapacity(BlobDefs::kPlaceholderSentinelLength,
+                                                    &value_data_length,
+                                                    "ARRAY<BLOB> element data size"));
+            continue;
+        }
+        if (IsTargetNull(row_index)) {
+            ++list_null_count;
+            continue;
+        }
+
+        PAIMON_ASSIGN_OR_RAISE(ArrayBlobPayload payload, ReadArrayBlobPayload(row_index));
+        PAIMON_RETURN_NOT_OK(
+            AddBuilderCapacity(static_cast<int64_t>(payload.element_lengths.size()), &value_count,
+                               "ARRAY<BLOB> element count"));
+        for (int64_t element_length : payload.element_lengths) {
+            if (element_length == BlobDefs::kNullBinLength) {
+                ++value_null_count;
+                continue;
+            }
+            if (blob_as_descriptor_) {
+                PAIMON_RETURN_NOT_OK(
+                    AddBuilderCapacity(1, &descriptor_count, "ARRAY<BLOB> descriptor count"));
+            } else {
+                PAIMON_RETURN_NOT_OK(AddBuilderCapacity(element_length, &value_data_length,
+                                                        "ARRAY<BLOB> element data size"));
+            }
+        }
+        payloads.emplace_back(std::move(payload));
+    }
+    if (descriptor_count > 0) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size, GetOrCreateSerializedDescriptorSize());
+        PAIMON_RETURN_NOT_OK(AddBuilderCapacityProduct(descriptor_count, descriptor_size,
+                                                       &value_data_length,
+                                                       "ARRAY<BLOB> descriptor data size"));
+    }
+
+    if (value_count > std::numeric_limits<int32_t>::max()) {
+        return Status::CapacityError("ARRAY<BLOB> element count exceeds list offset capacity");
+    }
+    if (!blob_as_descriptor_) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> list_offsets,
+                               AllocateTypedBuffer<int32_t>(rows_to_read + 1, arrow_pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> list_null_bitmap,
+                               AllocateValidityBitmap(rows_to_read, list_null_count, arrow_pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<PreallocatedLargeBinaryBuilder> value_builder,
+                               PreallocatedLargeBinaryBuilder::Create(
+                                   value_count, value_data_length, value_null_count, arrow_pool_));
+
+        auto* raw_list_offsets = reinterpret_cast<int32_t*>(list_offsets->mutable_data());
+        raw_list_offsets[0] = 0;
+        size_t payload_index = 0;
+        for (int32_t k = 0; k < rows_to_read; ++k) {
+            const size_t row_index = current_pos_ + k;
+            if (IsTargetNull(row_index)) {
+                arrow::bit_util::ClearBit(list_null_bitmap->mutable_data(), k);
+            } else if (IsTargetPlaceholder(row_index)) {
+                PAIMON_ASSIGN_OR_RAISE(auto* target,
+                                       value_builder->Append(BlobDefs::kPlaceholderSentinelLength));
+                memcpy(target, BlobDefs::kPlaceholderSentinel,
+                       BlobDefs::kPlaceholderSentinelLength);
+            } else {
+                const ArrayBlobPayload& payload = payloads[payload_index++];
+                uint8_t* row_target = nullptr;
+                int64_t row_data_length = 0;
+                for (int64_t element_length : payload.element_lengths) {
+                    if (element_length == BlobDefs::kNullBinLength) {
+                        PAIMON_RETURN_NOT_OK(value_builder->AppendNull());
+                        continue;
+                    }
+                    PAIMON_ASSIGN_OR_RAISE(auto* target, value_builder->Append(element_length));
+                    if (row_target == nullptr && element_length > 0) {
+                        row_target = target;
+                    }
+                    row_data_length += element_length;
+                }
+                if (row_data_length > 0) {
+                    PAIMON_RETURN_NOT_OK(
+                        ReadBlobContentAt(payload.data_offset, row_data_length, row_target));
+                }
+            }
+            raw_list_offsets[k + 1] = static_cast<int32_t>(value_builder->length());
+        }
+
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::LargeBinaryArray> values,
+                               value_builder->Finish());
+        auto list_array = std::make_shared<arrow::ListArray>(
+            list_type, rows_to_read, list_offsets, values, list_null_bitmap, list_null_count);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
+                                          arrow::StructArray::Make({list_array}, {list_field}));
+        return struct_array;
+    }
+
     std::unique_ptr<arrow::ArrayBuilder> array_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::MakeBuilder(arrow_pool_.get(), list_type, &array_builder));
     auto* list_builder = checked_cast<arrow::ListBuilder*>(array_builder.get());
     auto* blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(list_builder->value_builder());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Reserve(rows_to_read));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->Reserve(value_count));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->ReserveData(value_data_length));
+    size_t payload_index = 0;
     for (int32_t k = 0; k < rows_to_read; ++k) {
         const size_t row_index = current_pos_ + k;
         const bool is_null = IsTargetNull(row_index);
@@ -523,8 +759,8 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildArrayBlobArray(
             PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->Append(
                 BlobDefs::kPlaceholderSentinel, BlobDefs::kPlaceholderSentinelLength));
         } else if (!is_null) {
-            PAIMON_ASSIGN_OR_RAISE(ArrayBlobPayload payload, ReadArrayBlobPayload(row_index));
-            PAIMON_RETURN_NOT_OK(AppendArrayBlobValues(payload, blob_builder));
+            PAIMON_RETURN_NOT_OK(AppendArrayBlobDescriptors(payloads[payload_index], blob_builder));
+            ++payload_index;
         }
     }
 
@@ -658,56 +894,48 @@ Result<BlobFileBatchReader::MapBlobPayload> BlobFileBatchReader::ReadMapBlobPayl
 Status BlobFileBatchReader::AppendMapBlobKeys(const MapBlobPayload& payload,
                                               const std::shared_ptr<arrow::DataType>& key_type,
                                               arrow::ArrayBuilder* key_builder) const {
-    int64_t key_offset = payload.data_offset;
-    std::set<std::string> serialized_keys;
+    if (!InRange<size_t>(payload.key_data_length)) {
+        return Status::CapacityError("MAP<..., BLOB> key data exceeds size_t capacity");
+    }
+    PAIMON_UNIQUE_PTR<Bytes> key_bytes =
+        Bytes::AllocateBytes(static_cast<size_t>(payload.key_data_length), pool_.get());
+    if (payload.key_data_length > 0) {
+        PAIMON_RETURN_NOT_OK(ReadBlobContentAt(payload.data_offset, payload.key_data_length,
+                                               reinterpret_cast<uint8_t*>(key_bytes->data())));
+    }
+    int64_t key_offset = 0;
+    std::unordered_set<std::string_view> serialized_keys;
+    serialized_keys.reserve(payload.key_lengths.size());
     for (int64_t key_length_64 : payload.key_lengths) {
         const auto key_length = static_cast<int32_t>(key_length_64);
-        PAIMON_UNIQUE_PTR<Bytes> key_bytes =
-            Bytes::AllocateBytes(static_cast<size_t>(key_length), pool_.get());
-        if (key_length > 0) {
-            PAIMON_RETURN_NOT_OK(ReadBlobContentAt(key_offset, key_length,
-                                                   reinterpret_cast<uint8_t*>(key_bytes->data())));
-        }
-        std::string serialized_key;
-        if (key_length > 0) {
-            serialized_key.assign(key_bytes->data(), key_length);
-        }
-        if (!serialized_keys.emplace(std::move(serialized_key)).second) {
+        const char* key_data = key_length == 0 ? nullptr : key_bytes->data() + key_offset;
+        const std::string_view serialized_key =
+            key_length == 0 ? std::string_view() : std::string_view(key_data, key_length);
+        if (!serialized_keys.emplace(serialized_key).second) {
             return Status::Invalid("invalid MAP<..., BLOB> payload: duplicate key");
         }
         const uint8_t empty_key = 0;
-        const uint8_t* key_data =
-            key_length == 0 ? &empty_key : reinterpret_cast<const uint8_t*>(key_bytes->data());
-        PAIMON_RETURN_NOT_OK(AppendMapBlobKey(key_type, key_data, key_length, key_builder));
+        const uint8_t* append_data =
+            key_length == 0 ? &empty_key : reinterpret_cast<const uint8_t*>(key_data);
+        PAIMON_RETURN_NOT_OK(AppendMapBlobKey(key_type, append_data, key_length, key_builder));
         key_offset += key_length;
     }
     return Status::OK();
 }
 
-Status BlobFileBatchReader::AppendMapBlobValues(const MapBlobPayload& payload,
-                                                arrow::LargeBinaryBuilder* blob_builder) const {
+Status BlobFileBatchReader::AppendMapBlobDescriptors(
+    const MapBlobPayload& payload, arrow::LargeBinaryBuilder* blob_builder) const {
     int64_t value_offset = payload.data_offset + payload.key_data_length;
     for (int64_t value_length : payload.value_lengths) {
         if (value_length == BlobDefs::kNullBinLength) {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->AppendNull());
             continue;
         }
-        if (blob_as_descriptor_) {
-            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
-                                   Blob::FromPath(file_path_, value_offset, value_length));
-            PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                blob_builder->Append(descriptor->data(), descriptor->size()));
-        } else {
-            PAIMON_UNIQUE_PTR<Bytes> value_bytes =
-                Bytes::AllocateBytes(static_cast<size_t>(value_length), pool_.get());
-            if (value_length > 0) {
-                PAIMON_RETURN_NOT_OK(ReadBlobContentAt(
-                    value_offset, value_length, reinterpret_cast<uint8_t*>(value_bytes->data())));
-            }
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                blob_builder->Append(value_bytes->data(), value_length));
-        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
+                               Blob::FromPath(file_path_, value_offset, value_length));
+        PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(
+            blob_builder->Append(descriptor->data(), descriptor->size()));
         value_offset += value_length;
     }
     return Status::OK();
@@ -724,19 +952,140 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildMapBlobArray(
     }
     PAIMON_ASSIGN_OR_RAISE(int32_t fixed_key_length, GetMapBlobFixedKeyLength(key_type));
 
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> key_builder_unique,
+    std::vector<MapBlobPayload> payloads;
+    payloads.reserve(rows_to_read);
+    int64_t entry_count = 0;
+    int64_t key_data_length = 0;
+    int64_t value_data_length = 0;
+    int64_t descriptor_count = 0;
+    int64_t map_null_count = 0;
+    int64_t value_null_count = 0;
+    for (int32_t k = 0; k < rows_to_read; ++k) {
+        const size_t row_index = current_pos_ + k;
+        if (IsTargetPlaceholder(row_index)) {
+            PAIMON_RETURN_NOT_OK(AddBuilderCapacity(2, &entry_count, "MAP<..., BLOB> entry count"));
+            value_null_count += 2;
+            continue;
+        }
+        if (IsTargetNull(row_index)) {
+            ++map_null_count;
+            continue;
+        }
+
+        PAIMON_ASSIGN_OR_RAISE(MapBlobPayload payload,
+                               ReadMapBlobPayload(row_index, fixed_key_length));
+        PAIMON_RETURN_NOT_OK(AddBuilderCapacity(static_cast<int64_t>(payload.value_lengths.size()),
+                                                &entry_count, "MAP<..., BLOB> entry count"));
+        PAIMON_RETURN_NOT_OK(AddBuilderCapacity(payload.key_data_length, &key_data_length,
+                                                "MAP<..., BLOB> key data size"));
+        for (int64_t value_length : payload.value_lengths) {
+            if (value_length == BlobDefs::kNullBinLength) {
+                ++value_null_count;
+                continue;
+            }
+            if (blob_as_descriptor_) {
+                PAIMON_RETURN_NOT_OK(
+                    AddBuilderCapacity(1, &descriptor_count, "MAP<..., BLOB> descriptor count"));
+            } else {
+                PAIMON_RETURN_NOT_OK(AddBuilderCapacity(value_length, &value_data_length,
+                                                        "MAP<..., BLOB> value data size"));
+            }
+        }
+        payloads.emplace_back(std::move(payload));
+    }
+    if (descriptor_count > 0) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size, GetOrCreateSerializedDescriptorSize());
+        PAIMON_RETURN_NOT_OK(AddBuilderCapacityProduct(descriptor_count, descriptor_size,
+                                                       &value_data_length,
+                                                       "MAP<..., BLOB> descriptor data size"));
+    }
+
+    if (entry_count > std::numeric_limits<int32_t>::max()) {
+        return Status::CapacityError("MAP<..., BLOB> entry count exceeds map offset capacity");
+    }
+
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::ArrayBuilder> key_builder,
                                       arrow::MakeBuilder(key_type, arrow_pool_.get()));
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> item_builder_unique,
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder->Reserve(entry_count));
+    if (key_type->id() == arrow::Type::STRING) {
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(
+            checked_cast<arrow::StringBuilder*>(key_builder.get())->ReserveData(key_data_length));
+    } else if (key_type->id() == arrow::Type::BINARY) {
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(
+            checked_cast<arrow::BinaryBuilder*>(key_builder.get())->ReserveData(key_data_length));
+    }
+
+    if (!blob_as_descriptor_) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> map_offsets,
+                               AllocateTypedBuffer<int32_t>(rows_to_read + 1, arrow_pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> map_null_bitmap,
+                               AllocateValidityBitmap(rows_to_read, map_null_count, arrow_pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<PreallocatedLargeBinaryBuilder> value_builder,
+                               PreallocatedLargeBinaryBuilder::Create(
+                                   entry_count, value_data_length, value_null_count, arrow_pool_));
+
+        auto* raw_map_offsets = reinterpret_cast<int32_t*>(map_offsets->mutable_data());
+        raw_map_offsets[0] = 0;
+        size_t payload_index = 0;
+        for (int32_t k = 0; k < rows_to_read; ++k) {
+            const size_t row_index = current_pos_ + k;
+            if (IsTargetNull(row_index)) {
+                arrow::bit_util::ClearBit(map_null_bitmap->mutable_data(), k);
+            } else if (IsTargetPlaceholder(row_index)) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder->AppendEmptyValues(2));
+                PAIMON_RETURN_NOT_OK(value_builder->AppendNull());
+                PAIMON_RETURN_NOT_OK(value_builder->AppendNull());
+            } else {
+                const MapBlobPayload& payload = payloads[payload_index++];
+                PAIMON_RETURN_NOT_OK(AppendMapBlobKeys(payload, key_type, key_builder.get()));
+                uint8_t* row_target = nullptr;
+                int64_t row_data_length = 0;
+                for (int64_t value_length : payload.value_lengths) {
+                    if (value_length == BlobDefs::kNullBinLength) {
+                        PAIMON_RETURN_NOT_OK(value_builder->AppendNull());
+                        continue;
+                    }
+                    PAIMON_ASSIGN_OR_RAISE(auto* target, value_builder->Append(value_length));
+                    if (row_target == nullptr && value_length > 0) {
+                        row_target = target;
+                    }
+                    row_data_length += value_length;
+                }
+                if (row_data_length > 0) {
+                    PAIMON_RETURN_NOT_OK(
+                        ReadBlobContentAt(payload.data_offset + payload.key_data_length,
+                                          row_data_length, row_target));
+                }
+            }
+            raw_map_offsets[k + 1] = static_cast<int32_t>(value_builder->length());
+        }
+
+        std::shared_ptr<arrow::Array> keys;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder->Finish(&keys));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::LargeBinaryArray> values,
+                               value_builder->Finish());
+        auto map_array = std::make_shared<arrow::MapArray>(
+            map_type, rows_to_read, map_offsets, keys, values, map_null_bitmap, map_null_count);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
+                                          arrow::StructArray::Make({map_array}, {map_field}));
+        return struct_array;
+    }
+
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::ArrayBuilder> item_builder,
                                       arrow::MakeBuilder(map_type->item_type(), arrow_pool_.get()));
-    std::shared_ptr<arrow::ArrayBuilder> key_builder(std::move(key_builder_unique));
-    std::shared_ptr<arrow::ArrayBuilder> item_builder(std::move(item_builder_unique));
     if (!item_builder || !item_builder->type() ||
         item_builder->type()->id() != arrow::Type::LARGE_BINARY) {
         return Status::Invalid("cast MAP<..., BLOB> item builder to large binary builder failed");
     }
     auto* blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(item_builder.get());
     arrow::MapBuilder map_builder(arrow_pool_.get(), key_builder, item_builder, map_type);
+    auto* entry_builder = checked_cast<arrow::StructBuilder*>(map_builder.value_builder());
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Reserve(rows_to_read));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(entry_builder->Reserve(entry_count));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->Reserve(entry_count));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->ReserveData(value_data_length));
 
+    size_t payload_index = 0;
     for (int32_t k = 0; k < rows_to_read; ++k) {
         const size_t row_index = current_pos_ + k;
         if (IsTargetNull(row_index)) {
@@ -752,11 +1101,11 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildMapBlobArray(
             continue;
         }
 
-        PAIMON_ASSIGN_OR_RAISE(MapBlobPayload payload,
-                               ReadMapBlobPayload(row_index, fixed_key_length));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Append());
-        PAIMON_RETURN_NOT_OK(AppendMapBlobKeys(payload, key_type, key_builder.get()));
-        PAIMON_RETURN_NOT_OK(AppendMapBlobValues(payload, blob_builder));
+        PAIMON_RETURN_NOT_OK(
+            AppendMapBlobKeys(payloads[payload_index], key_type, key_builder.get()));
+        PAIMON_RETURN_NOT_OK(AppendMapBlobDescriptors(payloads[payload_index], blob_builder));
+        ++payload_index;
     }
 
     std::shared_ptr<arrow::MapArray> built_map_array;
@@ -796,6 +1145,26 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildTargetArray(
         return Status::Invalid("cast to large binary builder failed");
     }
     auto* field_builder = checked_cast<arrow::LargeBinaryBuilder*>(field_builder_base);
+    int64_t descriptor_count = 0;
+    int64_t value_data_length = 0;
+    for (int32_t k = 0; k < rows_to_read; ++k) {
+        const size_t i = current_pos_ + k;
+        if (IsTargetPlaceholder(i)) {
+            PAIMON_RETURN_NOT_OK(AddBuilderCapacity(BlobDefs::kPlaceholderSentinelLength,
+                                                    &value_data_length,
+                                                    "BLOB descriptor data size"));
+        } else if (!IsTargetNull(i)) {
+            PAIMON_RETURN_NOT_OK(AddBuilderCapacity(1, &descriptor_count, "BLOB descriptor count"));
+        }
+    }
+    if (descriptor_count > 0) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t descriptor_size, GetOrCreateSerializedDescriptorSize());
+        PAIMON_RETURN_NOT_OK(AddBuilderCapacityProduct(
+            descriptor_count, descriptor_size, &value_data_length, "BLOB descriptor data size"));
+    }
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Reserve(rows_to_read));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(field_builder->Reserve(rows_to_read));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(field_builder->ReserveData(value_data_length));
     for (int32_t k = 0; k < rows_to_read; ++k) {
         const size_t i = current_pos_ + k;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append());

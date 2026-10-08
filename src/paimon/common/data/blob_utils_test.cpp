@@ -92,6 +92,19 @@ TEST_F(BlobUtilsTest, IsArrayBlobField) {
         arrow::field("nested", arrow::list(arrow::list(BlobUtils::ToArrowField("item", true))))));
 }
 
+TEST_F(BlobUtilsTest, ValidateContainerBlobWriteSchema) {
+    auto array_blob_field =
+        arrow::field("array_blob", arrow::list(BlobUtils::ToArrowField("item", true)));
+    ASSERT_OK(BlobUtils::ValidateContainerBlobWriteSchema(
+        arrow::schema({arrow::field("id", arrow::int32()), array_blob_field})));
+
+    auto map_blob_field =
+        arrow::field("map_blob", arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", true)));
+    ASSERT_NOK_WITH_MSG(BlobUtils::ValidateContainerBlobWriteSchema(
+                            arrow::schema({array_blob_field, map_blob_field})),
+                        "Writing a table with MAP<..., BLOB> is not supported by the C++ writer");
+}
+
 TEST_F(BlobUtilsTest, IsArrayBlobPlaceholder) {
     const std::string json = R"([
         ["_PAIMON_BLOB_PLACEHOLDER"],
@@ -244,6 +257,41 @@ TEST_F(BlobUtilsTest, SeparateBlobArray) {
                          BlobUtils::SeparateBlobArray(all_blob_sa, /*inline_fields=*/{}));
     ASSERT_EQ(nullptr, all_blob_separated.main_array);
     ASSERT_TRUE(all_blob_separated.blob_array->Equals(*all_blob_sa));
+}
+
+TEST_F(BlobUtilsTest, SeparateArrayBlobFields) {
+    auto int_field = arrow::field("f1_int", arrow::int32());
+    auto array_blob_field =
+        arrow::field("f2_array_blob", arrow::list(BlobUtils::ToArrowField("item", true)));
+    auto blob_field = BlobUtils::ToArrowField("f3_blob", true);
+    auto inline_blob_field = BlobUtils::ToArrowField("f4_inline_blob", true);
+    auto schema = arrow::schema({int_field, array_blob_field, blob_field, inline_blob_field});
+
+    BlobUtils::SeparatedSchemas schemas =
+        BlobUtils::SeparateBlobSchema(schema, /*inline_fields=*/{"f4_inline_blob"});
+    ASSERT_TRUE(schemas.main_schema->Equals(*arrow::schema({int_field, inline_blob_field})));
+    ASSERT_TRUE(schemas.blob_schema->Equals(*arrow::schema({array_blob_field, blob_field})));
+
+    auto struct_type = arrow::struct_(schema->fields());
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(struct_type, R"([
+            [1, ["a", null, ""], "x", "i"],
+            [2, null, null, null],
+            [3, [], "z", "k"]
+        ])")
+            .ValueOrDie();
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+    ASSERT_OK_AND_ASSIGN(
+        BlobUtils::SeparatedStructArrays separated,
+        BlobUtils::SeparateBlobArray(struct_array, /*inline_fields=*/{"f4_inline_blob"}));
+    ASSERT_TRUE(
+        separated.main_array->type()->Equals(*arrow::struct_({int_field, inline_blob_field})));
+    ASSERT_TRUE(separated.main_array->field(0)->Equals(*struct_array->field(0)));
+    ASSERT_TRUE(separated.main_array->field(1)->Equals(*struct_array->field(3)));
+    ASSERT_TRUE(
+        separated.blob_array->type()->Equals(*arrow::struct_({array_blob_field, blob_field})));
+    ASSERT_TRUE(separated.blob_array->field(0)->Equals(*struct_array->field(1)));
+    ASSERT_TRUE(separated.blob_array->field(1)->Equals(*struct_array->field(2)));
 }
 
 TEST_F(BlobUtilsTest, SeparateBlobArrayWithPartialInline) {

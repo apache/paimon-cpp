@@ -122,7 +122,8 @@ Result<std::optional<Snapshot>> DataTableStreamScan::GetNextSnapshot(
             return Status::Invalid(fmt::format(
                 "The next expected snapshot is too big! Most possible cause might be the table had "
                 "been recreated. The next snapshot id is {}, while the latest snapshot id is {}",
-                next_snapshot_id, latest.value()));
+                next_snapshot_id,
+                latest == std::nullopt ? "null" : fmt::format("{}", latest.value())));
         }
         return std::optional<Snapshot>();
     }

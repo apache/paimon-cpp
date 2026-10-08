@@ -142,8 +142,8 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         /// True when every file shares one max sequence number, so the files are read
         /// sequentially without the fallback merge. A lone layer is expected to hold no
         /// placeholder entries; if one does (a user value equal to the placeholder sentinel
-        /// written by a blob-only first write), the strict blob reader rejects the read, since
-        /// no older layer exists to resolve it.
+        /// written by a first write), the strict blob reader rejects the read, since no older
+        /// layer exists to resolve it.
         bool SequentialReadOptimize() const {
             return sequence_group_end_.size() <= 1;
         }

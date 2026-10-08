@@ -97,6 +97,28 @@ TEST_F(BlobFileContextTest, MixedInlineAndBlobFile) {
     ASSERT_TRUE(context->RequireBlobFileWriter());
 }
 
+TEST_F(BlobFileContextTest, ContainerBlobFields) {
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int32()), BlobUtils::ToArrowField("image"),
+                       arrow::field("frames", arrow::list(BlobUtils::ToArrowField("item", true))),
+                       arrow::field("tagged", arrow::map(arrow::utf8(),
+                                                         BlobUtils::ToArrowField("value", true)))});
+    std::map<std::string, std::string> opts_map = {{Options::BLOB_DESCRIPTOR_FIELD, "image"}};
+    ASSERT_OK_AND_ASSIGN(auto options, CoreOptions::FromMap(opts_map));
+    auto context = BlobFileContext::Create(schema, options);
+    ASSERT_TRUE(context);
+    ASSERT_EQ(context->GetInlineFields(), std::set<std::string>({"image"}));
+    ASSERT_EQ(context->GetBlobFileFields(), std::set<std::string>({"frames", "tagged"}));
+    ASSERT_TRUE(context->RequireBlobFileWriter());
+
+    auto array_only_schema =
+        arrow::schema({arrow::field("id", arrow::int32()),
+                       arrow::field("frames", arrow::list(BlobUtils::ToArrowField("item", true)))});
+    auto array_only_context = BlobFileContext::Create(array_only_schema, options);
+    ASSERT_TRUE(array_only_context);
+    ASSERT_EQ(array_only_context->GetBlobFileFields(), std::set<std::string>({"frames"}));
+}
+
 TEST_F(BlobFileContextTest, ViewFields) {
     auto schema = MakeSchema({"id"}, {"ref_image", "raw_blob"});
     std::map<std::string, std::string> opts_map = {

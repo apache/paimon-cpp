@@ -24,7 +24,6 @@
 #include <string>
 #include <utility>
 
-#include "paimon/common/data/blob_defs.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/file_source.h"
@@ -39,28 +38,20 @@ BlobDataFileWriterFactory::BlobDataFileWriterFactory(
     const std::shared_ptr<arrow::Schema>& file_schema,
     const std::optional<std::vector<std::string>>& write_cols,
     const std::shared_ptr<LongCounter>& seq_num_counter,
-    const std::shared_ptr<DataFilePathFactory>& path_factory, bool write_placeholder,
+    const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::shared_ptr<MemoryPool>& pool)
     : DataFileWriterFactory(options, schema_id, pool),
       file_schema_(file_schema),
       write_cols_(write_cols),
       seq_num_counter_(seq_num_counter),
-      path_factory_(path_factory),
-      write_placeholder_(write_placeholder) {}
+      path_factory_(path_factory) {}
 
 Result<std::unique_ptr<SingleFileWriter<::ArrowArray*, std::shared_ptr<DataFileMeta>>>>
 BlobDataFileWriterFactory::CreateWriter() const {
     std::shared_ptr<LongCounter> seq_num_counter =
         options_.DataEvolutionEnabled() ? std::make_shared<LongCounter>(0) : seq_num_counter_;
-    std::map<std::string, std::string> format_options = options_.ToMap();
-    // The placeholder channel is internal: strip user-supplied blob.internal.* table options so
-    // only the writer's own decision below can enable it.
-    BlobDefs::EraseInternalPlaceholderOptions(&format_options);
-    if (write_placeholder_) {
-        format_options[BlobDefs::kWritePlaceholderKey] = "true";
-    }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileFormat> format,
-                           FileFormatFactory::Get("blob", format_options));
+                           FileFormatFactory::Get("blob", options_.ToMap()));
     PAIMON_ASSIGN_OR_RAISE(WriterResources resources,
                            CreateWriterResources(*format, file_schema_,
                                                  /*create_stats_extractor=*/true));

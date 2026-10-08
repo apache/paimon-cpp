@@ -50,7 +50,7 @@ Result<std::unique_ptr<ReaderBuilder>> DataFileReaderFactory::CreateReaderBuilde
     const std::map<std::string, std::string>& extra_format_options,
     const DataFileReadOptions& read_options, const std::shared_ptr<MemoryPool>& pool) {
     std::map<std::string, std::string> options = format_options;
-    // The blob placeholder channels are internal: a table option must not enable them, only
+    // The blob placeholder read channel is internal: a table option must not enable it, only
     // `extra_format_options` may.
     BlobDefs::EraseInternalPlaceholderOptions(&options);
     for (const auto& [key, value] : extra_format_options) {
