@@ -442,7 +442,7 @@ Result<int64_t> BlobFormatWriter::WriteBlobData(const BlobCopySource& source,
         return AddFailureContext(copied.status(), "failed to copy", element_index);
     }
     if (!source.reused) {
-        Status status = source.stream->Close();
+        Status status = source.owned_stream ? source.owned_stream->Close() : source.stream->Close();
         if (!status.ok()) {
             return AddFailureContext(status, "failed to close blob source file for", element_index);
         }
@@ -540,7 +540,7 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenDescriptorInputSt
         // A failed check is otherwise deferred to the open below, which can still succeed.
     }
 
-    Result<std::unique_ptr<InputStream>> opened =
+    Result<BlobCopySource> opened =
         dynamic_length ? OpenToEnd(*descriptor) : OpenSource(*descriptor);
     if (!opened.ok()) {
         // The file can be deleted between the check above and this open. Classifying that from
@@ -555,10 +555,10 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenDescriptorInputSt
         }
         return HandleFetchFailure(uri, element_index, opened.status());
     }
-    return BlobCopySource{std::move(opened).value(), /*reused=*/!dynamic_length};
+    return opened;
 }
 
-Result<std::unique_ptr<InputStream>> BlobFormatWriter::OpenSource(
+Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenSource(
     const BlobDescriptor& descriptor) {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> file, fs_->Open(descriptor.Uri()));
     source_ = std::move(file);
@@ -566,8 +566,9 @@ Result<std::unique_ptr<InputStream>> BlobFormatWriter::OpenSource(
     Result<std::unique_ptr<InputStream>> view = OpenSourceView(descriptor);
     if (!view.ok()) {
         DiscardSource();
+        return view.status();
     }
-    return view;
+    return BlobCopySource{std::move(view).value(), /*reused=*/true};
 }
 
 Result<std::unique_ptr<InputStream>> BlobFormatWriter::OpenSourceView(
@@ -584,7 +585,7 @@ Result<std::unique_ptr<InputStream>> BlobFormatWriter::OpenSourceView(
     return std::unique_ptr<InputStream>(std::move(view));
 }
 
-Result<std::unique_ptr<InputStream>> BlobFormatWriter::OpenToEnd(
+Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenToEnd(
     const BlobDescriptor& descriptor) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> file, fs_->Open(descriptor.Uri()));
     PAIMON_ASSIGN_OR_RAISE(int64_t file_length, file->Length());
@@ -596,7 +597,7 @@ Result<std::unique_ptr<InputStream>> BlobFormatWriter::OpenToEnd(
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<OffsetInputStream> stream,
         OffsetInputStream::Create(file, file_length - offset, offset, file_length));
-    return std::unique_ptr<InputStream>(std::move(stream));
+    return BlobCopySource{std::move(stream), /*reused=*/false, std::move(file)};
 }
 
 Status BlobFormatWriter::CloseSource() {
