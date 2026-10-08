@@ -428,7 +428,7 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenBlobInputStream(
     }
     return BlobCopySource{
         std::make_unique<ByteArrayInputStream>(blob_data.data(), blob_data.size()),
-        /*reused=*/false};
+        /*reused=*/false, /*owned_stream=*/nullptr};
 }
 
 Result<int64_t> BlobFormatWriter::WriteBlobData(const BlobCopySource& source,
@@ -512,7 +512,8 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenDescriptorInputSt
         if (source_ != nullptr && source_uri_ == uri) {
             Result<std::unique_ptr<InputStream>> view = OpenSourceView(*descriptor);
             if (view.ok()) {
-                return BlobCopySource{std::move(view).value(), /*reused=*/true};
+                return BlobCopySource{std::move(view).value(), /*reused=*/true,
+                                      /*owned_stream=*/nullptr};
             }
         }
         // Release a kept source of another file, or one that cannot serve this range. As in Java,
@@ -568,7 +569,8 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenSource(
         DiscardSource();
         return view.status();
     }
-    return BlobCopySource{std::move(view).value(), /*reused=*/true};
+    return BlobCopySource{std::move(view).value(), /*reused=*/true,
+                          /*owned_stream=*/nullptr};
 }
 
 Result<std::unique_ptr<InputStream>> BlobFormatWriter::OpenSourceView(
@@ -597,7 +599,7 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenToEnd(
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<OffsetInputStream> stream,
         OffsetInputStream::Create(file, file_length - offset, offset, file_length));
-    return BlobCopySource{std::move(stream), /*reused=*/false, std::move(file)};
+    return BlobCopySource{std::move(stream), /*reused=*/false, /*owned_stream=*/std::move(file)};
 }
 
 Status BlobFormatWriter::CloseSource() {
@@ -623,7 +625,7 @@ BlobFormatWriter::BlobCopySource BlobFormatWriter::HandleMissingFile(
     PAIMON_LOG_WARN(logger_, "Blob file %s does not exist, writing NULL for %s", blob_uri.c_str(),
                     DescribeValue(element_index).c_str());
     ++null_on_missing_file_count_;
-    return BlobCopySource{};
+    return BlobCopySource{/*stream=*/nullptr, /*reused=*/false, /*owned_stream=*/nullptr};
 }
 
 Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::HandleFetchFailure(
@@ -635,7 +637,7 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::HandleFetchFailure(
     PAIMON_LOG_WARN(logger_, "Failed to fetch blob %s, writing NULL for %s: %s", blob_uri.c_str(),
                     DescribeValue(element_index).c_str(), status.ToString().c_str());
     ++null_on_fetch_failure_count_;
-    return BlobCopySource{};
+    return BlobCopySource{/*stream=*/nullptr, /*reused=*/false, /*owned_stream=*/nullptr};
 }
 
 Status BlobFormatWriter::AddFailureContext(const Status& status, const std::string& action,
