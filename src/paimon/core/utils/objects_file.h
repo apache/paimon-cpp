@@ -19,11 +19,8 @@
 #pragma once
 
 #include <functional>
-#include <future>
 #include <limits>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -89,7 +86,7 @@ class ObjectsFile {
 
     Result<std::pair<std::string, int64_t>> WriteWithoutRolling(const std::vector<T>& records);
 
-    /// Cumulative cache and derived reader work, including concurrent reads.
+    /// Cumulative decoded cache hits and misses, including concurrent reads.
     std::shared_ptr<Metrics> GetReadMetrics() const {
         auto snapshot = std::make_shared<MetricsImpl>();
         snapshot->Overwrite(read_metrics_);
@@ -125,10 +122,6 @@ class ObjectsFile {
     const std::string file_format_identifier_;
     std::string compression_;
     std::shared_ptr<Cache> cache_;
-
-    static Result<std::shared_ptr<CacheValue>> LoadCacheEntry(
-        const std::shared_ptr<Cache>& cache, const std::string& path,
-        const std::function<Result<std::shared_ptr<CacheValue>>()>& load);
 
     Result<std::shared_ptr<CacheValue>> SerializeArrowBatches(
         const std::string& file_name, std::optional<int64_t> file_size,
@@ -255,42 +248,6 @@ Result<std::unique_ptr<InputStream>> ObjectsFile<T>::OpenForRead(
     return file_system_->Open(file_path);
 }
 
-// Only in-progress loads are retained here. Readers sharing a cache and path share one load,
-// including across ObjectsFile instances; unrelated files load without holding the registry lock.
-template <typename T>
-Result<std::shared_ptr<CacheValue>> ObjectsFile<T>::LoadCacheEntry(
-    const std::shared_ptr<Cache>& cache, const std::string& path,
-    const std::function<Result<std::shared_ptr<CacheValue>>()>& load) {
-    using LoadKey = std::pair<std::shared_ptr<Cache>, std::string>;
-    using CacheResult = Result<std::shared_ptr<CacheValue>>;
-    static std::mutex mutex;
-    static std::map<LoadKey, std::shared_future<CacheResult>> pending;
-    const LoadKey key(cache, path);
-    std::shared_ptr<std::promise<CacheResult>> promise;
-    std::shared_future<CacheResult> future;
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto iter = pending.find(key);
-        if (iter != pending.end()) {
-            future = iter->second;
-        } else {
-            promise = std::make_shared<std::promise<CacheResult>>();
-            future = promise->get_future().share();
-            pending.emplace(key, future);
-        }
-    }
-    if (!promise) {
-        return future.get();
-    }
-    ScopeGuard remove_pending([&]() {
-        std::lock_guard<std::mutex> lock(mutex);
-        pending.erase(key);
-    });
-    CacheResult result = load();
-    promise->set_value(result);
-    return result;
-}
-
 template <typename T>
 Result<std::shared_ptr<CacheValue>> ObjectsFile<T>::SerializeArrowBatches(
     const std::string& file_name, std::optional<int64_t> file_size,
@@ -377,20 +334,19 @@ Status ObjectsFile<T>::ReadArrowBatches(
     bool loaded = false;
     std::optional<Status> read_status;
     std::vector<std::shared_ptr<arrow::StructArray>> batches;
-    auto cached = LoadCacheEntry(cache_, path, [&]() {
-        return cache_->Get(key, [&](const std::shared_ptr<CacheKey>&) {
-            loaded = true;
-            return SerializeArrowBatches(file_name, file_size, &batches, &read_status);
-        });
+    auto cached = cache_->Get(key, [&](const std::shared_ptr<CacheKey>&) {
+        loaded = true;
+        return SerializeArrowBatches(file_name, file_size, &batches, &read_status);
     });
     const bool usable = cached.ok() && cached.value() && cached.value()->GetSegment().Data();
-    metrics->SetCounter(!usable  ? ScanMetrics::MANIFEST_ARROW_CACHE_FALLBACKS
-                        : loaded ? ScanMetrics::MANIFEST_ARROW_CACHE_MISSES
-                                 : ScanMetrics::MANIFEST_ARROW_CACHE_HITS,
-                        1);
+    if (usable) {
+        metrics->SetCounter(loaded ? ScanMetrics::MANIFEST_ARROW_CACHE_MISSES
+                                   : ScanMetrics::MANIFEST_ARROW_CACHE_HITS,
+                            1);
+    }
     if (read_status) {
         // Publish the query-independent cache before invoking user filters. A filter error
-        // neither invalidates the cache nor affects another reader waiting for this file.
+        // does not invalidate the cache or affect other readers of this file.
         PAIMON_RETURN_NOT_OK(read_status.value());
         for (const auto& batch : batches) {
             PAIMON_RETURN_NOT_OK(consumer(batch));

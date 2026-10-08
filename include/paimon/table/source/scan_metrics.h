@@ -25,15 +25,9 @@ namespace paimon {
 /// Metric names for scan planning operations.
 class PAIMON_EXPORT ScanMetrics {
  public:
-    // Cumulative work for row-range manifest reads; duration histogram samples are per file (ms).
-    static constexpr char ROW_RANGE_MANIFEST_ENTRIES_SCANNED[] = "rowRangeManifestEntriesScanned";
-    static constexpr char ROW_RANGE_MANIFEST_ENTRIES_PRUNED[] = "rowRangeManifestEntriesPruned";
-    static constexpr char ROW_RANGE_MANIFEST_ENTRIES_MATERIALIZED[] =
-        "rowRangeManifestEntriesMaterialized";
-    static constexpr char ROW_RANGE_MANIFEST_READ_DURATION[] = "rowRangeManifestReadDuration";
+    // Cumulative decoded manifest cache hits and misses.
     static constexpr char MANIFEST_ARROW_CACHE_HITS[] = "manifestArrowCacheHits";
     static constexpr char MANIFEST_ARROW_CACHE_MISSES[] = "manifestArrowCacheMisses";
-    static constexpr char MANIFEST_ARROW_CACHE_FALLBACKS[] = "manifestArrowCacheFallbacks";
 
     static constexpr char LAST_SCAN_DURATION[] = "lastScanDuration";
     // Histogram metric for scan plan duration (milliseconds).

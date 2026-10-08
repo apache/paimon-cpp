@@ -30,13 +30,11 @@
 #include "paimon/common/reader/late_materializing_file_batch_reader.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/rolling_file_writer.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_entry_serializer.h"
 #include "paimon/core/manifest/manifest_entry_writer_factory.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
-#include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/object_serializer.h"
 #include "paimon/core/utils/path_factory.h"
@@ -46,7 +44,6 @@
 #include "paimon/format/writer_builder.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/status.h"
-#include "paimon/table/source/scan_metrics.h"
 #include "paimon/utils/row_range_index.h"
 
 namespace arrow {
@@ -142,24 +139,9 @@ Status ManifestFile::ReadRowRangeEntries(
     const std::string& file_name, const RowRangeIndex& row_ranges,
     const std::function<Result<bool>(const ManifestEntry&)>& filter,
     std::optional<int64_t> file_size, std::vector<ManifestEntry>* entries) const {
-    uint64_t scanned = 0;
-    uint64_t pruned = 0;
-    uint64_t materialized = 0;
-    Duration duration;
-    auto metrics = std::make_shared<MetricsImpl>();
-    // Merge once per file rather than locking a shared metric for every entry. ScopeGuard
-    // also accounts for work completed before an I/O or filter error.
-    ScopeGuard record_metrics([&]() {
-        metrics->SetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_SCANNED, scanned);
-        metrics->SetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_PRUNED, pruned);
-        metrics->SetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_MATERIALIZED, materialized);
-        metrics->ObserveHistogram(ScanMetrics::ROW_RANGE_MANIFEST_READ_DURATION,
-                                  static_cast<double>(duration.Get()));
-        read_metrics_->Merge(metrics);
-    });
     return ReadArrowBatches(
         file_name, file_size,
-        [this, &row_ranges, &filter, &scanned, &pruned, &materialized,
+        [this, &row_ranges, &filter,
          entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
             // ManifestMetaReader has aligned both the entry and its nested file schema. Probe
             // the two range columns without allocating DataFileMeta, stats or binary keys.
@@ -181,7 +163,6 @@ Status ManifestFile::ReadRowRangeEntries(
             auto first_ids = checked_pointer_cast<arrow::Int64Array>(first_column);
             ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
             for (int64_t i = 0; i < batch->length(); ++i) {
-                ++scanned;
                 row.SetRowId(i);
                 PAIMON_RETURN_NOT_OK(
                     ManifestEntrySerializer::ValidateVersion(row.GetInt(kVersionFieldIndex)));
@@ -197,12 +178,10 @@ Status ManifestFile::ReadRowRangeEntries(
                     if (first >= 0 && count > 0 &&
                         first <= std::numeric_limits<int64_t>::max() - (count - 1) &&
                         !row_ranges.Intersects(first, first + (count - 1))) {
-                        ++pruned;
                         continue;
                     }
                 }
                 PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
-                ++materialized;
                 if (filter) {
                     PAIMON_ASSIGN_OR_RAISE(bool keep, filter(entry));
                     if (!keep) {

@@ -118,32 +118,13 @@ These metrics are C++-only and have no counterparts in Java Paimon.
 Manifest reads
 ~~~~~~~~~~~~~~
 
-Data-evolution scans with row ID ranges prune non-overlapping entries before
-materializing file metadata. Unknown ranges are retained.
+``manifestArrowCacheHits`` and ``manifestArrowCacheMisses`` are cumulative
+counters for successful decoded-cache accesses by the scan's manifest-file
+reader. Ordinary, bucket and row-range reads share the same query-independent
+Arrow IPC entry under the existing whole-file cache key. Cache failures do not
+update these counters.
 
-When a caller cache is provided, ordinary, bucket and row-range manifest reads
-share one Arrow IPC representation of each immutable manifest, replacing the raw
-manifest byte cache. Manifest lists and index manifests use the same decoded IPC
-cache through ``ObjectsFile``, with the existing whole-file keys and cache budget.
-Cache keys do not contain query filters or mutable snapshot
-selection. Concurrent loads of the same path through the same cache are coalesced
-across readers; each reader applies its own filters.
-
-Cold reads decode the complete manifest to populate the shared cache and consume
-the original batches without reading the IPC stream back. Warm reads skip the
-source format decoder. Without a cache, or when the cache rejects manifest reads,
-bucket reads retain source-level selective decoding when supported. Cold bucket
-reads with a cache may therefore decode more entries than uncached selective
-reads. Cache entries retain their buffers and allocator until the last reader
-releases them, including after eviction.
-
-The scan metrics additionally expose cumulative ``rowRangeManifestEntriesScanned``,
-``rowRangeManifestEntriesPruned`` and ``rowRangeManifestEntriesMaterialized``.
-Materialized entries are counted before the ordinary entry filter.
-``manifestArrowCacheHits``, ``manifestArrowCacheMisses`` and
-``manifestArrowCacheFallbacks`` describe the decoded cache path for all three manifest read modes.
-Manifest list and index manifest readers expose the same counters through their own read metrics.
-Readers reusing a concurrent load count as cache hits.
-``rowRangeManifestReadDuration`` is a per-file duration histogram in milliseconds,
-including cache access, filtering and materialization, also on failed reads.
-Parallel file durations overlap and must not be added to obtain request latency.
+Warm reads skip the source format decoder. Cold reads populate the cache by
+decoding the complete manifest, so a cold bucket read may decode more entries
+than an uncached selective read. Concurrent load coordination is delegated to
+the caller-provided cache.

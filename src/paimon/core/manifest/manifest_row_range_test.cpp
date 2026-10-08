@@ -17,12 +17,9 @@
  * under the License.
  */
 
-#include <chrono>
-#include <condition_variable>
 #include <future>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -34,7 +31,6 @@
 #include "gtest/gtest.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
-#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/meta_to_arrow_array_converter.h"
 #include "paimon/core/manifest/manifest_entry_serializer.h"
@@ -160,6 +156,7 @@ TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
     ASSERT_OK(
         unsupported->ReadRowRangeEntries(written.first, ranges, nullptr, written.second, &entries));
     ASSERT_EQ(expected, entries);
+    ASSERT_TRUE(unsupported->GetReadMetrics()->GetAllCounters().empty());
     entries.clear();
     auto small_cache = std::make_shared<LruCache>(1);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> uncached,
@@ -391,93 +388,10 @@ TEST_F(RowRangeManifestFileTest, CacheAdmissionFailureReusesAlreadyDecodedBatche
     ASSERT_OK(manifest->Read(written.first, filter, written.second, &entries));
     ASSERT_EQ(1, calls);
     ASSERT_EQ(std::vector<ManifestEntry>{entry}, entries);
-    ASSERT_OK_AND_ASSIGN(uint64_t fallbacks, manifest->GetReadMetrics()->GetCounter(
-                                                 ScanMetrics::MANIFEST_ARROW_CACHE_FALLBACKS));
-    ASSERT_EQ(1, fallbacks);
+    ASSERT_TRUE(manifest->GetReadMetrics()->GetAllCounters().empty());
 }
 
-class BlockingManifestCache : public CountingRoutingCache {
- public:
-    BlockingManifestCache() : CountingRoutingCache(CacheKind::MANIFEST, 1024 * 1024) {}
-
-    Result<std::shared_ptr<CacheValue>> Get(
-        const std::shared_ptr<CacheKey>& key,
-        std::function<Result<std::shared_ptr<CacheValue>>(const std::shared_ptr<CacheKey>&)>
-            supplier) override {
-        return CountingRoutingCache::Get(key, [&](const std::shared_ptr<CacheKey>& supplier_key) {
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                ++loads_;
-                cv_.notify_all();
-                cv_.wait(lock, [&]() { return released_; });
-            }
-            return supplier(supplier_key);
-        });
-    }
-
-    bool WaitForLoads(int32_t count) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, std::chrono::seconds(10), [&]() { return loads_ >= count; });
-    }
-
-    void Release() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        released_ = true;
-        cv_.notify_all();
-    }
-
- private:
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    int32_t loads_ = 0;
-    bool released_ = false;
-};
-
-TEST_F(RowRangeManifestFileTest, ConcurrentColdReadersShareLoadAcrossInstances) {
-    auto dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(dir);
-    auto cache = std::make_shared<BlockingManifestCache>();
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> manifest,
-                         CreateManifest(dir->Str(), dir->GetFileSystem(), true, cache));
-    ASSERT_OK_AND_ASSIGN(ManifestEntry entry, Entry("a.parquet", 100, 10));
-    using WrittenFile = std::pair<std::string, int64_t>;
-    ASSERT_OK_AND_ASSIGN(WrittenFile written, manifest->WriteWithoutRolling({entry}));
-    ASSERT_OK_AND_ASSIGN(WrittenFile other, manifest->WriteWithoutRolling({entry}));
-    std::vector<std::unique_ptr<ManifestFile>> instances;
-    for (int32_t i = 0; i < 9; ++i) {
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> reader,
-                             CreateManifest(dir->Str(), dir->GetFileSystem(), true, cache));
-        instances.push_back(std::move(reader));
-    }
-    std::vector<std::future<Status>> readers;
-    // Release blocked suppliers before future destructors wait, including on assertion failure.
-    ScopeGuard release([&]() { cache->Release(); });
-    std::promise<void> start;
-    auto gate = start.get_future().share();
-    for (int32_t i = 0; i < 9; ++i) {
-        readers.push_back(std::async(std::launch::async, [&, i]() -> Status {
-            gate.wait();
-            const auto& file = i == 8 ? other : written;
-            std::vector<ManifestEntry> entries;
-            PAIMON_RETURN_NOT_OK(instances[i]->Read(file.first, nullptr, file.second, &entries));
-            if (entries != std::vector<ManifestEntry>{entry}) {
-                return Status::Invalid("concurrent manifest result differs");
-            }
-            return Status::OK();
-        }));
-    }
-    start.set_value();
-    // An unrelated manifest must load while the first one is blocked.
-    ASSERT_TRUE(cache->WaitForLoads(2));
-    cache->Release();
-    for (auto& reader : readers) {
-        ASSERT_OK(reader.get());
-    }
-    ASSERT_EQ(2, cache->SupplierCallCount());
-    ASSERT_EQ(2, cache->Size());
-}
-
-TEST_F(RowRangeManifestFileTest, MetricsCountPruningCacheReuseAndFilterErrors) {
+TEST_F(RowRangeManifestFileTest, CacheMetricsCountReadsAndPreserveSnapshots) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> manifest,
@@ -494,37 +408,24 @@ TEST_F(RowRangeManifestFileTest, MetricsCountPruningCacheReuseAndFilterErrors) {
         ASSERT_EQ(std::vector<ManifestEntry>{b}, entries);
     }
     auto metrics = manifest->GetReadMetrics();
-    ASSERT_OK_AND_ASSIGN(uint64_t scanned,
-                         metrics->GetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_SCANNED));
-    ASSERT_OK_AND_ASSIGN(uint64_t pruned,
-                         metrics->GetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_PRUNED));
-    ASSERT_OK_AND_ASSIGN(uint64_t materialized,
-                         metrics->GetCounter(ScanMetrics::ROW_RANGE_MANIFEST_ENTRIES_MATERIALIZED));
-    ASSERT_EQ(4, scanned);
-    ASSERT_EQ(2, pruned);
-    ASSERT_EQ(2, materialized);
     ASSERT_OK_AND_ASSIGN(uint64_t hits,
                          metrics->GetCounter(ScanMetrics::MANIFEST_ARROW_CACHE_HITS));
     ASSERT_OK_AND_ASSIGN(uint64_t misses,
                          metrics->GetCounter(ScanMetrics::MANIFEST_ARROW_CACHE_MISSES));
     ASSERT_EQ(1, hits);
     ASSERT_EQ(1, misses);
-    ASSERT_OK_AND_ASSIGN(HistogramStats stats,
-                         metrics->GetHistogramStats(ScanMetrics::ROW_RANGE_MANIFEST_READ_DURATION));
-    ASSERT_EQ(2, stats.count);
     std::vector<ManifestEntry> entries;
     ASSERT_NOK(manifest->ReadRowRangeEntries(
         written.first, ranges,
         [](const ManifestEntry&) -> Result<bool> { return Status::IOError("filter failure"); },
         written.second, &entries));
-    ASSERT_OK_AND_ASSIGN(HistogramStats after_error,
-                         manifest->GetReadMetrics()->GetHistogramStats(
-                             ScanMetrics::ROW_RANGE_MANIFEST_READ_DURATION));
-    ASSERT_EQ(3, after_error.count);
+    ASSERT_OK_AND_ASSIGN(uint64_t after_error, manifest->GetReadMetrics()->GetCounter(
+                                                   ScanMetrics::MANIFEST_ARROW_CACHE_HITS));
+    ASSERT_EQ(2, after_error);
     // Previously returned snapshots remain unchanged after subsequent reads.
-    ASSERT_OK_AND_ASSIGN(HistogramStats old_snapshot,
-                         metrics->GetHistogramStats(ScanMetrics::ROW_RANGE_MANIFEST_READ_DURATION));
-    ASSERT_EQ(2, old_snapshot.count);
+    ASSERT_OK_AND_ASSIGN(uint64_t old_snapshot,
+                         metrics->GetCounter(ScanMetrics::MANIFEST_ARROW_CACHE_HITS));
+    ASSERT_EQ(1, old_snapshot);
 }
 
 TEST_F(RowRangeManifestFileTest, BoundariesUnknownRangesAndDeleteMerging) {
