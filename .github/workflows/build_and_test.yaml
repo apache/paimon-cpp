@@ -46,6 +46,9 @@ jobs:
       - name: Run packaging argument tests
         shell: bash
         run: ci/scripts/test_packaging_args.sh
+      - name: Run build argument tests
+        shell: bash
+        run: ci/scripts/test_build_paimon_args.sh
       - name: Run asan_symbolize tests
         shell: bash
         run: ci/scripts/test_asan_symbolize.sh
