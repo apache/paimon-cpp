@@ -318,6 +318,10 @@ A data-evolution table (``data-evolution.enabled = true``) may enable
 ``deletion-vectors.enabled``. Reading such a table is supported: a deleted row disappears
 from the result, including from the columns merged out of the other files that cover it.
 
+Both Java-compatible 32-bit and 64-bit deletion vectors can be read, including mixed
+formats in one index file. ``deletion-vectors.bitmap64 = true`` selects the format of new
+deletion vectors on supported write paths; existing vectors retain their format.
+
 How the Deletion Vector Is Located
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -340,8 +344,6 @@ come back.
 Limitations
 ~~~~~~~~~~~
 
-- Only the default 32-bit deletion vectors can be read. ``deletion-vectors.bitmap64`` is not
-  supported yet, and a read fails when it actually encounters a 64-bit deletion vector.
 - Paimon C++ does not write deletion vectors for data-evolution tables, so the deletes
   themselves have to be issued by another engine.
 - A commit that drops data files from such a table, an overwrite for instance, is refused.

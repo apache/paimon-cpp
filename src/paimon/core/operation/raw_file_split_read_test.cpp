@@ -31,6 +31,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
@@ -45,6 +46,7 @@
 #include "paimon/format/file_format.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
 #include "paimon/table/source/data_split.h"
@@ -132,12 +134,17 @@ class RawFileSplitReadTest : public ::testing::Test {
     }
 
     void CheckReadResult(const std::shared_ptr<arrow::Schema>& read_schema,
-                         const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
+                         const std::shared_ptr<arrow::ChunkedArray>& expected_array,
+                         DeletionVector::Factory dv_factory = {}) const {
         std::string path = paimon::test::GetDataDir() +
                            "/orc/multi_partition_append_table.db/"
                            "multi_partition_append_table";
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames(read_schema->field_names());
+        if (dv_factory) {
+            context_builder.AddOption(Options::FILE_INDEX_READ_ENABLED, "true");
+            context_builder.SetPredicate(PredicateBuilder::IsNotNull(0, "f0", FieldType::STRING));
+        }
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
@@ -169,8 +176,18 @@ class RawFileSplitReadTest : public ::testing::Test {
         std::vector<std::unique_ptr<BatchReader>> batch_readers;
         batch_readers.reserve(data_splits.size());
         for (const auto& split : data_splits) {
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
-                                 split_read->CreateReader(split));
+            auto impl = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            if (dv_factory) {
+                // A DV64 read must bypass file-index evaluation even for a small file.
+                for (const auto& file : impl->DataFiles()) {
+                    file->embedded_index = std::make_shared<Bytes>("invalid index", pool_.get());
+                }
+            }
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<BatchReader> reader,
+                dv_factory ? split_read->CreateReader(impl->Partition(), impl->Bucket(),
+                                                      impl->DataFiles(), dv_factory, std::nullopt)
+                           : split_read->CreateReader(split));
             batch_readers.emplace_back(std::move(reader));
         }
         auto batch_reader =
@@ -555,6 +572,25 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
         ASSERT_TRUE(match_result);
     }
     ASSERT_NOK(split_read->Match(nullptr, /*force_keep_delete=*/false));
+}
+
+TEST_F(RawFileSplitReadTest, TestBitmap64DeletionVectorFallback) {
+    auto read_schema =
+        arrow::schema({arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
+                       arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())});
+    auto result_fields = read_schema->fields();
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    auto expected =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(result_fields), R"([[0, "Bob", 10, 0, 12.1], [0, "Tony", 10, 0, 14.1]])")
+            .ValueOrDie();
+    DeletionVector::Factory factory =
+        [](const std::string& name) -> Result<std::shared_ptr<DeletionVector>> {
+        auto dv = std::make_shared<Bitmap64DeletionVector>();
+        PAIMON_RETURN_NOT_OK(dv->Delete(name.find("01b6a930") != std::string::npos ? 1 : 0));
+        return dv;
+    };
+    CheckReadResult(read_schema, std::make_shared<arrow::ChunkedArray>(expected), factory);
 }
 
 }  // namespace paimon::test

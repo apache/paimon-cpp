@@ -18,6 +18,7 @@
  */
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -106,6 +107,9 @@ class DeletionVector {
     /// @return the number of distinct integers added to the DeletionVector.
     virtual Result<int64_t> GetCardinality() const = 0;
 
+    /// Iterates over all deleted positions in this deletion vector.
+    virtual Status ForEachDeletedPosition(const std::function<void(int64_t)>& consumer) const = 0;
+
     /// Serializes the deletion vector.
     virtual Result<int32_t> SerializeTo(const std::shared_ptr<MemoryPool>& pool,
                                         DataOutputStream* out) = 0;
@@ -115,13 +119,6 @@ class DeletionVector {
     /// @return A byte array representing the serialized deletion vector.
     virtual Result<PAIMON_UNIQUE_PTR<Bytes>> SerializeToBytes(
         const std::shared_ptr<MemoryPool>& pool) = 0;
-
-    /// Deserializes a deletion vector from a byte array.
-    ///
-    /// @param bytes The byte array containing the serialized deletion vector.
-    /// @return A DeletionVector instance that represents the deserialized data.
-    static Result<PAIMON_UNIQUE_PTR<DeletionVector>> DeserializeFromBytes(const Bytes* bytes,
-                                                                          MemoryPool* pool);
 
     static Result<PAIMON_UNIQUE_PTR<DeletionVector>> Read(const FileSystem* file_system,
                                                           const DeletionFile& deletion_file,

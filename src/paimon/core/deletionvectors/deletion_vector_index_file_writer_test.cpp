@@ -47,6 +47,10 @@ class FailingDeletionVector : public DeletionVector {
         return Status::Invalid("injected is-deleted failure");
     }
 
+    Status ForEachDeletedPosition(const std::function<void(int64_t)>&) const override {
+        return Status::OK();
+    }
+
     bool IsEmpty() const override {
         return true;
     }

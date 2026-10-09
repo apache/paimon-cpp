@@ -28,6 +28,7 @@
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/read_ahead_cache.h"
+#include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/executor.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_file_system.h"
@@ -43,8 +44,9 @@ class FileSystem;
 }  // namespace paimon
 
 namespace paimon::test {
-class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
-                                           public ::testing::WithParamInterface<bool> {
+class ApplyDeletionVectorBatchReaderTest
+    : public ::testing::Test,
+      public ::testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
     void SetUp() override {
         int_type_ = arrow::int32();
@@ -77,9 +79,14 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
 
         int32_t prefetch_batch_count = 3;
         for (int32_t batch_size : {1, 2, 4, 10}) {
-            auto dv = DeletionVector::FromPrimitiveArray(dv_data, pool.get());
+            std::shared_ptr<DeletionVector> dv =
+                DeletionVector::FromPrimitiveArray(dv_data, pool.get());
+            if (std::get<1>(GetParam())) {
+                dv = Bitmap64DeletionVector::FromBitmapDeletionVector(
+                    *static_cast<BitmapDeletionVector*>(dv.get()));
+            }
             std::unique_ptr<FileBatchReader> file_batch_reader;
-            bool enable_prefetch = GetParam();
+            bool enable_prefetch = std::get<0>(GetParam());
             if (enable_prefetch) {
                 MockFormatReaderBuilder reader_builder(data, target_type_, batch_size);
                 ASSERT_OK_AND_ASSIGN(
@@ -182,5 +189,5 @@ TEST(ApplyDeletionVectorBatchReaderWarmupTest, WarmupForwardsToInnerReader) {
 }
 
 INSTANTIATE_TEST_SUITE_P(EnablePrefetch, ApplyDeletionVectorBatchReaderTest,
-                         ::testing::Values(false, true));
+                         ::testing::Combine(::testing::Bool(), ::testing::Bool()));
 }  // namespace paimon::test

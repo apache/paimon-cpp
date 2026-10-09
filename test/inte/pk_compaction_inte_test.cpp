@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
@@ -45,12 +47,14 @@
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
+#include "paimon/format/file_format_factory.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
+#include "paimon/reader/prefetch_file_batch_reader.h"
 #include "paimon/record_batch.h"
 #include "paimon/result.h"
 #include "paimon/scan_context.h"
@@ -67,8 +71,188 @@
 
 namespace paimon::test {
 
-class PkCompactionInteTest : public ::testing::Test,
-                             public ::testing::WithParamInterface<std::string> {
+// Stores a few real Parquet rows and exposes sparse file positions to exercise the full
+// lookup/DV path. This simulates large positions, not a physically large Parquet file.
+class HighPositionFileBatchReader : public PrefetchFileBatchReader {
+ public:
+    explicit HighPositionFileBatchReader(std::unique_ptr<PrefetchFileBatchReader> reader)
+        : reader_(std::move(reader)) {}
+
+    Result<ReadBatch> NextBatch() override {
+        return reader_->NextBatch();
+    }
+
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        return reader_->NextBatchWithBitmap();
+    }
+
+    Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override {
+        return reader_->GetFileSchema();
+    }
+
+    Status SetReadSchema(::ArrowSchema* schema, const std::shared_ptr<Predicate>& predicate,
+                         const std::optional<RoaringBitmap32>& selection) override {
+        if (selection) {
+            return Status::Invalid("High position test format does not support bitmap32 selection");
+        }
+        return reader_->SetReadSchema(schema, predicate, std::nullopt);
+    }
+
+    Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override {
+        PAIMON_ASSIGN_OR_RAISE(uint64_t position, reader_->GetPreviousBatchFileRowId(batch_row_id));
+        return ToHighPosition(position);
+    }
+
+    Result<uint64_t> GetNumberOfRows() const override {
+        PAIMON_ASSIGN_OR_RAISE(uint64_t count, reader_->GetNumberOfRows());
+        return ToHighPosition(count);
+    }
+
+    Status SeekToRow(uint64_t row_number) override {
+        return reader_->SeekToRow(ToPhysicalPosition(row_number));
+    }
+
+    Result<uint64_t> GetNextRowToRead() const override {
+        PAIMON_ASSIGN_OR_RAISE(uint64_t position, reader_->GetNextRowToRead());
+        return ToHighPosition(position);
+    }
+
+    Result<std::vector<std::pair<uint64_t, uint64_t>>> GenReadRanges(
+        bool* need_prefetch) const override {
+        std::vector<std::pair<uint64_t, uint64_t>> ranges;
+        PAIMON_ASSIGN_OR_RAISE(ranges, reader_->GenReadRanges(need_prefetch));
+        for (auto& range : ranges) {
+            range = {ToHighPosition(range.first), ToHighPosition(range.second)};
+        }
+        return ranges;
+    }
+
+    Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& ranges) override {
+        std::vector<std::pair<uint64_t, uint64_t>> physical_ranges;
+        for (const auto& range : ranges) {
+            physical_ranges.emplace_back(ToPhysicalPosition(range.first),
+                                         ToPhysicalPosition(range.second));
+        }
+        return reader_->SetReadRanges(physical_ranges);
+    }
+
+    Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
+        return reader_->PreBufferRange();
+    }
+
+    void SetPreBufferRangeCallback(PreBufferRangeCallback callback) override {
+        reader_->SetPreBufferRangeCallback(std::move(callback));
+    }
+
+    bool SupportPreciseBitmapSelection() const override {
+        return false;
+    }
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return reader_->GetReaderMetrics();
+    }
+
+    void Close() override {
+        reader_->Close();
+    }
+
+    void Warmup() override {
+        reader_->Warmup();
+    }
+
+ private:
+    static uint64_t ToHighPosition(uint64_t position) {
+        return (position << 32) + 7;
+    }
+
+    static uint64_t ToPhysicalPosition(uint64_t position) {
+        // Seek to the first stored row at or after a position in the sparse coordinate space.
+        return position <= 7 ? 0 : ((position - 8) >> 32) + 1;
+    }
+
+    std::unique_ptr<PrefetchFileBatchReader> reader_;
+};
+
+class HighPositionReaderBuilder : public ReaderBuilder {
+ public:
+    explicit HighPositionReaderBuilder(std::unique_ptr<ReaderBuilder> builder)
+        : builder_(std::move(builder)) {}
+
+    ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
+        builder_->WithMemoryPool(pool);
+        return this;
+    }
+
+    ReaderBuilder* WithCache(const std::shared_ptr<Cache>& cache) override {
+        builder_->WithCache(cache);
+        return this;
+    }
+
+    ReaderBuilder* WithReadHints(const std::optional<ReadHints>& hints) override {
+        builder_->WithReadHints(hints);
+        return this;
+    }
+
+    Result<std::unique_ptr<FileBatchReader>> Build(
+        const std::shared_ptr<InputStream>& input) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader, builder_->Build(input));
+        return std::unique_ptr<FileBatchReader>(std::make_unique<HighPositionFileBatchReader>(
+            checked_pointer_cast<PrefetchFileBatchReader>(std::move(reader))));
+    }
+
+ private:
+    std::unique_ptr<ReaderBuilder> builder_;
+};
+
+class HighPositionFileFormat : public FileFormat {
+ public:
+    explicit HighPositionFileFormat(std::unique_ptr<FileFormat> parquet)
+        : parquet_(std::move(parquet)) {}
+
+    const std::string& Identifier() const override {
+        return identifier_;
+    }
+
+    Result<std::unique_ptr<ReaderBuilder>> CreateReaderBuilder(int32_t batch_size) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> builder,
+                               parquet_->CreateReaderBuilder(batch_size));
+        return std::unique_ptr<ReaderBuilder>(
+            std::make_unique<HighPositionReaderBuilder>(std::move(builder)));
+    }
+
+    Result<std::unique_ptr<WriterBuilder>> CreateWriterBuilder(::ArrowSchema* schema,
+                                                               int32_t batch_size) const override {
+        return parquet_->CreateWriterBuilder(schema, batch_size);
+    }
+
+    Result<std::unique_ptr<FormatStatsExtractor>> CreateStatsExtractor(
+        ::ArrowSchema* schema) const override {
+        return parquet_->CreateStatsExtractor(schema);
+    }
+
+ private:
+    const std::string identifier_ = "high_position_parquet";
+    std::unique_ptr<FileFormat> parquet_;
+};
+
+class HighPositionFileFormatFactory : public FileFormatFactory {
+ public:
+    const char* Identifier() const override {
+        return "high_position_parquet";
+    }
+
+    Result<std::unique_ptr<FileFormat>> Create(
+        const std::map<std::string, std::string>& options) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileFormat> parquet,
+                               FileFormatFactory::Get("parquet", options));
+        return std::unique_ptr<FileFormat>(
+            std::make_unique<HighPositionFileFormat>(std::move(parquet)));
+    }
+};
+
+REGISTER_PAIMON_FACTORY(HighPositionFileFormatFactory);
+
+class PkCompactionInteTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
@@ -211,8 +395,10 @@ class PkCompactionInteTest : public ::testing::Test,
 
     Result<std::vector<std::shared_ptr<CommitMessage>>> CompactAndCommit(
         const std::string& table_path, const std::map<std::string, std::string>& partition,
-        int32_t bucket, bool full_compaction, int64_t commit_identifier) {
+        int32_t bucket, bool full_compaction, int64_t commit_identifier,
+        const std::map<std::string, std::string>& options = {}) {
         WriteContextBuilder write_builder(table_path, "commit_user_1");
+        write_builder.SetOptions(options);
         write_builder.WithStreamingMode(true).WithTempDirectory(
             PathUtil::JoinPath(dir_->Str(), "tmp"));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
@@ -378,11 +564,21 @@ class PkCompactionInteTest : public ::testing::Test,
         return split.value();
     }
 
- private:
+ protected:
     std::shared_ptr<MemoryPool> pool_;
     std::unique_ptr<UniqueTestDirectory> dir_;
     arrow::FieldVector fields_;
 };
+
+class PkCompactionFormatInteTest : public PkCompactionInteTest,
+                                   public ::testing::WithParamInterface<std::string> {};
+
+class PkCompactionDvInteTest : public PkCompactionInteTest,
+                               public ::testing::WithParamInterface<bool> {};
+
+class PkCompactionFormatDvInteTest
+    : public PkCompactionInteTest,
+      public ::testing::WithParamInterface<std::tuple<std::string, bool>> {};
 
 TEST_F(PkCompactionInteTest, TestMetadataOnlyLevelUpgradeKeepsValueStats) {
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
@@ -442,7 +638,7 @@ TEST_F(PkCompactionInteTest, TestMetadataOnlyLevelUpgradeKeepsValueStats) {
 }
 
 // Verify shared-shredding MAP can be read correctly after PK full compaction.
-TEST_P(PkCompactionInteTest, TestKeyValueTableFullCompactionWithMapSharedShredding) {
+TEST_P(PkCompactionFormatInteTest, TestKeyValueTableFullCompactionWithMapSharedShredding) {
     auto file_format = GetParam();
     if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
@@ -514,8 +710,8 @@ TEST_P(PkCompactionInteTest, TestKeyValueTableFullCompactionWithMapSharedShreddi
     ASSERT_TRUE(success);
 }
 
-TEST_P(PkCompactionInteTest, TestKeyValueTableDvCompactionWithMapSharedShredding) {
-    auto file_format = GetParam();
+TEST_P(PkCompactionFormatDvInteTest, TestKeyValueTableDvCompactionWithMapSharedShredding) {
+    auto file_format = std::get<0>(GetParam());
     if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
@@ -535,6 +731,7 @@ TEST_P(PkCompactionInteTest, TestKeyValueTableDvCompactionWithMapSharedShredding
         {Options::FILE_SYSTEM, "local"},
         {Options::FILE_COMPRESSION, "none"},
         {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, std::get<1>(GetParam()) ? "true" : "false"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "2"},
         {"parquet.page.size", "1"},
@@ -640,7 +837,7 @@ TEST_P(PkCompactionInteTest, TestKeyValueTableDvCompactionWithMapSharedShredding
 //   7. ScanAndVerify after DV compact (data read with DV applied)
 //   8. Full compact to merge everything
 //   9. ScanAndVerify after full compact (all data merged)
-TEST_F(PkCompactionInteTest, DeduplicateWithDeletionVectors) {
+TEST_P(PkCompactionDvInteTest, DeduplicateWithDeletionVectors) {
     // f4 is a large padding field to make the initial file substantially bigger than
     // subsequent small level-0 files, preventing PickForSizeRatio from merging them all.
     arrow::FieldVector fields = {
@@ -649,11 +846,13 @@ TEST_F(PkCompactionInteTest, DeduplicateWithDeletionVectors) {
         arrow::field("f4", arrow::utf8())};
     std::vector<std::string> primary_keys = {"f0", "f1", "f2"};
     std::vector<std::string> partition_keys = {"f1"};
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "2"},
-                                                  {Options::BUCKET_KEY, "f2"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "2"},
+        {Options::BUCKET_KEY, "f2"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -752,6 +951,111 @@ TEST_F(PkCompactionInteTest, DeduplicateWithDeletionVectors) {
         // clang-format on
         ScanAndVerify(table_path, fields, expected_data);
     }
+}
+
+TEST_F(PkCompactionInteTest, DeduplicateWithBitmap64HighPositions) {
+    arrow::FieldVector fields = {
+        arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
+        arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64()),
+        arrow::field("f4", arrow::utf8())};
+    CreateTable(fields, /*partition_keys=*/{"f1"}, /*primary_keys=*/{"f0", "f1", "f2"},
+                {{Options::FILE_FORMAT, "high_position_parquet"},
+                 {Options::BUCKET, "2"},
+                 {Options::BUCKET_KEY, "f2"},
+                 {Options::FILE_SYSTEM, "local"},
+                 {Options::DELETION_VECTORS_ENABLED, "true"},
+                 {Options::DELETION_VECTOR_BITMAP64, "true"},
+                 {Options::READ_BATCH_SIZE, "2"}});
+    std::string table_path = TablePath();
+    auto data_type = arrow::struct_(fields);
+    int64_t commit_id = 0;
+    std::string padding(2048, 'X');
+    auto initial = arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
+        ["Alice", 10, 0, 1.0, ")" + padding + R"("],
+        ["Bob",   10, 0, 2.0, ")" + padding + R"("],
+        ["Carol", 10, 0, 3.0, ")" + padding + R"("],
+        ["Dave",  10, 0, 4.0, ")" + padding + R"("],
+        ["Eve",   10, 0, 5.0, ")" + padding + R"("]
+    ])")
+                       .ValueOrDie();
+    ASSERT_OK(WriteAndCommit(table_path, {{"f1", "10"}}, 0, initial, commit_id++));
+    ASSERT_OK_AND_ASSIGN(auto upgrade_msgs,
+                         CompactAndCommit(table_path, {{"f1", "10"}}, 0,
+                                          /*full_compaction=*/true, commit_id++));
+    ASSERT_FALSE(HasDeletionVectorIndexFiles(upgrade_msgs));
+
+    // Two small L0 files trigger lookup against the larger, upgraded file. Bob and Carol
+    // occupy distinct positions above UINT32_MAX, both sharing Alice's low 32 bits (7).
+    for (const auto& update :
+         {R"([["Bob", 10, 0, 102.0, "u1"]])", R"([["Carol", 10, 0, 203.0, "u2"]])"}) {
+        auto array = arrow::ipc::internal::json::ArrayFromJSON(data_type, update).ValueOrDie();
+        ASSERT_OK(WriteAndCommit(table_path, {{"f1", "10"}}, 0, array, commit_id++));
+    }
+    ASSERT_OK_AND_ASSIGN(auto compact_msgs,
+                         CompactAndCommit(table_path, {{"f1", "10"}}, 0,
+                                          /*full_compaction=*/false, commit_id++));
+    ASSERT_TRUE(HasDeletionVectorIndexFiles(compact_msgs));
+
+    // Reload committed metadata and DV bytes; no test-created DV or lookup result is injected.
+    ScanContextBuilder scan_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+    int32_t dv_count = 0;
+    for (const auto& split : plan->Splits()) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_TRUE(data_split);
+        auto deletion_files = DeletionVector::CreateDeletionFileMap(data_split->DataFiles(),
+                                                                    data_split->DeletionFiles());
+        auto factory = DeletionVector::CreateFactory(dir_->GetFileSystem(), deletion_files, pool_);
+        for (const auto& file : data_split->DataFiles()) {
+            if (deletion_files.count(file->file_name) == 0) {
+                continue;
+            }
+            ASSERT_EQ(file->row_count, 5);
+            ASSERT_OK_AND_ASSIGN(auto dv, factory(file->file_name));
+            ASSERT_TRUE(std::dynamic_pointer_cast<Bitmap64DeletionVector>(dv));
+            ASSERT_OK_AND_ASSIGN(int64_t cardinality, dv->GetCardinality());
+            ASSERT_EQ(cardinality, 2);
+            for (const auto& position : {(1LL << 32) + 7, (2LL << 32) + 7}) {
+                ASSERT_OK_AND_ASSIGN(bool deleted, dv->IsDeleted(position));
+                ASSERT_TRUE(deleted);
+            }
+            for (const auto& position : {7LL, (3LL << 32) + 7, (4LL << 32) + 7}) {
+                ASSERT_OK_AND_ASSIGN(bool deleted, dv->IsDeleted(position));
+                ASSERT_FALSE(deleted);
+            }
+            ++dv_count;
+        }
+    }
+    ASSERT_EQ(dv_count, 1);
+
+    std::map<std::pair<std::string, int32_t>, std::string> expected_data;
+    expected_data[{"f1=10/", 0}] = R"([
+        [0, "Alice", 10, 0, 1.0, ")" +
+                                   padding + R"("],
+        [0, "Dave",  10, 0, 4.0, ")" +
+                                   padding + R"("],
+        [0, "Eve",   10, 0, 5.0, ")" +
+                                   padding + R"("],
+        [0, "Bob",   10, 0, 102.0, "u1"],
+        [0, "Carol", 10, 0, 203.0, "u2"]
+    ])";
+    ScanAndVerify(table_path, fields, expected_data);
+
+    ASSERT_OK(CompactAndCommit(table_path, {{"f1", "10"}}, 0,
+                               /*full_compaction=*/true, commit_id++));
+    expected_data[{"f1=10/", 0}] = R"([
+        [0, "Alice", 10, 0, 1.0, ")" +
+                                   padding + R"("],
+        [0, "Bob",   10, 0, 102.0, "u1"],
+        [0, "Carol", 10, 0, 203.0, "u2"],
+        [0, "Dave",  10, 0, 4.0, ")" +
+                                   padding + R"("],
+        [0, "Eve",   10, 0, 5.0, ")" +
+                                   padding + R"("]
+    ])";
+    ScanAndVerify(table_path, fields, expected_data);
 }
 
 // Test: PK table compact writes output files to external path.
@@ -863,7 +1167,7 @@ TEST_F(PkCompactionInteTest, CompactWithExternalPath) {
 //   7. ScanAndVerify after DV compact
 //   8. Full compact to merge everything
 //   9. ScanAndVerify after full compact
-TEST_F(PkCompactionInteTest, AggMinWithAllNonNestedTypes) {
+TEST_P(PkCompactionDvInteTest, AggMinWithAllNonNestedTypes) {
     // f15 is a large padding field to inflate the initial file size for DV strategy.
     arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),   // PK
                                  arrow::field("f1", arrow::int32()),  // PK
@@ -884,13 +1188,15 @@ TEST_F(PkCompactionInteTest, AggMinWithAllNonNestedTypes) {
     std::vector<std::string> primary_keys = {"f0", "f1"};
     std::vector<std::string> partition_keys = {};
 
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::MERGE_ENGINE, "aggregation"},
-                                                  {Options::FIELDS_DEFAULT_AGG_FUNC, "min"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"},
-                                                  {"fields.f7.aggregate-function", "bool_and"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {Options::FIELDS_DEFAULT_AGG_FUNC, "min"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"},
+        {"fields.f7.aggregate-function", "bool_and"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -1004,7 +1310,7 @@ TEST_F(PkCompactionInteTest, AggMinWithAllNonNestedTypes) {
 //   7. ScanAndVerify after DV compact
 //   8. Full compact
 //   9. ScanAndVerify after full compact
-TEST_F(PkCompactionInteTest, AggMinWithPkInMiddle) {
+TEST_P(PkCompactionDvInteTest, AggMinWithPkInMiddle) {
     // f4 is a large padding field to inflate the initial file size for DV strategy.
     // PK fields f1(utf8) and f2(int32) are deliberately placed in the middle of the schema,
     // and the PK declaration order (f2, f1) differs from the schema order (f1, f2).
@@ -1018,9 +1324,13 @@ TEST_F(PkCompactionInteTest, AggMinWithPkInMiddle) {
     std::vector<std::string> partition_keys = {};
 
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, "parquet"},         {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, "local"},           {Options::MERGE_ENGINE, "aggregation"},
-        {Options::FIELDS_DEFAULT_AGG_FUNC, "min"}, {Options::DELETION_VECTORS_ENABLED, "true"}};
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {Options::FIELDS_DEFAULT_AGG_FUNC, "min"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -1128,7 +1438,7 @@ TEST_F(PkCompactionInteTest, AggMinWithPkInMiddle) {
 //   7. ScanAndVerify after DV compact
 //   8. Full compact
 //   9. ScanAndVerify after full compact
-TEST_F(PkCompactionInteTest, DeduplicateWithSequenceFieldAndPkInMiddle) {
+TEST_P(PkCompactionDvInteTest, DeduplicateWithSequenceFieldAndPkInMiddle) {
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::int32()),    // value
         arrow::field("f1", arrow::utf8()),     // PK
@@ -1141,9 +1451,13 @@ TEST_F(PkCompactionInteTest, DeduplicateWithSequenceFieldAndPkInMiddle) {
     std::vector<std::string> partition_keys = {};
 
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, "parquet"},  {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, "local"},    {Options::MERGE_ENGINE, "deduplicate"},
-        {Options::SEQUENCE_FIELD, "s1,s0"}, {Options::DELETION_VECTORS_ENABLED, "true"}};
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "deduplicate"},
+        {Options::SEQUENCE_FIELD, "s1,s0"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -1252,7 +1566,7 @@ TEST_F(PkCompactionInteTest, DeduplicateWithSequenceFieldAndPkInMiddle) {
 //   7. ScanAndVerify after DV compact
 //   8. Full compact
 //   9. ScanAndVerify after full compact
-TEST_F(PkCompactionInteTest, DeduplicateNestedTypesWithSequenceField) {
+TEST_P(PkCompactionDvInteTest, DeduplicateNestedTypesWithSequenceField) {
     auto map_type =
         std::make_shared<arrow::MapType>(arrow::field("key", arrow::utf8(), /*nullable=*/false),
                                          arrow::field("value", arrow::int32()));
@@ -1269,9 +1583,13 @@ TEST_F(PkCompactionInteTest, DeduplicateNestedTypesWithSequenceField) {
     std::vector<std::string> partition_keys = {};
 
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, "parquet"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, "local"},   {Options::MERGE_ENGINE, "deduplicate"},
-        {Options::SEQUENCE_FIELD, "seq"},  {Options::DELETION_VECTORS_ENABLED, "true"}};
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "deduplicate"},
+        {Options::SEQUENCE_FIELD, "seq"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -1503,7 +1821,7 @@ TEST_F(PkCompactionInteTest, CompactWithSchemaEvolution) {
 //   6. ScanAndVerify after DV compact
 //   7. Full compact → everything merges to level-5 orc
 //   8. ScanAndVerify after full compact
-TEST_F(PkCompactionInteTest, FileFormatPerLevelWithDV) {
+TEST_P(PkCompactionDvInteTest, FileFormatPerLevelWithDV) {
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64()),
@@ -1521,7 +1839,8 @@ TEST_F(PkCompactionInteTest, FileFormatPerLevelWithDV) {
         {Options::BUCKET, "2"},
         {Options::BUCKET_KEY, "f2"},
         {Options::FILE_SYSTEM, "local"},
-        {Options::DELETION_VECTORS_ENABLED, "true"}};
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -1778,17 +2097,19 @@ TEST_F(PkCompactionInteTest, ContinuousWriteWithBackgroundCompact) {
 //   4. Non-full compact → lookup against max-level file produces DV.
 //   5. ScanAndVerify: "Carol" must be gone, "Bob" must have updated value.
 //   6. Full compact → ScanAndVerify again, data must be identical.
-TEST_F(PkCompactionInteTest, DeduplicateWithRowKindAndDV) {
+TEST_P(PkCompactionDvInteTest, DeduplicateWithRowKindAndDV) {
     // f3 is a large padding field to make the initial file substantially bigger.
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
         arrow::field("f2", arrow::float64()), arrow::field("f3", arrow::utf8())};
     std::vector<std::string> primary_keys = {"f0"};
     std::vector<std::string> partition_keys = {};
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -2162,7 +2483,7 @@ TEST_F(PkCompactionInteTest, TestFirstRowNoDV) {
     }
 }
 
-TEST_F(PkCompactionInteTest, TestPartialUpdateWithDV) {
+TEST_P(PkCompactionDvInteTest, TestPartialUpdateWithDV) {
     // f2 and f3 are nullable value fields; PartialUpdate keeps the latest non-null value
     // per field. f4 is a large padding field to inflate the initial file size so that
     // PickForSizeRatio does not merge L0 files directly into Lmax.
@@ -2172,12 +2493,14 @@ TEST_F(PkCompactionInteTest, TestPartialUpdateWithDV) {
         arrow::field("f3", arrow::float64(), /*nullable=*/true), arrow::field("f4", arrow::utf8())};
     std::vector<std::string> primary_keys = {"f0", "f1"};
     std::vector<std::string> partition_keys = {"f1"};
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::BUCKET_KEY, "f0"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::MERGE_ENGINE, "partial-update"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "f0"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "partial-update"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -2291,18 +2614,20 @@ TEST_F(PkCompactionInteTest, TestPartialUpdateWithDV) {
     }
 }
 
-TEST_F(PkCompactionInteTest, TestDeduplicateWithDvInAllLevels) {
+TEST_P(PkCompactionDvInteTest, TestDeduplicateWithDvInAllLevels) {
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64()),
         arrow::field("f4", arrow::utf8())};
     std::vector<std::string> primary_keys = {"f0", "f1", "f2"};
     std::vector<std::string> partition_keys = {"f1"};
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::BUCKET_KEY, "f2"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "f2"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -2726,19 +3051,21 @@ TEST_F(PkCompactionInteTest, TestAggregateWithNoDvAndOrphanDelete) {
     }
 }
 
-TEST_F(PkCompactionInteTest, TestDuplicateWithDvAndOrphanDelete) {
+TEST_P(PkCompactionDvInteTest, TestDuplicateWithDvAndOrphanDelete) {
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64()),
         arrow::field("f4", arrow::utf8())};
     std::vector<std::string> primary_keys = {"f0", "f1"};
     std::vector<std::string> partition_keys = {"f1"};
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::BUCKET_KEY, "f0"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::MERGE_ENGINE, "deduplicate"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "f0"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "deduplicate"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -2890,7 +3217,7 @@ TEST_F(PkCompactionInteTest, TestKeyValueTableCompactionWithIOException) {
     ASSERT_TRUE(compaction_run_complete);
 }
 
-TEST_P(PkCompactionInteTest, TestKeyValueTableStreamWriteFullCompaction) {
+TEST_P(PkCompactionFormatInteTest, TestKeyValueTableStreamWriteFullCompaction) {
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
@@ -2983,7 +3310,7 @@ TEST_P(PkCompactionInteTest, TestKeyValueTableStreamWriteFullCompaction) {
 //   7. ScanAndVerify after DV compact
 //   8. Full compact
 //   9. ScanAndVerify after full compact
-TEST_F(PkCompactionInteTest, RemoteLookupFileWithExternalPath) {
+TEST_P(PkCompactionDvInteTest, RemoteLookupFileWithExternalPath) {
     // f4 is a large padding field to inflate the initial file size for DV strategy.
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::int32()),    // value field (min agg)
@@ -3006,6 +3333,7 @@ TEST_F(PkCompactionInteTest, RemoteLookupFileWithExternalPath) {
         {Options::MERGE_ENGINE, "aggregation"},
         {Options::FIELDS_DEFAULT_AGG_FUNC, "min"},
         {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"},
         {Options::LOOKUP_REMOTE_FILE_ENABLED, "true"},
         {Options::LOOKUP_REMOTE_LEVEL_THRESHOLD, "1"},
         {Options::DATA_FILE_EXTERNAL_PATHS, "FILE://" + external_path},
@@ -3121,7 +3449,7 @@ TEST_F(PkCompactionInteTest, RemoteLookupFileWithExternalPath) {
 //   8. ScanAndVerify after DV compact
 //   9. Full compact
 //   10. ScanAndVerify after full compact
-TEST_F(PkCompactionInteTest, RemoteLookupFileWithSchemaEvolution) {
+TEST_P(PkCompactionDvInteTest, RemoteLookupFileWithSchemaEvolution) {
     // f4 is a large padding field to inflate the initial file size for DV strategy.
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::int32()),    // value field (min agg)
@@ -3132,14 +3460,16 @@ TEST_F(PkCompactionInteTest, RemoteLookupFileWithSchemaEvolution) {
     std::vector<std::string> primary_keys = {"f2", "f1"};
     std::vector<std::string> partition_keys = {};
 
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::MERGE_ENGINE, "aggregation"},
-                                                  {Options::FIELDS_DEFAULT_AGG_FUNC, "min"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"},
-                                                  {Options::LOOKUP_REMOTE_FILE_ENABLED, "true"},
-                                                  {Options::LOOKUP_REMOTE_LEVEL_THRESHOLD, "1"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {Options::FIELDS_DEFAULT_AGG_FUNC, "min"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"},
+        {Options::LOOKUP_REMOTE_FILE_ENABLED, "true"},
+        {Options::LOOKUP_REMOTE_LEVEL_THRESHOLD, "1"}};
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -3275,8 +3605,8 @@ TEST_F(PkCompactionInteTest, RemoteLookupFileWithSchemaEvolution) {
 //   4. ScanAndVerify after DV compact
 //   5. Full compact
 //   6. ScanAndVerify after full compact
-TEST_P(PkCompactionInteTest, TestLookupCompatibility) {
-    auto file_format = GetParam();
+TEST_P(PkCompactionFormatDvInteTest, TestLookupCompatibility) {
+    auto file_format = std::get<0>(GetParam());
     if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
@@ -3292,11 +3622,13 @@ TEST_P(PkCompactionInteTest, TestLookupCompatibility) {
         arrow::field("f3", arrow::float64()),  // value field (min agg)
         arrow::field("f4", arrow::utf8())};    // padding value field (min agg)
 
+    std::map<std::string, std::string> options = {
+        {Options::DELETION_VECTOR_BITMAP64, std::get<1>(GetParam()) ? "true" : "false"}};
     int64_t commit_id = 6;
     // Step 2: Non-full compact → two level-0 files merge, lookup against max-level produces DV.
     ASSERT_OK_AND_ASSIGN(
         auto dv_compact_msgs,
-        CompactAndCommit(table_path, {}, 0, /*full_compaction=*/false, commit_id++));
+        CompactAndCommit(table_path, {}, 0, /*full_compaction=*/false, commit_id++, options));
 
     // Step 2: Assert DV index files are present.
     ASSERT_TRUE(HasDeletionVectorIndexFiles(dv_compact_msgs))
@@ -3322,7 +3654,7 @@ TEST_P(PkCompactionInteTest, TestLookupCompatibility) {
     // Step 4: Full compact to merge everything.
     ASSERT_OK_AND_ASSIGN(
         auto full_compact_msgs,
-        CompactAndCommit(table_path, {}, 0, /*full_compaction=*/true, commit_id++));
+        CompactAndCommit(table_path, {}, 0, /*full_compaction=*/true, commit_id++, options));
     ASSERT_TRUE(HasExtraLookupFiles(full_compact_msgs));
 
     // Step 5: ScanAndVerify after full compact.
@@ -3341,7 +3673,7 @@ TEST_P(PkCompactionInteTest, TestLookupCompatibility) {
     }
 }
 
-TEST_F(PkCompactionInteTest, PkDvAndAggWithIOException) {
+TEST_P(PkCompactionDvInteTest, PkDvAndAggWithIOException) {
     // f4 is a large padding field to inflate the initial file size for DV strategy.
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::int32()),    // value field (min agg)
@@ -3352,14 +3684,16 @@ TEST_F(PkCompactionInteTest, PkDvAndAggWithIOException) {
     std::vector<std::string> primary_keys = {"f2", "f1"};
     std::vector<std::string> partition_keys = {};
 
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::MERGE_ENGINE, "aggregation"},
-                                                  {Options::FIELDS_DEFAULT_AGG_FUNC, "min"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"},
-                                                  {Options::LOOKUP_REMOTE_FILE_ENABLED, "true"},
-                                                  {Options::LOOKUP_REMOTE_LEVEL_THRESHOLD, "1"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {Options::FIELDS_DEFAULT_AGG_FUNC, "min"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"},
+        {Options::LOOKUP_REMOTE_FILE_ENABLED, "true"},
+        {Options::LOOKUP_REMOTE_LEVEL_THRESHOLD, "1"}};
 
     auto data_type = arrow::struct_(fields);
     int64_t commit_id = 0;
@@ -3450,7 +3784,7 @@ TEST_F(PkCompactionInteTest, PkDvAndAggWithIOException) {
 
 // End-to-end coverage for the collect / merge_map / nested_update aggregators: values are merged
 // both on read (across level-0 files) and during compaction, then verified from the written files.
-TEST_F(PkCompactionInteTest, AggCollectMergeMapAndNestedUpdate) {
+TEST_P(PkCompactionDvInteTest, AggCollectMergeMapAndNestedUpdate) {
     auto map_type =
         std::make_shared<arrow::MapType>(arrow::field("key", arrow::int32(), /*nullable=*/false),
                                          arrow::field("value", arrow::int32()));
@@ -3459,16 +3793,18 @@ TEST_F(PkCompactionInteTest, AggCollectMergeMapAndNestedUpdate) {
         arrow::field("f1", arrow::list(arrow::int32())), arrow::field("f2", map_type),
         arrow::field("f3", arrow::list(arrow::struct_({arrow::field("id", arrow::int32()),
                                                        arrow::field("name", arrow::utf8())})))};
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::MERGE_ENGINE, "aggregation"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"},
-                                                  {"fields.f1.aggregate-function", "collect"},
-                                                  {"fields.f1.distinct", "true"},
-                                                  {"fields.f2.aggregate-function", "merge_map"},
-                                                  {"fields.f3.aggregate-function", "nested_update"},
-                                                  {"fields.f3.nested-key", "id"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"},
+        {"fields.f1.aggregate-function", "collect"},
+        {"fields.f1.distinct", "true"},
+        {"fields.f2.aggregate-function", "merge_map"},
+        {"fields.f3.aggregate-function", "nested_update"},
+        {"fields.f3.nested-key", "id"}};
     CreateTable(fields, /*partition_keys=*/{}, /*primary_keys=*/{"f0"}, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -3535,17 +3871,19 @@ TEST_F(PkCompactionInteTest, AggCollectMergeMapAndNestedUpdate) {
 // End-to-end coverage for the sketch aggregators. The last batch writes null sketches, which is the
 // path where the aggregator must hand back an owning copy of the accumulator rather than a view
 // into the row buffer that is about to be overwritten.
-TEST_F(PkCompactionInteTest, AggHllAndThetaSketches) {
+TEST_P(PkCompactionDvInteTest, AggHllAndThetaSketches) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),  // PK
                                  arrow::field("f1", arrow::binary()),
                                  arrow::field("f2", arrow::binary())};
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
-                                                  {Options::BUCKET, "1"},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::MERGE_ENGINE, "aggregation"},
-                                                  {Options::DELETION_VECTORS_ENABLED, "true"},
-                                                  {"fields.f1.aggregate-function", "hll_sketch"},
-                                                  {"fields.f2.aggregate-function", "theta_sketch"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {Options::DELETION_VECTOR_BITMAP64, GetParam() ? "true" : "false"},
+        {"fields.f1.aggregate-function", "hll_sketch"},
+        {"fields.f2.aggregate-function", "theta_sketch"}};
     CreateTable(fields, /*partition_keys=*/{}, /*primary_keys=*/{"f0"}, options);
     std::string table_path = TablePath();
     int64_t commit_id = 0;
@@ -3654,7 +3992,12 @@ std::vector<std::string> GetTestValuesForCompactionInteTest() {
     return values;
 }
 
-INSTANTIATE_TEST_SUITE_P(FileFormat, PkCompactionInteTest,
+INSTANTIATE_TEST_SUITE_P(FileFormat, PkCompactionFormatInteTest,
                          ::testing::ValuesIn(GetTestValuesForCompactionInteTest()));
+INSTANTIATE_TEST_SUITE_P(Bitmap64, PkCompactionDvInteTest, ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(
+    FileFormatAndBitmap64, PkCompactionFormatDvInteTest,
+    ::testing::Combine(::testing::ValuesIn(GetTestValuesForCompactionInteTest()),
+                       ::testing::Bool()));
 
 }  // namespace paimon::test

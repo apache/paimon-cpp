@@ -96,8 +96,17 @@ class PositionShiftedDeletionVector : public DeletionVector {
     /// IsEmpty; the row counting that does consult a vector's cardinality builds its factory
     /// from the split's deletion files, never from this view.
     Result<int64_t> GetCardinality() const override {
-        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 valid, inner_->IsValid(offset_, length_));
-        return length_ - valid.Cardinality();
+        int64_t count = 0;
+        PAIMON_RETURN_NOT_OK(ForEachDeletedPosition([&count](int64_t) { ++count; }));
+        return count;
+    }
+
+    Status ForEachDeletedPosition(const std::function<void(int64_t)>& consumer) const override {
+        return inner_->ForEachDeletedPosition([&](int64_t position) {
+            if (position >= offset_ && position - offset_ < length_) {
+                consumer(position - offset_);
+            }
+        });
     }
 
     Status Delete(int64_t) override {
