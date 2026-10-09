@@ -17,8 +17,10 @@
  * under the License.
  */
 
+#include <atomic>
 #include <future>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -35,6 +37,8 @@
 #include "paimon/core/io/meta_to_arrow_array_converter.h"
 #include "paimon/core/manifest/manifest_entry_serializer.h"
 #include "paimon/core/manifest/manifest_file.h"
+#include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/operation/data_evolution_file_store_scan.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/format/file_format.h"
@@ -167,6 +171,113 @@ TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
     uncached.reset();
     // Materialized entries must remain valid after both cache eviction and reader destruction.
     ASSERT_EQ(expected, entries);
+}
+
+TEST_F(RowRangeManifestFileTest, ScanPlanPreservesResultsAcrossLazyDecodeAndCacheModes) {
+    auto pool = GetDefaultPool();
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    auto filters = std::make_shared<ScanFilter>(
+        nullptr, std::vector<std::map<std::string, std::string>>{}, std::nullopt);
+    auto schema = arrow::schema({arrow::field("value", arrow::int32())});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, {}));
+    ASSERT_OK_AND_ASSIGN(ManifestEntry a, Entry("a.parquet", 100, 10));
+    ASSERT_OK_AND_ASSIGN(ManifestEntry b, Entry("b.parquet", 110, 10));
+    ASSERT_OK_AND_ASSIGN(ManifestEntry c, Entry("c.parquet", 120, 10));
+    ASSERT_OK_AND_ASSIGN(ManifestEntry unknown, Entry("unknown.parquet", std::nullopt, 10));
+    ManifestEntry deleted(FileKind::Delete(), a.Partition(), a.Bucket(), a.TotalBuckets(),
+                          a.File());
+    struct Query {
+        std::optional<std::vector<Range>> ranges;
+        std::vector<ManifestEntry> expected;
+        int32_t retained_entries;
+    };
+    const std::vector<Query> queries = {
+        {std::vector<Range>{Range(100, 100)}, {unknown}, 3},
+        {std::vector<Range>{Range(110, 110)}, {b, unknown}, 2},
+        {std::vector<Range>{Range(120, 129)}, {unknown, c}, 2},
+        {std::vector<Range>{Range(109, 110), Range(129, 129)}, {b, unknown, c}, 5},
+        {std::vector<Range>{Range(1000, 1000)}, {unknown}, 1},
+        {std::vector<Range>{}, {unknown}, 1},
+        {std::nullopt, {b, unknown, c}, 5}};
+    for (bool cache_enabled : {false, true}) {
+        SCOPED_TRACE(cache_enabled);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto fs = dir->GetFileSystem();
+        auto cache = cache_enabled
+                         ? std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 1024 * 1024)
+                         : nullptr;
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ManifestFile> manifest,
+                             CreateManifest(dir->Str(), fs, cache_enabled, cache));
+        using WrittenFile = std::pair<std::string, int64_t>;
+        ASSERT_OK_AND_ASSIGN(WrittenFile base, manifest->WriteWithoutRolling({a, b, unknown}));
+        ASSERT_OK_AND_ASSIGN(WrittenFile delta, manifest->WriteWithoutRolling({deleted, c}));
+        // Unknown manifest bounds force entry-level pruning even for disjoint queries.
+        ManifestFileMeta base_meta(base.first, base.second, 3, 0, SimpleStats::EmptyStats(), 0, 0,
+                                   0, 0, 0, std::nullopt, std::nullopt);
+        ManifestFileMeta delta_meta(delta.first, delta.second, 1, 1, SimpleStats::EmptyStats(), 0,
+                                    0, 0, 0, 0, std::nullopt, std::nullopt);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> format,
+                             FileFormatFactory::Get("avro", {}));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<FileStorePathFactory> paths,
+            FileStorePathFactory::Create(dir->Str(), schema, {}, "", "avro", "data-", true, {},
+                                         std::nullopt, false, pool));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ManifestList> lists,
+                             ManifestList::Create(fs, format, "null", paths, cache, pool));
+        ASSERT_OK_AND_ASSIGN(WrittenFile base_list, lists->Write({base_meta}));
+        ASSERT_OK_AND_ASSIGN(WrittenFile delta_list, lists->Write({delta_meta}));
+        Snapshot snapshot(1, 0, base_list.first, base_list.second, delta_list.first,
+                          delta_list.second, std::nullopt, std::nullopt, std::nullopt, "test", 0,
+                          Snapshot::CommitKind::Append(), 0, 30, 0, std::nullopt, std::nullopt,
+                          std::nullopt, std::nullopt, std::nullopt);
+        for (bool lazy_decode : {false, true}) {
+            SCOPED_TRACE(lazy_decode);
+            const int64_t previous_loads = cache ? cache->SupplierCallCount() : 0;
+            if (cache) {
+                cache->InvalidateAll();
+            }
+            ASSERT_OK_AND_ASSIGN(
+                CoreOptions options,
+                CoreOptions::FromMap({{Options::DATA_EVOLUTION_ENABLED, "true"},
+                                      {Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
+                                       lazy_decode ? "true" : "false"}}));
+            options.WithCache(cache);
+            for (int32_t attempt = 0; attempt < 2; ++attempt) {
+                SCOPED_TRACE(attempt);
+                for (size_t i = 0; i < queries.size(); ++i) {
+                    SCOPED_TRACE(i);
+                    const auto& query = queries[i];
+                    ASSERT_OK_AND_ASSIGN(std::unique_ptr<DataEvolutionFileStoreScan> scan,
+                                         DataEvolutionFileStoreScan::Create(
+                                             nullptr, nullptr, lists, manifest, table_schema,
+                                             schema, filters, options, executor, pool));
+                    scan->WithSnapshot(snapshot);
+                    if (query.ranges) {
+                        ASSERT_OK_AND_ASSIGN(RowRangeIndex ranges,
+                                             RowRangeIndex::Create(query.ranges.value()));
+                        scan->WithRowRangeIndex(ranges);
+                    }
+                    std::atomic<int32_t> filter_calls{0};
+                    scan->WithLevelFilter([&](int32_t) {
+                        ++filter_calls;
+                        return true;
+                    });
+                    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStoreScan::RawPlan> plan,
+                                         scan->CreatePlan());
+                    ASSERT_EQ(query.expected, plan->Files());
+                    // The regular filter sees only retained entries when early pruning is on.
+                    // This also verifies that both the Add and Delete of a reach the merge.
+                    ASSERT_EQ(lazy_decode ? query.retained_entries : 5, filter_calls.load());
+                    if (cache) {
+                        // Two manifest lists and two manifests load once per cache reset.
+                        ASSERT_EQ(previous_loads + 4, cache->SupplierCallCount());
+                    }
+                }
+            }
+        }
+    }
 }
 
 TEST_F(RowRangeManifestFileTest, OrcCachePreservesManifestMetadata) {
