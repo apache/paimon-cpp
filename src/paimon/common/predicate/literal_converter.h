@@ -134,10 +134,6 @@ class PAIMON_EXPORT LiteralConverter {
                 literals.emplace_back(literal_type);
             } else {
                 int64_t dict_index = indices->Value(i);
-                if (dictionary->IsNull(dict_index)) {
-                    literals.emplace_back(literal_type);
-                    continue;
-                }
                 auto value = dictionary->GetView(dict_index);
                 literals.emplace_back(literal_type, value.data(), value.size(), own_data);
             }

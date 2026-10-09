@@ -30,6 +30,8 @@ Result<std::shared_ptr<arrow::Array>> CastingUtils::DecodeDictionary(
     }
     const auto& dictionary_type = checked_cast<const arrow::DictionaryType&>(*array->type());
     std::shared_ptr<arrow::DataType> value_type = dictionary_type.value_type();
+    /// We're not casting `LARGE_BINARY` to `BINARY` since `BLOB` specifically expects
+    /// `LARGE_BINARY`. See also in `src/paimon/common/utils/field_type_utils.h`.
     if (value_type->id() == arrow::Type::LARGE_STRING) {
         value_type = arrow::utf8();
     }
