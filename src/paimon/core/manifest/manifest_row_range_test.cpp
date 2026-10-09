@@ -42,7 +42,6 @@
 #include "paimon/format/format_writer.h"
 #include "paimon/format/writer_builder.h"
 #include "paimon/fs/local/local_file_system.h"
-#include "paimon/table/source/scan_metrics.h"
 #include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/row_range_index.h"
@@ -72,12 +71,12 @@ class RowRangeManifestFileTest : public ::testing::Test {
     }
 
     Result<ManifestEntry> Entry(const std::string& name, std::optional<int64_t> first,
-                                int64_t count, const FileKind& kind = FileKind::Add()) {
+                                int64_t count) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFileMeta> meta,
                                DataFileMeta::ForAppend(name, 100, count, SimpleStats::EmptyStats(),
                                                        0, 0, 0, FileSource::Append(), std::nullopt,
                                                        std::nullopt, first, std::nullopt));
-        return ManifestEntry(kind, BinaryRow::EmptyRow(), 0, 1, meta);
+        return ManifestEntry(FileKind::Add(), BinaryRow::EmptyRow(), 0, 1, meta);
     }
 
     Status WriteArray(const std::string& path, const std::string& name,
@@ -128,7 +127,7 @@ TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
         return Status::OK();
     };
     ASSERT_OK(read());
-    // The manifest has one decoded entry; no raw-byte copy is retained.
+    // The first read loads the manifest once; concurrent warm reads reuse it.
     ASSERT_EQ(1, cache->SupplierCallCount(cache_kind));
     // Readers own their decode state; the cache only shares immutable bytes.
     std::vector<std::future<Status>> readers;
@@ -156,7 +155,6 @@ TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
     ASSERT_OK(
         unsupported->ReadRowRangeEntries(written.first, ranges, nullptr, written.second, &entries));
     ASSERT_EQ(expected, entries);
-    ASSERT_TRUE(unsupported->GetReadMetrics()->GetAllCounters().empty());
     entries.clear();
     auto small_cache = std::make_shared<LruCache>(1);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> uncached,
@@ -207,11 +205,6 @@ TEST_F(RowRangeManifestFileTest, OrcCachePreservesManifestMetadata) {
         ASSERT_OK(reader->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &actual));
         ASSERT_EQ(expected, actual);
         ASSERT_EQ(1, cache->SupplierCallCount(CacheKind::MANIFEST));
-        ASSERT_OK_AND_ASSIGN(uint64_t count,
-                             reader->GetReadMetrics()->GetCounter(
-                                 attempt == 0 ? ScanMetrics::MANIFEST_ARROW_CACHE_MISSES
-                                              : ScanMetrics::MANIFEST_ARROW_CACHE_HITS));
-        ASSERT_EQ(1, count);
     }
 }
 
@@ -388,44 +381,6 @@ TEST_F(RowRangeManifestFileTest, CacheAdmissionFailureReusesAlreadyDecodedBatche
     ASSERT_OK(manifest->Read(written.first, filter, written.second, &entries));
     ASSERT_EQ(1, calls);
     ASSERT_EQ(std::vector<ManifestEntry>{entry}, entries);
-    ASSERT_TRUE(manifest->GetReadMetrics()->GetAllCounters().empty());
-}
-
-TEST_F(RowRangeManifestFileTest, CacheMetricsCountReadsAndPreserveSnapshots) {
-    auto dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(dir);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> manifest,
-                         CreateManifest(dir->Str(), dir->GetFileSystem(), true));
-    ASSERT_OK_AND_ASSIGN(ManifestEntry a, Entry("a.parquet", 100, 10));
-    ASSERT_OK_AND_ASSIGN(ManifestEntry b, Entry("b.parquet", 110, 10));
-    using WrittenFile = std::pair<std::string, int64_t>;
-    ASSERT_OK_AND_ASSIGN(WrittenFile written, manifest->WriteWithoutRolling({a, b}));
-    ASSERT_OK_AND_ASSIGN(RowRangeIndex ranges, RowRangeIndex::Create({Range(110, 110)}));
-    for (int32_t i = 0; i < 2; ++i) {
-        std::vector<ManifestEntry> entries;
-        ASSERT_OK(manifest->ReadRowRangeEntries(written.first, ranges, nullptr, written.second,
-                                                &entries));
-        ASSERT_EQ(std::vector<ManifestEntry>{b}, entries);
-    }
-    auto metrics = manifest->GetReadMetrics();
-    ASSERT_OK_AND_ASSIGN(uint64_t hits,
-                         metrics->GetCounter(ScanMetrics::MANIFEST_ARROW_CACHE_HITS));
-    ASSERT_OK_AND_ASSIGN(uint64_t misses,
-                         metrics->GetCounter(ScanMetrics::MANIFEST_ARROW_CACHE_MISSES));
-    ASSERT_EQ(1, hits);
-    ASSERT_EQ(1, misses);
-    std::vector<ManifestEntry> entries;
-    ASSERT_NOK(manifest->ReadRowRangeEntries(
-        written.first, ranges,
-        [](const ManifestEntry&) -> Result<bool> { return Status::IOError("filter failure"); },
-        written.second, &entries));
-    ASSERT_OK_AND_ASSIGN(uint64_t after_error, manifest->GetReadMetrics()->GetCounter(
-                                                   ScanMetrics::MANIFEST_ARROW_CACHE_HITS));
-    ASSERT_EQ(2, after_error);
-    // Previously returned snapshots remain unchanged after subsequent reads.
-    ASSERT_OK_AND_ASSIGN(uint64_t old_snapshot,
-                         metrics->GetCounter(ScanMetrics::MANIFEST_ARROW_CACHE_HITS));
-    ASSERT_EQ(1, old_snapshot);
 }
 
 TEST_F(RowRangeManifestFileTest, BoundariesUnknownRangesAndDeleteMerging) {
@@ -556,16 +511,24 @@ TEST_F(RowRangeManifestFileTest, SchemaEvolutionAndVersionValidation) {
         std::shared_ptr<arrow::StructArray> evolved = evolved_result.ValueOrDie();
         const std::string name = fmt::format("manifest-evolved-{}", mode);
         ASSERT_OK(WriteArray(dir->Str(), name, evolved));
-        std::vector<ManifestEntry> actual;
-        if (mode >= 2) {
-            ASSERT_NOK_WITH_MSG(
-                manifest->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &actual),
-                (mode == 2 ? "not compatible" : "Unsupported version: 999"));
-        } else {
-            ASSERT_OK(manifest->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &actual));
-            ASSERT_EQ(mode == 0 ? 1 : 0, actual.size());
-            if (mode == 0) {
-                ASSERT_FALSE(actual[0].File()->first_row_id.has_value());
+        for (int32_t attempt = 0; attempt < 2; ++attempt) {
+            SCOPED_TRACE(attempt);
+            std::vector<ManifestEntry> actual;
+            if (mode >= 2) {
+                ASSERT_NOK_WITH_MSG(
+                    manifest->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &actual),
+                    (mode == 2 ? "not compatible" : "Unsupported version: 999"));
+            } else {
+                ASSERT_OK(
+                    manifest->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &actual));
+                ASSERT_EQ(mode == 0 ? 1 : 0, actual.size());
+                if (mode == 0) {
+                    ASSERT_FALSE(actual[0].File()->first_row_id.has_value());
+                }
+            }
+            if (attempt == 0) {
+                // The second read must preserve schema evolution and validation from IPC alone.
+                manifest->DeleteQuietly(name);
             }
         }
     }

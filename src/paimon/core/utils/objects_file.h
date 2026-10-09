@@ -33,7 +33,6 @@
 #include "fmt/format.h"
 #include "paimon/cache/cache.h"
 #include "paimon/common/data/columnar/columnar_row.h"
-#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -49,7 +48,6 @@
 #include "paimon/format/writer_builder.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/record_batch.h"
-#include "paimon/table/source/scan_metrics.h"
 
 namespace paimon {
 /// A file which contains several `T`s, provides read and write.
@@ -86,13 +84,6 @@ class ObjectsFile {
 
     Result<std::pair<std::string, int64_t>> WriteWithoutRolling(const std::vector<T>& records);
 
-    /// Cumulative decoded cache hits and misses, including concurrent reads.
-    std::shared_ptr<Metrics> GetReadMetrics() const {
-        auto snapshot = std::make_shared<MetricsImpl>();
-        snapshot->Overwrite(read_metrics_);
-        return snapshot;
-    }
-
  protected:
     Status ValidateWrite() const {
         if (file_format_identifier_ != "avro") {
@@ -108,7 +99,6 @@ class ObjectsFile {
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
         const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
 
-    std::shared_ptr<MetricsImpl> read_metrics_ = std::make_shared<MetricsImpl>();
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
@@ -327,23 +317,14 @@ Status ObjectsFile<T>::ReadArrowBatches(
     if (!cache_) {
         return ReadUncachedArrowBatches(file_name, file_size, consumer, prepare_reader);
     }
-    auto metrics = std::make_shared<MetricsImpl>();
-    ScopeGuard record_metrics([&]() { read_metrics_->Merge(metrics); });
     const std::string path = path_factory_->ToPath(file_name);
     auto key = CacheKey::ForKind(path, /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);
-    bool loaded = false;
     std::optional<Status> read_status;
     std::vector<std::shared_ptr<arrow::StructArray>> batches;
     auto cached = cache_->Get(key, [&](const std::shared_ptr<CacheKey>&) {
-        loaded = true;
         return SerializeArrowBatches(file_name, file_size, &batches, &read_status);
     });
     const bool usable = cached.ok() && cached.value() && cached.value()->GetSegment().Data();
-    if (usable) {
-        metrics->SetCounter(loaded ? ScanMetrics::MANIFEST_ARROW_CACHE_MISSES
-                                   : ScanMetrics::MANIFEST_ARROW_CACHE_HITS,
-                            1);
-    }
     if (read_status) {
         // Publish the query-independent cache before invoking user filters. A filter error
         // does not invalidate the cache or affect other readers of this file.
@@ -374,10 +355,8 @@ Status ObjectsFile<T>::ReadArrowBatches(
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array,
                                           batch->ToStructArray());
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> aligned,
-                               ManifestMetaReader::AlignArrayWithSchema(
-                                   array, serializer_->GetDataType(), arrow_pool_.get()));
-        PAIMON_RETURN_NOT_OK(consumer(checked_pointer_cast<arrow::StructArray>(aligned)));
+        // Cached batches were already aligned by ManifestMetaReader before serialization.
+        PAIMON_RETURN_NOT_OK(consumer(array));
     }
     return Status::OK();
 }

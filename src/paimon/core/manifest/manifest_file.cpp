@@ -58,7 +58,6 @@ namespace {
 constexpr int32_t kVersionFieldIndex = 0;
 constexpr int32_t kBucketFieldIndex = 3;
 constexpr int32_t kTotalBucketsFieldIndex = 4;
-
 }  // namespace
 
 ManifestFile::ManifestFile(const std::shared_ptr<FileSystem>& file_system,

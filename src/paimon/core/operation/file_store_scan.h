@@ -174,7 +174,6 @@ class FileStoreScan {
     std::shared_ptr<Metrics> GetScanMetrics() const {
         auto snapshot = std::make_shared<MetricsImpl>();
         snapshot->Overwrite(metrics_);
-        snapshot->Merge(manifest_file_->GetReadMetrics());
         return snapshot;
     }
 

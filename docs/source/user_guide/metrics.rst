@@ -114,17 +114,3 @@ These metrics are C++-only and have no counterparts in Java Paimon.
    "io.async.pending", "gauge", "requests", "Asynchronous callbacks not yet completed"
    "io.async.latency.count", "counter", "requests", "Completed asynchronous callback latency samples"
    "io.async.latency.sum-us", "counter", "microseconds", "Sum of asynchronous callback latency"
-
-Manifest reads
-~~~~~~~~~~~~~~
-
-``manifestArrowCacheHits`` and ``manifestArrowCacheMisses`` are cumulative
-counters for successful decoded-cache accesses by the scan's manifest-file
-reader. Ordinary, bucket and row-range reads share the same query-independent
-Arrow IPC entry under the existing whole-file cache key. Cache failures do not
-update these counters.
-
-Warm reads skip the source format decoder. Cold reads populate the cache by
-decoding the complete manifest, so a cold bucket read may decode more entries
-than an uncached selective read. Concurrent load coordination is delegated to
-the caller-provided cache.

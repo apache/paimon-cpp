@@ -27,7 +27,6 @@
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/path_util.h"
-#include "paimon/core/core_options.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
