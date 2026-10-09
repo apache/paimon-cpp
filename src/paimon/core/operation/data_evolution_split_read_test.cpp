@@ -26,6 +26,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
@@ -870,6 +871,28 @@ TEST_F(DataEvolutionSplitReadTest, TestExcludeDeletedRowIds) {
     ASSERT_OK_AND_ASSIGN(remaining,
                          DataEvolutionSplitRead::ExcludeDeletedRowIds({Range(103, 104)}, group_dv));
     ASSERT_TRUE(remaining.empty());
+}
+
+TEST_F(DataEvolutionSplitReadTest, Bitmap64GroupWindowWithHighOffset) {
+    const int64_t offset = 1LL << 32;
+    auto anchor = CreateNormalFile("anchor.parquet", 100, offset + 30, 10);
+    auto blob = CreateDataFileMeta("blob0.blob", 100 + offset, 20, 20);
+    auto dv = std::make_shared<Bitmap64DeletionVector>();
+    for (int64_t p : {offset - 1, offset, offset + 5, offset + 20}) {
+        ASSERT_OK(dv->Delete(p));
+    }
+    DataEvolutionSplitRead::GroupDeletionVector group_dv{dv, Range(100, 100 + offset + 29)};
+    ASSERT_OK_AND_ASSIGN(auto factory,
+                         DataEvolutionSplitRead::CreateGroupDvFactory({anchor, blob}, group_dv));
+    ASSERT_OK_AND_ASSIGN(auto view, factory("blob0.blob"));
+    ASSERT_TRUE(view);
+    ASSERT_TRUE(view->IsDeleted(0).value());
+    ASSERT_TRUE(view->IsDeleted(5).value());
+    ASSERT_FALSE(view->IsDeleted(6).value());
+    ASSERT_EQ(view->GetCardinality().value(), 2);
+    std::vector<int64_t> positions;
+    ASSERT_OK(view->ForEachDeletedPosition([&](int64_t p) { positions.push_back(p); }));
+    ASSERT_EQ(positions, (std::vector<int64_t>{0, 5}));
 }
 
 }  // namespace paimon::test

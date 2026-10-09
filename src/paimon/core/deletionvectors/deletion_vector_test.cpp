@@ -27,12 +27,13 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/io/byte_array_output_stream.h"
+#include "paimon/common/io/data_output_stream.h"
 #include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/table/source/deletion_file.h"
 #include "paimon/io/byte_array_input_stream.h"
-#include "paimon/io/byte_order.h"
 #include "paimon/io/data_input_stream.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -82,9 +83,15 @@ TEST(DeletionVectorTest, TestSimple) {
         }
     }
     auto pool = GetDefaultPool();
-    ASSERT_OK_AND_ASSIGN(auto bytes, deletion_vector->SerializeToBytes(pool));
-    ASSERT_OK_AND_ASSIGN(auto de_deletion_vector,
-                         DeletionVector::DeserializeFromBytes(bytes.get(), pool.get()));
+    auto output = std::make_shared<ByteArrayOutputStream>(
+        std::make_unique<MemorySegmentOutputStream>(1024, pool));
+    DataOutputStream out(output);
+    ASSERT_OK_AND_ASSIGN(int32_t length, deletion_vector->SerializeTo(pool, &out));
+    ASSERT_OK_AND_ASSIGN(auto bytes, output->Finish(pool.get()));
+    auto input = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+    DataInputStream in(input);
+    ASSERT_OK_AND_ASSIGN(auto de_deletion_vector, DeletionVector::Read(&in, length, pool.get()));
+    ASSERT_EQ(input->GetPos().value(), bytes->size());
 
     ASSERT_FALSE(deletion_vector->IsEmpty());
     ASSERT_FALSE(de_deletion_vector->IsEmpty());
@@ -106,9 +113,16 @@ TEST(DeletionVectorTest, TestCompatibleWithJava) {
     auto serialize_bytes = std::make_shared<Bytes>(data.size(), pool.get());
     memcpy(serialize_bytes->data(), data.data(), data.size());
 
-    // test deserialize
-    ASSERT_OK_AND_ASSIGN(auto deletion_vector,
-                         DeletionVector::DeserializeFromBytes(serialize_bytes.get(), pool.get()));
+    // Wrap the Java payload in a record with its length and CRC.
+    std::vector<uint8_t> record;
+    AppendInt32BigEndian(&record, data.size());
+    record.insert(record.end(), data.begin(), data.end());
+    AppendInt32BigEndian(&record, 0x5235C7CF);
+    auto input = std::make_shared<ByteArrayInputStream>(
+        reinterpret_cast<const char*>(record.data()), record.size());
+    DataInputStream in(input);
+    ASSERT_OK_AND_ASSIGN(auto deletion_vector, DeletionVector::Read(&in, data.size(), pool.get()));
+    ASSERT_EQ(input->GetPos().value(), record.size());
     std::vector<bool> expected = {false, true, true, false, true, false};
     std::vector<bool> result;
     for (size_t i = 0; i < expected.size(); i++) {
@@ -147,20 +161,30 @@ TEST(DeletionVectorTest, ReadFromDataInputStreamInvalidBitmapLength) {
                         "Invalid bitmap length");
 }
 
-TEST(DeletionVectorTest, ReadFromDataInputStreamBitmap64NotImplemented) {
-    std::vector<uint8_t> data;
-    AppendInt32BigEndian(&data, /*value=*/8);
-    // Trigger: EndianSwapValue(magic_number) == Bitmap64DeletionVector::MAGIC_NUMBER.
-    AppendInt32BigEndian(&data, EndianSwapValue(Bitmap64DeletionVector::MAGIC_NUMBER));
-
-    auto input_stream = std::make_shared<ByteArrayInputStream>(
-        reinterpret_cast<const char*>(data.data()), data.size());
-    DataInputStream in(input_stream);
+TEST(DeletionVectorTest, ReadFromDataInputStreamBitmap64) {
     auto pool = GetDefaultPool();
+    Bitmap64DeletionVector dv;
+    std::vector<int64_t> positions = {1, (1LL << 32) + 7, (2LL << 32) + 3};
+    for (const auto& position : positions) {
+        ASSERT_OK(dv.Delete(position));
+    }
+    auto output = std::make_shared<ByteArrayOutputStream>(
+        std::make_unique<MemorySegmentOutputStream>(1024, pool));
+    DataOutputStream out(output);
+    ASSERT_OK_AND_ASSIGN(int32_t length, dv.SerializeTo(pool, &out));
+    ASSERT_OK_AND_ASSIGN(auto bytes, output->Finish(pool.get()));
+    ASSERT_EQ(length, bytes->size());
 
-    ASSERT_NOK_WITH_MSG(
-        DeletionVector::Read(&in, std::nullopt, pool.get()),
-        "NotImplemented: bitmap64 deletion vectors are not supported in this version");
+    auto input = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+    DataInputStream in(input);
+    ASSERT_OK_AND_ASSIGN(auto decoded, DeletionVector::Read(&in, length, pool.get()));
+    ASSERT_TRUE(dynamic_cast<Bitmap64DeletionVector*>(decoded.get()));
+    ASSERT_EQ(decoded->GetCardinality().value(), positions.size());
+    for (const auto& position : positions) {
+        ASSERT_TRUE(decoded->IsDeleted(position).value());
+    }
+    ASSERT_FALSE(decoded->IsDeleted((1LL << 32) + 8).value());
+    ASSERT_EQ(input->GetPos().value(), bytes->size());
 }
 
 TEST(DeletionVectorTest, ReadFromDataInputStreamInvalidMagicNumber) {

@@ -46,6 +46,7 @@
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon {
 class MemoryPool;
@@ -75,7 +76,7 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<MemoryPool>& pool) {
-    if (predicate == nullptr) {
+    if (predicate == nullptr || file_meta->row_count > RoaringBitmap32::MAX_VALUE) {
         return FileIndexResult::Remain();
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,

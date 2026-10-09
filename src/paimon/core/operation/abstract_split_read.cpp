@@ -50,6 +50,8 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/object_utils.h"
+#include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
+#include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/io/complete_row_tracking_fields_reader.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -185,8 +187,13 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::map<std::string, std::string>& file_index_options,
     std::vector<float>* index_scores) const {
+    std::shared_ptr<DeletionVector> deletion_vector;
+    if (dv_factory) {
+        PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
+    }
     std::shared_ptr<FileIndexResult> file_index_result;
-    if (options_.FileIndexReadEnabled()) {
+    if (options_.FileIndexReadEnabled() &&
+        dynamic_cast<Bitmap64DeletionVector*>(deletion_vector.get()) == nullptr) {
         PAIMON_ASSIGN_OR_RAISE(file_index_result,
                                FileIndexEvaluator::Evaluate(data_schema, file_index_options,
                                                             predicate, data_file_path_factory, file,
@@ -217,10 +224,6 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
     }
 
     // prepare deletion bitmap for deletion vector
-    std::shared_ptr<DeletionVector> deletion_vector;
-    if (dv_factory) {
-        PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
-    }
     const RoaringBitmap32* deletion = nullptr;
     if (auto* bitmap_dv = dynamic_cast<BitmapDeletionVector*>(deletion_vector.get())) {
         deletion = bitmap_dv->GetBitmap();
@@ -247,9 +250,8 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
                                                 std::move(actual_selection)));
 
     if (deletion_vector && !deletion && !deletion_vector->IsEmpty()) {
-        // TODO(xinyu.lxy): if deletion vector is bitmap64, use ApplyBitmapIndexBatchReader to
-        // filter result
-        return Status::NotImplemented("Only support BitmapDeletionVector");
+        reader =
+            std::make_unique<ApplyDeletionVectorBatchReader>(std::move(reader), deletion_vector);
     }
     return reader;
 }

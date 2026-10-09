@@ -24,6 +24,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -208,14 +209,36 @@ TEST(BitmapDeletionVectorTest, MergeEmptyDeletionVector) {
     ASSERT_TRUE(dv1->IsDeleted(20).value());
 }
 
-TEST(BitmapDeletionVectorTest, MergeNullDeletionVector) {
+TEST(BitmapDeletionVectorTest, MergeNullDeletionVectorShouldFail) {
     RoaringBitmap32 roaring1;
     roaring1.Add(7);
     auto dv1 = std::make_shared<BitmapDeletionVector>(roaring1);
 
-    ASSERT_OK(dv1->Merge(nullptr));
+    ASSERT_NOK_WITH_MSG(dv1->Merge(nullptr), "Cannot merge a non-BitmapDeletionVector");
     ASSERT_EQ(dv1->GetCardinality().value(), 1);
     ASSERT_TRUE(dv1->IsDeleted(7).value());
+}
+
+TEST(BitmapDeletionVectorTest, MergeDifferentTypeShouldFail) {
+    for (const auto& target_empty : {false, true}) {
+        for (const auto& source_empty : {false, true}) {
+            BitmapDeletionVector dv{RoaringBitmap32()};
+            if (!target_empty) {
+                ASSERT_OK(dv.Delete(7));
+            }
+            auto other = std::make_shared<Bitmap64DeletionVector>();
+            if (!source_empty) {
+                ASSERT_OK(other->Delete(8));
+                ASSERT_OK(other->Delete(1LL << 32));
+            }
+            ASSERT_NOK_WITH_MSG(dv.Merge(other), "Cannot merge a non-BitmapDeletionVector");
+            ASSERT_EQ(dv.IsEmpty(), target_empty);
+            ASSERT_EQ(dv.GetCardinality().value(), target_empty ? 0 : 1);
+            ASSERT_EQ(dv.IsDeleted(7).value(), !target_empty);
+            ASSERT_FALSE(dv.IsDeleted(8).value());
+            ASSERT_EQ(other->GetCardinality().value(), source_empty ? 0 : 2);
+        }
+    }
 }
 
 TEST(BitmapDeletionVectorTest, MergeIntoEmptyDeletionVector) {
