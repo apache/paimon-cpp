@@ -619,6 +619,13 @@ TEST(FormatTableTest, TestParseFormat) {
         ASSERT_TRUE(unimplemented.status().IsNotImplemented()) << format;
     }
 
+    // Data-file-only formats are not format-table formats at all, so they answer `Invalid`.
+    for (const char* format : {"avro", "lance", "vortex"}) {
+        Result<FormatTable::Format> not_a_format_table_format = FormatTable::ParseFormat(format);
+        ASSERT_FALSE(not_a_format_table_format.ok()) << format;
+        ASSERT_TRUE(not_a_format_table_format.status().IsInvalid()) << format;
+    }
+
     Result<FormatTable::Format> unknown = FormatTable::ParseFormat("nonesuch");
     ASSERT_FALSE(unknown.ok());
     ASSERT_TRUE(unknown.status().IsInvalid());
