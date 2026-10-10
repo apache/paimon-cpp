@@ -45,6 +45,7 @@
 #include "paimon/global_index/io/global_index_file_reader.h"
 #include "paimon/global_index/io/global_index_file_writer.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/testing/mock/mock_global_index_reader.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -100,13 +101,16 @@ class TestGlobalIndexFileReader : public GlobalIndexFileReader {
 
 /// A reader stub whose equality result is fully controlled by the test, used to exercise
 /// the untrusted-position fallbacks.
-class StubGlobalIndexReader : public GlobalIndexReader {
+class StubGlobalIndexReader : public MockGlobalIndexReader {
  public:
     explicit StubGlobalIndexReader(RoaringBitmap64 equal_result)
-        : equal_result_(std::move(equal_result)) {}
+        : MockGlobalIndexReader(/*supports_search=*/false),
+          equal_result_(std::move(equal_result)) {}
 
     StubGlobalIndexReader(RoaringBitmap64 equal_result, std::shared_ptr<int32_t> equal_call_count)
-        : equal_result_(std::move(equal_result)), equal_call_count_(std::move(equal_call_count)) {}
+        : MockGlobalIndexReader(/*supports_search=*/false),
+          equal_result_(std::move(equal_result)),
+          equal_call_count_(std::move(equal_call_count)) {}
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override {
         return NotEvaluable();
@@ -157,14 +161,6 @@ class StubGlobalIndexReader : public GlobalIndexReader {
     }
     Result<std::shared_ptr<GlobalIndexResult>> VisitLike(const Literal& literal) override {
         return NotEvaluable();
-    }
-    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
-        const std::shared_ptr<VectorSearch>& vector_search) override {
-        return Status::Invalid("not supported");
-    }
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
-        const std::shared_ptr<FullTextSearch>& full_text_search) override {
-        return Status::Invalid("not supported");
     }
     bool IsThreadSafe() const override {
         return false;

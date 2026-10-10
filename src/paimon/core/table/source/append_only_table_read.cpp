@@ -244,6 +244,10 @@ Result<std::unique_ptr<CountReader>> AppendOnlyTableRead::CreateCountReader(
         return Status::NotImplemented(
             "CreateCountReader with predicate pushdown is not supported yet");
     }
+    if (context_->HasVectorOrFullTextSearch()) {
+        return Status::NotImplemented(
+            "CreateCountReader with VectorSearch or FullTextSearch is not supported");
+    }
 
     return std::make_unique<AppendCountReader>(splits, context_->GetCoreOptions().GetFileSystem(),
                                                context_->GetMemoryPool());

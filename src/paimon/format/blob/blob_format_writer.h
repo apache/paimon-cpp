@@ -133,11 +133,12 @@ class BlobFormatWriter : public FormatWriter {
     Result<std::vector<int64_t>> WriteBlobElements(const arrow::LargeBinaryArray& values,
                                                    int64_t offset, int32_t count);
 
-    /// The input stream of a blob value, as Java's BlobCopySource. A `reused` stream is a view on
-    /// the kept source stream and must not be closed; any other stream is the value's own.
+    /// The input stream of a blob value and the stream to close after a successful copy.
     struct BlobCopySource {
         std::unique_ptr<InputStream> stream;
-        bool reused = false;
+        /// Non-owning: kept alive by stream, directly or through the view's wrapped stream.
+        /// Null for a cached source whose closing is managed by the writer.
+        InputStream* close_target = nullptr;
     };
 
     /// Open an input stream on a blob value, which is either a serialized BlobDescriptor or the
@@ -173,7 +174,7 @@ class BlobFormatWriter : public FormatWriter {
 
     /// Open the file a descriptor with a known length references as the new source stream and
     /// return a view of the descriptor's range on it. No source is kept when this fails.
-    Result<std::unique_ptr<InputStream>> OpenSource(const BlobDescriptor& descriptor);
+    Result<BlobCopySource> OpenSource(const BlobDescriptor& descriptor);
 
     /// Return a view of the range of a descriptor with a known length on the source stream,
     /// positioned at its start. The view shares the source stream, so it must not be closed.
@@ -182,7 +183,7 @@ class BlobFormatWriter : public FormatWriter {
     /// Open a new stream on the file a descriptor with a dynamic length (-1) references, from its
     /// offset to the end of the file as of this open. An offset past the end of the file fails the
     /// open.
-    Result<std::unique_ptr<InputStream>> OpenToEnd(const BlobDescriptor& descriptor) const;
+    Result<BlobCopySource> OpenToEnd(const BlobDescriptor& descriptor) const;
 
     /// Close and release the source stream, if any.
     Status CloseSource();

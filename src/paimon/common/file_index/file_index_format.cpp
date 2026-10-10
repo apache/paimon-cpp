@@ -30,6 +30,7 @@
 #include "paimon/common/io/data_output_stream.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/math.h"
+#include "paimon/core/io/file_index_options.h"
 #include "paimon/file_index/file_indexer.h"
 #include "paimon/file_index/file_indexer_factory.h"
 #include "paimon/io/byte_array_input_stream.h"
@@ -170,7 +171,10 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
                            std::unordered_map<std::string, std::pair<int32_t, int32_t>>>;
 
     static Result<std::unique_ptr<FileIndexFormatReaderImpl>> Create(
-        const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool) {
+        const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool,
+        const std::map<std::string, std::string>& options) {
+        PAIMON_ASSIGN_OR_RAISE(FileIndexOptions file_index_options,
+                               FileIndexOptions::FromMap(options));
         DataInputStream data_input_stream(input_stream);
         PAIMON_ASSIGN_OR_RAISE(int64_t magic, data_input_stream.ReadValue<int64_t>());
         if (magic != FileIndexFormat::MAGIC) {
@@ -207,8 +211,8 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
                 index_map[index_type] = std::make_pair(offset, length);
             }
         }
-        return std::unique_ptr<FileIndexFormatReaderImpl>(
-            new FileIndexFormatReaderImpl(input_stream, std::move(header), pool));
+        return std::unique_ptr<FileIndexFormatReaderImpl>(new FileIndexFormatReaderImpl(
+            input_stream, std::move(header), pool, std::move(file_index_options)));
     }
 
     Result<std::vector<std::shared_ptr<FileIndexReader>>> ReadColumnIndex(
@@ -224,9 +228,10 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
         if (index_iter != header_.end()) {
             const auto& index_map = index_iter->second;
             for (const auto& [index_type, offset_and_length] : index_map) {
-                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexReader> file_index_reader,
-                                       GetFileIndexReader(arrow::schema({column_field}), index_type,
-                                                          offset_and_length));
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::shared_ptr<FileIndexReader> file_index_reader,
+                    GetFileIndexReader(column_name, arrow::schema({column_field}), index_type,
+                                       offset_and_length));
                 if (file_index_reader) {
                     // skip the index not registered
                     res.push_back(std::move(file_index_reader));
@@ -238,19 +243,24 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
 
  private:
     FileIndexFormatReaderImpl(const std::shared_ptr<InputStream>& input_stream, HeaderType&& header,
-                              const std::shared_ptr<MemoryPool>& pool)
-        : input_stream_(input_stream), pool_(pool), header_(std::move(header)) {
+                              const std::shared_ptr<MemoryPool>& pool, FileIndexOptions&& options)
+        : input_stream_(input_stream),
+          pool_(pool),
+          header_(std::move(header)),
+          options_(std::move(options)) {
         assert(input_stream_);
     }
 
     Result<std::shared_ptr<FileIndexReader>> GetFileIndexReader(
-        const std::shared_ptr<arrow::Schema>& arrow_schema, const std::string& index_type,
-        const std::pair<int32_t, int32_t>& offset_and_length) const {
+        const std::string& column_name, const std::shared_ptr<arrow::Schema>& arrow_schema,
+        const std::string& index_type, const std::pair<int32_t, int32_t>& offset_and_length) const {
         if (offset_and_length.first == FileIndexFormat::EMPTY_INDEX_FLAG) {
             return std::make_shared<EmptyFileIndexReader>();
         }
+        const std::map<std::string, std::string>& indexer_options =
+            options_.GetIndexerOptions(column_name, index_type);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexer> file_indexer,
-                               FileIndexerFactory::Get(index_type, /*options=*/{}));
+                               FileIndexerFactory::Get(index_type, indexer_options));
         // assert(file_indexer);
         if (!file_indexer) {
             return std::shared_ptr<FileIndexReader>();
@@ -267,6 +277,7 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
     // get header and cache it.
     // [column_name : [index_type : {offset, length}]]
     HeaderType header_;
+    FileIndexOptions options_;
 };
 
 const int64_t FileIndexFormat::MAGIC = 1493475289347502LL;
@@ -274,8 +285,9 @@ const int32_t FileIndexFormat::EMPTY_INDEX_FLAG = -1;
 const int32_t FileIndexFormat::V_1 = 1;
 
 Result<std::unique_ptr<FileIndexFormat::Reader>> FileIndexFormat::CreateReader(
-    const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool) {
-    return FileIndexFormatReaderImpl::Create(input_stream, pool);
+    const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool,
+    const std::map<std::string, std::string>& options) {
+    return FileIndexFormatReaderImpl::Create(input_stream, pool, options);
 }
 
 Result<std::unique_ptr<FileIndexFormat::Writer>> FileIndexFormat::CreateWriter(

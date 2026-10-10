@@ -21,7 +21,10 @@
 #include <utility>
 
 #include "gtest/gtest.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
+#include "paimon/predicate/vector_search.h"
+#include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 
@@ -63,5 +66,14 @@ TEST(FileIndexReaderTest, TestDefaultIndexReader) {
 
     ASSERT_TRUE(reader.VisitIn({lit0, lit1}).value()->IsRemain().value());
     ASSERT_TRUE(reader.VisitNotIn({lit0, lit1}).value()->IsRemain().value());
+
+    std::shared_ptr<VectorSearch> vector_search =
+        std::make_shared<VectorSearch>("embedding", 1, std::vector<float>{1.0f}, nullptr, nullptr,
+                                       std::nullopt, std::map<std::string, std::string>{});
+    ASSERT_NOK_WITH_MSG(reader.VisitVectorSearch(vector_search), "does not support vector search");
+    std::shared_ptr<FullTextSearch> full_text_search = std::make_shared<FullTextSearch>(
+        "body", std::nullopt, "word", FullTextSearch::SearchType::MATCH_ANY, std::nullopt);
+    ASSERT_NOK_WITH_MSG(reader.VisitFullTextSearch(full_text_search),
+                        "does not support full text search");
 }
 }  // namespace paimon::test

@@ -17,12 +17,10 @@
  * under the License.
  */
 
-#include "paimon/common/global_index/complete_index_score_batch_reader.h"
+#include "paimon/common/reader/complete_index_score_batch_reader.h"
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
-#include "arrow/c/abi.h"
-#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"

@@ -1,0 +1,133 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+#include "paimon/common/reader/complete_index_score_batch_reader.h"
+
+#include <cassert>
+#include <utility>
+
+#include "arrow/api.h"
+#include "arrow/array/array_base.h"
+#include "arrow/array/array_nested.h"
+#include "arrow/c/bridge.h"
+#include "arrow/scalar.h"
+#include "fmt/format.h"
+#include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
+#include "paimon/status.h"
+namespace paimon {
+CompleteIndexScoreBatchReader::CompleteIndexScoreBatchReader(
+    std::unique_ptr<BatchReader>&& reader, std::unordered_map<int64_t, float>&& scores_by_row_id,
+    bool remove_row_id, const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool),
+      reader_(std::move(reader)),
+      scores_by_row_id_(std::move(scores_by_row_id)),
+      remove_row_id_(remove_row_id) {}
+
+Result<BatchReader::ReadBatch> CompleteIndexScoreBatchReader::NextBatch() {
+    PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
+                           NextBatchWithBitmap());
+    PAIMON_ASSIGN_OR_RAISE(
+        BatchReader::ReadBatch batch,
+        ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_));
+    return batch;
+}
+
+Status CompleteIndexScoreBatchReader::InitFieldIndices(const arrow::StructType* struct_type) {
+    int32_t index_score_field_idx = struct_type->GetFieldIndex(SpecialFields::IndexScore().Name());
+    if (index_score_field_idx < 0) {
+        return Status::Invalid("Missing _INDEX_SCORE in CompleteIndexScoreBatchReader");
+    }
+    int32_t row_id_field_idx = struct_type->GetFieldIndex(SpecialFields::RowId().Name());
+    if (row_id_field_idx < 0 ||
+        struct_type->field(row_id_field_idx)->type()->id() != arrow::Type::INT64) {
+        return Status::Invalid("Global index score lookup requires an int64 _ROW_ID field");
+    }
+    index_score_field_idx_ = index_score_field_idx;
+    row_id_field_idx_ = row_id_field_idx;
+    return Status::OK();
+}
+
+Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatchWithBitmap() {
+    PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
+                           reader_->NextBatchWithBitmap());
+    if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+        return batch_with_bitmap;
+    }
+
+    auto& [batch, bitmap] = batch_with_bitmap;
+    auto& [c_array, c_schema] = batch;
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
+                                      arrow::ImportArray(c_array.get(), c_schema.get()));
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid("cannot cast array to StructArray in CompleteIndexScoreBatchReader");
+    }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
+    auto struct_type = struct_array->struct_type();
+    if (row_id_field_idx_ == -1) {
+        PAIMON_RETURN_NOT_OK(InitFieldIndices(struct_type));
+    }
+    auto row_ids = checked_pointer_cast<arrow::Int64Array>(struct_array->field(row_id_field_idx_));
+
+    // prepare index score array
+    std::unique_ptr<arrow::ArrayBuilder> index_score_builder;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
+        arrow_pool_.get(), SpecialFields::IndexScore().Type(), &index_score_builder));
+    if (!index_score_builder || !index_score_builder->type() ||
+        index_score_builder->type()->id() != arrow::Type::FLOAT) {
+        return Status::Invalid("cannot cast index score builder to FloatBuilder");
+    }
+    auto* typed_builder = checked_cast<arrow::FloatBuilder*>(index_score_builder.get());
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Reserve(struct_array->length()));
+    bool all_not_null = (struct_array->length() == bitmap.Cardinality());
+    for (int64_t i = 0; i < struct_array->length(); i++) {
+        if (all_not_null || bitmap.Contains(i)) {
+            assert(!row_ids->IsNull(i));
+            int64_t row_id = row_ids->Value(i);
+            auto iter = scores_by_row_id_.find(row_id);
+            if (iter == scores_by_row_id_.end()) {
+                return Status::Invalid(
+                    fmt::format("Missing global index score for row id {}", row_id));
+            }
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Append(iter->second));
+        } else {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->AppendNull());
+        }
+    }
+    std::shared_ptr<arrow::Array> index_score_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Finish(&index_score_array));
+    // update index score array to struct array
+    arrow::ArrayVector array_vec = struct_array->fields();
+    array_vec[index_score_field_idx_] = index_score_array;
+    arrow::FieldVector fields = struct_type->fields();
+    if (remove_row_id_) {
+        array_vec.erase(array_vec.begin() + row_id_field_idx_);
+        fields.erase(fields.begin() + row_id_field_idx_);
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array_with_score,
+                                      arrow::StructArray::Make(array_vec, fields));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        arrow::ExportArray(*array_with_score, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
+    return batch_with_bitmap;
+}
+}  // namespace paimon

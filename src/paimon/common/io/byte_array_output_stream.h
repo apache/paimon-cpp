@@ -24,16 +24,17 @@
 
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/visibility.h"
 
 namespace paimon {
 
-class Bytes;
 class MemoryPool;
 
 /// An in-memory output stream backed by segments allocated from a Paimon MemoryPool.
-class ByteArrayOutputStream : public OutputStream {
+class PAIMON_EXPORT ByteArrayOutputStream : public OutputStream {
  public:
     /// Takes ownership of an initialized segmented output stream.
     explicit ByteArrayOutputStream(std::unique_ptr<MemorySegmentOutputStream>&& output);
@@ -57,13 +58,14 @@ class ByteArrayOutputStream : public OutputStream {
     Status Close() override;
 
     /// Closes the stream and returns its contents as an exactly-sized contiguous byte array.
+    /// This method can only be called once.
     /// @note The caller must keep `pool` alive until the returned bytes are destroyed.
-    Result<std::shared_ptr<Bytes>> Finish(MemoryPool* pool);
+    Result<PAIMON_UNIQUE_PTR<Bytes>> Finish(MemoryPool* pool);
 
  private:
     std::unique_ptr<MemorySegmentOutputStream> output_;
-    std::shared_ptr<Bytes> result_;
     bool closed_ = false;
+    bool finished_ = false;
 };
 
 }  // namespace paimon

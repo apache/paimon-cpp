@@ -17,6 +17,7 @@
 if(PAIMON_BUILD_TESTS)
     set(PAIMON_MOCK_FILE_FORMAT
         mock_file_system_factory.cpp
+        mock_search_file_index.cpp
         mock_file_format_factory.cpp
         mock_file_format.cpp
         mock_format_writer_builder.cpp
