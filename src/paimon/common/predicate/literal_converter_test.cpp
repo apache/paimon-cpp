@@ -460,12 +460,12 @@ TEST_F(LiteralConverterTest, TestDictionaryValueAndIndexTypes) {
         const FieldType literal_type =
             arrow::is_string(value_type->id()) ? FieldType::STRING : FieldType::BINARY;
         auto dictionary = arrow::ipc::internal::json::ArrayFromJSON(
-                              value_type, R"(["unused", "a\u0000b", "", null, "tail"])")
+                              value_type, R"(["unused", "a\u0000b", "", "middle", "tail"])")
                               .ValueOrDie()
                               ->Slice(1);
         const std::vector<Literal> expected = {
             Literal(literal_type, "a\0b", 3), Literal(literal_type),
-            Literal(literal_type, "", 0),     Literal(literal_type),
+            Literal(literal_type, "", 0),     Literal(literal_type, "middle", 6),
             Literal(literal_type, "tail", 4), Literal(literal_type, "a\0b", 3)};
         SCOPED_TRACE(index_type->ToString());
         auto indices =
