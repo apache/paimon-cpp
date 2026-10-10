@@ -29,6 +29,7 @@
 #include "paimon/result.h"
 
 namespace paimon {
+class FileBatchReader;
 class MemoryPool;
 
 /// This reader is to concatenate a list of BatchReaders and read them sequentially. The input list
@@ -44,11 +45,22 @@ class ConcatBatchReader : public BatchReader {
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
 
  private:
+    /// How many child readers ahead of the one being consumed get their first read started. Each
+    /// warm reader holds its own prefetched data, so one ahead is a conservative trade-off between
+    /// overlapped I/O and extra memory.
+    static constexpr size_t kWarmupLookahead = 1;
+
+    /// Warms up \p count readers starting at \p idx, stopping at the end of the list. Warmup() is
+    /// idempotent, so this is safe to call on every batch.
+    void WarmupRange(size_t idx, size_t count);
     void CloseAndReleaseReader(size_t reader_index);
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<Metrics> finished_reader_metrics_;
     std::vector<std::unique_ptr<BatchReader>> readers_;
+    // readers_[i] as a FileBatchReader, or nullptr when it is not one or has been released.
+    // Warmup() lives on FileBatchReader, so the cast is done once instead of on every batch.
+    std::vector<FileBatchReader*> file_readers_;
     size_t current_;
 };
 }  // namespace paimon
