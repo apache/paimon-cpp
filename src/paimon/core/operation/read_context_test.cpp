@@ -82,7 +82,7 @@ TEST(ReadContextTest, TestReadViaHeaderReportsTheStartingTable) {
     // The value is the identifier's flat JSON in the form-urlencoded flavor the REST server
     // expects, byte for byte what the Java client sends.
     const std::string expected = "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%22%7D";
-    for (const std::string& metastore : {"rest"}) {
+    for (const std::string metastore : {"rest"}) {
         auto catalog = std::make_shared<MockVersionManagedCatalog>();
         catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
 
@@ -118,7 +118,7 @@ TEST(ReadContextTest, TestReadViaHeaderNeedsARestCatalogAndATable) {
     // Only a REST metastore turns a `header.` option into a request header, and only a read naming
     // a table has one to report: the two guards the Java counterpart checks before copying the
     // options over. A catalog that is not one is told nothing.
-    for (const std::string& metastore : {"filesystem", "hive", "alake"}) {
+    for (const std::string metastore : {"filesystem", "hive", "alake"}) {
         auto catalog = std::make_shared<MockVersionManagedCatalog>();
         catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
 

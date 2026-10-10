@@ -65,6 +65,7 @@ struct RestToken {
 class RestCredentialProvider : public CredentialProvider {
  public:
     using Clock = std::function<std::chrono::system_clock::time_point()>;
+    using TokenLoader = std::function<Result<GetTableTokenResponse>()>;
 
     /// @param api Client of the catalog that issues the credentials. Shared because a
     ///            provider commonly outlives the catalog it was obtained from.
@@ -72,6 +73,10 @@ class RestCredentialProvider : public CredentialProvider {
     /// @param clock Source of the current time, overridable for tests.
     RestCredentialProvider(const std::shared_ptr<RestApi>& api, const Identifier& identifier,
                            Clock clock = std::chrono::system_clock::now);
+
+    /// Creates a provider backed by an arbitrary table-token loader. This keeps the refresh and
+    /// file-system cache semantics shared by REST-compatible catalog implementations.
+    RestCredentialProvider(TokenLoader token_loader, const Identifier& identifier, Clock clock);
 
     ~RestCredentialProvider() override = default;
 
@@ -103,7 +108,7 @@ class RestCredentialProvider : public CredentialProvider {
     /// Whether `token_` is absent or expires within the safe time.
     bool ShouldRefresh() const;
 
-    std::shared_ptr<RestApi> api_;
+    TokenLoader token_loader_;
     Identifier identifier_;
     Clock clock_;
     std::shared_ptr<Logger> logger_;

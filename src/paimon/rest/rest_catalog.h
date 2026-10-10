@@ -129,6 +129,8 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
         const Identifier& data_identifier, const std::optional<std::string>& branch,
         std::string* table_path, std::string* table_id) const;
 
+    /// Converts a `GetTableResponse` into a `TableSchema`, applying the table path, audit
+    /// and branch options.
     static Result<std::unique_ptr<TableSchema>> ToTableSchema(
         const GetTableResponse& response, const std::optional<std::string>& branch);
 
