@@ -102,6 +102,11 @@ class InternalReadContext {
     std::shared_ptr<RealtimeContext> GetRealtimeContext() const {
         return read_context_->GetRealtimeContext();
     }
+    /// The scheme map the file system of this read was resolved with, which a catalog reading a
+    /// dependency table on its behalf needs to resolve that table's location the same way.
+    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
+        return read_context_->GetFileSystemSchemeToIdentifierMap();
+    }
 
     bool ReadAheadCacheEnabled() const {
         return read_context_->ReadAheadCacheEnabled();

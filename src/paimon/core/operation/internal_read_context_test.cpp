@@ -18,6 +18,7 @@
 
 #include "paimon/core/operation/internal_read_context.h"
 
+#include <map>
 #include <utility>
 
 #include "arrow/c/bridge.h"
@@ -66,6 +67,46 @@ TEST(InternalReadContext, TestReadWithSpecifiedSchema) {
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
     auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields);
     ASSERT_TRUE(internal_context->GetReadSchema()->Equals(expected_schema));
+}
+
+TEST(InternalReadContext, TestHeaderOptionSurvivesIntoCoreOptions) {
+    // The `header.` option a read through a REST catalog reports its starting table with has to
+    // still be among the options a dependency table is read through: `DataEvolutionSplitRead`
+    // builds that catalog context out of `CoreOptions::ToMap()`, so an option dropped on the way
+    // here would quietly drop the `X-Paimon-Read-Via` delegation header along with it.
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    ReadContextBuilder context_builder(path);
+    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+
+    // The merge `TableRead::Create` performs: the table's own options first, then the ones the read
+    // context carries over them, which is where a header option arrives from.
+    const std::string read_via = "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%22%7D";
+    std::map<std::string, std::string> options = table_schema->Options();
+    options["header.X-Paimon-Read-Via"] = read_via;
+    ASSERT_OK_AND_ASSIGN(auto internal_context, InternalReadContext::Create(std::move(read_context),
+                                                                            table_schema, options));
+    ASSERT_EQ(internal_context->GetCoreOptions().ToMap().at("header.X-Paimon-Read-Via"), read_via);
+}
+
+TEST(InternalReadContext, TestFileSystemSchemeMapReachesTheDependencyRead) {
+    // A blob view reads its dependency table through a catalog of its own, which builds a file
+    // system out of the options and this map rather than borrowing the one of the read it descends
+    // from. Nothing reading a local path would notice the map going missing: a location is
+    // resolved through it only when its scheme is not the default of the options, so dropping it
+    // surfaces as a `dfs://` dependency table that cannot be opened, far away from the cause.
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    const std::map<std::string, std::string> scheme_map = {{"file", "local"}};
+    ReadContextBuilder context_builder(path);
+    context_builder.WithFileSystemSchemeToIdentifierMap(scheme_map);
+    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(auto internal_context,
+                         InternalReadContext::Create(std::move(read_context), table_schema,
+                                                     table_schema->Options()));
+    ASSERT_EQ(internal_context->GetFileSystemSchemeToIdentifierMap(), scheme_map);
 }
 
 TEST(InternalReadContext, TestReadWithSpecifiedFieldId) {
