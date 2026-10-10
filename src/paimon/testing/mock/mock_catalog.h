@@ -255,6 +255,10 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
                                                     const std::string&) const override {
         return Unsupported();
     }
+    Result<std::optional<SnapshotInfo>> GetLatestSnapshot(const Identifier&,
+                                                          const std::string&) const override {
+        return Unsupported();
+    }
 
  private:
     static Status Unsupported() {

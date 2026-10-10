@@ -541,6 +541,22 @@ Result<std::vector<SnapshotInfo>> FileSystemCatalog::ListSnapshots(
     return result;
 }
 
+Result<std::optional<SnapshotInfo>> FileSystemCatalog::GetLatestSnapshot(
+    const Identifier& identifier, const std::string& branch) const {
+    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(branch));
+    PAIMON_ASSIGN_OR_RAISE(bool exists, TableExists(identifier));
+    if (!exists) {
+        return Status::NotExist(fmt::format("table {} does not exist", identifier.ToString()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(identifier));
+    SnapshotManager mgr(fs_, table_path, branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, mgr.LatestSnapshot());
+    if (!snapshot) {
+        return std::optional<SnapshotInfo>();
+    }
+    return std::optional<SnapshotInfo>(snapshot->ToSnapshotInfo());
+}
+
 Result<std::shared_ptr<FormatTable>> FileSystemCatalog::LoadFormatTable(
     const Identifier& identifier) const {
     return CatalogUtils::LoadFormatTableInTwoRequests(*this, identifier,
