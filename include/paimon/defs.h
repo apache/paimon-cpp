@@ -569,9 +569,11 @@ struct PAIMON_EXPORT Options {
     /// tables at read time. Set to false to preserve serialized BlobViewStruct bytes when
     /// forwarding blob view values to another blob-view table. Default value is "true".
     static const char BLOB_VIEW_RESOLVE_ENABLED[];
-    /// "blob-view-upstream-warehouse" - Since the catalog capabilities are partially missing, when
-    /// Blob View is enabled, cpp paimon cannot automatically obtain the upstream table warehouse
-    /// path and requires manual configuration by the user. No default value.
+    /// "blob-view-upstream-warehouse" - Warehouse root the upstream table a blob-view field points
+    /// at is resolved from. Since the catalog capabilities are partially missing, cpp paimon cannot
+    /// always obtain it automatically, so it may be configured explicitly. When it is not set, the
+    /// read falls back to the warehouse the downstream table itself lives in, which resolves a
+    /// co-located upstream table. No default value.
     static const char BLOB_VIEW_UPSTREAM_WAREHOUSE[];
     /// "blob-write-null-on-missing-file" - Whether to write NULL for a descriptor BLOB value,
     /// including an ARRAY<BLOB> element or a MAP<..., BLOB> value, when the referenced file does

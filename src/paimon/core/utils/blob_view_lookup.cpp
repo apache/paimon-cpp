@@ -32,7 +32,6 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/common/utils/path_util.h"
 #include "paimon/data/blob_descriptor.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -150,13 +149,16 @@ Result<BlobViewLookup::DescriptorMapping> BlobViewLookup::LoadTableDescriptorChu
     if (branch) {
         return Status::Invalid("do not support upstream table with branch");
     }
-    auto file_system = catalog_context->file_system;
-    PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(catalog_context, identifier));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<Catalog> catalog,
+        Catalog::Create(catalog_context->root_path, catalog_context->options,
+                        /*file_system=*/nullptr, catalog_context->fs_scheme_to_identifier_map));
+    PAIMON_ASSIGN_OR_RAISE(std::string table_path, catalog->GetTableLocation(identifier));
     ScanContextBuilder scan_builder(table_path);
     auto global_index_result = BitmapGlobalIndexResult::FromRanges(row_ranges);
     scan_builder.SetGlobalIndexResult(global_index_result)
         .WithMemoryPool(pool)
-        .WithFileSystem(file_system);
+        .WithCatalog(catalog, identifier);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
                            TableScan::Create(std::move(scan_context)));
@@ -169,7 +171,7 @@ Result<BlobViewLookup::DescriptorMapping> BlobViewLookup::LoadTableDescriptorChu
         .AddOption(Options::BLOB_AS_DESCRIPTOR, "true")
         .EnablePrefetch(true)
         .WithMemoryPool(pool)
-        .WithFileSystem(file_system);
+        .WithCatalog(catalog, identifier);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
                            TableRead::Create(std::move(read_context)));
@@ -180,34 +182,6 @@ Result<BlobViewLookup::DescriptorMapping> BlobViewLookup::LoadTableDescriptorChu
     PAIMON_RETURN_NOT_OK(
         ExtractBlobDescriptors(identifier, read_field_ids, pool, reader.get(), &mapping));
     return mapping;
-}
-
-Result<std::string> BlobViewLookup::GetTableLocation(
-    const std::shared_ptr<CatalogContext>& catalog_context, const Identifier& identifier) {
-    auto file_system = catalog_context->file_system;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<Catalog> catalog,
-        Catalog::Create(catalog_context->root_path, catalog_context->options, file_system));
-    // The table path may be either xxx/test_database/test_table or
-    // xxx/test_database.db/test_table. If neither path exists or both paths exist, it means we
-    // cannot infer the table path, and an error will be reported. If only one of the paths
-    // exists, we will use that path.
-    PAIMON_ASSIGN_OR_RAISE(std::string source_table_path, catalog->GetTableLocation(identifier));
-    std::string database_name = identifier.GetDatabaseName();
-    PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
-    std::string fallback_source_table_path = PathUtil::JoinPath(
-        PathUtil::JoinPath(catalog_context->root_path, database_name), data_table_name);
-
-    PAIMON_ASSIGN_OR_RAISE(bool exist, catalog_context->file_system->Exists(source_table_path));
-    PAIMON_ASSIGN_OR_RAISE(bool fallback_exist, file_system->Exists(fallback_source_table_path));
-    if (exist == fallback_exist) {
-        return Status::Invalid(
-            fmt::format("Ambiguous table path: both table path {} and fallback table path {} are "
-                        "present or absent",
-                        source_table_path, fallback_source_table_path));
-    }
-    std::string final_table_path = exist ? source_table_path : fallback_source_table_path;
-    return final_table_path;
 }
 
 Status BlobViewLookup::ExtractBlobDescriptors(const Identifier& identifier,

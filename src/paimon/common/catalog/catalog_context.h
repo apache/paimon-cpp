@@ -21,18 +21,29 @@
 #include <map>
 #include <string>
 
-#include "paimon/fs/file_system.h"
-
 namespace paimon {
+
+/// What a dependency table - the blob table behind a BlobView - is read through. Like the Java
+/// `CatalogContext` that `CatalogEnvironment.dependencyReadContext()` returns, it carries no file
+/// system. The catalog built from these options issues credentials for the table about to be read,
+/// whereas a file system handed down from the read above authenticates as a different table - and
+/// the `X-Paimon-Read-Via` header travelling with it cannot excuse that, being request context a
+/// server must not treat as authorization proof. A caller supplying its own file system therefore
+/// gets no blob view delegation.
 struct CatalogContext {
     CatalogContext(const std::string& _root_path,
                    const std::map<std::string, std::string>& _options,
-                   const std::shared_ptr<FileSystem>& _file_system)
-        : root_path(_root_path), options(_options), file_system(_file_system) {}
+                   const std::map<std::string, std::string>& _fs_scheme_to_identifier_map)
+        : root_path(_root_path),
+          options(_options),
+          fs_scheme_to_identifier_map(_fs_scheme_to_identifier_map) {}
 
     std::string root_path;
     std::map<std::string, std::string> options;
-    std::shared_ptr<FileSystem> file_system;
+    /// Maps a URI scheme to the registered file system serving it, the map the file system of the
+    /// read this descends from was resolved with. The catalog builds its own file system out of
+    /// these options and needs the map to route a scheme that is not their default.
+    std::map<std::string, std::string> fs_scheme_to_identifier_map;
 };
 
 }  // namespace paimon

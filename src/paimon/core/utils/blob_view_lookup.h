@@ -29,6 +29,7 @@
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/data/blob_view_struct.h"
+#include "paimon/fs/file_system.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/result.h"
 #include "paimon/utils/range.h"
@@ -93,9 +94,6 @@ class BlobViewLookup {
 
     static std::vector<std::vector<Range>> SplitRowRanges(const std::vector<Range>& row_ranges,
                                                           int64_t target_rows_per_task);
-
-    static Result<std::string> GetTableLocation(
-        const std::shared_ptr<CatalogContext>& catalog_context, const Identifier& identifier);
 };
 
 }  // namespace paimon

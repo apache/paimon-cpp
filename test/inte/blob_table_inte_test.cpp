@@ -4156,8 +4156,8 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
         PathUtil::JoinPath(dir_->Str(), upstream_db_name + ".db/" + upstream_table_name);
     ASSERT_TRUE(TestUtil::CopyDirectory(src_db_path, dst_db_path));
 
-    // The source table has no upstream warehouse configured: only a read with resolve
-    // dynamically disabled can succeed on it.
+    // The source table configures no explicit upstream warehouse; a default read falls back to the
+    // warehouse it lives in (dir_), where the copied upstream table sits.
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("view", true)};
     std::map<std::string, std::string> source_options = {
@@ -4210,12 +4210,15 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
                          WriteArray(source_table_path, {}, schema->field_names(), {write_struct}));
     ASSERT_OK(Commit(source_table_path, commit_msgs));
 
-    // A default read fails on the missing upstream warehouse: the pass-through below is
-    // enabled by the dynamic option alone.
+    // With no explicit upstream warehouse, a default read now falls back to the source table's own
+    // warehouse (dir_) and resolves the copied upstream table instead of failing. The pass-through
+    // read below still uses the dynamic option to preserve the raw BlobViewStruct bytes.
     ASSERT_OK_AND_ASSIGN(auto source_plan, ScanTable(source_table_path));
-    ASSERT_NOK_WITH_MSG(
-        ReadTable(source_table_path, schema->field_names(), source_plan, /*predicate=*/nullptr),
-        "BLOB_VIEW_UPSTREAM_WAREHOUSE");
+    ASSERT_OK_AND_ASSIGN(
+        auto source_default_result,
+        ReadTable(source_table_path, schema->field_names(), source_plan, /*predicate=*/nullptr));
+    ASSERT_TRUE(source_default_result);
+    ASSERT_EQ(source_default_result->length(), 8);
 
     ASSERT_OK_AND_ASSIGN(
         auto source_result,
@@ -4577,7 +4580,7 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
         << "expected:" << expected_with_rk->ToString();
 }
 
-TEST_P(BlobTableInteTest, TestBlobViewFailsWhenBothPathsAbsent) {
+TEST_P(BlobTableInteTest, TestBlobViewFailsWhenUpstreamTableAbsent) {
     if (GetParam() == "mosaic") {
         return;
     }
@@ -4589,10 +4592,10 @@ TEST_P(BlobTableInteTest, TestBlobViewFailsWhenBothPathsAbsent) {
 
     ASSERT_OK(WriteDanglingBlobViewRows(table_path));
 
-    // reading fails because neither the table path nor the fallback one exists upstream
+    // reading fails because the upstream table does not exist at the catalog-issued location
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "Ambiguous table path");
+                        "not found latest schema");
 }
 
 TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
@@ -4613,7 +4616,7 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
     // without the deletion vector the dangling reference fails the read
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "Ambiguous table path");
+                        "not found latest schema");
 
     ASSERT_OK_AND_ASSIGN(std::string anchor_file_name,
                          DeletionVectorTestHelper::RetrieveAnchorFileName(commit_msgs));
@@ -4659,7 +4662,7 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceInEveryRowRangeGroup
     // without deletion vectors both groups' dangling references fail the read
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "Ambiguous table path");
+                        "not found latest schema");
 
     // each group's anchor gets a deletion vector dropping its row 0, the dangling one
     ASSERT_OK_AND_ASSIGN(std::string anchor_file_name0,
@@ -4698,7 +4701,7 @@ TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
     // reading the whole split fails on the dangling reference of row 0
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "Ambiguous table path");
+                        "not found latest schema");
 
     // a predicate keeping only row 1 does not rescue the query: it is evaluated above the split
     // read, while the pre-read takes none, so row 0's reference is still collected and resolved
@@ -4706,7 +4709,7 @@ TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
                                               FieldType::INT, Literal(101));
     ASSERT_OK_AND_ASSIGN(auto filtered_plan, ScanTable(table_path, keep_row_1));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), filtered_plan, keep_row_1),
-                        "Ambiguous table path");
+                        "not found latest schema");
 
     // dropping the same row through the row ranges does: the pre-read honors them the same way
     // the main read does, so row 0 is never resolved
@@ -4715,115 +4718,6 @@ TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_struct,
                           /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 1)}));
-}
-
-TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {
-    auto file_format = GetParam();
-    if (file_format == "mosaic") {
-        return;
-    }
-    const std::string upstream_db_name = "fallback_db";
-    const std::string upstream_table_name = "fallback_table";
-    arrow::FieldVector upstream_fields = {arrow::field("f0", arrow::int32()),
-                                          BlobUtils::ToArrowField("blob", true)};
-    auto upstream_schema = arrow::schema(upstream_fields);
-    std::map<std::string, std::string> upstream_options = {
-        {Options::FILE_FORMAT, file_format},     {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_AS_DESCRIPTOR, "true"},   {Options::FILE_SYSTEM, "local"}};
-
-    // Create the upstream table at the fallback path: <warehouse>/db/table (no .db).
-    auto upstream_dir = UniqueTestDirectory::Create("local");
-    std::string fallback_table_path =
-        PathUtil::JoinPath(upstream_dir->Str(), upstream_db_name + "/" + upstream_table_name);
-
-    // Manually create schema at fallback path so it can be read as a valid paimon table.
-    {
-        // Use a temporary warehouse with Catalog to build the table data, then copy to fallback.
-        auto temp_dir = UniqueTestDirectory::Create("local");
-        ::ArrowSchema c_schema;
-        ASSERT_TRUE(arrow::ExportSchema(*upstream_schema, &c_schema).ok());
-        ASSERT_OK_AND_ASSIGN(auto catalog,
-                             Catalog::Create(temp_dir->Str(), {{Options::FILE_SYSTEM, "local"}}));
-        ASSERT_OK(catalog->CreateDatabase(upstream_db_name, {}, /*ignore_if_exists=*/true));
-        ASSERT_OK(catalog->CreateTable(Identifier(upstream_db_name, upstream_table_name), &c_schema,
-                                       /*partition_keys=*/{}, /*primary_keys=*/{}, upstream_options,
-                                       /*ignore_if_exists=*/false));
-        std::string temp_table_path =
-            PathUtil::JoinPath(temp_dir->Str(), upstream_db_name + ".db/" + upstream_table_name);
-
-        // Write data to the temp table.
-        std::string raw_json = R"([[0, "hello"], [1, "world"]])";
-        auto raw_array = std::dynamic_pointer_cast<arrow::StructArray>(
-            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(upstream_fields), raw_json)
-                .ValueOrDie());
-        ASSERT_OK_AND_ASSIGN(auto desc_array, ConvertRawBlobToDescriptor(raw_array, {"blob"}));
-        ASSERT_OK_AND_ASSIGN(
-            auto upstream_commit_msgs,
-            WriteArray(temp_table_path, {}, upstream_schema->field_names(), {desc_array}));
-        ASSERT_OK(Commit(temp_table_path, upstream_commit_msgs));
-
-        // Copy the temp table to the fallback path (without .db).
-        ASSERT_TRUE(TestUtil::CopyDirectory(temp_table_path, fallback_table_path));
-    }
-
-    // Build the downstream table.
-    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
-                                 BlobUtils::ToArrowField("view", true)};
-    std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, file_format},
-        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_VIEW_FIELD, "view"},
-        {Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, upstream_dir->Str()},
-        {Options::FILE_SYSTEM, "local"}};
-    CreateTable(fields, /*partition_keys=*/{}, options);
-    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
-
-    // Write downstream rows referencing the upstream fallback table.
-    Identifier upstream_identifier(upstream_db_name, upstream_table_name);
-    arrow::LargeBinaryBuilder view_builder;
-    for (int64_t row = 0; row < 2; ++row) {
-        BlobViewStruct view_struct(upstream_identifier, /*field_id=*/1, /*row_id=*/row);
-        ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized, view_struct.Serialize(pool_));
-        ASSERT_TRUE(
-            view_builder
-                .Append(reinterpret_cast<const uint8_t*>(serialized->data()), serialized->size())
-                .ok());
-    }
-    std::shared_ptr<arrow::Array> write_view_array;
-    ASSERT_TRUE(view_builder.Finish(&write_view_array).ok());
-    auto write_f0_array =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([100, 101])").ValueOrDie();
-    auto write_struct = std::dynamic_pointer_cast<arrow::StructArray>(
-        arrow::StructArray::Make(arrow::ArrayVector({write_f0_array, write_view_array}),
-                                 std::vector<std::string>({"f0", "view"}))
-            .ValueOrDie());
-
-    auto schema = arrow::schema(fields);
-    ASSERT_OK_AND_ASSIGN(auto commit_msgs,
-                         WriteArray(table_path, {}, schema->field_names(), {write_struct}));
-    ASSERT_OK(Commit(table_path, commit_msgs));
-
-    // Read and verify
-    ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
-    ASSERT_OK_AND_ASSIGN(auto result,
-                         ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr));
-    ASSERT_TRUE(result);
-    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
-    auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
-    ASSERT_EQ(read_struct->length(), 2);
-    ASSERT_OK_AND_ASSIGN(auto result_array, ConvertDescriptorToRawBlob(read_struct, {"view"}));
-
-    std::string expected_json = R"([[100, "hello"], [101, "world"]])";
-    auto expected_struct = std::dynamic_pointer_cast<arrow::StructArray>(
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), expected_json)
-            .ValueOrDie());
-    ASSERT_OK_AND_ASSIGN(auto expected_with_rk, PrependRowKindColumn(expected_struct));
-    ASSERT_TRUE(result_array->Equals(expected_with_rk))
-        << "result_array:" << result_array->ToString() << std::endl
-        << "expected:" << expected_with_rk->ToString();
 }
 
 TEST_P(BlobTableInteTest, TestReadBlobDescriptorFieldFromJava) {
