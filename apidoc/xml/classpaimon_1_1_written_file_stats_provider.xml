@@ -1,0 +1,67 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_written_file_stats_provider" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::WrittenFileStatsProvider</compoundname>
+    <includes refid="written__file__stats__provider_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/written_file_stats_provider.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_written_file_stats_provider_1a593f8be04628965dd5dc53154e63fd46" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::WrittenFileStatsProvider::~WrittenFileStatsProvider</definition>
+        <argsstring>()=default</argsstring>
+        <name>~WrittenFileStatsProvider</name>
+        <qualifiedname>paimon::WrittenFileStatsProvider::~WrittenFileStatsProvider</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/written_file_stats_provider.h" line="37" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_written_file_stats_provider_1a68beabe6343a0e2eb6cfd3d7b187f404" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="namespacepaimon_1acc645dad64b7eea72db8fe50386b97cb" kindref="member">ColumnStatsVector</ref> &gt;</type>
+        <definition>virtual Result&lt; ColumnStatsVector &gt; paimon::WrittenFileStatsProvider::ExtractWrittenFileStats</definition>
+        <argsstring>(const std::shared_ptr&lt; MemoryPool &gt; &amp;pool) const =0</argsstring>
+        <name>ExtractWrittenFileStats</name>
+        <qualifiedname>paimon::WrittenFileStatsProvider::ExtractWrittenFileStats</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <briefdescription>
+<para>Extracts the statistics of each top-level column of the finished file. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>They must equal what <computeroutput><ref refid="classpaimon_1_1_format_stats_extractor_1a286589bfa52690e64d144d95d0c8bc76" kindref="member">FormatStatsExtractor::Extract()</ref></computeroutput> reads back from that file.</para>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>pool</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Memory pool used to build the statistics. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para>The statistics, or an error status if the file has not been finished successfully. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/written_file_stats_provider.h" line="44" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Optionally implemented by a <computeroutput><ref refid="classpaimon_1_1_format_writer" kindref="compound">FormatWriter</ref></computeroutput> that can produce the column statistics of the file it has finished from the metadata it still holds in memory. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>The data file writers then take the statistics from it instead of reopening the file through <computeroutput><ref refid="classpaimon_1_1_format_stats_extractor" kindref="compound">FormatStatsExtractor</ref></computeroutput> to read them back.</para>
+<para>It is implemented alongside <computeroutput><ref refid="classpaimon_1_1_format_writer" kindref="compound">FormatWriter</ref></computeroutput> rather than added to it, so <computeroutput><ref refid="classpaimon_1_1_format_writer" kindref="compound">FormatWriter</ref></computeroutput> keeps its ABI and format writers that do not implement it are unaffected. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/written_file_stats_provider.h" line="35" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/written_file_stats_provider.h" bodystart="35" bodyend="46"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_written_file_stats_provider_1a68beabe6343a0e2eb6cfd3d7b187f404" prot="public" virt="pure-virtual"><scope>paimon::WrittenFileStatsProvider</scope><name>ExtractWrittenFileStats</name></member>
+      <member refid="classpaimon_1_1_written_file_stats_provider_1a593f8be04628965dd5dc53154e63fd46" prot="public" virt="virtual"><scope>paimon::WrittenFileStatsProvider</scope><name>~WrittenFileStatsProvider</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

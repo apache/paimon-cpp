@@ -1,0 +1,497 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="file__system_8h" kind="file" language="C++">
+    <compoundname>file_system.h</compoundname>
+    <includes local="no">cstdint</includes>
+    <includes local="no">functional</includes>
+    <includes local="no">memory</includes>
+    <includes local="no">string</includes>
+    <includes local="no">utility</includes>
+    <includes local="no">vector</includes>
+    <includes refid="result_8h" local="yes">paimon/result.h</includes>
+    <includes refid="status_8h" local="yes">paimon/status.h</includes>
+    <includes refid="visibility_8h" local="yes">paimon/visibility.h</includes>
+    <includedby refid="blob_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob.h</includedby>
+    <includedby refid="file__indexer_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_indexer.h</includedby>
+    <includedby refid="file__system__factory_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system_factory.h</includedby>
+    <includedby refid="global__index__file__writer_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_file_writer.h</includedby>
+    <includedby refid="buffered__input__stream_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/buffered_input_stream.h</includedby>
+    <includedby refid="byte__array__input__stream_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/byte_array_input_stream.h</includedby>
+    <incdepgraph>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h</label>
+        <link refid="file__system_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="19" relation="include">
+        </childnode>
+      </node>
+      <node id="8">
+        <label>paimon/result.h</label>
+        <link refid="result_8h"/>
+        <childnode refid="9" relation="include">
+        </childnode>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="20" relation="include">
+        </childnode>
+      </node>
+      <node id="11">
+        <label>paimon/status.h</label>
+        <link refid="status_8h"/>
+        <childnode refid="12" relation="include">
+        </childnode>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="14" relation="include">
+        </childnode>
+        <childnode refid="15" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+        <childnode refid="19" relation="include">
+        </childnode>
+      </node>
+      <node id="16">
+        <label>paimon/string_builder.h</label>
+        <link refid="string__builder_8h"/>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="18" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="19" relation="include">
+        </childnode>
+      </node>
+      <node id="19">
+        <label>paimon/visibility.h</label>
+        <link refid="visibility_8h"/>
+      </node>
+      <node id="9">
+        <label>cassert</label>
+      </node>
+      <node id="2">
+        <label>cstdint</label>
+      </node>
+      <node id="12">
+        <label>cstring</label>
+      </node>
+      <node id="3">
+        <label>functional</label>
+      </node>
+      <node id="13">
+        <label>iosfwd</label>
+      </node>
+      <node id="4">
+        <label>memory</label>
+      </node>
+      <node id="17">
+        <label>ostream</label>
+      </node>
+      <node id="14">
+        <label>paimon/compare.h</label>
+      </node>
+      <node id="15">
+        <label>paimon/macros.h</label>
+      </node>
+      <node id="20">
+        <label>paimon/traits.h</label>
+      </node>
+      <node id="18">
+        <label>sstream</label>
+      </node>
+      <node id="5">
+        <label>string</label>
+      </node>
+      <node id="10">
+        <label>type_traits</label>
+      </node>
+      <node id="6">
+        <label>utility</label>
+      </node>
+      <node id="7">
+        <label>vector</label>
+      </node>
+    </incdepgraph>
+    <invincdepgraph>
+      <node id="5">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/api.h</label>
+        <link refid="api_8h"/>
+      </node>
+      <node id="2">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob.h</label>
+        <link refid="blob_8h"/>
+      </node>
+      <node id="11">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/bitmap_index_result.h</label>
+        <link refid="bitmap__index__result_8h"/>
+      </node>
+      <node id="3">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_indexer.h</label>
+        <link refid="file__indexer_8h"/>
+      </node>
+      <node id="15">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/file_format.h</label>
+        <link refid="file__format_8h"/>
+      </node>
+      <node id="14">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/reader_builder.h</label>
+        <link refid="reader__builder_8h"/>
+        <childnode refid="15" relation="include">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h</label>
+        <link refid="file__system_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="9" relation="include">
+        </childnode>
+      </node>
+      <node id="4">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system_factory.h</label>
+        <link refid="file__system__factory_8h"/>
+        <childnode refid="5" relation="include">
+        </childnode>
+      </node>
+      <node id="21">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/bitmap_global_index_result.h</label>
+        <link refid="bitmap__global__index__result_8h"/>
+      </node>
+      <node id="22">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/bitmap_scored_global_index_result.h</label>
+        <link refid="bitmap__scored__global__index__result_8h"/>
+      </node>
+      <node id="24">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/global_index_reader.h</label>
+        <link refid="global__index__reader_8h"/>
+        <childnode refid="25" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+      </node>
+      <node id="25">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/global_index_scan.h</label>
+        <link refid="global__index__scan_8h"/>
+      </node>
+      <node id="7">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/global_indexer.h</label>
+        <link refid="global__indexer_8h"/>
+      </node>
+      <node id="6">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/global_index/io/global_index_file_writer.h</label>
+        <link refid="global__index__file__writer_8h"/>
+        <childnode refid="7" relation="include">
+        </childnode>
+      </node>
+      <node id="8">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/buffered_input_stream.h</label>
+        <link refid="buffered__input__stream_8h"/>
+      </node>
+      <node id="9">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/byte_array_input_stream.h</label>
+        <link refid="byte__array__input__stream_8h"/>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="20" relation="include">
+        </childnode>
+      </node>
+      <node id="23">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h</label>
+        <link refid="full__text__search_8h"/>
+        <childnode refid="24" relation="include">
+        </childnode>
+      </node>
+      <node id="12">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/batch_reader.h</label>
+        <link refid="batch__reader_8h"/>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="19" relation="include">
+        </childnode>
+      </node>
+      <node id="13">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/file_batch_reader.h</label>
+        <link refid="file__batch__reader_8h"/>
+        <childnode refid="14" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="16">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h</label>
+        <link refid="prefetch__file__batch__reader_8h"/>
+      </node>
+      <node id="18">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/arrow_realtime_store_factory.h</label>
+        <link refid="arrow__realtime__store__factory_8h"/>
+      </node>
+      <node id="17">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h</label>
+        <link refid="realtime__store_8h"/>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="18" relation="include">
+        </childnode>
+      </node>
+      <node id="19">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/table_read.h</label>
+        <link refid="table__read_8h"/>
+        <childnode refid="5" relation="include">
+        </childnode>
+      </node>
+      <node id="10">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/roaring_bitmap32.h</label>
+        <link refid="roaring__bitmap32_8h"/>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="20" relation="include">
+        </childnode>
+      </node>
+      <node id="20">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/roaring_bitmap64.h</label>
+        <link refid="roaring__bitmap64_8h"/>
+        <childnode refid="21" relation="include">
+        </childnode>
+        <childnode refid="22" relation="include">
+        </childnode>
+        <childnode refid="23" relation="include">
+        </childnode>
+      </node>
+    </invincdepgraph>
+    <innerclass refid="classpaimon_1_1_stream" prot="public">paimon::Stream</innerclass>
+    <innerclass refid="classpaimon_1_1_input_stream" prot="public">paimon::InputStream</innerclass>
+    <innerclass refid="classpaimon_1_1_output_stream" prot="public">paimon::OutputStream</innerclass>
+    <innerclass refid="classpaimon_1_1_basic_file_status" prot="public">paimon::BasicFileStatus</innerclass>
+    <innerclass refid="classpaimon_1_1_file_status" prot="public">paimon::FileStatus</innerclass>
+    <innerclass refid="classpaimon_1_1_file_system" prot="public">paimon::FileSystem</innerclass>
+    <innernamespace refid="namespacepaimon">paimon</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="comment">/*</highlight></codeline>
+<codeline lineno="2"><highlight class="comment"><sp/>*<sp/>Licensed<sp/>to<sp/>the<sp/>Apache<sp/>Software<sp/>Foundation<sp/>(ASF)<sp/>under<sp/>one</highlight></codeline>
+<codeline lineno="3"><highlight class="comment"><sp/>*<sp/>or<sp/>more<sp/>contributor<sp/>license<sp/>agreements.<sp/><sp/>See<sp/>the<sp/>NOTICE<sp/>file</highlight></codeline>
+<codeline lineno="4"><highlight class="comment"><sp/>*<sp/>distributed<sp/>with<sp/>this<sp/>work<sp/>for<sp/>additional<sp/>information</highlight></codeline>
+<codeline lineno="5"><highlight class="comment"><sp/>*<sp/>regarding<sp/>copyright<sp/>ownership.<sp/><sp/>The<sp/>ASF<sp/>licenses<sp/>this<sp/>file</highlight></codeline>
+<codeline lineno="6"><highlight class="comment"><sp/>*<sp/>to<sp/>you<sp/>under<sp/>the<sp/>Apache<sp/>License,<sp/>Version<sp/>2.0<sp/>(the</highlight></codeline>
+<codeline lineno="7"><highlight class="comment"><sp/>*<sp/>&quot;License&quot;);<sp/>you<sp/>may<sp/>not<sp/>use<sp/>this<sp/>file<sp/>except<sp/>in<sp/>compliance</highlight></codeline>
+<codeline lineno="8"><highlight class="comment"><sp/>*<sp/>with<sp/>the<sp/>License.<sp/><sp/>You<sp/>may<sp/>obtain<sp/>a<sp/>copy<sp/>of<sp/>the<sp/>License<sp/>at</highlight></codeline>
+<codeline lineno="9"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="10"><highlight class="comment"><sp/>*<sp/><sp/><sp/><sp/><sp/>http://www.apache.org/licenses/LICENSE-2.0</highlight></codeline>
+<codeline lineno="11"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="12"><highlight class="comment"><sp/>*<sp/>Unless<sp/>required<sp/>by<sp/>applicable<sp/>law<sp/>or<sp/>agreed<sp/>to<sp/>in<sp/>writing,<sp/>software</highlight></codeline>
+<codeline lineno="13"><highlight class="comment"><sp/>*<sp/>distributed<sp/>under<sp/>the<sp/>License<sp/>is<sp/>distributed<sp/>on<sp/>an<sp/>&quot;AS<sp/>IS&quot;<sp/>BASIS,</highlight></codeline>
+<codeline lineno="14"><highlight class="comment"><sp/>*<sp/>WITHOUT<sp/>WARRANTIES<sp/>OR<sp/>CONDITIONS<sp/>OF<sp/>ANY<sp/>KIND,<sp/>either<sp/>express<sp/>or<sp/>implied.</highlight></codeline>
+<codeline lineno="15"><highlight class="comment"><sp/>*<sp/>See<sp/>the<sp/>License<sp/>for<sp/>the<sp/>specific<sp/>language<sp/>governing<sp/>permissions<sp/>and</highlight></codeline>
+<codeline lineno="16"><highlight class="comment"><sp/>*<sp/>limitations<sp/>under<sp/>the<sp/>License.</highlight></codeline>
+<codeline lineno="17"><highlight class="comment"><sp/>*/</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="18"><highlight class="normal"></highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight><highlight class="preprocessor">#pragma<sp/>once</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;cstdint&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;functional&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="23"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;memory&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="24"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;string&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="25"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;utility&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="26"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;vector&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="27"><highlight class="normal"></highlight></codeline>
+<codeline lineno="28"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="result_8h" kindref="compound">paimon/result.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="29"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="status_8h" kindref="compound">paimon/status.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="30"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="visibility_8h" kindref="compound">paimon/visibility.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="31"><highlight class="normal"></highlight></codeline>
+<codeline lineno="32"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal"><ref refid="namespacepaimon" kindref="compound">paimon</ref><sp/>{</highlight></codeline>
+<codeline lineno="33"><highlight class="normal"></highlight></codeline>
+<codeline lineno="35" refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9" refkind="member"><highlight class="keyword">enum</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9" kindref="member">SeekOrigin</ref><sp/>{</highlight></codeline>
+<codeline lineno="37" refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9a770c25711516829cd50bfbca5f15867e" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9a770c25711516829cd50bfbca5f15867e" kindref="member">FS_SEEK_SET</ref>,</highlight></codeline>
+<codeline lineno="39" refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9a5199153f908442fa3fcc3e97d03358b7" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9a5199153f908442fa3fcc3e97d03358b7" kindref="member">FS_SEEK_CUR</ref>,</highlight></codeline>
+<codeline lineno="41"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9ac74982539e1b5314febf367c19aa7a27" kindref="member">FS_SEEK_END</ref></highlight></codeline>
+<codeline lineno="42" refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9ac74982539e1b5314febf367c19aa7a27" refkind="member"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="43"><highlight class="normal"></highlight></codeline>
+<codeline lineno="45" refid="classpaimon_1_1_stream" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_stream" kindref="compound">Stream</ref><sp/>{</highlight></codeline>
+<codeline lineno="46"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="47" refid="classpaimon_1_1_stream_1aff0ae0a9c78f8fb31da85ef1607748d9" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_stream_1aff0ae0a9c78f8fb31da85ef1607748d9" kindref="member">~Stream</ref>()<sp/>=<sp/></highlight><highlight class="keywordflow">default</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="49" refid="classpaimon_1_1_stream_1a1c12b3f1e8618ad95e980aa6ea79912a" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_stream_1a1c12b3f1e8618ad95e980aa6ea79912a" kindref="member">Close</ref>()<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="50"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="51"><highlight class="normal"></highlight></codeline>
+<codeline lineno="53" refid="classpaimon_1_1_input_stream" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_input_stream" kindref="compound">InputStream</ref><sp/>:<sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_stream" kindref="compound">Stream</ref><sp/>{</highlight></codeline>
+<codeline lineno="54"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="55" refid="classpaimon_1_1_input_stream_1a105551df49ad793873a9b7383048fb8d" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_input_stream_1a105551df49ad793873a9b7383048fb8d" kindref="member">InputStream</ref>()<sp/>=<sp/></highlight><highlight class="keywordflow">default</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="56" refid="classpaimon_1_1_input_stream_1aad5b06608c25f5dda325e5c32dcb6090" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_input_stream_1aad5b06608c25f5dda325e5c32dcb6090" kindref="member">~InputStream</ref>()<sp/></highlight><highlight class="keyword">override</highlight><highlight class="normal"><sp/>=<sp/></highlight><highlight class="keywordflow">default</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="57"><highlight class="normal"></highlight></codeline>
+<codeline lineno="64" refid="classpaimon_1_1_input_stream_1a2dc5b4b46ddcae0352124a6d0c9ac4c9" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_input_stream_1a2dc5b4b46ddcae0352124a6d0c9ac4c9" kindref="member">Seek</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>offset,<sp/><ref refid="namespacepaimon_1ac1eb532d87b4e6a9ea64431b61e115f9" kindref="member">SeekOrigin</ref><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">origin</ref>)<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="65"><highlight class="normal"></highlight></codeline>
+<codeline lineno="71" refid="classpaimon_1_1_input_stream_1a3ac32eb3c03543f382ffeae736d47212" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;int64_t&gt;</ref><sp/><ref refid="classpaimon_1_1_input_stream_1a3ac32eb3c03543f382ffeae736d47212" kindref="member">GetPos</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="72"><highlight class="normal"></highlight></codeline>
+<codeline lineno="79" refid="classpaimon_1_1_input_stream_1a06395a4740692d34586328f311c32c32" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;int64_t&gt;</ref><sp/><ref refid="classpaimon_1_1_input_stream_1a06395a4740692d34586328f311c32c32" kindref="member">Read</ref>(</highlight><highlight class="keywordtype">char</highlight><highlight class="normal">*<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">buffer</ref>,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>size)<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="80"><highlight class="normal"></highlight></codeline>
+<codeline lineno="89" refid="classpaimon_1_1_input_stream_1a2f5cbfe5d49bc705de945131fe1b60f1" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;int64_t&gt;</ref><sp/><ref refid="classpaimon_1_1_input_stream_1a2f5cbfe5d49bc705de945131fe1b60f1" kindref="member">Read</ref>(</highlight><highlight class="keywordtype">char</highlight><highlight class="normal">*<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">buffer</ref>,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>size,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>offset)<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="90"><highlight class="normal"></highlight></codeline>
+<codeline lineno="105" refid="classpaimon_1_1_input_stream_1aa4942e6b879619ab97c8ed71d1288499" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_input_stream_1aa4942e6b879619ab97c8ed71d1288499" kindref="member">ReadAsync</ref>(</highlight><highlight class="keywordtype">char</highlight><highlight class="normal">*<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">buffer</ref>,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>size,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>offset,</highlight></codeline>
+<codeline lineno="106"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>std::function&lt;</highlight><highlight class="keywordtype">void</highlight><highlight class="normal">(<ref refid="classpaimon_1_1_status" kindref="compound">Status</ref>)&gt;&amp;&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">callback</ref>)<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="107"><highlight class="normal"></highlight></codeline>
+<codeline lineno="111" refid="classpaimon_1_1_input_stream_1a689b6b28137753671f61da41a6ce636f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::string&gt;</ref><sp/><ref refid="classpaimon_1_1_input_stream_1a689b6b28137753671f61da41a6ce636f" kindref="member">GetUri</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="112"><highlight class="normal"></highlight></codeline>
+<codeline lineno="114" refid="classpaimon_1_1_input_stream_1a73b121ffeedf93986dd3b6b95208e9f0" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;int64_t&gt;</ref><sp/><ref refid="classpaimon_1_1_input_stream_1a73b121ffeedf93986dd3b6b95208e9f0" kindref="member">Length</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="115"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="116"><highlight class="normal"></highlight></codeline>
+<codeline lineno="118" refid="classpaimon_1_1_output_stream" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_output_stream" kindref="compound">OutputStream</ref><sp/>:<sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_stream" kindref="compound">Stream</ref><sp/>{</highlight></codeline>
+<codeline lineno="119"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="120" refid="classpaimon_1_1_output_stream_1a550aead391c3dff769bbeeea330bb4c2" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_output_stream_1a550aead391c3dff769bbeeea330bb4c2" kindref="member">OutputStream</ref>()<sp/>=<sp/></highlight><highlight class="keywordflow">default</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="121"><highlight class="normal"></highlight></codeline>
+<codeline lineno="128" refid="classpaimon_1_1_output_stream_1a37d2c57cd9a4b9881a69327329507605" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;int64_t&gt;</ref><sp/><ref refid="classpaimon_1_1_output_stream_1a37d2c57cd9a4b9881a69327329507605" kindref="member">Write</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal">*<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">buffer</ref>,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>size)<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="129"><highlight class="normal"></highlight></codeline>
+<codeline lineno="131" refid="classpaimon_1_1_output_stream_1abe7934a91049e5026eae1a8288c2e42f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_output_stream_1abe7934a91049e5026eae1a8288c2e42f" kindref="member">Flush</ref>()<sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="133" refid="classpaimon_1_1_output_stream_1acf3de015741596ae7d44bade71df9b89" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;int64_t&gt;</ref><sp/><ref refid="classpaimon_1_1_output_stream_1acf3de015741596ae7d44bade71df9b89" kindref="member">GetPos</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="135" refid="classpaimon_1_1_output_stream_1af8d3717c83bb3b7c3a664167c3f43261" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::string&gt;</ref><sp/><ref refid="classpaimon_1_1_output_stream_1af8d3717c83bb3b7c3a664167c3f43261" kindref="member">GetUri</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="136"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="137"><highlight class="normal"></highlight></codeline>
+<codeline lineno="143" refid="classpaimon_1_1_basic_file_status" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_basic_file_status" kindref="compound">BasicFileStatus</ref><sp/>{</highlight></codeline>
+<codeline lineno="144"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="145" refid="classpaimon_1_1_basic_file_status_1a025f1e86f33d5122302d1ad2953d6514" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_basic_file_status_1a025f1e86f33d5122302d1ad2953d6514" kindref="member">BasicFileStatus</ref>()<sp/>=<sp/></highlight><highlight class="keywordflow">default</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="146"><highlight class="normal"></highlight></codeline>
+<codeline lineno="150" refid="classpaimon_1_1_basic_file_status_1a02ff58a99da9984af2d6264f5090ab87" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_basic_file_status_1a02ff58a99da9984af2d6264f5090ab87" kindref="member">BasicFileStatus</ref>(std::string<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>,<sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">is_dir</ref>)<sp/>:<sp/>path_(<ref refid="namespacestd" kindref="compound">std</ref>::<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">move</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>)),<sp/>is_dir_(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">is_dir</ref>)<sp/>{}</highlight></codeline>
+<codeline lineno="151"><highlight class="normal"></highlight></codeline>
+<codeline lineno="153" refid="classpaimon_1_1_basic_file_status_1a964a7e09d49d4e8f93e96c04e74bc3c0" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_basic_file_status_1a964a7e09d49d4e8f93e96c04e74bc3c0" kindref="member">IsDir</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="154"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>is_dir_;</highlight></codeline>
+<codeline lineno="155"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="156"><highlight class="normal"></highlight></codeline>
+<codeline lineno="158" refid="classpaimon_1_1_basic_file_status_1a6d7b09091087fb936235ffc3d9aa8d7b" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::string<sp/><ref refid="classpaimon_1_1_basic_file_status_1a6d7b09091087fb936235ffc3d9aa8d7b" kindref="member">GetPath</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="159"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>path_;</highlight></codeline>
+<codeline lineno="160"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="161"><highlight class="normal"></highlight></codeline>
+<codeline lineno="162"><highlight class="normal"><sp/></highlight><highlight class="keyword">private</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="163" refid="classpaimon_1_1_basic_file_status_1a7c2f9697cd89b642a4a897cea52888b4" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::string<sp/><ref refid="classpaimon_1_1_basic_file_status_1a7c2f9697cd89b642a4a897cea52888b4" kindref="member">path_</ref>;</highlight></codeline>
+<codeline lineno="164" refid="classpaimon_1_1_basic_file_status_1a7ebdcedba76e32a5e2f49bff02643362" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/>is_dir_<sp/>=<sp/></highlight><highlight class="keyword">false</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="165"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="166"><highlight class="normal"></highlight></codeline>
+<codeline lineno="171" refid="classpaimon_1_1_file_status" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_file_status" kindref="compound">FileStatus</ref><sp/>{</highlight></codeline>
+<codeline lineno="172"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="174" refid="classpaimon_1_1_file_status_1a2294312fee9a40cea8353c1cf2a2e116" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>kUnknownModificationTime<sp/>=<sp/>-1;</highlight></codeline>
+<codeline lineno="175"><highlight class="normal"></highlight></codeline>
+<codeline lineno="176" refid="classpaimon_1_1_file_status_1a1b4f7cc1cf98fa8da4d3792aeb209b77" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>kNoSize<sp/>=<sp/>-1;</highlight></codeline>
+<codeline lineno="177"><highlight class="normal"></highlight></codeline>
+<codeline lineno="178" refid="classpaimon_1_1_file_status_1a6278b7b7d8c7327ba7d7af3674836381" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_file_status_1a6278b7b7d8c7327ba7d7af3674836381" kindref="member">FileStatus</ref>()<sp/>=<sp/></highlight><highlight class="keywordflow">default</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="179"><highlight class="normal"></highlight></codeline>
+<codeline lineno="187" refid="classpaimon_1_1_file_status_1a42af84baa379263138e8b71cfbe732cf" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_file_status_1a42af84baa379263138e8b71cfbe732cf" kindref="member">FileStatus</ref>(std::string<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>length,<sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">is_dir</ref><sp/>=<sp/></highlight><highlight class="keyword">false</highlight><highlight class="normal">,</highlight></codeline>
+<codeline lineno="188"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">modification_time</ref><sp/>=<sp/>kUnknownModificationTime)</highlight></codeline>
+<codeline lineno="189"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>:<sp/>path_(<ref refid="namespacestd" kindref="compound">std</ref>::<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">move</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>)),</highlight></codeline>
+<codeline lineno="190"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>length_(length),</highlight></codeline>
+<codeline lineno="191"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>is_dir_(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">is_dir</ref>),</highlight></codeline>
+<codeline lineno="192"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>modification_time_(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">modification_time</ref>)<sp/>{}</highlight></codeline>
+<codeline lineno="193"><highlight class="normal"></highlight></codeline>
+<codeline lineno="196" refid="classpaimon_1_1_file_status_1ab193413a4bb94283f4bef619f357107f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="classpaimon_1_1_file_status_1ab193413a4bb94283f4bef619f357107f" kindref="member">GetLen</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="197"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>length_;</highlight></codeline>
+<codeline lineno="198"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="199"><highlight class="normal"></highlight></codeline>
+<codeline lineno="201" refid="classpaimon_1_1_file_status_1a7e2ed84dd62daa659425bd9481acb77f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_file_status_1a7e2ed84dd62daa659425bd9481acb77f" kindref="member">IsDir</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="202"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>is_dir_;</highlight></codeline>
+<codeline lineno="203"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="204"><highlight class="normal"></highlight></codeline>
+<codeline lineno="206" refid="classpaimon_1_1_file_status_1ad3eedbdf213160a587c3bcc789c47a4c" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::string<sp/><ref refid="classpaimon_1_1_file_status_1ad3eedbdf213160a587c3bcc789c47a4c" kindref="member">GetPath</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="207"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>path_;</highlight></codeline>
+<codeline lineno="208"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="209"><highlight class="normal"></highlight></codeline>
+<codeline lineno="214" refid="classpaimon_1_1_file_status_1a286dfb8c6f784cec91ec2be5c148b821" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="classpaimon_1_1_file_status_1a286dfb8c6f784cec91ec2be5c148b821" kindref="member">GetModificationTime</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="215"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>modification_time_;</highlight></codeline>
+<codeline lineno="216"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="217"><highlight class="normal"></highlight></codeline>
+<codeline lineno="218"><highlight class="normal"><sp/></highlight><highlight class="keyword">private</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="219" refid="classpaimon_1_1_file_status_1a1d2040698b3a5d97d40c529e0322b230" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::string<sp/><ref refid="classpaimon_1_1_file_status_1a1d2040698b3a5d97d40c529e0322b230" kindref="member">path_</ref>;</highlight></codeline>
+<codeline lineno="220" refid="classpaimon_1_1_file_status_1ab2823a0715edfa784a0968e2b7a5816b" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>length_<sp/>=<sp/>kNoSize;</highlight></codeline>
+<codeline lineno="221" refid="classpaimon_1_1_file_status_1af3ed7785b5d77095f1e9671ee7e8d5f7" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/>is_dir_<sp/>=<sp/></highlight><highlight class="keyword">false</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="222" refid="classpaimon_1_1_file_status_1a7397665c6eeddc38f2e6d761155140a0" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/>modification_time_<sp/>=<sp/>kUnknownModificationTime;</highlight></codeline>
+<codeline lineno="223"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="224"><highlight class="normal"></highlight></codeline>
+<codeline lineno="226" refid="classpaimon_1_1_file_system" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref><sp/>{</highlight></codeline>
+<codeline lineno="227"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="228" refid="classpaimon_1_1_file_system_1a04a8b646af1b296361f62582d9b0180f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_file_system_1a04a8b646af1b296361f62582d9b0180f" kindref="member">~FileSystem</ref>();</highlight></codeline>
+<codeline lineno="229"><highlight class="normal"></highlight></codeline>
+<codeline lineno="232" refid="classpaimon_1_1_file_system_1af62ae49a94e2d7eabe0e71dcb9166562" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;bool&gt;</ref><sp/><ref refid="classpaimon_1_1_file_system_1af62ae49a94e2d7eabe0e71dcb9166562" kindref="member">IsObjectStore</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path_str</ref>);</highlight></codeline>
+<codeline lineno="233"><highlight class="normal"></highlight></codeline>
+<codeline lineno="238" refid="classpaimon_1_1_file_system_1a72c1f7b0cce63bea2ba4c386c0835251" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::unique_ptr&lt;InputStream&gt;</ref>&gt;<sp/><ref refid="classpaimon_1_1_file_system_1a72c1f7b0cce63bea2ba4c386c0835251" kindref="member">Open</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="239"><highlight class="normal"></highlight></codeline>
+<codeline lineno="251" refid="classpaimon_1_1_file_system_1a7ee7a29c4abbfa8c92ca25457180ca77" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::unique_ptr&lt;InputStream&gt;</ref>&gt;<sp/><ref refid="classpaimon_1_1_file_system_1a7ee7a29c4abbfa8c92ca25457180ca77" kindref="member">Open</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_file_status" kindref="compound">FileStatus</ref>&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">file_status</ref>)</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="252"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">if</highlight><highlight class="normal"><sp/>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">file_status</ref>.GetLen()<sp/>&lt;<sp/>0)<sp/>{</highlight></codeline>
+<codeline lineno="253"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>Status::Invalid(</highlight><highlight class="stringliteral">&quot;file<sp/>size<sp/>must<sp/>be<sp/>non-negative&quot;</highlight><highlight class="normal">);</highlight></codeline>
+<codeline lineno="254"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="255"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>Open(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">file_status</ref>.GetPath());</highlight></codeline>
+<codeline lineno="256"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="257"><highlight class="normal"></highlight></codeline>
+<codeline lineno="263" refid="classpaimon_1_1_file_system_1acb391d2242b9f12d548d97cbb1e7b1f5" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::unique_ptr&lt;OutputStream&gt;</ref>&gt;<sp/><ref refid="classpaimon_1_1_file_system_1acb391d2242b9f12d548d97cbb1e7b1f5" kindref="member">Create</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>,</highlight></codeline>
+<codeline lineno="264"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">overwrite</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="265"><highlight class="normal"></highlight></codeline>
+<codeline lineno="269" refid="classpaimon_1_1_file_system_1a9959000667856883aa0c884b5be11b3e" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_file_system_1a9959000667856883aa0c884b5be11b3e" kindref="member">Mkdirs</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="270"><highlight class="normal"></highlight></codeline>
+<codeline lineno="275" refid="classpaimon_1_1_file_system_1a8103e3f37aad87743a3b1d35846c3424" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_file_system_1a8103e3f37aad87743a3b1d35846c3424" kindref="member">Rename</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">src</ref>,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">dst</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="276"><highlight class="normal"></highlight></codeline>
+<codeline lineno="282" refid="classpaimon_1_1_file_system_1ae8c6594859b8000d635ffccff1ce3700" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_file_system_1ae8c6594859b8000d635ffccff1ce3700" kindref="member">Delete</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>,<sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">recursive</ref><sp/>=<sp/></highlight><highlight class="keyword">true</highlight><highlight class="normal">)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="287" refid="classpaimon_1_1_file_system_1a0a1a1c2d1fdd44d4ca244b6423760cd3" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;FileStatus&gt;</ref><sp/><ref refid="classpaimon_1_1_file_system_1a0a1a1c2d1fdd44d4ca244b6423760cd3" kindref="member">GetFileStatus</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="288"><highlight class="normal"></highlight></codeline>
+<codeline lineno="293" refid="classpaimon_1_1_file_system_1a2743e5e13a4815d01d1c7145a4f4e345" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_file_system_1a2743e5e13a4815d01d1c7145a4f4e345" kindref="member">ListDir</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">directory</ref>,</highlight></codeline>
+<codeline lineno="294"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>std::vector&lt;BasicFileStatus&gt;*<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">file_status_list</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="295"><highlight class="normal"></highlight></codeline>
+<codeline lineno="300" refid="classpaimon_1_1_file_system_1abbec459a94a6e2dece8457c181964ed6" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_file_system_1abbec459a94a6e2dece8457c181964ed6" kindref="member">ListFileStatus</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>,</highlight></codeline>
+<codeline lineno="301"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>std::vector&lt;FileStatus&gt;*<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">file_status_list</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="302"><highlight class="normal"></highlight></codeline>
+<codeline lineno="307" refid="classpaimon_1_1_file_system_1a8275380dae43d478bb40ca45e7bdf679" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;bool&gt;</ref><sp/><ref refid="classpaimon_1_1_file_system_1a8275380dae43d478bb40ca45e7bdf679" kindref="member">Exists</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="308"><highlight class="normal"></highlight></codeline>
+<codeline lineno="314" refid="classpaimon_1_1_file_system_1ac52c94b98ce0bc0e55715dd18f29105d" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_file_system_1ac52c94b98ce0bc0e55715dd18f29105d" kindref="member">ReadFile</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>,<sp/>std::string*<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">content</ref>);</highlight></codeline>
+<codeline lineno="315"><highlight class="normal"></highlight></codeline>
+<codeline lineno="322" refid="classpaimon_1_1_file_system_1a76fae546803760b1b0d063088a089ee2" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_file_system_1a76fae546803760b1b0d063088a089ee2" kindref="member">WriteFile</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">content</ref>,<sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">overwrite</ref>);</highlight></codeline>
+<codeline lineno="323"><highlight class="normal"></highlight></codeline>
+<codeline lineno="330" refid="classpaimon_1_1_file_system_1a8b1f228e96ed46496e95c1aa8deb8c38" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref><sp/><ref refid="classpaimon_1_1_file_system_1a8b1f228e96ed46496e95c1aa8deb8c38" kindref="member">AtomicStore</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">path</ref>,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">content</ref>);</highlight></codeline>
+<codeline lineno="331"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="332"><highlight class="normal"></highlight></codeline>
+<codeline lineno="333"><highlight class="normal">}<sp/><sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>paimon</highlight><highlight class="normal"></highlight></codeline>
+    </programlisting>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h"/>
+  </compounddef>
+</doxygen>

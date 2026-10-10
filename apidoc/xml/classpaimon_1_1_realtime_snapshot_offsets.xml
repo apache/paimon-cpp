@@ -1,0 +1,127 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_snapshot_offsets" kind="class" language="C++" prot="public">
+    <compoundname>paimon::RealtimeSnapshotOffsets</compoundname>
+    <includes refid="realtime__snapshot__offsets_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_snapshot_offsets_1a129e2df929addaa13d97dc3947bd7e94" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimeSnapshotOffsets::RealtimeSnapshotOffsets</definition>
+        <argsstring>()=delete</argsstring>
+        <name>RealtimeSnapshotOffsets</name>
+        <qualifiedname>paimon::RealtimeSnapshotOffsets::RealtimeSnapshotOffsets</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h" line="38" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_snapshot_offsets_1aba58ff423bc5776b9794b16cfdcbe0e3" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimeSnapshotOffsets::~RealtimeSnapshotOffsets</definition>
+        <argsstring>()=delete</argsstring>
+        <name>~RealtimeSnapshotOffsets</name>
+        <qualifiedname>paimon::RealtimeSnapshotOffsets::~RealtimeSnapshotOffsets</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h" line="39" column="5"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_snapshot_offsets_1ac7982ddbff441c94a510fd9dced84f34" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="namespacepaimon_1a96ef50bca14c6706de741dc797bf4410" kindref="member">RealtimeOffsetMap</ref> &gt;</type>
+        <definition>static Result&lt; RealtimeOffsetMap &gt; paimon::RealtimeSnapshotOffsets::ReadAllOffsets</definition>
+        <argsstring>(const std::string &amp;table_path, const std::string &amp;branch, int64_t snapshot_id, const std::map&lt; std::string, std::string &gt; &amp;options, const std::shared_ptr&lt; FileSystem &gt; &amp;file_system)</argsstring>
+        <name>ReadAllOffsets</name>
+        <qualifiedname>paimon::RealtimeSnapshotOffsets::ReadAllOffsets</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>table_path</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>branch</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>snapshot_id</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>options</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt; &amp;</type>
+          <declname>file_system</declname>
+        </param>
+        <briefdescription>
+<para>Loads every partition-bucket offset recorded by an exact snapshot. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>An empty branch selects the main branch. A non-null <computeroutput>file_system</computeroutput> takes precedence; otherwise it is resolved by <computeroutput>CoreOptions</computeroutput> from <computeroutput>options</computeroutput>. A snapshot without real-time progress returns an empty map. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h" line="46" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_snapshot_offsets_1a9c06fb58cc87c443bcd337007b669c5f" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt;</type>
+        <definition>static Result&lt; int64_t &gt; paimon::RealtimeSnapshotOffsets::ReadOffset</definition>
+        <argsstring>(const std::string &amp;table_path, const std::string &amp;branch, int64_t snapshot_id, const RealtimePartitionBucket &amp;partition_bucket, const std::map&lt; std::string, std::string &gt; &amp;options, const std::shared_ptr&lt; FileSystem &gt; &amp;file_system)</argsstring>
+        <name>ReadOffset</name>
+        <qualifiedname>paimon::RealtimeSnapshotOffsets::ReadOffset</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>table_path</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>branch</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>snapshot_id</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref> &amp;</type>
+          <declname>partition_bucket</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>options</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt; &amp;</type>
+          <declname>file_system</declname>
+        </param>
+        <briefdescription>
+<para>Loads the exclusive durable recovery offset for one partition-bucket. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>A non-null <computeroutput>file_system</computeroutput> takes precedence; otherwise it is resolved by <computeroutput>CoreOptions</computeroutput> from <computeroutput>options</computeroutput>. Partition values are logical values rather than escaped partition-path components. Returns <computeroutput>-1</computeroutput> when the snapshot contains no progress for <computeroutput>partition_bucket</computeroutput>. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h" line="56" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Reads durable real-time recovery offsets recorded by an immutable table snapshot. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h" line="36" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h" bodystart="36" bodyend="61"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_snapshot_offsets_1ac7982ddbff441c94a510fd9dced84f34" prot="public" virt="non-virtual"><scope>paimon::RealtimeSnapshotOffsets</scope><name>ReadAllOffsets</name></member>
+      <member refid="classpaimon_1_1_realtime_snapshot_offsets_1a9c06fb58cc87c443bcd337007b669c5f" prot="public" virt="non-virtual"><scope>paimon::RealtimeSnapshotOffsets</scope><name>ReadOffset</name></member>
+      <member refid="classpaimon_1_1_realtime_snapshot_offsets_1a129e2df929addaa13d97dc3947bd7e94" prot="public" virt="non-virtual"><scope>paimon::RealtimeSnapshotOffsets</scope><name>RealtimeSnapshotOffsets</name></member>
+      <member refid="classpaimon_1_1_realtime_snapshot_offsets_1aba58ff423bc5776b9794b16cfdcbe0e3" prot="public" virt="non-virtual"><scope>paimon::RealtimeSnapshotOffsets</scope><name>~RealtimeSnapshotOffsets</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
