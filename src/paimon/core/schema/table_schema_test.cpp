@@ -22,6 +22,7 @@
 #include <utility>
 
 #include "arrow/api.h"
+#include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
@@ -1358,12 +1359,33 @@ TEST_F(TableSchemaTest, MapBlobSchemaLoadsFromJson) {
     ASSERT_EQ(restored_json, serialized);
 }
 
-TEST_F(TableSchemaTest, CreatingMapBlobSchemaIsRejected) {
+TEST_F(TableSchemaTest, CreatingMapBlobSchemaIsAllowed) {
     auto map_type = arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true));
-    ASSERT_NOK_WITH_MSG(
-        TableSchema::Create(/*schema_id=*/0, arrow::schema({arrow::field("blob_map", map_type)}),
-                            /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}),
-        "not supported by the C++ writer");
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int32()), arrow::field("blob_map", map_type)});
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    std::shared_ptr<arrow::Schema> imported = arrow::ImportSchema(&c_schema).ValueOrDie();
+    auto missing_metadata_value = arrow::field("value", arrow::large_binary(), /*nullable=*/true);
+    ASSERT_FALSE(BlobUtils::IsBlobField(missing_metadata_value));
+    auto missing_metadata = arrow::schema(
+        {arrow::field("id", arrow::int32()),
+         arrow::field("blob_map", arrow::map(arrow::utf8(), missing_metadata_value))});
+
+    for (const auto& input : {schema, imported, missing_metadata}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, input, /*partition_keys=*/{},
+                                                 /*primary_keys=*/{}, /*options=*/{}));
+        ASSERT_OK_AND_ASSIGN(std::string serialized, table_schema->ToJsonString());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> restored,
+                             TableSchema::CreateFromJson(serialized));
+        for (const auto& fields : {table_schema->Fields(), restored->Fields()}) {
+            auto field = DataField::ConvertDataFieldToArrowField(fields[1]);
+            ASSERT_TRUE(BlobUtils::IsMapBlobField(field));
+            ASSERT_TRUE(BlobUtils::IsBlobField(
+                checked_cast<const arrow::MapType&>(*field->type()).item_field()));
+        }
+    }
 }
 
 TEST_F(TableSchemaTest, CreatingArrayBlobSchemaIsAllowed) {

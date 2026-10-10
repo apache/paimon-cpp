@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_defs.h"
@@ -319,6 +320,13 @@ class BlobFormatWriterTestBase : public ::testing::Test {
         return path;
     }
 
+    Result<std::string> DescriptorOf(const std::string& path, int64_t offset = 0,
+                                     int64_t length = -1) const {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob, Blob::FromPath(path, offset, length));
+        PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
+        return std::string(descriptor->data(), descriptor->size());
+    }
+
  protected:
     std::shared_ptr<MemoryPool> pool_;
     std::unique_ptr<paimon::test::UniqueTestDirectory> dir_;
@@ -465,7 +473,7 @@ TEST_P(BlobFormatWriterTest, TestCreateWithInvalidParameters) {
         BlobFormatWriter::Create(output_stream_, non_blob_type,
                                  /*write_null_on_missing_file=*/false,
                                  /*write_null_on_fetch_failure=*/false, file_system_, pool_),
-        "field regular_col: binary is not BLOB or ARRAY<BLOB>");
+        "field regular_col: binary is not BLOB, ARRAY<BLOB> or MAP<..., BLOB>");
 
     auto plain_binary_array_type =
         arrow::struct_({arrow::field("array_col", arrow::list(arrow::large_binary()))});
@@ -473,14 +481,32 @@ TEST_P(BlobFormatWriterTest, TestCreateWithInvalidParameters) {
         BlobFormatWriter::Create(output_stream_, plain_binary_array_type,
                                  /*write_null_on_missing_file=*/false,
                                  /*write_null_on_fetch_failure=*/false, file_system_, pool_),
-        "is not BLOB or ARRAY<BLOB>");
+        "is not BLOB, ARRAY<BLOB> or MAP<..., BLOB>");
     auto nested_array_type = arrow::struct_({arrow::field(
         "nested_col", arrow::list(arrow::list(BlobUtils::ToArrowField("item", true))))});
     ASSERT_NOK_WITH_MSG(
         BlobFormatWriter::Create(output_stream_, nested_array_type,
                                  /*write_null_on_missing_file=*/false,
                                  /*write_null_on_fetch_failure=*/false, file_system_, pool_),
-        "is not BLOB or ARRAY<BLOB>");
+        "is not BLOB, ARRAY<BLOB> or MAP<..., BLOB>");
+    auto plain_binary_map_type =
+        arrow::struct_({arrow::field("map_col", arrow::map(arrow::utf8(), arrow::binary()))});
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, plain_binary_map_type,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_),
+        "is not BLOB, ARRAY<BLOB> or MAP<..., BLOB>");
+
+    for (const auto& key_type : {arrow::float32(), arrow::time32(arrow::TimeUnit::MILLI),
+                                 arrow::timestamp(arrow::TimeUnit::MILLI)}) {
+        auto map_blob_type = arrow::struct_({arrow::field(
+            "map_col", arrow::map(key_type, BlobUtils::ToArrowField("value", true)))});
+        ASSERT_NOK_WITH_MSG(
+            BlobFormatWriter::Create(output_stream_, map_blob_type,
+                                     /*write_null_on_missing_file=*/false,
+                                     /*write_null_on_fetch_failure=*/false, file_system_, pool_),
+            "unsupported MAP<..., BLOB> key type: " + key_type->ToString());
+    }
 }
 
 TEST_P(BlobFormatWriterTest, TestInvalidCase) {
@@ -1363,13 +1389,6 @@ class BlobFormatWriterArrayBlobTest : public BlobFormatWriterTestBase {
         return AddBatchOnce(writer, array);
     }
 
-    Result<std::string> DescriptorOf(const std::string& path, int64_t offset = 0,
-                                     int64_t length = -1) const {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob, Blob::FromPath(path, offset, length));
-        PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
-        return std::string(descriptor->data(), descriptor->size());
-    }
-
     Result<std::shared_ptr<arrow::ListArray>> ReadBackArrays(
         bool blob_as_descriptor, bool emit_placeholder_sentinel,
         const std::string& file_name = "file.blob") const {
@@ -1761,6 +1780,447 @@ TEST_F(BlobFormatWriterArrayBlobTest, TestArrayBlobOutputFailureFailsWrite) {
             status = writer->Finish();
         }
         ASSERT_NOK_WITH_MSG(status, c.expected_error);
+    }
+}
+
+class BlobFormatWriterMapBlobTest : public BlobFormatWriterTestBase {
+ public:
+    using MapEntries = std::vector<std::pair<std::string, std::optional<std::string>>>;
+
+    void SetUp() override {
+        BlobFormatWriterTestBase::SetUp();
+        struct_type_ = MapBlobStructType(arrow::utf8());
+    }
+
+    static std::shared_ptr<arrow::DataType> MapBlobStructType(
+        const std::shared_ptr<arrow::DataType>& key_type) {
+        return arrow::struct_({arrow::field(
+            "map_blob_col", arrow::map(key_type, BlobUtils::ToArrowField("value", true)), true)});
+    }
+
+    static Result<std::shared_ptr<arrow::Array>> MakeMapBlobRow(
+        const std::shared_ptr<arrow::DataType>& struct_type,
+        const std::shared_ptr<arrow::Array>& keys,
+        const std::vector<std::optional<std::string>>& values) {
+        arrow::LargeBinaryBuilder value_builder;
+        for (const std::optional<std::string>& value : values) {
+            if (value) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder.Append(*value));
+            } else {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder.AppendNull());
+            }
+        }
+        std::shared_ptr<arrow::Array> items;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder.Finish(&items));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> offsets,
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(),
+                                                      fmt::format("[0, {}]", keys->length())));
+        const std::shared_ptr<arrow::Field>& map_field = struct_type->field(0);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> map_array,
+            arrow::MapArray::FromArrays(map_field->type(), offsets, keys, items));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> struct_array,
+                                          arrow::StructArray::Make({map_array}, {map_field}));
+        return struct_array;
+    }
+
+    static Result<std::vector<std::shared_ptr<arrow::Array>>> RowsFromJson(
+        const std::shared_ptr<arrow::DataType>& struct_type, const std::string& json) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> array,
+            arrow::ipc::internal::json::ArrayFromJSON(struct_type, json));
+        std::vector<std::shared_ptr<arrow::Array>> rows;
+        for (int64_t i = 0; i < array->length(); ++i) {
+            rows.push_back(array->Slice(i, 1));
+        }
+        return rows;
+    }
+
+    Status AddMapBlobRow(const std::shared_ptr<BlobFormatWriter>& writer,
+                         const std::optional<MapEntries>& entries) const {
+        if (!entries) {
+            PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<arrow::Array>> rows,
+                                   RowsFromJson(struct_type_, "[[null]]"));
+            return AddBatchOnce(writer, rows[0]);
+        }
+        arrow::StringBuilder key_builder;
+        std::vector<std::optional<std::string>> values;
+        for (const auto& [key, value] : *entries) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder.Append(key));
+            values.push_back(value);
+        }
+        std::shared_ptr<arrow::Array> keys;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder.Finish(&keys));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> row,
+                               MakeMapBlobRow(struct_type_, keys, values));
+        return AddBatchOnce(writer, row);
+    }
+
+    Result<std::shared_ptr<arrow::MapArray>> ReadBackMapArray(
+        bool blob_as_descriptor, bool emit_placeholder_sentinel,
+        const std::string& file_name = "file.blob") const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> struct_array,
+                               ReadBack(blob_as_descriptor, emit_placeholder_sentinel, file_name));
+        return checked_pointer_cast<arrow::MapArray>(struct_array->field(0));
+    }
+
+    Result<std::vector<std::optional<MapEntries>>> ReadBackMaps(
+        bool blob_as_descriptor, const std::string& file_name = "file.blob") const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::MapArray> map_array,
+                               ReadBackMapArray(blob_as_descriptor,
+                                                /*emit_placeholder_sentinel=*/false, file_name));
+        const auto& keys = checked_cast<const arrow::StringArray&>(*map_array->keys());
+        const auto& values = checked_cast<const arrow::LargeBinaryArray&>(*map_array->items());
+        std::vector<std::optional<MapEntries>> rows;
+        for (int64_t row = 0; row < map_array->length(); ++row) {
+            if (map_array->IsNull(row)) {
+                rows.emplace_back(std::nullopt);
+                continue;
+            }
+            MapEntries entries;
+            for (int64_t i = map_array->value_offset(row); i < map_array->value_offset(row + 1);
+                 ++i) {
+                if (values.IsNull(i)) {
+                    entries.emplace_back(keys.GetString(i), std::nullopt);
+                    continue;
+                }
+                std::string_view stored = values.GetView(i);
+                if (!blob_as_descriptor) {
+                    entries.emplace_back(keys.GetString(i), std::string(stored));
+                    continue;
+                }
+                PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
+                                       Blob::FromDescriptor(stored.data(), stored.size()));
+                PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> data,
+                                       blob->ToData(file_system_, pool_));
+                entries.emplace_back(keys.GetString(i), std::string(data->data(), data->size()));
+            }
+            rows.emplace_back(std::move(entries));
+        }
+        return rows;
+    }
+
+    static MapEntries PlaceholderEntries() {
+        return {{"key", std::nullopt}, {"key", std::nullopt}};
+    }
+};
+
+TEST_F(BlobFormatWriterMapBlobTest, TestMapBlobGoldenBytes) {
+    ASSERT_OK_AND_ASSIGN(std::string descriptor,
+                         DescriptorOf(WriteSourceFile("source.bin", "descriptor")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
+
+    ASSERT_OK(AddMapBlobRow(writer, MapEntries{}));
+    ASSERT_OK(AddMapBlobRow(
+        writer,
+        MapEntries{
+            {"", ""}, {"inline", "data"}, {"descriptor", descriptor}, {"null", std::nullopt}}));
+    ASSERT_OK(AddMapBlobRow(writer, std::nullopt));
+    ASSERT_OK(AddMapBlobRow(writer, PlaceholderEntries()));
+    ASSERT_OK(writer->Finish());
+
+    std::vector<uint8_t> expected = {
+        0xcf, 0x11, 0x4e, 0x58, 0x42, 0x43, 0x42, 0x4d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x83,
+        0x60, 0x59, 0x1e, 0xcf, 0x11, 0x4e, 0x58, 0x42, 0x43, 0x42, 0x4d, 0x01, 0x04, 0x00, 0x00,
+        0x00, 0x69, 0x6e, 0x6c, 0x69, 0x6e, 0x65, 0x64, 0x65, 0x73, 0x63, 0x72, 0x69, 0x70, 0x74,
+        0x6f, 0x72, 0x6e, 0x75, 0x6c, 0x6c, 0x64, 0x61, 0x74, 0x61, 0x64, 0x65, 0x73, 0x63, 0x72,
+        0x69, 0x70, 0x74, 0x6f, 0x72, 0x00, 0x0c, 0x08, 0x0b, 0x00, 0x08, 0x0c, 0x15, 0x04, 0x00,
+        0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x4b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3a,
+        0xbb, 0x6e, 0xee, 0x42, 0x54, 0x97, 0x01, 0x01, 0x05, 0x00, 0x00, 0x00, 0x01};
+    std::string content;
+    ASSERT_OK(file_system_->ReadFile(dir_->Str() + "/file.blob", &content));
+    ASSERT_EQ(std::vector<uint8_t>(content.begin(), content.end()), expected);
+}
+
+TEST_F(BlobFormatWriterMapBlobTest, TestMatchesJavaWrittenFiles) {
+    const std::string table_dir =
+        paimon::test::GetDataDir() + "/parquet/map_blob_java.db/map_blob_java/bucket-0/";
+    const std::string java_file_prefix = "data-1be78d56-71bd-453f-ab1f-4312f3bf480e-";
+    const std::string null_rows = R"(, [null], [null], [null]])";
+    struct Case {
+        std::string java_file;
+        std::shared_ptr<arrow::DataType> key_type;
+        std::string json;
+    };
+    const std::vector<Case> cases = {
+        {java_file_prefix + "1.blob", arrow::utf8(),
+         R"([[[["", "string-empty"], ["alpha", "string-alpha"]]], [[]], [null],
+             [[["omega", "string-omega"]]]])"},
+        {java_file_prefix + "2.blob", arrow::boolean(),
+         R"([[[[false, "bool-false"], [true, "bool-true"]]])" + null_rows},
+        {java_file_prefix + "3.blob", arrow::int8(),
+         R"([[[[-128, "tiny-min"], [-1, "tiny-negative"], [127, "tiny-max"]]])" + null_rows},
+        {java_file_prefix + "4.blob", arrow::int16(),
+         R"([[[[-32768, "small-min"], [-1, "small-negative"], [32767, "small-max"]]])" + null_rows},
+        {java_file_prefix + "5.blob", arrow::int32(),
+         R"([[[[-2147483648, "int-min"], [-1, "int-negative"], [2147483647, "int-max"]]])" +
+             null_rows},
+        {java_file_prefix + "6.blob", arrow::int64(),
+         R"([[[[-9223372036854775808, "big-min"], [-1, "big-negative"],
+               [9223372036854775807, "big-max"]]])" +
+             null_rows},
+        {java_file_prefix + "7.blob", arrow::date32(),
+         R"([[[[-1, "date-negative"], [0, "date-epoch"]]])" + null_rows},
+        {java_file_prefix + "8.blob", arrow::binary(), ""},
+        {java_file_prefix + "9.blob", arrow::decimal128(10, 2),
+         R"([[[["-99999999.99", "compact-negative"], ["99999999.99", "compact-positive"]]])" +
+             null_rows},
+        {java_file_prefix + "10.blob", arrow::decimal128(20, 2),
+         R"([[[["-999999999999999999.99", "large-negative"],
+               ["999999999999999999.99", "large-positive"]]])" +
+             null_rows},
+        {"data-d5380318-987b-4af0-9073-9c8e8162b568-0.blob", arrow::utf8(),
+         R"([[[["key", null], ["key", null]]], [[["key", null], ["key", null]]],
+             [[["key", null], ["key", null]]], [[["key", null], ["key", null]]]])"}};
+    for (size_t i = 0; i < cases.size(); ++i) {
+        const Case& c = cases[i];
+        SCOPED_TRACE(fmt::format("case {}: {}", i, c.java_file));
+        const auto struct_type = MapBlobStructType(c.key_type);
+        std::vector<std::shared_ptr<arrow::Array>> rows;
+        if (c.key_type->id() == arrow::Type::BINARY) {
+            arrow::BinaryBuilder key_builder;
+            ASSERT_TRUE(key_builder.Append("").ok());
+            ASSERT_TRUE(key_builder.Append(std::string("\0\xff\1\2", 4)).ok());
+            std::shared_ptr<arrow::Array> keys;
+            ASSERT_TRUE(key_builder.Finish(&keys).ok());
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<arrow::Array> first_row,
+                MakeMapBlobRow(struct_type, keys, {"binary-empty", "binary-bytes"}));
+            ASSERT_OK_AND_ASSIGN(rows, RowsFromJson(struct_type, "[[null], [null], [null]]"));
+            rows.insert(rows.begin(), first_row);
+        } else {
+            ASSERT_OK_AND_ASSIGN(rows, RowsFromJson(struct_type, c.json));
+        }
+
+        const std::string file_path = dir_->Str() + fmt::format("/java_{}.blob", i);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                             file_system_->Create(file_path, /*overwrite=*/true));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<BlobFormatWriter> writer,
+            BlobFormatWriter::Create(out, struct_type, /*write_null_on_missing_file=*/false,
+                                     /*write_null_on_fetch_failure=*/false, file_system_, pool_));
+        for (const std::shared_ptr<arrow::Array>& row : rows) {
+            ASSERT_OK(AddBatchOnce(writer, row));
+        }
+        ASSERT_OK(writer->Finish());
+        ASSERT_OK(out->Close());
+
+        std::string actual;
+        ASSERT_OK(file_system_->ReadFile(file_path, &actual));
+        std::string expected;
+        ASSERT_OK(file_system_->ReadFile(table_dir + c.java_file, &expected));
+        ASSERT_EQ(std::vector<uint8_t>(actual.begin(), actual.end()),
+                  std::vector<uint8_t>(expected.begin(), expected.end()));
+    }
+}
+
+TEST_F(BlobFormatWriterMapBlobTest, TestMapBlobRoundTrip) {
+    std::string xxhash_file = paimon::test::GetDataDir() + "/xxhash.data";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> blob_slice,
+                         Blob::FromPath(xxhash_file, /*offset=*/92, /*length=*/85));
+    PAIMON_UNIQUE_PTR<Bytes> slice_descriptor = blob_slice->ToDescriptor(pool_);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> slice_data,
+                         blob_slice->ToData(file_system_, pool_));
+    const std::string slice_bytes(slice_data->data(), slice_data->size());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
+    const std::vector<std::optional<MapEntries>> rows = {
+        MapEntries{{"first", "1"}, {"empty", ""}, {"", "empty key"}, {"null", std::nullopt}},
+        std::nullopt,
+        MapEntries{},
+        MapEntries{{"slice", std::string(slice_descriptor->data(), slice_descriptor->size())},
+                   {"tail", "tail"}},
+        MapEntries{{"large", std::string((1 << 20) + 7, 'x')}, {"small", "small"}},
+    };
+    for (const std::optional<MapEntries>& row : rows) {
+        ASSERT_OK(AddMapBlobRow(writer, row));
+    }
+    ASSERT_OK(writer->Finish());
+
+    std::vector<std::optional<MapEntries>> expected = rows;
+    expected[3] = MapEntries{{"slice", slice_bytes}, {"tail", "tail"}};
+    for (bool blob_as_descriptor : {false, true}) {
+        ASSERT_OK_AND_ASSIGN(std::vector<std::optional<MapEntries>> actual,
+                             ReadBackMaps(blob_as_descriptor));
+        ASSERT_EQ(actual, expected) << "blob_as_descriptor: " << blob_as_descriptor;
+    }
+}
+
+TEST_F(BlobFormatWriterMapBlobTest, TestMapBlobPlaceholder) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
+    ASSERT_OK(AddMapBlobRow(writer, MapEntries{{"key", "value"}}));
+    ASSERT_OK(AddMapBlobRow(writer, PlaceholderEntries()));
+    ASSERT_OK(AddMapBlobRow(writer, MapEntries{{"key", std::nullopt}}));
+    ASSERT_OK(AddMapBlobRow(writer, MapEntries{{"left", std::nullopt}, {"right", std::nullopt}}));
+    ASSERT_OK(writer->Finish());
+
+    ASSERT_NOK_WITH_MSG(ReadBackMapArray(/*blob_as_descriptor=*/false,
+                                         /*emit_placeholder_sentinel=*/false),
+                        "placeholder");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::MapArray> map_array,
+                         ReadBackMapArray(/*blob_as_descriptor=*/false,
+                                          /*emit_placeholder_sentinel=*/true));
+    ASSERT_EQ(map_array->length(), 4);
+    for (int64_t row = 0; row < map_array->length(); ++row) {
+        ASSERT_EQ(BlobUtils::IsMapBlobPlaceholder(*map_array, row), row == 1) << "row " << row;
+    }
+    const auto& keys = checked_cast<const arrow::StringArray&>(*map_array->keys());
+    const auto& values = checked_cast<const arrow::LargeBinaryArray&>(*map_array->items());
+    ASSERT_EQ(map_array->value_length(0), 1);
+    ASSERT_EQ(keys.GetString(map_array->value_offset(0)), "key");
+    ASSERT_EQ(values.GetString(map_array->value_offset(0)), "value");
+    ASSERT_EQ(map_array->value_length(2), 1);
+    ASSERT_TRUE(values.IsNull(map_array->value_offset(2)));
+    ASSERT_EQ(map_array->value_length(3), 2);
+}
+
+TEST_F(BlobFormatWriterMapBlobTest, TestInvalidKeysFailWriteWithoutPartialData) {
+    const std::string key_context =
+        "invalid key of entry 1 of MAP<..., BLOB> field map_blob_col in row 0 of blob file";
+    std::shared_ptr<arrow::Array> null_keys =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["key", null])").ValueOrDie();
+    std::shared_ptr<arrow::ArrayData> null_key_data = null_keys->data()->Copy();
+    null_key_data->SetNullCount(0);
+    std::shared_ptr<arrow::Array> keys = arrow::MakeArray(null_key_data);
+    ASSERT_EQ(keys->null_count(), 0);
+    ASSERT_TRUE(keys->IsNull(1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> null_key_row,
+                         MakeMapBlobRow(struct_type_, keys, {"a", "b"}));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer, CreateDefaultWriter());
+    const std::vector<std::pair<Status, std::string>> failures = {
+        {AddMapBlobRow(writer, MapEntries{{"key", "first"}, {"key", "second"}}),
+         "MAP<..., BLOB> keys must be unique"},
+        {AddMapBlobRow(writer,
+                       MapEntries{{"key", std::nullopt}, {"key", std::nullopt}, {"x", "x"}}),
+         "MAP<..., BLOB> keys must be unique"},
+        {AddMapBlobRow(writer, MapEntries{{"key", std::nullopt}, {"key", "value"}}),
+         "MAP<..., BLOB> keys must be unique"},
+        {AddMapBlobRow(writer, MapEntries{{"key", "first"}, {"\xff", "second"}}),
+         "invalid UTF-8 in MAP<STRING, BLOB> key"},
+        {AddBatchOnce(writer, null_key_row), "MAP<..., BLOB> keys cannot be null"}};
+    for (size_t i = 0; i < failures.size(); ++i) {
+        SCOPED_TRACE(fmt::format("case {}", i));
+        ASSERT_NOK_WITH_MSG(failures[i].first, key_context);
+        ASSERT_NOK_WITH_MSG(failures[i].first, failures[i].second);
+    }
+    ASSERT_OK(AddMapBlobRow(writer, MapEntries{{"key", "value"}}));
+    ASSERT_OK(writer->Finish());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::optional<MapEntries>> actual,
+                         ReadBackMaps(/*blob_as_descriptor=*/false));
+    const std::vector<std::optional<MapEntries>> expected = {MapEntries{{"key", "value"}}};
+    ASSERT_EQ(actual, expected);
+
+    const auto decimal_struct_type = MapBlobStructType(arrow::decimal128(10, 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> decimal_out,
+                         file_system_->Create(dir_->Str() + "/decimal.blob", /*overwrite=*/true));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlobFormatWriter> decimal_writer,
+        BlobFormatWriter::Create(decimal_out, decimal_struct_type,
+                                 /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_));
+    arrow::Decimal128Builder key_builder(arrow::decimal128(10, 2));
+    ASSERT_TRUE(key_builder.Append(arrow::Decimal128(100)).ok());
+    ASSERT_TRUE(key_builder.Append(arrow::Decimal128(12345678901LL)).ok());
+    std::shared_ptr<arrow::Array> decimal_keys;
+    ASSERT_TRUE(key_builder.Finish(&decimal_keys).ok());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> decimal_row,
+                         MakeMapBlobRow(decimal_struct_type, decimal_keys, {"a", "b"}));
+    Status status = AddBatchOnce(decimal_writer, decimal_row);
+    ASSERT_NOK_WITH_MSG(status, key_context);
+    ASSERT_NOK_WITH_MSG(status, "MAP<..., BLOB> decimal key exceeds declared precision");
+    ASSERT_OK_AND_ASSIGN(int64_t decimal_pos, decimal_out->GetPos());
+    ASSERT_EQ(decimal_pos, 0);
+    ASSERT_OK(decimal_out->Close());
+}
+
+TEST_F(BlobFormatWriterMapBlobTest, TestWriteNullOnUnreachableValues) {
+    ASSERT_OK_AND_ASSIGN(const std::string missing_descriptor,
+                         DescriptorOf(dir_->Str() + "/not_exist_file"));
+    const MapEntries entries = {{"first", "1"}, {"missing", missing_descriptor}, {"last", "2"}};
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> failing_writer, CreateDefaultWriter());
+    Status status = AddMapBlobRow(failing_writer, entries);
+    ASSERT_NOK_WITH_MSG(
+        status, "value of entry 1 of MAP<..., BLOB> field map_blob_col in row 0 of blob file");
+    ASSERT_NOK_WITH_MSG(status, "not exists");
+
+    const std::string file_name = "write_null.blob";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                         file_system_->Create(dir_->Str() + "/" + file_name, /*overwrite=*/true));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlobFormatWriter> writer,
+        BlobFormatWriter::Create(out, struct_type_, /*write_null_on_missing_file=*/true,
+                                 /*write_null_on_fetch_failure=*/false, file_system_, pool_));
+    ASSERT_OK(AddMapBlobRow(writer, entries));
+    ASSERT_OK_AND_ASSIGN(
+        uint64_t missing_nulls,
+        writer->GetWriterMetrics()->GetCounter(BlobMetrics::WRITE_NULL_ON_MISSING_FILE_COUNT));
+    ASSERT_EQ(missing_nulls, 1);
+    ASSERT_OK(writer->Finish());
+    ASSERT_OK(out->Close());
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::optional<MapEntries>> actual,
+                         ReadBackMaps(/*blob_as_descriptor=*/false, file_name));
+    const std::vector<std::optional<MapEntries>> expected = {
+        MapEntries{{"first", "1"}, {"missing", std::nullopt}, {"last", "2"}}};
+    ASSERT_EQ(actual, expected);
+}
+
+TEST_F(BlobFormatWriterMapBlobTest, TestMapBlobOutputFailureFailsWrite) {
+    struct Case {
+        int64_t write_limit;
+        bool short_write;
+        bool fail_flush;
+        bool fails_on_finish;
+        std::string expected_error;
+    };
+    const int64_t key_data_begin = 13;
+    const int64_t value_data_begin = 16;
+    const int64_t key_index_begin = 21;
+    const int64_t value_index_begin = 22;
+    const int64_t key_index_length_begin = 23;
+    const int64_t value_index_length_begin = 27;
+    const int64_t entry_end = 43;
+    const std::string write_error = "failed to write blob file mock.blob: mock write error";
+    const std::vector<Case> cases = {
+        {key_data_begin, false, false, false, write_error},
+        {key_data_begin + 1, true, false, false,
+         "failed to write blob file mock.blob: unexpected actual length 1 not match with expect 3"},
+        {value_data_begin, false, false, false,
+         "failed to copy value of entry 0 of MAP<..., BLOB> field map_blob_col in row 0 of blob "
+         "file mock.blob: " +
+             write_error},
+        {key_index_begin, false, false, false, write_error},
+        {value_index_begin, false, false, false, write_error},
+        {key_index_length_begin, false, false, false, write_error},
+        {value_index_length_begin, false, false, false, write_error},
+        {entry_end, false, false, true, write_error},
+        {std::numeric_limits<int64_t>::max(), false, true, true,
+         "failed to flush blob file mock.blob: mock flush error"}};
+    for (size_t i = 0; i < cases.size(); ++i) {
+        const Case& c = cases[i];
+        SCOPED_TRACE(fmt::format("case {}: write_limit={}, short_write={}, fail_flush={}", i,
+                                 c.write_limit, c.short_write, c.fail_flush));
+        auto out =
+            std::make_shared<FailingOutputStream>(c.write_limit, c.short_write, c.fail_flush);
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<BlobFormatWriter> writer,
+            BlobFormatWriter::Create(out, struct_type_, /*write_null_on_missing_file=*/false,
+                                     /*write_null_on_fetch_failure=*/false, file_system_, pool_));
+        Status status = AddMapBlobRow(writer, MapEntries{{"key", "value"}});
+        if (c.fails_on_finish) {
+            ASSERT_OK(status);
+            status = writer->Finish();
+        }
+        ASSERT_NOK_WITH_MSG(status, c.expected_error);
+        if (!c.fail_flush) {
+            ASSERT_OK_AND_ASSIGN(int64_t pos, out->GetPos());
+            ASSERT_EQ(pos, c.write_limit);
+        }
     }
 }
 

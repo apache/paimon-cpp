@@ -801,6 +801,20 @@ Status SchemaValidation::ValidateRowTracking(const TableSchema& table_schema,
 }
 
 Status SchemaValidation::ValidateBlobFields(const TableSchema& schema, const CoreOptions& options) {
+    // A MAP<..., BLOB> field goes to blob files by its type alone, so its key type is checked
+    // whether or not a blob option names it.
+    for (const auto& field : schema.Fields()) {
+        if (!BlobUtils::IsMapBlobField(field.ArrowField())) {
+            continue;
+        }
+        const auto& map_type = checked_cast<const arrow::MapType&>(*field.Type());
+        if (!BlobUtils::IsSupportedMapBlobKeyType(*map_type.key_type())) {
+            return Status::NotImplemented(
+                fmt::format("Field '{}' has unsupported MAP<..., BLOB> key type: {}.", field.Name(),
+                            map_type.key_type()->ToString()));
+        }
+    }
+
     const auto& configured_blob_names = options.GetBlobFields();
     const auto& blob_descriptor_names = options.GetBlobDescriptorFields();
     const auto& blob_view_names = options.GetBlobViewFields();

@@ -76,6 +76,11 @@ class BlobDefs {
     /// merge resolves from an older layer, or degrades to a null blob when every layer holds a
     /// placeholder for the row. The marker is distinctive enough that these collisions are
     /// accepted as negligibly improbable.
+    ///
+    /// A MAP<..., BLOB> placeholder does not use these bytes: both channels mark it as a map of
+    /// exactly two entries with equal keys and null values (see BlobUtils::IsMapBlobPlaceholder).
+    /// The writer rejects duplicate keys in any other map, so that marker never collides with a
+    /// user value.
     static constexpr char kPlaceholderSentinel[] = "_PAIMON_BLOB_PLACEHOLDER";
     /// Byte length of kPlaceholderSentinel, excluding the literal's terminating NUL.
     static constexpr int32_t kPlaceholderSentinelLength = sizeof(kPlaceholderSentinel) - 1;
@@ -119,6 +124,10 @@ class BlobDefs {
     static constexpr int32_t kArrayBlobMagicNumber = 1094861634;
     /// ARRAY<BLOB> nested payload version.
     static constexpr int8_t kArrayBlobVersion = 1;
+    /// Magic number identifying the nested payload of a MAP<..., BLOB> entry.
+    static constexpr int32_t kMapBlobMagicNumber = 0x4D424342;
+    /// MAP<..., BLOB> nested payload version.
+    static constexpr int8_t kMapBlobVersion = 1;
 };
 
 }  // namespace paimon

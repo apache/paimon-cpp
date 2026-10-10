@@ -166,14 +166,21 @@ bool BlobUtils::IsMapBlobPlaceholder(const arrow::MapArray& array, int64_t row) 
     return keys->RangeEquals(entry_index, entry_index + 1, entry_index + 1, *keys);
 }
 
-Status BlobUtils::ValidateContainerBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema) {
-    for (const auto& field : schema->fields()) {
-        if (IsMapBlobField(field)) {
-            return Status::NotImplemented(
-                "Writing a table with MAP<..., BLOB> is not supported by the C++ writer.");
-        }
+bool BlobUtils::IsSupportedMapBlobKeyType(const arrow::DataType& key_type) {
+    switch (key_type.id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::INT64:
+        case arrow::Type::DATE32:
+        case arrow::Type::DECIMAL128:
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+            return true;
+        default:
+            return false;
     }
-    return Status::OK();
 }
 
 bool BlobUtils::IsBlobMetadata(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata) {

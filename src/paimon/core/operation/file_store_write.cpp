@@ -26,7 +26,6 @@
 
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
-#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
@@ -239,7 +238,6 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     }
     const std::shared_ptr<TableSchema>& schema = latest_schema;
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
-    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateContainerBlobWriteSchema(arrow_schema));
     auto opts = schema->Options();
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;

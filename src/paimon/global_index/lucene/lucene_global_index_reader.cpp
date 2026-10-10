@@ -267,7 +267,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LuceneGlobalIndexReader::VisitFullTex
         // results, which would be a correctness bug for the caller.
         return Status::NotImplemented(
             "lucene full-text search does not support min_score; "
-            "min_score pushdown is only available on the tantivy backend");
+            "min_score pushdown is only available on the full-text backend");
     }
     try {
         Lucene::QueryPtr query;

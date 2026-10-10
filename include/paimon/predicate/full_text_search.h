@@ -69,6 +69,9 @@ struct PAIMON_EXPORT FullTextSearch {
     /// Maximum number of documents to return. Purely a truncation switch,
     /// orthogonal to `with_score`: set `with_score = true` to get relevance
     /// scores; a non-empty `limit` does not by itself imply scoring.
+    ///
+    /// The `full-text` index requires a positive `limit` and always returns at most `limit` rows
+    /// with the highest scores.
     std::optional<int32_t> limit;
     /// The query string to search for. The interpretation depends on search_type:
     ///
@@ -88,6 +91,10 @@ struct PAIMON_EXPORT FullTextSearch {
     ///   preserved. Both the original pattern and an alternative with each ASCII alphanumeric
     ///   fragment lowercased are matched, covering pure ASCII and mixed ASCII/non-ASCII terms.
     ///
+    /// - For the `full-text` index, `search_type` is ignored and the query is passed to the
+    ///   native engine unchanged, so it must be a JSON DSL query such as
+    ///   `{"match":{"query":"paimon lake"}}`.
+    ///
     /// @note Analyzer consistency between indexing and querying is critical for correctness.
     std::string query;
     /// Type of search to perform.
@@ -105,16 +112,25 @@ struct PAIMON_EXPORT FullTextSearch {
     ///
     /// For plain `LIMIT N` without ORDER BY (the common case when an online
     /// engine, e.g. StarRocks, pushes down a predicate) set `with_score=false,
-    /// limit=N` — the unscored fast path. For top-N by relevance use
-    /// `with_score=true, limit=N` and drop the scores in the caller if unneeded.
+    /// limit=N` — the unscored fast path, where the backend provides one. For top-N by relevance
+    /// use `with_score=true, limit=N` and drop the scores in the caller if unneeded.
     ///
-    /// Default is `false` to avoid score computation overhead for callers that don't need it.
+    /// The built-in indexes deviate from this matrix:
+    /// - `lucene` ignores `with_score`: a search with `limit` returns the top `limit` rows with
+    ///   their scores, and a search without `limit` returns all matching rows without scores.
+    /// - `full-text` requires `limit` and always ranks the matching rows by BM25 score, keeping the
+    ///   top `limit` rows. `with_score` only selects whether their scores are returned.
+    ///
+    /// Default is `false`, which avoids score computation on backends with an unscored path.
     bool with_score = false;
     /// Minimum relevance-score threshold (exclusive); results with score ≤ this value are
     /// excluded. The score is whatever the backend's similarity produces (e.g. BM25 for
-    /// tantivy, classic TF-IDF for lucene), so a threshold is not directly comparable across
-    /// backends. Only meaningful when scoring is active (`with_score = true` or `limit` set);
-    /// applied before truncation so low-score documents never occupy limit slots.
+    /// full-text, classic TF-IDF for lucene), so a threshold is not directly comparable across
+    /// backends.
+    ///
+    /// Only the `full-text` index supports it; the `lucene` index rejects a search that sets it.
+    /// The `full-text` index applies it to the top `limit` rows returned by the engine, so a
+    /// search can return fewer than `limit` rows.
     /// Default is nullopt (no threshold filtering).
     std::optional<float> min_score;
 };

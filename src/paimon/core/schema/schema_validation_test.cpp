@@ -459,6 +459,41 @@ TEST(SchemaValidationTest, TestContainerBlobRowTracking) {
     }
 }
 
+TEST(SchemaValidationTest, TestMapBlobKeyType) {
+    const std::string options_json = R"({
+        "bucket": "-1",
+        "row-tracking.enabled": "true",
+        "data-evolution.enabled": "true"
+    })";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> table_schema,
+        MakeContainerBlobSchema(R"json({"type":"MAP","key":"STRING","value":"BLOB"})json", "[]",
+                                options_json));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    // Checked without any blob option naming the field.
+    ASSERT_OK_AND_ASSIGN(
+        table_schema,
+        MakeContainerBlobSchema(R"json({"type":"MAP","key":"TIME(3)","value":"BLOB"})json", "[]",
+                                options_json));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "Field 'blob' has unsupported MAP<..., BLOB> key type: time32[ms].");
+
+    std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_FIELD, "blob_map"}};
+    auto schema = arrow::schema(
+        {arrow::field("id", arrow::int32()),
+         arrow::field("blob_map", arrow::map(arrow::float32(), BlobUtils::ToArrowField(
+                                                                   "value", /*nullable=*/true)))});
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "Field 'blob_map' has unsupported MAP<..., BLOB> key type: float.");
+}
+
 TEST(SchemaValidationTest, TestWithBlobField) {
     auto f0 = arrow::field("f0", arrow::utf8());
     auto f1 = arrow::field("f1", arrow::int32());

@@ -98,6 +98,43 @@ class FixedMetricsBatchReader : public BatchReader {
     std::shared_ptr<Metrics> metrics_;
 };
 
+namespace {
+/// Logs its Warmup() and NextBatchWithBitmap() calls as "warmup <name>" and "read <name>" into a
+/// log the test owns, because ConcatBatchReader destroys a child once it reaches EOF and the
+/// child's own state goes with it.
+class EventLoggingFileBatchReader : public MockFileBatchReader {
+ public:
+    EventLoggingFileBatchReader(const std::shared_ptr<arrow::Array>& data, const std::string& name,
+                                std::vector<std::string>* events)
+        : MockFileBatchReader(data, data->type(), /*read_batch_size=*/1),
+          name_(name),
+          events_(events) {}
+
+    void Warmup() override {
+        events_->push_back("warmup " + name_);
+        MockFileBatchReader::Warmup();
+    }
+
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        events_->push_back("read " + name_);
+        return MockFileBatchReader::NextBatchWithBitmap();
+    }
+
+ private:
+    std::string name_;
+    std::vector<std::string>* events_;
+};
+
+int64_t CountEvent(const std::vector<std::string>& events, const std::string& event) {
+    return std::count(events.begin(), events.end(), event);
+}
+
+/// Position of the first \p event in \p events, or events.size() when it never happened.
+size_t FirstEvent(const std::vector<std::string>& events, const std::string& event) {
+    return static_cast<size_t>(std::find(events.begin(), events.end(), event) - events.begin());
+}
+}  // namespace
+
 class ConcatBatchReaderTest : public ::testing::Test {
     void SetUp() override {
         pool_ = GetDefaultPool();
@@ -281,6 +318,71 @@ TEST_F(ConcatBatchReaderTest, TestCollectMetricsAfterReleasingReaders) {
     ASSERT_EQ(latency, 28);
     ASSERT_OK_AND_ASSIGN(uint64_t io_count, metrics->GetCounter("orc.read.io.count"));
     ASSERT_EQ(io_count, 5);
+}
+
+TEST_F(ConcatBatchReaderTest, TestWarmupLooksOneReaderAhead) {
+    std::shared_ptr<arrow::DataType> type = arrow::struct_({arrow::field("f1", arrow::int32())});
+    std::vector<std::string> events;
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    readers.push_back(std::make_unique<EventLoggingFileBatchReader>(
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[1], [2]]").ValueOrDie(), "a", &events));
+    readers.push_back(std::make_unique<EventLoggingFileBatchReader>(
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[3]]").ValueOrDie(), "b", &events));
+    readers.push_back(std::make_unique<EventLoggingFileBatchReader>(
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[4]]").ValueOrDie(), "c", &events));
+    ConcatBatchReader reader(std::move(readers), GetArrowPool(pool_));
+    ASSERT_TRUE(events.empty());
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, reader.NextBatchWithBitmap());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+    ASSERT_LT(FirstEvent(events, "warmup a"), FirstEvent(events, "read a"));
+    ASSERT_LT(FirstEvent(events, "warmup b"), FirstEvent(events, "read a"));
+    ASSERT_EQ(CountEvent(events, "warmup c"), 0);
+
+    // Still inside the first file, so the lookahead does not move on.
+    ASSERT_OK_AND_ASSIGN(batch, reader.NextBatchWithBitmap());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+    ASSERT_EQ(CountEvent(events, "warmup c"), 0);
+
+    ASSERT_OK_AND_ASSIGN(batch, reader.NextBatchWithBitmap());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+    ASSERT_LT(FirstEvent(events, "warmup c"), FirstEvent(events, "read b"));
+    reader.Close();
+}
+
+TEST_F(ConcatBatchReaderTest, TestWarmupSkipsReaderThatIsNotFileBatchReader) {
+    std::shared_ptr<arrow::DataType> type = arrow::struct_({arrow::field("f1", arrow::int32())});
+    std::vector<std::string> events;
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    readers.push_back(std::make_unique<EventLoggingFileBatchReader>(
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[1], [2]]").ValueOrDie(), "a", &events));
+    readers.push_back(std::make_unique<LifetimeTrackingBatchReader>(
+        std::make_unique<EventLoggingFileBatchReader>(
+            arrow::ipc::internal::json::ArrayFromJSON(type, "[[3]]").ValueOrDie(), "b", &events),
+        /*lifetime=*/nullptr));
+    readers.push_back(std::make_unique<EventLoggingFileBatchReader>(
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[4]]").ValueOrDie(), "c", &events));
+    auto concat_reader =
+        std::make_unique<ConcatBatchReader>(std::move(readers), GetArrowPool(pool_));
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch,
+                         concat_reader->NextBatchWithBitmap());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+    // The lookahead window counts every child, so it does not reach past the skipped one.
+    ASSERT_EQ(CountEvent(events, "warmup c"), 0);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(concat_reader.get()));
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[2], [3], [4]]").ValueOrDie();
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(result))
+        << result->ToString();
+    ASSERT_EQ(CountEvent(events, "warmup b"), 0);
+    ASSERT_LT(FirstEvent(events, "warmup c"), FirstEvent(events, "read b"));
 }
 
 }  // namespace paimon::test

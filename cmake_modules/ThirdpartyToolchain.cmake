@@ -103,6 +103,18 @@ else()
     endif()
 endif()
 
+if(DEFINED ENV{PAIMON_FULL_TEXT_URL})
+    set(FULL_TEXT_SOURCE_URL "$ENV{PAIMON_FULL_TEXT_URL}")
+else()
+    if(EXISTS "${THIRDPARTY_DIR}/${PAIMON_FULL_TEXT_PKG_NAME}")
+        set_urls(FULL_TEXT_SOURCE_URL "${THIRDPARTY_DIR}/${PAIMON_FULL_TEXT_PKG_NAME}")
+    else()
+        set_urls(FULL_TEXT_SOURCE_URL
+                 "https://downloads.apache.org/paimon/paimon-full-text-${PAIMON_FULL_TEXT_BUILD_VERSION}/${PAIMON_FULL_TEXT_PKG_NAME}"
+        )
+    endif()
+endif()
+
 if(DEFINED ENV{PAIMON_RAPIDJSON_URL})
     set(RAPIDJSON_SOURCE_URL "$ENV{PAIMON_RAPIDJSON_URL}")
 else()
@@ -1403,6 +1415,53 @@ macro(build_mosaic)
     install(FILES "${MOSAIC_DYNAMIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endmacro()
 
+macro(build_full_text)
+    message(STATUS "Building Apache Paimon Full Text Rust FFI from source")
+    find_program(PAIMON_CARGO_EXECUTABLE cargo REQUIRED)
+
+    set(FULL_TEXT_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/full_text_ep-install")
+    set(FULL_TEXT_INCLUDE_DIR "${FULL_TEXT_PREFIX}/include")
+    set(FULL_TEXT_LIB_DIR "${FULL_TEXT_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+    set(FULL_TEXT_DYNAMIC_LIB
+        "${FULL_TEXT_LIB_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}paimon_ftindex_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+    set(FULL_TEXT_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/full_text_ep-cargo")
+    set(FULL_TEXT_CARGO_DYNAMIC_LIB
+        "${FULL_TEXT_CARGO_TARGET_DIR}/release/${CMAKE_SHARED_LIBRARY_PREFIX}paimon_ftindex_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+
+    file(MAKE_DIRECTORY "${FULL_TEXT_INCLUDE_DIR}")
+    file(MAKE_DIRECTORY "${FULL_TEXT_LIB_DIR}")
+
+    # Build with the lock file shipped in the source release: a reader rejects index files whose
+    # recorded Tantivy version differs from the linked one, so the Tantivy version must match the
+    # one used by Java Paimon.
+    externalproject_add(full_text_ep
+                        URL ${FULL_TEXT_SOURCE_URL}
+                        URL_HASH "SHA256=${PAIMON_FULL_TEXT_BUILD_SHA256_CHECKSUM}"
+                        ${THIRDPARTY_LOG_OPTIONS}
+                        CONFIGURE_COMMAND ""
+                        BUILD_COMMAND ${CMAKE_COMMAND} -E env
+                                      CARGO_TARGET_DIR=${FULL_TEXT_CARGO_TARGET_DIR}
+                                      ${PAIMON_CARGO_EXECUTABLE} build --release --locked
+                                      --manifest-path <SOURCE_DIR>/ffi/Cargo.toml
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                ${FULL_TEXT_CARGO_DYNAMIC_LIB} ${FULL_TEXT_DYNAMIC_LIB}
+                        INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_directory
+                                        <SOURCE_DIR>/include ${FULL_TEXT_INCLUDE_DIR}
+                        BUILD_BYPRODUCTS "${FULL_TEXT_DYNAMIC_LIB}")
+
+    add_library(paimon_ftindex_ffi SHARED IMPORTED GLOBAL)
+    set_target_properties(paimon_ftindex_ffi
+                          PROPERTIES IMPORTED_LOCATION "${FULL_TEXT_DYNAMIC_LIB}"
+                                     IMPORTED_NO_SONAME TRUE
+                                     INTERFACE_INCLUDE_DIRECTORIES
+                                     "${FULL_TEXT_INCLUDE_DIR}")
+    add_dependencies(paimon_ftindex_ffi full_text_ep)
+
+    install(FILES "${FULL_TEXT_DYNAMIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endmacro()
+
 macro(build_jindosdk_nextarch)
     message(STATUS "Building jindosdk-nextarch from local source")
 
@@ -2128,6 +2187,9 @@ resolve_dependency(glog)
 if(PAIMON_ENABLE_MOSAIC)
     build_mosaic()
 endif()
+if(PAIMON_ENABLE_FULL_TEXT)
+    build_full_text()
+endif()
 if(PAIMON_ENABLE_AVRO)
     resolve_dependency(Avro)
 endif()
@@ -2155,9 +2217,5 @@ endif()
 if(PAIMON_ENABLE_LUCENE)
     build_boost()
     build_lucene()
-endif()
-# jieba (dict + headers) is needed by BOTH lucene-fts and the tantivy jieba
-# tokenizer; build it whenever either backend is on, not only under lucene.
-if(PAIMON_ENABLE_LUCENE OR PAIMON_ENABLE_TANTIVY)
     build_jieba()
 endif()

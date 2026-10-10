@@ -23,10 +23,13 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/util/utf8.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/io/offset_input_stream.h"
@@ -35,12 +38,92 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/delta_varint_compressor.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/data/blob_descriptor.h"
+#include "paimon/data/decimal.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/logging.h"
 
 namespace paimon::blob {
+namespace {
+
+template <typename T>
+void AppendLittleEndian(T value, std::string* out) {
+    const T little_endian = ToLittleEndian(value);
+    out->append(reinterpret_cast<const char*>(&little_endian), sizeof(T));
+}
+
+/// Serialize the key at `index` of `keys` and append its bytes to `out`, as Java's
+/// MapBlobElementSerializer serializes a MAP<..., BLOB> key: fixed-width little-endian integers,
+/// one byte 0 or 1 for a boolean, the unscaled long of a compact decimal or the big-endian
+/// two's-complement unscaled bytes of any other decimal, and the raw bytes of a string or binary.
+Status SerializeMapBlobKey(const arrow::Array& keys, int64_t index, std::string* out) {
+    switch (keys.type_id()) {
+        case arrow::Type::BOOL:
+            out->push_back(checked_cast<const arrow::BooleanArray&>(keys).Value(index) ? 1 : 0);
+            return Status::OK();
+        case arrow::Type::INT8:
+            out->push_back(
+                static_cast<char>(checked_cast<const arrow::Int8Array&>(keys).Value(index)));
+            return Status::OK();
+        case arrow::Type::INT16:
+            AppendLittleEndian(checked_cast<const arrow::Int16Array&>(keys).Value(index), out);
+            return Status::OK();
+        case arrow::Type::INT32:
+            AppendLittleEndian(checked_cast<const arrow::Int32Array&>(keys).Value(index), out);
+            return Status::OK();
+        case arrow::Type::INT64:
+            AppendLittleEndian(checked_cast<const arrow::Int64Array&>(keys).Value(index), out);
+            return Status::OK();
+        case arrow::Type::DATE32:
+            AppendLittleEndian(checked_cast<const arrow::Date32Array&>(keys).Value(index), out);
+            return Status::OK();
+        case arrow::Type::DECIMAL128: {
+            const auto& decimal_type = checked_cast<const arrow::Decimal128Type&>(*keys.type());
+            const arrow::Decimal128 value(
+                checked_cast<const arrow::Decimal128Array&>(keys).GetValue(index));
+            // Keep the key within its declared precision so the C++ reader can read it back.
+            if (!value.FitsInPrecision(decimal_type.precision())) {
+                return Status::Invalid("MAP<..., BLOB> decimal key exceeds declared precision");
+            }
+            const Decimal decimal(
+                decimal_type.precision(), decimal_type.scale(),
+                static_cast<Decimal::int128_t>(
+                    static_cast<Decimal::uint128_t>(static_cast<uint64_t>(value.high_bits()))
+                        << 64 |
+                    value.low_bits()));
+            if (decimal.IsCompact()) {
+                AppendLittleEndian(decimal.ToUnscaledLong(), out);
+                return Status::OK();
+            }
+            const std::vector<char> bytes = decimal.ToUnscaledBytes();
+            out->append(bytes.data(), bytes.size());
+            return Status::OK();
+        }
+        case arrow::Type::STRING: {
+            const std::string_view key =
+                checked_cast<const arrow::StringArray&>(keys).GetView(index);
+            // Write only valid UTF-8 so the C++ reader can read the string key back.
+            if (!arrow::util::ValidateUTF8(key)) {
+                return Status::Invalid("invalid UTF-8 in MAP<STRING, BLOB> key");
+            }
+            out->append(key.data(), key.size());
+            return Status::OK();
+        }
+        case arrow::Type::BINARY: {
+            const std::string_view key =
+                checked_cast<const arrow::BinaryArray&>(keys).GetView(index);
+            out->append(key.data(), key.size());
+            return Status::OK();
+        }
+        default:
+            return Status::Invalid(
+                fmt::format("unsupported MAP<..., BLOB> key type: {}", keys.type()->ToString()));
+    }
+}
+
+}  // namespace
 
 BlobFormatWriter::BlobFormatWriter(const std::shared_ptr<OutputStream>& out, const std::string& uri,
                                    const std::shared_ptr<arrow::DataType>& data_type,
@@ -55,13 +138,16 @@ BlobFormatWriter::BlobFormatWriter(const std::shared_ptr<OutputStream>& out, con
       pool_(pool),
       write_null_on_missing_file_(write_null_on_missing_file),
       write_null_on_fetch_failure_(write_null_on_fetch_failure) {
-    // Create() has already checked that data_type has exactly one BLOB or ARRAY<BLOB> field.
+    // Create() has already checked that data_type has exactly one BLOB, ARRAY<BLOB> or
+    // MAP<..., BLOB> field.
     blob_field_name_ = data_type_->field(0)->name();
+    is_map_blob_field_ = BlobUtils::IsMapBlobField(data_type_->field(0));
     metrics_ = std::make_shared<MetricsImpl>();
     tmp_buffer_ = Bytes::AllocateBytes(kTmpBufferSize, pool_.get());
     magic_number_bytes_ = IntegerToLittleEndian<int32_t>(BlobDefs::kMagicNumber, pool_);
     array_magic_number_bytes_ =
         IntegerToLittleEndian<int32_t>(BlobDefs::kArrayBlobMagicNumber, pool_);
+    map_magic_number_bytes_ = IntegerToLittleEndian<int32_t>(BlobDefs::kMapBlobMagicNumber, pool_);
     logger_ = Logger::GetLogger("BlobFormatWriter");
 }
 
@@ -85,10 +171,20 @@ Result<std::unique_ptr<BlobFormatWriter>> BlobFormatWriter::Create(
         return Status::Invalid(
             fmt::format("blob data type field number {} is not 1", data_type->num_fields()));
     }
-    if (!BlobUtils::IsBlobField(data_type->field(0)) &&
-        !BlobUtils::IsArrayBlobField(data_type->field(0))) {
+    const std::shared_ptr<arrow::Field>& field = data_type->field(0);
+    if (!BlobUtils::IsAnyBlobField(field)) {
         return Status::Invalid(
-            fmt::format("field {} is not BLOB or ARRAY<BLOB>", data_type->field(0)->ToString()));
+            fmt::format("field {} is not BLOB, ARRAY<BLOB> or MAP<..., BLOB>", field->ToString()));
+    }
+    if (BlobUtils::IsMapBlobField(field)) {
+        const auto& map_type = checked_cast<const arrow::MapType&>(*field->type());
+        if (!BlobUtils::IsSupportedMapBlobKeyType(*map_type.key_type())) {
+            return Status::Invalid(fmt::format("unsupported MAP<..., BLOB> key type: {}",
+                                               map_type.key_type()->ToString()));
+        }
+        if (map_type.key_type()->id() == arrow::Type::STRING) {
+            arrow::util::InitializeUTF8();
+        }
     }
     PAIMON_ASSIGN_OR_RAISE(std::string uri, out->GetUri());
     return std::unique_ptr<BlobFormatWriter>(new BlobFormatWriter(
@@ -127,6 +223,16 @@ Status BlobFormatWriter::AddBatch(ArrowArray* batch) {
         }
         PAIMON_RETURN_NOT_OK(WriteArrayBlob(list_array));
         // Unlike a BLOB row, an ARRAY<BLOB> row is left to Flush() and Finish(), as in Java.
+        UpdateMetrics();
+        return Status::OK();
+    }
+    if (child_array->type_id() == arrow::Type::type::MAP) {
+        const auto& map_array = checked_cast<const arrow::MapArray&>(*child_array);
+        if (BlobUtils::IsMapBlobPlaceholder(map_array, 0)) {
+            bin_lengths_.push_back(BlobDefs::kPlaceholderBinLength);
+            return Status::OK();
+        }
+        PAIMON_RETURN_NOT_OK(WriteMapBlob(map_array));
         UpdateMetrics();
         return Status::OK();
     }
@@ -217,22 +323,8 @@ Status BlobFormatWriter::WriteArrayBlob(const arrow::ListArray& list_array) {
         IntegerToLittleEndian<int32_t>(element_count, pool_);
     PAIMON_RETURN_NOT_OK(WriteWithCrc32(element_count_bytes->data(), element_count_bytes->size()));
 
-    // Each element is opened before any of its bytes are written, so an element converted to NULL
-    // leaves no partial data. As in Java, any other failure leaves a partial entry and fails the
-    // write.
-    std::vector<int64_t> element_lengths(element_count, BlobDefs::kNullBinLength);
-    for (int32_t i = 0; i < element_count; ++i) {
-        const int64_t value_index = element_offset + i;
-        if (blob_values.IsNull(value_index)) {
-            continue;
-        }
-        PAIMON_ASSIGN_OR_RAISE(BlobCopySource source,
-                               OpenBlobInputStream(blob_values.GetView(value_index), i));
-        if (source.stream == nullptr) {
-            continue;
-        }
-        PAIMON_ASSIGN_OR_RAISE(element_lengths[i], WriteBlobData(source, i));
-    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> element_lengths,
+                           WriteBlobElements(blob_values, element_offset, element_count));
 
     const std::vector<char> index_bytes = DeltaVarintCompressor::Compress(element_lengths);
     PAIMON_ASSIGN_OR_RAISE(int32_t index_length, ToIndexLength(index_bytes.size()));
@@ -241,6 +333,88 @@ Status BlobFormatWriter::WriteArrayBlob(const arrow::ListArray& list_array) {
         IntegerToLittleEndian<int32_t>(index_length, pool_);
     PAIMON_RETURN_NOT_OK(WriteWithCrc32(index_length_bytes->data(), index_length_bytes->size()));
     return FinishEntry(entry_pos);
+}
+
+Status BlobFormatWriter::WriteMapBlob(const arrow::MapArray& map_array) {
+    const std::shared_ptr<arrow::Array>& items = map_array.items();
+    if (items->type_id() != arrow::Type::type::LARGE_BINARY) {
+        return Status::Invalid("BlobFormatWriter only support large binary MAP<..., BLOB> values.");
+    }
+    const auto& blob_values = checked_cast<const arrow::LargeBinaryArray&>(*items);
+    const arrow::Array& keys = *map_array.keys();
+    const int64_t entry_offset = map_array.value_offset(0);
+    const int32_t entry_count = map_array.value_length(0);
+
+    // As in Java, the keys are serialized and validated before the entry is begun, so an invalid
+    // key fails the write without leaving partial data.
+    std::string key_data;
+    std::vector<int64_t> key_lengths(entry_count);
+    std::unordered_set<std::string> serialized_keys;
+    serialized_keys.reserve(entry_count);
+    for (int32_t i = 0; i < entry_count; ++i) {
+        const int64_t key_index = entry_offset + i;
+        if (keys.IsNull(key_index)) {
+            return Status::Invalid(
+                fmt::format("invalid {}: MAP<..., BLOB> keys cannot be null", DescribeMapKey(i)));
+        }
+        std::string key;
+        Status status = SerializeMapBlobKey(keys, key_index, &key);
+        if (!status.ok()) {
+            return status.WithMessage("invalid ", DescribeMapKey(i), ": ", status.message());
+        }
+        key_data.append(key);
+        key_lengths[i] = static_cast<int64_t>(key.size());
+        if (!serialized_keys.insert(std::move(key)).second) {
+            return Status::Invalid(
+                fmt::format("invalid {}: MAP<..., BLOB> keys must be unique", DescribeMapKey(i)));
+        }
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(int64_t entry_pos, BeginEntry());
+    PAIMON_RETURN_NOT_OK(
+        WriteWithCrc32(map_magic_number_bytes_->data(), map_magic_number_bytes_->size()));
+    PAIMON_RETURN_NOT_OK(WriteWithCrc32(reinterpret_cast<const char*>(&BlobDefs::kMapBlobVersion),
+                                        sizeof(BlobDefs::kMapBlobVersion)));
+    PAIMON_UNIQUE_PTR<Bytes> entry_count_bytes = IntegerToLittleEndian<int32_t>(entry_count, pool_);
+    PAIMON_RETURN_NOT_OK(WriteWithCrc32(entry_count_bytes->data(), entry_count_bytes->size()));
+    PAIMON_RETURN_NOT_OK(WriteWithCrc32(key_data.data(), key_data.size()));
+
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> value_lengths,
+                           WriteBlobElements(blob_values, entry_offset, entry_count));
+
+    const std::vector<char> key_index_bytes = DeltaVarintCompressor::Compress(key_lengths);
+    const std::vector<char> value_index_bytes = DeltaVarintCompressor::Compress(value_lengths);
+    PAIMON_ASSIGN_OR_RAISE(int32_t key_index_length, ToIndexLength(key_index_bytes.size()));
+    PAIMON_ASSIGN_OR_RAISE(int32_t value_index_length, ToIndexLength(value_index_bytes.size()));
+    PAIMON_RETURN_NOT_OK(WriteWithCrc32(key_index_bytes.data(), key_index_bytes.size()));
+    PAIMON_RETURN_NOT_OK(WriteWithCrc32(value_index_bytes.data(), value_index_bytes.size()));
+    PAIMON_UNIQUE_PTR<Bytes> key_index_length_bytes =
+        IntegerToLittleEndian<int32_t>(key_index_length, pool_);
+    PAIMON_RETURN_NOT_OK(
+        WriteWithCrc32(key_index_length_bytes->data(), key_index_length_bytes->size()));
+    PAIMON_UNIQUE_PTR<Bytes> value_index_length_bytes =
+        IntegerToLittleEndian<int32_t>(value_index_length, pool_);
+    PAIMON_RETURN_NOT_OK(
+        WriteWithCrc32(value_index_length_bytes->data(), value_index_length_bytes->size()));
+    return FinishEntry(entry_pos);
+}
+
+Result<std::vector<int64_t>> BlobFormatWriter::WriteBlobElements(
+    const arrow::LargeBinaryArray& values, int64_t offset, int32_t count) {
+    std::vector<int64_t> lengths(count, BlobDefs::kNullBinLength);
+    for (int32_t i = 0; i < count; ++i) {
+        const int64_t value_index = offset + i;
+        if (values.IsNull(value_index)) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(BlobCopySource source,
+                               OpenBlobInputStream(values.GetView(value_index), i));
+        if (source.stream == nullptr) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(lengths[i], WriteBlobData(source, i));
+    }
+    return lengths;
 }
 
 Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenBlobInputStream(
@@ -474,8 +648,17 @@ std::string BlobFormatWriter::DescribeValue(std::optional<int32_t> element_index
     if (!element_index) {
         return fmt::format("BLOB field {} in row {} of blob file {}", blob_field_name_, row, uri_);
     }
+    if (is_map_blob_field_) {
+        return fmt::format("value of entry {} of MAP<..., BLOB> field {} in row {} of blob file {}",
+                           *element_index, blob_field_name_, row, uri_);
+    }
     return fmt::format("element {} of ARRAY<BLOB> field {} in row {} of blob file {}",
                        *element_index, blob_field_name_, row, uri_);
+}
+
+std::string BlobFormatWriter::DescribeMapKey(int32_t entry_index) const {
+    return fmt::format("key of entry {} of MAP<..., BLOB> field {} in row {} of blob file {}",
+                       entry_index, blob_field_name_, bin_lengths_.size(), uri_);
 }
 
 Result<int32_t> BlobFormatWriter::ToIndexLength(size_t index_size) const {

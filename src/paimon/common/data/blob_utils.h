@@ -30,6 +30,7 @@
 #include "paimon/visibility.h"
 
 namespace arrow {
+class DataType;
 class Field;
 class KeyValueMetadata;
 class ListArray;
@@ -88,8 +89,9 @@ class PAIMON_EXPORT BlobUtils {
     static bool IsArrayBlobPlaceholder(const arrow::ListArray& array, int64_t row);
     /// Returns whether a MAP<..., BLOB> row is the internal fallback sentinel.
     static bool IsMapBlobPlaceholder(const arrow::MapArray& array, int64_t row);
-    /// Rejects MAP<..., BLOB>, which is currently supported by the C++ reader only.
-    static Status ValidateContainerBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema);
+    /// Returns whether Paimon C++ supports `key_type` as the key type of MAP<..., BLOB>:
+    /// BOOLEAN, TINYINT, SMALLINT, INT, BIGINT, DATE, DECIMAL, CHAR/VARCHAR and BINARY/VARBINARY.
+    static bool IsSupportedMapBlobKeyType(const arrow::DataType& key_type);
     static bool IsBlobMetadata(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata);
     static bool IsBlobFile(const std::string& file_name);
 

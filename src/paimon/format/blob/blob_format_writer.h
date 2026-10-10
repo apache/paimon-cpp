@@ -37,7 +37,9 @@
 
 namespace arrow {
 class DataType;
+class LargeBinaryArray;
 class ListArray;
+class MapArray;
 }  // namespace arrow
 struct ArrowArray;
 
@@ -53,12 +55,12 @@ namespace paimon::blob {
 
 class BlobMetrics {
  public:
-    /// Number of BLOB values (rows, or ARRAY<BLOB> elements) written as NULL because their
-    /// referenced file did not exist.
+    /// Number of BLOB values (rows, ARRAY<BLOB> elements or MAP<..., BLOB> values) written as NULL
+    /// because their referenced file did not exist.
     static inline const char WRITE_NULL_ON_MISSING_FILE_COUNT[] =
         "blob.write.null-on-missing-file.count";
-    /// Number of BLOB values (rows, or ARRAY<BLOB> elements) written as NULL because their
-    /// referenced data could not be reached.
+    /// Number of BLOB values (rows, ARRAY<BLOB> elements or MAP<..., BLOB> values) written as NULL
+    /// because their referenced data could not be reached.
     static inline const char WRITE_NULL_ON_FETCH_FAILURE_COUNT[] =
         "blob.write.null-on-fetch-failure.count";
 };
@@ -66,8 +68,9 @@ class BlobMetrics {
 // Blob format:
 // https://cwiki.apache.org/confluence/display/PAIMON/PIP-35%3A+Introduce+Blob+to+store+multimodal+data
 //
-// The single field of a blob file is BLOB or ARRAY<BLOB>. An ARRAY<BLOB> entry stores the nested
-// payload of the Paimon BLOB file spec, where a null element has length -1.
+// The single field of a blob file is BLOB, ARRAY<BLOB> or MAP<..., BLOB>. An ARRAY<BLOB> or
+// MAP<..., BLOB> entry stores the nested payload of the Paimon BLOB file spec, where a null element
+// or value has length -1.
 class BlobFormatWriter : public FormatWriter {
  public:
     /// `write_null_on_missing_file` converts a descriptor whose referenced file does not exist
@@ -78,10 +81,17 @@ class BlobFormatWriter : public FormatWriter {
     /// `write_null_on_fetch_failure` like any other failed open.
     /// See Options::BLOB_WRITE_NULL_ON_MISSING_FILE / BLOB_WRITE_NULL_ON_FETCH_FAILURE.
     ///
-    /// A value exactly equal to BlobDefs::kPlaceholderSentinel, or an ARRAY<BLOB> whose only
-    /// element is that sentinel, is persisted as a placeholder entry (bin_length -2, no data bytes)
-    /// in every write, as Java persists its placeholder objects; any other value is written as
-    /// usual.
+    /// A value exactly equal to BlobDefs::kPlaceholderSentinel, an ARRAY<BLOB> whose only element
+    /// is that sentinel, or a MAP<..., BLOB> of exactly two entries with equal keys and null values
+    /// (see BlobUtils::IsMapBlobPlaceholder), is persisted as a placeholder entry (bin_length -2,
+    /// no data bytes) in every write, as Java persists its placeholder objects; any other value is
+    /// written as usual.
+    ///
+    /// Any other MAP<..., BLOB> row fails the write before any of its bytes are written when its
+    /// keys are not unique by their serialized bytes, as in Java's MapBlobElementSerializer, when
+    /// it has a null key, which Java allows once but Arrow map keys cannot hold, or when it has a
+    /// key the C++ reader rejects: a decimal key exceeding its precision or a string key that is
+    /// not valid UTF-8. The key type must satisfy BlobUtils::IsSupportedMapBlobKeyType.
     static Result<std::unique_ptr<BlobFormatWriter>> Create(
         const std::shared_ptr<OutputStream>& out, const std::shared_ptr<arrow::DataType>& data_type,
         bool write_null_on_missing_file, bool write_null_on_fetch_failure,
@@ -114,6 +124,15 @@ class BlobFormatWriter : public FormatWriter {
 
     Status WriteArrayBlob(const arrow::ListArray& list_array);
 
+    Status WriteMapBlob(const arrow::MapArray& map_array);
+
+    /// Copy `count` blob values of `values` from `offset` into the current entry, returning the
+    /// length of each one, or -1 for a null value. Each value is opened before any of its bytes are
+    /// written, so a value converted to NULL leaves no partial data. As in Java, any other failure
+    /// leaves a partial entry and fails the write.
+    Result<std::vector<int64_t>> WriteBlobElements(const arrow::LargeBinaryArray& values,
+                                                   int64_t offset, int32_t count);
+
     /// The input stream of a blob value, as Java's BlobCopySource. A `reused` stream is a view on
     /// the kept source stream and must not be closed; any other stream is the value's own.
     struct BlobCopySource {
@@ -124,8 +143,8 @@ class BlobFormatWriter : public FormatWriter {
     /// Open an input stream on a blob value, which is either a serialized BlobDescriptor or the
     /// raw blob bytes. Returns a null stream when a failure to reach the referenced data is
     /// converted to a NULL value by `write_null_on_missing_file_` or
-    /// `write_null_on_fetch_failure_`. `element_index` identifies an ARRAY<BLOB> element in logs
-    /// and errors.
+    /// `write_null_on_fetch_failure_`. `element_index` identifies an ARRAY<BLOB> element or a
+    /// MAP<..., BLOB> value in logs and errors.
     Result<BlobCopySource> OpenBlobInputStream(std::string_view blob_data,
                                                std::optional<int32_t> element_index);
 
@@ -188,9 +207,13 @@ class BlobFormatWriter : public FormatWriter {
     Status AddFailureContext(const Status& status, const std::string& action,
                              std::optional<int32_t> element_index) const;
 
-    /// Describe the value being written for logs and errors: the BLOB field or one element of the
-    /// ARRAY<BLOB> field, with its row in the blob file.
+    /// Describe the value being written for logs and errors: the BLOB field, one element of the
+    /// ARRAY<BLOB> field or the value of one entry of the MAP<..., BLOB> field, with its row in the
+    /// blob file.
     std::string DescribeValue(std::optional<int32_t> element_index) const;
+
+    /// Describe the key of one entry of the MAP<..., BLOB> field being written for errors.
+    std::string DescribeMapKey(int32_t entry_index) const;
 
     /// Convert the size of a compressed index to the signed 32-bit index length stored after it,
     /// failing when the index is too large for that field.
@@ -214,8 +237,10 @@ class BlobFormatWriter : public FormatWriter {
     PAIMON_UNIQUE_PTR<Bytes> tmp_buffer_;
     PAIMON_UNIQUE_PTR<Bytes> magic_number_bytes_;
     PAIMON_UNIQUE_PTR<Bytes> array_magic_number_bytes_;
+    PAIMON_UNIQUE_PTR<Bytes> map_magic_number_bytes_;
     std::shared_ptr<arrow::DataType> data_type_;
     std::string blob_field_name_;
+    bool is_map_blob_field_ = false;
     std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<Metrics> metrics_;

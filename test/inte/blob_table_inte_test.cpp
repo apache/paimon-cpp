@@ -611,6 +611,35 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         return array;
     }
 
+    using MapBlobEntries = std::vector<std::pair<std::string, std::optional<std::string>>>;
+
+    static Result<std::shared_ptr<arrow::Array>> MakeMapBlobArray(
+        const std::shared_ptr<arrow::DataType>& map_type,
+        const std::vector<std::optional<MapBlobEntries>>& rows) {
+        auto key_builder = std::make_shared<arrow::StringBuilder>();
+        auto item_builder = std::make_shared<arrow::LargeBinaryBuilder>();
+        arrow::MapBuilder map_builder(arrow::default_memory_pool(), key_builder, item_builder,
+                                      map_type);
+        for (const std::optional<MapBlobEntries>& row : rows) {
+            if (!row) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.AppendNull());
+                continue;
+            }
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Append());
+            for (const auto& [key, value] : *row) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder->Append(key));
+                if (value) {
+                    PAIMON_RETURN_NOT_OK_FROM_ARROW(item_builder->Append(*value));
+                } else {
+                    PAIMON_RETURN_NOT_OK_FROM_ARROW(item_builder->AppendNull());
+                }
+            }
+        }
+        std::shared_ptr<arrow::Array> array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Finish(&array));
+        return array;
+    }
+
     void CheckArrayBlobColumn(const std::shared_ptr<arrow::StructArray>& rows,
                               const std::string& field_name, const std::string& expected_json,
                               bool blob_as_descriptor) const {
@@ -1704,6 +1733,104 @@ TEST_P(BlobTableInteTest, TestArrayBlobWithBlobFieldAcrossMultipleBlobFiles) {
         arrow::StructArray::Make({src_array->field(0), src_array->field(1), expected_list}, fields)
             .ValueOrDie();
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
+}
+
+TEST_P(BlobTableInteTest, TestMapBlobWriteAndPartialUpdate) {
+    arrow::FieldVector fields = {
+        arrow::field("f0", arrow::int32()),
+        arrow::field(
+            "m0", arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true)))};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, GetParam()},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::BLOB_WRITE_NULL_ON_FETCH_FAILURE, "true"}};
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields);
+
+    auto src_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        [1, [["a", "va"], ["", "empty key"], ["null", null]]],
+        [2, null],
+        [3, []],
+        [4, [["b", "vb"]]]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs0,
+                         WriteArray(table_path, {}, schema->field_names(), {src_array}));
+    ASSERT_OK(Commit(table_path, commit_msgs0));
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), src_array));
+
+    auto update_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}), R"([
+        [[["k", null], ["k", null]]],
+        [[["updated", "vu"], ["null", null]]],
+        [null],
+        [[["k", null], ["k", null]]]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs1, WriteArray(table_path, {}, {"m0"}, {update_array}));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs1);
+    ASSERT_OK(Commit(table_path, commit_msgs1));
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        [1, [["a", "va"], ["", "empty key"], ["null", null]]],
+        [2, [["updated", "vu"], ["null", null]]],
+        [3, null],
+        [4, [["b", "vb"]]]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
+
+    const std::string alpha_path = blob_dir_->Str() + "/alpha.bin";
+    ASSERT_OK(std::make_shared<LocalFileSystem>()->WriteFile(alpha_path, "alpha",
+                                                             /*overwrite=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Blob> alpha_blob, Blob::FromPath(alpha_path));
+    PAIMON_UNIQUE_PTR<Bytes> alpha_descriptor = alpha_blob->ToDescriptor(pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Blob> missing_blob,
+                         Blob::FromPath(blob_dir_->Str() + "/missing.bin"));
+    PAIMON_UNIQUE_PTR<Bytes> missing_descriptor = missing_blob->ToDescriptor(pool_);
+    const MapBlobEntries placeholder = {{"k", std::nullopt}, {"k", std::nullopt}};
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::Array> update_map,
+        MakeMapBlobArray(
+            fields[1]->type(),
+            {MapBlobEntries{
+                 {"missing", std::string(missing_descriptor->data(), missing_descriptor->size())},
+                 {"desc", std::string(alpha_descriptor->data(), alpha_descriptor->size())}},
+             placeholder, placeholder, placeholder}));
+    auto second_update_array = arrow::StructArray::Make({update_map}, {fields[1]}).ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs2,
+                         WriteArray(table_path, {}, {"m0"}, {second_update_array}));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs2);
+    ASSERT_OK(Commit(table_path, commit_msgs2));
+    blob_dir_.reset();
+
+    expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        [1, [["missing", null], ["desc", "alpha"]]],
+        [2, [["updated", "vu"], ["null", null]]],
+        [3, null],
+        [4, [["b", "vb"]]]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
+
+    ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
+    std::map<std::string, std::string> read_options = {{Options::BLOB_AS_DESCRIPTOR, "true"}};
+    ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), plan,
+                                                /*predicate=*/nullptr, read_options));
+    ASSERT_TRUE(result);
+    auto rows = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::Concatenate(result->chunks()).ValueOrDie());
+    ASSERT_TRUE(rows);
+    CheckMapBlobColumn(rows, "m0",
+                       R"([[["missing", null], ["desc", "alpha"]],
+                           [["updated", "vu"], ["null", null]], null, [["b", "vb"]]])",
+                       /*blob_as_descriptor=*/true);
 }
 
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateMultipleLayers) {

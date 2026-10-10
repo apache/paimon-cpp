@@ -53,8 +53,6 @@ constexpr int32_t kArrayBlobHeaderLength = 9;
 constexpr int32_t kArrayBlobIndexLengthSize = 4;
 constexpr int32_t kArrayBlobMinPayloadLength = kArrayBlobHeaderLength + kArrayBlobIndexLengthSize;
 
-constexpr int32_t kMapBlobMagicNumber = 0x4D424342;
-constexpr int8_t kMapBlobVersion = 1;
 constexpr int32_t kMapBlobHeaderLength = 9;
 constexpr int32_t kMapBlobIndexLengthsSize = 8;
 constexpr int32_t kMapBlobMinPayloadLength = kMapBlobHeaderLength + kMapBlobIndexLengthsSize;
@@ -788,12 +786,12 @@ Result<BlobFileBatchReader::MapBlobPayload> BlobFileBatchReader::ReadMapBlobPayl
     std::array<uint8_t, kMapBlobHeaderLength> header;
     PAIMON_RETURN_NOT_OK(ReadBlobContentAt(payload_offset, header.size(), header.data()));
     const auto magic_number = ReadLittleEndian<int32_t>(header.data());
-    if (magic_number != kMapBlobMagicNumber) {
+    if (magic_number != BlobDefs::kMapBlobMagicNumber) {
         return Status::Invalid(
             fmt::format("invalid MAP<..., BLOB> payload magic number: {}", magic_number));
     }
     const auto version = static_cast<int8_t>(header[4]);
-    if (version != kMapBlobVersion) {
+    if (version != BlobDefs::kMapBlobVersion) {
         return Status::NotImplemented(
             fmt::format("unsupported MAP<..., BLOB> payload version: {}", version));
     }

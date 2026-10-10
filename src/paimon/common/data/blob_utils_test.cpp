@@ -92,17 +92,17 @@ TEST_F(BlobUtilsTest, IsArrayBlobField) {
         arrow::field("nested", arrow::list(arrow::list(BlobUtils::ToArrowField("item", true))))));
 }
 
-TEST_F(BlobUtilsTest, ValidateContainerBlobWriteSchema) {
-    auto array_blob_field =
-        arrow::field("array_blob", arrow::list(BlobUtils::ToArrowField("item", true)));
-    ASSERT_OK(BlobUtils::ValidateContainerBlobWriteSchema(
-        arrow::schema({arrow::field("id", arrow::int32()), array_blob_field})));
-
-    auto map_blob_field =
-        arrow::field("map_blob", arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", true)));
-    ASSERT_NOK_WITH_MSG(BlobUtils::ValidateContainerBlobWriteSchema(
-                            arrow::schema({array_blob_field, map_blob_field})),
-                        "Writing a table with MAP<..., BLOB> is not supported by the C++ writer");
+TEST_F(BlobUtilsTest, IsSupportedMapBlobKeyType) {
+    for (const auto& key_type : {arrow::boolean(), arrow::int8(), arrow::int16(), arrow::int32(),
+                                 arrow::int64(), arrow::date32(), arrow::decimal128(10, 2),
+                                 arrow::decimal128(38, 2), arrow::utf8(), arrow::binary()}) {
+        ASSERT_TRUE(BlobUtils::IsSupportedMapBlobKeyType(*key_type)) << key_type->ToString();
+    }
+    for (const auto& key_type :
+         {arrow::float32(), arrow::float64(), arrow::time32(arrow::TimeUnit::MILLI),
+          arrow::timestamp(arrow::TimeUnit::MICRO), arrow::large_binary(), arrow::large_utf8()}) {
+        ASSERT_FALSE(BlobUtils::IsSupportedMapBlobKeyType(*key_type)) << key_type->ToString();
+    }
 }
 
 TEST_F(BlobUtilsTest, IsArrayBlobPlaceholder) {
