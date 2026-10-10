@@ -299,7 +299,7 @@ Result<std::shared_ptr<CacheValue>> ObjectsFile<T>::SerializeArrowBatches(
               buffer(data),
               value(MemorySegment::WrapView(reinterpret_cast<const char*>(data->data()),
                                             static_cast<int32_t>(data->size())),
-                    CacheCallback()) {}
+                    CacheCallback(), data->capacity()) {}
         std::shared_ptr<arrow::MemoryPool> pool;
         std::shared_ptr<arrow::Buffer> buffer;
         CacheValue value;

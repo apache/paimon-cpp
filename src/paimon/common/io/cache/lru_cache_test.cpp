@@ -113,6 +113,40 @@ TEST_F(LruCacheTest, TestPutInsertAndUpdate) {
     ASSERT_EQ(result->GetSegment().Get(0), 'B');
 }
 
+TEST_F(LruCacheTest, TestRetainedMemoryAccounting) {
+    LruCache cache(192);
+    auto segment = MemorySegment::AllocateHeapMemory(64, pool_.get());
+    auto value = std::make_shared<CacheValue>(segment, CacheCallback(), 128);
+    ASSERT_EQ(64, value->GetSegment().Size());
+    ASSERT_EQ(128, value->GetMemoryUsage());
+    ASSERT_EQ(64, CacheValue(segment, CacheCallback()).GetMemoryUsage());
+    ASSERT_EQ(64, CacheValue(segment, CacheCallback(), 32).GetMemoryUsage());
+
+    std::vector<std::shared_ptr<CacheKey>> evicted;
+    auto first = std::make_shared<CacheValue>(
+        segment, [&](const std::shared_ptr<CacheKey>& key) { evicted.push_back(key); }, 128);
+    auto first_key = MakeKey(0);
+    ASSERT_OK(cache.Put(first_key, first));
+    ASSERT_EQ(128, cache.GetCurrentWeight());
+    ASSERT_OK(cache.Put(MakeKey(1), value));
+    ASSERT_EQ(1, cache.Size());
+    ASSERT_EQ(128, cache.GetCurrentWeight());
+    ASSERT_EQ(std::vector<std::shared_ptr<CacheKey>>{first_key}, evicted);
+    cache.InvalidateAll();
+    ASSERT_EQ(0, cache.GetCurrentWeight());
+
+    // The payload fits, but its retained allocation exceeds the cache budget.
+    LruCache small_cache(100);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CacheValue> loaded,
+        small_cache.Get(MakeKey(0),
+                        [&](const std::shared_ptr<CacheKey>&)
+                            -> Result<std::shared_ptr<CacheValue>> { return value; }));
+    ASSERT_EQ(value, loaded);
+    ASSERT_EQ(0, small_cache.Size());
+    ASSERT_EQ(0, small_cache.GetCurrentWeight());
+}
+
 /// Verifies weight-based eviction: when total weight exceeds max, LRU entries are evicted.
 TEST_F(LruCacheTest, TestWeightBasedEviction) {
     // Cache can hold at most 200 bytes

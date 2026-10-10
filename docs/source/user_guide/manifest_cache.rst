@@ -99,3 +99,10 @@ Embedding applications can implement hit/miss and eviction statistics in their
 ``Cache`` implementation. Coordination of concurrent loads for the same key
 also belongs to that implementation; ``ObjectsFile<T>`` does not deduplicate
 concurrent cache misses.
+
+Cache implementations should use ``CacheValue::GetMemoryUsage()`` for admission
+and eviction accounting. For manifest IPC, this reports the retained Arrow
+buffer capacity, including unused space from growth. ``GetSegment().Size()``
+continues to describe the valid IPC byte length. The built-in ``LruCache`` uses
+the memory usage value; existing cache values without an explicit allocation
+size continue to charge their segment length.

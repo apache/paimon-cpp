@@ -43,6 +43,10 @@ class Bytes;
 
 /// Metadata of a data file.
 struct DataFileMeta {
+    /// Field positions in DataType(), shared by serialization and manifest pruning.
+    static constexpr int32_t kRowCountFieldIndex = 2;
+    static constexpr int32_t kFirstRowIdFieldIndex = 18;
+
     static const BinaryRow& EmptyMinKey();
     static const BinaryRow& EmptyMaxKey();
     static constexpr int32_t DUMMY_LEVEL = 0;

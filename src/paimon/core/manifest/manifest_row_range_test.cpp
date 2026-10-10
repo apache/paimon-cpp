@@ -457,6 +457,59 @@ TEST_F(RowRangeManifestFileTest, CachedBufferRetainsAllocatorUntilEviction) {
     ASSERT_EQ(expected, entries);
 }
 
+TEST_F(RowRangeManifestFileTest, CacheChargesRetainedArrowCapacity) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> writer,
+                         CreateManifest(dir->Str(), fs, false));
+    // Exercise growth beyond the initial IPC buffer allocation.
+    ASSERT_OK_AND_ASSIGN(ManifestEntry entry, Entry(std::string(5000, 'a') + ".parquet", 100, 10));
+    using WrittenFile = std::pair<std::string, int64_t>;
+    ASSERT_OK_AND_ASSIGN(WrittenFile written, writer->WriteWithoutRolling({entry}));
+    std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+    auto cache = std::make_shared<LruCache>(1024 * 1024);
+    {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> reader,
+                             CreateManifest(dir->Str(), fs, true, cache, pool));
+        std::vector<ManifestEntry> entries;
+        ASSERT_OK(reader->Read(written.first, nullptr, written.second, &entries));
+        ASSERT_EQ(std::vector<ManifestEntry>{entry}, entries);
+    }
+    // Only the cached IPC allocation remains in this reader's pool.
+    ASSERT_EQ(1, cache->Size());
+    ASSERT_EQ(pool->CurrentUsage(), cache->GetCurrentWeight());
+    auto key = CacheKey::ForKind(
+        PathUtil::JoinPath(FileStorePathFactory::ManifestPath(dir->Str()), written.first),
+        /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CacheValue> cached,
+        cache->Get(key,
+                   [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                       return Status::Invalid("manifest was not cached");
+                   }));
+    ASSERT_TRUE(cached);
+    const int64_t logical_size = cached->GetSegment().Size();
+    ASSERT_GT(cached->GetMemoryUsage(), logical_size);
+    ASSERT_EQ(pool->CurrentUsage(), cached->GetMemoryUsage());
+    cached.reset();
+    cache->InvalidateAll();
+    ASSERT_EQ(0, pool->CurrentUsage());
+
+    // Admission must reject the allocation even though the valid IPC bytes would fit.
+    auto small_cache = std::make_shared<LruCache>(logical_size);
+    {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> reader,
+                             CreateManifest(dir->Str(), fs, true, small_cache, pool));
+        std::vector<ManifestEntry> entries;
+        ASSERT_OK(reader->Read(written.first, nullptr, written.second, &entries));
+        ASSERT_EQ(std::vector<ManifestEntry>{entry}, entries);
+        ASSERT_EQ(0, small_cache->Size());
+        ASSERT_EQ(0, small_cache->GetCurrentWeight());
+    }
+    ASSERT_EQ(0, pool->CurrentUsage());
+}
+
 TEST_F(RowRangeManifestFileTest, CacheAdmissionFailureReusesAlreadyDecodedBatches) {
     class FailingCache : public CountingRoutingCache {
      public:
@@ -580,6 +633,7 @@ TEST_F(RowRangeManifestFileTest, UncertainAndOverflowingRangesAreRetained) {
 }
 
 TEST_F(RowRangeManifestFileTest, SchemaEvolutionAndVersionValidation) {
+    constexpr int32_t kVersionedFileFieldIndex = ManifestEntry::kFileFieldIndex + 1;
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto pool = GetDefaultPool();
@@ -597,15 +651,17 @@ TEST_F(RowRangeManifestFileTest, SchemaEvolutionAndVersionValidation) {
         SCOPED_TRACE(mode);
         auto fields = serializer.GetDataType()->fields();
         auto columns = batch->fields();
-        auto file = checked_pointer_cast<arrow::StructArray>(columns[5]);
+        auto file = checked_pointer_cast<arrow::StructArray>(columns[kVersionedFileFieldIndex]);
         auto file_fields = checked_pointer_cast<arrow::StructType>(file->type())->fields();
         auto file_columns = file->fields();
         if (mode == 0) {
-            file_fields.erase(file_fields.begin() + 18);
-            file_columns.erase(file_columns.begin() + 18);
+            file_fields.erase(file_fields.begin() + DataFileMeta::kFirstRowIdFieldIndex);
+            file_columns.erase(file_columns.begin() + DataFileMeta::kFirstRowIdFieldIndex);
         } else if (mode == 1) {
-            std::swap(file_fields[2], file_fields[18]);
-            std::swap(file_columns[2], file_columns[18]);
+            std::swap(file_fields[DataFileMeta::kRowCountFieldIndex],
+                      file_fields[DataFileMeta::kFirstRowIdFieldIndex]);
+            std::swap(file_columns[DataFileMeta::kRowCountFieldIndex],
+                      file_columns[DataFileMeta::kFirstRowIdFieldIndex]);
         } else {
             arrow::Int32Builder versions;
             ASSERT_TRUE(versions.Append(mode == 2 ? 1 : 999).ok());
@@ -613,10 +669,11 @@ TEST_F(RowRangeManifestFileTest, SchemaEvolutionAndVersionValidation) {
         }
         auto updated_file = arrow::StructArray::Make(file_columns, file_fields);
         ASSERT_TRUE(updated_file.ok()) << updated_file.status().ToString();
-        columns[5] = updated_file.ValueOrDie();
-        fields[5] = fields[5]->WithType(arrow::struct_(file_fields));
-        std::swap(fields[1], fields[5]);
-        std::swap(columns[1], columns[5]);
+        columns[kVersionedFileFieldIndex] = updated_file.ValueOrDie();
+        fields[kVersionedFileFieldIndex] =
+            fields[kVersionedFileFieldIndex]->WithType(arrow::struct_(file_fields));
+        std::swap(fields[1], fields[kVersionedFileFieldIndex]);
+        std::swap(columns[1], columns[kVersionedFileFieldIndex]);
         auto evolved_result = arrow::StructArray::Make(columns, fields);
         ASSERT_TRUE(evolved_result.ok()) << evolved_result.status().ToString();
         std::shared_ptr<arrow::StructArray> evolved = evolved_result.ValueOrDie();

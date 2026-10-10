@@ -144,16 +144,14 @@ Status ManifestFile::ReadRowRangeEntries(
          entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
             // ManifestMetaReader has aligned both the entry and its nested file schema. Probe
             // the two range columns without allocating DataFileMeta, stats or binary keys.
-            constexpr int32_t kFileFieldIndex = 5;
-            constexpr int32_t kRowCountFieldIndex = 2;
-            constexpr int32_t kFirstRowIdFieldIndex = 18;
-            const auto& file_column = batch->field(kFileFieldIndex);
+            // The serialized entry has a leading _VERSION field.
+            const auto& file_column = batch->field(ManifestEntry::kFileFieldIndex + 1);
             if (file_column->type_id() != arrow::Type::STRUCT) {
                 return Status::Invalid("Manifest entry file metadata must be a struct");
             }
             auto files = checked_pointer_cast<arrow::StructArray>(file_column);
-            const auto& count_column = files->field(kRowCountFieldIndex);
-            const auto& first_column = files->field(kFirstRowIdFieldIndex);
+            const auto& count_column = files->field(DataFileMeta::kRowCountFieldIndex);
+            const auto& first_column = files->field(DataFileMeta::kFirstRowIdFieldIndex);
             if (count_column->type_id() != arrow::Type::INT64 ||
                 first_column->type_id() != arrow::Type::INT64) {
                 return Status::Invalid("Manifest entry row range must contain int64 fields");
