@@ -28,10 +28,12 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/status.h"
+#include "paimon/visibility.h"
 
 namespace arrow {
 class DataType;
 class Field;
+class Schema;
 }  // namespace arrow
 
 namespace paimon {
@@ -89,6 +91,10 @@ class SchemaValidation {
         const std::shared_ptr<FileSystem>& file_system);
 
     static bool IsPostponeBucketTable(const TableSchema& schema, int32_t bucket);
+
+    /// Validates an Arrow schema against the Vortex data-file type whitelist.
+    static PAIMON_EXPORT Status
+    ValidateVortexArrowSchema(const std::shared_ptr<arrow::Schema>& schema);
 
  private:
     static Status ValidateNoDuplicateField(const std::vector<std::string>& field_names,

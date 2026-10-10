@@ -48,7 +48,7 @@ class VortexReaderBuilder : public ReaderBuilder {
         if (pool_ == nullptr) {
             return Status::Invalid("Vortex reader memory pool is nullptr");
         }
-        return VortexFileBatchReader::Create(input, batch_size_, pool_, arrow_pool_);
+        return VortexFileBatchReader::Create(input, batch_size_, arrow_pool_);
     }
 
  private:

@@ -5544,6 +5544,40 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingAllNullMapColumn) {
     ASSERT_TRUE(success);
 }
 
+#ifdef PAIMON_ENABLE_VORTEX
+// Regression: primary-key finalization requires one stats entry per write-schema field
+// (KeyValueDataFileWriter), which the Vortex extractor satisfies with unknown entries.
+TEST(VortexPrimaryKeyWriteInteTest, TestPKWriteFinalize) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
+                                 arrow::field("f1", arrow::int32())};
+    auto schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "vortex"}, {Options::BUCKET, "1"}, {Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{},
+                                                         /*primary_keys=*/{"pk"}, options,
+                                                         /*is_streaming_mode=*/true));
+    int64_t commit_identifier = 0;
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["a", 1],["b", 2]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs,
+                         helper->WriteAndCommit(std::move(batch), commit_identifier++,
+                                                /*expected_commit_messages=*/std::nullopt));
+    arrow::FieldVector fields_with_row_kind = fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(arrow::struct_(fields_with_row_kind), splits,
+                                                    R"([[0, "a", 1],[0, "b", 2]])"));
+    ASSERT_TRUE(success);
+}
+#endif
+
 INSTANTIATE_TEST_SUITE_P(FileFormatAndFileSystem, WriteAndReadInteTest,
                          ::testing::ValuesIn(GetTestValuesForWriteAndReadInteTest()));
 

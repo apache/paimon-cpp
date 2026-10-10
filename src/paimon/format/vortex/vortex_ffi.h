@@ -45,11 +45,8 @@ extern "C" {
 #include "vortex.h"  // NOLINT(build/include_subdir)
 }
 
-// Callback-based data source, added to vortex-ffi by this repository (see
-// crates/vortex_callback_io/callback_io.rs). Vortex's own C API can only read a whole file already
-// in memory or a path it resolves itself, neither of which goes through paimon's FileSystem. These
-// declarations are kept here because the upstream cbindgen-generated vortex.h does not know about
-// them; they must stay in sync with the Rust definitions.
+// Declarations for the callback data source this repository injects into vortex-ffi (see
+// crates/vortex_callback_io/callback_io.rs); keep in sync with the Rust definitions.
 extern "C" {
 
 /// Fill `length` bytes starting at `offset` into `dst`. Returns 0 on success and non-zero on
@@ -99,8 +96,7 @@ struct vx_output_callbacks {
     vx_release_fn release_fn;
 };
 
-/// A sink writing a Vortex file through host callbacks. Mirrors `vx_array_sink`, which can only
-/// target a local filesystem path.
+/// A sink writing a Vortex file through host callbacks.
 struct vx_callback_sink;
 
 /// Open a sink writing through `callbacks`. Returns null and sets `err` on failure. Write errors

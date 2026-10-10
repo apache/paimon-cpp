@@ -42,6 +42,7 @@
 #include "paimon/format/format_stats_extractor.h"
 #include "paimon/format/format_writer.h"
 #include "paimon/format/reader_builder.h"
+#include "paimon/format/vortex/vortex_io_callbacks.h"
 #include "paimon/format/writer_builder.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -157,6 +158,88 @@ class VortexFileFormatTest : public ::testing::Test {
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
+
+namespace {
+
+// Counts Close() calls so tests can observe when the input context releases the stream.
+class RecordingInputStream : public InputStream {
+ public:
+    Status Close() override {
+        ++close_count_;
+        return Status::OK();
+    }
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return Status::OK();
+    }
+    Result<int64_t> GetPos() const override {
+        return 0;
+    }
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        return 0;
+    }
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        return 0;
+    }
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        callback(Status::OK());
+    }
+    Result<std::string> GetUri() const override {
+        return std::string("recording://test");
+    }
+    Result<int64_t> Length() const override {
+        return 0;
+    }
+    int close_count() const {
+        return close_count_;
+    }
+
+ private:
+    int close_count_ = 0;
+};
+
+}  // namespace
+
+// The stream must stay open while a read callback still owns the context, and close exactly once
+// when the last owner releases it.
+TEST(VortexInputContextTest, CloseDefersUntilLastOwnerReleases) {
+    auto stream = std::make_shared<RecordingInputStream>();
+    auto context = std::make_shared<VortexInputContext>(stream);
+    std::shared_ptr<VortexInputContext> in_flight = context;
+    context.reset();
+    ASSERT_EQ(stream->close_count(), 0);
+    in_flight.reset();
+    ASSERT_EQ(stream->close_count(), 1);
+}
+
+TEST(VortexInputContextTest, CloseRunsWhenReaderIsLastOwner) {
+    auto stream = std::make_shared<RecordingInputStream>();
+    auto context = std::make_shared<VortexInputContext>(stream);
+    context.reset();
+    ASSERT_EQ(stream->close_count(), 1);
+}
+
+// MAP hits `unimplemented!` in Vortex, whose panic would abort across the FFI boundary.
+TEST_F(VortexFileFormatTest, WriterBuilderRejectsUnsupportedTypes) {
+    const std::vector<std::shared_ptr<arrow::Field>> unsupported = {
+        arrow::field("m", arrow::map(arrow::utf8(), arrow::int32())),
+        arrow::field(
+            "r", arrow::struct_({arrow::field("m", arrow::map(arrow::utf8(), arrow::int32()))}))};
+    for (const std::shared_ptr<arrow::Field>& field : unsupported) {
+        std::string path = PathUtil::JoinPath(directory_->Str(), "unsupported.vortex");
+        std::shared_ptr<arrow::Schema> schema = arrow::schema({field});
+        ::ArrowSchema ffi_schema = {};
+        ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriterBuilder> writer_builder,
+                             format_->CreateWriterBuilder(&ffi_schema, /*batch_size=*/2));
+        writer_builder->WithMemoryPool(pool_);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                             file_system_->Create(path, /*overwrite=*/true));
+        Result<std::unique_ptr<FormatWriter>> writer = writer_builder->Build(output, "zstd");
+        ASSERT_FALSE(writer.ok());
+        ASSERT_TRUE(writer.status().IsInvalid()) << writer.status().ToString();
+    }
+}
 
 TEST_F(VortexFileFormatTest, WriteThenRead) {
     std::string path = PathUtil::JoinPath(directory_->Str(), "data.vortex");
@@ -285,8 +368,47 @@ TEST_F(VortexFileFormatTest, ExtractStatisticsReportsRowCount) {
                          format_->CreateStatsExtractor(&ffi_schema));
     ASSERT_OK_AND_ASSIGN(auto result, extractor->ExtractWithFileInfo(file_system_, path, pool_));
     ASSERT_EQ(result.second.GetRowCount(), 5);
-    // Vortex exposes no per-column statistics; only the row count is verified.
-    ASSERT_TRUE(result.first.empty());
+    // Vortex exposes no per-column statistics: one unknown entry per field, all values nullopt.
+    ASSERT_EQ(result.first.size(), fields.size());
+    for (const std::shared_ptr<ColumnStats>& column_stats : result.first) {
+        ASSERT_EQ(column_stats->NullCount(), std::nullopt);
+    }
+}
+
+// Regression: consumers index the stats vector by field position and primary-key finalization
+// requires one entry per write-schema field, so every supported type must yield an unknown entry.
+TEST_F(VortexFileFormatTest, ExtractStatisticsReportsUnknownStatsPerField) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "statistics-types.vortex");
+    arrow::FieldVector fields = {
+        arrow::field("flag", arrow::boolean()),
+        arrow::field("id", arrow::int32(), false),
+        arrow::field("name", arrow::utf8()),
+        arrow::field("payload", arrow::binary()),
+        arrow::field("score", arrow::float64()),
+        arrow::field("day", arrow::date32()),
+        arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        arrow::field("amount", arrow::decimal128(10, 2)),
+        arrow::field("tags", arrow::list(arrow::field("element", arrow::int32()))),
+        arrow::field("vec", arrow::fixed_size_list(arrow::field("element", arrow::float64()), 2)),
+        arrow::field("r", arrow::struct_({arrow::field("a", arrow::int32())}))};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(fields),
+            R"([[true,1,"one","AA",1.5,17000,1700000000000,"1.25",[1],[1.0,2.0],{"a":1}]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/1));
+
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FormatStatsExtractor> extractor,
+                         format_->CreateStatsExtractor(&ffi_schema));
+    ASSERT_OK_AND_ASSIGN(auto result, extractor->ExtractWithFileInfo(file_system_, path, pool_));
+    ASSERT_EQ(result.second.GetRowCount(), 1);
+    ASSERT_EQ(result.first.size(), fields.size());
+    for (const std::shared_ptr<ColumnStats>& column_stats : result.first) {
+        ASSERT_EQ(column_stats->NullCount(), std::nullopt);
+    }
 }
 
 TEST_F(VortexFileFormatTest, ProjectedReadReturnsOnlyRequestedColumns) {
@@ -341,6 +463,47 @@ TEST_F(VortexFileFormatTest, ProjectedReadPrunesNestedStruct) {
     std::shared_ptr<arrow::Array> expected =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(projected_fields),
                                                   R"([[{"b":"x"}],[{"b":null}],[{"b":"z"}]])")
+            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual,
+                         ReadFile(path, projected, /*batch_size=*/2, /*expected_row_count=*/3));
+    ASSERT_TRUE(actual->Equals(expected)) << actual->ToString() << "\nvs\n" << expected->ToString();
+}
+
+// Regression: an incompatible leaf type must be rejected, not silently reinterpreted. Reading an
+// int32 column through an int64 read schema used to keep the 32-bit buffers under a 64-bit type, so
+// the exported schema disagreed with the data and [1, 2, 3] came back as garbage.
+TEST_F(VortexFileFormatTest, ProjectedReadRejectsIncompatibleLeafType) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "leaf-mismatch.vortex");
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false)};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> written =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([[1],[2],[3]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, written, /*batch_size=*/2));
+
+    std::shared_ptr<arrow::Schema> widened = arrow::schema({arrow::field("id", arrow::int64())});
+    Result<std::shared_ptr<arrow::Array>> rejected =
+        ReadFile(path, widened, /*batch_size=*/2, /*expected_row_count=*/3);
+    ASSERT_FALSE(rejected.ok());
+    ASSERT_TRUE(rejected.status().IsInvalid()) << rejected.status().ToString();
+}
+
+// A read field the file does not carry is null-filled instead of rejected: that is the
+// schema-evolution answer the rest of the read path gives, so every file yields the read schema.
+TEST_F(VortexFileFormatTest, ProjectedReadNullFillsFieldMissingFromFile) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "missing-field.vortex");
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false)};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> written =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([[1],[2],[3]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, written, /*batch_size=*/2));
+
+    arrow::FieldVector projected_fields = {fields[0], arrow::field("extra", arrow::utf8())};
+    std::shared_ptr<arrow::Schema> projected = arrow::schema(projected_fields);
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(projected_fields),
+                                                  R"([[1,null],[2,null],[3,null]])")
             .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual,
                          ReadFile(path, projected, /*batch_size=*/2, /*expected_row_count=*/3));
@@ -430,7 +593,9 @@ TEST_F(VortexFileFormatTest, FlushBetweenBatchesThenRead) {
 // the injected one (proving it propagated), and fails the test on any other error.
 TEST_F(VortexFileFormatTest, ReadSurfacesInjectedIOError) {
     std::string path = PathUtil::JoinPath(directory_->Str(), "read-io-error.vortex");
-    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),
+    // Nullable columns: ReadResultCollector imports batches through RecordBatch, whose
+    // struct conversion drops NOT NULL; NOT NULL columns are covered by the ReadFile-based tests.
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
                                  arrow::field("name", arrow::utf8())};
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::shared_ptr<arrow::Array> written =
@@ -464,12 +629,16 @@ TEST_F(VortexFileFormatTest, ReadSurfacesInjectedIOError) {
                                                         /*selection_bitmap=*/std::nullopt),
                           i);
 
-        bool eof = false;
-        while (!eof) {
-            Result<BatchReader::ReadBatch> batch = reader.value()->NextBatch();
-            CHECK_HOOK_STATUS(batch.status(), i);
-            eof = BatchReader::IsEofBatch(batch.value());
-        }
+        std::unique_ptr<FileBatchReader> owned_reader = std::move(reader).value();
+        Result<std::shared_ptr<arrow::ChunkedArray>> collected =
+            paimon::test::ReadResultCollector::CollectResult(std::move(owned_reader));
+        CHECK_HOOK_STATUS(collected.status(), i);
+        arrow::Result<std::shared_ptr<arrow::Array>> concat_result =
+            arrow::Concatenate(collected.value()->chunks(), arrow_pool_.get());
+        ASSERT_TRUE(concat_result.ok()) << concat_result.status().ToString();
+        std::shared_ptr<arrow::Array> actual = concat_result.ValueOrDie();
+        ASSERT_TRUE(actual->Equals(written))
+            << "actual: " << actual->ToString() << "\nexpected: " << written->ToString();
         run_complete = true;
         break;
     }
@@ -511,6 +680,11 @@ TEST_F(VortexFileFormatTest, WriteSurfacesInjectedIOError) {
         CHECK_HOOK_STATUS(writer.value()->AddBatch(&ffi_array), i);
         CHECK_HOOK_STATUS(writer.value()->Finish(), i);
         CHECK_HOOK_STATUS(output_stream->Close(), i);
+        // The write survived every injected position; stop injecting and verify the bytes.
+        io_hook->Clear();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual,
+                             ReadFile(path, schema, /*batch_size=*/2, /*expected_row_count=*/3));
+        ASSERT_TRUE(actual->Equals(data)) << actual->ToString() << "\nvs\n" << data->ToString();
         run_complete = true;
         break;
     }

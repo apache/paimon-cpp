@@ -27,6 +27,7 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
 #include "paimon/fs/file_system.h"
 
@@ -51,6 +52,7 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
     if (output == nullptr || schema == nullptr || arrow_pool == nullptr) {
         return Status::Invalid("Vortex writer requires non-null output, schema and arrow pool");
     }
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateVortexArrowSchema(schema));
     VxSessionPtr session(vx_session_new(), vx_session_free);
     if (session == nullptr) {
         return Status::IOError("failed to create Vortex session");
@@ -77,8 +79,8 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
 
 VortexFormatWriter::~VortexFormatWriter() {
     if (sink_ != nullptr) {
-        // Not finished: abort so Vortex drops the sink without writing a footer. Whatever reached
-        // the output stream is an incomplete file, which the caller discards along with it.
+        // Not finished: abort so Vortex drops the sink without a footer; the caller discards the
+        // partial output.
         vx_callback_sink_abort(sink_);
         sink_ = nullptr;
     }
@@ -91,11 +93,9 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
     if (finished_ || sink_ == nullptr) {
         return Status::Invalid("cannot add a batch after Vortex writer is finished");
     }
-    // vx_array_from_arrow imports through arrow-rs, which cannot represent a sliced (offset > 0)
-    // top-level struct: the parent offset gets re-applied to children that Arrow C++ already
-    // exported with it, tripping an arrow-data slice assertion (end <= len) that aborts the
-    // process. Rebase such a batch to offset 0 first, mirroring the read path. Offset-0 batches
-    // (the common case) are handed over untouched, so the hot path adds no copy.
+    // arrow-rs cannot represent a sliced (offset > 0) top-level struct: importing one trips a slice
+    // assertion that aborts the process, so rebase such a batch to offset 0 first. Offset-0 batches
+    // are handed over untouched.
     ::ArrowArray* vortex_batch = batch;
     ::ArrowArray rebased_batch{};
     if (batch->offset != 0) {
@@ -126,13 +126,8 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
 }
 
 Status VortexFormatWriter::Flush() {
-    if (finished_) {
-        return Status::OK();
-    }
-    // Flush through the output context so it is serialized with the background writer task's writes
-    // (OutputStream has no concurrent Write/Flush contract). Vortex buffers internally, so this
-    // flushes the bytes handed over so far; the rest is drained when the sink closes in Finish().
-    return output_context_->FlushStream();
+    // Vortex drains and flushes when the sink closes in Finish(); nothing to do mid-write.
+    return Status::OK();
 }
 
 Status VortexFormatWriter::Finish() {
@@ -161,8 +156,6 @@ Result<bool> VortexFormatWriter::ReachTargetSize(bool suggested_check, int64_t t
     if (!suggested_check || output_context_ == nullptr) {
         return false;
     }
-    // Bytes already handed to the output stream. Vortex still holds buffered data and writes the
-    // footer on close, so this is a lower bound and rolling only ever happens later than ideal.
     return output_context_->BytesWritten() >= target_size;
 }
 

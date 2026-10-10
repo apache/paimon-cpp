@@ -401,8 +401,8 @@ unsafe fn callback_sink_open(
         flush_fn: callbacks.flush_fn,
     };
 
-    // The channel size matches the stock file sink.
-    let (sink, rx) = mpsc::channel(32);
+    // Small on purpose so the producing thread feels back-pressure, as in vortex-jni's writer.
+    let (sink, rx) = mpsc::channel(4);
     let array_stream = ArrayStreamAdapter::new(dtype.clone(), rx.into_stream());
 
     let strategy = WriteStrategyBuilder::default().build();

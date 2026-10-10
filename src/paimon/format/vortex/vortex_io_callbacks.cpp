@@ -24,6 +24,7 @@
 #include "paimon/common/utils/math.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/logging.h"
 #include "paimon/result.h"
 
 namespace paimon::vortex {
@@ -38,10 +39,26 @@ Context* ContextFrom(void* ctx) {
     return holder == nullptr ? nullptr : holder->get();
 }
 
+Logger* VortexInputLogger() {
+    static Logger* logger = Logger::GetLogger("VortexInputContext").release();
+    return logger;
+}
+
 }  // namespace
 
 VortexInputContext::VortexInputContext(std::shared_ptr<InputStream> input)
     : input_(std::move(input)) {}
+
+VortexInputContext::~VortexInputContext() {
+    if (input_ != nullptr) {
+        Status status = input_->Close();
+        if (!status.ok()) {
+            PAIMON_LOG_WARN(VortexInputLogger(),
+                            "Failed to close the Vortex input stream while discarding: %s",
+                            status.ToString().c_str());
+        }
+    }
+}
 
 vx_input_callbacks VortexInputContext::MakeCallbacks(
     const std::shared_ptr<VortexInputContext>& context) {
@@ -108,8 +125,7 @@ int32_t VortexInputContext::ReadAt(void* ctx, uint64_t offset, uint8_t* dst,
 
 Status VortexCallbackError(const std::string& operation, vx_error* error,
                            const Status& callback_status) {
-    // Consume the Vortex error either way, then prefer the callback's error: it is the root cause,
-    // while Vortex only sees an opaque failure code.
+    // Consume the Vortex error either way, then prefer the callback's error as the root cause.
     Status ffi_status = VortexFfiError(operation, error);
     if (!callback_status.ok()) {
         return callback_status.WithMessage(operation, ": ", callback_status.message());
@@ -171,12 +187,9 @@ int32_t VortexOutputContext::Write(void* ctx, const uint8_t* src, size_t length)
         return -1;
     }
     auto write_length = static_cast<int64_t>(length);
-    // The Vortex writer task is the only other accessor of `output_`; hold the stream lock so a
-    // concurrent caller-thread FlushStream cannot interleave with this write.
-    Result<int64_t> result = [&] {
-        std::lock_guard<std::mutex> stream_lock(context->stream_mutex_);
-        return context->output_->Write(reinterpret_cast<const char*>(src), write_length);
-    }();
+    // The Vortex writer task is the only accessor of `output_`, so no lock is needed.
+    Result<int64_t> result =
+        context->output_->Write(reinterpret_cast<const char*>(src), write_length);
     if (!result.ok()) {
         context->SetCallbackStatus(result.status());
         return -1;
@@ -198,17 +211,12 @@ int32_t VortexOutputContext::Flush(void* ctx) noexcept {
     if (context == nullptr) {
         return -1;
     }
-    Status status = context->FlushStream();
+    Status status = context->output_->Flush();
     if (!status.ok()) {
         context->SetCallbackStatus(status);
         return -1;
     }
     return 0;
-}
-
-Status VortexOutputContext::FlushStream() {
-    std::lock_guard<std::mutex> stream_lock(stream_mutex_);
-    return output_->Flush();
 }
 
 }  // namespace paimon::vortex

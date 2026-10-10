@@ -41,11 +41,6 @@ class OutputStream;
 namespace paimon::vortex {
 
 /// Writes a Vortex file.
-///
-/// Bytes go straight to the paimon `OutputStream` through `vx_callback_sink_open`, the
-/// callback-based sink this repository adds to vortex-ffi: Vortex writes into `output_context_`,
-/// which forwards to the stream. Vortex's own sink (`vx_array_sink_open_file`) can only create a
-/// local file, which would mean staging the file on local disk and copying it back on finish.
 class VortexFormatWriter : public FormatWriter {
  public:
     static Result<std::unique_ptr<VortexFormatWriter>> Create(
@@ -68,8 +63,7 @@ class VortexFormatWriter : public FormatWriter {
 
     std::shared_ptr<OutputStream> output_;
     std::shared_ptr<arrow::Schema> schema_;
-    // The caller's Arrow pool, used for any buffer (re)allocation on the write path so it counts
-    // against Paimon's memory accounting instead of Arrow's default pool.
+    // The caller's Arrow pool, so write-path allocations count against Paimon's memory accounting.
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     VxSessionPtr session_;
     std::shared_ptr<VortexOutputContext> output_context_;

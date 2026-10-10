@@ -36,15 +36,13 @@ class OutputStream;
 namespace paimon::vortex {
 
 /// Bridges Vortex's positional reads to a paimon `InputStream`.
-///
-/// Vortex calls back into this context for every range it needs, so the file is never staged in
-/// memory and any paimon `FileSystem` works. Callbacks cannot throw or return a `Status` across the
-/// FFI boundary, so a failure is reported as a status code and the real error is stashed here for
-/// the caller to pick up with `GetCallbackStatus()`.
 class VortexInputContext {
  public:
     /// @param input The paimon stream every positional read is forwarded to.
     explicit VortexInputContext(std::shared_ptr<InputStream> input);
+
+    /// Closes the paimon stream when the last owner releases the context.
+    ~VortexInputContext();
 
     /// Build the FFI callbacks for `context`.
     ///
@@ -60,7 +58,7 @@ class VortexInputContext {
     ///
     /// Called concurrently from several Vortex threads. This is safe because paimon's positional
     /// `InputStream::Read` does not touch the stream position (the local implementation uses
-    /// `pread`), which is the same contract the mosaic format's callbacks rely on.
+    /// `pread`).
     ///
     /// @param ctx The `VortexInputContext` shared-reference holder passed as the callback context.
     /// @param offset Byte offset in the file to read from.
@@ -97,10 +95,6 @@ Status VortexCallbackError(const std::string& operation, vx_error* error,
                            const Status& callback_status);
 
 /// Bridges Vortex's sequential writes to a paimon `OutputStream`.
-///
-/// Vortex's own file sink can only create a local file, so without this the writer would have to
-/// stage the file locally and copy it back on finish. Errors are stashed the same way as on the
-/// read side, because the callbacks can only return a status code.
 class VortexOutputContext {
  public:
     /// @param output The paimon stream every write is forwarded to.
@@ -136,32 +130,17 @@ class VortexOutputContext {
 
     /// Bytes handed to the paimon stream so far.
     ///
-    /// This is a lower bound on the final file size: Vortex buffers data internally and only writes
-    /// the footer on close, so a size-based rolling decision using this value errs on the side of
-    /// writing a larger file.
+    /// Lower bound on the final file size: Vortex buffers internally and writes the footer on
+    /// close.
     ///
     /// @return The number of bytes written to the paimon stream so far.
     int64_t BytesWritten() const;
-
-    /// Flush the paimon stream, serialized with the background writer task's writes.
-    ///
-    /// `OutputStream` carries no thread-safety contract for concurrent `Write`/`Flush`, and
-    /// Vortex's writer task invokes the write callback from its own thread, so a caller-thread
-    /// flush must take the same lock the write callback holds. Vortex buffers internally, so this
-    /// flushes the bytes handed over so far; whatever is still buffered is drained when the sink is
-    /// closed (`Finish`).
-    ///
-    /// @return OK on success, or the flush error.
-    Status FlushStream();
 
  private:
     void SetCallbackStatus(const Status& status);
 
     std::shared_ptr<OutputStream> output_;
     mutable std::mutex mutex_;
-    // Serializes access to `output_` between the Vortex writer task (write/flush callbacks) and a
-    // caller-thread `FlushStream`; `mutex_` only guards the status/byte-count bookkeeping.
-    std::mutex stream_mutex_;
     Status callback_status_;
     int64_t bytes_written_ = 0;
 };

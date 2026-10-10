@@ -39,7 +39,6 @@ class Schema;
 
 namespace paimon {
 class InputStream;
-class MemoryPool;
 class Metrics;
 class PredicateFilter;
 }  // namespace paimon
@@ -47,17 +46,10 @@ class PredicateFilter;
 namespace paimon::vortex {
 
 /// Reads a Vortex file via the vortex-ffi scan API.
-///
-/// IO goes through `vx_data_source_new_callback`, the callback-based data source this repository
-/// adds to vortex-ffi: Vortex issues positional reads back into `input_context_`, which forwards
-/// them to the paimon `InputStream`. Nothing is staged in memory, range reads stay lazy, and any
-/// paimon `FileSystem` works. Each batch the scan produces is converted through the Arrow C Data
-/// Interface.
 class VortexFileBatchReader : public FileBatchReader {
  public:
     static Result<std::unique_ptr<VortexFileBatchReader>> Create(
         const std::shared_ptr<InputStream>& input, int32_t batch_size,
-        const std::shared_ptr<MemoryPool>& pool,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~VortexFileBatchReader() override;
@@ -80,7 +72,6 @@ class VortexFileBatchReader : public FileBatchReader {
                           VxDataSourcePtr data_source, VxScanPtr scan,
                           const std::shared_ptr<arrow::Schema>& file_schema,
                           const std::shared_ptr<arrow::DataType>& struct_type, uint64_t total_rows,
-                          const std::shared_ptr<MemoryPool>& pool,
                           const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     /// Pull the next Arrow array from the current partition stream, opening the next partition's
@@ -89,6 +80,10 @@ class VortexFileBatchReader : public FileBatchReader {
     /// Open the next partition and fill `current_stream_` via `vx_partition_scan_arrow`.
     /// Returns false when there are no more partitions.
     Result<bool> OpenNextPartitionStream();
+    /// Reshape a scanned batch to `read_schema_`, selecting columns by name and recursing into
+    /// nested fields. Returns `array` unchanged when SetReadSchema has not been called.
+    Result<std::shared_ptr<arrow::Array>> AlignToReadSchema(
+        const std::shared_ptr<arrow::Array>& array) const;
     void ReleaseStream();
     void CloseInternal();
 
@@ -123,7 +118,6 @@ class VortexFileBatchReader : public FileBatchReader {
     uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
     uint64_t previous_batch_row_count_ = 0;
 
-    std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<PredicateFilter> predicate_filter_;  // from SetReadSchema; not pushed down
     std::shared_ptr<Metrics> metrics_;

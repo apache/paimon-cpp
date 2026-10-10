@@ -27,15 +27,13 @@
 #include "paimon/result.h"
 
 namespace arrow {
+class DataType;
 class Schema;
 }  // namespace arrow
 
 namespace paimon::vortex {
 
-/// Vortex exposes no per-column statistics to Paimon (the Java side has no StatsExtractor either).
-/// Predicate pruning for Vortex happens inside Vortex via native expression pushdown, not
-/// through Paimon-level row-group statistics. This extractor therefore returns empty column stats
-/// and only reads back the file's row count for `FileInfo`.
+/// Reports one unknown-stats entry per schema field and the file's row count.
 class VortexStatsExtractor : public FormatStatsExtractor {
  public:
     explicit VortexStatsExtractor(const std::shared_ptr<arrow::Schema>& schema) : schema_(schema) {}
@@ -53,6 +51,9 @@ class VortexStatsExtractor : public FormatStatsExtractor {
         const std::shared_ptr<MemoryPool>& pool) override;
 
  private:
+    Result<std::unique_ptr<ColumnStats>> CreateUnknownStats(
+        const std::shared_ptr<arrow::DataType>& type) const;
+
     std::shared_ptr<arrow::Schema> schema_;
 };
 

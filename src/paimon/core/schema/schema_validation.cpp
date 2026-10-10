@@ -1010,6 +1010,16 @@ Status SchemaValidation::ValidateLanceDataFields(const TableSchema& schema,
     return Status::OK();
 }
 
+Status SchemaValidation::ValidateVortexArrowSchema(const std::shared_ptr<arrow::Schema>& schema) {
+    if (schema == nullptr) {
+        return Status::Invalid("schema is nullptr");
+    }
+    for (const std::shared_ptr<arrow::Field>& field : schema->fields()) {
+        PAIMON_RETURN_NOT_OK(ValidateVortexDataField(field));
+    }
+    return Status::OK();
+}
+
 Status SchemaValidation::ValidateVortexDataField(const std::shared_ptr<arrow::Field>& field) {
     if (VariantTypeUtils::IsVariantField(field)) {
         return Status::Invalid("Vortex file format does not support type VARIANT");

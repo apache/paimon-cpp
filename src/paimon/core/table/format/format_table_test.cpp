@@ -613,10 +613,17 @@ TEST(FormatTableTest, TestParseFormat) {
 
     // Format table formats with no reader here yet answer `NotImplemented`, which is a different
     // answer from a name that is no format at all.
-    for (const char* format : {"csv", "text", "json", "mosaic", "vortex"}) {
+    for (const char* format : {"csv", "text", "json", "mosaic"}) {
         Result<FormatTable::Format> unimplemented = FormatTable::ParseFormat(format);
         ASSERT_FALSE(unimplemented.ok()) << format;
         ASSERT_TRUE(unimplemented.status().IsNotImplemented()) << format;
+    }
+
+    // Data-file-only formats are not format-table formats at all, so they answer `Invalid`.
+    for (const char* format : {"avro", "lance", "vortex"}) {
+        Result<FormatTable::Format> not_a_format_table_format = FormatTable::ParseFormat(format);
+        ASSERT_FALSE(not_a_format_table_format.ok()) << format;
+        ASSERT_TRUE(not_a_format_table_format.status().IsInvalid()) << format;
     }
 
     Result<FormatTable::Format> unknown = FormatTable::ParseFormat("nonesuch");
