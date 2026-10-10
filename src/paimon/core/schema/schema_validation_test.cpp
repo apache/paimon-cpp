@@ -27,6 +27,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
@@ -82,6 +83,15 @@ Result<std::unique_ptr<TableSchema>> MakeContainerBlobSchema(const std::string& 
 
 }  // namespace
 
+Status CreateAndValidateTableSchema(const std::shared_ptr<arrow::Schema>& arrow_schema,
+                                    const std::vector<std::string>& primary_keys,
+                                    const std::map<std::string, std::string>& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
+                           TableSchema::Create(/*schema_id=*/0, arrow_schema, /*partition_keys=*/{},
+                                               primary_keys, options));
+    return SchemaValidation::ValidateTableSchema(*table_schema);
+}
+
 TEST(SchemaValidationTest, TestSimple) {
     auto f0 = arrow::field("f0", arrow::utf8());
     auto f1 = arrow::field("f1", arrow::int32());
@@ -98,12 +108,96 @@ TEST(SchemaValidationTest, TestSimple) {
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 }
 
-TEST(SchemaValidationTest, TestRealtimeOffsetIsGloballyReserved) {
-    auto schema = arrow::schema({arrow::field("_REALTIME_OFFSET", arrow::int64())});
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
-                         TableSchema::Create(0, schema, {}, {}, {}));
-    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "field name '_REALTIME_OFFSET' in schema cannot be special field");
+TEST(SchemaValidationTest, TestRealtime) {
+    const std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/false)});
+
+    const std::map<std::string, std::string> valid_options = {
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::REALTIME_ENABLED, "true"},
+    };
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, valid_options));
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{"id"}, valid_options));
+
+    std::map<std::string, std::string> deletion_vector_options = valid_options;
+    deletion_vector_options[Options::DELETION_VECTORS_ENABLED] = "true";
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, deletion_vector_options));
+
+    std::map<std::string, std::string> spill_options = valid_options;
+    spill_options[Options::REALTIME_SPILL_ENABLED] = "true";
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, spill_options));
+
+    std::map<std::string, std::string> deduplicate_without_realtime = valid_options;
+    deduplicate_without_realtime.erase(Options::REALTIME_ENABLED);
+    deduplicate_without_realtime[Options::REALTIME_DEDUPLICATE_KEY_FIELDS] = "id";
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, deduplicate_without_realtime),
+        "realtime.deduplicate-key-fields' requires 'realtime.enabled=true");
+
+    std::map<std::string, std::string> spill_without_realtime = valid_options;
+    spill_without_realtime.erase(Options::REALTIME_ENABLED);
+    spill_without_realtime[Options::REALTIME_SPILL_ENABLED] = "true";
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, spill_without_realtime),
+        "realtime.spill-enabled' requires 'realtime.enabled=true");
+
+    std::map<std::string, std::string> dynamic_bucket_options = valid_options;
+    dynamic_bucket_options[Options::BUCKET] = "-1";
+    dynamic_bucket_options.erase(Options::BUCKET_KEY);
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, dynamic_bucket_options),
+        "Real-time mode requires a fixed positive bucket count");
+
+    std::map<std::string, std::string> data_evolution_options = valid_options;
+    data_evolution_options[Options::DATA_EVOLUTION_ENABLED] = "true";
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, data_evolution_options),
+        "Real-time mode does not support data evolution");
+}
+
+TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
+    const std::shared_ptr<arrow::Field> offset_field =
+        arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64(), /*nullable=*/false);
+    const std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/false), offset_field});
+
+    const std::map<std::string, std::string> valid_options = {
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::REALTIME_ENABLED, "true"},
+        {Options::REALTIME_DEDUPLICATE_KEY_FIELDS, "id"},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+        {"file-index.bitmap.columns", SpecialFields::RealtimeOffset().Name()},
+    };
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, valid_options));
+
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(schema, /*primary_keys=*/{"id"}, valid_options),
+        "is only supported on append tables without primary keys");
+
+    std::map<std::string, std::string> no_deletion_vector_options = valid_options;
+    no_deletion_vector_options.erase(Options::DELETION_VECTORS_ENABLED);
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, no_deletion_vector_options),
+        "requires 'deletion-vectors.enabled=true'");
+
+    std::map<std::string, std::string> spill_options = valid_options;
+    spill_options[Options::REALTIME_SPILL_ENABLED] = "true";
+    ASSERT_NOK_WITH_MSG(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, spill_options),
+                        "does not support 'realtime.spill-enabled=true'");
+
+    const std::shared_ptr<arrow::Schema> no_offset_schema =
+        arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/false)});
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(no_offset_schema, /*primary_keys=*/{}, valid_options),
+        "requires non-null int64 _REALTIME_OFFSET");
+
+    std::map<std::string, std::string> no_offset_index_options = valid_options;
+    no_offset_index_options.erase("file-index.bitmap.columns");
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, no_offset_index_options),
+        "requires file-index.bitmap.columns to include _REALTIME_OFFSET");
 }
 
 TEST(SchemaValidationTest, TestVectorType) {

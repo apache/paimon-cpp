@@ -643,6 +643,10 @@ struct PAIMON_EXPORT Options {
     /// Supported values are "none" and "full". Default value is "none".
     static const char REALTIME_STORE_STATS_MODE[];
 
+    /// "realtime.deduplicate-key-fields" - Comma-separated user-defined deduplicate key fields
+    /// used for last-write-wins deduplication on an append table. No default value.
+    static const char REALTIME_DEDUPLICATE_KEY_FIELDS[];
+
     /// "scan.timestamp" - Optional timestamp string used in case of "from-timestamp" scan mode,
     /// as an alternative to "scan.timestamp-millis".
     /// It will be automatically converted to timestamp in unix milliseconds, using local time zone.

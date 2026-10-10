@@ -89,7 +89,7 @@ Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& 
             RealtimeOffsetMap realtime_committed_offsets,
             RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
         PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
-            latest_snapshot->Id(), realtime_committed_offsets));
+            latest_snapshot->Id(), realtime_committed_offsets, /*committed_data_files=*/{}));
     }
     return Status::OK();
 }
@@ -286,6 +286,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     }
     if (schema->PrimaryKeys().empty()) {
         // append table
+        const bool realtime_deduplicate = !options.GetRealtimeDeduplicateKeyFields().empty();
         bool need_dv_maintainer_factory = options.DeletionVectorsEnabled();
         if (options.GetBucket() == -1) {
             need_dv_maintainer_factory = false;
@@ -295,17 +296,15 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 fmt::format("not support bucket {} in append table", options.GetBucket()));
         }
         if (ctx->GetRealtimeContext()) {
-            if (options.GetBucket() <= 0) {
-                return Status::Invalid("real-time append write requires fixed bucket mode");
+            if (!ctx->GetWriteSchema().empty()) {
+                return Status::Invalid("real-time append write does not support a custom schema");
             }
-            if (options.DataEvolutionEnabled() || !ctx->GetWriteSchema().empty()) {
-                return Status::Invalid("real-time append write does not support data evolution");
+            if (!realtime_deduplicate) {
+                PAIMON_RETURN_NOT_OK(RestoreRealtimeCommittedProgress(ctx->GetRealtimeContext(),
+                                                                      snapshot_manager, options));
             }
-            if (options.DeletionVectorsEnabled()) {
-                return Status::Invalid("real-time append write does not support deletion vectors");
-            }
-            PAIMON_RETURN_NOT_OK(RestoreRealtimeCommittedProgress(ctx->GetRealtimeContext(),
-                                                                  snapshot_manager, options));
+        } else if (realtime_deduplicate) {
+            return Status::Invalid("real-time deduplicate write requires a real-time context");
         }
         std::shared_ptr<arrow::Schema> write_schema = arrow_schema;
         const auto& write_field_names = ctx->GetWriteSchema();
@@ -326,9 +325,10 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 
         std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
         if (ctx->GetRealtimeContext()) {
-            PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<RealtimeSchemaLayout> layout,
-                RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, write_schema));
+            const RealtimeStoreMode mode = realtime_deduplicate ? RealtimeStoreMode::DEDUPLICATE
+                                                                : RealtimeStoreMode::APPEND_ONLY;
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeSchemaLayout> layout,
+                                   RealtimeSchemaLayout::Create(mode, write_schema));
             realtime_schema_layout = std::move(layout);
         }
 
@@ -353,6 +353,14 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             partition_schema, dv_maintainer_factory, io_manager, options, ignore_previous_files,
             ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->GetRealtimeContext(),
             ctx->GetExecutor(), ctx->GetMemoryPool());
+        if (ctx->GetRealtimeContext() && realtime_deduplicate) {
+            PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
+                                   snapshot_manager->LatestSnapshot());
+            if (latest_snapshot) {
+                PAIMON_RETURN_NOT_OK(
+                    file_store_write->RefreshCommittedSnapshot(latest_snapshot->Id()));
+            }
+        }
         return std::unique_ptr<FileStoreWrite>(std::move(file_store_write));
     } else {
         // pk table

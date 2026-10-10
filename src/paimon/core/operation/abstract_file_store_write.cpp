@@ -372,18 +372,28 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealt
         PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment,
                                snapshot.writer->PrepareCommit(/*wait_compaction=*/false));
         writer_memory_manager_->RefreshWriterMemory(snapshot.writer.get());
+        std::shared_ptr<CompactDeletionFile> compact_deletion_file =
+            increment.GetCompactDeletionFile();
+        CompactIncrement& compact_increment = increment.GetCompactIncrement();
+        if (compact_deletion_file) {
+            PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<IndexFileMeta>> dv_index_file_meta,
+                                   compact_deletion_file->GetOrCompute());
+            if (dv_index_file_meta) {
+                compact_increment.AddNewIndexFiles({dv_index_file_meta.value()});
+            }
+        }
         auto committable = std::make_shared<CommitMessageImpl>(
             snapshot.partition, snapshot.bucket, snapshot.total_buckets,
-            increment.GetNewFilesIncrement(), increment.GetCompactIncrement());
+            increment.GetNewFilesIncrement(), compact_increment);
         if (!increment.GetRealtimeOffsetRange()) {
             if (!committable->IsEmpty()) {
                 return Status::Invalid("real-time commit message does not have an offset range");
             }
             continue;
         }
-        if (committable->IsEmpty()) {
-            return Status::Invalid("sealed real-time segment produced an empty commit message");
-        }
+        // A real-time range may contain only changes that cancel in memory, for example an insert
+        // followed by a delete before either row is persisted. Keep the empty message so commit
+        // can durably advance the offset without manufacturing a data or deletion-vector file.
         std::vector<std::pair<std::string, std::string>> partition_values;
         PAIMON_ASSIGN_OR_RAISE(partition_values, file_store_path_factory_->GeneratePartitionVector(
                                                      snapshot.partition));
