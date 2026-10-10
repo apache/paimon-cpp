@@ -38,6 +38,9 @@ namespace paimon {
 /// Entry of a manifest file, representing an addition / deletion of a data file.
 class ManifestEntry : public FileEntry {
  public:
+    /// Field position in DataType(), before the serializer prepends _VERSION.
+    static constexpr int32_t kFileFieldIndex = 4;
+
     static const std::shared_ptr<arrow::DataType>& DataType();
     static int64_t RecordCount(const std::vector<ManifestEntry>& manifest_entries);
     static std::optional<int64_t> NullableRecordCount(

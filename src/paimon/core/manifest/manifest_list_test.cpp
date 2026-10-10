@@ -22,9 +22,11 @@
 #include <optional>
 #include <variant>
 
+#include "arrow/io/memory.h"
+#include "arrow/ipc/api.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
-#include "paimon/core/core_options.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
@@ -34,6 +36,7 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -97,7 +100,8 @@ class ManifestListTest : public testing::Test {
 
     std::unique_ptr<ManifestList> CreateManifestList(
         const std::shared_ptr<FileSystem>& file_system, const std::string& file_format_str,
-        const std::string& root_path, const std::shared_ptr<MemoryPool>& pool) const {
+        const std::string& root_path, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<Cache>& cache = nullptr) const {
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
                              FileFormatFactory::Get(file_format_str, {}));
         auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
@@ -109,10 +113,9 @@ class ManifestListTest : public testing::Test {
                                  /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
                                  /*global_index_external_path=*/std::nullopt,
                                  /*index_file_in_data_file_dir=*/false, pool));
-        EXPECT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
-        EXPECT_OK_AND_ASSIGN(auto manifest_list,
-                             ManifestList::Create(file_system, file_format, "zstd", path_factory,
-                                                  options.GetCache(), pool));
+        EXPECT_OK_AND_ASSIGN(
+            auto manifest_list,
+            ManifestList::Create(file_system, file_format, "zstd", path_factory, cache, pool));
         return manifest_list;
     }
 
@@ -126,6 +129,71 @@ class ManifestListTest : public testing::Test {
         return manifest_file_metas;
     }
 };
+
+TEST_F(ManifestListTest, DecodedCacheReusesIpcAcrossReaders) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto pool = GetDefaultPool();
+    auto cache = std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 1024 * 1024);
+    auto writer = CreateManifestList(dir->GetFileSystem(), "avro", dir->Str(), pool, cache);
+    const std::vector<ManifestFileMeta> expected = {MakeMeta("manifest-a", 100, 2, 0),
+                                                    MakeMeta("manifest-b", 200, 0, 1)};
+    using WrittenFile = std::pair<std::string, int64_t>;
+    ASSERT_OK_AND_ASSIGN(WrittenFile written, writer->Write(expected));
+    std::vector<ManifestFileMeta> cold;
+    ASSERT_OK(writer->Read(written.first, nullptr, written.second, &cold));
+    ASSERT_EQ(expected, cold);
+    auto key = CacheKey::ForKind(
+        PathUtil::JoinPath(FileStorePathFactory::ManifestPath(dir->Str()), written.first),
+        /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CacheValue> cached,
+        cache->Get(key,
+                   [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                       return Status::Invalid("manifest list was not cached");
+                   }));
+    ASSERT_TRUE(cached);
+    const auto& segment = cached->GetSegment();
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
+                                                  segment.Size());
+    // The existing cache key contains IPC, not source-format bytes.
+    auto ipc = arrow::ipc::RecordBatchStreamReader::Open(
+        std::make_shared<arrow::io::BufferReader>(buffer));
+    ASSERT_TRUE(ipc.ok()) << ipc.status().ToString();
+    auto batch = ipc.ValueOrDie()->Next();
+    ASSERT_TRUE(batch.ok()) << batch.status().ToString();
+    ASSERT_TRUE(batch.ValueOrDie());
+    ASSERT_EQ(expected.size(), batch.ValueOrDie()->num_rows());
+    writer->DeleteQuietly(written.first);
+    writer.reset();
+    auto reader = CreateManifestList(dir->GetFileSystem(), "avro", dir->Str(), pool, cache);
+    std::vector<ManifestFileMeta> warm;
+    ASSERT_OK(reader->Read(written.first, nullptr, written.second, &warm));
+    ASSERT_EQ(expected, warm);
+    ASSERT_EQ(1, cache->SupplierCallCount());
+    cache->Invalidate(key);
+    ASSERT_EQ(0, cache->Size());
+    ASSERT_NOK(reader->Read(written.first, nullptr, written.second, &warm));
+}
+
+TEST_F(ManifestListTest, OrcDecodedCachePreservesLegacyMetadata) {
+    auto pool = GetDefaultPool();
+    auto fs = std::make_shared<LocalFileSystem>();
+    const std::string path = GetDataDir() + "/orc/append_09.db/append_09";
+    const std::string file = "manifest-list-f2d59cb8-3ec6-4860-b34b-050b1a533416-2";
+    auto uncached = CreateManifestList(fs, "orc", path, pool);
+    std::vector<ManifestFileMeta> expected;
+    ASSERT_OK(uncached->Read(file, nullptr, std::nullopt, &expected));
+    ASSERT_EQ(4, expected.size());
+    auto cache = std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 1024 * 1024);
+    for (int32_t attempt = 0; attempt < 2; ++attempt) {
+        auto reader = CreateManifestList(fs, "orc", path, pool, cache);
+        std::vector<ManifestFileMeta> actual;
+        ASSERT_OK(reader->Read(file, nullptr, std::nullopt, &actual));
+        ASSERT_EQ(expected, actual);
+        ASSERT_EQ(1, cache->SupplierCallCount());
+    }
+}
 
 TEST_F(ManifestListTest, TestSimple) {
     auto pool = GetDefaultPool();

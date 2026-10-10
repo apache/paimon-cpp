@@ -235,7 +235,6 @@ TEST_F(AppendBucketPruningTest, ReadsSingleBucketManifestOnce) {
                                      {}, std::nullopt, false, pool_));
     ASSERT_OK(fs->Mkdirs(FileStorePathFactory::ManifestPath(dir->Str())));
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
-    options.WithCache(std::make_shared<LruCache>(16 * 1024 * 1024));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ManifestFile> manifest,
                          ManifestFile::Create(fs, format, "null", paths, 1024 * 1024, pool_,
                                               options, arrow::schema({})));
@@ -252,24 +251,34 @@ TEST_F(AppendBucketPruningTest, ReadsSingleBucketManifestOnce) {
     ASSERT_OK_AND_ASSIGN(BinaryRow row, serializer.ToRow(entries[0]));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> data, converter->NextBatch({row}));
     auto reader_builder = std::make_shared<CountingManifestReaderBuilder>(data);
-    manifest->reader_builder_ = reader_builder;
     options_[Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED] = "true";
-    for (bool inferred : {false, true}) {
-        SCOPED_TRACE(inferred);
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<AppendOnlyFileStoreScan> scan,
-            CreateScan(KeyEquals(), inferred ? std::nullopt : std::optional<int32_t>(bucket)));
-        scan->manifest_file_ = manifest;
-        for (bool known_bounds : {false, true}) {
-            SCOPED_TRACE(known_bounds);
-            auto meta = metas[0];
-            meta.min_bucket_ = known_bounds ? std::optional<int32_t>(bucket) : std::nullopt;
-            meta.max_bucket_ = meta.min_bucket_;
-            reader_builder->rows_read = 0;
-            std::vector<ManifestEntry> actual;
-            ASSERT_OK(scan->ReadAndMergeBucketFileEntries({meta}, bucket, &actual));
-            ASSERT_EQ(actual, entries);
-            ASSERT_EQ(reader_builder->rows_read.load(), known_bounds ? 1 : 2);
+    for (bool cache_enabled : {false, true}) {
+        SCOPED_TRACE(cache_enabled);
+        options.WithCache(cache_enabled ? std::make_shared<LruCache>(16 * 1024 * 1024) : nullptr);
+        ASSERT_OK_AND_ASSIGN(manifest, ManifestFile::Create(fs, format, "null", paths, 1024 * 1024,
+                                                            pool_, options, arrow::schema({})));
+        manifest->reader_builder_ = reader_builder;
+        bool cache_warm = false;
+        for (bool inferred : {false, true}) {
+            SCOPED_TRACE(inferred);
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<AppendOnlyFileStoreScan> scan,
+                CreateScan(KeyEquals(), inferred ? std::nullopt : std::optional<int32_t>(bucket)));
+            scan->manifest_file_ = manifest;
+            for (bool known_bounds : {false, true}) {
+                SCOPED_TRACE(known_bounds);
+                auto meta = metas[0];
+                meta.min_bucket_ = known_bounds ? std::optional<int32_t>(bucket) : std::nullopt;
+                meta.max_bucket_ = meta.min_bucket_;
+                reader_builder->rows_read = 0;
+                std::vector<ManifestEntry> actual;
+                ASSERT_OK(scan->ReadAndMergeBucketFileEntries({meta}, bucket, &actual));
+                ASSERT_EQ(actual, entries);
+                const int64_t expected_rows =
+                    cache_enabled ? (cache_warm ? 0 : 1) : (known_bounds ? 1 : 2);
+                ASSERT_EQ(reader_builder->rows_read.load(), expected_rows);
+                cache_warm = cache_enabled;
+            }
         }
     }
 }

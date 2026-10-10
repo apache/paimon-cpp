@@ -314,7 +314,7 @@ TEST_F(ManifestFileTest, TestManifestCacheIsDisabledWithoutInjectedCache) {
     ASSERT_EQ(0, counting_file_system->get_file_status_count);
 }
 
-TEST_F(ManifestFileTest, TestManifestCacheReusesCachedBytes) {
+TEST_F(ManifestFileTest, TestManifestCacheReusesDecodedBatches) {
     auto pool = GetDefaultPool();
     auto counting_file_system = std::make_shared<CountingFileSystem>();
     auto manifest_cache =
@@ -500,7 +500,7 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
                              manifest_file->WriteWithoutRolling({excluded, selected}));
         std::vector<ManifestEntry> warm;
         ASSERT_OK(manifest_file->Read(written.first, nullptr, /*file_size=*/std::nullopt, &warm));
-        // Cached bytes, if available, belong to a separate pool from reader allocations.
+        // Warm decoded batches, if available, belong to a separate pool from reader allocations.
         for (bool inferred : {false, true}) {
             std::shared_ptr<MemoryPool> read_pool = GetMemoryPool();
             ASSERT_OK_AND_ASSIGN(
@@ -571,7 +571,7 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
             WrittenFile written_file,
             manifest_file->WriteWithoutRolling({invalid_other_bucket, valid_target_bucket}));
 
-        // Exercise both a cold cache and reuse of the retained manifest bytes.
+        // Exercise both a cold cache and reuse of the decoded manifest batches.
         for (int32_t read = 0; read < 2; ++read) {
             std::vector<ManifestEntry> bucket_entries;
             ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0,

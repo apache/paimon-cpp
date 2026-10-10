@@ -46,7 +46,7 @@ Result<BinaryRow> DataFileMetaSerializer::ToRow(const std::shared_ptr<DataFileMe
     BinaryRowWriter writer(&row, 32 * 1024, pool_.get());
     writer.WriteString(0, BinaryString::FromString(meta->file_name, pool_.get()));
     writer.WriteLong(1, meta->file_size);
-    writer.WriteLong(2, meta->row_count);
+    writer.WriteLong(DataFileMeta::kRowCountFieldIndex, meta->row_count);
     auto min_key_bytes = SerializationUtils::SerializeBinaryRow(meta->min_key, pool_.get());
     writer.WriteBinary(3, *min_key_bytes);
     auto max_key_bytes = SerializationUtils::SerializeBinaryRow(meta->max_key, pool_.get());
@@ -86,9 +86,9 @@ Result<BinaryRow> DataFileMetaSerializer::ToRow(const std::shared_ptr<DataFileMe
         writer.WriteString(17, BinaryString::FromString(meta->external_path.value(), pool_.get()));
     }
     if (meta->first_row_id == std::nullopt) {
-        writer.SetNullAt(18);
+        writer.SetNullAt(DataFileMeta::kFirstRowIdFieldIndex);
     } else {
-        writer.WriteLong(18, meta->first_row_id.value());
+        writer.WriteLong(DataFileMeta::kFirstRowIdFieldIndex, meta->first_row_id.value());
     }
     if (meta->write_cols == std::nullopt) {
         writer.SetNullAt(19);
@@ -110,7 +110,7 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMetaSerializer::FromRow(
     const InternalRow& row) const {
     auto file_name = row.GetString(0);
     auto file_size = row.GetLong(1);
-    auto row_count = row.GetLong(2);
+    auto row_count = row.GetLong(DataFileMeta::kRowCountFieldIndex);
     auto min_key = row.GetBinary(3);
     auto max_key = row.GetBinary(4);
     auto key_stats_row = row.GetRow(5, 3);
@@ -155,8 +155,8 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMetaSerializer::FromRow(
         external_path = row.GetString(17).ToString();
     }
     std::optional<int64_t> first_row_id;
-    if (!row.IsNullAt(18)) {
-        first_row_id = row.GetLong(18);
+    if (!row.IsNullAt(DataFileMeta::kFirstRowIdFieldIndex)) {
+        first_row_id = row.GetLong(DataFileMeta::kFirstRowIdFieldIndex);
     }
 
     std::optional<std::vector<std::string>> write_cols;

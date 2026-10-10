@@ -19,6 +19,7 @@
 #pragma once
 
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,6 +28,8 @@
 
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "arrow/io/memory.h"
+#include "arrow/ipc/api.h"
 #include "fmt/format.h"
 #include "paimon/cache/cache.h"
 #include "paimon/common/data/columnar/columnar_row.h"
@@ -44,8 +47,6 @@
 #include "paimon/format/reader_builder.h"
 #include "paimon/format/writer_builder.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/io/byte_array_input_stream.h"
-#include "paimon/memory/bytes.h"
 #include "paimon/record_batch.h"
 
 namespace paimon {
@@ -92,8 +93,7 @@ class ObjectsFile {
         return Status::OK();
     }
 
-    // Optional preparation may wrap the reader and reread the file, using either cached bytes
-    // or the underlying file stream.
+    // Cached batches are query-independent. Optional preparation only applies to uncached reads.
     Status ReadArrowBatches(
         const std::string& file_name, std::optional<int64_t> file_size,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
@@ -113,8 +113,15 @@ class ObjectsFile {
     std::string compression_;
     std::shared_ptr<Cache> cache_;
 
-    Result<MemorySegment> ReadFileSegment(const std::string& file_path,
-                                          const std::optional<int64_t>& file_size) const;
+    Result<std::shared_ptr<CacheValue>> SerializeArrowBatches(
+        const std::string& file_name, std::optional<int64_t> file_size,
+        std::vector<std::shared_ptr<arrow::StructArray>>* batches,
+        std::optional<Status>* read_status) const;
+
+    Status ReadUncachedArrowBatches(
+        const std::string& file_name, std::optional<int64_t> file_size,
+        const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
+        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
 
     /// Opens the file for reading, handing over the length when the caller already has it.
     Result<std::unique_ptr<InputStream>> OpenForRead(const std::string& file_path,
@@ -183,37 +190,13 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
 }
 
 template <typename T>
-Status ObjectsFile<T>::ReadArrowBatches(
+Status ObjectsFile<T>::ReadUncachedArrowBatches(
     const std::string& file_name, std::optional<int64_t> file_size,
     const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
     const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const {
     std::string file_path = path_factory_->ToPath(file_name);
-    std::shared_ptr<InputStream> file_input_stream;
-    std::shared_ptr<Bytes> cached_bytes;
-    if (cache_) {
-        // Use a whole-file key so cache hits do not need a metadata lookup just to discover file
-        // length.
-        auto cache_key =
-            CacheKey::ForKind(file_path, /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);
-        auto supplier =
-            [this, &file_path,
-             &file_size](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
-            PAIMON_ASSIGN_OR_RAISE(MemorySegment segment, ReadFileSegment(file_path, file_size));
-            return std::make_shared<CacheValue>(segment, CacheCallback());
-        };
-        Result<std::shared_ptr<CacheValue>> cache_result = cache_->Get(cache_key, supplier);
-        if (cache_result.ok() && cache_result.value() &&
-            cache_result.value()->GetSegment().Data() != nullptr) {
-            cached_bytes = cache_result.value()->GetSegment().GetOrCreateHeapMemory(pool_.get());
-            file_input_stream =
-                std::make_shared<ByteArrayInputStream>(cached_bytes->data(), cached_bytes->size());
-        }
-    }
-    if (!file_input_stream) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> unique_file_input_stream,
-                               OpenForRead(file_path, file_size));
-        file_input_stream = std::shared_ptr<InputStream>(std::move(unique_file_input_stream));
-    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> file_input_stream,
+                           OpenForRead(file_path, file_size));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> batch_reader,
                            reader_builder_->Build(file_input_stream));
@@ -256,22 +239,126 @@ Result<std::unique_ptr<InputStream>> ObjectsFile<T>::OpenForRead(
 }
 
 template <typename T>
-Result<MemorySegment> ObjectsFile<T>::ReadFileSegment(
-    const std::string& file_path, const std::optional<int64_t>& file_size) const {
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
-                           OpenForRead(file_path, file_size));
-    PAIMON_ASSIGN_OR_RAISE(int64_t input_length, input_stream->Length());
-
-    PAIMON_RETURN_NOT_OK(input_stream->Seek(0, FS_SEEK_SET));
-    auto bytes = std::make_shared<Bytes>(input_length, pool_.get());
-    PAIMON_ASSIGN_OR_RAISE(int64_t actual_read_size,
-                           input_stream->Read(bytes->data(), input_length));
-    if (actual_read_size != input_length) {
-        return Status::IOError(fmt::format(
-            "Unexpected EOF while reading manifest file {}, expected {} bytes, got {} bytes",
-            file_path, input_length, actual_read_size));
+Result<std::shared_ptr<CacheValue>> ObjectsFile<T>::SerializeArrowBatches(
+    const std::string& file_name, std::optional<int64_t> file_size,
+    std::vector<std::shared_ptr<arrow::StructArray>>* batches,
+    std::optional<Status>* read_status) const {
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::io::BufferOutputStream> output,
+        arrow::io::BufferOutputStream::Create(4096, arrow_pool_.get()));
+    auto write_options = arrow::ipc::IpcWriteOptions::Defaults();
+    write_options.memory_pool = arrow_pool_.get();
+    write_options.use_threads = false;
+    std::shared_ptr<arrow::ipc::RecordBatchWriter> writer;
+    Status cache_status;
+    *read_status = ReadUncachedArrowBatches(
+        file_name, file_size,
+        [&](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+            // The loading caller consumes these original batches, without an IPC round trip.
+            batches->push_back(batch);
+            if (!cache_status.ok()) {
+                return Status::OK();
+            }
+            auto write_batch = [&]() -> Status {
+                // Preserve physical types, including ORC nanosecond timestamps.
+                PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                    std::shared_ptr<arrow::RecordBatch> record_batch,
+                    arrow::RecordBatch::FromStructArray(batch, arrow_pool_.get()));
+                if (!writer) {
+                    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                        writer, arrow::ipc::MakeStreamWriter(output, record_batch->schema(),
+                                                             write_options));
+                }
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(writer->WriteRecordBatch(*record_batch));
+                return Status::OK();
+            };
+            // Optional serialization failures must not interrupt the source read.
+            cache_status = write_batch();
+            return Status::OK();
+        },
+        /*prepare_reader=*/nullptr);
+    PAIMON_RETURN_NOT_OK(read_status->value());
+    PAIMON_RETURN_NOT_OK(cache_status);
+    if (!writer) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            writer,
+            arrow::ipc::MakeStreamWriter(
+                output, arrow::schema(serializer_->GetDataType()->fields()), write_options));
     }
-    return MemorySegment::Wrap(bytes);
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(writer->Close());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Buffer> buffer, output->Finish());
+    if (buffer->size() > std::numeric_limits<int32_t>::max()) {
+        return Status::Invalid("Manifest Arrow cache entry exceeds the memory segment limit");
+    }
+    // Retain the IPC buffer and its allocator without copying the complete stream into Bytes.
+    // The aliasing CacheValue keeps both alive, including after eviction with active readers.
+    struct OwnedBuffer {
+        OwnedBuffer(const std::shared_ptr<arrow::MemoryPool>& owner,
+                    const std::shared_ptr<arrow::Buffer>& data)
+            : pool(owner),
+              buffer(data),
+              value(MemorySegment::WrapView(reinterpret_cast<const char*>(data->data()),
+                                            static_cast<int32_t>(data->size())),
+                    CacheCallback(), data->capacity()) {}
+        std::shared_ptr<arrow::MemoryPool> pool;
+        std::shared_ptr<arrow::Buffer> buffer;
+        CacheValue value;
+    };
+    auto owner = std::make_shared<OwnedBuffer>(arrow_pool_, buffer);
+    auto* value = &owner->value;
+    return std::shared_ptr<CacheValue>(std::move(owner), value);
+}
+
+template <typename T>
+Status ObjectsFile<T>::ReadArrowBatches(
+    const std::string& file_name, std::optional<int64_t> file_size,
+    const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
+    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const {
+    if (!cache_) {
+        return ReadUncachedArrowBatches(file_name, file_size, consumer, prepare_reader);
+    }
+    const std::string path = path_factory_->ToPath(file_name);
+    auto key = CacheKey::ForKind(path, /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);
+    std::optional<Status> read_status;
+    std::vector<std::shared_ptr<arrow::StructArray>> batches;
+    auto cached = cache_->Get(key, [&](const std::shared_ptr<CacheKey>&) {
+        return SerializeArrowBatches(file_name, file_size, &batches, &read_status);
+    });
+    const bool usable = cached.ok() && cached.value() && cached.value()->GetSegment().Data();
+    if (read_status) {
+        // Publish the query-independent cache before invoking user filters. A filter error
+        // does not invalidate the cache or affect other readers of this file.
+        PAIMON_RETURN_NOT_OK(read_status.value());
+        for (const auto& batch : batches) {
+            PAIMON_RETURN_NOT_OK(consumer(batch));
+        }
+        return Status::OK();
+    }
+    if (!usable) {
+        return ReadUncachedArrowBatches(file_name, file_size, consumer, prepare_reader);
+    }
+    const auto& segment = cached.value()->GetSegment();
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
+                                                  segment.Size());
+    auto input = std::make_shared<arrow::io::BufferReader>(buffer);
+    auto read_options = arrow::ipc::IpcReadOptions::Defaults();
+    read_options.memory_pool = arrow_pool_.get();
+    read_options.use_threads = false;
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::ipc::RecordBatchStreamReader> reader,
+        arrow::ipc::RecordBatchStreamReader::Open(input, read_options));
+    while (true) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::RecordBatch> batch,
+                                          reader->Next());
+        if (!batch) {
+            break;
+        }
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array,
+                                          batch->ToStructArray());
+        // Cached batches were already aligned by ManifestMetaReader before serialization.
+        PAIMON_RETURN_NOT_OK(consumer(array));
+    }
+    return Status::OK();
 }
 
 template <typename T>

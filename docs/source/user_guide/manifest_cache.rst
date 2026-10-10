@@ -21,18 +21,24 @@ Manifest Cache
 Overview
 --------
 
-Paimon C++ caches raw manifest file bytes at the ``ObjectsFile<T>::Read()``
-layer. The cache uses the public ``Cache`` abstraction and is enabled through
-``ScanContextBuilder::WithCache()``. The cache covers data manifests, manifest
-lists, and index manifests because they all read through ``ObjectsFile<T>``.
+Paimon C++ caches decoded, schema-aligned manifest batches as Arrow IPC streams
+in ``ObjectsFile<T>``. The cache uses the public ``Cache`` abstraction and is
+enabled through ``ScanContextBuilder::WithCache()``. It covers data manifests,
+manifest lists, and index manifests because they all read through ``ObjectsFile<T>``.
 
 For repeated ``get``, ``scan``, or batch ``get/scan -f`` requests in the same
 process, the same snapshot often reads the same manifest files repeatedly. On a
-cache hit, the read path skips remote filesystem ``open/read``, builds an
-in-memory input stream from cached bytes, and still runs the format reader,
-Arrow decoding, and object deserialization. This design primarily reduces
-remote IO latency and bandwidth while keeping cache weight aligned with the
-actual cached bytes.
+cache hit, the read path skips remote filesystem ``open/read`` and Avro/ORC
+source-format decoding. It still reads the IPC stream, deserializes objects,
+and applies scan filters. Bucket and row-range reads can select entries before
+constructing their file metadata. Ordinary, bucket, and row-range reads share
+the same complete, query-independent cache entry.
+
+A cold cache load decodes the complete manifest and serializes its aligned
+batches into IPC. The loading reader consumes the original batches without an
+IPC round trip. Cold bucket reads may therefore decode more entries than
+uncached selective reads. Without a cache, reads retain the existing
+source-format reader path.
 
 Configuration
 -------------
@@ -86,11 +92,17 @@ Example:
 Passing ``nullptr`` or omitting ``ScanContextBuilder::WithCache()`` leaves
 manifest caching disabled.
 
-Future Optimizations
---------------------
+Cache Implementation Responsibilities
+-------------------------------------
 
-- Add hit, miss, bypass, and eviction metrics to read trace or metrics.
-- Add single-flight loading for high-concurrency misses on the same manifest
-  path.
-- Evaluate a decoded-records second-level cache, configurable as a
-  CPU-vs-memory tradeoff.
+Embedding applications can implement hit/miss and eviction statistics in their
+``Cache`` implementation. Coordination of concurrent loads for the same key
+also belongs to that implementation; ``ObjectsFile<T>`` does not deduplicate
+concurrent cache misses.
+
+Cache implementations should use ``CacheValue::GetMemoryUsage()`` for admission
+and eviction accounting. For manifest IPC, this reports the retained Arrow
+buffer capacity, including unused space from growth. ``GetSegment().Size()``
+continues to describe the valid IPC byte length. The built-in ``LruCache`` uses
+the memory usage value; existing cache values without an explicit allocation
+size continue to charge their segment length.

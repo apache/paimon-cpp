@@ -25,7 +25,10 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/io/memory.h"
+#include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/index/index_file_meta.h"
@@ -37,6 +40,7 @@
 #include "paimon/format/file_format_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -50,7 +54,8 @@ class IndexManifestFileHandlerTest : public testing::Test {
     }
 
     Result<std::unique_ptr<IndexManifestFile>> CreateManifestFile(
-        int32_t bucket_mode, const std::string& file_format_identifier = "avro") const {
+        int32_t bucket_mode, const std::string& file_format_identifier = "avro",
+        const std::shared_ptr<Cache>& cache = nullptr) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> file_format,
                                FileFormatFactory::Get(file_format_identifier, {}));
         auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
@@ -63,6 +68,7 @@ class IndexManifestFileHandlerTest : public testing::Test {
                 /*global_index_external_path=*/std::nullopt,
                 /*index_file_in_data_file_dir=*/false, pool_));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap({}));
+        options.WithCache(cache);
         return IndexManifestFile::Create(dir_->GetFileSystem(), file_format, "zstd", path_factory,
                                          bucket_mode, pool_, options);
     }
@@ -99,6 +105,51 @@ class IndexManifestFileHandlerTest : public testing::Test {
     std::shared_ptr<MemoryPool> pool_;
     std::unique_ptr<UniqueTestDirectory> dir_;
 };
+
+TEST_F(IndexManifestFileHandlerTest, DecodedCacheReusesIpcAcrossReaders) {
+    auto cache = std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 1024 * 1024);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexManifestFile> writer,
+                         CreateManifestFile(2, "avro", cache));
+    const std::vector<IndexManifestEntry> expected = {
+        MakeDvEntry(FileKind::Add(), BinaryRow::EmptyRow(), 0, "dv-0", {"data-a", "data-b"}, 10),
+        MakeEntry(FileKind::Add(), BinaryRow::EmptyRow(), 1, "BTREE", "index-1", 20)};
+    using WrittenFile = std::pair<std::string, int64_t>;
+    ASSERT_OK_AND_ASSIGN(WrittenFile written, writer->WriteWithoutRolling(expected));
+    std::vector<IndexManifestEntry> cold;
+    ASSERT_OK(writer->Read(written.first, nullptr, written.second, &cold));
+    ASSERT_EQ(expected, cold);
+    auto key = CacheKey::ForKind(
+        PathUtil::JoinPath(FileStorePathFactory::ManifestPath(dir_->Str()), written.first),
+        /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CacheValue> cached,
+        cache->Get(key,
+                   [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                       return Status::Invalid("index manifest was not cached");
+                   }));
+    ASSERT_TRUE(cached);
+    const auto& segment = cached->GetSegment();
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
+                                                  segment.Size());
+    auto ipc = arrow::ipc::RecordBatchStreamReader::Open(
+        std::make_shared<arrow::io::BufferReader>(buffer));
+    ASSERT_TRUE(ipc.ok()) << ipc.status().ToString();
+    auto batch = ipc.ValueOrDie()->Next();
+    ASSERT_TRUE(batch.ok()) << batch.status().ToString();
+    ASSERT_TRUE(batch.ValueOrDie());
+    ASSERT_EQ(expected.size(), batch.ValueOrDie()->num_rows());
+    writer->DeleteQuietly(written.first);
+    writer.reset();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexManifestFile> reader,
+                         CreateManifestFile(2, "avro", cache));
+    std::vector<IndexManifestEntry> warm;
+    ASSERT_OK(reader->Read(written.first, nullptr, written.second, &warm));
+    ASSERT_EQ(expected, warm);
+    ASSERT_EQ(1, cache->SupplierCallCount());
+    cache->Invalidate(key);
+    ASSERT_EQ(0, cache->Size());
+    ASSERT_NOK(reader->Read(written.first, nullptr, written.second, &warm));
+}
 
 TEST_F(IndexManifestFileHandlerTest, GlobalCombinerDeletesThenAddsByFileName) {
     ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/4));

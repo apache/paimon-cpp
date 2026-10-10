@@ -19,17 +19,27 @@
 
 #include "paimon/cache/cache.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace paimon {
 
 CacheValue::CacheValue(const MemorySegment& segment, CacheCallback callback)
-    : segment_(segment), callback_(std::move(callback)) {}
+    : CacheValue(segment, std::move(callback), segment.Size()) {}
+
+CacheValue::CacheValue(const MemorySegment& segment, CacheCallback callback, int64_t memory_usage)
+    : segment_(segment),
+      callback_(std::move(callback)),
+      memory_usage_(std::max<int64_t>(segment.Size(), memory_usage)) {}
 
 CacheValue::~CacheValue() = default;
 
 const MemorySegment& CacheValue::GetSegment() const {
     return segment_;
+}
+
+int64_t CacheValue::GetMemoryUsage() const {
+    return memory_usage_;
 }
 
 void CacheValue::OnEvict(const std::shared_ptr<CacheKey>& key) const {

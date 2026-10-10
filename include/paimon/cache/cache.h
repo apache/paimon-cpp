@@ -88,11 +88,19 @@ class PAIMON_EXPORT Cache {
 
 class PAIMON_EXPORT CacheValue {
  public:
+    /// Charge the segment's logical size when no separate allocation size is supplied.
     CacheValue(const MemorySegment& segment, CacheCallback callback);
+
+    /// @param memory_usage Retained allocation size in bytes, including unused capacity.
+    ///                     The charge is at least the segment's logical size.
+    CacheValue(const MemorySegment& segment, CacheCallback callback, int64_t memory_usage);
 
     ~CacheValue();
 
     const MemorySegment& GetSegment() const;
+
+    /// Bytes to charge against the cache budget. May exceed GetSegment().Size().
+    int64_t GetMemoryUsage() const;
 
     void OnEvict(const std::shared_ptr<CacheKey>& key) const;
 
@@ -101,6 +109,7 @@ class PAIMON_EXPORT CacheValue {
  private:
     MemorySegment segment_;
     CacheCallback callback_;
+    int64_t memory_usage_;
 };
 
 }  // namespace paimon
