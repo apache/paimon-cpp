@@ -74,8 +74,6 @@ class SortedFileGlobalIndexReader : public GlobalIndexReader {
                                                                      ReaderAction visitor);
     Result<std::shared_ptr<GlobalIndexResult>> VisitSelectedFiles(
         const std::vector<GlobalIndexIOMeta>& files, ReaderAction visitor);
-    Result<std::shared_ptr<GlobalIndexReader>> CreateUnionReader(
-        const std::vector<GlobalIndexIOMeta>& files);
     Result<std::shared_ptr<GlobalIndexReader>> GetOrCreateReader(const GlobalIndexIOMeta& meta);
 
     bool FallbackScanEnabled(const std::vector<GlobalIndexIOMeta>& files) const;

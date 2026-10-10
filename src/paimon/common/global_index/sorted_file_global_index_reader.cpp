@@ -19,11 +19,12 @@
 
 #include "paimon/common/global_index/sorted_file_global_index_reader.h"
 
+#include <future>
 #include <limits>
 #include <optional>
 #include <utility>
 
-#include "paimon/common/global_index/union_global_index_reader.h"
+#include "paimon/common/executor/future.h"
 #include "paimon/common/predicate/like_optimization.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -224,20 +225,45 @@ Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitSel
     if (files.empty()) {
         return EmptyResult();
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexReader> union_reader,
-                           CreateUnionReader(files));
-    return visitor(union_reader);
-}
 
-Result<std::shared_ptr<GlobalIndexReader>> SortedFileGlobalIndexReader::CreateUnionReader(
-    const std::vector<GlobalIndexIOMeta>& files) {
     std::vector<std::shared_ptr<GlobalIndexReader>> readers;
     readers.reserve(files.size());
     for (const GlobalIndexIOMeta& meta : files) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexReader> reader, GetOrCreateReader(meta));
         readers.push_back(std::move(reader));
     }
-    return std::make_shared<UnionGlobalIndexReader>(std::move(readers), executor_);
+
+    using ReaderResult = Result<std::shared_ptr<GlobalIndexResult>>;
+    std::vector<ReaderResult> results;
+    results.reserve(readers.size());
+    if (executor_ == nullptr || readers.size() == 1) {
+        for (const std::shared_ptr<GlobalIndexReader>& reader : readers) {
+            results.push_back(visitor(reader));
+        }
+    } else {
+        std::vector<std::future<ReaderResult>> futures;
+        futures.reserve(readers.size());
+        for (const std::shared_ptr<GlobalIndexReader>& reader : readers) {
+            futures.push_back(
+                Via(executor_.get(), [visitor, reader]() { return visitor(reader); }));
+        }
+        results = CollectAll(futures);
+    }
+
+    std::shared_ptr<GlobalIndexResult> merged_result = nullptr;
+    for (ReaderResult& result_or_status : results) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result,
+                               std::move(result_or_status));
+        if (result == nullptr) {
+            continue;
+        }
+        if (merged_result == nullptr) {
+            merged_result = std::move(result);
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(merged_result, merged_result->Or(result));
+        }
+    }
+    return merged_result;
 }
 
 Result<std::shared_ptr<GlobalIndexReader>> SortedFileGlobalIndexReader::GetOrCreateReader(
