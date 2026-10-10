@@ -18,20 +18,70 @@
 
 #include "paimon/read_context.h"
 
+#include <map>
+#include <string>
 #include <utility>
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/catalog_options.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
+#include "paimon/common/utils/url_utils.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 namespace paimon {
 class Predicate;
+
+namespace {
+
+/// The catalog option that carries the `X-Paimon-Read-Via` request header, spelled with the prefix
+/// a REST catalog strips when it turns an option into a header. That prefix is
+/// `RestApi::kHeaderOptionPrefix`, not referenced here because its header pulls in the http client;
+/// mirrors the Java `RESTApi.READ_VIA_OPTION`.
+constexpr char kReadViaOption[] = "header.X-Paimon-Read-Via";
+
+/// True when the options select a catalog that speaks the REST protocol, the only kind turning a
+/// `header.`-prefixed option into a request header. These same options decide which catalog a
+/// dependency table is read through, so when they select none there is nobody to send the header
+/// to. The Java counterpart answers this from the catalog loader it was built with.
+bool IsRestMetastore(const std::map<std::string, std::string>& options) {
+    auto metastore = options.find(CatalogOptions::METASTORE);
+    if (metastore == options.end()) {
+        return false;
+    }
+    // Matched leniently in lower case, the way `Catalog::Create` matches it.
+    const std::string name = StringUtils::ToLowerCase(metastore->second);
+    return name == "rest";
+}
+
+/// `{"database":"db1","object":"t1"}`, the flat JSON the metastore parses a header value back into.
+/// The field names are the Java `Identifier.FIELD_DATABASE_NAME` and `FIELD_OBJECT_NAME`, and the
+/// object name keeps any branch and system-table suffix, as the `getObjectName()` the Java
+/// serializer reads does, so a read of a branch reports that branch.
+std::string IdentifierToFlatJson(const Identifier& identifier) {
+    rapidjson::Document document(rapidjson::kObjectType);
+    auto& allocator = document.GetAllocator();
+    document.AddMember(rapidjson::StringRef("database"),
+                       rapidjson::Value(identifier.GetDatabaseName(), allocator), allocator);
+    document.AddMember(rapidjson::StringRef("object"),
+                       rapidjson::Value(identifier.GetTableName(), allocator), allocator);
+    // Compact, not the pretty form `RapidJsonUtil::ToJson` writes: the value goes into a header.
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    document.Accept(writer);
+    return buffer.GetString();
+}
+
+}  // namespace
 
 ReadContext::ReadContext(
     const std::string& path, const std::string& branch,
@@ -379,6 +429,19 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
 
     if (impl_->enable_multi_thread_row_to_batch_ && impl_->row_to_batch_thread_number_ <= 0) {
         return Status::Invalid("row to batch thread number should be greater than 0");
+    }
+    // A read that goes through a catalog says which table it started from, which is what lets the
+    // metastore authorize a dependency table - the blob table behind a BlobView - through the owner
+    // of that table. Mirrors the Java `CatalogEnvironment.dependencyReadContext()` and both of its
+    // guards: only a REST metastore understands the header, and a value already there wins, so a
+    // chain of views reports its outermost one instead of the innermost. It travels in the options,
+    // which `TableRead::Create` merges into the table options and the blob view read then hands to
+    // the catalog it reads the dependency table through, so it reaches that request with no second
+    // channel to keep in step.
+    if (impl_->identifier_ && IsRestMetastore(impl_->options_) &&
+        impl_->options_.count(kReadViaOption) == 0) {
+        impl_->options_[kReadViaOption] =
+            UrlUtils::EncodeString(IdentifierToFlatJson(impl_->identifier_.value()));
     }
     auto ctx = std::make_unique<ReadContext>(
         impl_->path_, branch, impl_->read_field_names_, impl_->read_field_ids_, impl_->predicate_,

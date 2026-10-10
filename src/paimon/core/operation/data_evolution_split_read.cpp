@@ -270,17 +270,25 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewRes
     if (read_blob_view_fields.empty()) {
         return std::move(inner_reader);
     }
+    // The explicit upstream warehouse is optional. Absent it, fall back to the warehouse this
+    // (downstream) table itself lives in, which is where a co-located upstream table is resolved
+    // from; a metastore-backed catalog resolves the upstream location by identifier anyway, so the
+    // root is only a hint there. Stripping the trailing `<database>.db/<table>` (or
+    // `<database>/<table>`) components off this table's path yields that warehouse.
     std::optional<std::string> warehouse_path = options_.GetBlobViewUpstreamWarehouse();
     if (!warehouse_path) {
-        return Status::Invalid(
-            "invalid config for blob view, supposed to set BLOB_VIEW_UPSTREAM_WAREHOUSE");
+        warehouse_path =
+            PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(context_->GetPath()));
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> pre_reader,
                            CreateBlobViewReader(data_split, read_blob_view_fields, row_ranges));
     PAIMON_ASSIGN_OR_RAISE(std::unordered_set<BlobViewStruct> blob_view_structs,
                            ExtractBlobViewStructs(pre_reader.get()));
+    // The dependency table is read through a catalog of its own, told how to resolve a scheme but
+    // not handed this read's file system: that one authenticates as this table, and the table about
+    // to be read is a different one whose credentials the metastore issues only for it.
     auto catalog_context = std::make_shared<CatalogContext>(
-        warehouse_path.value(), options_.ToMap(), options_.GetFileSystem());
+        warehouse_path.value(), options_.ToMap(), context_->GetFileSystemSchemeToIdentifierMap());
     // use global thread number
     uint32_t cpu_count = std::thread::hardware_concurrency();
     uint32_t thread_num = cpu_count > 0 ? cpu_count : 1;
