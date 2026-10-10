@@ -57,7 +57,7 @@ class OffsetGlobalIndexReader : public GlobalIndexReader {
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override;
 
     bool IsThreadSafe() const override {
@@ -71,6 +71,9 @@ class OffsetGlobalIndexReader : public GlobalIndexReader {
  private:
     Result<std::shared_ptr<GlobalIndexResult>> ApplyOffset(
         const std::shared_ptr<GlobalIndexResult>& result);
+
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> ApplyScoredOffset(
+        const std::shared_ptr<ScoredGlobalIndexResult>& result);
 
  private:
     std::shared_ptr<GlobalIndexReader> wrapped_;

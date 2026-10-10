@@ -17,121 +17,76 @@
  */
 
 #pragma once
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "paimon/predicate/predicate.h"
 #include "paimon/utils/roaring_bitmap64.h"
 #include "paimon/visibility.h"
 namespace paimon {
-/// A configuration structure for full-text search operations.
+/// A full-text search on a full-text indexed field, aligned with Java
+/// `org.apache.paimon.predicate.FullTextSearch`.
 struct PAIMON_EXPORT FullTextSearch {
-    /// Enumeration of supported full-text search types.
-    enum class SearchType {
-        /// All terms in the query must be present (AND semantics).
-        MATCH_ALL = 1,
-        /// Any term in the query can match (OR semantics).
-        MATCH_ANY = 2,
-        /// Matches the exact sequence of words (with proximity).
-        PHRASE = 3,
-        /// Matches terms starting with the given string (e.g., "run*" → running, runner).
-        PREFIX = 4,
-        /// Supports wildcards * and ? (e.g., "ap*e", "app?e" -> "apple").
-        WILDCARD = 5,
-        /// Default/fallback type for unrecognized or invalid queries.
-        UNKNOWN = 128
-    };
-
-    FullTextSearch(const std::string& _field_name, std::optional<int32_t> _limit,
-                   const std::string& _query, const SearchType& _search_type,
-                   const std::optional<RoaringBitmap64>& _pre_filter, bool _with_score = false,
-                   std::optional<float> _min_score = std::nullopt)
+    FullTextSearch(const std::string& _field_name, const std::string& _query, int32_t _limit,
+                   std::optional<RoaringBitmap64> _include_row_ids = std::nullopt)
         : field_name(_field_name),
-          limit(_limit),
           query(_query),
-          search_type(_search_type),
-          pre_filter(_pre_filter),
-          with_score(_with_score),
-          min_score(_min_score) {}
+          limit(_limit),
+          include_row_ids(std::move(_include_row_ids)) {}
 
-    std::shared_ptr<FullTextSearch> ReplacePreFilter(
-        const std::optional<RoaringBitmap64>& _pre_filter) const {
-        return std::make_shared<FullTextSearch>(field_name, limit, query, search_type, _pre_filter,
-                                                with_score, min_score);
+    /// Returns a copy of this search for an index shard covering the global row ids [`from`, `to`]
+    /// (both inclusive), as Java `FullTextSearch#offsetRange` does: `include_row_ids` is clipped to
+    /// the range and shifted to shard-local row ids by subtracting `from`.
+    std::shared_ptr<FullTextSearch> OffsetRange(int64_t from, int64_t to) const {
+        if (!include_row_ids) {
+            return std::make_shared<FullTextSearch>(*this);
+        }
+        const RoaringBitmap64& global_row_ids = include_row_ids.value();
+        RoaringBitmap64 local_row_ids;
+        for (auto iter = global_row_ids.EqualOrLarger(from), end = global_row_ids.End();
+             iter != end && *iter <= to; ++iter) {
+            local_row_ids.Add(*iter - from);
+        }
+        return std::make_shared<FullTextSearch>(field_name, query, limit, std::move(local_row_ids));
     }
 
     /// Name of the field to search within (must be a full-text indexed field).
     std::string field_name;
-    /// Maximum number of documents to return. Purely a truncation switch,
-    /// orthogonal to `with_score`: set `with_score = true` to get relevance
-    /// scores; a non-empty `limit` does not by itself imply scoring.
+    /// The JSON DSL query defined by the `paimon-full-text` engine (`core/src/query.rs` in
+    /// apache/paimon-full-text). The root object holds exactly one query:
     ///
-    /// The `full-text` index requires a positive `limit` and always returns at most `limit` rows
-    /// with the highest scores.
-    std::optional<int32_t> limit;
-    /// The query string to search for. The interpretation depends on search_type:
+    /// - `match`: `query` (alias `terms`), optional `column`, `operator` (`Or` by default, or
+    ///   `And`), `boost` (1.0), `fuzziness` (0, a number, or `"auto"` or `null` for automatic),
+    ///   `max_expansions` (50) and `prefix_length` (0). The text is analyzed with the analyzer
+    ///   used at indexing time.
+    /// - `multi_match`: `query`, `columns`, `boosts`, `operator`, `fuzziness`, `max_expansions`
+    ///   and `prefix_length`.
+    /// - `match_phrase` (alias `phrase`): `query`, optional `column` and `slop` (0).
+    /// - `boolean`: `must`, `should` and `must_not` lists of queries, and `queries` as
+    ///   `[occur, query]` pairs.
+    /// - `boost`: `positive`, `negative` and `negative_boost` (0.5).
     ///
-    /// - For MATCH_ALL/MATCH_ANY: keywords are split into terms using the **same analyzer as
-    ///   indexing**.
-    ///   Example: "Hello World" → terms ["hello", "world"] (after lowercasing and tokenization).
+    /// Examples: `{"match":{"query":"paimon lake","operator":"And"}}` and
+    /// `{"match_phrase":{"query":"paimon lake","slop":1}}`.
     ///
-    /// - For PHRASE: matches the exact word sequence (with optional slop). Also be analyzed.
+    /// `field_name` selects the table column. DSL column names refer to fields inside the index:
+    /// the `full-text` backend defaults to `text`, while `lucene-fts` uses `field_name`.
     ///
-    /// - For PREFIX: matches terms starting with the given string (e.g., "run" → running, runner).
-    ///   The query is not tokenized or filtered for stop words. The original prefix is retained,
-    ///   and a prefix consisting entirely of ASCII letters and digits is also matched using the
-    ///   lowercase case-normalization applied to pure ASCII terms at indexing time.
-    ///
-    /// - For WILDCARD: supports wildcards * and ? (e.g., "ap*e", "app?e").
-    ///   The query is not tokenized or filtered for stop words. The wildcard operators are
-    ///   preserved. Both the original pattern and an alternative with each ASCII alphanumeric
-    ///   fragment lowercased are matched, covering pure ASCII and mixed ASCII/non-ASCII terms.
-    ///
-    /// - For the `full-text` index, `search_type` is ignored and the query is passed to the
-    ///   native engine unchanged, so it must be a JSON DSL query such as
-    ///   `{"match":{"query":"paimon lake"}}`.
-    ///
-    /// @note Analyzer consistency between indexing and querying is critical for correctness.
+    /// The `full-text` index passes the query to the native engine unchanged. The `lucene-fts`
+    /// index translates `match`, `multi_match`, `match_phrase` and `boolean` into Lucene queries
+    /// and rejects `boost` queries and a `fuzziness` other than 0. An invalid query is reported as
+    /// an error `Status`.
     std::string query;
-    /// Type of search to perform.
-    SearchType search_type;
-    /// A pre-filter based on **global row IDs**, implemented by leveraging another global index.
-    /// Only rows whose global row ID is present in `pre_filter` will be included during search.
-    /// If not set, all rows will be included.
-    std::optional<RoaringBitmap64> pre_filter;
-    /// Whether to compute and return relevance scores (e.g. BM25). The 4-path matrix:
-    /// - `with_score=false, limit=nullopt` → BitmapGlobalIndexResult (all rows, no score)
-    /// - `with_score=false, limit=N`       → BitmapGlobalIndexResult (any N matches, unscored)
-    /// - `with_score=true,  limit=nullopt` → BitmapScoredGlobalIndexResult (all rows + all scores)
-    /// - `with_score=true,  limit=N`       → BitmapScoredGlobalIndexResult (top-N by score +
-    /// scores)
-    ///
-    /// For plain `LIMIT N` without ORDER BY (the common case when an online
-    /// engine, e.g. StarRocks, pushes down a predicate) set `with_score=false,
-    /// limit=N` — the unscored fast path, where the backend provides one. For top-N by relevance
-    /// use `with_score=true, limit=N` and drop the scores in the caller if unneeded.
-    ///
-    /// The built-in indexes deviate from this matrix:
-    /// - `lucene` ignores `with_score`: a search with `limit` returns the top `limit` rows with
-    ///   their scores, and a search without `limit` returns all matching rows without scores.
-    /// - `full-text` requires `limit` and always ranks the matching rows by BM25 score, keeping the
-    ///   top `limit` rows. `with_score` only selects whether their scores are returned.
-    ///
-    /// Default is `false`, which avoids score computation on backends with an unscored path.
-    bool with_score = false;
-    /// Minimum relevance-score threshold (exclusive); results with score ≤ this value are
-    /// excluded. The score is whatever the backend's similarity produces (e.g. BM25 for
-    /// full-text, classic TF-IDF for lucene), so a threshold is not directly comparable across
-    /// backends.
-    ///
-    /// Only the `full-text` index supports it; the `lucene` index rejects a search that sets it.
-    /// The `full-text` index applies it to the top `limit` rows returned by the engine, so a
-    /// search can return fewer than `limit` rows.
-    /// Default is nullopt (no threshold filtering).
-    std::optional<float> min_score;
+    /// Maximum number of highest-scoring rows requested from each index shard; must be positive.
+    int32_t limit;
+    /// The **global row ids** to search within, aligned with Java `includeRowIds`. Only these rows
+    /// are ranked, so an empty set matches no rows. If not set, all rows are searched.
+    std::optional<RoaringBitmap64> include_row_ids;
 };
 }  // namespace paimon

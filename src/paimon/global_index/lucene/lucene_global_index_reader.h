@@ -33,6 +33,8 @@
 #include "paimon/predicate/full_text_search.h"
 
 namespace paimon::lucene {
+/// Reads a `lucene-fts` index and answers `FullTextSearch` by translating its JSON DSL query into
+/// Lucene queries on the indexed field.
 class LuceneGlobalIndexReader : public GlobalIndexReader {
  public:
     static Result<std::shared_ptr<LuceneGlobalIndexReader>> Create(
@@ -105,7 +107,7 @@ class LuceneGlobalIndexReader : public GlobalIndexReader {
             "LuceneGlobalIndexReader is not supposed to handle vector search query");
     }
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override;
 
     bool IsThreadSafe() const override {
@@ -128,29 +130,12 @@ class LuceneGlobalIndexReader : public GlobalIndexReader {
 
     std::vector<std::wstring> TokenizeQuery(const std::string& query) const;
 
-    static std::string NormalizeWildcardQuery(const std::string& query);
-
     std::shared_ptr<GlobalIndexResult> CreateAllResult() const {
         return nullptr;
     }
 
-    Lucene::QueryPtr ConstructMatchQuery(
-        const std::shared_ptr<FullTextSearch>& full_text_search) const noexcept(false);
-
-    Lucene::QueryPtr ConstructPhraseQuery(
-        const std::shared_ptr<FullTextSearch>& full_text_search) const noexcept(false);
-
-    Lucene::QueryPtr ConstructPrefixQuery(
-        const std::shared_ptr<FullTextSearch>& full_text_search) const noexcept(false);
-
-    Lucene::QueryPtr ConstructWildCardQuery(
-        const std::shared_ptr<FullTextSearch>& full_text_search) const noexcept(false);
-
-    Result<std::shared_ptr<GlobalIndexResult>> SearchWithLimit(
-        const Lucene::QueryPtr& query,
-        const std::shared_ptr<FullTextSearch>& full_text_search) const noexcept(false);
-
-    std::shared_ptr<GlobalIndexResult> SearchWithNoLimit(
+    /// Returns the top `limit` rows matching `query` with their scores.
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> Search(
         const Lucene::QueryPtr& query,
         const std::shared_ptr<FullTextSearch>& full_text_search) const noexcept(false);
 

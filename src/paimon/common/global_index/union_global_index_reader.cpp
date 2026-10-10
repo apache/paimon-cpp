@@ -126,11 +126,21 @@ Result<std::shared_ptr<GlobalIndexResult>> UnionGlobalIndexReader::VisitLike(
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::VisitVectorSearch(
     const std::shared_ptr<VectorSearch>& vector_search) {
-    auto results = ExecuteAllReaders<Result<std::shared_ptr<ScoredGlobalIndexResult>>>(
-        [vector_search](const std::shared_ptr<GlobalIndexReader>& reader)
-            -> Result<std::shared_ptr<ScoredGlobalIndexResult>> {
-            return reader->VisitVectorSearch(vector_search);
-        });
+    return UnionScored([vector_search](const std::shared_ptr<GlobalIndexReader>& reader) {
+        return reader->VisitVectorSearch(vector_search);
+    });
+}
+
+Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::VisitFullTextSearch(
+    const std::shared_ptr<FullTextSearch>& full_text_search) {
+    return UnionScored([full_text_search](const std::shared_ptr<GlobalIndexReader>& reader) {
+        return reader->VisitFullTextSearch(full_text_search);
+    });
+}
+
+Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::UnionScored(
+    ScoredReaderAction action) {
+    auto results = ExecuteAllReaders<Result<std::shared_ptr<ScoredGlobalIndexResult>>>(action);
 
     std::shared_ptr<ScoredGlobalIndexResult> merged_result = nullptr;
     for (auto& result_or_status : results) {
@@ -154,13 +164,6 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::VisitVe
     }
 
     return merged_result;
-}
-
-Result<std::shared_ptr<GlobalIndexResult>> UnionGlobalIndexReader::VisitFullTextSearch(
-    const std::shared_ptr<FullTextSearch>& full_text_search) {
-    return Union([full_text_search](const std::shared_ptr<GlobalIndexReader>& reader) {
-        return reader->VisitFullTextSearch(full_text_search);
-    });
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> UnionGlobalIndexReader::Union(ReaderAction action) {

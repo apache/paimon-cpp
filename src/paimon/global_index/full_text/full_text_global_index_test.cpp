@@ -41,7 +41,6 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/global_index/global_index_file_manager.h"
 #include "paimon/fs/local/local_file_system.h"
-#include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/global_index/global_indexer_factory.h"
 #include "paimon/global_index/io/global_index_file_writer.h"
@@ -59,7 +58,7 @@ namespace {
 struct GoldenSearch {
     std::string query;
     int32_t limit;
-    std::optional<std::vector<int64_t>> pre_filter;
+    std::optional<std::vector<int64_t>> include_row_ids;
     std::vector<std::pair<int64_t, float>> hits;
 };
 
@@ -257,12 +256,9 @@ class FullTextGlobalIndexTest : public ::testing::Test {
     }
 
     static std::shared_ptr<FullTextSearch> MakeSearch(
-        const std::string& query, std::optional<int32_t> limit = 10,
-        const std::optional<RoaringBitmap64>& pre_filter = std::nullopt, bool with_score = true,
-        std::optional<float> min_score = std::nullopt) {
-        return std::make_shared<FullTextSearch>("f0", limit, query,
-                                                FullTextSearch::SearchType::UNKNOWN, pre_filter,
-                                                with_score, min_score);
+        const std::string& query, int32_t limit = 10,
+        const std::optional<RoaringBitmap64>& include_row_ids = std::nullopt) {
+        return std::make_shared<FullTextSearch>("f0", query, limit, include_row_ids);
     }
 
     static std::string MatchQuery(const std::string& terms) {
@@ -304,13 +300,13 @@ class FullTextGlobalIndexTest : public ::testing::Test {
     void CheckGoldenSearches(const GoldenFixture& fixture, const GlobalIndexIOMeta& meta) const {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader, CreateReader({meta}));
         for (const auto& search : fixture.searches) {
-            std::optional<RoaringBitmap64> pre_filter;
-            if (search.pre_filter) {
-                pre_filter = RoaringBitmap64::From(search.pre_filter.value());
+            std::optional<RoaringBitmap64> include_row_ids;
+            if (search.include_row_ids) {
+                include_row_ids = RoaringBitmap64::From(search.include_row_ids.value());
             }
-            ASSERT_OK_AND_ASSIGN(
-                std::shared_ptr<GlobalIndexResult> result,
-                reader->VisitFullTextSearch(MakeSearch(search.query, search.limit, pre_filter)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> result,
+                                 reader->VisitFullTextSearch(
+                                     MakeSearch(search.query, search.limit, include_row_ids)));
             auto hits = ToHits(result);
             ASSERT_EQ(hits.size(), search.hits.size())
                 << fixture.name << ": " << search.query << ": " << result->ToString();
@@ -394,6 +390,10 @@ TEST_F(FullTextGlobalIndexTest, TestWriteAndSearch) {
     ASSERT_TRUE(reader->IsThreadSafe());
     ASSERT_OK_AND_ASSIGN(auto result,
                          reader->VisitFullTextSearch(MakeSearch(MatchQuery("THE LAKE"))));
+    CheckRowIds(result, {0, 2});
+    ASSERT_OK_AND_ASSIGN(
+        result, reader->VisitFullTextSearch(
+                    MakeSearch(R"({"multi_match":{"query":"paimon lake","columns":["text"]}})")));
     CheckRowIds(result, {0, 2});
 }
 
@@ -483,7 +483,7 @@ TEST_F(FullTextGlobalIndexTest, TestInvalidWrite) {
                         "full-text index value of row 1 must not contain NUL characters");
 }
 
-TEST_F(FullTextGlobalIndexTest, TestPreFilterLimitAndMinScore) {
+TEST_F(FullTextGlobalIndexTest, TestIncludeRowIdsAndLimit) {
     auto array = MakeArray(R"([
         ["paimon paimon paimon paimon"],
         ["paimon paimon"],
@@ -526,20 +526,6 @@ TEST_F(FullTextGlobalIndexTest, TestPreFilterLimitAndMinScore) {
                                               MatchQuery("paimon"), 10, RoaringBitmap64())));
         CheckRowIds(result, {});
     }
-    {
-        ASSERT_OK_AND_ASSIGN(auto result, reader->VisitFullTextSearch(
-                                              MakeSearch(MatchQuery("paimon"), 10, std::nullopt,
-                                                         /*with_score=*/true, all_hits[1].second)));
-        CheckRowIds(result, {0});
-    }
-    {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             reader->VisitFullTextSearch(MakeSearch(
-                                 MatchQuery("paimon"), 10, std::nullopt, /*with_score=*/false)));
-        ASSERT_TRUE(std::dynamic_pointer_cast<BitmapGlobalIndexResult>(result));
-        ASSERT_FALSE(std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(result));
-        CheckRowIds(result, {0, 1, 2});
-    }
 }
 
 TEST_F(FullTextGlobalIndexTest, TestInvalidRead) {
@@ -553,9 +539,9 @@ TEST_F(FullTextGlobalIndexTest, TestInvalidRead) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader, CreateReader(metas));
 
     ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(nullptr), "null FullTextSearch");
-    ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(MakeSearch(MatchQuery("paimon"), std::nullopt)),
-                        "positive limit");
     ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(MakeSearch(MatchQuery("paimon"), 0)),
+                        "positive limit");
+    ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(MakeSearch(MatchQuery("paimon"), -1)),
                         "positive limit");
     ASSERT_NOK_WITH_MSG(
         reader->VisitFullTextSearch(MakeSearch(MatchQuery(std::string("pai\0mon", 7)))),
@@ -629,7 +615,7 @@ TEST_F(FullTextGlobalIndexTest, TestConcurrentSearch) {
             std::vector<int64_t> expected_ids =
                 i % 2 == 0 ? std::vector<int64_t>({1}) : std::vector<int64_t>({2});
             for (int32_t round = 0; round < kRoundNum; ++round) {
-                Result<std::shared_ptr<GlobalIndexResult>> result =
+                Result<std::shared_ptr<ScoredGlobalIndexResult>> result =
                     reader->VisitFullTextSearch(search);
                 if (!result.ok()) {
                     statuses[i] = result.status();
@@ -674,7 +660,7 @@ TEST_F(FullTextGlobalIndexTest, TestIOException) {
         CHECK_HOOK_STATUS(metas.status(), i);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader,
                              CreateReader(metas.value()));
-        Result<std::shared_ptr<GlobalIndexResult>> result =
+        Result<std::shared_ptr<ScoredGlobalIndexResult>> result =
             reader->VisitFullTextSearch(MakeSearch(MatchQuery("paimon")));
         CHECK_HOOK_STATUS(result.status(), i);
         CheckRowIds(result.value(), {0});

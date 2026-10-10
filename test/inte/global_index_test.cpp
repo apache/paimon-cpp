@@ -2517,47 +2517,22 @@ TEST_P(GlobalIndexTest, TestLuceneWriteCommitScanReadIndexWithScore) {
                          global_index_scan->CreateReaders("f0", /*row_range_index=*/std::nullopt));
     ASSERT_EQ(index_readers.size(), 1u);
     auto index_reader = index_readers[0];
-    {
+    auto search = [&](const std::string& query,
+                      const std::optional<RoaringBitmap64>& include_row_ids,
+                      const std::string& expected) {
         ASSERT_OK_AND_ASSIGN(auto index_result,
                              index_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "document", FullTextSearch::SearchType::MATCH_ALL,
-                                 /*pre_filter=*/std::nullopt)));
-        ASSERT_TRUE(index_result->ToString().find("row ids: {0,1,2}") != std::string::npos);
-    }
-    {
-        std::optional<RoaringBitmap64> pre_filter = RoaringBitmap64::From({1, 2, 3});
-        ASSERT_OK_AND_ASSIGN(
-            auto index_result,
-            index_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                "f0",
-                /*limit=*/10, "document", FullTextSearch::SearchType::MATCH_ALL, pre_filter)));
-        ASSERT_TRUE(index_result->ToString().find("row ids: {1,2}") != std::string::npos);
-    }
-    {
-        ASSERT_OK_AND_ASSIGN(auto index_result,
-                             index_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "*or*er*", FullTextSearch::SearchType::WILDCARD,
-                                 /*pre_filter=*/std::nullopt)));
-        ASSERT_TRUE(index_result->ToString().find("row ids: {3}") != std::string::npos);
-    }
-    {
-        ASSERT_OK_AND_ASSIGN(auto index_result,
-                             index_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "THIS", FullTextSearch::SearchType::PREFIX,
-                                 /*pre_filter=*/std::nullopt)));
-        ASSERT_TRUE(index_result->ToString().find("row ids: {0,1}") != std::string::npos);
-    }
-    {
-        ASSERT_OK_AND_ASSIGN(auto index_result,
-                             index_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "*THIS*", FullTextSearch::SearchType::WILDCARD,
-                                 /*pre_filter=*/std::nullopt)));
-        ASSERT_TRUE(index_result->ToString().find("row ids: {0,1}") != std::string::npos);
-    }
+                                 "f0", query, /*limit=*/10, include_row_ids)));
+        ASSERT_TRUE(index_result->ToString().find("row ids: " + expected + ", scores: ") !=
+                    std::string::npos)
+            << query << ": " << index_result->ToString();
+    };
+    search(R"({"match":{"query":"document","operator":"And"}})", std::nullopt, "{0,1,2}");
+    search(R"({"match":{"query":"document","operator":"And"}})", RoaringBitmap64::From({1, 2, 3}),
+           "{1,2}");
+    search(R"({"match_phrase":{"query":"test document"}})", std::nullopt, "{0}");
+    search(R"({"boolean":{"should":[{"match":{"query":"unordered"}},{"match":{"query":"new"}}]}})",
+           std::nullopt, "{1,3}");
 }
 
 TEST_P(GlobalIndexTest, TestWriteCommitScanReadLuceneIndexWithPartition) {
@@ -2606,7 +2581,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadLuceneIndexWithPartition) {
 
     auto scan_and_check_result = [&](const std::map<std::string, std::string>& partition,
                                      const std::optional<RowRangeIndex>& row_range_index,
-                                     const std::optional<RoaringBitmap64>& pre_filter,
+                                     const std::optional<RoaringBitmap64>& include_row_ids,
                                      const std::string& index_expected) {
         std::vector<std::map<std::string, std::string>> partitions = {partition};
         ASSERT_OK_AND_ASSIGN(
@@ -2616,11 +2591,10 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadLuceneIndexWithPartition) {
         // check lucene index
         ASSERT_OK_AND_ASSIGN(auto readers, global_index_scan->CreateReaders("f0", row_range_index));
         ASSERT_EQ(readers.size(), 1u);
-        ASSERT_OK_AND_ASSIGN(
-            auto index_result,
-            readers[0]->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                "f0",
-                /*limit=*/10, "document", FullTextSearch::SearchType::MATCH_ALL, pre_filter)));
+        ASSERT_OK_AND_ASSIGN(auto index_result,
+                             readers[0]->VisitFullTextSearch(std::make_shared<FullTextSearch>(
+                                 "f0", R"({"match":{"query":"document","operator":"And"}})",
+                                 /*limit=*/10, include_row_ids)));
         ASSERT_TRUE(index_result->ToString().find(index_expected) != std::string::npos);
     };
 
@@ -2677,14 +2651,15 @@ TEST_P(GlobalIndexTest, TestFullTextWriteCommitScanReadIndex) {
                          global_index_scan->CreateReaders("f0", /*row_range_index=*/std::nullopt));
     ASSERT_EQ(index_readers.size(), 1u);
     auto index_reader = index_readers[0];
-    auto search = [&](const std::string& query, const std::optional<RoaringBitmap64>& pre_filter,
+    auto search = [&](const std::string& query,
+                      const std::optional<RoaringBitmap64>& include_row_ids,
                       const std::string& expected) {
-        ASSERT_OK_AND_ASSIGN(
-            auto index_result,
-            index_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                "f0",
-                /*limit=*/10, query, FullTextSearch::SearchType::UNKNOWN, pre_filter)));
-        ASSERT_EQ(index_result->ToString(), expected) << query;
+        ASSERT_OK_AND_ASSIGN(auto index_result,
+                             index_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
+                                 "f0", query, /*limit=*/10, include_row_ids)));
+        ASSERT_TRUE(index_result->ToString().find("row ids: " + expected + ", scores: ") !=
+                    std::string::npos)
+            << query << ": " << index_result->ToString();
     };
     search(R"({"match":{"query":"document"}})", std::nullopt, "{0,1,2}");
     search(R"({"match":{"query":"document"}})", RoaringBitmap64::From({1, 2, 3}), "{1,2}");
@@ -2732,7 +2707,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadFullTextIndexWithPartition) {
 
     auto scan_and_check_result = [&](const std::map<std::string, std::string>& partition,
                                      const std::optional<RowRangeIndex>& row_range_index,
-                                     const std::optional<RoaringBitmap64>& pre_filter,
+                                     const std::optional<RoaringBitmap64>& include_row_ids,
                                      const std::string& index_expected) {
         std::vector<std::map<std::string, std::string>> partitions = {partition};
         ASSERT_OK_AND_ASSIGN(
@@ -2741,12 +2716,13 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadFullTextIndexWithPartition) {
                                     /*options=*/{}, fs_, /*executor=*/nullptr, pool_));
         ASSERT_OK_AND_ASSIGN(auto readers, global_index_scan->CreateReaders("f0", row_range_index));
         ASSERT_EQ(readers.size(), 1u);
-        ASSERT_OK_AND_ASSIGN(auto index_result,
-                             readers[0]->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, R"({"match":{"query":"document"}})",
-                                 FullTextSearch::SearchType::UNKNOWN, pre_filter)));
-        ASSERT_EQ(index_result->ToString(), index_expected);
+        ASSERT_OK_AND_ASSIGN(
+            auto index_result,
+            readers[0]->VisitFullTextSearch(std::make_shared<FullTextSearch>(
+                "f0", R"({"match":{"query":"document"}})", /*limit=*/10, include_row_ids)));
+        ASSERT_TRUE(index_result->ToString().find("row ids: " + index_expected + ", scores: ") !=
+                    std::string::npos)
+            << index_result->ToString();
     };
 
     {

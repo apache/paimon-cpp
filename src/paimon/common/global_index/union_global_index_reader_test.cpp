@@ -64,7 +64,7 @@ class FakeReader : public GlobalIndexReader {
         exception_message_ = message;
     }
 
-    /// Sets a scored result returned by VisitVectorSearch.
+    /// Sets a scored result returned by VisitVectorSearch and VisitFullTextSearch.
     void SetScoredResult(const std::vector<int64_t>& row_ids, const std::vector<float>& scores) {
         scored_row_ids_ = row_ids;
         scored_scores_ = scores;
@@ -142,6 +142,24 @@ class FakeReader : public GlobalIndexReader {
 
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override {
+        return MakeScoredResult();
+    }
+
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
+        const std::shared_ptr<FullTextSearch>& full_text_search) override {
+        return MakeScoredResult();
+    }
+
+    bool IsThreadSafe() const override {
+        return thread_safe_;
+    }
+
+    std::string GetIndexType() const override {
+        return "fake";
+    }
+
+ private:
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> MakeScoredResult() {
         invocation_count_++;
         if (return_error_) {
             return Status::Invalid(error_message_);
@@ -155,20 +173,6 @@ class FakeReader : public GlobalIndexReader {
                                                                std::move(scores));
     }
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
-        const std::shared_ptr<FullTextSearch>& full_text_search) override {
-        return MakeResult();
-    }
-
-    bool IsThreadSafe() const override {
-        return thread_safe_;
-    }
-
-    std::string GetIndexType() const override {
-        return "fake";
-    }
-
- private:
     Result<std::shared_ptr<GlobalIndexResult>> MakeResult() {
         invocation_count_++;
         if (throw_exception_) {
@@ -514,14 +518,15 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitIsNullUnion) {
 TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchUnion) {
     auto reader1 = std::make_shared<FakeReader>();
     auto reader2 = std::make_shared<FakeReader>();
-    reader1->SetDefaultResult({1, 5});
-    reader2->SetDefaultResult({2, 6});
+    auto reader3 = std::make_shared<FakeReader>();
+    reader1->SetScoredResult({1, 5}, {0.9f, 0.5f});
+    reader3->SetScoredResult({2, 6}, {0.8f, 0.6f});
 
-    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
     UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(nullptr));
-    CheckResult(result, {1, 2, 5, 6});
+    CheckScoredResult(result, {1, 2, 5, 6}, {0.9f, 0.8f, 0.5f, 0.6f});
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchAllNullptr) {

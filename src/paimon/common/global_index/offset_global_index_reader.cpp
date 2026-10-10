@@ -130,10 +130,36 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> OffsetGlobalIndexReader::VisitV
                 return original_filter(local_id + offset);
             });
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result,
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredGlobalIndexResult> result,
                            wrapped_->VisitVectorSearch(rewritten_search));
+    return ApplyScoredOffset(result);
+}
+
+Result<std::shared_ptr<ScoredGlobalIndexResult>> OffsetGlobalIndexReader::VisitFullTextSearch(
+    const std::shared_ptr<FullTextSearch>& full_text_search) {
+    // Convert global include row ids to local row ids. The shard end is unknown here, so row ids
+    // past the shard are kept; they match no local row.
+    std::shared_ptr<FullTextSearch> local_search = full_text_search;
+    if (full_text_search && full_text_search->include_row_ids) {
+        local_search = full_text_search->OffsetRange(offset_, RoaringBitmap64::MAX_VALUE);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredGlobalIndexResult> result,
+                           wrapped_->VisitFullTextSearch(local_search));
+    return ApplyScoredOffset(result);
+}
+
+Result<std::shared_ptr<GlobalIndexResult>> OffsetGlobalIndexReader::ApplyOffset(
+    const std::shared_ptr<GlobalIndexResult>& result) {
     if (result == nullptr) {
-        return std::shared_ptr<ScoredGlobalIndexResult>();
+        return result;
+    }
+    return result->AddOffset(offset_);
+}
+
+Result<std::shared_ptr<ScoredGlobalIndexResult>> OffsetGlobalIndexReader::ApplyScoredOffset(
+    const std::shared_ptr<ScoredGlobalIndexResult>& result) {
+    if (result == nullptr) {
+        return result;
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> offset_result,
                            result->AddOffset(offset_));
@@ -143,33 +169,6 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> OffsetGlobalIndexReader::VisitV
             "AddOffset on ScoredGlobalIndexResult did not return ScoredGlobalIndexResult");
     }
     return scored_result;
-}
-
-Result<std::shared_ptr<GlobalIndexResult>> OffsetGlobalIndexReader::VisitFullTextSearch(
-    const std::shared_ptr<FullTextSearch>& full_text_search) {
-    // Rewrite pre_filter to convert global ids (used externally) to local ids (used by wrapped_).
-    // The original bitmap contains global ids; subtract offset_ to get local ids for the
-    // underlying reader.
-    std::shared_ptr<FullTextSearch> rewritten_search = full_text_search;
-    if (full_text_search && full_text_search->pre_filter.has_value()) {
-        RoaringBitmap64 local_bitmap;
-        const auto& global_bitmap = full_text_search->pre_filter.value();
-        for (auto iter = global_bitmap.Begin(); iter != global_bitmap.End(); ++iter) {
-            local_bitmap.Add(*iter - offset_);
-        }
-        rewritten_search = full_text_search->ReplacePreFilter(std::move(local_bitmap));
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result,
-                           wrapped_->VisitFullTextSearch(rewritten_search));
-    return ApplyOffset(result);
-}
-
-Result<std::shared_ptr<GlobalIndexResult>> OffsetGlobalIndexReader::ApplyOffset(
-    const std::shared_ptr<GlobalIndexResult>& result) {
-    if (result == nullptr) {
-        return result;
-    }
-    return result->AddOffset(offset_);
 }
 
 }  // namespace paimon

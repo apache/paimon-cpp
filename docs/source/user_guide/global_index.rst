@@ -24,7 +24,7 @@ Paimon C++ supports the following global index types:
 
 - **BTree Index**: An efficient index based on multi-level SST files for scalar column lookups.
 - **Range Bitmap Index**: A range bitmap index optimized for range predicates on ordered scalar columns. Extends the bitmap approach by encoding value ordering, enabling efficient less-than, greater-than, and range conditions.
-- **Lucene Index**: A full-text search index powered by Lucene++. Supports tokenized text search with multiple modes including match-all, match-any, phrase, prefix, and wildcard queries.
+- **Lucene Index**: A full-text search index powered by Lucene++. Supports tokenized text search with the JSON queries of the full-text index: match, multi-match, phrase and boolean queries.
 - **Full-Text Index (experimental)**: A full-text search index powered by the native
   ``paimon-full-text-index`` engine. It uses the same index file format as Java Paimon's
   ``full-text`` index.
@@ -66,23 +66,27 @@ less-than, greater-than, and range conditions without scanning all bitmaps.
 Lucene Index
 ------------
 
-A full-text search index powered by Lucene++. It supports tokenized text search with multiple
-search modes including match-all, match-any, phrase, prefix, and wildcard queries.
+A full-text search index powered by Lucene++. It uses ``FullTextSearch`` and the JSON DSL
+described in `Full-Text Index (Experimental)`_, translating queries into Lucene queries on the
+indexed field:
 
-**Supported search types:**
+- ``match``: one term query per analyzed term, combined with OR, or with AND for
+  ``"operator": "And"``. ``boost`` sets the boost of the query.
+- ``multi_match``: one ``match`` query per column, combined with OR. Every column must be the
+  indexed field.
+- ``match_phrase`` (alias ``phrase``): a phrase query with an optional ``slop``.
+- ``boolean``: a boolean query of the translated ``must``, ``should``, ``must_not`` and
+  ``queries`` clauses.
 
-- ``MATCH_ALL``: All terms in the query must be present (AND semantics).
-- ``MATCH_ANY``: Any term in the query can match (OR semantics).
-- ``PHRASE``: Matches the exact sequence of words (with proximity).
-- ``PREFIX``: Matches terms starting with the given string (e.g., "run*" → running, runner). The
-  query is not tokenized. The original prefix is retained, and a pure ASCII alphanumeric prefix
-  is also matched using the lowercase case-normalization applied to pure ASCII terms at indexing
-  time. This preserves matches for mixed terms such as ``B超`` while allowing ``THIS`` to match
-  terms indexed as ``this...``.
-- ``WILDCARD``: Supports wildcards ``*`` and ``?`` (e.g., "ap*e", "app?e" → "apple"). The query
-  is not tokenized, and wildcard operators are preserved. Both the original pattern and an
-  alternative with each ASCII alphanumeric fragment lowercased are matched, covering pure ASCII
-  and mixed ASCII/non-ASCII terms.
+``boost`` queries and fuzzy matching (a ``fuzziness`` other than 0) are rejected with a
+``NotImplemented`` status, and a ``column`` other than the indexed field is rejected. The query
+text is analyzed with the Jieba tokenizer of the index. Each index shard returns at most ``limit``
+rows with the highest Lucene relevance scores.
+
+Duplicate known fields, raw NUL bytes in the JSON text and boosts that do not round to a finite
+positive float are rejected, while unknown fields are ignored. Leading and trailing Unicode
+whitespace in operators, boolean occurrences and column names is trimmed as in the native DSL, and
+a column name containing only such whitespace selects the indexed field.
 
 **Special Configuration:**
 
@@ -117,20 +121,37 @@ by it. Rebuild such indexes with the ``full-text`` index type.
 
 **Queries:**
 
-``FullTextSearch::query`` is passed to the engine unchanged and must be a JSON query, for example:
+``FullTextSearch`` is aligned with Java Paimon: it takes the field name, a JSON query, a positive
+``limit`` and optional ``include_row_ids``. ``FullTextSearch::query`` is passed to the engine
+unchanged and must be a JSON query, for example:
 
 - ``{"match": {"query": "paimon lake"}}``: rows that contain any of the analyzed terms. Add
-  ``"operator": "And"`` to require all terms.
+  ``"operator": "And"`` to require all terms. ``boost``, ``fuzziness``, ``max_expansions`` and
+  ``prefix_length`` are optional.
+- ``{"multi_match": {"query": "paimon lake", "columns": ["text"]}}``: a ``match`` query on the
+  default native index field, with optional per-column ``boosts``.
 - ``{"match_phrase": {"query": "data lake"}}``: rows that contain the terms as a phrase. An
   optional ``"slop"`` allows other terms between them.
 - ``{"boolean": {"must": [...], "should": [...], "must_not": [...]}}``: combines other queries.
+- ``{"boost": {"positive": {...}, "negative": {...}, "negative_boost": 0.5}}``: lowers the score
+  of rows that also match the negative query.
 
-The query text is analyzed with the analyzer stored in the index file. ``search_type`` is ignored.
-A positive ``limit`` is required. The engine always ranks the matching rows by BM25 score and
-returns the ``limit`` rows with the highest scores; ``pre_filter`` restricts the rows that are
-ranked. ``min_score`` is applied to those rows afterwards and drops rows whose score is not greater
-than it, so a search can return fewer than ``limit`` rows. ``with_score`` only selects whether the
-scores are returned; scores are computed either way.
+The C++ writer indexes one table column. ``FullTextSearch::field_name`` selects that table column,
+while ``column`` and ``columns`` in the JSON query name fields inside the native index. The native
+field defaults to ``text`` and can be renamed with ``full-text.text-field``. These names do not
+enable searches across multiple table columns. For ``lucene-fts``, DSL column names must instead
+match the indexed table column.
+
+The query text is analyzed with the analyzer stored in the index file, and an invalid query is
+reported as an error status. A search always returns a ``ScoredGlobalIndexResult``. Within each
+index shard, the engine ranks matching rows by BM25 score and returns at most ``limit`` rows with
+the highest scores.
+``include_row_ids`` holds global row ids and restricts the rows that are ranked; an empty set
+matches no rows.
+
+For both ``full-text`` and ``lucene-fts``, searches across multiple shards currently return the
+union of the shard candidates, which can exceed ``limit``. Applying a final global top-k is tracked
+in `issue #402 <https://github.com/apache/paimon-cpp/issues/402>`_.
 
 **Configuration:**
 

@@ -642,6 +642,7 @@ if(PAIMON_BUILD_TESTS)
                     common/metrics/histogram_windowing_test.cpp
                     common/options/memory_size_test.cpp
                     common/options/time_duration_test.cpp
+                    common/predicate/full_text_search_test.cpp
                     common/predicate/literal_converter_test.cpp
                     common/predicate/literal_test.cpp
                     common/predicate/multi_literals_leaf_function_test.cpp

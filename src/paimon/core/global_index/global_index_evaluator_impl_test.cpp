@@ -108,7 +108,7 @@ class RecordingGlobalIndexReader : public GlobalIndexReader {
         return Status::Invalid("not supported");
     }
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override {
         return Status::Invalid("not supported");
     }

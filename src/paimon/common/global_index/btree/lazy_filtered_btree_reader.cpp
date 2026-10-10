@@ -180,7 +180,7 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> LazyFilteredBTreeReader::VisitV
     return Status::Invalid("LazyFilteredBTreeReader does not support vector search");
 }
 
-Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitFullTextSearch(
+Result<std::shared_ptr<ScoredGlobalIndexResult>> LazyFilteredBTreeReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
     return Status::Invalid("LazyFilteredBTreeReader does not support full text search");
 }

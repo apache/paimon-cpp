@@ -17,6 +17,8 @@
  */
 #include "paimon/global_index/lucene/lucene_global_index.h"
 
+#include <cmath>
+
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
@@ -121,15 +123,20 @@ class LuceneGlobalIndexTest : public ::testing::Test,
                                           pool_);
     }
 
-    void CheckResult(const std::shared_ptr<GlobalIndexResult>& result,
+    static std::shared_ptr<FullTextSearch> MakeSearch(
+        const std::string& query, int32_t limit = 10,
+        const std::optional<RoaringBitmap64>& include_row_ids = std::nullopt) {
+        return std::make_shared<FullTextSearch>("f0", query, limit, include_row_ids);
+    }
+
+    void CheckResult(const std::shared_ptr<ScoredGlobalIndexResult>& result,
                      const std::vector<int64_t>& expected_ids) const {
-        const RoaringBitmap64* bitmap = nullptr;
-        if (auto scored_result = std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(result)) {
-            ASSERT_OK_AND_ASSIGN(bitmap, scored_result->GetBitmap());
-            ASSERT_EQ(scored_result->GetScores().size(), expected_ids.size());
-        } else if (auto bitmap_result =
-                       std::dynamic_pointer_cast<BitmapGlobalIndexResult>(result)) {
-            ASSERT_OK_AND_ASSIGN(bitmap, bitmap_result->GetBitmap());
+        auto scored_result = std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(result);
+        ASSERT_TRUE(scored_result);
+        ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* bitmap, scored_result->GetBitmap());
+        ASSERT_EQ(scored_result->GetScores().size(), expected_ids.size());
+        for (float score : scored_result->GetScores()) {
+            ASSERT_TRUE(std::isfinite(score)) << score;
         }
         ASSERT_TRUE(bitmap);
         ASSERT_EQ(*bitmap, RoaringBitmap64::From(expected_ids))
@@ -182,167 +189,143 @@ TEST_P(LuceneGlobalIndexTest, TestSimple) {
     ASSERT_TRUE(lucene_reader);
 
     // test visit
+    auto search = [&](const std::string& query, int32_t limit = 10,
+                      const std::optional<RoaringBitmap64>& include_row_ids = std::nullopt) {
+        return lucene_reader->VisitFullTextSearch(MakeSearch(query, limit, include_row_ids));
+    };
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "document", FullTextSearch::SearchType::MATCH_ALL,
-                                 /*pre_filter=*/std::nullopt)));
+        const std::string query = R"({"match":{"query":"document","operator":"And"}})";
+        ASSERT_OK_AND_ASSIGN(auto result, search(query));
         CheckResult(result, {2l, 1l, 0l});
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScoredGlobalIndexResult::ScoredIterator> iter,
+                             result->CreateScoredIterator());
+        while (iter->HasNext()) {
+            const auto [row_id, score] = iter->NextWithScore();
+            ASSERT_OK_AND_ASSIGN(auto single_row_result,
+                                 search(query, 1, RoaringBitmap64::From({row_id})));
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<ScoredGlobalIndexResult::ScoredIterator> single_row_iter,
+                single_row_result->CreateScoredIterator());
+            ASSERT_TRUE(single_row_iter->HasNext());
+            const auto [expected_row_id, expected_score] = single_row_iter->NextWithScore();
+            ASSERT_EQ(row_id, expected_row_id);
+            ASSERT_FLOAT_EQ(score, expected_score);
+            ASSERT_FALSE(single_row_iter->HasNext());
+        }
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/1, "document", FullTextSearch::SearchType::MATCH_ANY,
-                                 /*pre_filter=*/std::nullopt)));
+        ASSERT_OK_AND_ASSIGN(auto result, search(R"({"match":{"query":"document",)"
+                                                 R"("ignored":1,"ignored":"\u0000"}})"));
+        CheckResult(result, {0l, 1l, 2l});
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(auto result, search(R"({"match":{"query":"document"}})", 1));
         CheckResult(result, {2l});
     }
     {
-        ASSERT_OK_AND_ASSIGN(
-            auto result, lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                             "f0",
-                             /*limit=*/10, "test document", FullTextSearch::SearchType::MATCH_ALL,
-                             /*pre_filter=*/std::nullopt)));
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             search(R"({"match":{"terms":"test document","operator":"AND"}})"));
         CheckResult(result, {2l, 0l});
     }
     {
         ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "test new", FullTextSearch::SearchType::MATCH_ANY,
-                                 /*pre_filter=*/std::nullopt)));
+                             search(R"({"match":{"query":"test new","operator":"Or"}})"));
         CheckResult(result, {1l, 0l, 2l});
     }
     {
         ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "test document", FullTextSearch::SearchType::PHRASE,
-                                 /*pre_filter=*/std::nullopt)));
+                             search(R"({"match":{"query":"unordered","column":"f0","boost":2.0,)"
+                                    R"("fuzziness":0,"max_expansions":10,"prefix_length":1}})"));
+        CheckResult(result, {3l});
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(auto result, search(R"({"match":{"query":"   "}})"));
+        CheckResult(result, {});
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(auto result, search(R"({"match_phrase":{"query":"test document"}})"));
         CheckResult(result, {0l});
     }
     {
         ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "unordered", FullTextSearch::SearchType::MATCH_ALL,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {3l});
+                             search(R"({"phrase":{"query":"test document","slop":2}})"));
+        CheckResult(result, {0l, 2l});
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "unorder", FullTextSearch::SearchType::PREFIX,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {3l});
+        ASSERT_OK_AND_ASSIGN(
+            auto result,
+            search(R"({"multi_match":{"query":"test new","columns":["f0"],"boosts":[2.0]}})"));
+        CheckResult(result, {1l, 0l, 2l});
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "THIS", FullTextSearch::SearchType::PREFIX,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {1l, 0l});
+        ASSERT_OK_AND_ASSIGN(auto result, search(R"({"multi_match":{"query":"test document",)"
+                                                 R"("columns":["f0"],"operator":"And"}})"));
+        CheckResult(result, {0l, 2l});
     }
-    // test wildcard query
-    {
+    for (const std::string& boost : std::vector<std::string>{"1e-45", "3.4028235e38"}) {
+        SCOPED_TRACE(boost);
         ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "*order*", FullTextSearch::SearchType::WILDCARD,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {3l});
-    }
-    {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "*or*er*", FullTextSearch::SearchType::WILDCARD,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {3l});
+                             search(R"({"match":{"query":"document","boost":)" + boost + "}}"));
+        CheckResult(result, {0l, 1l, 2l});
+        ASSERT_OK_AND_ASSIGN(result,
+                             search(R"({"multi_match":{"query":"document","columns":["f0"],)"
+                                    R"("boosts":[)" +
+                                    boost + "]}}"));
+        CheckResult(result, {0l, 1l, 2l});
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "*THIS*", FullTextSearch::SearchType::WILDCARD,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {1l, 0l});
+        ASSERT_OK_AND_ASSIGN(auto result, search(R"({"boolean":{"should":[
+            {"match":{"query":"document","boost":100.0}},
+            {"match":{"query":"unordered"}}]}})",
+                                                 3));
+        CheckResult(result, {0l, 1l, 2l});
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "*?HIS*", FullTextSearch::SearchType::WILDCARD,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {1l, 0l});
+        ASSERT_OK_AND_ASSIGN(auto result, search(R"({"boolean":{
+            "must":[{"match":{"query":"document"}}],
+            "must_not":[{"match":{"query":"new"}}]}})"));
+        CheckResult(result, {0l, 2l});
+    }
+    const std::vector<std::pair<std::string, std::vector<int64_t>>> whitespace_queries = {
+        {R"({"match":{"query":"test document","operator":"\u3000And\u00a0",)"
+         R"("column":"\u0085f0\u202f"}})",
+         {0l, 2l}},
+        {R"({"multi_match":{"query":"test new","columns":["\u2007f0\u205f"],)"
+         R"("operator":"\u1680Or\u2009"}})",
+         {0l, 1l, 2l}},
+        {R"({"match_phrase":{"query":"test document","column":"\t\u3000\u00a0\n"}})", {0l}},
+        {R"({"multi_match":{"query":"document","columns":["\u2028\u2029"]}})", {0l, 1l, 2l}},
+        {R"({"match":{"query":"document","column":""}})", {0l, 1l, 2l}},
+        {R"({"boolean":{"queries":[
+            ["\u00a0Must\u3000",{"match":{"query":"document"}}],
+            ["\u202fShould\u0085",{"match_phrase":{"query":"test document"}}],
+            ["\u205fMustNot\u2007",{"match":{"query":"new"}}]]}})",
+         {0l, 2l}}};
+    for (const auto& [query, expected_ids] : whitespace_queries) {
+        SCOPED_TRACE(query);
+        ASSERT_OK_AND_ASSIGN(auto result, search(query));
+        CheckResult(result, expected_ids);
     }
     // test filter
+    std::string match_all_document = R"({"match":{"query":"document","operator":"And"}})";
     {
         ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "document", FullTextSearch::SearchType::MATCH_ALL,
-                                 /*pre_filter=*/RoaringBitmap64::From({0l, 1l}))));
+                             search(match_all_document, 10, RoaringBitmap64::From({0l, 1l})));
         CheckResult(result, {0l, 1l});
     }
     {
         ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "document", FullTextSearch::SearchType::MATCH_ALL,
-                                 /*pre_filter=*/RoaringBitmap64::From({2l, 100l}))));
+                             search(match_all_document, 10, RoaringBitmap64::From({2l, 100l})));
         CheckResult(result, {2l});
     }
     {
         ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "document", FullTextSearch::SearchType::MATCH_ALL,
-                                 /*pre_filter=*/RoaringBitmap64::From({20l, 100l}))));
+                             search(match_all_document, 10, RoaringBitmap64::From({20l, 100l})));
         CheckResult(result, {});
     }
-    // test no limit
     {
-        ASSERT_OK_AND_ASSIGN(
-            auto result,
-            lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                "f0",
-                /*limit=*/std::nullopt, "document", FullTextSearch::SearchType::MATCH_ALL,
-                /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {0l, 1l, 2l});
-    }
-    {
-        ASSERT_OK_AND_ASSIGN(
-            auto result,
-            lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                "f0",
-                /*limit=*/std::nullopt, "document", FullTextSearch::SearchType::MATCH_ALL,
-                /*pre_filter=*/RoaringBitmap64::From({2l}))));
-        CheckResult(result, {2l});
-    }
-    {
-        ASSERT_OK_AND_ASSIGN(
-            auto result,
-            lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                "f0",
-                /*limit=*/std::nullopt, "document test", FullTextSearch::SearchType::MATCH_ALL,
-                /*pre_filter=*/RoaringBitmap64::From({1l, 2l, 3l, 100l}))));
-        CheckResult(result, {2l});
-    }
-    // min_score pushdown is not supported by the lucene backend: it must fail
-    // loudly rather than silently ignore the threshold.
-    {
-        auto fts = std::make_shared<FullTextSearch>("f0",
-                                                    /*limit=*/10, "document",
-                                                    FullTextSearch::SearchType::MATCH_ALL,
-                                                    /*pre_filter=*/std::nullopt);
-        fts->min_score = 1.5f;
-        auto result = lucene_reader->VisitFullTextSearch(fts);
-        ASSERT_FALSE(result.ok());
-        ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+        ASSERT_OK_AND_ASSIGN(auto result, search(match_all_document, 10, RoaringBitmap64()));
+        CheckResult(result, {});
     }
 }
 
@@ -389,119 +372,162 @@ TEST_P(LuceneGlobalIndexTest, TestSimpleChinese) {
 
     // test visit
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "模块", FullTextSearch::SearchType::MATCH_ALL,
-                                 /*pre_filter=*/std::nullopt)));
+        ASSERT_OK_AND_ASSIGN(auto result, lucene_reader->VisitFullTextSearch(MakeSearch(
+                                              R"({"match":{"query":"模块","operator":"And"}})")));
         CheckResult(result, {0l, 2l});
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/1, "模块", FullTextSearch::SearchType::MATCH_ANY,
-                                 /*pre_filter=*/std::nullopt)));
+        ASSERT_OK_AND_ASSIGN(auto result, lucene_reader->VisitFullTextSearch(
+                                              MakeSearch(R"({"match":{"query":"模块"}})", 1)));
         CheckResult(result, {0l});
     }
     {
         ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "模块技术", FullTextSearch::SearchType::MATCH_ALL,
-                                 /*pre_filter=*/std::nullopt)));
+                             lucene_reader->VisitFullTextSearch(
+                                 MakeSearch(R"({"match":{"query":"模块技术","operator":"And"}})")));
         CheckResult(result, {0l});
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "模块技术", FullTextSearch::SearchType::MATCH_ANY,
-                                 /*pre_filter=*/std::nullopt)));
+        ASSERT_OK_AND_ASSIGN(auto result, lucene_reader->VisitFullTextSearch(
+                                              MakeSearch(R"({"match":{"query":"模块技术"}})")));
         CheckResult(result, {0l, 1l, 2l, 3l});
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "发展方向", FullTextSearch::SearchType::PHRASE,
-                                 /*pre_filter=*/std::nullopt)));
+        ASSERT_OK_AND_ASSIGN(auto result, lucene_reader->VisitFullTextSearch(MakeSearch(
+                                              R"({"match_phrase":{"query":"发展方向"}})")));
         CheckResult(result, {4l});
-    }
-    {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "发", FullTextSearch::SearchType::PREFIX,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {3l, 4l});
-    }
-    // test wildcard query
-    {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "*发*", FullTextSearch::SearchType::WILDCARD,
-                                 /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {0l, 1l, 2l, 3l, 4l});
     }
     // test filter
     {
-        ASSERT_OK_AND_ASSIGN(auto result,
-                             lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                                 "f0",
-                                 /*limit=*/10, "模块技术", FullTextSearch::SearchType::MATCH_ANY,
-                                 /*pre_filter=*/RoaringBitmap64::From({1l, 3l, 4l}))));
+        ASSERT_OK_AND_ASSIGN(auto result, lucene_reader->VisitFullTextSearch(
+                                              MakeSearch(R"({"match":{"query":"模块技术"}})", 10,
+                                                         RoaringBitmap64::From({1l, 3l, 4l}))));
 
         CheckResult(result, {1l, 3l});
     }
-    // test no limit
-    {
-        ASSERT_OK_AND_ASSIGN(
-            auto result,
-            lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                "f0",
-                /*limit=*/std::nullopt, "模块技术", FullTextSearch::SearchType::MATCH_ANY,
-                /*pre_filter=*/std::nullopt)));
-        CheckResult(result, {0l, 1l, 2l, 3l});
-    }
 }
 
-TEST_P(LuceneGlobalIndexTest, TestMixedAsciiCjkPrefixAndWildcard) {
+TEST_F(LuceneGlobalIndexTest, TestInvalidQuery) {
     auto test_root_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);
     auto tmp_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(tmp_dir);
-
     std::map<std::string, std::string> options = {
-        {"lucene-fts.write.omit-term-freq-and-position", "false"},
-        {"lucene-fts.read.buffer-size", std::to_string(GetParam())},
-        {"lucene-fts.jieba.tokenize-mode", "query"},
         {"lucene-fts.write.tmp.directory", tmp_dir->Str()}};
-    std::shared_ptr<arrow::Array> array = arrow::ipc::internal::json::ArrayFromJSON(data_type_, R"([
-            ["B超检查"],
-            ["T恤"]
-        ])")
-                                              .ValueOrDie();
-
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type_, R"([["This is an new document."]])")
+            .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto meta, WriteGlobalIndex(test_root_dir->Str(), data_type_, options,
-                                                     array, Range(0, 1), tmp_dir->Str()));
+                                                     array, Range(0, 0), tmp_dir->Str()));
     ASSERT_OK_AND_ASSIGN(auto reader,
                          CreateGlobalIndexReader(test_root_dir->Str(), data_type_, options, meta));
-    auto lucene_reader = std::dynamic_pointer_cast<LuceneGlobalIndexReader>(reader);
-    ASSERT_TRUE(lucene_reader);
+    auto search = [&](const std::string& query, int32_t limit = 10) {
+        return reader->VisitFullTextSearch(MakeSearch(query, limit));
+    };
 
-    ASSERT_OK_AND_ASSIGN(auto prefix_result,
-                         lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                             "f0", /*limit=*/10, "B", FullTextSearch::SearchType::PREFIX,
-                             /*pre_filter=*/std::nullopt)));
-    CheckResult(prefix_result, {0l});
+    {
+        auto result = search(R"({"boost":{"positive":{"match":{"query":"document"}},)"
+                             R"("negative":{"match":{"query":"new"}}}})");
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+    }
+    for (const std::string& fuzziness : std::vector<std::string>{"1", "2", R"("auto")", "null"}) {
+        auto result = search(R"({"match":{"query":"document","fuzziness":)" + fuzziness + "}}");
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+    }
 
-    ASSERT_OK_AND_ASSIGN(auto wildcard_result,
-                         lucene_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
-                             "f0", /*limit=*/10, "*T*", FullTextSearch::SearchType::WILDCARD,
-                             /*pre_filter=*/std::nullopt)));
-    CheckResult(wildcard_result, {1l});
+    ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(nullptr), "null FullTextSearch");
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document"}})", 0),
+                        "requires a positive limit");
+    ASSERT_NOK_WITH_MSG(search("document"), "invalid full-text query");
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document"}} trailing)"),
+                        "invalid full-text query");
+    std::string query_with_nul = R"({"match":{"query":"document"}})";
+    query_with_nul.push_back('\0');
+    query_with_nul.append("trailing");
+    ASSERT_NOK_WITH_MSG(search(query_with_nul), "must not contain NUL characters");
+    ASSERT_NOK_WITH_MSG(search(R"(["match"])"), "exactly one query type");
+    ASSERT_NOK_WITH_MSG(
+        search(R"({"match":{"query":"document"},"match_phrase":{"query":"document"}})"),
+        "exactly one query type");
+    ASSERT_NOK_WITH_MSG(search(R"({"term":{"query":"document"}})"),
+                        "unknown full-text query type `term`");
+    ASSERT_NOK_WITH_MSG(search(R"({"match":"document"})"), "must be a JSON object");
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{}})"), "missing field `query`");
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":1}})"), "field `query` must be a string");
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document","terms":"document"}})"),
+                        "sets both field `terms` and its alias `query`");
+    const std::vector<std::pair<std::string, std::string>> duplicate_field_cases = {
+        {R"({"match":{"query":"document","query":"new"}})", "query"},
+        {R"({"match":{"query":"document","column":null,"column":"f0"}})", "column"},
+        {R"({"match":{"query":"document","operator":"Or","operator":"And"}})", "operator"},
+        {R"({"match":{"query":"document","boost":1,"boost":2}})", "boost"},
+        {R"({"multi_match":{"query":"document","columns":["f0"],"columns":["f0"]}})", "columns"},
+        {R"({"multi_match":{"query":"document","columns":["f0"],"boosts":[1],"boosts":[2]}})",
+         "boosts"},
+        {R"({"phrase":{"query":"new document","slop":0,"slop":1}})", "slop"},
+        {R"({"boolean":{"must":[{"match":{"query":"document"}}],)"
+         R"("must":[{"match":{"query":"new"}}]}})",
+         "must"},
+        {R"({"boolean":{"should":[{"match":{"query":"document","query":"new"}}]}})", "query"}};
+    for (const auto& [query, field] : duplicate_field_cases) {
+        SCOPED_TRACE(query);
+        ASSERT_NOK_WITH_MSG(search(query), "duplicate full-text query field `" + field + "`");
+    }
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document","column":"f1"}})"),
+                        "column 'f1' is not configured for this index");
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document","operator":"Xor"}})"),
+                        "invalid full-text query operator: Xor");
+    for (const std::string& non_whitespace :
+         std::vector<std::string>{R"(\u0000)", R"(\u0001)", R"(\u001c)", R"(\u001f)", R"(\u180e)",
+                                  R"(\u200b)", R"(\ufeff)", R"(\ufffe)", R"(\uffff)", "\xff"}) {
+        SCOPED_TRACE(non_whitespace);
+        ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document","operator":")" + non_whitespace +
+                                   "And" + non_whitespace + R"("}})"),
+                            "invalid full-text query operator");
+        ASSERT_NOK_WITH_MSG(search(R"({"boolean":{"queries":[[")" + non_whitespace + "Must" +
+                                   non_whitespace + R"(",{"match":{"query":"document"}}]]}})"),
+                            "invalid boolean query occur");
+        ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document","column":")" + non_whitespace +
+                                   "f0" + non_whitespace + R"("}})"),
+                            "full-text query column");
+        ASSERT_NOK_WITH_MSG(search(R"({"multi_match":{"query":"document","columns":[")" +
+                                   non_whitespace + R"("]}})"),
+                            "full-text query column");
+    }
+    for (const std::string& boost :
+         std::vector<std::string>{"0", "1e40", "1e-100", "3.4028236e38", "7e-46"}) {
+        SCOPED_TRACE(boost);
+        ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document","boost":)" + boost + "}}"),
+                            "boost must be a finite positive value after float conversion");
+        ASSERT_NOK_WITH_MSG(
+            search(R"({"multi_match":{"query":"document","columns":["f0"],"boosts":[)" + boost +
+                   "]}}"),
+            "boost must be a finite positive value after float conversion");
+    }
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document","fuzziness":3}})"),
+                        "fuzziness must be auto/null or a value in [0, 2]");
+    ASSERT_NOK_WITH_MSG(search(R"({"match":{"query":"document","max_expansions":0}})"),
+                        "max_expansions must be positive");
+    ASSERT_NOK_WITH_MSG(search(R"({"match_phrase":{"query":"document","slop":-1}})"),
+                        "field `slop` must be an integer");
+    ASSERT_NOK_WITH_MSG(search(R"({"multi_match":{"query":"document","columns":[]}})"),
+                        "must contain at least one column");
+    ASSERT_NOK_WITH_MSG(
+        search(R"({"multi_match":{"query":"document","columns":["f0"],"boosts":[1.0,2.0]}})"),
+        "boosts length 2 does not match columns length 1");
+    ASSERT_NOK_WITH_MSG(search(R"({"multi_match":{"query":"document","columns":["f0","f1"]}})"),
+                        "column 'f1' is not configured for this index");
+    ASSERT_NOK_WITH_MSG(search(R"({"boolean":{}})"), "must contain at least one clause");
+    ASSERT_NOK_WITH_MSG(search(R"({"boolean":{"must_not":[{"match":{"query":"new"}}]}})"),
+                        "must contain at least one should or must clause");
+    ASSERT_NOK_WITH_MSG(search(R"({"boolean":{"queries":[["should"]]}})"),
+                        "must be an array of [occur, query] pairs");
+    ASSERT_NOK_WITH_MSG(search(R"({"boolean":{"queries":[["filter",{"match":{"query":"new"}}]]}})"),
+                        "invalid boolean query occur: filter");
+    ASSERT_NOK_WITH_MSG(search(R"({"boolean":{"should":[{"term":{"query":"new"}}]}})"),
+                        "unknown full-text query type `term`");
 }
 
 TEST_F(LuceneGlobalIndexTest, TestInvalidWithoutTmpDir) {

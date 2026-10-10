@@ -102,7 +102,7 @@ class FullTextGlobalIndexReader : public GlobalIndexReader {
             "FullTextGlobalIndexReader is not supposed to handle vector search query");
     }
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override;
 
     /// The native reader supports concurrent searches, and opening it is guarded by a mutex.
