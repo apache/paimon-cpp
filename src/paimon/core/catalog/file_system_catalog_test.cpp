@@ -38,6 +38,7 @@
 #include "paimon/file_store_commit.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/snapshot/snapshot_info.h"
 #include "paimon/table/format/format_table.h"
 #include "paimon/testing/utils/testharness.h"
@@ -1253,6 +1254,41 @@ TEST(FileSystemCatalogTest, TestListSnapshots) {
 
     // Verify ascending order by snapshot_id
     ASSERT_LT(snapshots[0].snapshot_id, snapshots[1].snapshot_id);
+}
+
+TEST(FileSystemCatalogTest, TestGetLatestSnapshot) {
+    auto fs = std::make_shared<LocalFileSystem>();
+    FileSystemCatalog catalog(fs, GetDataDir(), {});
+    const Catalog& public_catalog = catalog;
+    Identifier identifier("append_table_with_multiple_file_format",
+                          "append_table_with_multiple_file_format");
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> snapshot,
+                         public_catalog.GetLatestSnapshot(identifier));
+    ASSERT_TRUE(snapshot);
+    ASSERT_EQ(snapshot->snapshot_id, 2);
+    ASSERT_EQ(snapshot->schema_id, 1);
+}
+
+TEST(FileSystemCatalogTest, TestGetLatestSnapshotEmptyMissingAndBranch) {
+    auto fs = std::make_shared<LocalFileSystem>();
+    FileSystemCatalog catalog(fs, GetDataDir() + "/orc", {});
+    ASSERT_OK_AND_ASSIGN(
+        std::optional<SnapshotInfo> empty,
+        catalog.GetLatestSnapshot(
+            Identifier("append_table_with_nested_type", "append_table_with_nested_type"), ""));
+    ASSERT_FALSE(empty);
+    Identifier identifier("append_table_with_rt_branch", "append_table_with_rt_branch");
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> branch_snapshot,
+                         catalog.GetLatestSnapshot(identifier, "rt"));
+    ASSERT_TRUE(branch_snapshot);
+    ASSERT_EQ(branch_snapshot->snapshot_id, 1);
+    ASSERT_EQ(branch_snapshot->total_record_count, 4);
+
+    ASSERT_TRUE(catalog.GetLatestSnapshot(Identifier(identifier.GetDatabaseName(), "missing"), "")
+                    .status()
+                    .IsNotExist());
+    ASSERT_OK_AND_ASSIGN(empty, catalog.GetLatestSnapshot(identifier, "missing"));
+    ASSERT_FALSE(empty);
 }
 
 namespace {
