@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 
+#include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
@@ -45,12 +46,11 @@ class BucketedDvMaintainer {
         std::shared_ptr<DeletionVector> dv;
         if (auto it = deletion_vectors_.find(file_name); it == deletion_vectors_.end()) {
             if (bitmap64_) {
-                return Status::NotImplemented("not support bitmap 64 deletion vectors");
+                dv = std::make_shared<Bitmap64DeletionVector>();
+            } else {
+                dv = std::make_shared<BitmapDeletionVector>(RoaringBitmap32());
             }
-            RoaringBitmap32 roaring_bitmap;
-            auto inserted = std::make_shared<BitmapDeletionVector>(roaring_bitmap);
-            deletion_vectors_[file_name] = inserted;
-            dv = std::move(inserted);
+            deletion_vectors_[file_name] = dv;
         } else {
             dv = it->second;
         }

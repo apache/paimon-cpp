@@ -68,6 +68,13 @@ class BitmapDeletionVector : public DeletionVector {
 
     Status Merge(const std::shared_ptr<DeletionVector>& deletion_vector) override;
 
+    Status ForEachDeletedPosition(const std::function<void(int64_t)>& consumer) const override {
+        for (auto iter = roaring_bitmap_.Begin(); iter != roaring_bitmap_.End(); ++iter) {
+            consumer(*iter);
+        }
+        return Status::OK();
+    }
+
     const RoaringBitmap32* GetBitmap() const {
         return &roaring_bitmap_;
     }

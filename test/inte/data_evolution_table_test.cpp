@@ -48,11 +48,12 @@
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::test {
-using DataEvolutionTableParam = std::tuple<std::string, bool>;
+using DataEvolutionTableParam = std::tuple<std::string, bool, bool>;
 
 // This is a sdk end-to-end test for data evolution
 class DataEvolutionTableTest : public ::testing::Test,
                                public ::testing::WithParamInterface<DataEvolutionTableParam> {
+ protected:
     void SetUp() override {
         dir_ = UniqueTestDirectory::Create("local");
         int64_t seed = DateTimeUtils::GetCurrentUTCTimeUs();
@@ -168,6 +169,8 @@ class DataEvolutionTableTest : public ::testing::Test,
                                                       {Options::DATA_EVOLUTION_ENABLED, "true"}};
         if (deletion_vectors_enabled) {
             options.emplace(Options::DELETION_VECTORS_ENABLED, "true");
+            options.emplace(Options::DELETION_VECTOR_BITMAP64,
+                            std::get<2>(GetParam()) ? "true" : "false");
         }
         options.insert(extra_options.begin(), extra_options.end());
         CreateTable(/*partition_keys=*/{}, options);
@@ -682,7 +685,7 @@ class DataEvolutionTableTest : public ::testing::Test,
                 .ValueOrDie());
     }
 
- private:
+ protected:
     std::unique_ptr<UniqueTestDirectory> dir_;
     mutable std::shared_ptr<Cache> snapshot_live_manifest_cache_;
     arrow::FieldVector fields_ = {
@@ -691,6 +694,8 @@ class DataEvolutionTableTest : public ::testing::Test,
         arrow::field("f2", arrow::utf8()),
     };
 };
+
+class DataEvolutionDvTableTest : public DataEvolutionTableTest {};
 
 TEST_P(DataEvolutionTableTest, TestBasic) {
     CreateTable();
@@ -2935,15 +2940,15 @@ TEST_P(DataEvolutionTableTest, TestWithRowIds) {
     }
 }
 
-TEST_P(DataEvolutionTableTest, TestGlobalIndexScoresWithSingleFileFiltering) {
+TEST_P(DataEvolutionDvTableTest, TestGlobalIndexScoresWithSingleFileFiltering) {
     CheckGlobalIndexScoresWithFiltering(/*merge_files=*/false);
 }
 
-TEST_P(DataEvolutionTableTest, TestGlobalIndexScoresWithMergedFileFiltering) {
+TEST_P(DataEvolutionDvTableTest, TestGlobalIndexScoresWithMergedFileFiltering) {
     CheckGlobalIndexScoresWithFiltering(/*merge_files=*/true);
 }
 
-TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectors) {
+TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectors) {
     CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
@@ -3020,7 +3025,7 @@ TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectors) {
                           /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 2)}));
 }
 
-TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsAcrossReadBatches) {
+TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectorsAcrossReadBatches) {
     // the 12 rows below span several read batches, so the deletion vector empties a whole
     // batch of every file of the group: each file reader then skips that batch entirely and
     // the column merge has to stay aligned on the surviving row count alone
@@ -3069,7 +3074,7 @@ TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsAcrossReadBatches) {
                           /*predicate=*/nullptr, /*row_ranges=*/{Range(3, 8)}));
 }
 
-TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsOnPartOfRowRangeGroups) {
+TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectorsOnPartOfRowRangeGroups) {
     // one split per row range group, so a group's deletion file must not reach the other
     CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true,
                              {{Options::SOURCE_SPLIT_TARGET_SIZE, "1"}});
@@ -3139,7 +3144,7 @@ TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsOnPartOfRowRangeGroups
     ASSERT_OK(ScanAndRead(table_path, {"_ROW_ID"}, expected_row_ids));
 }
 
-TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsOnEveryRowRangeGroup) {
+TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectorsOnEveryRowRangeGroup) {
     CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
@@ -3225,7 +3230,7 @@ TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsOnEveryRowRangeGroup) 
                           /*predicate=*/nullptr, /*row_ranges=*/{Range(2, 5)}));
 }
 
-TEST_P(DataEvolutionTableTest, TestReadWithFullyDeletedRowRangeGroup) {
+TEST_P(DataEvolutionDvTableTest, TestReadWithFullyDeletedRowRangeGroup) {
     CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
@@ -3284,7 +3289,7 @@ TEST_P(DataEvolutionTableTest, TestReadWithFullyDeletedRowRangeGroup) {
     ASSERT_FALSE(only_deleted.rows);
 }
 
-TEST_P(DataEvolutionTableTest, TestReadAfterUpdatingDeletionVectors) {
+TEST_P(DataEvolutionDvTableTest, TestReadAfterUpdatingDeletionVectors) {
     CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
@@ -3330,7 +3335,7 @@ TEST_P(DataEvolutionTableTest, TestReadAfterUpdatingDeletionVectors) {
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_after_update));
 }
 
-TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsAfterAddingColumn) {
+TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectorsAfterAddingColumn) {
     if (FileFormat() == "avro") {
         GTEST_SKIP() << "Avro has no stats, which the added column's scan pruning relies on";
     }
@@ -3392,7 +3397,7 @@ TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsAfterAddingColumn) {
     ASSERT_OK(ScanAndRead(table_path, {"f3"}, expected_f3));
 }
 
-TEST_P(DataEvolutionTableTest, TestLimitPushDownWithHeavilyDeletedFirstRowRangeGroup) {
+TEST_P(DataEvolutionDvTableTest, TestLimitPushDownWithHeavilyDeletedFirstRowRangeGroup) {
     // one split per row range group, so the limit has to span both to be satisfied
     CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true,
                              {{Options::SOURCE_SPLIT_TARGET_SIZE, "1"}});
@@ -3541,22 +3546,35 @@ TEST_P(DataEvolutionTableTest, TestLimitPushDownDisabledByRowRangeIndex) {
 std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionTableTest() {
     std::vector<DataEvolutionTableParam> values;
     for (bool enable_snapshot_live_manifest_cache : {false, true}) {
-        values.emplace_back("parquet", enable_snapshot_live_manifest_cache);
+        values.emplace_back("parquet", enable_snapshot_live_manifest_cache, /*bitmap64=*/false);
 #ifdef PAIMON_ENABLE_MOSAIC
-        values.emplace_back("mosaic", enable_snapshot_live_manifest_cache);
+        values.emplace_back("mosaic", enable_snapshot_live_manifest_cache, /*bitmap64=*/false);
 #endif
 #ifdef PAIMON_ENABLE_LANCE
-        values.emplace_back("lance", enable_snapshot_live_manifest_cache);
+        values.emplace_back("lance", enable_snapshot_live_manifest_cache, /*bitmap64=*/false);
 #endif
 #ifdef PAIMON_ENABLE_ORC
-        values.emplace_back("orc", enable_snapshot_live_manifest_cache);
+        values.emplace_back("orc", enable_snapshot_live_manifest_cache, /*bitmap64=*/false);
 #endif
 #ifdef PAIMON_ENABLE_AVRO
-        values.emplace_back("avro", enable_snapshot_live_manifest_cache);
+        values.emplace_back("avro", enable_snapshot_live_manifest_cache, /*bitmap64=*/false);
 #endif
     }
     return values;
 }
+
+std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionDvTableTest() {
+    std::vector<DataEvolutionTableParam> values;
+    for (const auto& param : GetTestValuesForDataEvolutionTableTest()) {
+        for (const auto& bitmap64 : {false, true}) {
+            values.emplace_back(std::get<0>(param), std::get<1>(param), bitmap64);
+        }
+    }
+    return values;
+}
+
+INSTANTIATE_TEST_SUITE_P(FileFormat, DataEvolutionDvTableTest,
+                         ::testing::ValuesIn(GetTestValuesForDataEvolutionDvTableTest()));
 
 INSTANTIATE_TEST_SUITE_P(FileFormat, DataEvolutionTableTest,
                          ::testing::ValuesIn(GetTestValuesForDataEvolutionTableTest()));

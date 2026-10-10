@@ -421,4 +421,30 @@ TEST_F(FileIndexEvaluatorTest, TestInvalidEvaluate) {
         "read process for FileIndexEvaluator must have data_file_path_factory and file_system");
 }
 
+TEST_F(FileIndexEvaluatorTest, TestLargeFileSkips32BitIndex) {
+    auto data_file_meta = std::make_shared<DataFileMeta>(
+        "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc", /*file_size=*/689,
+        /*row_count=*/(1LL << 32), /*min_key=*/BinaryRow::EmptyRow(),
+        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+        /*max_sequence_number=*/7, /*schema_id=*/0,
+        /*level=*/0,
+        /*extra_files=*/
+        std::vector<std::optional<std::string>>(
+            {"data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc.index"}),
+        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+        /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt,
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
+    auto predicate =
+        PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
+    ASSERT_OK_AND_ASSIGN(
+        auto result, FileIndexEvaluator::Evaluate(data_schema_, predicate,
+                                                  /*data_file_path_factory=*/nullptr,
+                                                  data_file_meta, /*file_system=*/nullptr, pool_));
+    ASSERT_TRUE(result->IsRemain().value());
+    ASSERT_EQ(dynamic_cast<BitmapIndexResult*>(result.get()), nullptr);
+}
+
 }  // namespace paimon::test

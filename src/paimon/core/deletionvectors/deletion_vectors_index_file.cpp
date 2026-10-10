@@ -55,6 +55,7 @@ DeletionVectorsIndexFile::ReadAllDeletionVectors(
     auto data_input_stream = std::make_shared<DataInputStream>(input_stream);
     PAIMON_RETURN_NOT_OK(CheckVersion(data_input_stream));
     for (const auto& [_, deletion_vector_meta] : deletion_vector_metas.value()) {
+        PAIMON_RETURN_NOT_OK(data_input_stream->Seek(deletion_vector_meta.GetOffset()));
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<DeletionVector> dv,
             DeletionVector::Read(data_input_stream.get(),

@@ -261,6 +261,7 @@ set(PAIMON_CORE_SRCS
     core/deletionvectors/deletion_vector.cpp
     core/deletionvectors/deletion_file_writer.cpp
     core/deletionvectors/bitmap_deletion_vector.cpp
+    core/deletionvectors/bitmap64_deletion_vector.cpp
     core/deletionvectors/deletion_vectors_index_file.cpp
     core/deletionvectors/deletion_vector_index_file_writer.cpp
     core/global_index/global_index_evaluator_impl.cpp
@@ -790,6 +791,7 @@ if(PAIMON_BUILD_TESTS)
                     core/options/table_type_test.cpp
                     core/deletionvectors/apply_deletion_vector_batch_reader_test.cpp
                     core/deletionvectors/bitmap_deletion_vector_test.cpp
+                    core/deletionvectors/bitmap64_deletion_vector_test.cpp
                     core/deletionvectors/bucketed_dv_maintainer_test.cpp
                     core/deletionvectors/deletion_file_writer_test.cpp
                     core/deletionvectors/deletion_vector_test.cpp
