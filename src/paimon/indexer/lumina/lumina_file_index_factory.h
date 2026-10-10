@@ -16,24 +16,27 @@
  * limitations under the License.
  */
 
-#include "paimon/indexer/lumina/lumina_file_index_factory.h"
+#pragma once
 
 #include <map>
 #include <memory>
 #include <string>
 
-#include "paimon/factories/factory.h"
-#include "paimon/indexer/lumina/lumina_file_index.h"
+#include "paimon/file_index/file_indexer_factory.h"
 
 namespace paimon::lumina {
 
-const char LuminaFileIndexFactory::IDENTIFIER[] = "lumina";
+/// Factory for creating lumina file indexers.
+class LuminaFileIndexFactory final : public FileIndexerFactory {
+ public:
+    static const char IDENTIFIER[];
 
-Result<std::unique_ptr<FileIndexer>> LuminaFileIndexFactory::Create(
-    const std::map<std::string, std::string>& options) const {
-    return std::make_unique<LuminaFileIndexer>(options);
-}
+    const char* Identifier() const override {
+        return IDENTIFIER;
+    }
 
-REGISTER_PAIMON_FACTORY(LuminaFileIndexFactory);
+    Result<std::unique_ptr<FileIndexer>> Create(
+        const std::map<std::string, std::string>& options) const override;
+};
 
 }  // namespace paimon::lumina

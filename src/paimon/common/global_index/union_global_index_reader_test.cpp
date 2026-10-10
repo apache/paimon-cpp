@@ -19,7 +19,6 @@
 
 #include "paimon/common/global_index/union_global_index_reader.h"
 
-#include <atomic>
 #include <map>
 #include <memory>
 #include <queue>
@@ -32,173 +31,11 @@
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/predicate/literal.h"
+#include "paimon/testing/mock/mock_global_index_reader.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon::test {
-class FakeReader : public GlobalIndexReader {
- public:
-    /// Sets the result returned by all Visit* methods (default behavior).
-    /// Pass an empty vector for an empty bitmap.
-    void SetDefaultResult(const std::vector<int64_t>& row_ids) {
-        default_result_ = row_ids;
-        return_nullptr_ = false;
-        return_error_ = false;
-    }
-
-    /// Configures this reader to return nullptr for all Visit* methods.
-    void SetReturnNullptr() {
-        return_nullptr_ = true;
-        return_error_ = false;
-    }
-
-    /// Configures this reader to return an error Status for all Visit* methods.
-    void SetReturnError(const std::string& message) {
-        return_error_ = true;
-        return_nullptr_ = false;
-        error_message_ = message;
-    }
-
-    void SetThrowException(const std::string& message) {
-        throw_exception_ = true;
-        exception_message_ = message;
-    }
-
-    /// Sets a scored result returned by VisitVectorSearch.
-    void SetScoredResult(const std::vector<int64_t>& row_ids, const std::vector<float>& scores) {
-        scored_row_ids_ = row_ids;
-        scored_scores_ = scores;
-        has_scored_result_ = true;
-    }
-
-    void SetThreadSafe(bool thread_safe) {
-        thread_safe_ = thread_safe;
-    }
-
-    /// Counts how many times any Visit* method was invoked. Useful to assert all readers
-    /// are exercised by UnionGlobalIndexReader.
-    int InvocationCount() const {
-        return invocation_count_.load();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitIsNull() override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitEqual(const Literal& literal) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitNotEqual(const Literal& literal) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitLessThan(const Literal& literal) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitLessOrEqual(const Literal& literal) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterThan(const Literal& literal) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterOrEqual(
-        const Literal& literal) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitIn(
-        const std::vector<Literal>& literals) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitNotIn(
-        const std::vector<Literal>& literals) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitStartsWith(const Literal& prefix) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitEndsWith(const Literal& suffix) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitContains(const Literal& literal) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitLike(const Literal& literal) override {
-        return MakeResult();
-    }
-
-    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
-        const std::shared_ptr<VectorSearch>& vector_search) override {
-        invocation_count_++;
-        if (return_error_) {
-            return Status::Invalid(error_message_);
-        }
-        if (!has_scored_result_) {
-            return std::shared_ptr<ScoredGlobalIndexResult>(nullptr);
-        }
-        auto bitmap = RoaringBitmap64::From(scored_row_ids_);
-        auto scores = scored_scores_;
-        return std::make_shared<BitmapScoredGlobalIndexResult>(std::move(bitmap),
-                                                               std::move(scores));
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
-        const std::shared_ptr<FullTextSearch>& full_text_search) override {
-        return MakeResult();
-    }
-
-    bool IsThreadSafe() const override {
-        return thread_safe_;
-    }
-
-    std::string GetIndexType() const override {
-        return "fake";
-    }
-
- private:
-    Result<std::shared_ptr<GlobalIndexResult>> MakeResult() {
-        invocation_count_++;
-        if (throw_exception_) {
-            throw std::runtime_error(exception_message_);
-        }
-        if (return_error_) {
-            return Status::Invalid(error_message_);
-        }
-        if (return_nullptr_) {
-            return std::shared_ptr<GlobalIndexResult>(nullptr);
-        }
-        auto ids = default_result_;
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [ids]() { return RoaringBitmap64::From(ids); });
-    }
-
- private:
-    std::vector<int64_t> default_result_;
-    bool return_nullptr_ = false;
-    bool return_error_ = false;
-    bool throw_exception_ = false;
-    std::string error_message_;
-    std::string exception_message_;
-    std::vector<int64_t> scored_row_ids_;
-    std::vector<float> scored_scores_;
-    bool has_scored_result_ = false;
-    bool thread_safe_ = true;
-    std::atomic<int32_t> invocation_count_{0};
-};
-
 // Runs the first task immediately and defers the rest. This makes it possible to verify that
 // queued tasks own their action even if collecting an earlier future throws.
 class DeferAfterFirstExecutor : public Executor {
@@ -267,7 +104,7 @@ class UnionGlobalIndexReaderTest : public ::testing::Test {
 };
 
 TEST_F(UnionGlobalIndexReaderTest, TestSingleReaderUnion) {
-    auto reader = std::make_shared<FakeReader>();
+    auto reader = std::make_shared<MockGlobalIndexReader>();
     reader->SetDefaultResult({1, 2, 3});
     auto executor = std::make_shared<DeferAfterFirstExecutor>();
 
@@ -281,9 +118,9 @@ TEST_F(UnionGlobalIndexReaderTest, TestSingleReaderUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionSequential) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
-    auto reader3 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    auto reader3 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1, 2});
     reader2->SetDefaultResult({3, 4});
     reader3->SetDefaultResult({5});
@@ -300,8 +137,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionSequential) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionOverlappingIds) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1, 2, 3});
     reader2->SetDefaultResult({2, 3, 4});
 
@@ -314,9 +151,9 @@ TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionOverlappingIds) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionWithExecutor) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
-    auto reader3 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    auto reader3 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({10});
     reader2->SetDefaultResult({20});
     reader3->SetDefaultResult({30});
@@ -342,8 +179,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestEmptyReaderList) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestAllReadersReturnNullptr) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetReturnNullptr();
     reader2->SetReturnNullptr();
 
@@ -356,9 +193,9 @@ TEST_F(UnionGlobalIndexReaderTest, TestAllReadersReturnNullptr) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptr) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
-    auto reader3 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    auto reader3 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetReturnNullptr();
     reader2->SetDefaultResult({1, 2});
     reader3->SetReturnNullptr();
@@ -372,8 +209,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptr) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestErrorPropagationSequential) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1, 2});
     reader2->SetReturnError("Unknown error for reader2");
 
@@ -384,8 +221,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestErrorPropagationSequential) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestErrorPropagationWithExecutor) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1});
     reader2->SetReturnError("Unknown error for reader2");
 
@@ -397,8 +234,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestErrorPropagationWithExecutor) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestDeferredTaskOwnsActionAfterEarlierFutureThrows) {
-    auto throwing_reader = std::make_shared<FakeReader>();
-    auto deferred_reader = std::make_shared<FakeReader>();
+    auto throwing_reader = std::make_shared<MockGlobalIndexReader>();
+    auto deferred_reader = std::make_shared<MockGlobalIndexReader>();
     throwing_reader->SetThrowException("reader exception");
     deferred_reader->SetDefaultResult({2});
 
@@ -414,8 +251,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestDeferredTaskOwnsActionAfterEarlierFutureT
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitEqualUnion) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1});
     reader2->SetDefaultResult({2});
 
@@ -428,8 +265,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitEqualUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitNotEqualUnion) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1});
     reader2->SetDefaultResult({2});
 
@@ -442,8 +279,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitNotEqualUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitRangeQueriesUnion) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1});
     reader2->SetDefaultResult({2});
 
@@ -462,8 +299,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitRangeQueriesUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitInUnion) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1, 3});
     reader2->SetDefaultResult({2, 4});
 
@@ -479,8 +316,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitInUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitStringQueriesUnion) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1});
     reader2->SetDefaultResult({2});
 
@@ -499,8 +336,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitStringQueriesUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitIsNullUnion) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({100, 200});
     reader2->SetDefaultResult({300});
 
@@ -512,8 +349,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitIsNullUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchUnion) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1, 5});
     reader2->SetDefaultResult({2, 6});
 
@@ -525,8 +362,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchAllNullptr) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     // Neither reader has SetScoredResult -> VisitVectorSearch returns nullptr
     reader1->SetDefaultResult({1});
     reader2->SetDefaultResult({2});
@@ -539,7 +376,7 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchAllNullptr) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchSingleReader) {
-    auto reader = std::make_shared<FakeReader>();
+    auto reader = std::make_shared<MockGlobalIndexReader>();
     reader->SetScoredResult({1, 3, 5}, {0.9f, 0.7f, 0.5f});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader};
@@ -550,8 +387,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchSingleReader) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchMultipleReadersUnion) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetScoredResult({1, 3}, {0.9f, 0.7f});
     reader2->SetScoredResult({2, 4}, {0.8f, 0.6f});
 
@@ -564,9 +401,9 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchMultipleReadersUnion) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchPartialNullptr) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
-    auto reader3 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    auto reader3 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetScoredResult({1, 2}, {0.9f, 0.8f});
     // reader2 has no scored result -> returns nullptr
     reader2->SetDefaultResult({10});
@@ -581,8 +418,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchPartialNullptr) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchErrorPropagation) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetScoredResult({1}, {0.9f});
     reader2->SetReturnError("vector search failure");
 
@@ -593,8 +430,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchErrorPropagation) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestIsThreadSafeReturnsTrueWhenAllReadersAreSafe) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
     UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
@@ -603,8 +440,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestIsThreadSafeReturnsTrueWhenAllReadersAreS
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestIsThreadSafeReturnsFalseWhenAnyReaderIsNotSafe) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader2->SetThreadSafe(false);
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};

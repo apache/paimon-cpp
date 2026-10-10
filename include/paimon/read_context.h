@@ -109,7 +109,7 @@ class PAIMON_EXPORT ReadContext {
         return full_text_search_;
     }
 
-    bool HasFileIndexSearch() const {
+    bool HasVectorOrFullTextSearch() const {
         return vector_search_ != nullptr || full_text_search_ != nullptr;
     }
 
@@ -339,14 +339,20 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetPredicate(const std::shared_ptr<Predicate>& predicate);
 
-    /// Configure file-local vector search. The limit is applied independently to every data file.
-    /// Vector search and full-text search are mutually exclusive.
+    /// Set the vector search request used when reading data.
+    ///
+    /// TODO(jinli.zjw): Support combining vector search with predicates and full-text search. Merge
+    /// per-file candidates to compute read-level top-k results.
+    ///
     /// @param vector_search Vector search request, or nullptr to clear it.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetVectorSearch(const std::shared_ptr<VectorSearch>& vector_search);
 
-    /// Configure file-local full-text search. The limit is applied independently to every data
-    /// file. Full-text search and vector search are mutually exclusive.
+    /// Set the full-text search request used when reading data.
+    ///
+    /// TODO(jinli.zjw): Support combining full-text search with predicates and vector search. Apply
+    /// the search limit to merged per-file results at read level.
+    ///
     /// @param full_text_search Full-text search request, or nullptr to clear it.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetFullTextSearch(const std::shared_ptr<FullTextSearch>& full_text_search);

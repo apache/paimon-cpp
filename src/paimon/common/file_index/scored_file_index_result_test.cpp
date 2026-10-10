@@ -36,10 +36,6 @@ TEST(ScoredFileIndexResultTest, TestCreate) {
     EXPECT_TRUE(remain);
     EXPECT_EQ("row positions: {2,5}, scores: {0.25,0.75}", result->ToString());
 
-    std::shared_ptr<FileIndexResult> file_index_result = result;
-    ASSERT_OK_AND_ASSIGN(remain, file_index_result->IsRemain());
-    EXPECT_TRUE(remain);
-
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> empty,
                          ScoredFileIndexResult::Create(RoaringBitmap32(), {}));
     EXPECT_TRUE(empty->IsEmpty());

@@ -27,126 +27,11 @@
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
+#include "paimon/testing/mock/mock_global_index_reader.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon::test {
-class FakeGlobalIndexReader : public GlobalIndexReader {
- public:
-    void SetDefaultResult(const std::vector<int64_t>& row_ids) {
-        default_result_ = row_ids;
-    }
-
-    void SetVectorSearchResult(const std::vector<int64_t>& row_ids,
-                               const std::vector<float>& scores) {
-        vector_search_row_ids_ = row_ids;
-        vector_search_scores_ = scores;
-        has_vector_search_result_ = true;
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitIsNull() override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitEqual(const Literal& literal) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitNotEqual(const Literal& literal) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitLessThan(const Literal& literal) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitLessOrEqual(const Literal& literal) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterThan(const Literal& literal) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterOrEqual(
-        const Literal& literal) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitIn(
-        const std::vector<Literal>& literals) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitNotIn(
-        const std::vector<Literal>& literals) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitStartsWith(const Literal& prefix) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitEndsWith(const Literal& suffix) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitContains(const Literal& literal) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitLike(const Literal& literal) override {
-        return MakeResult(default_result_);
-    }
-
-    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
-        const std::shared_ptr<VectorSearch>& vector_search) override {
-        if (!has_vector_search_result_) {
-            return Status::Invalid("FakeGlobalIndexReader does not support vector search");
-        }
-        auto bitmap = RoaringBitmap64::From(vector_search_row_ids_);
-        auto scores = vector_search_scores_;
-        return std::make_shared<BitmapScoredGlobalIndexResult>(std::move(bitmap),
-                                                               std::move(scores));
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
-        const std::shared_ptr<FullTextSearch>& full_text_search) override {
-        captured_fts = full_text_search;
-        return MakeResult(default_result_);
-    }
-
-    // Captures the (possibly pre_filter-rewritten) FullTextSearch the offset
-    // reader forwarded, so tests can assert field propagation.
-    std::shared_ptr<FullTextSearch> captured_fts;
-
-    bool IsThreadSafe() const override {
-        return true;
-    }
-
-    std::string GetIndexType() const override {
-        return "fake";
-    }
-
- private:
-    static Result<std::shared_ptr<GlobalIndexResult>> MakeResult(
-        const std::vector<int64_t>& row_ids) {
-        auto ids = row_ids;
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [ids]() { return RoaringBitmap64::From(ids); });
-    }
-
- private:
-    std::vector<int64_t> default_result_;
-    std::vector<int64_t> vector_search_row_ids_;
-    std::vector<float> vector_search_scores_;
-    bool has_vector_search_result_ = false;
-};
-
 class OffsetGlobalIndexReaderTest : public ::testing::Test {
  public:
     void CheckResult(const std::shared_ptr<GlobalIndexResult>& result,
@@ -177,7 +62,7 @@ class OffsetGlobalIndexReaderTest : public ::testing::Test {
 };
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitEqualWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1, 3});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
@@ -189,7 +74,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitEqualWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitIsNotNullWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 2, 4, 6});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 50);
@@ -200,7 +85,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitIsNotNullWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitIsNullWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({1, 3});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 200);
@@ -211,7 +96,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitIsNullWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitLessThanWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
@@ -223,7 +108,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitLessThanWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitGreaterOrEqualWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({3, 4, 5});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 1000);
@@ -235,7 +120,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitGreaterOrEqualWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitInWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 2});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 5);
@@ -247,7 +132,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitInWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitNotInWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({1, 3, 5});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 20);
@@ -259,7 +144,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitNotInWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitNotEqualWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 2, 4});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 7);
@@ -271,7 +156,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitNotEqualWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitLessOrEqualWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1, 2});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 30);
@@ -283,7 +168,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitLessOrEqualWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitGreaterThanWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({4, 5});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 15);
@@ -295,7 +180,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitGreaterThanWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestZeroOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1, 2});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 0);
@@ -306,7 +191,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestZeroOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestEmptyResultWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
@@ -317,20 +202,20 @@ TEST_F(OffsetGlobalIndexReaderTest, TestEmptyResultWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestIsThreadSafeDelegated) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
-    // FakeGlobalIndexReader returns true for IsThreadSafe
+    // MockGlobalIndexReader returns true for IsThreadSafe
     ASSERT_TRUE(offset_reader->IsThreadSafe());
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestGetIndexTypeDelegated) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
     ASSERT_EQ(offset_reader->GetIndexType(), "fake");
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 3, 5});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
@@ -346,7 +231,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchPreservesScoreFlags) 
     // FullTextSearch::ReplacePreFilter rebuilt via the 5-arg ctor and silently
     // reset both back to their defaults, turning a scored / min_score query
     // unscored as soon as it crossed any offset shard.
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 3, 5});
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
 
@@ -360,20 +245,20 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchPreservesScoreFlags) 
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(fts));
     CheckResult(result, {10, 13, 15});
 
-    ASSERT_TRUE(fake_reader->captured_fts);
-    ASSERT_TRUE(fake_reader->captured_fts->with_score)
-        << "with_score must survive the pre_filter rewrite";
-    ASSERT_TRUE(fake_reader->captured_fts->min_score.has_value())
+    auto captured_fts = fake_reader->CapturedFullTextSearch();
+    ASSERT_TRUE(captured_fts);
+    ASSERT_TRUE(captured_fts->with_score) << "with_score must survive the pre_filter rewrite";
+    ASSERT_TRUE(captured_fts->min_score.has_value())
         << "min_score must survive the pre_filter rewrite";
-    ASSERT_FLOAT_EQ(fake_reader->captured_fts->min_score.value(), 1.5f);
+    ASSERT_FLOAT_EQ(captured_fts->min_score.value(), 1.5f);
     // limit and the offset-rewritten local pre_filter should still be present.
-    ASSERT_EQ(fake_reader->captured_fts->limit, std::optional<int32_t>(7));
-    ASSERT_TRUE(fake_reader->captured_fts->pre_filter.has_value());
+    ASSERT_EQ(captured_fts->limit, std::optional<int32_t>(7));
+    ASSERT_TRUE(captured_fts->pre_filter.has_value());
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitVectorSearchWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
-    fake_reader->SetVectorSearchResult({0, 2, 5}, {0.9f, 0.7f, 0.3f});
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
+    fake_reader->SetScoredResult({0, 2, 5}, {0.9f, 0.7f, 0.3f});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
 
@@ -383,15 +268,15 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitVectorSearchWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitVectorSearchNotSupported) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
-    // FakeGlobalIndexReader without SetVectorSearchResult returns error for VectorSearch
-    ASSERT_NOK_WITH_MSG(offset_reader->VisitVectorSearch(nullptr),
-                        "FakeGlobalIndexReader does not support vector search");
+    // Propagate the wrapped reader's unsupported-search error.
+    fake_reader->SetReturnError("vector search not supported");
+    ASSERT_NOK_WITH_MSG(offset_reader->VisitVectorSearch(nullptr), "vector search not supported");
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitStartsWithWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1, 4});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 50);
@@ -403,7 +288,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitStartsWithWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitEndsWithWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({2, 3});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 25);
@@ -415,7 +300,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitEndsWithWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitContainsWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({1, 5, 6});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 300);
@@ -427,7 +312,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitContainsWithOffset) {
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitLikeWithOffset) {
-    auto fake_reader = std::make_shared<FakeGlobalIndexReader>();
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 3, 7});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 40);

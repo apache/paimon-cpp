@@ -37,7 +37,6 @@ constexpr char kFileIndexPrefix[] = "file-index.";
 constexpr char kColumnsSuffix[] = ".columns";
 constexpr size_t kFileIndexPrefixLength = sizeof(kFileIndexPrefix) - 1;
 constexpr size_t kColumnsSuffixLength = sizeof(kColumnsSuffix) - 1;
-constexpr int64_t kDefaultInManifestThreshold = 500;
 
 }  // namespace
 
@@ -47,7 +46,7 @@ Result<FileIndexOptions> FileIndexOptions::FromCoreOptions(const CoreOptions& op
 
 Result<FileIndexOptions> FileIndexOptions::FromMap(
     const std::map<std::string, std::string>& raw_options) {
-    int64_t in_manifest_threshold = kDefaultInManifestThreshold;
+    int64_t in_manifest_threshold = CoreOptions().FileIndexInManifestThreshold();
     auto iter = raw_options.find(Options::FILE_INDEX_IN_MANIFEST_THRESHOLD);
     if (iter != raw_options.end()) {
         PAIMON_ASSIGN_OR_RAISE(in_manifest_threshold, MemorySize::ParseBytes(iter->second));

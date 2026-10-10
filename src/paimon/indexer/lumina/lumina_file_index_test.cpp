@@ -26,7 +26,9 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate_builder.h"
@@ -38,55 +40,34 @@ namespace paimon::lumina::test {
 namespace {
 
 std::shared_ptr<arrow::StructArray> CreateVectors() {
-    std::shared_ptr<arrow::FloatBuilder> values =
-        std::make_shared<arrow::FloatBuilder>(arrow::default_memory_pool());
-    arrow::ListBuilder vectors(arrow::default_memory_pool(), values);
-    EXPECT_TRUE(vectors.Append().ok());
-    EXPECT_TRUE(values->AppendValues({0.0f, 0.0f, 0.0f, 0.0f}).ok());
-    EXPECT_TRUE(vectors.AppendNull().ok());
-    EXPECT_TRUE(vectors.Append().ok());
-    EXPECT_TRUE(values->AppendValues({1.0f, 1.0f, 1.0f, 1.0f}).ok());
-    std::shared_ptr<arrow::Array> vector_array;
-    EXPECT_TRUE(vectors.Finish(&vector_array).ok());
-    return arrow::StructArray::Make({vector_array},
-                                    {arrow::field("embedding", vector_array->type())})
-        .ValueOrDie();
+    auto type = arrow::struct_({arrow::field("embedding", arrow::list(arrow::float32()))});
+    return checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(type, R"([
+            [[0.0, 0.0, 0.0, 0.0]],
+            [null],
+            [[1.0, 1.0, 1.0, 1.0]]
+        ])")
+            .ValueOrDie());
 }
 
 std::shared_ptr<arrow::StructArray> CreateAllNullVectors() {
-    std::shared_ptr<arrow::FloatBuilder> values =
-        std::make_shared<arrow::FloatBuilder>(arrow::default_memory_pool());
-    arrow::ListBuilder vectors(arrow::default_memory_pool(), values);
-    EXPECT_TRUE(vectors.AppendNulls(3).ok());
-    std::shared_ptr<arrow::Array> vector_array;
-    EXPECT_TRUE(vectors.Finish(&vector_array).ok());
-    return arrow::StructArray::Make({vector_array},
-                                    {arrow::field("embedding", vector_array->type())})
-        .ValueOrDie();
+    auto type = arrow::struct_({arrow::field("embedding", arrow::list(arrow::float32()))});
+    return checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(type, R"([[null], [null], [null]])")
+            .ValueOrDie());
 }
 
 std::shared_ptr<arrow::StructArray> CreateTaggedVectors() {
-    std::shared_ptr<arrow::FloatBuilder> values =
-        std::make_shared<arrow::FloatBuilder>(arrow::default_memory_pool());
-    arrow::ListBuilder vectors(arrow::default_memory_pool(), values);
-    EXPECT_TRUE(vectors.Append().ok());
-    EXPECT_TRUE(values->AppendValues({0.0f, 0.0f, 0.0f, 0.0f}).ok());
-    EXPECT_TRUE(vectors.AppendNull().ok());
-    EXPECT_TRUE(vectors.Append().ok());
-    EXPECT_TRUE(values->AppendValues({1.0f, 1.0f, 1.0f, 1.0f}).ok());
-    EXPECT_TRUE(vectors.Append().ok());
-    EXPECT_TRUE(values->AppendValues({1.0f, 1.0f, 1.0f, 1.1f}).ok());
-    std::shared_ptr<arrow::Array> vector_array;
-    EXPECT_TRUE(vectors.Finish(&vector_array).ok());
-
-    arrow::StringBuilder colors;
-    EXPECT_TRUE(colors.AppendValues({"red", "red", "blue", "red"}).ok());
-    std::shared_ptr<arrow::Array> color_array;
-    EXPECT_TRUE(colors.Finish(&color_array).ok());
-    return arrow::StructArray::Make({vector_array, color_array},
-                                    {arrow::field("embedding", vector_array->type()),
-                                     arrow::field("color", color_array->type())})
-        .ValueOrDie();
+    auto type = arrow::struct_({arrow::field("embedding", arrow::list(arrow::float32())),
+                                arrow::field("color", arrow::utf8())});
+    return checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(type, R"([
+            [[0.0, 0.0, 0.0, 0.0], "red"],
+            [null, "red"],
+            [[1.0, 1.0, 1.0, 1.0], "blue"],
+            [[1.0, 1.0, 1.0, 1.1], "red"]
+        ])")
+            .ValueOrDie());
 }
 
 }  // namespace

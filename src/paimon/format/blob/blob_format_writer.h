@@ -133,13 +133,12 @@ class BlobFormatWriter : public FormatWriter {
     Result<std::vector<int64_t>> WriteBlobElements(const arrow::LargeBinaryArray& values,
                                                    int64_t offset, int32_t count);
 
-    /// The input stream of a blob value, as Java's BlobCopySource. A `reused` stream is a view on
-    /// the kept source stream and must not be closed. For a dynamic-length descriptor, the view
-    /// shares an independently opened file stream, which must be closed instead of the view.
+    /// The input stream of a blob value and the stream to close after a successful copy.
     struct BlobCopySource {
         std::unique_ptr<InputStream> stream;
-        bool reused = false;
-        std::shared_ptr<InputStream> owned_stream;
+        /// Non-owning: kept alive by stream, directly or through the view's wrapped stream.
+        /// Null for a cached source whose closing is managed by the writer.
+        InputStream* close_target = nullptr;
     };
 
     /// Open an input stream on a blob value, which is either a serialized BlobDescriptor or the

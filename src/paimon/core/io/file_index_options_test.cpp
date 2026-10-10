@@ -81,7 +81,7 @@ TEST(FileIndexOptionsTest, TestFromMapOnlyParsesFileIndexOptions) {
     EXPECT_EQ(1024, options.InManifestThreshold());
 
     ASSERT_OK_AND_ASSIGN(FileIndexOptions default_options, FileIndexOptions::FromMap({}));
-    EXPECT_EQ(500, default_options.InManifestThreshold());
+    EXPECT_EQ(CoreOptions().FileIndexInManifestThreshold(), default_options.InManifestThreshold());
     ASSERT_NOK(
         FileIndexOptions::FromMap({{Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "invalid-size"}}));
 }

@@ -240,17 +240,9 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
         return std::unique_ptr<FileBatchReader>();
     }
 
-    ::ArrowSchema c_read_schema;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
-    PAIMON_RETURN_NOT_OK(file_reader->SetReadSchema(&c_read_schema, predicate, actual_selection));
-
-    std::unique_ptr<FileBatchReader> reader;
-    if (!file_reader->SupportPreciseBitmapSelection() && actual_selection) {
-        reader = std::make_unique<ApplyBitmapIndexBatchReader>(std::move(file_reader),
-                                                               std::move(actual_selection).value());
-    } else {
-        reader = std::move(file_reader);
-    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
+                           ApplyBitmapSelection(std::move(file_reader), read_schema, predicate,
+                                                std::move(actual_selection)));
 
     if (deletion_vector && !deletion && !deletion_vector->IsEmpty()) {
         // TODO(xinyu.lxy): if deletion vector is bitmap64, use ApplyBitmapIndexBatchReader to
@@ -258,6 +250,20 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
         return Status::NotImplemented("Only support BitmapDeletionVector");
     }
     return reader;
+}
+
+Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyBitmapSelection(
+    std::unique_ptr<FileBatchReader>&& file_reader,
+    const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
+    std::optional<RoaringBitmap32> selection) {
+    ::ArrowSchema c_read_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
+    PAIMON_RETURN_NOT_OK(file_reader->SetReadSchema(&c_read_schema, predicate, selection));
+    if (!file_reader->SupportPreciseBitmapSelection() && selection) {
+        return std::make_unique<ApplyBitmapIndexBatchReader>(std::move(file_reader),
+                                                             std::move(selection).value());
+    }
+    return std::move(file_reader);
 }
 
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateRawFileReader(

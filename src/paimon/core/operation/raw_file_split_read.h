@@ -44,19 +44,18 @@ class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
 class Predicate;
+class ScoredFileIndexResult;
 struct DataFileMeta;
 struct DeletionFile;
 
 /// If the class name below is enclosed in parentheses, it might be present in the read path;
 /// otherwise, it must be present in the read path.
 ///
-/// Readers Overview: (ConcatBatchReader across
-/// splits)->CompleteRowKindBatchReader->(PredicateBatchReader)
-/// ->ConcatBatchReader across
-/// files->FieldMappingReader->(ApplyBitmapIndexBatchReader)->(CompleteRowTrackingFieldsBatchReader)
-/// ->(ShreddingFileReader)->(VectorFileBatchReader)
-/// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)
-/// ->(LateMaterializingFileBatchReader)->FormatReader
+/// Readers Overview: (ConcatBatchReader across splits) -> CompleteRowKindBatchReader ->
+/// (PredicateBatchReader) -> ConcatBatchReader across files -> (CompleteIndexScoreFileBatchReader)
+/// -> FieldMappingReader -> (ApplyBitmapIndexBatchReader) -> (CompleteRowTrackingFieldsBatchReader)
+/// -> (ShreddingFileReader) -> (VectorFileBatchReader) -> (DelegatingPrefetchReader) ->
+/// (PrefetchFileBatchReader) -> (LateMaterializingFileBatchReader) -> FormatReader
 
 class RawFileSplitRead : public AbstractSplitRead {
  public:
@@ -91,6 +90,23 @@ class RawFileSplitRead : public AbstractSplitRead {
         const std::optional<std::vector<Range>>& ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         std::vector<float>* index_scores) const override;
+
+ private:
+    static Result<std::shared_ptr<const RoaringBitmap32>> LoadSearchDeletionBitmap(
+        const std::shared_ptr<DataFileMeta>& file, const DeletionVector::Factory& dv_factory);
+
+    Result<std::shared_ptr<ScoredFileIndexResult>> EvaluateVectorSearchWithDv(
+        const std::shared_ptr<DataFileMeta>& file,
+        const std::shared_ptr<arrow::Schema>& data_schema,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::shared_ptr<const RoaringBitmap32>& deletion) const;
+
+    // nullopt means the file can be skipped, not an unrestricted selection.
+    Result<std::optional<RoaringBitmap32>> EvaluateFullTextSearchWithDv(
+        const std::shared_ptr<DataFileMeta>& file,
+        const std::shared_ptr<arrow::Schema>& data_schema,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::shared_ptr<const RoaringBitmap32>& deletion) const;
 };
 
 }  // namespace paimon

@@ -75,8 +75,8 @@ class InternalReadContext {
     const std::shared_ptr<FullTextSearch>& GetFullTextSearch() const {
         return read_context_->GetFullTextSearch();
     }
-    bool HasFileIndexSearch() const {
-        return read_context_->HasFileIndexSearch();
+    bool HasVectorOrFullTextSearch() const {
+        return read_context_->HasVectorOrFullTextSearch();
     }
     bool EnablePredicateFilter() const {
         return read_context_->EnablePredicateFilter();
@@ -141,10 +141,10 @@ class InternalReadContext {
 
     static std::optional<DataField> TryResolveSpecialFieldById(int32_t field_id,
                                                                const CoreOptions& core_options,
-                                                               bool has_file_index_search);
-    static std::optional<DataField> TryResolveSpecialFieldByName(const std::string& name,
-                                                                 const CoreOptions& core_options,
-                                                                 bool has_file_index_search);
+                                                               bool has_vector_or_full_text_search);
+    static std::optional<DataField> TryResolveSpecialFieldByName(
+        const std::string& name, const CoreOptions& core_options,
+        bool has_vector_or_full_text_search);
     static Result<std::shared_ptr<arrow::Field>> AlignReadFieldWithTableFieldIds(
         const std::shared_ptr<arrow::Field>& read_field,
         const std::shared_ptr<arrow::Field>& table_field);

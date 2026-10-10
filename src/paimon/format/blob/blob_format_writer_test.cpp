@@ -1691,6 +1691,7 @@ TEST_F(BlobFormatWriterArrayBlobTest, TestDynamicLengthElementReadsGrownFile) {
     ASSERT_OK(AddArrayBlobRow(writer, BlobElements{whole, head}));
     ASSERT_OK(writer->Finish());
     ASSERT_EQ(counting_fs->OpenCallCount(), 3);
+    ASSERT_EQ(counting_fs->CloseCallCount(), 3);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ListArray> list_array,
                          ReadBackArrays(/*blob_as_descriptor=*/false,

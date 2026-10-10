@@ -20,12 +20,14 @@
 
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "arrow/type_fwd.h"
+#include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/fs/external_path_provider.h"
@@ -39,12 +41,17 @@
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_format.h"
+#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
+#include "paimon/testing/mock/mock_search_file_index.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
@@ -426,5 +433,176 @@ TEST_F(FileIndexEvaluatorTest, TestInvalidEvaluate) {
                                      /*file_system=*/nullptr, pool_),
         "read process for FileIndexEvaluator must have data_file_path_factory and file_system");
 }
+
+class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
+                                     public ::testing::WithParamInterface<bool> {
+ protected:
+    void SetUp() override {
+        FileIndexEvaluatorTest::SetUp();
+        data_schema_ = arrow::schema({arrow::field("embedding", arrow::list(arrow::float32())),
+                                      arrow::field("title", arrow::utf8())});
+        dir_ = UniqueTestDirectory::Create();
+        path_factory_ = std::make_shared<DataFilePathFactory>();
+        ASSERT_OK(path_factory_->Init(dir_->Str(), /*format_identifier=*/"orc",
+                                      /*data_file_prefix=*/"data-", nullptr));
+    }
+
+    Result<std::shared_ptr<DataFileMeta>> MakeIndex(const std::shared_ptr<Bytes>& bytes) const {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<DataFileMeta> meta,
+            DataFileMeta::ForAppend(
+                "data-search.orc", /*file_size=*/0, /*row_count=*/4, SimpleStats::EmptyStats(),
+                /*min_sequence_number=*/0,
+                /*max_sequence_number=*/3, /*schema_id=*/0, FileSource::Append(),
+                /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+                /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt));
+        bool is_embedded = GetParam();
+        if (is_embedded) {
+            meta->embedded_index = bytes;
+        } else {
+            const std::string index_name = meta->file_name + ".index";
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<OutputStream> file,
+                fs_->Create(path_factory_->ToAlignedPath(index_name, meta), /*overwrite=*/true));
+            PAIMON_RETURN_NOT_OK(file->Write(bytes->data(), bytes->size()));
+            PAIMON_RETURN_NOT_OK(file->Close());
+            meta->extra_files = {index_name};
+        }
+        return meta;
+    }
+
+    std::shared_ptr<VectorSearch> MakeVectorSearch(const std::string& field) const {
+        return std::make_shared<VectorSearch>(
+            field, /*limit=*/2, std::vector<float>{1.0f, 2.0f}, /*pre_filter=*/nullptr,
+            /*predicate=*/nullptr, VectorSearch::DistanceType::EUCLIDEAN,
+            std::map<std::string, std::string>{});
+    }
+
+    std::shared_ptr<FullTextSearch> MakeFullTextSearch(const std::string& field) const {
+        return std::make_shared<FullTextSearch>(field, /*limit=*/2, "paimon",
+                                                FullTextSearch::SearchType::MATCH_ALL,
+                                                /*pre_filter=*/std::nullopt);
+    }
+
+    void CheckSearchError(SearchIndexType index_type, const std::shared_ptr<DataFileMeta>& meta,
+                          const std::string& field, const std::string& message) const {
+        if (index_type == SearchIndexType::VECTOR) {
+            ASSERT_NOK_WITH_MSG(FileIndexEvaluator::EvaluateVectorSearch(
+                                    data_schema_, core_options_, MakeVectorSearch(field),
+                                    path_factory_, meta, fs_, pool_),
+                                message);
+        } else {
+            ASSERT_NOK_WITH_MSG(FileIndexEvaluator::EvaluateFullTextSearch(
+                                    data_schema_, core_options_, MakeFullTextSearch(field),
+                                    path_factory_, meta, fs_, pool_),
+                                message);
+        }
+    }
+
+    void CheckInvalidSearchIndexes(SearchIndexType index_type) const {
+        const std::string field = index_type == SearchIndexType::VECTOR ? "embedding" : "title";
+        const std::string identifier = index_type == SearchIndexType::VECTOR
+                                           ? MockSearchFileIndex::VECTOR_IDENTIFIER
+                                           : MockSearchFileIndex::FULL_TEXT_IDENTIFIER;
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Bytes> bytes,
+            MockSearchFileIndex::MakeIndex(field, identifier, {{3, 0.75f}, {1, 0.25f}}, pool_));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
+        CheckSearchError(index_type, meta, "missing",
+                         "Search field 'missing' does not exist in data schema");
+
+        ASSERT_OK_AND_ASSIGN(bytes,
+                             MockSearchFileIndex::MakeIndex("another-field", identifier,
+                                                            {{3, 0.75f}, {1, 0.25f}}, pool_));
+        ASSERT_OK_AND_ASSIGN(meta, MakeIndex(bytes));
+        CheckSearchError(index_type, meta, field, "No File Index reader supports");
+
+        FileIndexFormat::ColumnIndexes indexes;
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> payload,
+                             MockSearchFileIndex::MakePayload({{3, 0.75f}, {1, 0.25f}}, pool_));
+        indexes[field][identifier] = payload;
+        indexes[field]["another-empty-index"] = nullptr;
+        ASSERT_OK_AND_ASSIGN(bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+        ASSERT_OK_AND_ASSIGN(meta, MakeIndex(bytes));
+        CheckSearchError(index_type, meta, field, "Multiple File Index readers exist");
+
+        meta->embedded_index.reset();
+        meta->extra_files.clear();
+        CheckSearchError(index_type, meta, field,
+                         "has no File Index for search field '" + field + "'");
+    }
+
+    std::unique_ptr<UniqueTestDirectory> dir_;
+    std::shared_ptr<DataFilePathFactory> path_factory_;
+};
+
+TEST_P(FileIndexSearchEvaluatorTest, TestVectorSearchReadsIndexWithScores) {
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> bytes,
+        MockSearchFileIndex::MakeIndex("embedding", MockSearchFileIndex::VECTOR_IDENTIFIER,
+                                       {{3, 0.75f}, {1, 0.25f}}, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
+                         FileIndexEvaluator::EvaluateVectorSearch(data_schema_, core_options_,
+                                                                  MakeVectorSearch("embedding"),
+                                                                  path_factory_, meta, fs_, pool_));
+    ASSERT_TRUE(result);
+    EXPECT_EQ(RoaringBitmap32::From({1, 3}), result->GetRowPositions());
+    EXPECT_EQ(std::vector<float>({0.25f, 0.75f}), result->GetScores());
+}
+
+TEST_P(FileIndexSearchEvaluatorTest, TestFullTextSearchReadsIndex) {
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> bytes,
+        MockSearchFileIndex::MakeIndex("title", MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
+                                       {{3, 0.75f}, {1, 0.25f}}, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
+                         FileIndexEvaluator::EvaluateFullTextSearch(
+                             data_schema_, core_options_, MakeFullTextSearch("title"),
+                             path_factory_, meta, fs_, pool_));
+    CheckResult(result, {1, 3});
+}
+
+TEST_P(FileIndexSearchEvaluatorTest, TestEmptyVectorSearchIndex) {
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["embedding"][MockSearchFileIndex::VECTOR_IDENTIFIER] = nullptr;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
+                         MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> vector_result,
+                         FileIndexEvaluator::EvaluateVectorSearch(data_schema_, core_options_,
+                                                                  MakeVectorSearch("embedding"),
+                                                                  path_factory_, meta, fs_, pool_));
+    ASSERT_TRUE(vector_result);
+    EXPECT_TRUE(vector_result->IsEmpty());
+    EXPECT_TRUE(vector_result->GetScores().empty());
+}
+
+TEST_P(FileIndexSearchEvaluatorTest, TestEmptyFullTextSearchIndex) {
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["title"][MockSearchFileIndex::FULL_TEXT_IDENTIFIER] = nullptr;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
+                         MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> text_result,
+                         FileIndexEvaluator::EvaluateFullTextSearch(
+                             data_schema_, core_options_, MakeFullTextSearch("title"),
+                             path_factory_, meta, fs_, pool_));
+    CheckResult(text_result, {});
+}
+
+TEST_P(FileIndexSearchEvaluatorTest, TestInvalidVectorSearchIndexes) {
+    CheckInvalidSearchIndexes(SearchIndexType::VECTOR);
+}
+
+TEST_P(FileIndexSearchEvaluatorTest, TestInvalidFullTextSearchIndexes) {
+    CheckInvalidSearchIndexes(SearchIndexType::FULL_TEXT);
+}
+
+INSTANTIATE_TEST_SUITE_P(IndexStorage, FileIndexSearchEvaluatorTest, ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                             return info.param ? "Embedded" : "External";
+                         });
 
 }  // namespace paimon::test

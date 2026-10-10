@@ -23,9 +23,7 @@
 #include <utility>
 #include <vector>
 
-#include "arrow/c/bridge.h"
 #include "fmt/format.h"
-#include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/utils/object_utils.h"
@@ -198,96 +196,112 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReader
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     std::vector<float>* index_scores) const {
-    if (context_->HasFileIndexSearch()) {
-        if (predicate) {
-            return Status::NotImplemented(
-                "File Index search does not support combining with read predicates yet");
-        }
-        if (ranges) {
-            return Status::NotImplemented(
-                "File Index search does not support indexed split row ranges yet");
-        }
-        std::shared_ptr<DeletionVector> deletion_vector;
-        if (dv_factory) {
-            PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
-        }
-        const RoaringBitmap32* deletion = nullptr;
-        if (auto* bitmap_dv = dynamic_cast<BitmapDeletionVector*>(deletion_vector.get())) {
-            deletion = bitmap_dv->GetBitmap();
-        } else if (deletion_vector && !deletion_vector->IsEmpty()) {
-            return Status::NotImplemented(
-                "File Index search only supports bitmap32 deletion vectors");
-        }
-        if (deletion && deletion->Cardinality() == file->row_count) {
-            return std::unique_ptr<FileBatchReader>();
-        }
-
-        std::optional<RoaringBitmap32> search_selection;
-        if (context_->GetVectorSearch()) {
-            std::shared_ptr<VectorSearch> vector_search = context_->GetVectorSearch();
-            if (deletion && !deletion->IsEmpty()) {
-                // Keep the deletion vector alive for the search callback without copying the
-                // bitmap.
-                std::shared_ptr<const RoaringBitmap32> deleted_rows(deletion_vector, deletion);
-                auto user_filter = vector_search->pre_filter;
-                vector_search = vector_search->ReplacePreFilter(
-                    [deleted_rows, user_filter, row_count = file->row_count](int64_t row_id) {
-                        return row_id >= 0 && row_id < row_count &&
-                               !deleted_rows->Contains(static_cast<int32_t>(row_id)) &&
-                               (!user_filter || user_filter(row_id));
-                    });
-            }
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredFileIndexResult> search_result,
-                                   FileIndexEvaluator::EvaluateVectorSearch(
-                                       data_schema, options_, vector_search, data_file_path_factory,
-                                       file, options_.GetFileSystem(), pool_));
-            if (search_result->IsEmpty()) {
-                return std::unique_ptr<FileBatchReader>();
-            }
-            search_selection = search_result->GetRowPositions();
-            *index_scores = search_result->GetScores();
-        } else {
-            std::shared_ptr<FullTextSearch> full_text_search = context_->GetFullTextSearch();
-            if (deletion && !deletion->IsEmpty()) {
-                RoaringBitmap64 eligible;
-                eligible.AddRange(0, file->row_count);
-                eligible -= RoaringBitmap64(*deletion);
-                if (full_text_search->pre_filter) {
-                    eligible &= full_text_search->pre_filter.value();
-                }
-                if (eligible.IsEmpty()) {
-                    return std::unique_ptr<FileBatchReader>();
-                }
-                full_text_search = full_text_search->ReplacePreFilter(eligible);
-            }
-            PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<FileIndexResult> search_result,
-                FileIndexEvaluator::EvaluateFullTextSearch(data_schema, options_, full_text_search,
-                                                           data_file_path_factory, file,
-                                                           options_.GetFileSystem(), pool_));
-            std::shared_ptr<BitmapIndexResult> bitmap_result =
-                std::dynamic_pointer_cast<BitmapIndexResult>(search_result);
-            if (!bitmap_result) {
-                return std::unique_ptr<FileBatchReader>();
-            }
-            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* bitmap, bitmap_result->GetBitmap());
-            search_selection = *bitmap;
-        }
-
-        ::ArrowSchema c_read_schema;
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
-        PAIMON_RETURN_NOT_OK(
-            file_reader->SetReadSchema(&c_read_schema, /*predicate=*/nullptr, search_selection));
-        if (!file_reader->SupportPreciseBitmapSelection()) {
-            return std::make_unique<ApplyBitmapIndexBatchReader>(
-                std::move(file_reader), std::move(search_selection).value());
-        }
-        return std::move(file_reader);
+    if (!context_->HasVectorOrFullTextSearch()) {
+        return AbstractSplitRead::ApplyIndexAndDvReaderIfNeeded(
+            std::move(file_reader), file, data_schema, read_schema, predicate, dv_factory, ranges,
+            data_file_path_factory, index_scores);
+    }
+    if (predicate) {
+        return Status::NotImplemented(
+            "VectorSearch or FullTextSearch does not support combining with read predicates yet");
+    }
+    if (ranges) {
+        return Status::NotImplemented(
+            "VectorSearch or FullTextSearch does not support indexed split row ranges yet");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const RoaringBitmap32> deletion,
+                           LoadSearchDeletionBitmap(file, dv_factory));
+    if (deletion && deletion->Cardinality() == file->row_count) {
+        return std::unique_ptr<FileBatchReader>();
     }
 
-    return AbstractSplitRead::ApplyIndexAndDvReaderIfNeeded(
-        std::move(file_reader), file, data_schema, read_schema, predicate, dv_factory, ranges,
-        data_file_path_factory, index_scores);
+    std::optional<RoaringBitmap32> search_selection;
+    if (context_->GetVectorSearch()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<ScoredFileIndexResult> search_result,
+            EvaluateVectorSearchWithDv(file, data_schema, data_file_path_factory, deletion));
+        if (search_result->IsEmpty()) {
+            return std::unique_ptr<FileBatchReader>();
+        }
+        search_selection = search_result->GetRowPositions();
+        *index_scores = search_result->GetScores();
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(
+            search_selection,
+            EvaluateFullTextSearchWithDv(file, data_schema, data_file_path_factory, deletion));
+        if (!search_selection) {
+            return std::unique_ptr<FileBatchReader>();
+        }
+    }
+
+    return ApplyBitmapSelection(std::move(file_reader), read_schema, /*predicate=*/nullptr,
+                                std::move(search_selection));
+}
+
+Result<std::shared_ptr<const RoaringBitmap32>> RawFileSplitRead::LoadSearchDeletionBitmap(
+    const std::shared_ptr<DataFileMeta>& file, const DeletionVector::Factory& dv_factory) {
+    std::shared_ptr<DeletionVector> deletion_vector;
+    if (dv_factory) {
+        PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
+    }
+    if (auto* bitmap_dv = dynamic_cast<BitmapDeletionVector*>(deletion_vector.get())) {
+        // Keep the deletion vector alive for the search callback without copying the bitmap.
+        return std::shared_ptr<const RoaringBitmap32>(deletion_vector, bitmap_dv->GetBitmap());
+    }
+    if (deletion_vector && !deletion_vector->IsEmpty()) {
+        return Status::NotImplemented(
+            "VectorSearch or FullTextSearch only supports bitmap32 deletion vectors");
+    }
+    return std::shared_ptr<const RoaringBitmap32>();
+}
+
+Result<std::shared_ptr<ScoredFileIndexResult>> RawFileSplitRead::EvaluateVectorSearchWithDv(
+    const std::shared_ptr<DataFileMeta>& file, const std::shared_ptr<arrow::Schema>& data_schema,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::shared_ptr<const RoaringBitmap32>& deletion) const {
+    std::shared_ptr<VectorSearch> vector_search = context_->GetVectorSearch();
+    if (deletion && !deletion->IsEmpty()) {
+        auto user_filter = vector_search->pre_filter;
+        vector_search = vector_search->ReplacePreFilter(
+            [deletion, user_filter, row_count = file->row_count](int64_t row_id) {
+                return row_id >= 0 && row_id < row_count &&
+                       !deletion->Contains(static_cast<int32_t>(row_id)) &&
+                       (!user_filter || user_filter(row_id));
+            });
+    }
+    return FileIndexEvaluator::EvaluateVectorSearch(data_schema, options_, vector_search,
+                                                    data_file_path_factory, file,
+                                                    options_.GetFileSystem(), pool_);
+}
+
+Result<std::optional<RoaringBitmap32>> RawFileSplitRead::EvaluateFullTextSearchWithDv(
+    const std::shared_ptr<DataFileMeta>& file, const std::shared_ptr<arrow::Schema>& data_schema,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::shared_ptr<const RoaringBitmap32>& deletion) const {
+    std::shared_ptr<FullTextSearch> full_text_search = context_->GetFullTextSearch();
+    if (deletion && !deletion->IsEmpty()) {
+        RoaringBitmap64 eligible;
+        eligible.AddRange(0, file->row_count);
+        eligible -= RoaringBitmap64(*deletion);
+        if (full_text_search->pre_filter) {
+            eligible &= full_text_search->pre_filter.value();
+        }
+        if (eligible.IsEmpty()) {
+            return std::optional<RoaringBitmap32>();
+        }
+        full_text_search = full_text_search->ReplacePreFilter(eligible);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> search_result,
+                           FileIndexEvaluator::EvaluateFullTextSearch(
+                               data_schema, options_, full_text_search, data_file_path_factory,
+                               file, options_.GetFileSystem(), pool_));
+    std::shared_ptr<BitmapIndexResult> bitmap_result =
+        std::dynamic_pointer_cast<BitmapIndexResult>(search_result);
+    if (!bitmap_result) {
+        return std::optional<RoaringBitmap32>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* bitmap, bitmap_result->GetBitmap());
+    return std::optional<RoaringBitmap32>(*bitmap);
 }
 
 }  // namespace paimon

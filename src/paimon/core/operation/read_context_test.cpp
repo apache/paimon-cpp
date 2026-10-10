@@ -87,7 +87,7 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetReadFieldIds().empty());
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetPredicate());
-    ASSERT_FALSE(ctx->HasFileIndexSearch());
+    ASSERT_FALSE(ctx->HasVectorOrFullTextSearch());
     ASSERT_FALSE(ctx->EnablePredicateFilter());
     ASSERT_FALSE(ctx->EnablePrefetch());
     ASSERT_TRUE(ctx->ReadAheadCacheEnabled());
@@ -288,7 +288,7 @@ TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context, builder.Finish());
     EXPECT_EQ(vector_search, vector_context->GetVectorSearch());
     EXPECT_FALSE(vector_context->GetFullTextSearch());
-    EXPECT_TRUE(vector_context->HasFileIndexSearch());
+    EXPECT_TRUE(vector_context->HasVectorOrFullTextSearch());
 
     std::shared_ptr<FullTextSearch> full_text_search = std::make_shared<FullTextSearch>(
         "body", /*limit=*/5, "paimon", FullTextSearch::SearchType::MATCH_ANY, std::nullopt);
@@ -296,11 +296,11 @@ TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> full_text_context, builder.Finish());
     EXPECT_FALSE(full_text_context->GetVectorSearch());
     EXPECT_EQ(full_text_search, full_text_context->GetFullTextSearch());
-    EXPECT_TRUE(full_text_context->HasFileIndexSearch());
+    EXPECT_TRUE(full_text_context->HasVectorOrFullTextSearch());
 
     // Finish resets search configuration just like every other per-read option.
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> reset_context, builder.Finish());
-    EXPECT_FALSE(reset_context->HasFileIndexSearch());
+    EXPECT_FALSE(reset_context->HasVectorOrFullTextSearch());
 }
 
 TEST(ReadContextTest, TestRejectConflictingFileIndexSearch) {

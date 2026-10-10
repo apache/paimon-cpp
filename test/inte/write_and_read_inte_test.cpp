@@ -49,6 +49,7 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/record_batch.h"
@@ -724,6 +725,89 @@ TEST_P(WriteAndReadInteTest, TestAppendWithExternalBitmapAndRangeBitmapIndexes) 
     auto expected = std::make_shared<arrow::ChunkedArray>(expected_result.ValueOrDie());
     ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
 }
+
+#ifdef PAIMON_ENABLE_LUMINA
+TEST_P(WriteAndReadInteTest, TestAppendWithLuminaVectorIndex) {
+    auto [file_format, file_system] = GetParam();
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", arrow::list(arrow::float32()))};
+    for (bool embedded : {false, true}) {
+        SCOPED_TRACE(embedded ? "embedded index" : "external index");
+        std::map<std::string, std::string> options = {
+            {Options::FILE_FORMAT, file_format},
+            {Options::FILE_SYSTEM, file_system},
+            {Options::BUCKET, "-1"},
+            {Options::TARGET_FILE_SIZE, "1MB"},
+            {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, embedded ? "1MB" : "1B"},
+            {"file-index.lumina.columns", "embedding"},
+            {"file-index.lumina.embedding.index.dimension", "2"},
+            {"file-index.lumina.embedding.index.type", "bruteforce"},
+            {"file-index.lumina.embedding.distance.metric", "l2"},
+            {"file-index.lumina.embedding.encoding.type", "rawf32"},
+            {Options::READ_BATCH_SIZE, "1"},
+        };
+        if (file_system == "jindo") {
+            options = AddOptionsForJindo(options);
+        }
+        std::string root = PathUtil::JoinPath(test_dir_, embedded ? "embedded" : "external");
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TestHelper> helper,
+            TestHelper::Create(root, arrow::schema(fields), /*partition_keys=*/{},
+                               /*primary_keys=*/{}, options, /*is_streaming_mode=*/false));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+                [10, [2.0, 0.0]],
+                [11, null],
+                [12, [0.0, 0.0]],
+                [13, [3.0, 0.0]],
+                [14, [1.0, 0.0]]
+            ])",
+                                                         /*partition_map=*/{}, /*bucket=*/0, {}));
+        ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                         /*expected_commit_messages=*/std::nullopt));
+        ASSERT_OK_AND_ASSIGN(
+            std::vector<std::shared_ptr<Split>> splits,
+            helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt,
+                            /*is_streaming=*/false));
+        ASSERT_EQ(1, splits.size());
+        auto split = std::dynamic_pointer_cast<DataSplitImpl>(splits[0]);
+        ASSERT_TRUE(split);
+        ASSERT_EQ(1, split->DataFiles().size());
+        const auto& file = split->DataFiles()[0];
+        EXPECT_EQ(embedded, file->embedded_index != nullptr);
+        if (embedded) {
+            EXPECT_TRUE(file->extra_files.empty());
+        } else {
+            ASSERT_EQ(1, file->extra_files.size());
+            ASSERT_TRUE(file->extra_files[0]);
+            EXPECT_EQ(file->file_name + ".index", file->extra_files[0].value());
+        }
+
+        auto search = std::make_shared<VectorSearch>(
+            "embedding", /*limit=*/3, std::vector<float>{0.0f, 0.0f}, /*pre_filter=*/nullptr,
+            /*predicate=*/nullptr, VectorSearch::DistanceType::EUCLIDEAN,
+            std::map<std::string, std::string>{});
+        ReadContextBuilder builder(PathUtil::JoinPath(root, "foo.db/bar"));
+        builder.SetReadFieldNames({"id", "_INDEX_SCORE"}).SetVectorSearch(search);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             TableRead::Create(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
+                                             arrow::field("id", arrow::int32()),
+                                             arrow::field("_INDEX_SCORE", arrow::float32())});
+        auto expected = arrow::ipc::internal::json::ArrayFromJSON(expected_type,
+                                                                  R"([[0, 10, 4.0],
+                                                                     [0, 12, 0.0],
+                                                                     [0, 14, 1.0]])")
+                            .ValueOrDie();
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(expected))) << actual->ToString();
+    }
+}
+#endif
 
 TEST_P(WriteAndReadInteTest, TestPKSimple) {
     arrow::FieldVector fields = {

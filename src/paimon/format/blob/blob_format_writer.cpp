@@ -426,9 +426,9 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenBlobInputStream(
     if (is_descriptor) {
         return OpenDescriptorInputStream(blob_data, element_index);
     }
-    return BlobCopySource{
-        std::make_unique<ByteArrayInputStream>(blob_data.data(), blob_data.size()),
-        /*reused=*/false, /*owned_stream=*/nullptr};
+    auto stream = std::make_unique<ByteArrayInputStream>(blob_data.data(), blob_data.size());
+    InputStream* close_target = stream.get();
+    return BlobCopySource{std::move(stream), close_target};
 }
 
 Result<int64_t> BlobFormatWriter::WriteBlobData(const BlobCopySource& source,
@@ -436,13 +436,13 @@ Result<int64_t> BlobFormatWriter::WriteBlobData(const BlobCopySource& source,
     Result<int64_t> copied = CopyBlobData(source.stream.get());
     if (!copied.ok()) {
         // As in Java, a kept source whose copy failed is released rather than reused.
-        if (source.reused) {
+        if (source.close_target == nullptr) {
             DiscardSource();
         }
         return AddFailureContext(copied.status(), "failed to copy", element_index);
     }
-    if (!source.reused) {
-        Status status = source.owned_stream ? source.owned_stream->Close() : source.stream->Close();
+    if (source.close_target != nullptr) {
+        Status status = source.close_target->Close();
         if (!status.ok()) {
             return AddFailureContext(status, "failed to close blob source file for", element_index);
         }
@@ -512,8 +512,7 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenDescriptorInputSt
         if (source_ != nullptr && source_uri_ == uri) {
             Result<std::unique_ptr<InputStream>> view = OpenSourceView(*descriptor);
             if (view.ok()) {
-                return BlobCopySource{std::move(view).value(), /*reused=*/true,
-                                      /*owned_stream=*/nullptr};
+                return BlobCopySource{std::move(view).value(), /*close_target=*/nullptr};
             }
         }
         // Release a kept source of another file, or one that cannot serve this range. As in Java,
@@ -569,8 +568,7 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenSource(
         DiscardSource();
         return view.status();
     }
-    return BlobCopySource{std::move(view).value(), /*reused=*/true,
-                          /*owned_stream=*/nullptr};
+    return BlobCopySource{std::move(view).value(), /*close_target=*/nullptr};
 }
 
 Result<std::unique_ptr<InputStream>> BlobFormatWriter::OpenSourceView(
@@ -599,7 +597,7 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenToEnd(
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<OffsetInputStream> stream,
         OffsetInputStream::Create(file, file_length - offset, offset, file_length));
-    return BlobCopySource{std::move(stream), /*reused=*/false, /*owned_stream=*/std::move(file)};
+    return BlobCopySource{std::move(stream), /*close_target=*/file.get()};
 }
 
 Status BlobFormatWriter::CloseSource() {
@@ -625,7 +623,7 @@ BlobFormatWriter::BlobCopySource BlobFormatWriter::HandleMissingFile(
     PAIMON_LOG_WARN(logger_, "Blob file %s does not exist, writing NULL for %s", blob_uri.c_str(),
                     DescribeValue(element_index).c_str());
     ++null_on_missing_file_count_;
-    return BlobCopySource{/*stream=*/nullptr, /*reused=*/false, /*owned_stream=*/nullptr};
+    return BlobCopySource{/*stream=*/nullptr, /*close_target=*/nullptr};
 }
 
 Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::HandleFetchFailure(
@@ -637,7 +635,7 @@ Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::HandleFetchFailure(
     PAIMON_LOG_WARN(logger_, "Failed to fetch blob %s, writing NULL for %s: %s", blob_uri.c_str(),
                     DescribeValue(element_index).c_str(), status.ToString().c_str());
     ++null_on_fetch_failure_count_;
-    return BlobCopySource{/*stream=*/nullptr, /*reused=*/false, /*owned_stream=*/nullptr};
+    return BlobCopySource{/*stream=*/nullptr, /*close_target=*/nullptr};
 }
 
 Status BlobFormatWriter::AddFailureContext(const Status& status, const std::string& action,

@@ -30,8 +30,6 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
-#include "paimon/common/io/byte_array_output_stream.h"
-#include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -49,13 +47,6 @@
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/executor.h"
-#include "paimon/factories/factory.h"
-#include "paimon/file_index/bitmap_index_result.h"
-#include "paimon/file_index/file_index_format.h"
-#include "paimon/file_index/file_index_reader.h"
-#include "paimon/file_index/file_indexer.h"
-#include "paimon/file_index/file_indexer_factory.h"
-#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
@@ -64,131 +55,12 @@
 #include "paimon/read_context.h"
 #include "paimon/status.h"
 #include "paimon/table/source/data_split.h"
+#include "paimon/testing/mock/mock_search_file_index.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
-namespace {
-
-constexpr char kRawVectorSearchIndexType[] = "raw-vector-search-test";
-constexpr char kRawFullTextSearchIndexType[] = "raw-full-text-search-test";
-
-class RawVectorSearchTestReader final : public FileIndexReader {
- public:
-    Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(
-        const std::shared_ptr<VectorSearch>& search) override {
-        RoaringBitmap32 positions;
-        std::vector<float> scores;
-        for (const auto& [row_id, score] :
-             std::vector<std::pair<int32_t, float>>{{0, 0.25f}, {2, 0.75f}}) {
-            if (!search->pre_filter || search->pre_filter(row_id)) {
-                positions.Add(row_id);
-                scores.push_back(score);
-                if (scores.size() == static_cast<size_t>(search->limit)) {
-                    break;
-                }
-            }
-        }
-        return ScoredFileIndexResult::Create(std::move(positions), std::move(scores));
-    }
-};
-
-class RawVectorSearchTestIndexer final : public FileIndexer {
- public:
-    Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema* arrow_schema, int32_t, int32_t, const std::shared_ptr<InputStream>&,
-        const std::shared_ptr<MemoryPool>&) const override {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW([[maybe_unused]] std::shared_ptr<arrow::Schema> schema,
-                                          arrow::ImportSchema(arrow_schema));
-        return std::make_shared<RawVectorSearchTestReader>();
-    }
-
-    Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
-        ::ArrowSchema*, const std::shared_ptr<MemoryPool>&) const override {
-        return Status::NotImplemented("Raw vector search test index is read-only");
-    }
-};
-
-class RawVectorSearchTestFactory final : public FileIndexerFactory {
- public:
-    const char* Identifier() const override {
-        return kRawVectorSearchIndexType;
-    }
-
-    Result<std::unique_ptr<FileIndexer>> Create(
-        const std::map<std::string, std::string>&) const override {
-        return std::make_unique<RawVectorSearchTestIndexer>();
-    }
-};
-
-REGISTER_PAIMON_FACTORY(RawVectorSearchTestFactory);
-
-class RawFullTextSearchTestReader final : public FileIndexReader {
- public:
-    Result<std::shared_ptr<FileIndexResult>> VisitFullTextSearch(
-        const std::shared_ptr<FullTextSearch>& search) override {
-        RoaringBitmap32 positions;
-        for (int32_t row_id : {0, 2}) {
-            if (!search->pre_filter || search->pre_filter->Contains(row_id)) {
-                positions.Add(row_id);
-                if (search->limit && positions.Cardinality() == search->limit.value()) {
-                    break;
-                }
-            }
-        }
-        return std::make_shared<BitmapIndexResult>(
-            [bitmap = std::move(positions)]() -> Result<RoaringBitmap32> { return bitmap; });
-    }
-};
-
-class RawFullTextSearchTestIndexer final : public FileIndexer {
- public:
-    Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema* arrow_schema, int32_t, int32_t, const std::shared_ptr<InputStream>&,
-        const std::shared_ptr<MemoryPool>&) const override {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW([[maybe_unused]] std::shared_ptr<arrow::Schema> schema,
-                                          arrow::ImportSchema(arrow_schema));
-        return std::make_shared<RawFullTextSearchTestReader>();
-    }
-
-    Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
-        ::ArrowSchema*, const std::shared_ptr<MemoryPool>&) const override {
-        return Status::NotImplemented("Raw full-text search test index is read-only");
-    }
-};
-
-class RawFullTextSearchTestFactory final : public FileIndexerFactory {
- public:
-    const char* Identifier() const override {
-        return kRawFullTextSearchIndexType;
-    }
-
-    Result<std::unique_ptr<FileIndexer>> Create(
-        const std::map<std::string, std::string>&) const override {
-        return std::make_unique<RawFullTextSearchTestIndexer>();
-    }
-};
-
-REGISTER_PAIMON_FACTORY(RawFullTextSearchTestFactory);
-
-Result<std::shared_ptr<Bytes>> MakeRawSearchIndex(const std::string& index_type,
-                                                  const std::shared_ptr<MemoryPool>& pool) {
-    FileIndexFormat::ColumnIndexes indexes;
-    indexes["f3"][index_type] = std::make_shared<Bytes>("index", pool.get());
-    auto segment_output = std::make_unique<MemorySegmentOutputStream>(
-        MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
-    auto output = std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Writer> writer,
-                           FileIndexFormat::CreateWriter(output, pool));
-    PAIMON_RETURN_NOT_OK(writer->WriteColumnIndexes(indexes));
-    PAIMON_RETURN_NOT_OK(writer->Close());
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, output->Finish(pool.get()));
-    return bytes;
-}
-
-}  // namespace
-
 class RawFileSplitReadTest : public ::testing::Test {
  protected:
     std::vector<std::shared_ptr<DataSplit>> PrepareDataSplits() const {
@@ -281,8 +153,9 @@ class RawFileSplitReadTest : public ::testing::Test {
         if (!split) {
             return Status::Invalid("Raw search test split must be a DataSplitImpl");
         }
-        PAIMON_ASSIGN_OR_RAISE(split->DataFiles().front()->embedded_index,
-                               MakeRawSearchIndex(index_type, pool_));
+        PAIMON_ASSIGN_OR_RAISE(
+            split->DataFiles().front()->embedded_index,
+            MockSearchFileIndex::MakeIndex("f3", index_type, {{0, 0.25f}, {2, 0.75f}}, pool_));
 
         const CoreOptions& options = internal_context->GetCoreOptions();
         std::shared_ptr<arrow::Schema> schema =
@@ -581,8 +454,10 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
     auto data_splits = PrepareDataSplits();
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(data_splits.front());
     ASSERT_TRUE(data_split);
-    ASSERT_OK_AND_ASSIGN(data_split->DataFiles().front()->embedded_index,
-                         MakeRawSearchIndex(kRawVectorSearchIndexType, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        data_split->DataFiles().front()->embedded_index,
+        MockSearchFileIndex::MakeIndex("f3", MockSearchFileIndex::VECTOR_IDENTIFIER,
+                                       {{0, 0.25f}, {2, 0.75f}}, pool_));
 
     const CoreOptions& core_options = internal_context->GetCoreOptions();
     std::shared_ptr<arrow::Schema> data_schema =
@@ -648,9 +523,10 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchFiltersDeletionVectorBeforeTopK) {
     ReadContextBuilder builder(path);
     builder.SetReadFieldNames({"_INDEX_SCORE", "f0"}).SetVectorSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadSearchWithDeletionVector(read_context, kRawVectorSearchIndexType,
-                                                      RoaringBitmap32::From({0})));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::ChunkedArray> result,
+        ReadSearchWithDeletionVector(read_context, MockSearchFileIndex::VECTOR_IDENTIFIER,
+                                     RoaringBitmap32::From({0})));
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
@@ -672,9 +548,10 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchFiltersDeletionVectorBeforeLimit)
     ReadContextBuilder builder(path);
     builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadSearchWithDeletionVector(read_context, kRawFullTextSearchIndexType,
-                                                      RoaringBitmap32::From({0})));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::ChunkedArray> result,
+        ReadSearchWithDeletionVector(read_context, MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
+                                     RoaringBitmap32::From({0})));
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),

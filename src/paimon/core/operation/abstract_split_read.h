@@ -41,6 +41,7 @@
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace arrow {
 class MemoryPool;
@@ -111,6 +112,11 @@ class AbstractSplitRead : public SplitRead {
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         std::vector<float>* index_scores) const;
+
+    static Result<std::unique_ptr<FileBatchReader>> ApplyBitmapSelection(
+        std::unique_ptr<FileBatchReader>&& file_reader,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const std::shared_ptr<Predicate>& predicate, std::optional<RoaringBitmap32> selection);
 
     // 1. project write cols to data schema
     // 2. add partition fields (if write cols not contain)

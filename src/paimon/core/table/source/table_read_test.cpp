@@ -139,7 +139,7 @@ TEST(TableReadTest, TestCreateCountReaderRejectsFileIndexSearch) {
         context_builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-        ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}), "File Index search");
+        ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}), "VectorSearch or FullTextSearch");
     }
     {
         std::string path = paimon::test::GetDataDir() +
@@ -151,7 +151,7 @@ TEST(TableReadTest, TestCreateCountReaderRejectsFileIndexSearch) {
         context_builder.SetReadFieldNames({"f0"}).SetVectorSearch(search);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-        ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}), "File Index search");
+        ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}), "VectorSearch or FullTextSearch");
     }
 }
 

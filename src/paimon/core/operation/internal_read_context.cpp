@@ -149,7 +149,7 @@ Result<std::shared_ptr<arrow::Field>> InternalReadContext::AlignReadFieldWithTab
 }
 
 std::optional<DataField> InternalReadContext::TryResolveSpecialFieldById(
-    int32_t field_id, const CoreOptions& core_options, bool has_file_index_search) {
+    int32_t field_id, const CoreOptions& core_options, bool has_vector_or_full_text_search) {
     if (field_id == SpecialFields::ValueKind().Id()) {
         return SpecialFields::ValueKind();
     }
@@ -166,7 +166,7 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldById(
         return std::nullopt;
     }
     if (field_id == SpecialFields::IndexScore().Id()) {
-        if (core_options.DataEvolutionEnabled() || has_file_index_search) {
+        if (core_options.DataEvolutionEnabled() || has_vector_or_full_text_search) {
             return SpecialFields::IndexScore();
         }
         return std::nullopt;
@@ -175,7 +175,7 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldById(
 }
 
 std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
-    const std::string& name, const CoreOptions& core_options, bool has_file_index_search) {
+    const std::string& name, const CoreOptions& core_options, bool has_vector_or_full_text_search) {
     if (name == SpecialFields::ValueKind().Name()) {
         return SpecialFields::ValueKind();
     }
@@ -192,7 +192,7 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
         return std::nullopt;
     }
     if (name == SpecialFields::IndexScore().Name()) {
-        if (core_options.DataEvolutionEnabled() || has_file_index_search) {
+        if (core_options.DataEvolutionEnabled() || has_vector_or_full_text_search) {
             return SpecialFields::IndexScore();
         }
         return std::nullopt;
@@ -207,9 +207,10 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(),
                                                 context->GetFileSystemSchemeToIdentifierMap()));
     core_options.WithCache(context->GetCache());
-    if (context->HasFileIndexSearch()) {
+    if (context->HasVectorOrFullTextSearch()) {
         if (!core_options.FileIndexReadEnabled()) {
-            return Status::Invalid("File Index read must be enabled for file-local search");
+            return Status::Invalid(
+                "File Index read must be enabled for VectorSearch or FullTextSearch");
         }
         if (context->GetFullTextSearch() && context->GetFullTextSearch()->with_score) {
             return Status::NotImplemented(
@@ -217,14 +218,15 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
         }
         if (!table_schema->PrimaryKeys().empty() && !core_options.DeletionVectorsEnabled()) {
             return Status::NotImplemented(
-                "File Index search on primary-key tables requires deletion vectors");
+                "VectorSearch or FullTextSearch on primary-key tables requires deletion vectors");
         }
         if (core_options.DataEvolutionEnabled()) {
             return Status::NotImplemented(
-                "File Index search does not support data-evolution reads yet");
+                "VectorSearch or FullTextSearch does not support data-evolution reads yet");
         }
         if (context->GetRealtimeContext()) {
-            return Status::NotImplemented("File Index search does not support real-time reads yet");
+            return Status::NotImplemented(
+                "VectorSearch or FullTextSearch does not support real-time reads yet");
         }
         const std::string& search_field = context->GetVectorSearch()
                                               ? context->GetVectorSearch()->field_name
@@ -235,7 +237,7 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     // prepare read schema
     // Priority: projected_arrow_schema > read_field_ids > read_field_names
     const bool has_projected_read_schema = context->HasReadSchema();
-    const bool has_file_index_search = context->HasFileIndexSearch();
+    const bool has_vector_or_full_text_search = context->HasVectorOrFullTextSearch();
     std::vector<DataField> read_data_fields;
     if (has_projected_read_schema) {
         // Nested column pruning path: user provided a read C ArrowSchema
@@ -247,7 +249,7 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
         // Align special-field validation with read_field_ids/read_field_names branches.
         for (const auto& read_field : read_schema->fields()) {
             if (auto resolved_special_field = TryResolveSpecialFieldByName(
-                    read_field->name(), core_options, has_file_index_search)) {
+                    read_field->name(), core_options, has_vector_or_full_text_search)) {
                 read_data_fields.push_back(*resolved_special_field);
                 continue;
             }
@@ -272,8 +274,8 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     } else if (!context->GetReadFieldIds().empty()) {
         read_data_fields.reserve(context->GetReadFieldIds().size());
         for (const auto& field_id : context->GetReadFieldIds()) {
-            if (auto resolved_special_field =
-                    TryResolveSpecialFieldById(field_id, core_options, has_file_index_search)) {
+            if (auto resolved_special_field = TryResolveSpecialFieldById(
+                    field_id, core_options, has_vector_or_full_text_search)) {
                 read_data_fields.push_back(*resolved_special_field);
                 continue;
             }
@@ -283,8 +285,8 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     } else if (!context->GetReadFieldNames().empty()) {
         read_data_fields.reserve(context->GetReadFieldNames().size());
         for (const auto& name : context->GetReadFieldNames()) {
-            if (auto resolved_special_field =
-                    TryResolveSpecialFieldByName(name, core_options, has_file_index_search)) {
+            if (auto resolved_special_field = TryResolveSpecialFieldByName(
+                    name, core_options, has_vector_or_full_text_search)) {
                 read_data_fields.push_back(*resolved_special_field);
                 continue;
             }

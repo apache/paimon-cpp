@@ -159,7 +159,7 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
     }
 }
 
-TEST(InternalReadContext, TestFileIndexSearchIndexScoreProjection) {
+TEST(InternalReadContext, TestVectorSearchIndexScoreProjection) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
@@ -203,7 +203,7 @@ TEST(InternalReadContext, TestFileIndexSearchIndexScoreProjection) {
     }
 }
 
-TEST(InternalReadContext, TestPrimaryKeyFileIndexSearchRequiresDeletionVectors) {
+TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality";
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
@@ -217,7 +217,7 @@ TEST(InternalReadContext, TestPrimaryKeyFileIndexSearchRequiresDeletionVectors) 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<InternalReadContext> internal,
         InternalReadContext::Create(context, table_schema, table_schema->Options()));
-    EXPECT_TRUE(internal->HasFileIndexSearch());
+    EXPECT_TRUE(internal->HasVectorOrFullTextSearch());
 
     std::map<std::string, std::string> options = table_schema->Options();
     options[Options::DELETION_VECTORS_ENABLED] = "false";

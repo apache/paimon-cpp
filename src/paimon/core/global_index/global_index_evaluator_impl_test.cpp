@@ -35,12 +35,15 @@
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/testing/mock/mock_global_index_reader.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 namespace {
-class RecordingGlobalIndexReader : public GlobalIndexReader {
+class RecordingGlobalIndexReader : public MockGlobalIndexReader {
  public:
+    RecordingGlobalIndexReader() : MockGlobalIndexReader(/*supports_search=*/false) {}
+
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override {
         is_not_null_calls_++;
         return Bitmap({0, 1});
@@ -101,16 +104,6 @@ class RecordingGlobalIndexReader : public GlobalIndexReader {
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitLike(const Literal& literal) override {
         return NotEvaluable();
-    }
-
-    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
-        const std::shared_ptr<VectorSearch>& vector_search) override {
-        return Status::Invalid("not supported");
-    }
-
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
-        const std::shared_ptr<FullTextSearch>& full_text_search) override {
-        return Status::Invalid("not supported");
     }
 
     bool IsThreadSafe() const override {
