@@ -71,7 +71,8 @@ class UnionGlobalIndexReader : public GlobalIndexReader {
     using ReaderAction = std::function<Result<std::shared_ptr<GlobalIndexResult>>(
         const std::shared_ptr<GlobalIndexReader>&)>;
 
-    /// Executes the given action on all readers and merges results with Union.
+    /// Executes the given action on all readers and merges results with Union. Returns nullptr if
+    /// any reader does not support the action.
     Result<std::shared_ptr<GlobalIndexResult>> Union(ReaderAction action);
 
     /// Executes the given action on all readers (parallel or sequential) and collects results.

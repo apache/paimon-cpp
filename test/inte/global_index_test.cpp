@@ -23,6 +23,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/global_index/bitmap/bitmap_global_index_factory.h"
+#include "paimon/common/global_index/bitmap/bitmap_global_index_options.h"
 #include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/common/global_index/union_global_index_reader.h"
 #include "paimon/common/table/special_fields.h"
@@ -917,7 +918,7 @@ TEST_P(GlobalIndexTest, TestScanIndexWithRange) {
     }
 }
 
-TEST_P(GlobalIndexTest, TestMultipleIndexFilesPrunedByKeyRange) {
+TEST_P(GlobalIndexTest, TestMultipleIndexFilesInOneRangePrunedByKeyRange) {
     CreateTable(/*partition_keys=*/{"f1"});
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
@@ -933,19 +934,56 @@ TEST_P(GlobalIndexTest, TestMultipleIndexFilesPrunedByKeyRange) {
     ASSERT_OK(Commit(table_path, first_commit_messages));
 
     auto second_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
-["Y", 20, 0, 3.0],
-["Z", 20, 1, 4.0]
+["Y", 10, 0, 3.0],
+["Z", 10, 1, 4.0]
     ])")
                             .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto second_commit_messages,
-                         WriteArray(table_path, {{"f1", "20"}}, write_cols, second_array));
+                         WriteArray(table_path, {{"f1", "10"}}, write_cols, second_array));
     ASSERT_OK(Commit(table_path, second_commit_messages));
 
+    ASSERT_OK_AND_ASSIGN(auto split, ScanData(table_path, /*partition_filters=*/{{{"f1", "10"}}}));
+    ASSERT_EQ(split->DataFiles().size(), 2u);
+    std::shared_ptr<DataFileMeta> first_file;
+    std::shared_ptr<DataFileMeta> second_file;
+    for (const auto& file : split->DataFiles()) {
+        ASSERT_TRUE(file->first_row_id);
+        if (file->first_row_id.value() == 0) {
+            first_file = file;
+        } else if (file->first_row_id.value() == 2) {
+            second_file = file;
+        }
+    }
+    ASSERT_TRUE(first_file);
+    ASSERT_TRUE(second_file);
+
+    auto create_single_file_split = [&](const std::shared_ptr<DataFileMeta>& file) {
+        DataSplitImpl::Builder builder(split->Partition(), split->Bucket(), split->BucketPath(),
+                                       std::vector<std::shared_ptr<DataFileMeta>>{file});
+        return builder.WithTotalBuckets(split->TotalBuckets())
+            .WithSnapshot(split->SnapshotId())
+            .IsStreaming(split->IsStreaming())
+            .RawConvertible(split->RawConvertible())
+            .Build();
+    };
+    ASSERT_OK_AND_ASSIGN(auto first_split, create_single_file_split(first_file));
+    ASSERT_OK_AND_ASSIGN(auto second_split, create_single_file_split(second_file));
+
+    const Range index_range(0, 3);
     for (const std::string index_type : {"bitmap", "btree"}) {
-        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{{{"f1", "10"}}}, "f0", index_type,
-                             /*options=*/{}, Range(0, 1)));
-        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{{{"f1", "20"}}}, "f0", index_type,
-                             /*options=*/{}, Range(2, 3)));
+        ASSERT_OK_AND_ASSIGN(
+            auto first_index_commit_message,
+            GlobalIndexWriteTask::WriteIndex(
+                table_path, "f0", index_type,
+                std::make_shared<IndexedSplitImpl>(first_split, std::vector<Range>({index_range})),
+                /*options=*/{}, /*task_id=*/std::nullopt, pool_, fs_));
+        ASSERT_OK_AND_ASSIGN(
+            auto second_index_commit_message,
+            GlobalIndexWriteTask::WriteIndex(
+                table_path, "f0", index_type,
+                std::make_shared<IndexedSplitImpl>(second_split, std::vector<Range>({index_range})),
+                /*options=*/{}, /*task_id=*/std::nullopt, pool_, fs_));
+        ASSERT_OK(Commit(table_path, {first_index_commit_message, second_index_commit_message}));
     }
 
     auto check_pruning = [&](const std::string& index_type) {
@@ -956,12 +994,8 @@ TEST_P(GlobalIndexTest, TestMultipleIndexFilesPrunedByKeyRange) {
         auto scan_impl = std::dynamic_pointer_cast<GlobalIndexScanImpl>(global_index_scan);
         ASSERT_TRUE(scan_impl);
         const auto& range_to_metas = scan_impl->index_metas_.at(0).at(index_type);
-        ASSERT_EQ(range_to_metas.size(), 2u);
-        size_t index_file_count = 0;
-        for (const auto& range_and_metas : range_to_metas) {
-            index_file_count += range_and_metas.second.size();
-        }
-        ASSERT_EQ(index_file_count, 2u);
+        ASSERT_EQ(range_to_metas.size(), 1u);
+        ASSERT_EQ(range_to_metas.at(index_range).size(), 2u);
 
         auto file_manager = scan_impl->index_file_manager_;
         auto counting_file_manager = std::make_shared<CountingGlobalIndexFileManager>(
@@ -979,10 +1013,81 @@ TEST_P(GlobalIndexTest, TestMultipleIndexFilesPrunedByKeyRange) {
         // "Z" is outside the first file's [A, B] key range, so first_key/last_key pruning should
         // avoid opening it and read only the second [Y, Z] file.
         ASSERT_EQ(counting_file_manager->OpenCount(), 1);
+
+        ASSERT_OK_AND_ASSIGN(result,
+                             reader->VisitNotEqual(Literal(FieldType::STRING, "A", /*size=*/1)));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->ToString(), "{1,2,3}");
+        // NOT EQUAL selects both physical files in the same logical row range and merges their
+        // range-local bitmaps.
+        ASSERT_EQ(counting_file_manager->OpenCount(), 2);
     };
 
     check_pruning("bitmap");
     check_pruning("btree");
+}
+
+TEST_P(GlobalIndexTest, TestFallbackUnsupportedPropagatesAcrossRowRanges) {
+    CreateTable(/*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+    std::vector<std::string> write_cols = schema->field_names();
+
+    auto first_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["A", 10, 0, 1.0],
+["B", 10, 1, 2.0]
+    ])")
+                           .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto first_commit_messages,
+                         WriteArray(table_path, {{"f1", "10"}}, write_cols, first_array));
+    ASSERT_OK(Commit(table_path, first_commit_messages));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{{{"f1", "10"}}}, "f0", "bitmap",
+                         /*options=*/{}, Range(0, 1)));
+
+    auto second_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Y", 20, 0, 3.0],
+["Z", 20, 1, 4.0]
+    ])")
+                            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto second_commit_messages,
+                         WriteArray(table_path, {{"f1", "20"}}, write_cols, second_array));
+    ASSERT_OK(Commit(table_path, second_commit_messages));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{{{"f1", "20"}}}, "f0", "bitmap",
+                         /*options=*/{}, Range(2, 3)));
+
+    std::map<std::string, std::string> options = {
+        {BitmapGlobalIndexOptions::kBitmapIndexFallbackScanMaxSize, "1B"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                 /*partitions=*/std::nullopt, options, fs_,
+                                                 /*executor=*/nullptr, pool_));
+
+    Literal y(FieldType::STRING, "Y", /*size=*/1);
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex first_range, RowRangeIndex::Create({Range(0, 1)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> first_reader,
+                         global_index_scan->CreateReader("f0", "bitmap", first_range));
+    ASSERT_TRUE(first_reader);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> first_result,
+                         first_reader->VisitGreaterOrEqual(y));
+    ASSERT_TRUE(first_result);
+    ASSERT_EQ(first_result->ToString(), "{}");
+
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex second_range, RowRangeIndex::Create({Range(2, 3)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> second_reader,
+                         global_index_scan->CreateReader("f0", "bitmap", second_range));
+    ASSERT_TRUE(second_reader);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> second_result,
+                         second_reader->VisitGreaterOrEqual(y));
+    ASSERT_FALSE(second_result);
+
+    auto predicate = PredicateBuilder::GreaterOrEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING, y);
+    auto scan_impl = std::dynamic_pointer_cast<GlobalIndexScanImpl>(global_index_scan);
+    ASSERT_TRUE(scan_impl);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> result, scan_impl->Scan(predicate));
+    // Range [A, B] is known empty while range [Y, Z] is unsupported because its selected file
+    // exceeds the fallback budget. The union must remain unsupported instead of becoming empty.
+    ASSERT_FALSE(result);
 }
 
 TEST_P(GlobalIndexTest, TestScanIndexWithPartition) {

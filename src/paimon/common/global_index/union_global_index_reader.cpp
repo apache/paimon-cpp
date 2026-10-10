@@ -171,7 +171,7 @@ Result<std::shared_ptr<GlobalIndexResult>> UnionGlobalIndexReader::Union(ReaderA
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result,
                                std::move(result_or_status));
         if (result == nullptr) {
-            continue;
+            return std::shared_ptr<GlobalIndexResult>(nullptr);
         }
         if (merged_result == nullptr) {
             merged_result = std::move(result);
