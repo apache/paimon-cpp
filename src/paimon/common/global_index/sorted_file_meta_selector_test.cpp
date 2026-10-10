@@ -172,9 +172,9 @@ TEST_F(SortedFileMetaSelectorTest, TestVisitNotEqual) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
                          SortedFileMetaSelector::Create(files_, key_serializer_));
 
-    // NotEqual cannot prune any file, returns all
+    // NOT EQUAL cannot match an only-null file.
     ASSERT_OK_AND_ASSIGN(auto result, selector->VisitNotEqual(Literal(22)));
-    CheckResult(result, {"file1", "file2", "file3", "file4", "file5", "file6"});
+    CheckResult(result, {"file1", "file2", "file3", "file4", "file5"});
 }
 
 TEST_F(SortedFileMetaSelectorTest, TestVisitIsNull) {
@@ -219,10 +219,73 @@ TEST_F(SortedFileMetaSelectorTest, TestVisitNotIn) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
                          SortedFileMetaSelector::Create(files_, key_serializer_));
 
-    // NotIn cannot prune any file
+    // NOT IN cannot match an only-null file.
     ASSERT_OK_AND_ASSIGN(auto result,
                          selector->VisitNotIn({Literal(1), Literal(7), Literal(19), Literal(30)}));
-    CheckResult(result, {"file1", "file2", "file3", "file4", "file5", "file6"});
+    CheckResult(result, {"file1", "file2", "file3", "file4", "file5"});
+}
+
+TEST_F(SortedFileMetaSelectorTest, TestVisitStartsWith) {
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
+                         KeySerializer::Create(arrow::utf8(), pool));
+    auto serialize = [&](const std::string& value) {
+        Literal literal(FieldType::STRING, value.data(), value.size());
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, key_serializer->Serialize(literal));
+        return result;
+    };
+
+    auto first_meta = std::make_shared<SortedIndexFileMeta>(serialize("apple"), serialize("banana"),
+                                                            /*has_nulls=*/true);
+    auto second_meta = std::make_shared<SortedIndexFileMeta>(serialize("band"), serialize("cat"),
+                                                             /*has_nulls=*/false);
+    auto third_meta = std::make_shared<SortedIndexFileMeta>(serialize("dog"), serialize("zoo"),
+                                                            /*has_nulls=*/false);
+    auto only_nulls_meta =
+        std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, /*has_nulls=*/true);
+    std::vector<GlobalIndexIOMeta> files = {
+        GlobalIndexIOMeta("first", 1, first_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("second", 1, second_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("third", 1, third_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("only_nulls", 1, only_nulls_meta->Serialize(pool.get())),
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
+                         SortedFileMetaSelector::Create(files, key_serializer));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<GlobalIndexIOMeta> result,
+                         selector->VisitStartsWith(Literal(FieldType::STRING, "ban", 3)));
+    CheckResult(result, {"first", "second"});
+
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitStartsWith(Literal(FieldType::STRING, "zzz", 3)));
+    ASSERT_TRUE(result.empty());
+
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitStartsWith(Literal(FieldType::STRING, "", 0)));
+    CheckResult(result, {"first", "second", "third"});
+
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitStartsWith(Literal(FieldType::STRING)));
+    ASSERT_TRUE(result.empty());
+}
+
+TEST_F(SortedFileMetaSelectorTest, TestPrefixUpperBound) {
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    auto upper_bound = [&](const std::string& prefix) {
+        std::shared_ptr<Bytes> bytes = Bytes::AllocateBytes(prefix, pool.get());
+        return SortedFileMetaSelector::PrefixUpperBound(MemorySlice::Wrap(bytes), pool.get());
+    };
+
+    std::shared_ptr<Bytes> result = upper_bound("abc");
+    ASSERT_TRUE(result);
+    ASSERT_EQ("abd", std::string(result->data(), result->size()));
+
+    result = upper_bound(std::string("a\xFF", 2));
+    ASSERT_TRUE(result);
+    ASSERT_EQ("b", std::string(result->data(), result->size()));
+
+    result = upper_bound(std::string("\xFF\xFF", 2));
+    ASSERT_FALSE(result);
+
+    result = upper_bound("");
+    ASSERT_FALSE(result);
 }
 
 TEST_F(SortedFileMetaSelectorTest, TestOnlyNullsFileExcludedFromRangeQueries) {

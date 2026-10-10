@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/global_index/sorted_file_global_index_reader.h"
 #include "paimon/executor.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
@@ -199,6 +200,49 @@ class FakeReader : public GlobalIndexReader {
     std::atomic<int32_t> invocation_count_{0};
 };
 
+class FakeSortedFileGlobalIndexReader : public SortedFileGlobalIndexReader {
+ public:
+    FakeSortedFileGlobalIndexReader(
+        std::map<std::string, std::shared_ptr<GlobalIndexReader>>&& readers,
+        std::shared_ptr<Executor> executor)
+        : SortedFileGlobalIndexReader(/*file_selector=*/nullptr,
+                                      /*fallback_scan_max_size=*/0, std::move(executor)),
+          readers_(std::move(readers)) {}
+
+    Result<std::shared_ptr<GlobalIndexResult>> VisitSelectedFilesForTest(
+        const std::vector<GlobalIndexIOMeta>& files) {
+        return VisitSelectedFiles(files, [](const std::shared_ptr<GlobalIndexReader>& reader) {
+            return reader->VisitIsNotNull();
+        });
+    }
+
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& vector_search) override {
+        return Status::Invalid("FakeSortedFileGlobalIndexReader does not support vector search");
+    }
+
+    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+        const std::shared_ptr<FullTextSearch>& full_text_search) override {
+        return Status::Invalid("FakeSortedFileGlobalIndexReader does not support full text search");
+    }
+
+    std::string GetIndexType() const override {
+        return "fake-sorted";
+    }
+
+ protected:
+    Result<std::shared_ptr<GlobalIndexReader>> OpenReader(const GlobalIndexIOMeta& meta) override {
+        auto iterator = readers_.find(meta.file_path);
+        if (iterator == readers_.end()) {
+            return Status::Invalid("Unknown fake index file " + meta.file_path);
+        }
+        return iterator->second;
+    }
+
+ private:
+    std::map<std::string, std::shared_ptr<GlobalIndexReader>> readers_;
+};
+
 // Runs the first task immediately and defers the rest. This makes it possible to verify that
 // queued tasks own their action even if collecting an earlier future throws.
 class DeferAfterFirstExecutor : public Executor {
@@ -367,8 +411,41 @@ TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptr) {
     UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
-    // Nullptrs are skipped, only reader2's result is used
+    // A missing result from any reader makes the whole union unsupported.
+    ASSERT_FALSE(result);
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptrWithExecutor) {
+    auto reader1 = std::make_shared<FakeReader>();
+    auto reader2 = std::make_shared<FakeReader>();
+    reader1->SetDefaultResult({1, 2});
+    reader2->SetReturnNullptr();
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    UnionGlobalIndexReader union_reader(std::move(readers), CreateDefaultExecutor());
+
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
+    ASSERT_FALSE(result);
+    ASSERT_EQ(reader1->InvocationCount(), 1);
+    ASSERT_EQ(reader2->InvocationCount(), 1);
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestSortedFileSelectedFilesSkipNullptr) {
+    auto unsupported_reader = std::make_shared<FakeReader>();
+    auto supported_reader = std::make_shared<FakeReader>();
+    unsupported_reader->SetReturnNullptr();
+    supported_reader->SetDefaultResult({1, 2});
+    std::map<std::string, std::shared_ptr<GlobalIndexReader>> readers = {
+        {"unsupported", unsupported_reader}, {"supported", supported_reader}};
+    FakeSortedFileGlobalIndexReader sorted_reader(std::move(readers), CreateDefaultExecutor());
+    std::vector<GlobalIndexIOMeta> files = {
+        GlobalIndexIOMeta("unsupported", /*file_size=*/1, /*metadata=*/nullptr),
+        GlobalIndexIOMeta("supported", /*file_size=*/1, /*metadata=*/nullptr)};
+
+    ASSERT_OK_AND_ASSIGN(auto result, sorted_reader.VisitSelectedFilesForTest(files));
     CheckResult(result, {1, 2});
+    ASSERT_EQ(unsupported_reader->InvocationCount(), 1);
+    ASSERT_EQ(supported_reader->InvocationCount(), 1);
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestErrorPropagationSequential) {

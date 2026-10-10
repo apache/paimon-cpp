@@ -126,6 +126,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/less_or_equal.cpp
     common/predicate/less_than.cpp
     common/predicate/like.cpp
+    common/predicate/like_optimization.cpp
     common/predicate/literal_converter.cpp
     common/predicate/literal.cpp
     common/predicate/multi_literals_leaf_function.cpp
@@ -616,9 +617,9 @@ if(PAIMON_BUILD_TESTS)
                     common/global_index/global_indexer_factory_test.cpp
                     common/global_index/bitmap_global_index_result_test.cpp
                     common/global_index/bitmap_scored_global_index_result_test.cpp
-                    common/global_index/bitmap/bitmap_global_index_test.cpp
                     common/global_index/bitmap/bitmap_global_index_format_test.cpp
-                    common/global_index/bitmap/bitmap_index_reader_test.cpp
+                    common/global_index/bitmap/bitmap_global_index_test.cpp
+                    common/global_index/bitmap/lazy_filtered_bitmap_reader_test.cpp
                     common/global_index/sorted_index_file_meta_test.cpp
                     common/global_index/btree/btree_file_footer_test.cpp
                     common/global_index/key_serializer_test.cpp
@@ -644,6 +645,7 @@ if(PAIMON_BUILD_TESTS)
                     common/options/time_duration_test.cpp
                     common/predicate/literal_converter_test.cpp
                     common/predicate/literal_test.cpp
+                    common/predicate/like_optimization_test.cpp
                     common/predicate/multi_literals_leaf_function_test.cpp
                     common/predicate/null_false_leaf_binary_function_test.cpp
                     common/predicate/predicate_test.cpp

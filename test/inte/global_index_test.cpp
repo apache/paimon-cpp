@@ -16,12 +16,15 @@
  * limitations under the License.
  */
 
+#include <atomic>
 #include <limits>
 
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/global_index/bitmap/bitmap_global_index_factory.h"
+#include "paimon/common/global_index/bitmap/bitmap_global_index_options.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/common/global_index/union_global_index_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -47,16 +50,34 @@
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::test {
+namespace {
+
+class CountingGlobalIndexFileManager : public GlobalIndexFileManager {
+ public:
+    CountingGlobalIndexFileManager(const std::shared_ptr<FileSystem>& fs,
+                                   const std::shared_ptr<IndexPathFactory>& path_factory)
+        : GlobalIndexFileManager(fs, path_factory, /*checkpoint_path_factory=*/nullptr) {}
+
+    Result<std::unique_ptr<InputStream>> GetInputStream(
+        const std::string& file_path) const override {
+        open_count_.fetch_add(1, std::memory_order_relaxed);
+        return GlobalIndexFileManager::GetInputStream(file_path);
+    }
+
+    int32_t OpenCount() const {
+        return open_count_.load(std::memory_order_relaxed);
+    }
+
+ private:
+    mutable std::atomic<int32_t> open_count_ = 0;
+};
+
+}  // namespace
+
 // string: FileFormat, bool: UseSpecificFileSystem
 using ParamType = std::tuple<std::string, bool>;
 /// This is a sdk end-to-end test for global index.
 class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInterface<ParamType> {
-    static const std::map<std::string, std::string>& LegacyBitmapTestOptions() {
-        static const std::map<std::string, std::string> options = {
-            {"bitmap-global-index.legacy-format.enabled-for-testing", "true"}};
-        return options;
-    }
-
     void SetUp() override {
         file_format_ = std::get<0>(GetParam());
         dir_ = UniqueTestDirectory::Create("local");
@@ -73,17 +94,13 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
     void CreateTable(const std::vector<std::string>& partition_keys,
                      const std::shared_ptr<arrow::Schema>& schema,
                      const std::map<std::string, std::string>& options) const {
-        std::map<std::string, std::string> test_options = options;
-        for (const auto& [key, value] : LegacyBitmapTestOptions()) {
-            test_options[key] = value;
-        }
         ::ArrowSchema c_schema;
         ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
 
         ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(dir_->Str(), {}, fs_));
         ASSERT_OK(catalog->CreateDatabase("foo", {}, /*ignore_if_exists=*/false));
         ASSERT_OK(catalog->CreateTable(Identifier("foo", "bar"), &c_schema, partition_keys,
-                                       /*primary_keys=*/{}, test_options,
+                                       /*primary_keys=*/{}, options,
                                        /*ignore_if_exists=*/false));
     }
 
@@ -487,13 +504,13 @@ TEST_P(GlobalIndexTest, TestWriteIndex) {
     std::vector<std::string> write_cols = schema->field_names();
     auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
 ["Alice", 10, 1, 11.1],
+["Alice", 20, null, 18.1],
 ["Bob", 10, 1, 12.1],
-["Emily", 10, 0, 13.1],
-["Tony", 10, 0, 14.1],
-["Lucy", 20, 1, 15.1],
 ["Bob", 10, 1, 16.1],
-["Tony", 20, 0, 17.1],
-["Alice", 20, null, 18.1]
+["Emily", 10, 0, 13.1],
+["Lucy", 20, 1, 15.1],
+["Tony", 10, 0, 14.1],
+["Tony", 20, 0, 17.1]
     ])")
                          .ValueOrDie();
 
@@ -511,9 +528,13 @@ TEST_P(GlobalIndexTest, TestWriteIndex) {
     ASSERT_TRUE(index_commit_msg_impl);
 
     // check commit message
+    std::shared_ptr<Bytes> index_meta =
+        SortedIndexFileMeta(std::make_shared<Bytes>("Alice", pool_.get()),
+                            std::make_shared<Bytes>("Tony", pool_.get()), /*has_nulls=*/false)
+            .Serialize(pool_.get());
     GlobalIndexMeta expected_global_index_meta(
         /*row_range_start=*/0, /*row_range_end=*/7, /*index_field_id=*/0,
-        /*extra_field_ids=*/std::nullopt, /*index_meta=*/nullptr);
+        /*extra_field_ids=*/std::nullopt, index_meta);
     auto expected_index_file_meta =
         std::make_shared<IndexFileMeta>("bitmap", /*file_name=*/"fake_index_file", /*file_size=*/10,
                                         /*row_count=*/8, /*dv_ranges=*/std::nullopt,
@@ -553,9 +574,9 @@ TEST_P(GlobalIndexTest, TestWriteIndexWithPartition) {
     auto src_array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
 ["Alice", 10, 1, 11.1],
 ["Bob", 10, 1, 12.1],
+["Bob", 10, 1, 16.1],
 ["Emily", 10, 0, 13.1],
-["Tony", 10, 0, 14.1],
-["Bob", 10, 1, 16.1]
+["Tony", 10, 0, 14.1]
     ])")
                           .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto commit_msgs1,
@@ -563,9 +584,9 @@ TEST_P(GlobalIndexTest, TestWriteIndexWithPartition) {
     ASSERT_OK(Commit(table_path, commit_msgs1));
 
     auto src_array2 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Alice", 20, null, 18.1],
 ["Lucy", 20, 1, 15.1],
-["Tony", 20, 0, 17.1],
-["Alice", 20, null, 18.1]
+["Tony", 20, 0, 17.1]
     ])")
                           .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto commit_msgs2,
@@ -587,10 +608,15 @@ TEST_P(GlobalIndexTest, TestWriteIndexWithPartition) {
             ASSERT_TRUE(index_commit_msg_impl);
 
             // check commit message
+            std::shared_ptr<Bytes> index_meta =
+                SortedIndexFileMeta(std::make_shared<Bytes>("Alice", pool_.get()),
+                                    std::make_shared<Bytes>("Tony", pool_.get()),
+                                    /*has_nulls=*/false)
+                    .Serialize(pool_.get());
             GlobalIndexMeta expected_global_index_meta(
                 /*row_range_start=*/expected_range.from, /*row_range_end=*/expected_range.to,
                 /*index_field_id=*/0,
-                /*extra_field_ids=*/std::nullopt, /*index_meta=*/nullptr);
+                /*extra_field_ids=*/std::nullopt, index_meta);
             auto expected_index_file_meta = std::make_shared<IndexFileMeta>(
                 "bitmap", /*file_name=*/"fake_index_file", /*file_size=*/10,
                 /*row_count=*/expected_range.Count(), /*dv_ranges=*/std::nullopt,
@@ -620,11 +646,10 @@ TEST_P(GlobalIndexTest, TestScanIndex) {
 
     std::string table_path = paimon::test::GetDataDir() + "/" + file_format_ +
                              "/append_with_global_index.db/append_with_global_index";
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<GlobalIndexScan> global_index_scan,
-        GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
-                                /*partitions=*/std::nullopt, LegacyBitmapTestOptions(), fs_,
-                                /*executor=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                 /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                                 /*executor=*/nullptr, pool_));
     // test index reader
     // test f0 field
     ASSERT_OK_AND_ASSIGN(auto index_readers, global_index_scan->CreateReaders("f0", std::nullopt));
@@ -747,32 +772,32 @@ TEST_P(GlobalIndexTest, TestScanIndex) {
         ASSERT_EQ(index_result->ToString(), "{}");
     }
     {
-        // test greater than predicate which bitmap index is not support, will return all range
+        // test greater than predicate
         auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"f1",
                                                        FieldType::INT, Literal(10));
         ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
-        ASSERT_FALSE(index_result);
+        ASSERT_EQ(index_result->ToString(), "{4,6,7}");
     }
     {
-        // test greater or equal predicate which bitmap index is not support, will return all range
+        // test greater or equal predicate
         auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/1, /*field_name=*/"f1",
                                                           FieldType::INT, Literal(10));
         ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
-        ASSERT_FALSE(index_result);
+        ASSERT_EQ(index_result->ToString(), "{0,1,2,3,4,5,6,7}");
     }
     {
-        // test less than predicate which bitmap index is not support, will return all range
+        // test less than predicate
         auto predicate = PredicateBuilder::LessThan(/*field_index=*/1, /*field_name=*/"f1",
                                                     FieldType::INT, Literal(10));
         ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
-        ASSERT_FALSE(index_result);
+        ASSERT_EQ(index_result->ToString(), "{}");
     }
     {
-        // test less or equal predicate which bitmap index is not support, will return all range
+        // test less or equal predicate
         auto predicate = PredicateBuilder::LessOrEqual(/*field_index=*/1, /*field_name=*/"f1",
                                                        FieldType::INT, Literal(10));
         ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
-        ASSERT_FALSE(index_result);
+        ASSERT_EQ(index_result->ToString(), "{0,1,2,3,5}");
     }
     {
         // test a predicate for field with no index
@@ -791,11 +816,10 @@ TEST_P(GlobalIndexTest, TestScanIndexWithSpecificSnapshot) {
     std::string table_path = paimon::test::GetDataDir() + "/" + file_format_ +
                              "/append_with_global_index.db/append_with_global_index";
     // snapshot 2 has f0 index
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<GlobalIndexScan> global_index_scan,
-        GlobalIndexScan::Create(table_path, /*snapshot_id=*/2l,
-                                /*partitions=*/std::nullopt, LegacyBitmapTestOptions(), fs_,
-                                /*executor=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/2l,
+                                                 /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                                 /*executor=*/nullptr, pool_));
     // test index reader
     // test f0 field
     ASSERT_OK_AND_ASSIGN(auto index_readers, global_index_scan->CreateReaders("f0", std::nullopt));
@@ -841,11 +865,10 @@ TEST_P(GlobalIndexTest, TestScanIndexWithSpecificSnapshotWithNoIndex) {
     std::string table_path = paimon::test::GetDataDir() + "/" + file_format_ +
                              "/append_with_global_index.db/append_with_global_index";
     // snapshot 1 has no index
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<GlobalIndexScan> global_index_scan,
-        GlobalIndexScan::Create(table_path, /*snapshot_id=*/1l,
-                                /*partitions=*/std::nullopt, LegacyBitmapTestOptions(), fs_,
-                                /*executor=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/1l,
+                                                 /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                                 /*executor=*/nullptr, pool_));
     // test index reader
     ASSERT_OK_AND_ASSIGN(auto index_readers, global_index_scan->CreateReaders("f0", std::nullopt));
     ASSERT_EQ(index_readers.size(), 0u);
@@ -866,11 +889,10 @@ TEST_P(GlobalIndexTest, TestScanIndexWithRange) {
 
     std::string table_path = paimon::test::GetDataDir() + "/" + file_format_ +
                              "/append_with_global_index.db/append_with_global_index";
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<GlobalIndexScan> global_index_scan,
-        GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
-                                /*partitions=*/std::nullopt, LegacyBitmapTestOptions(), fs_,
-                                /*executor=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                 /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                                 /*executor=*/nullptr, pool_));
     auto global_index_scan_impl = std::dynamic_pointer_cast<GlobalIndexScanImpl>(global_index_scan);
     {
         // test index reader
@@ -896,6 +918,178 @@ TEST_P(GlobalIndexTest, TestScanIndexWithRange) {
     }
 }
 
+TEST_P(GlobalIndexTest, TestMultipleIndexFilesInOneRangePrunedByKeyRange) {
+    CreateTable(/*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+    std::vector<std::string> write_cols = schema->field_names();
+
+    auto first_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["A", 10, 0, 1.0],
+["B", 10, 1, 2.0]
+    ])")
+                           .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto first_commit_messages,
+                         WriteArray(table_path, {{"f1", "10"}}, write_cols, first_array));
+    ASSERT_OK(Commit(table_path, first_commit_messages));
+
+    auto second_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Y", 10, 0, 3.0],
+["Z", 10, 1, 4.0]
+    ])")
+                            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto second_commit_messages,
+                         WriteArray(table_path, {{"f1", "10"}}, write_cols, second_array));
+    ASSERT_OK(Commit(table_path, second_commit_messages));
+
+    ASSERT_OK_AND_ASSIGN(auto split, ScanData(table_path, /*partition_filters=*/{{{"f1", "10"}}}));
+    ASSERT_EQ(split->DataFiles().size(), 2u);
+    std::shared_ptr<DataFileMeta> first_file;
+    std::shared_ptr<DataFileMeta> second_file;
+    for (const auto& file : split->DataFiles()) {
+        ASSERT_TRUE(file->first_row_id);
+        if (file->first_row_id.value() == 0) {
+            first_file = file;
+        } else if (file->first_row_id.value() == 2) {
+            second_file = file;
+        }
+    }
+    ASSERT_TRUE(first_file);
+    ASSERT_TRUE(second_file);
+
+    auto create_single_file_split = [&](const std::shared_ptr<DataFileMeta>& file) {
+        DataSplitImpl::Builder builder(split->Partition(), split->Bucket(), split->BucketPath(),
+                                       std::vector<std::shared_ptr<DataFileMeta>>{file});
+        return builder.WithTotalBuckets(split->TotalBuckets())
+            .WithSnapshot(split->SnapshotId())
+            .IsStreaming(split->IsStreaming())
+            .RawConvertible(split->RawConvertible())
+            .Build();
+    };
+    ASSERT_OK_AND_ASSIGN(auto first_split, create_single_file_split(first_file));
+    ASSERT_OK_AND_ASSIGN(auto second_split, create_single_file_split(second_file));
+
+    const Range index_range(0, 3);
+    for (const std::string index_type : {"bitmap", "btree"}) {
+        ASSERT_OK_AND_ASSIGN(
+            auto first_index_commit_message,
+            GlobalIndexWriteTask::WriteIndex(
+                table_path, "f0", index_type,
+                std::make_shared<IndexedSplitImpl>(first_split, std::vector<Range>({index_range})),
+                /*options=*/{}, /*task_id=*/std::nullopt, pool_, fs_));
+        ASSERT_OK_AND_ASSIGN(
+            auto second_index_commit_message,
+            GlobalIndexWriteTask::WriteIndex(
+                table_path, "f0", index_type,
+                std::make_shared<IndexedSplitImpl>(second_split, std::vector<Range>({index_range})),
+                /*options=*/{}, /*task_id=*/std::nullopt, pool_, fs_));
+        ASSERT_OK(Commit(table_path, {first_index_commit_message, second_index_commit_message}));
+    }
+
+    auto check_pruning = [&](const std::string& index_type) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                             GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                     /*partitions=*/std::nullopt, /*options=*/{},
+                                                     fs_, /*executor=*/nullptr, pool_));
+        auto scan_impl = std::dynamic_pointer_cast<GlobalIndexScanImpl>(global_index_scan);
+        ASSERT_TRUE(scan_impl);
+        const auto& range_to_metas = scan_impl->index_metas_.at(0).at(index_type);
+        ASSERT_EQ(range_to_metas.size(), 1u);
+        ASSERT_EQ(range_to_metas.at(index_range).size(), 2u);
+
+        auto file_manager = scan_impl->index_file_manager_;
+        auto counting_file_manager = std::make_shared<CountingGlobalIndexFileManager>(
+            file_manager->fs_, file_manager->path_factory_);
+        scan_impl->index_file_manager_ = counting_file_manager;
+
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<GlobalIndexReader> reader,
+            global_index_scan->CreateReader("f0", index_type, /*row_range_index=*/std::nullopt));
+        ASSERT_TRUE(reader);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> result,
+                             reader->VisitEqual(Literal(FieldType::STRING, "Z", /*size=*/1)));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->ToString(), "{3}");
+        // "Z" is outside the first file's [A, B] key range, so first_key/last_key pruning should
+        // avoid opening it and read only the second [Y, Z] file.
+        ASSERT_EQ(counting_file_manager->OpenCount(), 1);
+
+        ASSERT_OK_AND_ASSIGN(result,
+                             reader->VisitNotEqual(Literal(FieldType::STRING, "A", /*size=*/1)));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->ToString(), "{1,2,3}");
+        // NOT EQUAL selects both physical files in the same logical row range and merges their
+        // range-local bitmaps.
+        ASSERT_EQ(counting_file_manager->OpenCount(), 2);
+    };
+
+    check_pruning("bitmap");
+    check_pruning("btree");
+}
+
+TEST_P(GlobalIndexTest, TestFallbackUnsupportedPropagatesAcrossRowRanges) {
+    CreateTable(/*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+    std::vector<std::string> write_cols = schema->field_names();
+
+    auto first_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["A", 10, 0, 1.0],
+["B", 10, 1, 2.0]
+    ])")
+                           .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto first_commit_messages,
+                         WriteArray(table_path, {{"f1", "10"}}, write_cols, first_array));
+    ASSERT_OK(Commit(table_path, first_commit_messages));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{{{"f1", "10"}}}, "f0", "bitmap",
+                         /*options=*/{}, Range(0, 1)));
+
+    auto second_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Y", 20, 0, 3.0],
+["Z", 20, 1, 4.0]
+    ])")
+                            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto second_commit_messages,
+                         WriteArray(table_path, {{"f1", "20"}}, write_cols, second_array));
+    ASSERT_OK(Commit(table_path, second_commit_messages));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{{{"f1", "20"}}}, "f0", "bitmap",
+                         /*options=*/{}, Range(2, 3)));
+
+    std::map<std::string, std::string> options = {
+        {BitmapGlobalIndexOptions::kBitmapIndexFallbackScanMaxSize, "1B"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                 /*partitions=*/std::nullopt, options, fs_,
+                                                 /*executor=*/nullptr, pool_));
+
+    Literal y(FieldType::STRING, "Y", /*size=*/1);
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex first_range, RowRangeIndex::Create({Range(0, 1)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> first_reader,
+                         global_index_scan->CreateReader("f0", "bitmap", first_range));
+    ASSERT_TRUE(first_reader);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> first_result,
+                         first_reader->VisitGreaterOrEqual(y));
+    ASSERT_TRUE(first_result);
+    ASSERT_EQ(first_result->ToString(), "{}");
+
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex second_range, RowRangeIndex::Create({Range(2, 3)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> second_reader,
+                         global_index_scan->CreateReader("f0", "bitmap", second_range));
+    ASSERT_TRUE(second_reader);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> second_result,
+                         second_reader->VisitGreaterOrEqual(y));
+    ASSERT_FALSE(second_result);
+
+    auto predicate = PredicateBuilder::GreaterOrEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING, y);
+    auto scan_impl = std::dynamic_pointer_cast<GlobalIndexScanImpl>(global_index_scan);
+    ASSERT_TRUE(scan_impl);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> result, scan_impl->Scan(predicate));
+    // Range [A, B] is known empty while range [Y, Z] is unsupported because its selected file
+    // exceeds the fallback budget. The union must remain unsupported instead of becoming empty.
+    ASSERT_FALSE(result);
+}
+
 TEST_P(GlobalIndexTest, TestScanIndexWithPartition) {
     if (file_format_ == "avro") {
         return;
@@ -909,7 +1103,7 @@ TEST_P(GlobalIndexTest, TestScanIndexWithPartition) {
         [&](const std::optional<std::vector<std::map<std::string, std::string>>>& partitions) {
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
                                  GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
-                                                         partitions, LegacyBitmapTestOptions(), fs_,
+                                                         partitions, /*options=*/{}, fs_,
                                                          /*executor=*/nullptr, pool_));
             // test index reader
             ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index,
@@ -963,11 +1157,10 @@ TEST_P(GlobalIndexTest, TestScanUnregisteredIndex) {
 
     std::string table_path = paimon::test::GetDataDir() + "/" + file_format_ +
                              "/append_with_global_index.db/append_with_global_index";
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<GlobalIndexScan> global_index_scan,
-        GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
-                                /*partitions=*/std::nullopt, LegacyBitmapTestOptions(), fs_,
-                                /*executor=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                 /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                                 /*executor=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(auto index_readers, global_index_scan->CreateReaders("f0", std::nullopt));
     ASSERT_EQ(index_readers.size(), 0u);
 
@@ -988,13 +1181,13 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndex) {
     std::vector<std::string> write_cols = schema->field_names();
     auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
 ["Alice", 10, 1, 11.1],
+["Alice", 20, null, 18.1],
 ["Bob", 10, 1, 12.1],
-["Emily", 10, 0, 13.1],
-["Tony", 10, 0, 14.1],
-["Lucy", 20, 1, 15.1],
 ["Bob", 10, 1, 16.1],
-["Tony", 20, 0, 17.1],
-["Alice", 20, null, 18.1]
+["Emily", 10, 0, 13.1],
+["Lucy", 20, 1, 15.1],
+["Tony", 10, 0, 14.1],
+["Tony", 20, 0, 17.1]
     ])")
                          .ValueOrDie();
 
@@ -1012,7 +1205,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndex) {
     ASSERT_EQ(index_readers.size(), 1u);
     ASSERT_OK_AND_ASSIGN(auto index_result,
                          index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Alice", 5)));
-    ASSERT_EQ(index_result->ToString(), "{0,7}");
+    ASSERT_EQ(index_result->ToString(), "{0,1}");
 }
 
 #ifdef PAIMON_ENABLE_LUMINA
@@ -1062,11 +1255,11 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndexWithPartition) {
 
     // write partition f2 = 20
     auto src_array2 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
-["Lucy", [10.0, 10.0, 10.0, 10.0], 20, 15.1],
-["Bob", [10.0, 11.0, 10.0, 11.0], 20, 16.1],
-["Tony", [11.0, 10.0, 11.0, 10.0], 20, 17.1],
 ["Alice", [11.0, 11.0, 11.0, 11.0], 20, 18.1],
-["Paul", [10.0, 10.0, 10.0, 10.0], 20, 19.1]
+["Bob", [10.0, 11.0, 10.0, 11.0], 20, 16.1],
+["Lucy", [10.0, 10.0, 10.0, 10.0], 20, 15.1],
+["Paul", [10.0, 10.0, 10.0, 10.0], 20, 19.1],
+["Tony", [11.0, 10.0, 11.0, 10.0], 20, 17.1]
     ])")
                           .ValueOrDie();
     write_data_and_index(src_array2, {{"f2", "20"}}, Range(4, 8));
@@ -1119,7 +1312,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndexWithPartition) {
     result_fields.push_back(SpecialFields::IndexScore().ArrowField());
     std::map<int64_t, float> id_to_score1 = {{0, 4.21f}, {1, 2.01f}, {2, 2.21f}, {3, 0.01f}};
     std::map<int64_t, float> id_to_score2 = {
-        {0, 322.21f}, {1, 360.01f}, {2, 360.21f}, {3, 398.01}, {4, 322.21f}};
+        {0, 398.01f}, {1, 360.01f}, {2, 322.21f}, {3, 322.21f}, {4, 360.21f}};
 
     {
         // test scan and read for f2=10
@@ -1142,8 +1335,8 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndexWithPartition) {
     ])")
                 .ValueOrDie();
         ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(4, 8)}));
-        scan_and_check_result({{"f2", "20"}}, row_range_index, filter, /*limit=*/1, "{7,8}",
-                              "row ids: {8}, scores: {322.21}", expected_array, id_to_score2);
+        scan_and_check_result({{"f2", "20"}}, row_range_index, filter, /*limit=*/1, "{4,7}",
+                              "row ids: {7}, scores: {322.21}", expected_array, id_to_score2);
     }
     {
         // test invalid partition input
@@ -1448,13 +1641,13 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScan) {
     std::vector<std::string> write_cols = schema->field_names();
     auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
 ["Alice", 10, 1, 11.1],
+["Alice", 20, null, 18.1],
 ["Bob", 10, 1, 12.1],
-["Emily", 10, 0, 13.1],
-["Tony", 10, 0, 14.1],
-["Lucy", 20, 1, 15.1],
 ["Bob", 10, 1, 16.1],
-["Tony", 20, 0, 17.1],
-["Alice", 20, null, 18.1]
+["Emily", 10, 0, 13.1],
+["Lucy", 20, 1, 15.1],
+["Tony", 10, 0, 14.1],
+["Tony", 20, 0, 17.1]
     ])")
                          .ValueOrDie();
 
@@ -1466,13 +1659,13 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScan) {
     auto expected_all_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields), R"([
 [0, "Alice", 10, 1, 11.1],
+[0, "Alice", 20, null, 18.1],
 [0, "Bob", 10, 1, 12.1],
-[0, "Emily", 10, 0, 13.1],
-[0, "Tony", 10, 0, 14.1],
-[0, "Lucy", 20, 1, 15.1],
 [0, "Bob", 10, 1, 16.1],
-[0, "Tony", 20, 0, 17.1],
-[0, "Alice", 20, null, 18.1]
+[0, "Emily", 10, 0, 13.1],
+[0, "Lucy", 20, 1, 15.1],
+[0, "Tony", 10, 0, 14.1],
+[0, "Tony", 20, 0, 17.1]
     ])")
             .ValueOrDie();
 
@@ -1540,9 +1733,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScan) {
         auto expected_array =
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields), R"([
 [0, "Alice", 10, 1, 11.1],
+[0, "Alice", 20, null, 18.1],
 [0, "Bob", 10, 1, 12.1],
-[0, "Bob", 10, 1, 16.1],
-[0, "Alice", 20, null, 18.1]
+[0, "Bob", 10, 1, 16.1]
     ])")
                 .ValueOrDie();
         ASSERT_OK(ReadData(table_path, write_cols, expected_array, predicate, plan));
@@ -1673,9 +1866,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithOnlyOnePartitionHasIndex) 
     auto src_array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
 ["Alice", 10, 1, 11.1],
 ["Bob", 10, 1, 12.1],
+["Bob", 10, 1, 16.1],
 ["Emily", 10, 0, 13.1],
-["Tony", 10, 0, 14.1],
-["Bob", 10, 1, 16.1]
+["Tony", 10, 0, 14.1]
     ])")
                           .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto commit_msgs1,
@@ -1683,9 +1876,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithOnlyOnePartitionHasIndex) 
     ASSERT_OK(Commit(table_path, commit_msgs1));
 
     auto src_array2 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Alice", 20, null, 18.1],
 ["Lucy", 20, 1, 15.1],
-["Tony", 20, 0, 17.1],
-["Alice", 20, null, 18.1]
+["Tony", 20, 0, 17.1]
     ])")
                           .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto commit_msgs2,
@@ -1722,9 +1915,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithTwoIndexInDiffTwoPartition
     auto src_array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
 ["Alice", 10, 1, 11.1],
 ["Bob", 10, 1, 12.1],
+["Bob", 10, 1, 16.1],
 ["Emily", 10, 0, 13.1],
-["Tony", 10, 0, 14.1],
-["Bob", 10, 1, 16.1]
+["Tony", 10, 0, 14.1]
     ])")
                           .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto commit_msgs1,
@@ -1732,9 +1925,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithTwoIndexInDiffTwoPartition
     ASSERT_OK(Commit(table_path, commit_msgs1));
 
     auto src_array2 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
-["Lucy", 20, 1, 15.1],
+["Alice", 20, null, 18.1],
 ["Tony", 20, 0, 17.1],
-["Alice", 20, null, 18.1]
+["Lucy", 20, 1, 15.1]
     ])")
                           .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto commit_msgs2,
@@ -1816,9 +2009,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithTwoPartitionAllWithIndex) 
     auto src_array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
 ["Alice", 10, 1, 11.1],
 ["Bob", 10, 1, 12.1],
+["Bob", 10, 1, 16.1],
 ["Emily", 10, 0, 13.1],
-["Tony", 10, 0, 14.1],
-["Bob", 10, 1, 16.1]
+["Tony", 10, 0, 14.1]
     ])")
                           .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto commit_msgs1,
@@ -1826,9 +2019,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithTwoPartitionAllWithIndex) 
     ASSERT_OK(Commit(table_path, commit_msgs1));
 
     auto src_array2 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Alice", 20, null, 18.1],
 ["Lucy", 20, 1, 15.1],
-["Tony", 20, 0, 17.1],
-["Alice", 20, null, 18.1]
+["Tony", 20, 0, 17.1]
     ])")
                           .ValueOrDie();
     ASSERT_OK_AND_ASSIGN(auto commit_msgs2,
@@ -2038,14 +2231,14 @@ TEST_P(GlobalIndexTest, TestScanIndexWithTwoIndexes) {
     auto src_array = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
 ["Alice", [0.0, 0.0, 0.0, 0.0], 10, 11.1],
-["Bob", [0.0, 1.0, 0.0, 1.0], 10, 12.1],
-["Emily", [1.0, 0.0, 1.0, 0.0], 10, 13.1],
-["Tony", [1.0, 1.0, 1.0, 1.0], 10, 14.1],
-["Lucy", [10.0, 10.0, 10.0, 10.0], 20, 15.1],
-["Bob", [10.0, 11.0, 10.0, 11.0], 20, 16.1],
-["Tony", [11.0, 10.0, 11.0, 10.0], 20, 17.1],
 ["Alice", [11.0, 11.0, 11.0, 11.0], 20, 18.1],
-["Paul", [10.0, 10.0, 10.0, 10.0], 20, 19.1]
+["Bob", [0.0, 1.0, 0.0, 1.0], 10, 12.1],
+["Bob", [10.0, 11.0, 10.0, 11.0], 20, 16.1],
+["Emily", [1.0, 0.0, 1.0, 0.0], 10, 13.1],
+["Lucy", [10.0, 10.0, 10.0, 10.0], 20, 15.1],
+["Paul", [10.0, 10.0, 10.0, 10.0], 20, 19.1],
+["Tony", [1.0, 1.0, 1.0, 1.0], 10, 14.1],
+["Tony", [11.0, 10.0, 11.0, 10.0], 20, 17.1]
     ])")
             .ValueOrDie());
     ASSERT_OK_AND_ASSIGN(auto commit_msgs, WriteArray(table_path, write_cols, src_array));
@@ -2069,7 +2262,7 @@ TEST_P(GlobalIndexTest, TestScanIndexWithTwoIndexes) {
     ASSERT_EQ(index_readers.size(), 1);
     ASSERT_OK_AND_ASSIGN(auto index_result,
                          index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Alice", 5)));
-    ASSERT_EQ(index_result->ToString(), "{0,7}");
+    ASSERT_EQ(index_result->ToString(), "{0,1}");
 
     // query f1
     ASSERT_OK_AND_ASSIGN(index_readers, global_index_scan->CreateReaders("f1", std::nullopt));
@@ -2080,7 +2273,7 @@ TEST_P(GlobalIndexTest, TestScanIndexWithTwoIndexes) {
         index_readers[0]->VisitVectorSearch(std::make_shared<VectorSearch>(
             "f1", 1, query, /*filter=*/nullptr,
             /*predicate=*/nullptr, /*distance_type=*/std::nullopt, /*options=*/lumina_options)));
-    ASSERT_EQ(scored_result->ToString(), "row ids: {7}, scores: {0.00}");
+    ASSERT_EQ(scored_result->ToString(), "row ids: {1}, scores: {0.00}");
 
     // query f2
     ASSERT_OK_AND_ASSIGN(index_readers, global_index_scan->CreateReaders("f2", std::nullopt));
@@ -2105,14 +2298,14 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithExternalPath) {
     auto src_array = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
 ["Alice", [0.0, 0.0, 0.0, 0.0], 10, 11.1],
-["Bob", [0.0, 1.0, 0.0, 1.0], 10, 12.1],
-["Emily", [1.0, 0.0, 1.0, 0.0], 10, 13.1],
-["Tony", [1.0, 1.0, 1.0, 1.0], 10, 14.1],
-["Lucy", [10.0, 10.0, 10.0, 10.0], 20, 15.1],
-["Bob", [10.0, 11.0, 10.0, 11.0], 20, 16.1],
-["Tony", [11.0, 10.0, 11.0, 10.0], 20, 17.1],
 ["Alice", [11.0, 11.0, 11.0, 11.0], 20, 18.1],
-["Paul", [10.0, 10.0, 10.0, 10.0], 20, 19.1]
+["Bob", [0.0, 1.0, 0.0, 1.0], 10, 12.1],
+["Bob", [10.0, 11.0, 10.0, 11.0], 20, 16.1],
+["Emily", [1.0, 0.0, 1.0, 0.0], 10, 13.1],
+["Lucy", [10.0, 10.0, 10.0, 10.0], 20, 15.1],
+["Paul", [10.0, 10.0, 10.0, 10.0], 20, 19.1],
+["Tony", [1.0, 1.0, 1.0, 1.0], 10, 14.1],
+["Tony", [11.0, 10.0, 11.0, 10.0], 20, 17.1]
     ])")
             .ValueOrDie());
     ASSERT_OK_AND_ASSIGN(auto commit_msgs, WriteArray(table_path, write_cols, src_array));
@@ -2153,8 +2346,8 @@ TEST_P(GlobalIndexTest, TestIOException) {
     std::vector<std::string> write_cols = schema->field_names();
     auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
 ["Alice", [0.0, 0.0, 0.0, 0.0], 10, 11.1],
-["Bob", [0.0, 1.0, 0.0, 1.0], 10, 12.1],
 ["Alice", [1.0, 0.0, 1.0, 0.0], 10, 13.1],
+["Bob", [0.0, 1.0, 0.0, 1.0], 10, 12.1],
 ["Tony", [1.0, 1.0, 1.0, 1.0], 10, 14.1]
     ])")
                          .ValueOrDie();
@@ -2339,13 +2532,13 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithRangeBitmapAndBitmap) {
     std::vector<std::string> write_cols = schema->field_names();
     auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
 ["Alice", 10, 1, 11.1],
+["Alice", 30, null, 18.1],
 ["Bob", 10, 1, 12.1],
-["Emily", 15, 0, 13.1],
-["Tony", 20, 0, 14.1],
-["Lucy", 20, 1, 15.1],
 ["Bob", 25, 1, 16.1],
-["Tony", 30, 0, 17.1],
-["Alice", 30, null, 18.1]
+["Emily", 15, 0, 13.1],
+["Lucy", 20, 1, 15.1],
+["Tony", 20, 0, 14.1],
+["Tony", 30, 0, 17.1]
     ])")
                          .ValueOrDie();
 
@@ -2357,13 +2550,13 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithRangeBitmapAndBitmap) {
     auto expected_all_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields), R"([
 [0, "Alice", 10, 1, 11.1],
+[0, "Alice", 30, null, 18.1],
 [0, "Bob", 10, 1, 12.1],
-[0, "Emily", 15, 0, 13.1],
-[0, "Tony", 20, 0, 14.1],
-[0, "Lucy", 20, 1, 15.1],
 [0, "Bob", 25, 1, 16.1],
-[0, "Tony", 30, 0, 17.1],
-[0, "Alice", 30, null, 18.1]
+[0, "Emily", 15, 0, 13.1],
+[0, "Lucy", 20, 1, 15.1],
+[0, "Tony", 20, 0, 14.1],
+[0, "Tony", 30, 0, 17.1]
     ])")
             .ValueOrDie();
 
@@ -2431,8 +2624,8 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithRangeBitmapAndBitmap) {
 
         auto expected_array =
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields), R"([
-[0, "Tony", 30, 0, 17.1],
-[0, "Alice", 30, null, 18.1]
+[0, "Alice", 30, null, 18.1],
+[0, "Tony", 30, 0, 17.1]
     ])")
                 .ValueOrDie();
         ASSERT_OK(ReadData(table_path, write_cols, expected_array, predicate, plan));
@@ -3357,7 +3550,8 @@ TEST_P(GlobalIndexTest, TestBTreeAndBitmapCoexist) {
     ASSERT_EQ(bitmap_result->ToString(), "{1,2}");
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> bitmap_less_than_result,
                          bitmap_reader->VisitLessThan(Literal(FieldType::STRING, "Emily", 5)));
-    ASSERT_FALSE(bitmap_less_than_result);
+    ASSERT_TRUE(bitmap_less_than_result);
+    ASSERT_EQ(bitmap_less_than_result->ToString(), "{0,1,2}");
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> missing_reader,
                          global_index_scan->CreateReader("f0", "lucene", std::nullopt));
@@ -3423,8 +3617,8 @@ TEST_P(GlobalIndexTest, TestBTreeAndBitmapCoexist) {
         ASSERT_OK(ReadData(table_path, write_cols, expected_array, /*predicate=*/nullptr, plan));
     }
     // Full pipeline with AND across btree(f0) and bitmap(f0):
-    // btree supports LessOrEqual, bitmap returns nullptr for LessOrEqual
-    // So AND(LessOrEqual, Equal) -> only the field(s) that both can evaluate get AND
+    // both indexes support Equal on f0
+    // So AND(Equal, unsupported field) keeps the result evaluated from f0
     {
         // f0 == "Bob" AND f1 == 10 (f1 has no index -> nullptr -> keeps btree+bitmap result)
         auto f0_pred =

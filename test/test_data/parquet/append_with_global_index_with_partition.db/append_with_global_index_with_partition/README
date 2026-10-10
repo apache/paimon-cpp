@@ -18,3 +18,6 @@ NoCompact
 
 snapshot-1: with no index
 snapshot-2: with f0 global bitmap index for f1=10
+
+Row IDs are globally assigned after grouping data files by partition. In this table, f1=10 uses [0, 4]
+and f1=20 uses [5, 7], so the second Bob in f1=10 has global row ID 4.

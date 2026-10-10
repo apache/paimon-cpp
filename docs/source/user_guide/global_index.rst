@@ -22,6 +22,8 @@ Global Index is a powerful indexing mechanism for append-only tables.
 It enables efficient row-level lookups and filtering without full-table scans.
 Paimon C++ supports the following global index types:
 
+- **Bitmap Index**: An index that maps each distinct scalar value to its matching row IDs. The
+  file format is compatible with the Java bitmap global index.
 - **BTree Index**: An efficient index based on multi-level SST files for scalar column lookups.
 - **Range Bitmap Index**: A range bitmap index optimized for range predicates on ordered scalar columns. Extends the bitmap approach by encoding value ordering, enabling efficient less-than, greater-than, and range conditions.
 - **Lucene Index**: A full-text search index powered by Lucene++. Supports tokenized text search with multiple modes including match-all, match-any, phrase, prefix, and wildcard queries.
@@ -36,10 +38,20 @@ Global indexes work on top of Data Evolution tables. To use global indexes, your
 - ``'row-tracking.enabled' = 'true'``
 - ``'data-evolution.enabled' = 'true'``
 
-Bitmap Index Compatibility
---------------------------
+Bitmap Index
+------------
 
-The current Paimon C++ version does not support bitmap global indexes.
+Bitmap maps each distinct scalar value to a compressed row-ID bitmap. Input keys must be written
+in ascending order. Point predicates use direct dictionary lookup, while range and non-prefix
+string predicates can scan selected dictionary files within a configurable fallback budget.
+
+**Special Configuration:**
+
+- ``bitmap-index.dictionary-block-size``: Target dictionary block size. Default: ``16KB``.
+- ``bitmap-index.compression``: Dictionary block compression codec. Default: ``none``.
+- ``bitmap-index.compression-level``: Dictionary block compression level. Default: ``1``.
+- ``bitmap-index.fallback-scan-max-size``: Maximum total selected index file size for fallback
+  scans. Default: ``256MB``; set to ``0`` to disable fallback scans.
 
 BTree Index
 -----------
@@ -54,6 +66,13 @@ BTree is an efficient index based on multi-level SST files, supporting rich pred
 
     - For **range queries** (e.g., ``VisitLessThan``, ``VisitGreaterOrEqual``), increasing the buffer size (e.g., to 1MB) may improve I/O bandwidth and sequential read performance.
     - For **point queries** (e.g., ``VisitEqual``), buffering can introduce negative effects due to read amplification; it is recommended to leave this option unset.
+
+- **Option**: ``btree-index.fallback-scan-max-size``
+
+  - **Default**: ``256MB``
+  - **Description**: Limits the total selected BTree index file size for predicates that require
+    an index scan, such as range predicates and non-prefix string predicates. Set it to ``0`` to
+    disable fallback scans. Point lookups and prefix lookups are not affected.
 
 Range Bitmap Index
 ------------------
