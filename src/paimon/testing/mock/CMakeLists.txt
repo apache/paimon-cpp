@@ -31,6 +31,7 @@ if(PAIMON_BUILD_TESTS)
                    paimon_shared
                    STATIC_LINK_LIBS
                    arrow
+                   Threads::Threads
                    SHARED_LINK_LIBS
                    paimon_shared)
 
