@@ -29,6 +29,8 @@ if(PAIMON_BUILD_TESTS)
                    ${PAIMON_MOCK_FILE_FORMAT}
                    DEPENDENCIES
                    paimon_shared
+                   STATIC_LINK_LIBS
+                   arrow
                    SHARED_LINK_LIBS
                    paimon_shared)
 
