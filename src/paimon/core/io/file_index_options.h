@@ -43,6 +43,12 @@ class FileIndexOptions {
 
     static Result<FileIndexOptions> FromMap(const std::map<std::string, std::string>& options);
 
+    /// Rewrite File Index declarations and column options to file field names. Configurations for
+    /// fields absent from the file schema are omitted; other table options are preserved.
+    static Result<std::map<std::string, std::string>> RewriteFieldNames(
+        const std::map<std::string, std::string>& options,
+        const std::map<std::string, std::string>& field_name_mapping);
+
     const std::vector<FileIndexDefinition>& Definitions() const {
         return definitions_;
     }

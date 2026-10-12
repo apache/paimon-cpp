@@ -135,6 +135,14 @@ Result<std::unique_ptr<FileIndexer>> MockFullTextSearchFileIndexFactory::Create(
 REGISTER_PAIMON_FACTORY(MockVectorSearchFileIndexFactory);
 REGISTER_PAIMON_FACTORY(MockFullTextSearchFileIndexFactory);
 
+Result<std::unique_ptr<FileIndexer>> OptionsCheckingMockSearchFileIndexFactory::Create(
+    const std::map<std::string, std::string>& options) const {
+    if (options != expected_options_) {
+        return Status::Invalid("Mock search backend received unexpected indexer options");
+    }
+    return std::make_unique<MockSearchFileIndexer>(index_type_);
+}
+
 namespace {
 
 std::shared_ptr<ByteArrayOutputStream> MakeOutput(const std::shared_ptr<MemoryPool>& pool) {

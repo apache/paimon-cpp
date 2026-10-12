@@ -39,6 +39,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/manifest/file_source.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
@@ -727,6 +728,247 @@ TEST_P(WriteAndReadInteTest, TestAppendWithExternalBitmapAndRangeBitmapIndexes) 
 }
 
 #ifdef PAIMON_ENABLE_LUMINA
+TEST_P(WriteAndReadInteTest, TestLuminaSearchAfterRenameAcrossSchemaVersions) {
+    auto [file_format, file_system] = GetParam();
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", arrow::list(arrow::float32()))};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::BUCKET, "-1"},
+        {Options::TARGET_FILE_SIZE, "1MB"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"},
+        {"file-index.lumina.columns", "embedding"},
+        {"file-index.lumina.embedding.index.dimension", "2"},
+        {"file-index.lumina.embedding.index.type", "bruteforce"},
+        {"file-index.lumina.embedding.distance.metric", "l2"},
+        {"file-index.lumina.embedding.encoding.type", "rawf32"},
+        {Options::READ_BATCH_SIZE, "1"}};
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    const std::string root = test_dir_;
+    const std::string path = PathUtil::JoinPath(root, "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(auto helper,
+                         TestHelper::Create(root, arrow::schema(fields), {}, {}, options, false));
+    ASSERT_OK_AND_ASSIGN(auto batch, TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                                                 R"([
+            [10, [2.0, 0.0]],
+            [11, null],
+            [12, [0.0, 0.0]],
+            [13, [3.0, 0.0]],
+            [14, [1.0, 0.0]]
+        ])",
+                                                                 {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    SchemaManager schemas(dir_->GetFileSystem(), path);
+    ASSERT_OK_AND_ASSIGN(auto original_schema, schemas.ReadSchema(0));
+    std::map<std::string, std::string> current_options;
+    const std::string prefix = "file-index.lumina.embedding.";
+    for (const auto& [key, value] : options) {
+        if (StringUtils::StartsWith(key, prefix)) {
+            current_options["file-index.lumina.vec." + key.substr(prefix.size())] = value;
+        } else {
+            current_options[key] = value;
+        }
+    }
+    current_options["file-index.lumina.columns"] = "vec";
+    // Reorder the table fields as well as renaming the indexed, unprojected field.
+    const auto& vector_field = original_schema->Fields()[1];
+    std::vector<DataField> current_fields = {
+        DataField(vector_field.Id(), vector_field.ArrowField()->WithName("vec")),
+        original_schema->Fields()[0]};
+    ASSERT_OK(TestHelper::WriteNextSchema(dir_->GetFileSystem(), path, current_fields,
+                                          original_schema->HighestFieldId(), current_options));
+    helper.reset();
+    ASSERT_OK_AND_ASSIGN(helper, TestHelper::Create(path, current_options, false));
+    auto current_type = arrow::struct_(
+        {arrow::field("vec", arrow::list(arrow::float32())), arrow::field("id", arrow::int32())});
+    ASSERT_OK_AND_ASSIGN(batch, TestHelper::MakeRecordBatch(current_type, R"([
+            [[1.0, 0.0], 20],
+            [[4.0, 0.0], 21]
+        ])",
+                                                            {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 1, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(auto splits,
+                         helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+    bool saw_old_schema = false;
+    bool saw_new_schema = false;
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_TRUE(data_split);
+        for (const auto& file : data_split->DataFiles()) {
+            if (file->schema_id == 0) {
+                saw_old_schema = true;
+            } else if (file->schema_id == 1) {
+                saw_new_schema = true;
+            }
+            ASSERT_FALSE(file->embedded_index);
+        }
+    }
+    ASSERT_TRUE(saw_old_schema);
+    ASSERT_TRUE(saw_new_schema);
+    auto search = std::make_shared<VectorSearch>("vec", 3, std::vector<float>{0.0f, 0.0f}, nullptr,
+                                                 nullptr, VectorSearch::DistanceType::EUCLIDEAN,
+                                                 std::map<std::string, std::string>{});
+    ReadContextBuilder builder(path);
+    builder.SetOptions(current_options)
+        .SetReadFieldNames({"id", "_INDEX_SCORE"})
+        .SetVectorSearch(search);
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(splits));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
+    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
+                                         arrow::field("id", arrow::int32()),
+                                         arrow::field("_INDEX_SCORE", arrow::float32())});
+    ASSERT_TRUE(actual);
+    ASSERT_TRUE(actual->type()->Equals(expected_type));
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type, R"([
+        [0, 10, 4.0],
+        [0, 12, 0.0],
+        [0, 14, 1.0],
+        [0, 20, 1.0],
+        [0, 21, 16.0]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(actual, ReadResultCollector::SortArray(
+                                     actual, arrow::schema({arrow::field("id", arrow::int32())})));
+    ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
+    ASSERT_EQ("vec", search->field_name);
+    ASSERT_EQ("vec", current_options.at("file-index.lumina.columns"));
+}
+
+TEST_P(WriteAndReadInteTest, TestLuminaVectorIndexAfterCompaction) {
+    auto [file_format, file_system] = GetParam();
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", arrow::list(arrow::float32()))};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::TARGET_FILE_SIZE, "1MB"},
+        {Options::COMPACTION_MIN_FILE_NUM, "10"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"},
+        {"file-index.lumina.columns", "embedding"},
+        {"file-index.lumina.embedding.index.dimension", "2"},
+        {"file-index.lumina.embedding.index.type", "bruteforce"},
+        {"file-index.lumina.embedding.distance.metric", "l2"},
+        {"file-index.lumina.embedding.encoding.type", "rawf32"},
+        {Options::READ_BATCH_SIZE, "1"}};
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    const std::string path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(
+        auto helper, TestHelper::Create(test_dir_, arrow::schema(fields), {}, {}, options, true));
+    ASSERT_OK_AND_ASSIGN(auto first_batch, TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                                                       R"([
+        [10, [2.0, 0.0]],
+        [11, null],
+        [12, [0.0, 0.0]],
+        [13, [3.0, 0.0]]
+    ])",
+                                                                       {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(first_batch), 0, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(auto second_batch, TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                                                        R"([
+        [20, [1.0, 0.0]],
+        [21, null],
+        [22, [4.0, 0.0]],
+        [23, [0.5, 0.0]]
+    ])",
+                                                                        {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(second_batch), 1, std::nullopt));
+    // Full compaction normally requires at least three append files.
+    ASSERT_OK_AND_ASSIGN(auto third_batch, TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                                                       R"([
+        [30, [0.75, 0.0]],
+        [31, null]
+    ])",
+                                                                       {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(third_batch), 2, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(auto original_files, CurrentDataFiles(options));
+    ASSERT_EQ(3, original_files.size());
+    for (const auto& [bucket_path, file] : original_files) {
+        ASSERT_FALSE(file->embedded_index);
+        ASSERT_EQ(1, file->extra_files.size());
+        ASSERT_TRUE(file->extra_files[0]);
+        ASSERT_OK_AND_ASSIGN(bool index_exists, dir_->GetFileSystem()->Exists(PathUtil::JoinPath(
+                                                    bucket_path, file->extra_files[0].value())));
+        ASSERT_TRUE(index_exists);
+    }
+    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
+                                         arrow::field("id", arrow::int32()),
+                                         arrow::field("_INDEX_SCORE", arrow::float32())});
+    auto read_search = [&](int32_t limit) -> Result<std::shared_ptr<arrow::ChunkedArray>> {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, InnerScan(options));
+        auto search = std::make_shared<VectorSearch>(
+            "embedding", limit, std::vector<float>{0.0f, 0.0f}, nullptr, nullptr,
+            VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
+        ReadContextBuilder builder(path);
+        builder.SetOptions(options)
+            .SetReadFieldNames({"id", "_INDEX_SCORE"})
+            .SetVectorSearch(search);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
+                               TableRead::Create(std::move(context)));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
+                               read->CreateReader(plan->Splits()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> actual,
+                               ReadResultCollector::CollectResult(std::move(reader)));
+        return ReadResultCollector::SortArray(actual,
+                                              arrow::schema({arrow::field("id", arrow::int32())}));
+    };
+    auto expected_all_result = arrow::ipc::internal::json::ArrayFromJSON(expected_type, R"([
+        [0, 10, 4.0],
+        [0, 12, 0.0],
+        [0, 13, 9.0],
+        [0, 20, 1.0],
+        [0, 22, 16.0],
+        [0, 23, 0.25],
+        [0, 30, 0.5625]
+    ])");
+    ASSERT_TRUE(expected_all_result.ok()) << expected_all_result.status().ToString();
+    auto expected_all = std::make_shared<arrow::ChunkedArray>(expected_all_result.ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto before_compaction, read_search(10));
+    ASSERT_TRUE(expected_all->Equals(before_compaction)) << before_compaction->ToString();
+
+    helper.reset();
+    ASSERT_OK(CompactAndCommit(path, options, /*commit_identifier=*/3));
+    ASSERT_OK_AND_ASSIGN(auto compacted_files, CurrentDataFiles(options));
+    ASSERT_EQ(1, compacted_files.size());
+    const auto& [bucket_path, compacted_file] = compacted_files[0];
+    ASSERT_EQ(10, compacted_file->row_count);
+    ASSERT_TRUE(compacted_file->file_source);
+    ASSERT_EQ(FileSource::Compact(), compacted_file->file_source.value());
+    for (const auto& original_file : original_files) {
+        ASSERT_NE(original_file.second->file_name, compacted_file->file_name);
+    }
+    ASSERT_FALSE(compacted_file->embedded_index);
+    ASSERT_EQ(1, compacted_file->extra_files.size());
+    ASSERT_TRUE(compacted_file->extra_files[0]);
+    ASSERT_EQ(compacted_file->file_name + ".index", compacted_file->extra_files[0].value());
+    ASSERT_OK_AND_ASSIGN(bool index_exists,
+                         dir_->GetFileSystem()->Exists(PathUtil::JoinPath(
+                             bucket_path, compacted_file->extra_files[0].value())));
+    ASSERT_TRUE(index_exists);
+
+    ASSERT_OK_AND_ASSIGN(auto after_compaction, read_search(10));
+    ASSERT_TRUE(expected_all->Equals(after_compaction)) << after_compaction->ToString();
+    auto expected_topk_result = arrow::ipc::internal::json::ArrayFromJSON(expected_type, R"([
+        [0, 12, 0.0],
+        [0, 23, 0.25],
+        [0, 30, 0.5625]
+    ])");
+    ASSERT_TRUE(expected_topk_result.ok()) << expected_topk_result.status().ToString();
+    auto expected_topk = std::make_shared<arrow::ChunkedArray>(expected_topk_result.ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto topk, read_search(3));
+    ASSERT_TRUE(expected_topk->Equals(topk)) << topk->ToString();
+}
+
 TEST_P(WriteAndReadInteTest, TestAppendWithLuminaVectorIndex) {
     auto [file_format, file_system] = GetParam();
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),

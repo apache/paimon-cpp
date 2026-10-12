@@ -92,6 +92,22 @@ Result<std::unique_ptr<FieldMapping>> FieldMappingBuilder::CreateFieldMapping(
     return std::make_unique<FieldMapping>(partition_info, non_partition_info, non_exist_field_info);
 }
 
+std::map<std::string, std::string> FieldMappingBuilder::CreateFieldNameMapping(
+    const std::vector<DataField>& table_fields, const std::vector<DataField>& data_fields) {
+    std::map<int32_t, std::string> field_id_to_data_name;
+    for (const auto& field : data_fields) {
+        field_id_to_data_name.emplace(field.Id(), field.Name());
+    }
+    std::map<std::string, std::string> field_name_mapping;
+    for (const auto& field : table_fields) {
+        auto iter = field_id_to_data_name.find(field.Id());
+        if (iter != field_id_to_data_name.end()) {
+            field_name_mapping.emplace(field.Name(), iter->second);
+        }
+    }
+    return field_name_mapping;
+}
+
 Result<ExistFieldInfo> FieldMappingBuilder::CreateExistFieldInfo(
     const std::vector<DataField>& data_fields) const {
     // key:field id, value: {target_idx, read field}

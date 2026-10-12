@@ -126,4 +126,26 @@ class MockFullTextSearchFileIndexFactory final : public FileIndexerFactory {
         const std::map<std::string, std::string>& options) const override;
 };
 
+/// Reuse the mock search backend while requiring the exact options supplied to its factory.
+class OptionsCheckingMockSearchFileIndexFactory final : public FileIndexerFactory {
+ public:
+    OptionsCheckingMockSearchFileIndexFactory(std::string identifier, SearchIndexType index_type,
+                                              std::map<std::string, std::string> expected_options)
+        : identifier_(std::move(identifier)),
+          index_type_(index_type),
+          expected_options_(std::move(expected_options)) {}
+
+    const char* Identifier() const override {
+        return identifier_.c_str();
+    }
+
+    Result<std::unique_ptr<FileIndexer>> Create(
+        const std::map<std::string, std::string>& options) const override;
+
+ private:
+    std::string identifier_;
+    SearchIndexType index_type_;
+    std::map<std::string, std::string> expected_options_;
+};
+
 }  // namespace paimon::test

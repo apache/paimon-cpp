@@ -111,6 +111,7 @@ class AbstractSplitRead : public SplitRead {
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::map<std::string, std::string>& file_index_options,
         std::vector<float>* index_scores) const;
 
     static Result<std::unique_ptr<FileBatchReader>> ApplyBitmapSelection(

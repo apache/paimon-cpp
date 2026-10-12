@@ -63,6 +63,11 @@ class FieldMappingBuilder {
     Result<std::unique_ptr<FieldMapping>> CreateFieldMapping(
         const std::shared_ptr<arrow::Schema>& data_schema) const;
 
+    /// Map current table field names to file field names by field ID, independently of projection.
+    /// Fields absent from the file schema are omitted.
+    static std::map<std::string, std::string> CreateFieldNameMapping(
+        const std::vector<DataField>& table_fields, const std::vector<DataField>& data_fields);
+
     int32_t GetReadFieldCount() const {
         return read_fields_.size();
     }

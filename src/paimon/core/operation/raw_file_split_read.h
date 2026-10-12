@@ -18,8 +18,10 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "paimon/core/core_options.h"
@@ -47,6 +49,8 @@ class Predicate;
 class ScoredFileIndexResult;
 struct DataFileMeta;
 struct DeletionFile;
+struct FullTextSearch;
+struct VectorSearch;
 
 /// If the class name below is enclosed in parentheses, it might be present in the read path;
 /// otherwise, it must be present in the read path.
@@ -89,6 +93,7 @@ class RawFileSplitRead : public AbstractSplitRead {
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::map<std::string, std::string>& file_index_options,
         std::vector<float>* index_scores) const override;
 
  private:
@@ -99,14 +104,18 @@ class RawFileSplitRead : public AbstractSplitRead {
         const std::shared_ptr<DataFileMeta>& file,
         const std::shared_ptr<arrow::Schema>& data_schema,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::shared_ptr<const RoaringBitmap32>& deletion) const;
+        const std::shared_ptr<const RoaringBitmap32>& deletion,
+        const std::shared_ptr<VectorSearch>& vector_search,
+        const std::map<std::string, std::string>& file_index_options) const;
 
     // nullopt means the file can be skipped, not an unrestricted selection.
     Result<std::optional<RoaringBitmap32>> EvaluateFullTextSearchWithDv(
         const std::shared_ptr<DataFileMeta>& file,
         const std::shared_ptr<arrow::Schema>& data_schema,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::shared_ptr<const RoaringBitmap32>& deletion) const;
+        const std::shared_ptr<const RoaringBitmap32>& deletion,
+        const std::shared_ptr<FullTextSearch>& full_text_search,
+        const std::map<std::string, std::string>& file_index_options) const;
 };
 
 }  // namespace paimon

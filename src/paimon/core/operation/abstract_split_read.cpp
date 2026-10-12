@@ -56,6 +56,7 @@
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/field_mapping_reader.h"
 #include "paimon/core/io/file_index_evaluator.h"
+#include "paimon/core/io/file_index_options.h"
 #include "paimon/core/io/vector_file_batch_reader.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/partition/partition_info.h"
@@ -182,13 +183,14 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::map<std::string, std::string>& file_index_options,
     std::vector<float>* index_scores) const {
     std::shared_ptr<FileIndexResult> file_index_result;
     if (options_.FileIndexReadEnabled()) {
-        PAIMON_ASSIGN_OR_RAISE(
-            file_index_result,
-            FileIndexEvaluator::Evaluate(data_schema, options_, predicate, data_file_path_factory,
-                                         file, options_.GetFileSystem(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(file_index_result,
+                               FileIndexEvaluator::Evaluate(data_schema, file_index_options,
+                                                            predicate, data_file_path_factory, file,
+                                                            options_.GetFileSystem(), pool_));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {
             return std::unique_ptr<FileBatchReader>();
@@ -400,12 +402,19 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
     }
     const auto& predicate = field_mapping->non_partition_info.non_partition_filter;
     auto all_data_schema = DataField::ConvertDataFieldsToArrowSchema(data_schema->Fields());
+    auto field_name_mapping = FieldMappingBuilder::CreateFieldNameMapping(
+        context_->GetTableSchema()->Fields(), data_schema->Fields());
+    std::map<std::string, std::string> file_index_options;
+    if (options_.FileIndexReadEnabled() || context_->HasVectorOrFullTextSearch()) {
+        PAIMON_ASSIGN_OR_RAISE(file_index_options, FileIndexOptions::RewriteFieldNames(
+                                                       options_.ToMap(), field_name_mapping));
+    }
     std::vector<float> index_scores;
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FileBatchReader> final_reader,
         ApplyIndexAndDvReaderIfNeeded(std::move(file_reader), file_meta, all_data_schema,
                                       read_schema, predicate, dv_factory, row_ranges,
-                                      data_file_path_factory, &index_scores));
+                                      data_file_path_factory, file_index_options, &index_scores));
     if (!final_reader) {
         // file is skipped by index or dv
         return std::unique_ptr<FileBatchReader>();

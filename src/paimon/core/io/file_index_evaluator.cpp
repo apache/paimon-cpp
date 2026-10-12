@@ -32,7 +32,6 @@
 #include "fmt/ranges.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/string_utils.h"
-#include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/file_index/file_index_format.h"
@@ -53,26 +52,26 @@ class MemoryPool;
 enum class FieldType;
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
-    const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
-    const std::shared_ptr<Predicate>& predicate,
+    const std::shared_ptr<arrow::Schema>& data_schema,
+    const std::map<std::string, std::string>& options, const std::shared_ptr<Predicate>& predicate,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<MemoryPool>& pool) {
-    return Evaluate(/*only_use_embedding_index=*/false, data_schema, core_options, predicate,
+    return Evaluate(/*only_use_embedding_index=*/false, data_schema, options, predicate,
                     data_file_path_factory, file_meta, file_system, pool);
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
-    const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
-    const std::shared_ptr<Predicate>& predicate, const std::shared_ptr<DataFileMeta>& file_meta,
-    const std::shared_ptr<MemoryPool>& pool) {
-    return Evaluate(/*only_use_embedding_index=*/true, data_schema, core_options, predicate,
+    const std::shared_ptr<arrow::Schema>& data_schema,
+    const std::map<std::string, std::string>& options, const std::shared_ptr<Predicate>& predicate,
+    const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<MemoryPool>& pool) {
+    return Evaluate(/*only_use_embedding_index=*/true, data_schema, options, predicate,
                     /*data_file_path_factory=*/nullptr, file_meta, /*file_system=*/nullptr, pool);
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
     bool only_use_embedding_index, const std::shared_ptr<arrow::Schema>& data_schema,
-    const CoreOptions& core_options, const std::shared_ptr<Predicate>& predicate,
+    const std::map<std::string, std::string>& options, const std::shared_ptr<Predicate>& predicate,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<MemoryPool>& pool) {
@@ -87,7 +86,7 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
         return FileIndexResult::Remain();
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Reader> format_reader,
-                           FileIndexFormat::CreateReader(input_stream, pool, core_options.ToMap()));
+                           FileIndexFormat::CreateReader(input_stream, pool, options));
     std::set<std::string> required_field_names;
     PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &required_field_names));
     std::map<std::string, std::vector<std::shared_ptr<FileIndexReader>>>
@@ -155,7 +154,8 @@ namespace {
 
 Result<std::vector<std::shared_ptr<FileIndexReader>>> OpenSearchReaders(
     const std::shared_ptr<arrow::Schema>& data_schema, const std::string& field_name,
-    const CoreOptions& core_options, const std::shared_ptr<DataFileMeta>& file_meta,
+    const std::map<std::string, std::string>& options,
+    const std::shared_ptr<DataFileMeta>& file_meta,
     const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool) {
     std::shared_ptr<arrow::Field> field = data_schema->GetFieldByName(field_name);
     if (!field) {
@@ -167,7 +167,7 @@ Result<std::vector<std::shared_ptr<FileIndexReader>>> OpenSearchReaders(
                                            file_meta->file_name, field_name));
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Reader> format_reader,
-                           FileIndexFormat::CreateReader(input_stream, pool, core_options.ToMap()));
+                           FileIndexFormat::CreateReader(input_stream, pool, options));
     ::ArrowSchema c_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportSchema(*arrow::schema({std::move(field)}), &c_schema));
@@ -285,7 +285,8 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateCompoundPre
 }
 
 Result<std::shared_ptr<ScoredFileIndexResult>> FileIndexEvaluator::EvaluateVectorSearch(
-    const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
+    const std::shared_ptr<arrow::Schema>& data_schema,
+    const std::map<std::string, std::string>& options,
     const std::shared_ptr<VectorSearch>& vector_search,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
@@ -294,13 +295,14 @@ Result<std::shared_ptr<ScoredFileIndexResult>> FileIndexEvaluator::EvaluateVecto
                            ExtractIndexInputStream(/*only_use_embedding_index=*/false, path_factory,
                                                    file_meta, file_system));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
-                           OpenSearchReaders(data_schema, vector_search->field_name, core_options,
+                           OpenSearchReaders(data_schema, vector_search->field_name, options,
                                              file_meta, input_stream, pool));
     return ExecuteVectorSearch(readers, vector_search);
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateFullTextSearch(
-    const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
+    const std::shared_ptr<arrow::Schema>& data_schema,
+    const std::map<std::string, std::string>& options,
     const std::shared_ptr<FullTextSearch>& full_text_search,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
@@ -309,8 +311,8 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateFullTextSea
                            ExtractIndexInputStream(/*only_use_embedding_index=*/false, path_factory,
                                                    file_meta, file_system));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
-                           OpenSearchReaders(data_schema, full_text_search->field_name,
-                                             core_options, file_meta, input_stream, pool));
+                           OpenSearchReaders(data_schema, full_text_search->field_name, options,
+                                             file_meta, input_stream, pool));
     return ExecuteFullTextSearch(readers, full_text_search);
 }
 

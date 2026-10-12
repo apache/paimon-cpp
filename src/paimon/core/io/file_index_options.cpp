@@ -94,7 +94,7 @@ Result<FileIndexOptions> FileIndexOptions::Parse(
 
     for (const auto& [key, value] : raw_options) {
         if (!StringUtils::StartsWith(key, kFileIndexPrefix) ||
-            StringUtils::EndsWith(key, kColumnsSuffix) ||
+            StringUtils::EndsWith(key, kColumnsSuffix) || key == Options::FILE_INDEX_READ_ENABLED ||
             key == Options::FILE_INDEX_IN_MANIFEST_THRESHOLD) {
             continue;
         }
@@ -120,6 +120,45 @@ Result<FileIndexOptions> FileIndexOptions::Parse(
                 fmt::format("Wrong file index option '{}': column '{}' is not declared in "
                             "'file-index.{}.columns'",
                             key, parts[1], parts[0]));
+        }
+    }
+    return result;
+}
+
+Result<std::map<std::string, std::string>> FileIndexOptions::RewriteFieldNames(
+    const std::map<std::string, std::string>& options,
+    const std::map<std::string, std::string>& field_name_mapping) {
+    PAIMON_ASSIGN_OR_RAISE(FileIndexOptions parsed_options, FromMap(options));
+    std::map<std::string, std::string> result = options;
+    for (auto iter = result.begin(); iter != result.end();) {
+        const std::string& key = iter->first;
+        if (StringUtils::StartsWith(key, kFileIndexPrefix) &&
+            key != Options::FILE_INDEX_READ_ENABLED &&
+            key != Options::FILE_INDEX_IN_MANIFEST_THRESHOLD &&
+            (StringUtils::EndsWith(key, kColumnsSuffix) ||
+             StringUtils::Split(key.substr(kFileIndexPrefixLength), ".",
+                                /*ignore_empty=*/false)
+                     .size() >= 3)) {
+            iter = result.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
+    // Rebuild from the original definitions so renames cannot overwrite another field's options.
+    for (const FileIndexDefinition& definition : parsed_options.Definitions()) {
+        auto iter = field_name_mapping.find(definition.column_name);
+        if (iter == field_name_mapping.end()) {
+            continue;
+        }
+        const std::string& data_name = iter->second;
+        std::string& columns = result[fmt::format("file-index.{}.columns", definition.index_type)];
+        if (!columns.empty()) {
+            columns.append(",");
+        }
+        columns.append(data_name);
+        for (const auto& [name, value] : definition.options) {
+            result[fmt::format("file-index.{}.{}.{}", definition.index_type, data_name, name)] =
+                value;
         }
     }
     return result;

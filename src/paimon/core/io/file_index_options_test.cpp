@@ -86,4 +86,63 @@ TEST(FileIndexOptionsTest, TestFromMapOnlyParsesFileIndexOptions) {
         FileIndexOptions::FromMap({{Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "invalid-size"}}));
 }
 
+TEST(FileIndexOptionsTest, TestRewriteFieldNamesPreservesOptions) {
+    const std::map<std::string, std::string> options = {
+        {"file-index.lumina.columns", "vec, added"},
+        {"file-index.lumina.vec.index.dimension", "128"},
+        {"file-index.lumina.vec.distance.metric", "cosine"},
+        {"file-index.lumina.added.index.dimension", "256"},
+        {"file-index.bitmap.columns", "title"},
+        {Options::FILE_INDEX_READ_ENABLED, "true"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1KB"},
+        {Options::FILE_FORMAT, "missing-format"}};
+    const auto original = options;
+    ASSERT_OK_AND_ASSIGN(auto rewritten, FileIndexOptions::RewriteFieldNames(
+                                             options, {{"vec", "embedding"}, {"title", "text"}}));
+    ASSERT_EQ(original, options);
+    ASSERT_EQ("embedding", rewritten.at("file-index.lumina.columns"));
+    ASSERT_EQ("text", rewritten.at("file-index.bitmap.columns"));
+    ASSERT_EQ("128", rewritten.at("file-index.lumina.embedding.index.dimension"));
+    ASSERT_EQ("cosine", rewritten.at("file-index.lumina.embedding.distance.metric"));
+    ASSERT_EQ(0, rewritten.count("file-index.lumina.vec.index.dimension"));
+    ASSERT_EQ(0, rewritten.count("file-index.lumina.added.index.dimension"));
+    ASSERT_EQ("true", rewritten.at(Options::FILE_INDEX_READ_ENABLED));
+    ASSERT_EQ("missing-format", rewritten.at(Options::FILE_FORMAT));
+    ASSERT_OK_AND_ASSIGN(FileIndexOptions parsed, FileIndexOptions::FromMap(rewritten));
+    ASSERT_EQ(1024, parsed.InManifestThreshold());
+    ASSERT_EQ(2, parsed.Definitions().size());
+}
+
+TEST(FileIndexOptionsTest, TestRewriteFieldNamesForSwappedColumns) {
+    const std::map<std::string, std::string> options = {
+        {"file-index.lumina.columns", "a,b"},
+        {"file-index.lumina.a.index.dimension", "2"},
+        {"file-index.lumina.b.index.dimension", "3"}};
+    ASSERT_OK_AND_ASSIGN(auto rewritten,
+                         FileIndexOptions::RewriteFieldNames(options, {{"a", "b"}, {"b", "a"}}));
+    ASSERT_EQ("3", rewritten.at("file-index.lumina.a.index.dimension"));
+    ASSERT_EQ("2", rewritten.at("file-index.lumina.b.index.dimension"));
+    ASSERT_OK_AND_ASSIGN(FileIndexOptions parsed, FileIndexOptions::FromMap(rewritten));
+    ASSERT_EQ(2, parsed.Definitions().size());
+}
+
+TEST(FileIndexOptionsTest, TestRewriteFieldNamesDropsAbsentIndexColumns) {
+    const std::map<std::string, std::string> options = {
+        {"file-index.lumina.columns", "new_column"},
+        {"file-index.lumina.new_column.index.dimension", "2"},
+        {Options::FILE_INDEX_READ_ENABLED, "false"}};
+    ASSERT_OK_AND_ASSIGN(auto rewritten, FileIndexOptions::RewriteFieldNames(options, {}));
+    ASSERT_EQ(1, rewritten.size());
+    ASSERT_EQ("false", rewritten.at(Options::FILE_INDEX_READ_ENABLED));
+    ASSERT_OK_AND_ASSIGN(FileIndexOptions parsed, FileIndexOptions::FromMap(rewritten));
+    ASSERT_TRUE(parsed.Empty());
+}
+
+TEST(FileIndexOptionsTest, TestRewriteFieldNamesRejectsUndeclaredColumnOptions) {
+    ASSERT_NOK_WITH_MSG(
+        FileIndexOptions::RewriteFieldNames({{"file-index.lumina.vec.index.dimension", "2"}},
+                                            {{"vec", "embedding"}}),
+        "column 'vec' is not declared");
+}
+
 }  // namespace paimon::test

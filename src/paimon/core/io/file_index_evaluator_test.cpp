@@ -96,7 +96,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                 PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {7});
@@ -106,7 +106,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                 PredicateBuilder::IsNotNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {0, 1, 2, 3, 4, 5, 6});
@@ -117,7 +117,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                         Literal(FieldType::STRING, "Alice", 5));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {0, 7});
@@ -128,7 +128,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                         Literal(FieldType::STRING, "Alice", 5));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {1, 2, 3, 4, 5, 6});
@@ -138,7 +138,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                            FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
@@ -148,7 +148,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                 /*field_index=*/1, /*field_name=*/"f1", FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
@@ -158,7 +158,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                         FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
@@ -168,7 +168,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                            FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
@@ -180,7 +180,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                  Literal(FieldType::STRING, "Lucy", 4)});
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {0, 1, 4, 5, 7});
@@ -192,7 +192,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                  Literal(FieldType::STRING, "Lucy", 4)});
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {2, 3, 6});
@@ -207,7 +207,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                  PredicateBuilder::And({f0_predicate, f1_predicate}));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {7});
@@ -222,7 +222,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                  PredicateBuilder::Or({f0_predicate, f1_predicate}));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {0, 4, 6, 7});
@@ -234,7 +234,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                         Literal(FieldType::STRING, "unknown", 7));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_FALSE(file_index_result->IsRemain().value());
         }
@@ -252,16 +252,16 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                  PredicateBuilder::And({f1_predicate, f2_predicate, f0_predicate}));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_FALSE(file_index_result->IsRemain().value());
         }
         {
             // test no predicate
-            ASSERT_OK_AND_ASSIGN(
-                auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, /*predicate=*/nullptr,
-                                             data_file_path_factory, data_file_meta, fs_, pool_));
+            ASSERT_OK_AND_ASSIGN(auto file_index_result,
+                                 FileIndexEvaluator::Evaluate(
+                                     data_schema_, core_options_.ToMap(), /*predicate=*/nullptr,
+                                     data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
         }
@@ -269,10 +269,10 @@ class FileIndexEvaluatorTest : public ::testing::Test {
             // test predicate on f3 (do not have index)
             auto predicate = PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3",
                                                      FieldType::DOUBLE, Literal(14.1));
-            ASSERT_OK_AND_ASSIGN(
-                auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, core_options_, /*predicate=*/nullptr,
-                                             data_file_path_factory, data_file_meta, fs_, pool_));
+            ASSERT_OK_AND_ASSIGN(auto file_index_result,
+                                 FileIndexEvaluator::Evaluate(
+                                     data_schema_, core_options_.ToMap(), /*predicate=*/nullptr,
+                                     data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
         }
@@ -402,10 +402,10 @@ TEST_F(FileIndexEvaluatorTest, TestTimestampType) {
         /*field_index=*/6, /*field_name=*/"ts_tz_micro", FieldType::TIMESTAMP,
         Literal(Timestamp(1745542602001l, 1000)));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({in_predicate, greater_than}));
-    ASSERT_OK_AND_ASSIGN(
-        auto file_index_result,
-        FileIndexEvaluator::Evaluate(data_schema, core_options_, predicate, data_file_path_factory,
-                                     data_file_meta, /*file_system=*/fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto file_index_result,
+                         FileIndexEvaluator::Evaluate(data_schema, core_options_.ToMap(), predicate,
+                                                      data_file_path_factory, data_file_meta,
+                                                      /*file_system=*/fs_, pool_));
     CheckResult(file_index_result, {0, 6});
 }
 
@@ -428,7 +428,7 @@ TEST_F(FileIndexEvaluatorTest, TestInvalidEvaluate) {
     auto predicate =
         PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
     ASSERT_NOK_WITH_MSG(
-        FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+        FileIndexEvaluator::Evaluate(data_schema_, core_options_.ToMap(), predicate,
                                      /*data_file_path_factory=*/nullptr, data_file_meta,
                                      /*file_system=*/nullptr, pool_),
         "read process for FileIndexEvaluator must have data_file_path_factory and file_system");
@@ -488,12 +488,12 @@ class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
                           const std::string& field, const std::string& message) const {
         if (index_type == SearchIndexType::VECTOR) {
             ASSERT_NOK_WITH_MSG(FileIndexEvaluator::EvaluateVectorSearch(
-                                    data_schema_, core_options_, MakeVectorSearch(field),
+                                    data_schema_, core_options_.ToMap(), MakeVectorSearch(field),
                                     path_factory_, meta, fs_, pool_),
                                 message);
         } else {
             ASSERT_NOK_WITH_MSG(FileIndexEvaluator::EvaluateFullTextSearch(
-                                    data_schema_, core_options_, MakeFullTextSearch(field),
+                                    data_schema_, core_options_.ToMap(), MakeFullTextSearch(field),
                                     path_factory_, meta, fs_, pool_),
                                 message);
         }
@@ -543,9 +543,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestVectorSearchReadsIndexWithScores) {
                                        {{3, 0.75f}, {1, 0.25f}}, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
-                         FileIndexEvaluator::EvaluateVectorSearch(data_schema_, core_options_,
-                                                                  MakeVectorSearch("embedding"),
-                                                                  path_factory_, meta, fs_, pool_));
+                         FileIndexEvaluator::EvaluateVectorSearch(
+                             data_schema_, core_options_.ToMap(), MakeVectorSearch("embedding"),
+                             path_factory_, meta, fs_, pool_));
     ASSERT_TRUE(result);
     EXPECT_EQ(RoaringBitmap32::From({1, 3}), result->GetRowPositions());
     EXPECT_EQ(std::vector<float>({0.25f, 0.75f}), result->GetScores());
@@ -559,7 +559,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestFullTextSearchReadsIndex) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
                          FileIndexEvaluator::EvaluateFullTextSearch(
-                             data_schema_, core_options_, MakeFullTextSearch("title"),
+                             data_schema_, core_options_.ToMap(), MakeFullTextSearch("title"),
                              path_factory_, meta, fs_, pool_));
     CheckResult(result, {1, 3});
 }
@@ -571,9 +571,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyVectorSearchIndex) {
                          MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> vector_result,
-                         FileIndexEvaluator::EvaluateVectorSearch(data_schema_, core_options_,
-                                                                  MakeVectorSearch("embedding"),
-                                                                  path_factory_, meta, fs_, pool_));
+                         FileIndexEvaluator::EvaluateVectorSearch(
+                             data_schema_, core_options_.ToMap(), MakeVectorSearch("embedding"),
+                             path_factory_, meta, fs_, pool_));
     ASSERT_TRUE(vector_result);
     EXPECT_TRUE(vector_result->IsEmpty());
     EXPECT_TRUE(vector_result->GetScores().empty());
@@ -587,7 +587,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyFullTextSearchIndex) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> text_result,
                          FileIndexEvaluator::EvaluateFullTextSearch(
-                             data_schema_, core_options_, MakeFullTextSearch("title"),
+                             data_schema_, core_options_.ToMap(), MakeFullTextSearch("title"),
                              path_factory_, meta, fs_, pool_));
     CheckResult(text_result, {});
 }

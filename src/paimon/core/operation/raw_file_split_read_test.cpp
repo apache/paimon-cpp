@@ -47,6 +47,7 @@
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/executor.h"
+#include "paimon/factories/factory_creator.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
@@ -142,10 +143,11 @@ class RawFileSplitReadTest : public ::testing::Test {
 
     Result<std::shared_ptr<arrow::ChunkedArray>> ReadSearchWithDeletionVector(
         const std::shared_ptr<ReadContext>& read_context, const std::string& index_type,
-        const RoaringBitmap32& deleted_rows) const {
+        const RoaringBitmap32& deleted_rows, std::shared_ptr<TableSchema> table_schema) const {
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
-                               schema_manager.ReadSchema(0));
+        if (!table_schema) {
+            PAIMON_ASSIGN_OR_RAISE(table_schema, schema_manager.ReadSchema(0));
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<InternalReadContext> internal_context,
             InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
@@ -526,7 +528,7 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchFiltersDeletionVectorBeforeTopK) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result,
         ReadSearchWithDeletionVector(read_context, MockSearchFileIndex::VECTOR_IDENTIFIER,
-                                     RoaringBitmap32::From({0})));
+                                     RoaringBitmap32::From({0}), /*table_schema=*/nullptr));
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
@@ -551,7 +553,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchFiltersDeletionVectorBeforeLimit)
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result,
         ReadSearchWithDeletionVector(read_context, MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
-                                     RoaringBitmap32::From({0})));
+                                     RoaringBitmap32::From({0}), /*table_schema=*/nullptr));
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
@@ -559,6 +561,140 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchFiltersDeletionVectorBeforeLimit)
                     {R"([[0, "Tony"]])"}, &expected)
                     .ok());
     EXPECT_TRUE(result->Equals(expected));
+}
+
+TEST_F(RawFileSplitReadTest, TestVectorSearchRenamedUnprojectedFieldInOldFile) {
+    const std::string path =
+        GetDataDir() + "/orc/multi_partition_append_table.db/multi_partition_append_table";
+    SchemaManager schemas(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(auto original_schema, schemas.ReadSchema(0));
+    auto fields = original_schema->Fields();
+    ASSERT_EQ("f3", fields[3].Name());
+    fields[3] = DataField(fields[3].Id(), fields[3].ArrowField()->WithName("renamed_f3"));
+    fields.emplace_back(4, arrow::field("f3", arrow::float64()));
+
+    const std::string identifier = "raw-options-vector";
+    auto* factories = FactoryCreator::GetInstance();
+    if (!factories->Create(identifier)) {
+        factories->Register(identifier,
+                            std::make_unique<OptionsCheckingMockSearchFileIndexFactory>(
+                                identifier, SearchIndexType::VECTOR,
+                                std::map<std::string, std::string>{{"token", "current-options"}})
+                                .release());
+    }
+    auto options = original_schema->Options();
+    options["file-index.raw-options-vector.columns"] = "renamed_f3";
+    options["file-index.raw-options-vector.renamed_f3.token"] = "current-options";
+    options[Options::READ_BATCH_SIZE] = "1";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> current_schema,
+                         TableSchema::Create(1, DataField::ConvertDataFieldsToArrowSchema(fields),
+                                             original_schema->PartitionKeys(), {}, options));
+    auto search = std::make_shared<VectorSearch>("renamed_f3", 2, std::vector<float>{1.0f}, nullptr,
+                                                 nullptr, VectorSearch::DistanceType::EUCLIDEAN,
+                                                 std::map<std::string, std::string>{});
+    ReadContextBuilder builder(path);
+    builder.SetOptions(options).SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(search);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+
+    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
+                                         arrow::field("f0", arrow::utf8()),
+                                         arrow::field("_INDEX_SCORE", arrow::float32())});
+    const std::vector<std::pair<RoaringBitmap32, std::string>> cases = {
+        {RoaringBitmap32(), R"([[0,"Bob",0.25],[0,"Tony",0.75]])"},
+        {RoaringBitmap32::From({0}), R"([[0,"Tony",0.75]])"}};
+    for (const auto& [deleted, expected_json] : cases) {
+        SCOPED_TRACE(deleted.ToString());
+        ASSERT_OK_AND_ASSIGN(auto actual, ReadSearchWithDeletionVector(context, identifier, deleted,
+                                                                       current_schema));
+        auto expected_result =
+            arrow::ipc::internal::json::ArrayFromJSON(expected_type, expected_json);
+        ASSERT_TRUE(expected_result.ok()) << expected_result.status().ToString();
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(expected_result.ValueOrDie())))
+            << actual->ToString();
+    }
+    ASSERT_EQ("renamed_f3", search->field_name);
+    ASSERT_FALSE(search->pre_filter);
+    ASSERT_EQ("current-options",
+              current_schema->Options().at("file-index.raw-options-vector.renamed_f3.token"));
+
+    // The old file's f3 is field ID 3; the current table's f3 is a different field with ID 4.
+    auto missing_search = std::make_shared<VectorSearch>(*search);
+    missing_search->field_name = "f3";
+    ReadContextBuilder missing_field_builder(path);
+    missing_field_builder.SetOptions(options).SetReadFieldNames({"f0"}).SetVectorSearch(
+        missing_search);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> missing_context,
+                         missing_field_builder.Finish());
+    ASSERT_NOK_WITH_MSG(ReadSearchWithDeletionVector(missing_context, identifier, RoaringBitmap32(),
+                                                     current_schema),
+                        "has no matching field ID");
+}
+
+TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile) {
+    const std::string path =
+        GetDataDir() + "/orc/multi_partition_append_table.db/multi_partition_append_table";
+    SchemaManager schemas(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(auto original_schema, schemas.ReadSchema(0));
+    auto fields = original_schema->Fields();
+    ASSERT_EQ("f3", fields[3].Name());
+    fields[3] = DataField(fields[3].Id(), fields[3].ArrowField()->WithName("renamed_f3"));
+    fields.emplace_back(4, arrow::field("f3", arrow::float64()));
+
+    const std::string identifier = "raw-options-full-text";
+    auto* factories = FactoryCreator::GetInstance();
+    if (!factories->Create(identifier)) {
+        factories->Register(identifier,
+                            std::make_unique<OptionsCheckingMockSearchFileIndexFactory>(
+                                identifier, SearchIndexType::FULL_TEXT,
+                                std::map<std::string, std::string>{{"token", "current-options"}})
+                                .release());
+    }
+    auto options = original_schema->Options();
+    options["file-index.raw-options-full-text.columns"] = "renamed_f3";
+    options["file-index.raw-options-full-text.renamed_f3.token"] = "current-options";
+    options[Options::READ_BATCH_SIZE] = "1";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> current_schema,
+                         TableSchema::Create(1, DataField::ConvertDataFieldsToArrowSchema(fields),
+                                             original_schema->PartitionKeys(), {}, options));
+    auto search = std::make_shared<FullTextSearch>(
+        "renamed_f3", 2, "match", FullTextSearch::SearchType::MATCH_ALL, std::nullopt);
+    ReadContextBuilder builder(path);
+    builder.SetOptions(options).SetReadFieldNames({"f0"}).SetFullTextSearch(search);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+
+    auto expected_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("f0", arrow::utf8())});
+    const std::vector<std::pair<RoaringBitmap32, std::string>> cases = {
+        {RoaringBitmap32(), R"([[0,"Bob"],[0,"Tony"]])"},
+        {RoaringBitmap32::From({0}), R"([[0,"Tony"]])"}};
+    for (const auto& [deleted, expected_json] : cases) {
+        SCOPED_TRACE(deleted.ToString());
+        ASSERT_OK_AND_ASSIGN(auto actual, ReadSearchWithDeletionVector(context, identifier, deleted,
+                                                                       current_schema));
+        auto expected_result =
+            arrow::ipc::internal::json::ArrayFromJSON(expected_type, expected_json);
+        ASSERT_TRUE(expected_result.ok()) << expected_result.status().ToString();
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(expected_result.ValueOrDie())))
+            << actual->ToString();
+    }
+    ASSERT_EQ("renamed_f3", search->field_name);
+    ASSERT_FALSE(search->pre_filter);
+    ASSERT_EQ("current-options",
+              current_schema->Options().at("file-index.raw-options-full-text.renamed_f3.token"));
+
+    // The old file's f3 is field ID 3; the current table's f3 is a different field with ID 4.
+    auto missing_search = std::make_shared<FullTextSearch>(*search);
+    missing_search->field_name = "f3";
+    ReadContextBuilder missing_field_builder(path);
+    missing_field_builder.SetOptions(options).SetReadFieldNames({"f0"}).SetFullTextSearch(
+        missing_search);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> missing_context,
+                         missing_field_builder.Finish());
+    ASSERT_NOK_WITH_MSG(ReadSearchWithDeletionVector(missing_context, identifier, RoaringBitmap32(),
+                                                     current_schema),
+                        "has no matching field ID");
 }
 
 TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
