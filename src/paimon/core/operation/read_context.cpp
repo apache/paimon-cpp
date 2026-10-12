@@ -34,6 +34,7 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/vector_search.h"
+#include "paimon/rest/rest_api.h"
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
 #include "rapidjson/document.h"
@@ -45,11 +46,12 @@ class Predicate;
 
 namespace {
 
-/// The catalog option that carries the `X-Paimon-Read-Via` request header, spelled with the prefix
-/// a REST catalog strips when it turns an option into a header. That prefix is
-/// `RestApi::kHeaderOptionPrefix`, not referenced here because its header pulls in the http client;
-/// mirrors the Java `RESTApi.READ_VIA_OPTION`.
-constexpr char kReadViaOption[] = "header.X-Paimon-Read-Via";
+/// The catalog option that carries the `X-Paimon-Read-Via` request header: the header name
+/// spelled with the prefix a REST catalog strips when it turns an option into a header. Composed
+/// from the `RestApi` constants the way the Java `CatalogEnvironment.READ_VIA_OPTION` is built from
+/// `RESTApi.HEADER_PREFIX` and `RESTApi.READ_VIA_HEADER`.
+const std::string kReadViaOption =
+    std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
 
 /// True when the options select a catalog that speaks the REST protocol, the only kind turning a
 /// `header.`-prefixed option into a request header. These same options decide which catalog a
