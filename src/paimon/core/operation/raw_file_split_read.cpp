@@ -331,7 +331,7 @@ Result<std::optional<RoaringBitmap32>> RawFileSplitRead::EvaluateFullTextSearchW
     std::shared_ptr<BitmapIndexResult> bitmap_result =
         std::dynamic_pointer_cast<BitmapIndexResult>(search_result);
     if (!bitmap_result) {
-        return std::optional<RoaringBitmap32>();
+        return Status::Invalid("FullTextSearch must return a BitmapIndexResult");
     }
     PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* bitmap, bitmap_result->GetBitmap());
     return std::optional<RoaringBitmap32>(*bitmap);

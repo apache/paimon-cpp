@@ -133,11 +133,17 @@ class BlobFormatWriter : public FormatWriter {
     Result<std::vector<int64_t>> WriteBlobElements(const arrow::LargeBinaryArray& values,
                                                    int64_t offset, int32_t count);
 
-    /// The input stream of a blob value and the stream to close after a successful copy.
+    /// The bytes to copy for one blob value and the source to close after a successful copy.
     struct BlobCopySource {
+        /// May be an OffsetInputStream view or the source file input stream.
         std::unique_ptr<InputStream> stream;
-        /// Non-owning: kept alive by stream, directly or through the view's wrapped stream.
-        /// Null for a cached source whose closing is managed by the writer.
+        /// The value for close_target:
+        /// - `stream.get()` for raw bytes
+        /// - the underlying file stream for a dynamic-length descriptor (length == -1)
+        /// - `nullptr` for a fixed-length descriptor (length >= 0) which reuses the writer's cached
+        /// source_.
+        ///
+        /// Non-owning; stream keeps this target alive, directly or through its wrapped stream.
         InputStream* close_target = nullptr;
     };
 
