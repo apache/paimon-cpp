@@ -68,6 +68,8 @@ class FileSystemCatalog : public Catalog {
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override;
     Result<std::vector<SnapshotInfo>> ListSnapshots(const Identifier& identifier,
                                                     const std::string& branch) const override;
+    Result<std::optional<SnapshotInfo>> GetLatestSnapshot(const Identifier& identifier,
+                                                          const std::string& branch) const override;
 
  protected:
     /// This catalog keeps a table's schema under the table's own path, so the `schema` and

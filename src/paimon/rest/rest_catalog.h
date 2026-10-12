@@ -92,6 +92,8 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override;
     Result<std::vector<SnapshotInfo>> ListSnapshots(const Identifier& identifier,
                                                     const std::string& branch) const override;
+    Result<std::optional<SnapshotInfo>> GetLatestSnapshot(const Identifier& identifier,
+                                                          const std::string& branch) const override;
 
     bool SupportsVersionManagement() const override {
         return true;

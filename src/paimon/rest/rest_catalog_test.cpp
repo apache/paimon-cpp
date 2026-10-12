@@ -1518,6 +1518,48 @@ TEST_F(RestCatalogTest, ListSnapshots) {
                         "branch table");
 }
 
+TEST_F(RestCatalogTest, GetLatestSnapshot) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+    const Catalog& public_catalog = *catalog;
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> empty,
+                         public_catalog.GetLatestSnapshot(identifier));
+    ASSERT_FALSE(empty);
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->current_snapshot = SnapshotJson(7);
+    }
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> snapshot,
+                         public_catalog.GetLatestSnapshot(identifier));
+    ASSERT_TRUE(snapshot);
+    ASSERT_EQ(snapshot->snapshot_id, 7);
+    ASSERT_EQ(snapshot->schema_id, 0);
+}
+
+TEST_F(RestCatalogTest, GetLatestSnapshotBranchAndErrors) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->current_snapshot = SnapshotJson(7);
+        state_->databases["db1"]["t1$branch_b1"] = state_->databases["db1"]["t1"];
+    }
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> snapshot,
+                         catalog->GetLatestSnapshot(identifier, "b1"));
+    ASSERT_TRUE(snapshot);
+    ASSERT_EQ(snapshot->snapshot_id, 7);
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(state_->last_snapshot_table, "t1$branch_b1");
+    }
+    ASSERT_TRUE(catalog->GetLatestSnapshot(Identifier("db1", "missing"), "").status().IsNotExist());
+    ASSERT_TRUE(catalog->GetLatestSnapshot(identifier, "missing").status().IsNotExist());
+}
+
 TEST_F(RestCatalogTest, FileStoreCommitIsBuiltFromTheCatalog) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);

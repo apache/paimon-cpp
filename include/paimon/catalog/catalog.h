@@ -233,6 +233,15 @@ class PAIMON_EXPORT Catalog {
     virtual Result<std::vector<SnapshotInfo>> ListSnapshots(
         const Identifier& identifier, const std::string& branch = "") const = 0;
 
+    /// Gets the latest snapshot of the specified table without loading its snapshot history.
+    ///
+    /// @param identifier The identifier (database and table name) of the table.
+    /// @param branch Branch name; empty string means the main branch.
+    /// @return A result containing the latest SnapshotInfo, nullopt if there are no snapshots,
+    ///         or an error status.
+    virtual Result<std::optional<SnapshotInfo>> GetLatestSnapshot(
+        const Identifier& identifier, const std::string& branch = "") const = 0;
+
     /// Returns whether this catalog publishes snapshots through catalog commits. Defaults to false.
     /// @note Implementations returning true must also implement the internal
     /// `VersionManagedCatalog`.

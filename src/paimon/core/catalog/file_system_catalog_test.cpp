@@ -1255,6 +1255,64 @@ TEST(FileSystemCatalogTest, TestListSnapshots) {
     ASSERT_LT(snapshots[0].snapshot_id, snapshots[1].snapshot_id);
 }
 
+TEST(FileSystemCatalogTest, TestGetLatestSnapshot) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+
+    std::string test_data_path = GetDataDir() + "/append_table_with_multiple_file_format.db";
+    std::string db_path = dir->Str() + "/append_table_with_multiple_file_format.db";
+    ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, db_path));
+
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    const Catalog& public_catalog = catalog;
+    Identifier identifier("append_table_with_multiple_file_format",
+                          "append_table_with_multiple_file_format");
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> snapshot,
+                         public_catalog.GetLatestSnapshot(identifier));
+    ASSERT_TRUE(snapshot);
+    ASSERT_EQ(snapshot->snapshot_id, 2);
+    ASSERT_EQ(snapshot->schema_id, 1);
+}
+
+TEST(FileSystemCatalogTest, TestGetLatestSnapshotEmptyMissingAndBranch) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+
+    std::string empty_test_data_path = GetDataDir() + "/orc/append_table_with_nested_type.db";
+    std::string empty_db_path = dir->Str() + "/append_table_with_nested_type.db";
+    ASSERT_TRUE(TestUtil::CopyDirectory(empty_test_data_path, empty_db_path));
+    std::string branch_test_data_path = GetDataDir() + "/orc/append_table_with_rt_branch.db";
+    std::string branch_db_path = dir->Str() + "/append_table_with_rt_branch.db";
+    ASSERT_TRUE(TestUtil::CopyDirectory(branch_test_data_path, branch_db_path));
+
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK_AND_ASSIGN(
+        std::optional<SnapshotInfo> empty,
+        catalog.GetLatestSnapshot(
+            Identifier("append_table_with_nested_type", "append_table_with_nested_type"), ""));
+    ASSERT_FALSE(empty);
+    Identifier identifier("append_table_with_rt_branch", "append_table_with_rt_branch");
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> branch_snapshot,
+                         catalog.GetLatestSnapshot(identifier, "rt"));
+    ASSERT_TRUE(branch_snapshot);
+    ASSERT_EQ(branch_snapshot->snapshot_id, 1);
+    ASSERT_EQ(branch_snapshot->total_record_count, 4);
+
+    ASSERT_TRUE(catalog.GetLatestSnapshot(Identifier(identifier.GetDatabaseName(), "missing"), "")
+                    .status()
+                    .IsNotExist());
+    ASSERT_OK_AND_ASSIGN(empty, catalog.GetLatestSnapshot(identifier, "missing"));
+    ASSERT_FALSE(empty);
+}
+
 namespace {
 class ClaimsVersionManagementCatalog : public FileSystemCatalog {
  public:
