@@ -66,6 +66,36 @@ TEST(TableTest, TestCreateWithUnknownDatabase) {
     EXPECT_EQ(data_schema->PrimaryKeys(), primary_keys);
 }
 
+TEST(TableTest, TestCreateWithBranch) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    SchemaManager schema_manager(fs, dir->Str());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> main_schema,
+                         schema_manager.CreateTable(
+                             arrow::schema({arrow::field("main_c0", arrow::int32())}), {}, {}, {}));
+    SchemaManager branch_schema_manager(fs, dir->Str(), "b1");
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> branch_schema,
+                         branch_schema_manager.CreateTable(
+                             arrow::schema({arrow::field("b1_c0", arrow::int32())}), {}, {}, {}));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         Table::Create(fs, dir->Str(), Identifier("db1", "tbl1$branch_b1")));
+    ASSERT_EQ("tbl1$branch_b1", table->Name());
+    ASSERT_EQ((std::vector<std::string>{"b1_c0"}), table->LatestSchema()->FieldNames());
+    for (const auto& main_identifier :
+         {Identifier("db1", "tbl1$branch_main"), Identifier("db1", "tbl1$branch_MAIN")}) {
+        ASSERT_OK_AND_ASSIGN(table, Table::Create(fs, dir->Str(), main_identifier));
+        ASSERT_EQ((std::vector<std::string>{"main_c0"}), table->LatestSchema()->FieldNames());
+    }
+
+    Status missing_branch =
+        Table::Create(fs, dir->Str(), Identifier("db1", "tbl1$branch_missing")).status();
+    ASSERT_TRUE(missing_branch.IsNotExist()) << missing_branch.ToString();
+    ASSERT_NOK_WITH_MSG(Table::Create(fs, dir->Str(), Identifier("db1", "tbl1$branch_../outside")),
+                        "branch");
+}
+
 TEST(TableTest, TestCreateRejectsATableTypeThatIsNotAManagedTable) {
     // A `Table` describes a managed paimon table. Handing back another type as one would promise
     // snapshots and manifests it never had, so the failure belongs at the call that opens the
