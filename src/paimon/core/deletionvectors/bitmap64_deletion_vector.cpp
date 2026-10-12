@@ -63,7 +63,7 @@ Result<PAIMON_UNIQUE_PTR<Bytes>> Bitmap64DeletionVector::SerializeToBytes(
 Result<int32_t> Bitmap64DeletionVector::SerializeTo(const std::shared_ptr<MemoryPool>& pool,
                                                     DataOutputStream* out) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, SerializeToBytes(pool));
-    int32_t length = static_cast<int32_t>(bytes->size());
+    auto length = static_cast<int32_t>(bytes->size());
     PAIMON_RETURN_NOT_OK(out->WriteValue<int32_t>(length));
     PAIMON_RETURN_NOT_OK(out->WriteBytes(bytes));
     uint32_t crc = arrow::internal::crc32(0, bytes->data(), bytes->size());
