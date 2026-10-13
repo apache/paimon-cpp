@@ -58,7 +58,9 @@ class SortedFileGlobalIndexReader : public GlobalIndexReader {
 
  protected:
     SortedFileGlobalIndexReader(std::unique_ptr<SortedFileMetaSelector> file_selector,
-                                int64_t fallback_scan_max_size, std::shared_ptr<Executor> executor);
+                                int64_t fallback_scan_max_size,
+                                int64_t total_row_count,
+                                std::shared_ptr<Executor> executor);
 
     virtual Result<std::shared_ptr<GlobalIndexReader>> OpenReader(
         const GlobalIndexIOMeta& meta) = 0;
@@ -74,6 +76,8 @@ class SortedFileGlobalIndexReader : public GlobalIndexReader {
                                                                      ReaderAction visitor);
     Result<std::shared_ptr<GlobalIndexResult>> VisitSelectedFiles(
         const std::vector<GlobalIndexIOMeta>& files, ReaderAction visitor);
+    Result<std::shared_ptr<GlobalIndexResult>> Complement(
+        const std::vector<std::shared_ptr<GlobalIndexResult>>& excluded_results) const;
     Result<std::shared_ptr<GlobalIndexReader>> GetOrCreateReader(const GlobalIndexIOMeta& meta);
 
     bool FallbackScanEnabled(const std::vector<GlobalIndexIOMeta>& files) const;
@@ -82,6 +86,7 @@ class SortedFileGlobalIndexReader : public GlobalIndexReader {
     int64_t fallback_scan_max_size_;
     std::map<std::string, std::shared_ptr<GlobalIndexReader>> reader_cache_;
     std::shared_ptr<Executor> executor_;
+    int64_t total_row_count_;
 };
 
 }  // namespace paimon

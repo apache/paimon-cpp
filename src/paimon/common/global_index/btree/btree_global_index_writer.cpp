@@ -19,6 +19,7 @@
 
 #include "paimon/common/global_index/btree/btree_global_index_writer.h"
 
+#include <limits>
 #include <map>
 
 #include "arrow/c/bridge.h"
@@ -32,28 +33,40 @@
 #include "paimon/common/memory/memory_slice_output.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/bloom_filter.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/crc32c.h"
 #include "paimon/common/utils/preconditions.h"
 #include "paimon/memory/bytes.h"
 namespace paimon {
+namespace {
+
+constexpr double kBloomFilterFpp = 0.05;
+
+}  // namespace
+
 Result<std::shared_ptr<BTreeGlobalIndexWriter>> BTreeGlobalIndexWriter::Create(
     const std::string& field_name, const std::shared_ptr<arrow::StructType>& arrow_type,
     const std::shared_ptr<GlobalIndexFileWriter>& file_writer, int32_t block_size,
     const std::shared_ptr<paimon::BlockCompressionFactory>& compression_factory,
-    const std::shared_ptr<MemoryPool>& pool) {
+    bool bloom_filter_enabled, const std::shared_ptr<MemoryPool>& pool) {
     auto key_field = arrow_type->GetFieldByName(field_name);
     PAIMON_RETURN_NOT_OK(Preconditions::CheckNotNull(
         key_field,
         fmt::format("field {} not in arrow_array when Create BTreeGlobalIndexWriter", field_name)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeySerializer> key_serializer,
                            KeySerializer::Create(key_field->type(), pool));
+    std::shared_ptr<BloomFilter::Builder> bloom_filter_builder;
+    if (bloom_filter_enabled) {
+        PAIMON_ASSIGN_OR_RAISE(bloom_filter_builder,
+                               BloomFilter::DynamicBuilder(kBloomFilterFpp, pool));
+    }
     PAIMON_ASSIGN_OR_RAISE(std::string index_file_name,
                            file_writer->NewFileName(BtreeDefs::kIdentifier));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output_stream,
                            file_writer->NewOutputStream(index_file_name));
-    auto sst_file_writer = std::make_unique<SstFileWriter>(output_stream, /*bloom_filter=*/nullptr,
-                                                           block_size, compression_factory, pool);
+    auto sst_file_writer = std::make_unique<SstFileWriter>(
+        output_stream, bloom_filter_builder, block_size, compression_factory, pool);
     return std::shared_ptr<BTreeGlobalIndexWriter>(new BTreeGlobalIndexWriter(
         field_name, arrow_type, key_serializer, file_writer, index_file_name, output_stream,
         std::move(sst_file_writer), pool));
@@ -96,6 +109,10 @@ Status BTreeGlobalIndexWriter::AddBatch(::ArrowArray* arrow_array,
                            LiteralConverter::ConvertLiteralsFromArray(*value_array,
                                                                       /*own_data=*/true));
     for (size_t i = 0; i < literals.size(); ++i) {
+        if (row_count_ == std::numeric_limits<int64_t>::max()) {
+            return Status::Invalid("BTree global index row count exceeds INT64_MAX.");
+        }
+        ++row_count_;
         int64_t row_id = relative_row_ids[i];
         const auto& literal = literals[i];
         if (literal.IsNull()) {
@@ -170,8 +187,6 @@ Result<std::vector<GlobalIndexIOMeta>> BTreeGlobalIndexWriter::Finish() {
     // Write null bitmap first
     PAIMON_ASSIGN_OR_RAISE(std::optional<BlockHandle> null_bitmap_handle,
                            WriteNullBitmap(output_stream_));
-    // write bloom filter (currently is always null, but we could add it for equal
-    // and in condition.)
     PAIMON_ASSIGN_OR_RAISE(std::optional<BloomFilterHandle> bloom_filter_handle,
                            sst_writer_->WriteBloomFilter());
     // Write index block
@@ -206,7 +221,7 @@ Result<std::vector<GlobalIndexIOMeta>> BTreeGlobalIndexWriter::Finish() {
     // Create GlobalIndexIOMeta
     std::string file_path = file_writer_->ToPath(index_file_name_);
     PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(index_file_name_));
-    GlobalIndexIOMeta io_meta(file_path, file_size, meta_bytes);
+    GlobalIndexIOMeta io_meta(file_path, file_size, row_count_, meta_bytes);
     return std::vector<GlobalIndexIOMeta>{io_meta};
 }
 

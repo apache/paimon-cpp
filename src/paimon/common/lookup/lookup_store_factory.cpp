@@ -30,17 +30,11 @@ Result<std::shared_ptr<LookupStoreFactory>> LookupStoreFactory::Create(
         std::move(comparator), cache_manager, options.GetCachePageSize(), compression_factory);
 }
 
-Result<std::shared_ptr<BloomFilter>> LookupStoreFactory::BfGenerator(int64_t row_count,
-                                                                     const CoreOptions& options,
-                                                                     MemoryPool* pool) {
+Result<std::shared_ptr<BloomFilter::Builder>> LookupStoreFactory::BfGenerator(
+    int64_t row_count, const CoreOptions& options, MemoryPool* pool) {
     if (row_count <= 0 || !options.LookupCacheBloomFilterEnabled()) {
-        return std::shared_ptr<BloomFilter>();
+        return std::shared_ptr<BloomFilter::Builder>();
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BloomFilter> bloom_filter,
-                           BloomFilter::Create(row_count, options.GetLookupCacheBloomFilterFpp()));
-    MemorySegment memory_segment =
-        MemorySegment::AllocateHeapMemory(bloom_filter->ByteLength(), pool);
-    PAIMON_RETURN_NOT_OK(bloom_filter->SetMemorySegment(memory_segment));
-    return bloom_filter;
+    return BloomFilter::FixedBuilder(row_count, options.GetLookupCacheBloomFilterFpp(), pool);
 }
 }  // namespace paimon

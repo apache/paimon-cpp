@@ -29,7 +29,8 @@ Result<std::shared_ptr<SstFileReader>> SstFileReader::Create(
     const std::optional<BloomFilterHandle>& bloom_filter_handle,
     MemorySlice::SliceComparator comparator, const std::shared_ptr<BlockCache>& block_cache,
     const std::shared_ptr<MemoryPool>& pool) {
-    // read bloom filter directly now
+    // TODO: Align with Java FileBasedBloomFilter by probing the cache first and loading the Bloom
+    // filter on demand during point lookups instead of reading it eagerly when creating the reader.
     std::shared_ptr<BloomFilter> bloom_filter = nullptr;
     if (bloom_filter_handle.has_value() &&
         (bloom_filter_handle->ExpectedEntries() || bloom_filter_handle->Size() ||

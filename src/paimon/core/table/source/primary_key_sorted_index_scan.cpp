@@ -554,14 +554,15 @@ PrimaryKeySortedIndexScan::ReaderFactory PrimaryKeySortedIndexScan::MakeReaderFa
         }
         std::vector<GlobalIndexIOMeta> io_metas;
         io_metas.emplace_back(path_factory->ToPath(payload), payload->FileSize(),
-                              payload_meta.value().index_meta);
+                              payload->RowCount(), payload_meta.value().index_meta);
         PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema->GetField(definition.FieldId()));
         auto arrow_field = DataField::ConvertDataFieldToArrowField(field);
         auto arrow_schema = arrow::schema({arrow_field});
         ArrowSchema c_arrow_schema;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_arrow_schema));
         ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
-        return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool);
+        return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, payload->RowCount(),
+                                     /*row_ranges=*/std::nullopt, pool);
     };
 }
 

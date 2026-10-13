@@ -98,6 +98,7 @@ class LuceneGlobalIndexTest : public ::testing::Test,
 
         // check meta
         EXPECT_EQ(result_metas.size(), 1);
+        EXPECT_EQ(result_metas[0].row_count, array->length());
         auto file_name = PathUtil::GetName(result_metas[0].file_path);
         EXPECT_TRUE(StringUtils::StartsWith(file_name, "lucene-fts-global-index-"));
         EXPECT_TRUE(StringUtils::EndsWith(file_name, ".index"));
@@ -120,7 +121,7 @@ class LuceneGlobalIndexTest : public ::testing::Test,
         auto file_reader = std::make_shared<GlobalIndexFileManager>(
             fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         return global_index->CreateReader(CreateArrowSchema(data_type).get(), file_reader, {meta},
-                                          pool_);
+                                          meta.row_count, /*row_ranges=*/std::nullopt, pool_);
     }
 
     static std::shared_ptr<FullTextSearch> MakeSearch(

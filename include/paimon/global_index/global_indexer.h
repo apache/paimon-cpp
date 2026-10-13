@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,6 +31,7 @@
 #include "paimon/global_index/io/global_index_file_reader.h"
 #include "paimon/global_index/io/global_index_file_writer.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/utils/range.h"
 #include "paimon/visibility.h"
 
 struct ArrowSchema;
@@ -58,17 +60,23 @@ class PAIMON_EXPORT GlobalIndexer {
         const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
         const std::shared_ptr<MemoryPool>& pool) const = 0;
 
-    /// Creates a reader for querying a pre-built global index.
+    /// Creates a reader for querying a pre-built global index whose relative row IDs cover
+    /// [0, total_row_count).
     ///
-    /// @param arrow_schema   Schema of the indexed data; used to interpret predicate literals.
-    /// @param file_reader    I/O handler for reading index artifacts from storage.
-    /// @param files          List of index file metadata entries produced during writing.
-    /// @param pool           Memory pool for temporary allocations; if nullptr, uses default.
+    /// @param arrow_schema    Schema of the indexed data; used to interpret predicate literals.
+    /// @param file_reader     I/O handler for reading index artifacts from storage.
+    /// @param files           List of index file metadata entries produced during writing.
+    /// @param total_row_count Complete row count for evaluating negative predicates by complement.
+    /// @param row_ranges      Optional local row ranges used only as a pruning hint.
+    ///                        Implementations may ignore them; callers must still clip returned
+    ///                        candidates to the requested ranges.
+    /// @param pool            Memory pool for temporary allocations; if nullptr, uses default.
     /// @return A `Result` containing a shared pointer to the created `GlobalIndexReader`,
     ///         or an error if the index cannot be loaded or is incompatible, etc.
     virtual Result<std::shared_ptr<GlobalIndexReader>> CreateReader(
         ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-        const std::vector<GlobalIndexIOMeta>& files,
+        const std::vector<GlobalIndexIOMeta>& files, int64_t total_row_count,
+        const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<MemoryPool>& pool) const = 0;
 
     /// Whether this indexer supports checkpointing an index build.

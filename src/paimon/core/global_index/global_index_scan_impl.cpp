@@ -205,6 +205,17 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
             if (row_range_index && !row_range_index->Intersects(range.from, range.to)) {
                 continue;
             }
+            std::optional<std::vector<Range>> local_row_ranges;
+            if (row_range_index) {
+                std::vector<Range> intersected_ranges =
+                    row_range_index->IntersectedRanges(range.from, range.to);
+                local_row_ranges.emplace();
+                local_row_ranges->reserve(intersected_ranges.size());
+                for (const Range& intersected_range : intersected_ranges) {
+                    local_row_ranges->emplace_back(intersected_range.from - range.from,
+                                                   intersected_range.to - range.from);
+                }
+            }
             auto arrow_field = DataField::ConvertDataFieldToArrowField(field);
             auto arrow_schema = arrow::schema({arrow_field});
 
@@ -214,7 +225,8 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
             ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<GlobalIndexReader> index_reader,
-                indexer->CreateReader(&c_arrow_schema, index_file_manager_, index_io_metas, pool_));
+                indexer->CreateReader(&c_arrow_schema, index_file_manager_, index_io_metas,
+                                      range.Count(), local_row_ranges, pool_));
             union_readers.push_back(std::make_shared<OffsetGlobalIndexReader>(
                 std::move(index_reader), range.from, range.to));
             row_ranges.push_back(range);
@@ -243,7 +255,7 @@ GlobalIndexIOMeta GlobalIndexScanImpl::ToGlobalIndexIOMeta(
     const std::shared_ptr<IndexFileMeta>& index_meta) const {
     assert(index_meta->GetGlobalIndexMeta());
     const auto& global_index_meta = index_meta->GetGlobalIndexMeta().value();
-    return {index_file_manager_->ToPath(index_meta), index_meta->FileSize(),
+    return {index_file_manager_->ToPath(index_meta), index_meta->FileSize(), index_meta->RowCount(),
             global_index_meta.index_meta};
 }
 

@@ -347,11 +347,12 @@ Status LookupLevels<T>::CreateSstFileFromDataFile(const std::shared_ptr<DataFile
         GetOrCreateProcessor(table_schema_->Id(), serializer_factory_->Version()));
 
     // Prepare writer to write lookup file
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BloomFilter> bloom_filter,
-                           LookupStoreFactory::BfGenerator(file->row_count, options_, pool_.get()));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<BloomFilter::Builder> bloom_filter_builder,
+        LookupStoreFactory::BfGenerator(file->row_count, options_, pool_.get()));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<LookupStoreWriter> kv_writer,
-        lookup_store_factory_->CreateWriter(fs_, kv_file_path, bloom_filter, pool_));
+        lookup_store_factory_->CreateWriter(fs_, kv_file_path, bloom_filter_builder, pool_));
 
     ScopeGuard write_guard([&]() -> void {
         [[maybe_unused]] auto status = kv_writer->Close();

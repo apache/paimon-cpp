@@ -306,6 +306,7 @@ class PrimaryKeySortedIndexScanTest : public ::testing::Test {
             const std::shared_ptr<IndexFileMeta>& payload = group.Payload();
             std::vector<GlobalIndexIOMeta> io_metas;
             io_metas.emplace_back(base_path + "/" + payload->FileName(), payload->FileSize(),
+                                  payload->RowCount(),
                                   payload->GetGlobalIndexMeta().value().index_meta);
             PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema->GetField(definition.FieldId()));
             auto arrow_field = DataField::ConvertDataFieldToArrowField(field);
@@ -313,7 +314,8 @@ class PrimaryKeySortedIndexScanTest : public ::testing::Test {
             ArrowSchema c_arrow_schema;
             PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_arrow_schema));
             auto file_reader = std::make_shared<TestGlobalIndexFileReader>(fs);
-            return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool);
+            return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas,
+                                         payload->RowCount(), /*row_ranges=*/std::nullopt, pool);
         };
     }
 

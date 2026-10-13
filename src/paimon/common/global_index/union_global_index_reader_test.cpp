@@ -47,7 +47,8 @@ class FakeSortedFileGlobalIndexReader : public SortedFileGlobalIndexReader {
         std::map<std::string, std::shared_ptr<GlobalIndexReader>>&& readers,
         std::shared_ptr<Executor> executor)
         : SortedFileGlobalIndexReader(/*file_selector=*/nullptr,
-                                      /*fallback_scan_max_size=*/0, std::move(executor)),
+                                      /*fallback_scan_max_size=*/0,
+                                      /*total_row_count=*/0, std::move(executor)),
           readers_(std::move(readers)) {}
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitSelectedFilesForTest(
@@ -292,8 +293,10 @@ TEST_F(UnionGlobalIndexReaderTest, TestSortedFileSelectedFilesSkipNullptr) {
         {"unsupported", unsupported_reader}, {"supported", supported_reader}};
     FakeSortedFileGlobalIndexReader sorted_reader(std::move(readers), CreateDefaultExecutor());
     std::vector<GlobalIndexIOMeta> files = {
-        GlobalIndexIOMeta("unsupported", /*file_size=*/1, /*metadata=*/nullptr),
-        GlobalIndexIOMeta("supported", /*file_size=*/1, /*metadata=*/nullptr)};
+        GlobalIndexIOMeta("unsupported", /*file_size=*/1, /*row_count=*/0,
+                          /*metadata=*/nullptr),
+        GlobalIndexIOMeta("supported", /*file_size=*/1, /*row_count=*/0,
+                          /*metadata=*/nullptr)};
 
     ASSERT_OK_AND_ASSIGN(auto result, sorted_reader.VisitSelectedFilesForTest(files));
     CheckResult(result, {1, 2});

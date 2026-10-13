@@ -119,11 +119,11 @@ std::vector<Row> ExpectedResidualRowsAtSnapshot4() {
     return rows;
 }
 
-std::vector<Row> ExpectedPartitionRowsAtSnapshot2() {
+std::vector<Row> ExpectedPartitionScoreZeroRowsAtSnapshot2() {
     std::vector<Row> rows;
     for (int32_t pt = 1; pt <= 2; pt++) {
-        for (int32_t id = 1; id <= 100; id++) {
-            rows.emplace_back(pt, id, id % 10, id % 2 == 0 ? "keep" : "drop");
+        for (int32_t id = 10; id <= 100; id += 10) {
+            rows.emplace_back(pt, id, 0, "keep");
         }
     }
     return rows;
@@ -172,6 +172,11 @@ class PrimaryKeySortedIndexInteTest : public ::testing::Test,
     std::shared_ptr<Predicate> ScoreEqual(bool partitioned, int32_t score) const {
         return PredicateBuilder::Equal(partitioned ? 2 : 1, "score", FieldType::INT,
                                        Literal(score));
+    }
+
+    std::shared_ptr<Predicate> ScoreNotEqual(bool partitioned, int32_t score) const {
+        return PredicateBuilder::NotEqual(partitioned ? 2 : 1, "score", FieldType::INT,
+                                          Literal(score));
     }
 
     std::shared_ptr<Predicate> ScoreGreaterOrEqual(bool partitioned, int32_t score) const {
@@ -373,6 +378,37 @@ TEST_P(PrimaryKeySortedIndexInteTest, MultiSourceOrdinalsBecomeBoundedFileLocalR
     ASSERT_EQ(ExpectedScoreZeroRows(/*snapshot_id=*/2), ranges_only_rows);
 }
 
+TEST_P(PrimaryKeySortedIndexInteTest, NegativePredicateUsesCompleteIndexRowCount) {
+    std::shared_ptr<Predicate> predicate = ScoreNotEqual(/*partitioned=*/false, 0);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Plan> indexed_plan,
+        Scan(/*partitioned=*/false, predicate, /*snapshot_id=*/2, /*index_enabled=*/true,
+             /*partition_filters=*/{}, /*branch=*/"", /*file_system=*/nullptr));
+    const auto [indexed_count, data_count] = CountSplitKinds(indexed_plan);
+    ASSERT_GT(indexed_count, 0);
+    ASSERT_EQ(data_count, 0);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<Row> indexed_rows,
+        Read(/*partitioned=*/false, predicate, indexed_plan->Splits(), /*options=*/{},
+             /*file_system=*/nullptr));
+    ASSERT_EQ(indexed_rows.size(), 1800u);
+    for (const Row& row : indexed_rows) {
+        ASSERT_NE(std::get<2>(row), 0);
+    }
+
+    // Compare with a non-indexed scan so the assertion also covers the exact complement domain.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Plan> data_plan,
+        Scan(/*partitioned=*/false, predicate, /*snapshot_id=*/2, /*index_enabled=*/false,
+             /*partition_filters=*/{}, /*branch=*/"", /*file_system=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<Row> data_rows,
+        Read(/*partitioned=*/false, predicate, data_plan->Splits(), /*options=*/{},
+             /*file_system=*/nullptr));
+    ASSERT_EQ(indexed_rows, data_rows);
+}
+
 TEST_P(PrimaryKeySortedIndexInteTest, DeletionVectorResidualAndBooleanFallback) {
     std::shared_ptr<Predicate> score = ScoreEqual(/*partitioned=*/false, 0);
     std::shared_ptr<Predicate> id_upper_bound = IdLessOrEqual(/*partitioned=*/false, /*id=*/1500);
@@ -417,7 +453,9 @@ TEST_P(PrimaryKeySortedIndexInteTest, DeletionVectorResidualAndBooleanFallback) 
 }
 
 TEST_P(PrimaryKeySortedIndexInteTest, PartitionsBucketsAndIndexPaths) {
-    std::shared_ptr<Predicate> predicate = ScoreGreaterOrEqual(/*partitioned=*/true, /*score=*/0);
+    // Avoid the metadata-only full-match path so this test still verifies that the selected
+    // partition and bucket index files are opened through the configured file system.
+    std::shared_ptr<Predicate> predicate = ScoreEqual(/*partitioned=*/true, /*score=*/0);
     auto tracking_file_system = std::make_shared<TrackingLocalFileSystem>();
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Plan> plan,
@@ -444,13 +482,13 @@ TEST_P(PrimaryKeySortedIndexInteTest, PartitionsBucketsAndIndexPaths) {
     }
     ASSERT_EQ((std::set<int32_t>{1, 2}), partitions);
     ASSERT_EQ((std::set<int32_t>{0, 1}), buckets);
-    ASSERT_EQ(200, selected_rows);
+    ASSERT_EQ(20, selected_rows);
     ASSERT_FALSE(tracking_file_system->OpenedIndexPaths().empty());
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows,
                          Read(/*partitioned=*/true, predicate, plan->Splits(), /*options=*/{},
                               tracking_file_system));
-    ASSERT_EQ(ExpectedPartitionRowsAtSnapshot2(), rows);
+    ASSERT_EQ(ExpectedPartitionScoreZeroRowsAtSnapshot2(), rows);
 }
 
 TEST_P(PrimaryKeySortedIndexInteTest, FallbackTableReadRoutesMainAndFallbackSplits) {

@@ -188,6 +188,7 @@ class LuminaGlobalIndexTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(auto result_metas, global_writer->Finish());
         // check meta
         EXPECT_EQ(result_metas.size(), 1);
+        EXPECT_EQ(result_metas[0].row_count, array->length());
         auto file_name = PathUtil::GetName(result_metas[0].file_path);
         EXPECT_TRUE(StringUtils::StartsWith(file_name, "lumina-global-index-"));
         EXPECT_TRUE(StringUtils::EndsWith(file_name, ".index"));
@@ -228,7 +229,7 @@ class LuminaGlobalIndexTest : public ::testing::Test {
         auto file_reader = std::make_shared<GlobalIndexFileManager>(
             fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         return global_index->CreateReader(CreateArrowSchema(data_type).get(), file_reader, {meta},
-                                          pool_);
+                                          meta.row_count, /*row_ranges=*/std::nullopt, pool_);
     }
 
     std::shared_ptr<arrow::Array> CreateRandomVector(int32_t element_size,
@@ -1225,7 +1226,9 @@ TEST_F(LuminaGlobalIndexTest, TestInvalidInputs) {
                 fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
 
             ASSERT_NOK_WITH_MSG(global_index->CreateReader(CreateArrowSchema(data_type_).get(),
-                                                           file_reader, {meta, meta}, pool_),
+                                                           file_reader, {meta, meta},
+                                                           meta.row_count,
+                                                           /*row_ranges=*/std::nullopt, pool_),
                                 "lumina index only has one index file per shard");
         }
         {

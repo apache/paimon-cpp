@@ -60,6 +60,12 @@ BTree is an efficient index based on multi-level SST files, supporting rich pred
 
 **Special Configuration:**
 
+- **Option**: ``btree-index.bloom-filter.enabled``
+
+  - **Default**: ``false``
+  - **Description**: Enables a Bloom filter for BTree point lookups such as equality and ``IN``
+    predicates. This can avoid reading data blocks for missing keys.
+
 - **Option**: ``btree-index.read-buffer-size``
 
   - **Description**: Optional. Specifies the read buffer size for the B-tree index. This setting can be tuned based on query patterns:

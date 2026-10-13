@@ -54,7 +54,7 @@ class LookupStoreFactory {
 
     virtual Result<std::unique_ptr<LookupStoreWriter>> CreateWriter(
         const std::shared_ptr<paimon::FileSystem>& fs, const std::string& file_path,
-        const std::shared_ptr<BloomFilter>& bloom_filter,
+        const std::shared_ptr<BloomFilter::Builder>& bloom_filter_builder,
         const std::shared_ptr<MemoryPool>& pool) const = 0;
 
     virtual Result<std::unique_ptr<LookupStoreReader>> CreateReader(
@@ -65,8 +65,8 @@ class LookupStoreFactory {
         MemorySlice::SliceComparator comparator, const std::shared_ptr<CacheManager>& cache_manager,
         const CoreOptions& options);
 
-    static Result<std::shared_ptr<BloomFilter>> BfGenerator(int64_t row_count,
-                                                            const CoreOptions& options,
-                                                            MemoryPool* pool);
+    static Result<std::shared_ptr<BloomFilter::Builder>> BfGenerator(int64_t row_count,
+                                                                     const CoreOptions& options,
+                                                                     MemoryPool* pool);
 };
 }  // namespace paimon
