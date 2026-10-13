@@ -278,6 +278,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewRes
     // `<database>/<table>`) components off this table's path yields that warehouse.
     std::optional<std::string> warehouse_path = options_.GetBlobViewUpstreamWarehouse();
     if (!warehouse_path) {
+        // TODO(yonghao.fyh): refactor warehouse path in the future
         warehouse_path =
             PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(context_->GetPath()));
     }
