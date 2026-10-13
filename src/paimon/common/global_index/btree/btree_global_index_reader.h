@@ -44,7 +44,8 @@ class BTreeGlobalIndexReader : public GlobalIndexReader,
         const std::shared_ptr<SstFileReader>& sst_file_reader, RoaringBitmap64&& null_bitmap,
         const std::optional<MemorySlice>& min_key_slice,
         const std::optional<MemorySlice>& max_key_slice,
-        const std::shared_ptr<KeySerializer>& key_serializer);
+        const std::shared_ptr<KeySerializer>& key_serializer,
+        std::optional<RoaringBitmap64> row_id_filter);
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override;
 
@@ -95,11 +96,13 @@ class BTreeGlobalIndexReader : public GlobalIndexReader,
                            RoaringBitmap64&& null_bitmap, std::optional<Literal> min_key,
                            std::optional<Literal> max_key, std::optional<MemorySlice> min_key_slice,
                            std::optional<MemorySlice> max_key_slice,
-                           const std::shared_ptr<KeySerializer>& key_serializer);
+                           const std::shared_ptr<KeySerializer>& key_serializer,
+                           std::optional<RoaringBitmap64> row_id_filter);
 
     Result<RoaringBitmap64> RangeQuery(const std::optional<Literal>& from,
                                        const std::optional<Literal>& to, bool from_inclusive,
                                        bool to_inclusive);
+    Result<RoaringBitmap64> PointQuery(const Literal& literal);
 
     Status DeserializeRowIds(const MemorySlice& slice, std::vector<int64_t>* out) const;
 
@@ -108,6 +111,7 @@ class BTreeGlobalIndexReader : public GlobalIndexReader,
     std::shared_ptr<SstFileReader> sst_file_reader_;
     std::shared_ptr<KeySerializer> key_serializer_;
     RoaringBitmap64 null_bitmap_;
+    std::optional<RoaringBitmap64> row_id_filter_;
     std::optional<Literal> min_key_;
     std::optional<Literal> max_key_;
     /// Cached serialized min/max key slices to avoid repeated serialization in RangeQuery.

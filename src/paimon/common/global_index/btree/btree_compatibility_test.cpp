@@ -112,13 +112,13 @@ class BTreeCompatibilityTest : public ::testing::Test {
 
     Result<std::shared_ptr<GlobalIndexReader>> CreateReaderFromFiles(
         const std::string& bin_path, const std::string& meta_path,
-        const std::shared_ptr<arrow::DataType>& arrow_type) const {
+        const std::shared_ptr<arrow::DataType>& arrow_type, int64_t total_row_count) const {
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
         PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(bin_path));
         auto file_size = file_status.GetLen();
 
-        GlobalIndexIOMeta io_meta(bin_path, file_size, meta_bytes);
+        GlobalIndexIOMeta io_meta(bin_path, file_size, total_row_count, meta_bytes);
         std::vector<GlobalIndexIOMeta> metas = {io_meta};
 
         auto schema = arrow::schema({arrow::field("testField", arrow_type)});
@@ -128,7 +128,8 @@ class BTreeCompatibilityTest : public ::testing::Test {
         auto file_reader = std::make_shared<LocalGlobalIndexFileReader>(fs_);
         std::map<std::string, std::string> options;
         PAIMON_ASSIGN_OR_RAISE(auto indexer, BTreeGlobalIndexer::Create(options));
-        return indexer->CreateReader(c_schema.get(), file_reader, metas, pool_);
+        return indexer->CreateReader(c_schema.get(), file_reader, metas, total_row_count,
+                                     /*row_ranges=*/std::nullopt, pool_);
     }
 
     void RunIntQueries(const std::shared_ptr<GlobalIndexReader>& reader,
@@ -570,7 +571,8 @@ TEST_F(BTreeCompatibilityTest, ReadAndQueryIntData) {
         ASSERT_EQ(static_cast<int32_t>(records.size()), count);
 
         ASSERT_OK_AND_ASSIGN(auto reader,
-                             CreateReaderFromFiles(bin_path, meta_path, arrow::int32()));
+                             CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
+                                                   records.size()));
         RunIntQueries(reader, records);
     }
 }
@@ -586,7 +588,8 @@ TEST_F(BTreeCompatibilityTest, ReadAndQueryStringData) {
         ASSERT_EQ(static_cast<int32_t>(records.size()), count);
 
         ASSERT_OK_AND_ASSIGN(auto reader,
-                             CreateReaderFromFiles(bin_path, meta_path, arrow::utf8()));
+                             CreateReaderFromFiles(bin_path, meta_path, arrow::utf8(),
+                                                   records.size()));
         RunStringQueries(reader, records);
     }
 }
@@ -601,7 +604,9 @@ TEST_F(BTreeCompatibilityTest, ReadAndQueryFloatData) {
     auto records = ParseCsvFile(csv_path);
     ASSERT_EQ(static_cast<int32_t>(records.size()), count);
 
-    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::float32()));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        CreateReaderFromFiles(bin_path, meta_path, arrow::float32(), records.size()));
     RunFloatQueries(reader, records);
 }
 
@@ -615,7 +620,8 @@ TEST_F(BTreeCompatibilityTest, AllNulls) {
     ASSERT_FALSE(records.empty());
     auto count = static_cast<int32_t>(records.size());
 
-    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32()));
+    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
+                                                            records.size()));
 
     // All rows should be null
     {
@@ -653,7 +659,8 @@ TEST_F(BTreeCompatibilityTest, NoNulls) {
     ASSERT_FALSE(records.empty());
     auto count = static_cast<int32_t>(records.size());
 
-    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32()));
+    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
+                                                            records.size()));
 
     // No rows should be null
     {
@@ -720,7 +727,8 @@ TEST_F(BTreeCompatibilityTest, DuplicateKeys) {
     auto records = ParseCsvFile(csv_path);
     ASSERT_FALSE(records.empty());
 
-    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32()));
+    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
+                                                            records.size()));
 
     // VisitIsNull
     {
@@ -914,7 +922,9 @@ TEST_F(BTreeCompatibilityTest, RowCountConsistency) {
         ASSERT_FALSE(records.empty());
         auto count = static_cast<int32_t>(records.size());
 
-        ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow_type));
+        ASSERT_OK_AND_ASSIGN(
+            auto reader,
+            CreateReaderFromFiles(bin_path, meta_path, arrow_type, records.size()));
 
         ASSERT_OK_AND_ASSIGN(auto null_result, reader->VisitIsNull());
         auto null_ids = CollectRowIds(null_result);

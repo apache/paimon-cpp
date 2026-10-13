@@ -84,6 +84,7 @@ class RangeBitmapGlobalIndexTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(auto result_metas, global_writer->Finish());
         // check meta
         EXPECT_EQ(result_metas.size(), 1);
+        EXPECT_EQ(result_metas[0].row_count, array->length());
         auto file_name = PathUtil::GetName(result_metas[0].file_path);
         EXPECT_TRUE(StringUtils::StartsWith(file_name, "range-bitmap-global-index-"));
         EXPECT_TRUE(StringUtils::EndsWith(file_name, ".index"));
@@ -114,7 +115,8 @@ class RangeBitmapGlobalIndexTest : public ::testing::Test {
             fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
         EXPECT_OK_AND_ASSIGN(
             auto global_index_reader,
-            global_index->CreateReader(CreateArrowSchema(type).get(), file_reader, {meta}, pool_));
+            global_index->CreateReader(CreateArrowSchema(type).get(), file_reader, {meta},
+                                       meta.row_count, /*row_ranges=*/std::nullopt, pool_));
         EXPECT_TRUE(global_index_reader);
         return global_index_reader;
     }

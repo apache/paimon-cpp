@@ -314,7 +314,7 @@ Result<std::shared_ptr<CommitMessage>> ToCommitMessage(
             external_path = path.ToString();
         }
         index_file_metas.push_back(std::make_shared<IndexFileMeta>(
-            index_type, PathUtil::GetName(io_meta.file_path), io_meta.file_size, range.Count(),
+            index_type, PathUtil::GetName(io_meta.file_path), io_meta.file_size, io_meta.row_count,
             /*dv_ranges=*/std::nullopt, external_path,
             GlobalIndexMeta(range.from, range.to, field_id, extra_field_ids, io_meta.metadata)));
     }

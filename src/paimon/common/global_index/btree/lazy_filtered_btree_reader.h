@@ -19,9 +19,11 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
@@ -31,6 +33,7 @@
 #include "paimon/common/sst/block_cache.h"
 #include "paimon/common/sst/block_handle.h"
 #include "paimon/global_index/io/global_index_file_reader.h"
+#include "paimon/utils/range.h"
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
@@ -41,7 +44,14 @@ class LazyFilteredBTreeReader : public SortedFileGlobalIndexReader {
         const std::shared_ptr<arrow::DataType>& key_type,
         const std::shared_ptr<GlobalIndexFileReader>& file_reader,
         const std::shared_ptr<CacheManager>& cache_manager, int64_t fallback_scan_max_size,
+        int64_t total_row_count, const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<Executor>& executor);
+
+    Result<std::shared_ptr<GlobalIndexResult>> VisitEqual(const Literal& literal) override;
+    Result<std::shared_ptr<GlobalIndexResult>> VisitLessThan(const Literal& literal) override;
+    Result<std::shared_ptr<GlobalIndexResult>> VisitLessOrEqual(const Literal& literal) override;
+    Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterThan(const Literal& literal) override;
+    Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterOrEqual(const Literal& literal) override;
 
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;
@@ -59,8 +69,14 @@ class LazyFilteredBTreeReader : public SortedFileGlobalIndexReader {
                             const std::shared_ptr<KeySerializer>& key_serializer,
                             const std::shared_ptr<GlobalIndexFileReader>& file_reader,
                             const std::shared_ptr<CacheManager>& cache_manager,
-                            int64_t fallback_scan_max_size, const std::shared_ptr<MemoryPool>& pool,
+                            int64_t fallback_scan_max_size, int64_t total_row_count,
+                            std::optional<std::pair<Literal, Literal>> full_range_bounds,
+                            std::optional<RoaringBitmap64> row_id_filter,
+                            const std::shared_ptr<MemoryPool>& pool,
                             const std::shared_ptr<Executor>& executor);
+
+    Result<std::shared_ptr<GlobalIndexResult>> FullResult() const;
+    Result<bool> AllKeysMatch(const std::function<Result<bool>(const Literal&)>& predicate) const;
 
     Result<std::shared_ptr<GlobalIndexReader>> OpenReader(const GlobalIndexIOMeta& meta) override;
     Result<RoaringBitmap64> ReadNullBitmap(const std::shared_ptr<BlockCache>& cache,
@@ -72,6 +88,9 @@ class LazyFilteredBTreeReader : public SortedFileGlobalIndexReader {
     std::shared_ptr<KeySerializer> key_serializer_;
     std::shared_ptr<GlobalIndexFileReader> file_reader_;
     std::shared_ptr<CacheManager> cache_manager_;
+    int64_t total_row_count_;
+    std::optional<std::pair<Literal, Literal>> full_range_bounds_;
+    std::optional<RoaringBitmap64> row_id_filter_;
 };
 
 }  // namespace paimon

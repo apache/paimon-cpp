@@ -3319,22 +3319,30 @@ TEST_P(GlobalIndexTest, TestBTreeWriteCommitScanReadIndexWithPartition) {
         ASSERT_EQ(result2->ToString(), "{}");
     }
 
-    // Scan with row_range_index filtering: only range [5,7] (partition f1=20)
+    // Scan with row_range_index filtering: only global row 6 in range [5,7]. This verifies
+    // that the global range is translated to the file-local range [1,1] before creating the
+    // BTree reader.
     {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
                              GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
                                                      /*partitions=*/std::nullopt, /*options=*/{},
                                                      fs_, /*executor=*/nullptr, pool_));
-        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(5, 7)}));
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(6, 6)}));
         ASSERT_OK_AND_ASSIGN(auto index_readers,
                              global_index_scan->CreateReaders("f0", row_range_index));
         ASSERT_EQ(index_readers.size(), 1u);
 
-        // "Tony" in range [5,7]: local id {2} in range [5,7] -> global {7}
+        // "Lucy" is local row 1 in the index range [5,7] -> global row 6.
         ASSERT_OK_AND_ASSIGN(auto result,
-                             index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Tony", 4)));
+                             index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Lucy", 4)));
         ASSERT_TRUE(result);
-        ASSERT_EQ(result->ToString(), "{7}");
+        ASSERT_EQ(result->ToString(), "{6}");
+
+        // "Tony" is in the selected index file but outside the requested row range.
+        ASSERT_OK_AND_ASSIGN(
+            result, index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Tony", 4)));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->ToString(), "{}");
     }
 
     // Full pipeline with evaluator: Scan(predicate) -> read data

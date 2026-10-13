@@ -24,16 +24,22 @@
 #include <string>
 
 #include "paimon/memory/bytes.h"
+#include "paimon/visibility.h"
 
 namespace paimon {
 /// Metadata describing a single file entry in a global index.
 struct PAIMON_EXPORT GlobalIndexIOMeta {
-    GlobalIndexIOMeta(const std::string& _file_path, int64_t _file_size,
+    GlobalIndexIOMeta(const std::string& _file_path, int64_t _file_size, int64_t _row_count,
                       const std::shared_ptr<Bytes>& _metadata)
-        : file_path(_file_path), file_size(_file_size), metadata(_metadata) {}
+        : file_path(_file_path),
+          file_size(_file_size),
+          row_count(_row_count),
+          metadata(_metadata) {}
 
     std::string file_path;
     int64_t file_size;
+    /// Total logical rows processed by the writer, including null or skipped rows.
+    int64_t row_count;
     /// Optional binary metadata associated with the file, such as serialized
     /// secondary index structures or inline index bytes.
     /// May be null if no additional metadata is available.
