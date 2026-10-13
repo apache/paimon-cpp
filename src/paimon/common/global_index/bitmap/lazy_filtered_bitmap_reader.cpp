@@ -60,7 +60,7 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> LazyFilteredBitmapReader::Visit
     return Status::Invalid("LazyFilteredBitmapReader does not support vector search.");
 }
 
-Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBitmapReader::VisitFullTextSearch(
+Result<std::shared_ptr<ScoredGlobalIndexResult>> LazyFilteredBitmapReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
     return Status::Invalid("LazyFilteredBitmapReader does not support full text search.");
 }

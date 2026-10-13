@@ -253,8 +253,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptr) {
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptrWithExecutor) {
-    auto reader1 = std::make_shared<FakeReader>();
-    auto reader2 = std::make_shared<FakeReader>();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
     reader1->SetDefaultResult({1, 2});
     reader2->SetReturnNullptr();
 
@@ -268,8 +268,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptrWithExecutor) 
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestSortedFileSelectedFilesSkipNullptr) {
-    auto unsupported_reader = std::make_shared<FakeReader>();
-    auto supported_reader = std::make_shared<FakeReader>();
+    auto unsupported_reader = std::make_shared<MockGlobalIndexReader>();
+    auto supported_reader = std::make_shared<MockGlobalIndexReader>();
     unsupported_reader->SetReturnNullptr();
     supported_reader->SetDefaultResult({1, 2});
     std::map<std::string, std::shared_ptr<GlobalIndexReader>> readers = {
@@ -319,8 +319,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestDeferredTaskOwnsActionAfterEarlierFutureT
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {throwing_reader, deferred_reader};
     auto executor = std::make_shared<DeferAfterFirstExecutor>();
     UnionGlobalIndexReader union_reader(std::move(readers), executor);
-    ASSERT_THROW(
-        { [[maybe_unused]] auto result = union_reader.VisitIsNotNull(); }, std::runtime_error);
+    ASSERT_THROW({ [[maybe_unused]] auto result = union_reader.VisitIsNotNull(); },
+                 std::runtime_error);
     ASSERT_EQ(deferred_reader->InvocationCount(), 0);
 
     executor->RunPendingTasks();
