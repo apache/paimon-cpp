@@ -290,8 +290,8 @@ TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
     EXPECT_FALSE(vector_context->GetFullTextSearch());
     EXPECT_TRUE(vector_context->HasVectorOrFullTextSearch());
 
-    std::shared_ptr<FullTextSearch> full_text_search = std::make_shared<FullTextSearch>(
-        "body", /*limit=*/5, "paimon", FullTextSearch::SearchType::MATCH_ANY, std::nullopt);
+    std::shared_ptr<FullTextSearch> full_text_search =
+        std::make_shared<FullTextSearch>("body", R"({"match":{"query":"paimon"}})", /*limit=*/5);
     ASSERT_EQ(&builder, &builder.SetFullTextSearch(full_text_search));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> full_text_context, builder.Finish());
     EXPECT_FALSE(full_text_context->GetVectorSearch());
@@ -307,8 +307,8 @@ TEST(ReadContextTest, TestRejectConflictingFileIndexSearch) {
     std::shared_ptr<VectorSearch> vector_search =
         std::make_shared<VectorSearch>("embedding", /*limit=*/3, std::vector<float>{1.0f}, nullptr,
                                        nullptr, std::nullopt, std::map<std::string, std::string>{});
-    std::shared_ptr<FullTextSearch> full_text_search = std::make_shared<FullTextSearch>(
-        "body", std::nullopt, "paimon", FullTextSearch::SearchType::MATCH_ANY, std::nullopt);
+    std::shared_ptr<FullTextSearch> full_text_search =
+        std::make_shared<FullTextSearch>("body", R"({"match":{"query":"paimon"}})", /*limit=*/5);
     ReadContextBuilder conflicting("table_root_path");
     conflicting.SetVectorSearch(vector_search).SetFullTextSearch(full_text_search);
     ASSERT_NOK_WITH_MSG(conflicting.Finish(), "cannot be configured together");

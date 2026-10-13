@@ -229,11 +229,10 @@ TEST(InternalReadContext, TestFileFullTextSearchScoreIsNotSupported) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
-    auto search = std::make_shared<FullTextSearch>(
-        "f0", /*limit=*/1, "query", FullTextSearch::SearchType::MATCH_ALL,
-        /*pre_filter=*/std::nullopt, /*with_score=*/true);
+    auto search =
+        std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"query"}})", /*limit=*/1);
     ReadContextBuilder builder(path);
-    builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
+    builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, table_schema->Options()),
                         "does not support score output");

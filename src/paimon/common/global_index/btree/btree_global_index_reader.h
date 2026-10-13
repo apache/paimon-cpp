@@ -79,7 +79,7 @@ class BTreeGlobalIndexReader : public GlobalIndexReader,
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override;
 
     bool IsThreadSafe() const override {

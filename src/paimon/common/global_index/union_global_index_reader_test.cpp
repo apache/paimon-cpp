@@ -351,14 +351,15 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitIsNullUnion) {
 TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchUnion) {
     auto reader1 = std::make_shared<MockGlobalIndexReader>();
     auto reader2 = std::make_shared<MockGlobalIndexReader>();
-    reader1->SetDefaultResult({1, 5});
-    reader2->SetDefaultResult({2, 6});
+    auto reader3 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({1, 5}, {0.9f, 0.5f});
+    reader3->SetScoredResult({2, 6}, {0.8f, 0.6f});
 
-    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
     UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(nullptr));
-    CheckResult(result, {1, 2, 5, 6});
+    CheckScoredResult(result, {1, 2, 5, 6}, {0.9f, 0.8f, 0.5f, 0.6f});
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchAllNullptr) {

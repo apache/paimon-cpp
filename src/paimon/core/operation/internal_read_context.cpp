@@ -212,10 +212,6 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
             return Status::Invalid(
                 "File Index read must be enabled for VectorSearch or FullTextSearch");
         }
-        if (context->GetFullTextSearch() && context->GetFullTextSearch()->with_score) {
-            return Status::NotImplemented(
-                "File full-text search does not support score output yet");
-        }
         if (!table_schema->PrimaryKeys().empty() && !core_options.DeletionVectorsEnabled()) {
             return Status::NotImplemented(
                 "VectorSearch or FullTextSearch on primary-key tables requires deletion vectors");
@@ -305,6 +301,10 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
         PAIMON_RETURN_NOT_OK(ArrowSchemaValidator::ValidateSchema(*read_schema));
     } else {
         PAIMON_RETURN_NOT_OK(ArrowSchemaValidator::ValidateSchemaWithFieldId(*read_schema));
+    }
+    if (context->GetFullTextSearch() &&
+        read_schema->GetFieldIndex(SpecialFields::IndexScore().Name()) >= 0) {
+        return Status::NotImplemented("File full-text search does not support score output yet");
     }
     // validate predicate
     if (context->GetPredicate()) {

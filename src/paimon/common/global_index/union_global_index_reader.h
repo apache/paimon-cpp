@@ -58,7 +58,7 @@ class UnionGlobalIndexReader : public GlobalIndexReader {
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override;
 
     bool IsThreadSafe() const override;
@@ -71,8 +71,14 @@ class UnionGlobalIndexReader : public GlobalIndexReader {
     using ReaderAction = std::function<Result<std::shared_ptr<GlobalIndexResult>>(
         const std::shared_ptr<GlobalIndexReader>&)>;
 
+    using ScoredReaderAction = std::function<Result<std::shared_ptr<ScoredGlobalIndexResult>>(
+        const std::shared_ptr<GlobalIndexReader>&)>;
+
     /// Executes the given action on all readers and merges results with Union.
     Result<std::shared_ptr<GlobalIndexResult>> Union(ReaderAction action);
+
+    /// Executes the given action on all readers and merges the scored results with Union.
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionScored(ScoredReaderAction action);
 
     /// Executes the given action on all readers (parallel or sequential) and collects results.
     template <typename R>

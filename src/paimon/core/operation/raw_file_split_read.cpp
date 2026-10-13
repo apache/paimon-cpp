@@ -316,13 +316,15 @@ Result<std::optional<RoaringBitmap32>> RawFileSplitRead::EvaluateFullTextSearchW
         RoaringBitmap64 eligible;
         eligible.AddRange(0, file->row_count);
         eligible -= RoaringBitmap64(*deletion);
-        if (full_text_search->pre_filter) {
-            eligible &= full_text_search->pre_filter.value();
+        if (full_text_search->include_row_ids) {
+            eligible &= full_text_search->include_row_ids.value();
         }
         if (eligible.IsEmpty()) {
             return std::optional<RoaringBitmap32>();
         }
-        search_with_dv = full_text_search->ReplacePreFilter(eligible);
+        search_with_dv =
+            std::make_shared<FullTextSearch>(full_text_search->field_name, full_text_search->query,
+                                             full_text_search->limit, std::move(eligible));
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> search_result,
                            FileIndexEvaluator::EvaluateFullTextSearch(

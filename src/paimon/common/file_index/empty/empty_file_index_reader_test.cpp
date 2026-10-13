@@ -66,8 +66,8 @@ TEST(EmptyFileIndexReaderTest, TestVectorSearchReturnsNoMatches) {
 
 TEST(EmptyFileIndexReaderTest, TestFullTextSearchReturnsNoMatches) {
     EmptyFileIndexReader reader;
-    auto search = std::make_shared<FullTextSearch>(
-        "body", /*limit=*/1, "word", FullTextSearch::SearchType::MATCH_ANY, std::nullopt);
+    auto search =
+        std::make_shared<FullTextSearch>("body", R"({"match":{"query":"word"}})", /*limit=*/1);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
                          reader.VisitFullTextSearch(search));
     ASSERT_OK_AND_ASSIGN(bool is_remain, result->IsRemain());

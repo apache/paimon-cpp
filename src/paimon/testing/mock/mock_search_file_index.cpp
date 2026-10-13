@@ -76,10 +76,10 @@ Result<std::shared_ptr<FileIndexResult>> MockSearchFileIndexReader::VisitFullTex
     }
     RoaringBitmap32 positions;
     for (const auto& [row_id, score] : rows_) {
-        if (search->limit && positions.Cardinality() >= search->limit.value()) {
+        if (positions.Cardinality() >= search->limit) {
             break;
         }
-        if (!search->pre_filter || search->pre_filter->Contains(row_id)) {
+        if (!search->include_row_ids || search->include_row_ids->Contains(row_id)) {
             positions.Add(row_id);
         }
     }

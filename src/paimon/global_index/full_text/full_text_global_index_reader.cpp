@@ -20,12 +20,10 @@
 #include "paimon/global_index/full_text/full_text_global_index_reader.h"
 
 #include <map>
-#include <optional>
 #include <utility>
 
 #include "fmt/format.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -72,28 +70,12 @@ Status TakeLastError(const std::string& action) {
 }
 
 /// Converts the engine output, ordered by descending score, into a result ordered by row id.
-std::shared_ptr<GlobalIndexResult> ToGlobalIndexResult(const std::vector<int64_t>& row_ids,
-                                                       const std::vector<float>& scores,
-                                                       bool with_score,
-                                                       const std::optional<float>& min_score) {
-    auto above_min_score = [&](size_t i) { return !min_score || scores[i] > min_score.value(); };
-    if (!with_score) {
-        RoaringBitmap64 bitmap;
-        for (size_t i = 0; i < row_ids.size(); ++i) {
-            if (above_min_score(i)) {
-                bitmap.Add(row_ids[i]);
-            }
-        }
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [bitmap = std::move(bitmap)]() -> Result<RoaringBitmap64> { return bitmap; });
-    }
-
+std::shared_ptr<ScoredGlobalIndexResult> ToScoredResult(const std::vector<int64_t>& row_ids,
+                                                        const std::vector<float>& scores) {
     // As in Java, a row id that was indexed more than once keeps the score of its last hit.
     std::map<int64_t, float> scores_by_row_id;
     for (size_t i = 0; i < row_ids.size(); ++i) {
-        if (above_min_score(i)) {
-            scores_by_row_id[row_ids[i]] = scores[i];
-        }
+        scores_by_row_id[row_ids[i]] = scores[i];
     }
     RoaringBitmap64 bitmap;
     std::vector<float> sorted_scores;
@@ -165,12 +147,12 @@ Result<PaimonFtindexReaderHandle*> FullTextGlobalIndexReader::GetOrOpenReader() 
     return reader_.get();
 }
 
-Result<std::shared_ptr<GlobalIndexResult>> FullTextGlobalIndexReader::VisitFullTextSearch(
+Result<std::shared_ptr<ScoredGlobalIndexResult>> FullTextGlobalIndexReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
     if (!full_text_search) {
         return Status::Invalid("VisitFullTextSearch: null FullTextSearch pointer");
     }
-    if (!full_text_search->limit || full_text_search->limit.value() <= 0) {
+    if (full_text_search->limit <= 0) {
         return Status::Invalid("full-text index search requires a positive limit");
     }
     const std::string& query = full_text_search->query;
@@ -179,20 +161,19 @@ Result<std::shared_ptr<GlobalIndexResult>> FullTextGlobalIndexReader::VisitFullT
     }
 
     PAIMON_UNIQUE_PTR<Bytes> filter_bytes;
-    if (full_text_search->pre_filter) {
-        const RoaringBitmap64& pre_filter = full_text_search->pre_filter.value();
-        if (pre_filter.IsEmpty()) {
-            return ToGlobalIndexResult({}, {}, full_text_search->with_score,
-                                       full_text_search->min_score);
+    if (full_text_search->include_row_ids) {
+        const RoaringBitmap64& include_row_ids = full_text_search->include_row_ids.value();
+        if (include_row_ids.IsEmpty()) {
+            return ToScoredResult({}, {});
         }
         // Serialize() optimizes the bitmap in place and the same search may be visited by
         // concurrent readers, so serialize a copy.
-        RoaringBitmap64 filter = pre_filter;
+        RoaringBitmap64 filter = include_row_ids;
         filter_bytes = filter.Serialize(pool_.get());
     }
 
     PAIMON_ASSIGN_OR_RAISE(PaimonFtindexReaderHandle * reader, GetOrOpenReader());
-    auto limit = static_cast<size_t>(full_text_search->limit.value());
+    auto limit = static_cast<size_t>(full_text_search->limit);
     std::vector<int64_t> row_ids(limit);
     std::vector<float> scores(limit);
     size_t result_len = 0;
@@ -211,8 +192,7 @@ Result<std::shared_ptr<GlobalIndexResult>> FullTextGlobalIndexReader::VisitFullT
     }
     row_ids.resize(result_len);
     scores.resize(result_len);
-    return ToGlobalIndexResult(row_ids, scores, full_text_search->with_score,
-                               full_text_search->min_score);
+    return ToScoredResult(row_ids, scores);
 }
 
 }  // namespace paimon::full_text

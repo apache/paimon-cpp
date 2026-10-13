@@ -562,8 +562,8 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchFiltersDeletionVectorBeforeLimit)
     RoaringBitmap64 user_filter;
     user_filter.Add(0);
     user_filter.Add(2);
-    auto search = std::make_shared<FullTextSearch>(
-        "f3", /*limit=*/1, "match", FullTextSearch::SearchType::MATCH_ALL, user_filter);
+    auto search = std::make_shared<FullTextSearch>("f3", R"({"match":{"query":"match"}})",
+                                                   /*limit=*/1, user_filter);
     ReadContextBuilder builder(path);
     builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
@@ -674,8 +674,8 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> current_schema,
                          TableSchema::Create(1, DataField::ConvertDataFieldsToArrowSchema(fields),
                                              original_schema->PartitionKeys(), {}, options));
-    auto search = std::make_shared<FullTextSearch>(
-        "renamed_f3", 2, "match", FullTextSearch::SearchType::MATCH_ALL, std::nullopt);
+    auto search =
+        std::make_shared<FullTextSearch>("renamed_f3", R"({"match":{"query":"match"}})", 2);
     ReadContextBuilder builder(path);
     builder.SetOptions(options).SetReadFieldNames({"f0"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
@@ -697,7 +697,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
             << actual->ToString();
     }
     ASSERT_EQ("renamed_f3", search->field_name);
-    ASSERT_FALSE(search->pre_filter);
+    ASSERT_FALSE(search->include_row_ids);
     ASSERT_EQ("current-options",
               current_schema->Options().at("file-index.raw-options-full-text.renamed_f3.token"));
 

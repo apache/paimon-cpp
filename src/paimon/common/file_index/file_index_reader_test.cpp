@@ -71,8 +71,8 @@ TEST(FileIndexReaderTest, TestDefaultIndexReader) {
         std::make_shared<VectorSearch>("embedding", 1, std::vector<float>{1.0f}, nullptr, nullptr,
                                        std::nullopt, std::map<std::string, std::string>{});
     ASSERT_NOK_WITH_MSG(reader.VisitVectorSearch(vector_search), "does not support vector search");
-    std::shared_ptr<FullTextSearch> full_text_search = std::make_shared<FullTextSearch>(
-        "body", std::nullopt, "word", FullTextSearch::SearchType::MATCH_ANY, std::nullopt);
+    std::shared_ptr<FullTextSearch> full_text_search =
+        std::make_shared<FullTextSearch>("body", R"({"match":{"query":"word"}})", /*limit=*/1);
     ASSERT_NOK_WITH_MSG(reader.VisitFullTextSearch(full_text_search),
                         "does not support full text search");
 }
