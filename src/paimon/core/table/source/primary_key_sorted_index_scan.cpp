@@ -285,7 +285,7 @@ class FileLocalGroupReader : public GlobalIndexReader {
         return Status::Invalid("Primary-key sorted index does not support vector search.");
     }
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override {
         return Status::Invalid("Primary-key sorted index does not support full text search.");
     }

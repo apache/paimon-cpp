@@ -133,8 +133,8 @@ TEST(TableReadTest, TestCreateKeyValueTableRead) {
 TEST(TableReadTest, TestCreateCountReaderRejectsFileIndexSearch) {
     {
         std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-        auto search = std::make_shared<FullTextSearch>(
-            "f0", /*limit=*/1, "Alice", FullTextSearch::SearchType::MATCH_ALL, std::nullopt);
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"Alice"}})", /*limit=*/1);
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());

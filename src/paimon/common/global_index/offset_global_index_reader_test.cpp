@@ -216,44 +216,44 @@ TEST_F(OffsetGlobalIndexReaderTest, TestGetIndexTypeDelegated) {
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
-    fake_reader->SetDefaultResult({0, 3, 5});
+    fake_reader->SetScoredResult({0, 3, 5}, {0.5f, 0.9f, 0.1f});
 
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
 
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(nullptr));
     // row ids {0, 3, 5} + offset 10 -> {10, 13, 15}
-    CheckResult(result, {10, 13, 15});
+    CheckScoredResult(result, {10, 13, 15}, {0.5f, 0.9f, 0.1f});
 }
 
-TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchPreservesScoreFlags) {
-    // Regression (review finding #2): rewriting the pre_filter global->local ids
-    // in the offset reader must NOT drop with_score / min_score. Before the fix,
-    // FullTextSearch::ReplacePreFilter rebuilt via the 5-arg ctor and silently
-    // reset both back to their defaults, turning a scored / min_score query
-    // unscored as soon as it crossed any offset shard.
+TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchConvertsIncludeRowIds) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
-    fake_reader->SetDefaultResult({0, 3, 5});
     auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
-
-    // pre_filter must be set so the offset reader takes the rewrite path.
-    auto fts = std::make_shared<FullTextSearch>(
-        "f0", /*limit=*/7, "q", FullTextSearch::SearchType::MATCH_ALL,
-        /*pre_filter=*/RoaringBitmap64::From({10l, 13l, 15l}));
-    fts->with_score = true;
-    fts->min_score = 1.5f;
-
-    ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(fts));
-    CheckResult(result, {10, 13, 15});
-
-    auto captured_fts = fake_reader->CapturedFullTextSearch();
-    ASSERT_TRUE(captured_fts);
-    ASSERT_TRUE(captured_fts->with_score) << "with_score must survive the pre_filter rewrite";
-    ASSERT_TRUE(captured_fts->min_score.has_value())
-        << "min_score must survive the pre_filter rewrite";
-    ASSERT_FLOAT_EQ(captured_fts->min_score.value(), 1.5f);
-    // limit and the offset-rewritten local pre_filter should still be present.
-    ASSERT_EQ(captured_fts->limit, std::optional<int32_t>(7));
-    ASSERT_TRUE(captured_fts->pre_filter.has_value());
+    {
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7,
+                                             RoaringBitmap64::From({5l, 10l, 13l, 15l}));
+        ASSERT_OK(offset_reader->VisitFullTextSearch(search));
+        auto captured = fake_reader->CapturedFullTextSearch();
+        ASSERT_TRUE(captured);
+        ASSERT_EQ(captured->field_name, "f0");
+        ASSERT_EQ(captured->query, R"({"match":{"query":"paimon"}})");
+        ASSERT_EQ(captured->limit, 7);
+        ASSERT_EQ(captured->include_row_ids, RoaringBitmap64::From({0l, 3l, 5l}));
+        ASSERT_EQ(search->include_row_ids, RoaringBitmap64::From({5l, 10l, 13l, 15l}));
+    }
+    {
+        auto search = std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})",
+                                                       /*limit=*/7, RoaringBitmap64::From({5l}));
+        ASSERT_OK(offset_reader->VisitFullTextSearch(search));
+        ASSERT_TRUE(fake_reader->CapturedFullTextSearch()->include_row_ids);
+        ASSERT_TRUE(fake_reader->CapturedFullTextSearch()->include_row_ids->IsEmpty());
+    }
+    {
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7);
+        ASSERT_OK(offset_reader->VisitFullTextSearch(search));
+        ASSERT_EQ(fake_reader->CapturedFullTextSearch(), search);
+    }
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitVectorSearchWithOffset) {

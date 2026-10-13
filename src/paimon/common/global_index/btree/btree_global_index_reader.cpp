@@ -272,7 +272,7 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> BTreeGlobalIndexReader::VisitVe
     return Status::Invalid("Vector search not supported in BTree index");
 }
 
-Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitFullTextSearch(
+Result<std::shared_ptr<ScoredGlobalIndexResult>> BTreeGlobalIndexReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
     return Status::Invalid("Full text search not supported in BTree index");
 }

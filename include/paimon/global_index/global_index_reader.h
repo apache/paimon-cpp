@@ -45,8 +45,12 @@ class PAIMON_EXPORT GlobalIndexReader : public FunctionVisitor<std::shared_ptr<G
     virtual Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) = 0;
 
-    /// VisitFullTextSearch performs full text search.
-    virtual Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    /// VisitFullTextSearch performs full text search and returns row ids with relevance scores.
+    /// Each index shard returns at most `full_text_search->limit` rows. Union readers currently
+    /// retain all shard candidates and can return more than that limit.
+    /// @warning `VisitFullTextSearch` may return error status when it is incorrectly invoked (e.g.,
+    /// BTreeGlobalIndexReader call `VisitFullTextSearch`) or the query is invalid.
+    virtual Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) = 0;
 
     /// @return true if the reader is thread-safe; false otherwise.

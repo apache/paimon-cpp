@@ -479,9 +479,8 @@ class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
     }
 
     std::shared_ptr<FullTextSearch> MakeFullTextSearch(const std::string& field) const {
-        return std::make_shared<FullTextSearch>(field, /*limit=*/2, "paimon",
-                                                FullTextSearch::SearchType::MATCH_ALL,
-                                                /*pre_filter=*/std::nullopt);
+        return std::make_shared<FullTextSearch>(field, R"({"match":{"query":"paimon"}})",
+                                                /*limit=*/2);
     }
 
     void CheckSearchError(SearchIndexType index_type, const std::shared_ptr<DataFileMeta>& meta,

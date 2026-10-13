@@ -66,7 +66,7 @@ class MockGlobalIndexReader : public GlobalIndexReader {
         exception_message_ = message;
     }
 
-    /// Sets a scored result returned by VisitVectorSearch.
+    /// Sets a scored result returned by VisitVectorSearch and VisitFullTextSearch.
     void SetScoredResult(const std::vector<int64_t>& row_ids, const std::vector<float>& scores) {
         scored_row_ids_ = row_ids;
         scored_scores_ = scores;
@@ -144,6 +144,35 @@ class MockGlobalIndexReader : public GlobalIndexReader {
 
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override {
+        return MakeScoredResult();
+    }
+
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
+        const std::shared_ptr<FullTextSearch>& full_text_search) override {
+        {
+            std::lock_guard<std::mutex> lock(captured_search_mutex_);
+            captured_full_text_search_ = full_text_search;
+        }
+        return MakeScoredResult();
+    }
+
+    // Captures the (possibly include_row_ids-rewritten) FullTextSearch the offset
+    // reader forwarded, so tests can assert field propagation.
+    std::shared_ptr<FullTextSearch> CapturedFullTextSearch() const {
+        std::lock_guard<std::mutex> lock(captured_search_mutex_);
+        return captured_full_text_search_;
+    }
+
+    bool IsThreadSafe() const override {
+        return thread_safe_;
+    }
+
+    std::string GetIndexType() const override {
+        return "fake";
+    }
+
+ private:
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> MakeScoredResult() {
         invocation_count_++;
         if (!supports_search_) {
             return Status::Invalid("not supported");
@@ -160,34 +189,6 @@ class MockGlobalIndexReader : public GlobalIndexReader {
                                                                std::move(scores));
     }
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
-        const std::shared_ptr<FullTextSearch>& full_text_search) override {
-        if (!supports_search_) {
-            return Status::Invalid("not supported");
-        }
-        {
-            std::lock_guard<std::mutex> lock(captured_search_mutex_);
-            captured_full_text_search_ = full_text_search;
-        }
-        return MakeResult();
-    }
-
-    // Captures the (possibly pre_filter-rewritten) FullTextSearch the offset
-    // reader forwarded, so tests can assert field propagation.
-    std::shared_ptr<FullTextSearch> CapturedFullTextSearch() const {
-        std::lock_guard<std::mutex> lock(captured_search_mutex_);
-        return captured_full_text_search_;
-    }
-
-    bool IsThreadSafe() const override {
-        return thread_safe_;
-    }
-
-    std::string GetIndexType() const override {
-        return "fake";
-    }
-
- private:
     Result<std::shared_ptr<GlobalIndexResult>> MakeResult() {
         invocation_count_++;
         if (throw_exception_) {
