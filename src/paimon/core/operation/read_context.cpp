@@ -453,7 +453,8 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
 
     const std::string read_via_option =
         std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
-    if (impl_->identifier_ && IsRestMetastore(impl_->catalog_->GetOptions()) &&
+    if (impl_->catalog_ != nullptr && impl_->identifier_ &&
+        IsRestMetastore(impl_->catalog_->GetOptions()) &&
         impl_->options_.count(read_via_option) == 0) {
         impl_->options_[read_via_option] =
             UrlUtils::EncodeString(IdentifierToFlatJson(impl_->identifier_.value()));
