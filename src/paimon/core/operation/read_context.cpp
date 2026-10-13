@@ -454,10 +454,19 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     const std::string read_via_option =
         std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
     if (impl_->catalog_ != nullptr && impl_->identifier_ &&
-        IsRestMetastore(impl_->catalog_->GetOptions()) &&
-        impl_->options_.count(read_via_option) == 0) {
-        impl_->options_[read_via_option] =
-            UrlUtils::EncodeString(IdentifierToFlatJson(impl_->identifier_.value()));
+        IsRestMetastore(impl_->catalog_->GetOptions())) {
+        // A blob-view dependency read (BlobViewLookup) rebuilds its own catalog from a
+        // CatalogContext whose options come from these read options, so they carry none of the
+        // catalog-level connection settings. Hand over the ones RestApi::Create needs to come back
+        // as the same REST catalog - metastore, uri and the auth options - instead of letting it
+        // silently degrade to a filesystem catalog; a key the caller already set wins.
+        for (const auto& [key, value] : impl_->catalog_->GetOptions()) {
+            impl_->options_.emplace(key, value);
+        }
+        // Reports the outermost starting table; an existing value, set by an outer read, is kept.
+        impl_->options_.emplace(
+            read_via_option,
+            UrlUtils::EncodeString(IdentifierToFlatJson(impl_->identifier_.value())));
     }
     auto ctx = std::make_unique<ReadContext>(
         impl_->path_, branch, impl_->read_field_names_, impl_->read_field_ids_, impl_->predicate_,

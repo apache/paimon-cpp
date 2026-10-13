@@ -96,9 +96,11 @@ TEST(ReadContextTest, TestReadViaHeaderReportsTheStartingTable) {
         const std::map<std::string, std::string>& options = ctx->GetOptions();
         ASSERT_EQ(options.count("header.X-Paimon-Read-Via"), 1u) << metastore;
         ASSERT_EQ(options.at("header.X-Paimon-Read-Via"), expected) << metastore;
-        // The metastore is a catalog-level option, not a read option, so the injected header is
-        // the only entry the read options gain.
-        ASSERT_EQ(options.size(), 1u) << metastore;
+        // The catalog-level connection options are handed to the read options so the blob-view
+        // dependency catalog can be rebuilt as the same REST catalog; here that is the metastore.
+        ASSERT_EQ(options.count(CatalogOptions::METASTORE), 1u) << metastore;
+        ASSERT_EQ(options.at(CatalogOptions::METASTORE), metastore) << metastore;
+        ASSERT_EQ(options.size(), 2u) << metastore;
     }
 }
 
