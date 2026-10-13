@@ -251,6 +251,11 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     const std::map<std::string, std::string>& GetOptions() const override {
         return options_;
     }
+
+    /// Sets the catalog-level options `GetOptions()` reports, e.g. `metastore`.
+    void SetOptions(const std::map<std::string, std::string>& options) {
+        options_ = options;
+    }
     Result<std::vector<SnapshotInfo>> ListSnapshots(const Identifier&,
                                                     const std::string&) const override {
         return Unsupported();

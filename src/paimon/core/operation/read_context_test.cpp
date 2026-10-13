@@ -87,18 +87,18 @@ TEST(ReadContextTest, TestReadViaHeaderReportsTheStartingTable) {
     for (const std::string metastore : {"rest"}) {
         auto catalog = std::make_shared<MockVersionManagedCatalog>();
         catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+        catalog->SetOptions({{CatalogOptions::METASTORE, metastore}});
 
         ReadContextBuilder builder("table_root_path");
-        builder.AddOption(CatalogOptions::METASTORE, metastore);
         ASSERT_OK_AND_ASSIGN(auto ctx,
                              builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
 
         const std::map<std::string, std::string>& options = ctx->GetOptions();
         ASSERT_EQ(options.count("header.X-Paimon-Read-Via"), 1u) << metastore;
         ASSERT_EQ(options.at("header.X-Paimon-Read-Via"), expected) << metastore;
-        // The metastore is the only other option, so the header is added rather than anything
-        // rewritten around it.
-        ASSERT_EQ(options.size(), 2u) << metastore;
+        // The metastore is a catalog-level option, not a read option, so the injected header is
+        // the only entry the read options gain.
+        ASSERT_EQ(options.size(), 1u) << metastore;
     }
 }
 
@@ -108,9 +108,9 @@ TEST(ReadContextTest, TestReadViaHeaderKeepsTheOutermostView) {
     // `CatalogEnvironment.dependencyReadContext()`.
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    catalog->SetOptions({{CatalogOptions::METASTORE, "rest"}});
 
     ReadContextBuilder builder("table_root_path");
-    builder.AddOption(CatalogOptions::METASTORE, "rest");
     builder.AddOption("header.X-Paimon-Read-Via", "outer-view");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
     ASSERT_EQ(ctx->GetOptions().at("header.X-Paimon-Read-Via"), "outer-view");
@@ -123,9 +123,9 @@ TEST(ReadContextTest, TestReadViaHeaderNeedsARestCatalogAndATable) {
     for (const std::string metastore : {"filesystem", "hive", "alake"}) {
         auto catalog = std::make_shared<MockVersionManagedCatalog>();
         catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+        catalog->SetOptions({{CatalogOptions::METASTORE, metastore}});
 
         ReadContextBuilder builder("table_root_path");
-        builder.AddOption(CatalogOptions::METASTORE, metastore);
         ASSERT_OK_AND_ASSIGN(auto ctx,
                              builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
         ASSERT_EQ(ctx->GetOptions().count("header.X-Paimon-Read-Via"), 0u) << metastore;
@@ -154,9 +154,9 @@ TEST(ReadContextTest, TestReadViaHeaderReportsTheBranchOfTheStartingTable) {
     // naming the data table. The metastore is matched in upper case here as well.
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    catalog->SetOptions({{CatalogOptions::METASTORE, "REST"}});
 
     ReadContextBuilder builder("table_root_path");
-    builder.AddOption(CatalogOptions::METASTORE, "REST");
     ASSERT_OK_AND_ASSIGN(auto ctx,
                          builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).Finish());
     ASSERT_EQ(ctx->GetOptions().at("header.X-Paimon-Read-Via"),

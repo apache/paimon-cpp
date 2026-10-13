@@ -46,20 +46,14 @@ class Predicate;
 
 namespace {
 
-/// The catalog option that carries the `X-Paimon-Read-Via` request header: the header name
-/// spelled with the prefix a REST catalog strips when it turns an option into a header. Composed
-/// from the `RestApi` constants the way the Java `CatalogEnvironment.READ_VIA_OPTION` is built from
-/// `RESTApi.HEADER_PREFIX` and `RESTApi.READ_VIA_HEADER`.
-const std::string kReadViaOption =
-    std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
-
-/// True when the options select a catalog that speaks the REST protocol, the only kind turning a
-/// `header.`-prefixed option into a request header. These same options decide which catalog a
-/// dependency table is read through, so when they select none there is nobody to send the header
-/// to. The Java counterpart answers this from the catalog loader it was built with.
-bool IsRestMetastore(const std::map<std::string, std::string>& options) {
-    auto metastore = options.find(CatalogOptions::METASTORE);
-    if (metastore == options.end()) {
+/// True when the catalog-level options - the ones the catalog was created with, not the read's own
+/// table options - select the REST protocol, the only kind turning a `header.`-prefixed option into
+/// a request header. `Catalog::Create` dispatches on this same `metastore` key, so a catalog that
+/// speaks REST is exactly one whose `GetOptions()` names it. The Java counterpart answers this from
+/// the catalog loader / `catalogContext.options()` it was built with.
+bool IsRestMetastore(const std::map<std::string, std::string>& catalog_options) {
+    auto metastore = catalog_options.find(CatalogOptions::METASTORE);
+    if (metastore == catalog_options.end()) {
         return false;
     }
     // Matched leniently in lower case, the way `Catalog::Create` matches it.
@@ -456,17 +450,12 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->enable_multi_thread_row_to_batch_ && impl_->row_to_batch_thread_number_ <= 0) {
         return Status::Invalid("row to batch thread number should be greater than 0");
     }
-    // A read that goes through a catalog says which table it started from, which is what lets the
-    // metastore authorize a dependency table - the blob table behind a BlobView - through the owner
-    // of that table. Mirrors the Java `CatalogEnvironment.dependencyReadContext()` and both of its
-    // guards: only a REST metastore understands the header, and a value already there wins, so a
-    // chain of views reports its outermost one instead of the innermost. It travels in the options,
-    // which `TableRead::Create` merges into the table options and the blob view read then hands to
-    // the catalog it reads the dependency table through, so it reaches that request with no second
-    // channel to keep in step.
-    if (impl_->identifier_ && IsRestMetastore(impl_->options_) &&
-        impl_->options_.count(kReadViaOption) == 0) {
-        impl_->options_[kReadViaOption] =
+
+    const std::string read_via_option =
+        std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
+    if (impl_->identifier_ && IsRestMetastore(impl_->catalog_->GetOptions()) &&
+        impl_->options_.count(read_via_option) == 0) {
+        impl_->options_[read_via_option] =
             UrlUtils::EncodeString(IdentifierToFlatJson(impl_->identifier_.value()));
     }
     auto ctx = std::make_unique<ReadContext>(
