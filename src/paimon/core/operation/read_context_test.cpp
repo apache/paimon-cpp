@@ -313,6 +313,31 @@ TEST(ReadContextTest, TestBranch) {
     ASSERT_NOK_WITH_MSG(escaping_builder.Finish(), "branch name cannot contain path separators");
 }
 
+TEST(ReadContextTest, TestBranchAgreesWithIdentifier) {
+    // A read through a catalog names its table with an Identifier that can itself carry a branch,
+    // so that branch and the one WithBranch() names must agree, exactly as the write and commit
+    // builders already require: one read cannot be aimed at two branches at once.
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+
+    // The identifier's branch is honored when WithBranch() stays silent.
+    ReadContextBuilder identifier_builder("table_root_path");
+    identifier_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev"));
+    ASSERT_OK_AND_ASSIGN(auto identifier_ctx, identifier_builder.Finish());
+    ASSERT_EQ("dev", identifier_ctx->GetBranch());
+
+    // An agreeing WithBranch() is accepted.
+    ReadContextBuilder agreeing_builder("table_root_path");
+    agreeing_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).WithBranch("dev");
+    ASSERT_OK_AND_ASSIGN(auto agreeing_ctx, agreeing_builder.Finish());
+    ASSERT_EQ("dev", agreeing_ctx->GetBranch());
+
+    // A disagreeing WithBranch() is refused, and both branches are named.
+    ReadContextBuilder mixed_builder("table_root_path");
+    mixed_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).WithBranch("rt");
+    ASSERT_NOK_WITH_MSG(mixed_builder.Finish(), "but both 'dev' and 'rt' were named");
+}
+
 TEST(ReadContextTest, TestFileSystemAndSchemeMapConflict) {
     ReadContextBuilder builder("table_root_path");
     auto fs = std::make_shared<MockFileSystem>();

@@ -70,6 +70,10 @@ std::string IdentifierToFlatJson(const Identifier& identifier) {
     auto& allocator = document.GetAllocator();
     document.AddMember(rapidjson::StringRef("database"),
                        rapidjson::Value(identifier.GetDatabaseName(), allocator), allocator);
+    // C++ `GetTableName()` returns the stored object name - branch and system-table suffix
+    // included - which is the Java `getObjectName()` this field mirrors, not Java's stripped
+    // `getTableName()` (that one is `GetDataTableName()` here). So a branch read reports the
+    // branch.
     document.AddMember(rapidjson::StringRef("object"),
                        rapidjson::Value(identifier.GetTableName(), allocator), allocator);
     // Compact, not the pretty form `RapidJsonUtil::ToJson` writes: the value goes into a header.
@@ -423,9 +427,9 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::string branch,
-                           BranchManager::ResolveBranch(/*identifier=*/std::nullopt,
-                                                        impl_->options_, impl_->branch_, "read"));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::string branch,
+        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "read"));
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0");
     }
