@@ -51,7 +51,8 @@ TEST(TableTest, TestCreateWithUnknownDatabase) {
                          schema_manager.CreateTable(schema, partition_keys, primary_keys, options));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
-                         Table::Create(dir->GetFileSystem(), dir->Str(), Identifier("tbl1")));
+                         Table::Create(dir->GetFileSystem(), dir->Str(),
+                                       Identifier(Identifier::kUnknownDatabase, "tbl1")));
 
     EXPECT_EQ(table->Name(), "tbl1");
     EXPECT_EQ(table->FullName(), "tbl1");
@@ -118,8 +119,8 @@ TEST(TableTest, TestCreateFailedWithNonExistSchema) {
     ASSERT_OK(fs->Delete(schema_path, /*recursive=*/false));
     // check create table failed
     ASSERT_NOK_WITH_MSG(
-        Table::Create(fs, dir->Str(), Identifier("tbl1")),
-        "load table schema for Identifier{database='unknown', table='tbl1'} failed");
+        Table::Create(fs, dir->Str(), Identifier(Identifier::kUnknownDatabase, "tbl1")),
+        "load table schema for Identifier{database='unknown', object='tbl1'} failed");
 }
 
 }  // namespace paimon::test

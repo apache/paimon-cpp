@@ -52,7 +52,8 @@ Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& 
         CatalogUtils::CheckManagedTableType(identifier, *latest_schema, "Table::Create"));
 
     auto schema = checked_pointer_cast<Schema>(*latest_schema);
-    return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetTableName());
+    return std::make_shared<Table>(schema, identifier.GetDatabaseName(),
+                                   identifier.GetObjectName());
 }
 
 std::string Table::FullName() const {

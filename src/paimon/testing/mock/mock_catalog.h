@@ -96,7 +96,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override {
         ++get_table_calls_;
         return std::make_shared<Table>(table_schema_, identifier.GetDatabaseName(),
-                                       identifier.GetTableName(), table_uuid_);
+                                       identifier.GetObjectName(), table_uuid_);
     }
 
     void SetTableSchema(const std::shared_ptr<Schema>& table_schema) {

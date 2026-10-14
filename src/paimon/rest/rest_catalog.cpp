@@ -230,7 +230,7 @@ Status RestCatalog::CreateTable(const Identifier& identifier, ArrowSchema* c_sch
 
 Result<bool> RestCatalog::TableExists(const Identifier& identifier) const {
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
-        return GlobalSystemTableLoader::IsSupported(identifier.GetTableName(),
+        return GlobalSystemTableLoader::IsSupported(identifier.GetObjectName(),
                                                     api_->GetMergedOptions());
     }
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
@@ -375,7 +375,7 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
     // FileSystemCatalog.
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
         PAIMON_ASSIGN_OR_RAISE(bool supported,
-                               GlobalSystemTableLoader::IsSupported(identifier.GetTableName(),
+                               GlobalSystemTableLoader::IsSupported(identifier.GetObjectName(),
                                                                     api_->GetMergedOptions()));
         if (!supported) {
             return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
@@ -386,7 +386,7 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         context.warehouse = warehouse_;
         context.catalog_options = api_->GetMergedOptions();
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               GlobalSystemTableLoader::Load(identifier.GetTableName(), context));
+                               GlobalSystemTableLoader::Load(identifier.GetObjectName(), context));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema,
                                system_table->ArrowSchema());
         return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
@@ -448,7 +448,7 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, LoadTableSchema(identifier, &uuid));
     PAIMON_RETURN_NOT_OK(
         CatalogUtils::CheckManagedTableType(identifier, schema, "Catalog::GetTable"));
-    return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetTableName(),
+    return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetObjectName(),
                                    uuid);
 }
 
@@ -494,7 +494,7 @@ Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& i
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "listSnapshots"));
     // `CheckNotBranch` and `CheckNotSystemTable` above leave the table name bare, so the branch
     // this is asked for is the only one the object name can carry.
-    Identifier load_identifier(identifier.GetDatabaseName(), identifier.GetTableName(), branch);
+    Identifier load_identifier(identifier.GetDatabaseName(), identifier.GetObjectName(), branch);
     // The Catalog interface has no pagination, so all pages are fetched; the server
     // does not order snapshots across pages while the contract requires ascending ids.
     PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> snapshots, api_->ListSnapshots(load_identifier));
@@ -512,7 +512,7 @@ Result<std::optional<SnapshotInfo>> RestCatalog::GetLatestSnapshot(
     const Identifier& identifier, const std::string& branch) const {
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotBranch(identifier, "getLatestSnapshot"));
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "getLatestSnapshot"));
-    Identifier load_identifier(identifier.GetDatabaseName(), identifier.GetTableName(), branch);
+    Identifier load_identifier(identifier.GetDatabaseName(), identifier.GetObjectName(), branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, api_->LoadSnapshot(load_identifier));
     if (!snapshot) {
         return std::optional<SnapshotInfo>();

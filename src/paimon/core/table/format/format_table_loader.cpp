@@ -78,7 +78,8 @@ Result<std::shared_ptr<FormatTable>> FormatTableLoader::TryLoad(
     }
     // A context names a path, never a catalog identifier, so the table is known by the directory
     // it sits in.
-    return FormatTable::Create(file_system, table_path, Identifier(PathUtil::GetName(table_path)),
+    Identifier identifier(Identifier::kUnknownDatabase, PathUtil::GetName(table_path));
+    return FormatTable::Create(file_system, table_path, identifier,
                                checked_pointer_cast<DataSchema>(table_schema),
                                /*location_carries_paimon_metadata=*/true, options);
 }

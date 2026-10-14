@@ -103,7 +103,7 @@ Result<bool> FileSystemCatalog::DatabaseExists(const std::string& db_name) const
 Result<bool> FileSystemCatalog::TableExists(const Identifier& identifier) const {
     // Handle sys database global tables
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
-        return GlobalSystemTableLoader::IsSupported(identifier.GetTableName(), catalog_options_);
+        return GlobalSystemTableLoader::IsSupported(identifier.GetObjectName(), catalog_options_);
     }
     // The branch component is dropped when the data table identifier is rebuilt below, so the
     // identifier is validated as a whole here.
@@ -154,7 +154,7 @@ Status FileSystemCatalog::CreateTable(const Identifier& identifier, ArrowSchema*
             return Status::OK();
         } else {
             return Status::Invalid(
-                fmt::format("table {} already exist", identifier.GetTableName()));
+                fmt::format("table {} already exist", identifier.GetObjectName()));
         }
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
@@ -276,7 +276,7 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
     // Handle sys database global tables
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
         PAIMON_ASSIGN_OR_RAISE(bool supported, GlobalSystemTableLoader::IsSupported(
-                                                   identifier.GetTableName(), catalog_options_));
+                                                   identifier.GetObjectName(), catalog_options_));
         if (!supported) {
             return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
         }
@@ -286,7 +286,7 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
         context.warehouse = warehouse_;
         context.catalog_options = catalog_options_;
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               GlobalSystemTableLoader::Load(identifier.GetTableName(), context));
+                               GlobalSystemTableLoader::Load(identifier.GetObjectName(), context));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema,
                                system_table->ArrowSchema());
         return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
@@ -334,7 +334,7 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
     if (is_system_table) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, LoadTableSchema(identifier));
         return std::make_shared<Table>(schema, identifier.GetDatabaseName(),
-                                       identifier.GetTableName());
+                                       identifier.GetObjectName());
     }
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(identifier));
     // `Table::Create` reads the same schema file and rejects a format table there.

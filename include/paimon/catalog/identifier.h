@@ -27,7 +27,8 @@
 
 namespace paimon {
 
-/// An identifier for a table containing database and table name.
+/// An identifier for a catalog object: a database name plus an object name, which may carry a
+/// branch or system-table suffix.
 class PAIMON_EXPORT Identifier {
  public:
     static const char kUnknownDatabase[];
@@ -35,8 +36,7 @@ class PAIMON_EXPORT Identifier {
     static const char kSystemBranchPrefix[];
     static const char kDefaultMainBranch[];
 
-    explicit Identifier(const std::string& table);
-    Identifier(const std::string& database, const std::string& table);
+    Identifier(const std::string& database, const std::string& object);
     /// Names `branch` of `table`: every branch but the main one is addressed by the object name
     /// this builds, which joins them as `tbl$branch_dev`.
     ///
@@ -53,7 +53,9 @@ class PAIMON_EXPORT Identifier {
 
     bool operator==(const Identifier& other) const;
     const std::string& GetDatabaseName() const;
-    const std::string& GetTableName() const;
+    /// The full object name, which keeps any branch and system-table suffix, like
+    /// `tbl$branch_dev`. Mirrors the Java `Identifier#getObjectName`.
+    const std::string& GetObjectName() const;
     Result<std::string> GetDataTableName() const;
     Result<std::optional<std::string>> GetBranchName() const;
     Result<std::string> GetBranchNameOrDefault() const;
@@ -67,10 +69,10 @@ class PAIMON_EXPORT Identifier {
     static Result<Identifier> FromString(const std::string& full_name);
 
  private:
-    Status SplitTableName() const;
+    Status SplitObjectName() const;
 
     const std::string database_;
-    const std::string table_;
+    const std::string object_;
     mutable bool parsed_ = false;
     mutable std::string data_table_;
     mutable std::optional<std::string> branch_;
