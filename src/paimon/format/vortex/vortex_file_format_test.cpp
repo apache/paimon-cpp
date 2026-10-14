@@ -19,10 +19,15 @@
 
 // Round-trip unit tests for the Vortex file format: write, then read back via vortex-ffi.
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -34,6 +39,7 @@
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/format/column_stats.h"
@@ -202,6 +208,82 @@ class RecordingInputStream : public InputStream {
 
 // The stream must stay open while a read callback still owns the context, and close exactly once
 // when the last owner releases it.
+namespace {
+
+// Blocks inside Write() until the test releases it, so a callback can be held in flight.
+class BlockingOutputStream : public OutputStream {
+ public:
+    Status Close() override {
+        return Status::OK();
+    }
+    Result<int64_t> Write(const char* buffer, int64_t size) override {
+        ++writes_;
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this] { return released_; });
+        return size;
+    }
+    Status Flush() override {
+        return Status::OK();
+    }
+    Result<int64_t> GetPos() const override {
+        return 0;
+    }
+    Result<std::string> GetUri() const override {
+        return std::string("blocking://test");
+    }
+
+    void Release() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            released_ = true;
+        }
+        cv_.notify_all();
+    }
+    int32_t writes() const {
+        return writes_.load();
+    }
+
+ private:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool released_ = false;
+    std::atomic<int32_t> writes_{0};
+};
+
+}  // namespace
+
+// An aborting writer must not close the stream under a running write callback, and a callback
+// arriving after the abort must not reach the stream at all.
+TEST(VortexOutputContextTest, AbortWaitsForTheInFlightWriteCallback) {
+    auto stream = std::make_shared<BlockingOutputStream>();
+    auto context = std::make_shared<VortexOutputContext>(stream);
+    auto holder = std::make_unique<std::shared_ptr<VortexOutputContext>>(context);
+    const std::string payload = "data";
+    const auto* bytes = reinterpret_cast<const uint8_t*>(payload.data());
+    int32_t in_flight_result = -1;
+    std::thread in_flight([&] {
+        in_flight_result = VortexOutputContext::Write(holder.get(), bytes, payload.size());
+    });
+    while (stream->writes() == 0) {
+        std::this_thread::yield();
+    }
+    context->MarkAborted();
+    std::atomic<bool> wait_returned{false};
+    std::thread waiting([&] {
+        context->WaitForIdleCallbacks();
+        wait_returned = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(wait_returned.load());
+    stream->Release();
+    in_flight.join();
+    waiting.join();
+    EXPECT_TRUE(wait_returned.load());
+    EXPECT_EQ(in_flight_result, 0);
+    EXPECT_EQ(VortexOutputContext::Write(holder.get(), bytes, payload.size()), -1);
+    EXPECT_EQ(stream->writes(), 1);
+}
+
 TEST(VortexInputContextTest, CloseDefersUntilLastOwnerReleases) {
     auto stream = std::make_shared<RecordingInputStream>();
     auto context = std::make_shared<VortexInputContext>(stream);
@@ -239,6 +321,44 @@ TEST_F(VortexFileFormatTest, WriterBuilderRejectsUnsupportedTypes) {
         ASSERT_FALSE(writer.ok());
         ASSERT_TRUE(writer.status().IsInvalid()) << writer.status().ToString();
     }
+}
+
+// Vortex keeps the timezone the writer stored while the read schema asks for another one; the
+// instants must survive at the top level and inside nested columns.
+TEST_F(VortexFileFormatTest, ReadRetypesStoredTimestampTimezone) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "timezone.vortex");
+    auto fields = [](const std::string& tz) {
+        auto timestamp = arrow::timestamp(arrow::TimeUnit::MILLI, tz);
+        return arrow::FieldVector{
+            arrow::field("ts", timestamp),
+            arrow::field("r", arrow::struct_({arrow::field("ts", timestamp)})),
+            arrow::field("l", arrow::list(arrow::field("element", timestamp)))};
+    };
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields("UTC"));
+    std::shared_ptr<arrow::Array> written =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(fields("UTC")),
+            R"([[1700000000000,{"ts":1700000000000},[1700000000000,null]]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, written, /*batch_size=*/1));
+
+    const std::string wanted_tz = "Asia/Shanghai";
+    std::shared_ptr<arrow::Schema> read_schema = arrow::schema(fields(wanted_tz));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual,
+                         ReadFile(path, read_schema, /*batch_size=*/1, /*expected_row_count=*/1));
+    ASSERT_TRUE(actual->type()->Equals(arrow::struct_(fields(wanted_tz))))
+        << actual->type()->ToString();
+
+    const auto& row = checked_cast<const arrow::StructArray&>(*actual);
+    const auto& top = checked_cast<const arrow::TimestampArray&>(*row.field(0));
+    ASSERT_FALSE(top.IsNull(0));
+    ASSERT_EQ(top.Value(0), 1700000000000);
+    const auto& nested = checked_cast<const arrow::StructArray&>(*row.field(1));
+    ASSERT_EQ(checked_cast<const arrow::TimestampArray&>(*nested.field(0)).Value(0), 1700000000000);
+    const auto& list = checked_cast<const arrow::ListArray&>(*row.field(2));
+    const auto& values = checked_cast<const arrow::TimestampArray&>(*list.values());
+    ASSERT_EQ(values.Value(0), 1700000000000);
+    ASSERT_TRUE(values.IsNull(1));
 }
 
 TEST_F(VortexFileFormatTest, WriteThenRead) {
@@ -386,6 +506,7 @@ TEST_F(VortexFileFormatTest, ExtractStatisticsReportsUnknownStatsPerField) {
         arrow::field("payload", arrow::binary()),
         arrow::field("score", arrow::float64()),
         arrow::field("day", arrow::date32()),
+        arrow::field("tod", arrow::time32(arrow::TimeUnit::MILLI)),
         arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MILLI)),
         arrow::field("amount", arrow::decimal128(10, 2)),
         arrow::field("tags", arrow::list(arrow::field("element", arrow::int32()))),
@@ -395,7 +516,7 @@ TEST_F(VortexFileFormatTest, ExtractStatisticsReportsUnknownStatsPerField) {
     std::shared_ptr<arrow::Array> data =
         arrow::ipc::internal::json::ArrayFromJSON(
             arrow::struct_(fields),
-            R"([[true,1,"one","AA",1.5,17000,1700000000000,"1.25",[1],[1.0,2.0],{"a":1}]])")
+            R"([[true,1,"one","AA",1.5,17000,3723123,1700000000000,"1.25",[1],[1.0,2.0],{"a":1}]])")
             .ValueOrDie();
     ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/1));
 

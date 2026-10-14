@@ -30,6 +30,9 @@
 #include "paimon/core/core_options.h"
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
+#include "paimon/format/format_writer.h"
+#include "paimon/format/writer_builder.h"
+#include "paimon/fs/file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -44,6 +47,75 @@ class SimpleSingleFileWriter : public SingleFileWriter<int32_t, bool> {
         return true;
     }
 };
+
+namespace {
+
+// Reports whether the paimon stream was still usable when the format writer was destroyed.
+class ProbeFormatWriter : public FormatWriter {
+ public:
+    ProbeFormatWriter(const std::shared_ptr<OutputStream>& out, bool* stream_usable)
+        : out_(out), stream_usable_(stream_usable) {}
+
+    ~ProbeFormatWriter() override {
+        *stream_usable_ = out_->Write("x", 1).ok();
+    }
+
+    Status AddBatch(::ArrowArray*) override {
+        return Status::OK();
+    }
+    Status Flush() override {
+        return Status::OK();
+    }
+    Status Finish() override {
+        return Status::OK();
+    }
+    Result<bool> ReachTargetSize(bool, int64_t) const override {
+        return false;
+    }
+    std::shared_ptr<Metrics> GetWriterMetrics() const override {
+        return nullptr;
+    }
+    Status AddMetadata(const std::map<std::string, std::string>&) override {
+        return Status::OK();
+    }
+
+ private:
+    std::shared_ptr<OutputStream> out_;
+    bool* stream_usable_;
+};
+
+class ProbeWriterBuilder : public WriterBuilder {
+ public:
+    explicit ProbeWriterBuilder(bool* stream_usable) : stream_usable_(stream_usable) {}
+
+    WriterBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>&) override {
+        return this;
+    }
+    Result<std::unique_ptr<FormatWriter>> Build(const std::shared_ptr<OutputStream>& out,
+                                                const std::string&) override {
+        return std::make_unique<ProbeFormatWriter>(out, stream_usable_);
+    }
+
+ private:
+    bool* stream_usable_;
+};
+
+}  // namespace
+
+// A format writer driving a background task must be destroyed while the stream is still usable.
+TEST(SingleFileWriterTest, AbortDestroysFormatWriterBeforeClosingStream) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::string file_path = dir->Str() + "/abort-order";
+    bool stream_usable = false;
+    SimpleSingleFileWriter writer("none", nullptr);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    ASSERT_OK(writer.Init(options.GetFileSystem(), file_path,
+                          std::make_shared<ProbeWriterBuilder>(&stream_usable)));
+    writer.Abort();
+    ASSERT_TRUE(stream_usable);
+}
 
 TEST(SingleFileWriterTest, TestSimple) {
     auto dir = UniqueTestDirectory::Create();

@@ -40,6 +40,7 @@
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -3730,6 +3731,47 @@ TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibility) {
     ASSERT_TRUE(expected->Equals(actual))
         << "actual: " << (actual == nullptr ? "null" : actual->ToString())
         << "\nexpected: " << expected->ToString();
+}
+
+// The Java fixture stores TIMESTAMP_LTZ in UTC while paimon reads it in the reader's own zone, so
+// the same file must yield the same instants under any timezone.
+TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibilityLtzAcrossTimezones) {
+    const std::string table_path =
+        GetDataDir() + "/vortex/all_types_java_compat.db/all_types_java_compat";
+    std::shared_ptr<arrow::Array> utc;
+    std::shared_ptr<arrow::Array> shanghai;
+    for (const std::string& tz : {"UTC", "Asia/Shanghai"}) {
+        TimezoneGuard timezone_guard(tz);
+        ScanContextBuilder scan_context_builder(table_path);
+        ReadContextBuilder read_context_builder(table_path);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                             scan_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                             TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                             read_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                             TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                             table_read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
+        ASSERT_EQ(actual->num_chunks(), 1);
+        const auto& row = checked_cast<const arrow::StructArray&>(*actual->chunk(0));
+        std::shared_ptr<arrow::Array> column = row.GetFieldByName("f_ltz_3");
+        ASSERT_NE(column, nullptr);
+        ASSERT_EQ(column->type()->ToString(), "timestamp[ms, tz=" + tz + "]");
+        if (tz == "UTC") {
+            utc = column;
+        } else {
+            shanghai = column;
+        }
+    }
+    arrow::Result<std::shared_ptr<arrow::Array>> viewed = shanghai->View(utc->type());
+    ASSERT_TRUE(viewed.ok()) << viewed.status().ToString();
+    ASSERT_TRUE((*viewed)->Equals(*utc))
+        << "shanghai: " << shanghai->ToString() << "\nutc: " << utc->ToString();
 }
 
 TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibilityAllTypes) {

@@ -81,8 +81,10 @@ VortexFormatWriter::~VortexFormatWriter() {
     if (sink_ != nullptr) {
         // Not finished: abort so Vortex drops the sink without a footer; the caller discards the
         // partial output.
+        output_context_->MarkAborted();
         vx_callback_sink_abort(sink_);
         sink_ = nullptr;
+        output_context_->WaitForIdleCallbacks();
     }
 }
 

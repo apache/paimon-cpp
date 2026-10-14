@@ -19,6 +19,7 @@
 
 #include "paimon/format/vortex/vortex_io_callbacks.h"
 
+#include <chrono>
 #include <utility>
 
 #include "paimon/common/utils/math.h"
@@ -43,6 +44,23 @@ Logger* VortexInputLogger() {
     static Logger* logger = Logger::GetLogger("VortexInputContext").release();
     return logger;
 }
+
+Logger* VortexOutputLogger() {
+    static Logger* logger = Logger::GetLogger("VortexOutputContext").release();
+    return logger;
+}
+
+// Leaves the callback count on every early return.
+class CallbackScope {
+ public:
+    explicit CallbackScope(VortexOutputContext* context) : context_(context) {}
+    ~CallbackScope() {
+        context_->LeaveCallback();
+    }
+
+ private:
+    VortexOutputContext* context_;
+};
 
 }  // namespace
 
@@ -173,6 +191,39 @@ int64_t VortexOutputContext::BytesWritten() const {
     return bytes_written_;
 }
 
+void VortexOutputContext::MarkAborted() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    aborted_ = true;
+}
+
+void VortexOutputContext::WaitForIdleCallbacks() {
+    std::unique_lock<std::mutex> lock(callback_mutex_);
+    constexpr auto kWarnAfter = std::chrono::seconds(30);
+    if (!callback_cv_.wait_for(lock, kWarnAfter, [this] { return in_flight_ == 0; })) {
+        PAIMON_LOG_WARN(VortexOutputLogger(),
+                        "Still waiting for an in-flight Vortex write callback after %lld seconds",
+                        static_cast<long long>(kWarnAfter.count()));
+        callback_cv_.wait(lock, [this] { return in_flight_ == 0; });
+    }
+}
+
+bool VortexOutputContext::EnterCallback() {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (aborted_) {
+        return false;
+    }
+    ++in_flight_;
+    return true;
+}
+
+void VortexOutputContext::LeaveCallback() {
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        --in_flight_;
+    }
+    callback_cv_.notify_all();
+}
+
 int32_t VortexOutputContext::Write(void* ctx, const uint8_t* src, size_t length) noexcept {
     auto* context = ContextFrom<VortexOutputContext>(ctx);
     if (context == nullptr || src == nullptr) {
@@ -187,6 +238,10 @@ int32_t VortexOutputContext::Write(void* ctx, const uint8_t* src, size_t length)
         return -1;
     }
     auto write_length = static_cast<int64_t>(length);
+    if (!context->EnterCallback()) {
+        return -1;
+    }
+    CallbackScope scope(context);
     // The Vortex writer task is the only accessor of `output_`, so no lock is needed.
     Result<int64_t> result =
         context->output_->Write(reinterpret_cast<const char*>(src), write_length);
@@ -211,6 +266,10 @@ int32_t VortexOutputContext::Flush(void* ctx) noexcept {
     if (context == nullptr) {
         return -1;
     }
+    if (!context->EnterCallback()) {
+        return -1;
+    }
+    CallbackScope scope(context);
     Status status = context->output_->Flush();
     if (!status.ok()) {
         context->SetCallbackStatus(status);

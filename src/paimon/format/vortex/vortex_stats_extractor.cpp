@@ -106,6 +106,8 @@ Result<std::unique_ptr<ColumnStats>> VortexStatsExtractor::CreateUnknownStats(
             return ColumnStats::CreateStringColumnStats(std::nullopt, std::nullopt, std::nullopt);
         case arrow::Type::DATE32:
             return ColumnStats::CreateDateColumnStats(std::nullopt, std::nullopt, std::nullopt);
+        case arrow::Type::TIME32:
+            return ColumnStats::CreateIntColumnStats(std::nullopt, std::nullopt, std::nullopt);
         case arrow::Type::TIMESTAMP: {
             auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(type);
             return ColumnStats::CreateTimestampColumnStats(

@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -128,6 +129,17 @@ class VortexOutputContext {
     /// @return The first error reported by a callback, or OK when none failed.
     Status GetCallbackStatus() const;
 
+    /// Stops the callbacks from touching the paimon stream.
+    void MarkAborted();
+
+    /// Blocks until no callback is using the paimon stream.
+    void WaitForIdleCallbacks();
+
+    /// Counts a callback as in flight unless the context is aborted.
+    bool EnterCallback();
+
+    void LeaveCallback();
+
     /// Bytes handed to the paimon stream so far.
     ///
     /// Lower bound on the final file size: Vortex buffers internally and writes the footer on
@@ -143,6 +155,11 @@ class VortexOutputContext {
     mutable std::mutex mutex_;
     Status callback_status_;
     int64_t bytes_written_ = 0;
+
+    std::mutex callback_mutex_;
+    std::condition_variable callback_cv_;
+    int64_t in_flight_ = 0;
+    bool aborted_ = false;
 };
 
 }  // namespace paimon::vortex

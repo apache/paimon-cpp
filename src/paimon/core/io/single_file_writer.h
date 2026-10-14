@@ -138,6 +138,9 @@ class SingleFileWriter : public FileWriter<T, R> {
         if (PAIMON_UNLIKELY(closed_)) {
             return Status::Invalid("Writer has already closed!");
         }
+        if (PAIMON_UNLIKELY(writer_ == nullptr)) {
+            return Status::Invalid("Writer has been aborted!");
+        }
         return Status::OK();
     }
 
@@ -241,6 +244,9 @@ Status SingleFileWriter<T, R>::Close() {
     if (closed_) {
         return Status::OK();
     }
+    if (writer_ == nullptr) {
+        return Status::Invalid("Writer has been aborted!");
+    }
     PAIMON_LOG_DEBUG(logger_, "Closing file %s", path_.c_str());
     ScopeGuard guard([this]() -> void {
         this->Abort();
@@ -273,6 +279,9 @@ Status SingleFileWriter<T, R>::Close() {
 
 template <typename T, typename R>
 Result<bool> SingleFileWriter<T, R>::ReachTargetSize(bool suggested_check, int64_t target_size) {
+    if (writer_ == nullptr) {
+        return false;
+    }
     return writer_->ReachTargetSize(suggested_check, target_size);
 }
 
@@ -292,6 +301,8 @@ Status SingleFileWriter<T, R>::UpdateSchema(const std::shared_ptr<arrow::Schema>
 
 template <typename T, typename R>
 void SingleFileWriter<T, R>::Abort() {
+    // Destroy the format writer while the stream is still usable, so it can quiesce first.
+    writer_.reset();
     if (out_) {
         std::shared_ptr<OutputStream> out = std::move(out_);
         auto status = out->Close();
