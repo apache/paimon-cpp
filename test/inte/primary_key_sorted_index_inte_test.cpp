@@ -388,10 +388,9 @@ TEST_P(PrimaryKeySortedIndexInteTest, NegativePredicateUsesCompleteIndexRowCount
     ASSERT_GT(indexed_count, 0);
     ASSERT_EQ(data_count, 0);
 
-    ASSERT_OK_AND_ASSIGN(
-        std::vector<Row> indexed_rows,
-        Read(/*partitioned=*/false, predicate, indexed_plan->Splits(), /*options=*/{},
-             /*file_system=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> indexed_rows, Read(/*partitioned=*/false, predicate,
+                                                             indexed_plan->Splits(), /*options=*/{},
+                                                             /*file_system=*/nullptr));
     ASSERT_EQ(indexed_rows.size(), 1800u);
     for (const Row& row : indexed_rows) {
         ASSERT_NE(std::get<2>(row), 0);
@@ -402,10 +401,9 @@ TEST_P(PrimaryKeySortedIndexInteTest, NegativePredicateUsesCompleteIndexRowCount
         std::shared_ptr<Plan> data_plan,
         Scan(/*partitioned=*/false, predicate, /*snapshot_id=*/2, /*index_enabled=*/false,
              /*partition_filters=*/{}, /*branch=*/"", /*file_system=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(
-        std::vector<Row> data_rows,
-        Read(/*partitioned=*/false, predicate, data_plan->Splits(), /*options=*/{},
-             /*file_system=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> data_rows,
+                         Read(/*partitioned=*/false, predicate, data_plan->Splits(), /*options=*/{},
+                              /*file_system=*/nullptr));
     ASSERT_EQ(indexed_rows, data_rows);
 }
 

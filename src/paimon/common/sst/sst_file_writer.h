@@ -45,8 +45,7 @@ class PAIMON_EXPORT SstFileWriter {
  public:
     SstFileWriter(const std::shared_ptr<OutputStream>& out,
                   const std::shared_ptr<BloomFilter::Builder>& bloom_filter_builder,
-                  int32_t block_size,
-                  const std::shared_ptr<BlockCompressionFactory>& factory,
+                  int32_t block_size, const std::shared_ptr<BlockCompressionFactory>& factory,
                   const std::shared_ptr<MemoryPool>& pool);
 
     ~SstFileWriter() = default;

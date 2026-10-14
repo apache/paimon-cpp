@@ -40,9 +40,10 @@ namespace {
 
 using FullRangeBounds = std::optional<std::pair<Literal, Literal>>;
 
-Result<FullRangeBounds> GetFullRangeBounds(
-    const std::vector<GlobalIndexIOMeta>& files, int64_t total_row_count,
-    const std::shared_ptr<KeySerializer>& key_serializer, MemoryPool* pool) {
+Result<FullRangeBounds> GetFullRangeBounds(const std::vector<GlobalIndexIOMeta>& files,
+                                           int64_t total_row_count,
+                                           const std::shared_ptr<KeySerializer>& key_serializer,
+                                           MemoryPool* pool) {
     if (total_row_count <= 0 || files.empty()) {
         return std::optional<std::pair<Literal, Literal>>();
     }

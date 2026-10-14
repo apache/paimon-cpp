@@ -632,10 +632,9 @@ TEST_F(FullTextGlobalIndexTest, TestInvalidIndexFile) {
     std::string other_version_path = PathUtil::JoinPath(index_dir_->Str(), "other_version.index");
     ASSERT_OK(fs_->WriteFile(other_version_path, other_version_archive, /*overwrite=*/false));
     ASSERT_OK_AND_ASSIGN(
-        reader,
-        CreateReader({GlobalIndexIOMeta(
-            other_version_path, static_cast<int64_t>(other_version_archive.size()),
-            /*row_count=*/5, nullptr)}));
+        reader, CreateReader({GlobalIndexIOMeta(other_version_path,
+                                                static_cast<int64_t>(other_version_archive.size()),
+                                                /*row_count=*/5, nullptr)}));
     ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(MakeSearch(MatchQuery("paimon"))),
                         "unsupported Tantivy index version tantivy v0.25.0");
 }
@@ -746,9 +745,9 @@ TEST_F(FullTextGlobalIndexTest, TestCrossReadFixtures) {
         std::string fixture_path = FixturePath(fixture.name);
         ASSERT_OK_AND_ASSIGN(FileStatus file_status, fs_->GetFileStatus(fixture_path));
         std::shared_ptr<arrow::Array> fixture_array = MakeArray(fixture.rows);
-        CheckGoldenSearches(fixture, GlobalIndexIOMeta(fixture_path, file_status.GetLen(),
-                                                       fixture_array->length(),
-                                                       /*metadata=*/nullptr));
+        CheckGoldenSearches(
+            fixture, GlobalIndexIOMeta(fixture_path, file_status.GetLen(), fixture_array->length(),
+                                       /*metadata=*/nullptr));
 
         ASSERT_OK_AND_ASSIGN(std::vector<GlobalIndexIOMeta> metas,
                              WriteIndex(fixture.options, fixture_array));

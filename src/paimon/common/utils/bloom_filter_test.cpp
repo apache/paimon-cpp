@@ -85,9 +85,9 @@ TEST(BloomFilterTest, TestInvalidExpectedEntriesAndFpp) {
 
 TEST(BloomFilterTest, TestFixedBuilder) {
     auto pool = GetDefaultPool();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter::Builder> builder,
-                         BloomFilter::FixedBuilder(/*expected_entries=*/3, /*fpp=*/0.05,
-                                                   pool.get()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BloomFilter::Builder> builder,
+        BloomFilter::FixedBuilder(/*expected_entries=*/3, /*fpp=*/0.05, pool.get()));
     ASSERT_OK(builder->AddHash(11));
     ASSERT_OK(builder->AddHash(22));
     ASSERT_OK(builder->AddHash(33));

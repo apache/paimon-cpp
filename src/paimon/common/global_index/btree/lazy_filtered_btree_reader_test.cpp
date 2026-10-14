@@ -147,12 +147,11 @@ class LazyFilteredBTreeReaderTest : public ::testing::Test {
         const std::shared_ptr<Executor>& executor, int64_t fallback_scan_max_size) const {
         auto file_reader = std::make_shared<FakeLazyFileReader>(fs_, base_path_);
         auto cache_manager = std::make_shared<CacheManager>(1024 * 1024, 0.5);
-        EXPECT_OK_AND_ASSIGN(
-            std::shared_ptr<LazyFilteredBTreeReader> reader,
-            LazyFilteredBTreeReader::Create(
-                /*read_buffer_size=*/std::nullopt, all_metas_, arrow::int32(), file_reader,
-                cache_manager, fallback_scan_max_size, TotalRowCount(),
-                row_ranges, pool_, executor));
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<LazyFilteredBTreeReader> reader,
+                             LazyFilteredBTreeReader::Create(
+                                 /*read_buffer_size=*/std::nullopt, all_metas_, arrow::int32(),
+                                 file_reader, cache_manager, fallback_scan_max_size,
+                                 TotalRowCount(), row_ranges, pool_, executor));
         return reader;
     }
 
@@ -232,8 +231,7 @@ TEST_F(LazyFilteredBTreeReaderTest, TestFullMatch) {
     // full-match shortcut.
     std::shared_ptr<LazyFilteredBTreeReader> reader =
         CreateReader(/*executor=*/nullptr, /*fallback_scan_max_size=*/0);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> equal,
-                         reader->VisitEqual(Literal(5)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> equal, reader->VisitEqual(Literal(5)));
     CheckResult(equal, {0, 1, 2, 3, 4});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> less_than,
                          reader->VisitLessThan(Literal(6)));
@@ -535,13 +533,11 @@ TEST_F(LazyFilteredBTreeReaderTest, TestParallelEmptyFilesList) {
     std::vector<GlobalIndexIOMeta> empty_metas;
     auto file_reader = std::make_shared<FakeLazyFileReader>(fs_, base_path_);
     auto cache_manager = std::make_shared<CacheManager>(1024 * 1024, 0.5);
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<LazyFilteredBTreeReader> reader,
-        LazyFilteredBTreeReader::Create(/*read_buffer_size=*/std::nullopt, empty_metas,
-                                        arrow::int32(), file_reader, cache_manager,
-                                        std::numeric_limits<int64_t>::max(),
-                                        /*total_row_count=*/0, /*row_ranges=*/std::nullopt, pool_,
-                                        executor));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<LazyFilteredBTreeReader> reader,
+                         LazyFilteredBTreeReader::Create(
+                             /*read_buffer_size=*/std::nullopt, empty_metas, arrow::int32(),
+                             file_reader, cache_manager, std::numeric_limits<int64_t>::max(),
+                             /*total_row_count=*/0, /*row_ranges=*/std::nullopt, pool_, executor));
     Literal literal_1(1);
     ASSERT_OK_AND_ASSIGN(auto result, reader->VisitEqual(literal_1));
     CheckEmpty(result);

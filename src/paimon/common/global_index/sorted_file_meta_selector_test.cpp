@@ -247,8 +247,7 @@ TEST_F(SortedFileMetaSelectorTest, TestVisitStartsWith) {
         GlobalIndexIOMeta("first", 1, /*row_count=*/1, first_meta->Serialize(pool.get())),
         GlobalIndexIOMeta("second", 1, /*row_count=*/1, second_meta->Serialize(pool.get())),
         GlobalIndexIOMeta("third", 1, /*row_count=*/1, third_meta->Serialize(pool.get())),
-        GlobalIndexIOMeta("only_nulls", 1, /*row_count=*/1,
-                          only_nulls_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("only_nulls", 1, /*row_count=*/1, only_nulls_meta->Serialize(pool.get())),
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
                          SortedFileMetaSelector::Create(files, key_serializer));
