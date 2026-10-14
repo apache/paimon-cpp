@@ -78,13 +78,16 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
                              std::optional<int64_t> file_size,
                              std::vector<ManifestEntry>* entries) const;
 
-    /// Read entries intersecting row ID ranges before constructing their file metadata.
-    /// Unknown row ranges are retained. Add and Delete entries use the same selection, and
-    /// the ordinary entry filter still runs on every retained entry.
-    Status ReadRowRangeEntries(const std::string& file_name, const RowRangeIndex& row_ranges,
-                               const std::function<Result<bool>(const ManifestEntry&)>& filter,
-                               std::optional<int64_t> file_size,
-                               std::vector<ManifestEntry>* entries) const;
+    /// Select entries by row ranges and a row filter before constructing file metadata.
+    /// A null row_ranges or row_filter disables that selection. Unknown ranges are retained.
+    /// Add and Delete entries use the same selection. The entry filter runs after decoding.
+    /// The reader validates the entry version before inspecting row ranges or invoking the filter.
+    Status ReadSelectedEntries(
+        const std::string& file_name, std::optional<int64_t> file_size,
+        const RowRangeIndex* row_ranges,
+        const std::function<Result<bool>(const InternalRow&)>& row_filter,
+        const std::function<Result<bool>(const ManifestEntry&)>& entry_filter,
+        std::vector<ManifestEntry>* entries) const;
 
  private:
     Status PrepareBucketRead(int32_t bucket, const std::optional<int32_t>& expected_total_buckets,

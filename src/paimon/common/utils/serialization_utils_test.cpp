@@ -85,4 +85,50 @@ TEST_F(SerializationUtilsTest, TestDeserializeBinaryRowFromStream) {
     ASSERT_EQ(de_row.GetString(2).ToString(), "hello paimon!");
 }
 
+TEST_F(SerializationUtilsTest, DeserializeBorrowedBinaryRow) {
+    auto pool = GetDefaultPool();
+    BinaryRow row(3);
+    BinaryRowWriter writer(&row, 0, pool.get());
+    writer.WriteInt(0, -42);
+    writer.SetNullAt(1);
+    writer.WriteString(2, BinaryString::FromString("partition", pool.get()));
+    writer.Complete();
+    auto bytes = SerializationUtils::SerializeBinaryRow(row, pool.get());
+    // Use an unaligned backing address, as Arrow binary values need not be aligned.
+    std::string backing = "x" + std::string(bytes->data(), bytes->size());
+    std::string_view data(backing.data() + 1, bytes->size());
+    ASSERT_OK_AND_ASSIGN(auto view, SerializationUtils::DeserializeBinaryRowView(data));
+    ASSERT_EQ(view.GetSegment().Data(), data.data());
+    ASSERT_EQ(view.GetInt(0), -42);
+    ASSERT_TRUE(view.IsNullAt(1));
+    ASSERT_EQ(view.GetString(2).ToString(), "partition");
+    ASSERT_EQ(view, row);
+
+    ASSERT_OK_AND_ASSIGN(auto owned, SerializationUtils::DeserializeBinaryRow(bytes));
+    bytes.reset();
+    backing.clear();
+    ASSERT_EQ(owned, row);
+    auto empty_bytes = SerializationUtils::SerializeBinaryRow(BinaryRow::EmptyRow(), pool.get());
+    ASSERT_OK_AND_ASSIGN(auto empty, SerializationUtils::DeserializeBinaryRowView(std::string_view(
+                                         empty_bytes->data(), empty_bytes->size())));
+    ASSERT_EQ(empty, BinaryRow::EmptyRow());
+}
+
+TEST_F(SerializationUtilsTest, RejectInvalidBorrowedBinaryRow) {
+    const std::string negative_arity(4, static_cast<char>(0xff));
+    ASSERT_NOK_WITH_MSG(SerializationUtils::DeserializeBinaryRowView(negative_arity),
+                        "arity is less than 0");
+    const std::string huge_arity = {0x7f, static_cast<char>(0xff), static_cast<char>(0xff),
+                                    static_cast<char>(0xff)};
+    ASSERT_NOK_WITH_MSG(SerializationUtils::DeserializeBinaryRowView(huge_arity),
+                        "fixed fields exceed serialized length");
+    auto bytes =
+        SerializationUtils::SerializeBinaryRow(BinaryRow::EmptyRow(), GetDefaultPool().get());
+    for (size_t size = 0; size < bytes->size(); ++size) {
+        SCOPED_TRACE(size);
+        ASSERT_NOK(
+            SerializationUtils::DeserializeBinaryRowView(std::string_view(bytes->data(), size)));
+    }
+}
+
 }  // namespace paimon::test

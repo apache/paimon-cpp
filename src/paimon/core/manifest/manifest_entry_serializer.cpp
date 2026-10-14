@@ -48,6 +48,10 @@ int32_t ManifestEntrySerializer::GetBucket(const InternalRow& row) {
     return row.GetInt(3);
 }
 
+Result<BinaryRow> ManifestEntrySerializer::GetPartitionView(const InternalRow& row) {
+    return SerializationUtils::DeserializeBinaryRowView(row.GetStringView(2));
+}
+
 Result<ManifestEntry> ManifestEntrySerializer::ConvertFrom(int32_t version,
                                                            const InternalRow& row) const {
     PAIMON_RETURN_NOT_OK(ValidateVersion(version));

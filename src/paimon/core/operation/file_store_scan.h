@@ -63,6 +63,7 @@ namespace paimon {
 class CacheKey;
 class Executor;
 class FileKind;
+class InternalRow;
 class ManifestFile;
 class ManifestFileMeta;
 class ManifestList;
@@ -276,13 +277,12 @@ class FileStoreScan {
     Status ReadManifestEntries(const std::vector<ManifestFileMeta>& manifest_metas,
                                std::vector<ManifestEntry>* manifest_entries) const;
 
-    Status ReadManifestEntriesWithCache(const Snapshot& snapshot,
-                                        const std::vector<ManifestFileMeta>& bucket_manifest_metas,
-                                        int32_t bucket,
-                                        std::vector<ManifestEntry>* manifest_entries,
-                                        bool* cache_hit) const;
+    /// Read request-filtered entries while caching complete bucket snapshots.
+    /// @return Number of entries considered before request-specific filtering.
+    Result<uint64_t> ReadManifestEntriesWithCache(
+        const Snapshot& snapshot, const std::vector<ManifestFileMeta>& bucket_manifest_metas,
+        int32_t bucket, std::vector<ManifestEntry>* manifest_entries, bool* cache_hit) const;
     std::shared_ptr<CacheKey> CreateSnapshotLiveManifestEntriesCacheKey(int32_t bucket) const;
-    Result<SnapshotLiveManifestEntries> LoadSnapshotLiveManifestEntries(int32_t bucket) const;
     Status StoreSnapshotLiveManifestEntries(int32_t bucket,
                                             const SnapshotLiveManifestEntries& entries) const;
 
@@ -309,7 +309,13 @@ class FileStoreScan {
     Status ReadManifestFileMeta(const ManifestFileMeta& manifest,
                                 std::vector<ManifestEntry>* entries) const;
 
+    /// If provided, predicate_failed must initially be false and outlive the synchronous callback.
+    /// Only predicate evaluation errors set it; partition decoding errors leave it unchanged.
+    std::function<Result<bool>(const InternalRow&)> CreateManifestEntryRowFilter(
+        bool* predicate_failed) const;
+
     Result<bool> FilterManifestEntry(const ManifestEntry& entry) const;
+    Result<bool> FilterNonPartitionManifestEntry(const ManifestEntry& entry) const;
 
  protected:
     std::shared_ptr<MemoryPool> pool_;

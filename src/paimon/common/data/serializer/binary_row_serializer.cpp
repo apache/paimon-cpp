@@ -53,4 +53,16 @@ Result<BinaryRow> BinaryRowSerializer::Deserialize(DataInputStream* source) cons
     return row;
 }
 
+Status BinaryRowSerializer::Skip(DataInputStream* source) {
+    PAIMON_ASSIGN_OR_RAISE(int32_t read_length, source->ReadValue<int32_t>());
+    PAIMON_ASSIGN_OR_RAISE(int64_t pos, source->GetPos());
+    PAIMON_ASSIGN_OR_RAISE(int64_t length, source->Length());
+    if (read_length < 0 || pos < 0 || pos > length || read_length > length - pos) {
+        return Status::Invalid(
+            fmt::format("invalid binary row length {} at position {}, stream length {}",
+                        read_length, pos, length));
+    }
+    return source->Seek(pos + read_length);
+}
+
 }  // namespace paimon

@@ -46,6 +46,7 @@
 #include "paimon/format/format_writer.h"
 #include "paimon/format/writer_builder.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/row_range_index.h"
@@ -106,6 +107,65 @@ class RowRangeManifestFileTest : public ::testing::Test {
     }
 };
 
+TEST_F(RowRangeManifestFileTest, PartitionFilterComposesWithRowRanges) {
+    for (bool cache_enabled : {false, true}) {
+        SCOPED_TRACE(cache_enabled);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> manifest,
+                             CreateManifest(dir->Str(), dir->GetFileSystem(), cache_enabled));
+        auto pool = GetDefaultPool();
+        auto partition10 = BinaryRowGenerator::GenerateRow({10}, pool.get());
+        auto partition20 = BinaryRowGenerator::GenerateRow({20}, pool.get());
+        ASSERT_OK_AND_ASSIGN(ManifestEntry first, Entry("a.parquet", 100, 10));
+        ASSERT_OK_AND_ASSIGN(ManifestEntry second, Entry("b.parquet", 100, 10));
+        ASSERT_OK_AND_ASSIGN(ManifestEntry third, Entry("c.parquet", 200, 10));
+        ManifestEntry a(FileKind::Add(), partition10, 0, 1, first.File());
+        ManifestEntry deleted(FileKind::Delete(), partition10, 0, 1, first.File());
+        // Decoding the excluded partition would reject its invalid file kind.
+        ManifestEntry b(FileKind(static_cast<int8_t>(2)), partition20, 0, 1, second.File());
+        ManifestEntry c(FileKind::Add(), partition10, 0, 1, third.File());
+        std::vector<ManifestEntry> source = {a, deleted, b, c};
+        using WrittenFile = std::pair<std::string, int64_t>;
+        ASSERT_OK_AND_ASSIGN(WrittenFile written, manifest->WriteWithoutRolling(source));
+        auto row_filter = [](const InternalRow& row) -> Result<bool> {
+            PAIMON_ASSIGN_OR_RAISE(BinaryRow partition,
+                                   ManifestEntrySerializer::GetPartitionView(row));
+            return partition.GetInt(0) == 10;
+        };
+        std::vector<ManifestEntry> selected;
+        ASSERT_OK(manifest->ReadSelectedEntries(
+            written.first, written.second, /*row_ranges=*/nullptr, row_filter, nullptr, &selected));
+        ASSERT_EQ(std::vector<ManifestEntry>({a, deleted, c}), selected);
+        std::vector<ManifestEntry> live;
+        ASSERT_OK(FileStoreScan::MergeLiveEntries(selected, &live));
+        ASSERT_EQ(std::vector<ManifestEntry>({c}), live);
+
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex ranges, RowRangeIndex::Create({Range(100, 100)}));
+        selected.clear();
+        ASSERT_OK(manifest->ReadSelectedEntries(written.first, written.second, &ranges, row_filter,
+                                                nullptr, &selected));
+        ASSERT_EQ(std::vector<ManifestEntry>({a, deleted}), selected);
+        live.clear();
+        ASSERT_OK(FileStoreScan::MergeLiveEntries(selected, &live));
+        ASSERT_TRUE(live.empty());
+
+        auto error_filter = [](const InternalRow&) -> Result<bool> {
+            return Status::IOError("injected row filter error");
+        };
+        selected.clear();
+        ASSERT_NOK_WITH_MSG(
+            manifest->ReadSelectedEntries(written.first, written.second, /*row_ranges=*/nullptr,
+                                          error_filter, nullptr, &selected),
+            "injected row filter error");
+        // The unfiltered path still decodes the excluded entry from the complete batches.
+        selected.clear();
+        ASSERT_NOK_WITH_MSG(manifest->ReadSelectedEntries(written.first, written.second, nullptr,
+                                                          nullptr, nullptr, &selected),
+                            "Unsupported byte value 2 for file kind.");
+    }
+}
+
 TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -123,8 +183,8 @@ TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ManifestFile> reader,
                                CreateManifest(dir->Str(), dir->GetFileSystem(), true, cache));
         std::vector<ManifestEntry> entries;
-        PAIMON_RETURN_NOT_OK(
-            reader->ReadRowRangeEntries(written.first, ranges, nullptr, written.second, &entries));
+        PAIMON_RETURN_NOT_OK(reader->ReadSelectedEntries(
+            written.first, written.second, &ranges, /*row_filter=*/nullptr, nullptr, &entries));
         if (entries != expected) {
             return Status::Invalid("cached manifest result differs from source");
         }
@@ -148,7 +208,8 @@ TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
     // A different immutable manifest must not reuse the previous file's cached content.
     ASSERT_OK_AND_ASSIGN(WrittenFile next, manifest->WriteWithoutRolling({a}));
     std::vector<ManifestEntry> entries;
-    ASSERT_OK(manifest->ReadRowRangeEntries(next.first, ranges, nullptr, next.second, &entries));
+    ASSERT_OK(manifest->ReadSelectedEntries(next.first, next.second, &ranges,
+                                            /*row_filter=*/nullptr, nullptr, &entries));
     ASSERT_TRUE(entries.empty());
     ASSERT_EQ(3, cache->SupplierCallCount(cache_kind));
 
@@ -156,15 +217,15 @@ TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
         std::make_shared<CountingRoutingCache>(CacheKind::DATA_FILE_FOOTER, 1024 * 1024);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> unsupported,
                          CreateManifest(dir->Str(), dir->GetFileSystem(), true, unsupported_cache));
-    ASSERT_OK(
-        unsupported->ReadRowRangeEntries(written.first, ranges, nullptr, written.second, &entries));
+    ASSERT_OK(unsupported->ReadSelectedEntries(written.first, written.second, &ranges,
+                                               /*row_filter=*/nullptr, nullptr, &entries));
     ASSERT_EQ(expected, entries);
     entries.clear();
     auto small_cache = std::make_shared<LruCache>(1);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> uncached,
                          CreateManifest(dir->Str(), dir->GetFileSystem(), true, small_cache));
-    ASSERT_OK(
-        uncached->ReadRowRangeEntries(written.first, ranges, nullptr, written.second, &entries));
+    ASSERT_OK(uncached->ReadSelectedEntries(written.first, written.second, &ranges,
+                                            /*row_filter=*/nullptr, nullptr, &entries));
     ASSERT_EQ(expected, entries);
     ASSERT_LE(small_cache->GetCurrentWeight(), 1);
     small_cache->InvalidateAll();
@@ -302,7 +363,8 @@ TEST_F(RowRangeManifestFileTest, OrcCachePreservesManifestMetadata) {
     // This legacy manifest has unknown row IDs, so every entry must be retained.
     ASSERT_OK_AND_ASSIGN(RowRangeIndex ranges, RowRangeIndex::Create({Range(0, 0)}));
     std::vector<ManifestEntry> without_cache;
-    ASSERT_OK(uncached->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &without_cache));
+    ASSERT_OK(uncached->ReadSelectedEntries(name, std::nullopt, &ranges, /*row_filter=*/nullptr,
+                                            nullptr, &without_cache));
     ASSERT_EQ(expected, without_cache);
 
     auto cache = std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 1024 * 1024);
@@ -313,7 +375,8 @@ TEST_F(RowRangeManifestFileTest, OrcCachePreservesManifestMetadata) {
             std::unique_ptr<ManifestFile> reader,
             ManifestFile::Create(fs, format, "zstd", paths, 1024, pool, options, schema));
         std::vector<ManifestEntry> actual;
-        ASSERT_OK(reader->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &actual));
+        ASSERT_OK(reader->ReadSelectedEntries(name, std::nullopt, &ranges, /*row_filter=*/nullptr,
+                                              nullptr, &actual));
         ASSERT_EQ(expected, actual);
         ASSERT_EQ(1, cache->SupplierCallCount(CacheKind::MANIFEST));
     }
@@ -330,8 +393,8 @@ TEST_F(RowRangeManifestFileTest, EmptyManifestCacheReuse) {
     ASSERT_OK_AND_ASSIGN(RowRangeIndex ranges, RowRangeIndex::Create({Range(0, 0)}));
     for (int32_t attempt = 0; attempt < 2; ++attempt) {
         std::vector<ManifestEntry> entries;
-        ASSERT_OK(manifest->ReadRowRangeEntries(written.first, ranges, nullptr, written.second,
-                                                &entries));
+        ASSERT_OK(manifest->ReadSelectedEntries(written.first, written.second, &ranges,
+                                                /*row_filter=*/nullptr, nullptr, &entries));
         ASSERT_TRUE(entries.empty());
         ASSERT_EQ(1, cache->SupplierCallCount(CacheKind::MANIFEST));
     }
@@ -362,8 +425,8 @@ TEST_F(RowRangeManifestFileTest, AllReadPathsShareOneDecodedEntry) {
                                                       written.second, &actual));
                 ASSERT_EQ(source, actual);
             } else {
-                ASSERT_OK(manifest->ReadRowRangeEntries(written.first, ranges, nullptr,
-                                                        written.second, &actual));
+                ASSERT_OK(manifest->ReadSelectedEntries(written.first, written.second, &ranges,
+                                                        /*row_filter=*/nullptr, nullptr, &actual));
                 ASSERT_EQ(std::vector<ManifestEntry>{b}, actual);
             }
         };
@@ -582,8 +645,8 @@ TEST_F(RowRangeManifestFileTest, BoundariesUnknownRangesAndDeleteMerging) {
             std::vector<ManifestEntry> ordinary;
             ASSERT_OK(manifest->Read(written.first, filter, written.second, &ordinary));
             std::vector<ManifestEntry> selected;
-            ASSERT_OK(manifest->ReadRowRangeEntries(written.first, ranges, filter, written.second,
-                                                    &selected));
+            ASSERT_OK(manifest->ReadSelectedEntries(written.first, written.second, &ranges,
+                                                    /*row_filter=*/nullptr, filter, &selected));
             ASSERT_EQ(ordinary, selected);
             std::vector<ManifestEntry> ordinary_live;
             std::vector<ManifestEntry> selected_live;
@@ -596,15 +659,15 @@ TEST_F(RowRangeManifestFileTest, BoundariesUnknownRangesAndDeleteMerging) {
         }
         ASSERT_OK_AND_ASSIGN(RowRangeIndex ranges, RowRangeIndex::Create({Range(100, 100)}));
         std::vector<ManifestEntry> entries;
-        ASSERT_NOK_WITH_MSG(manifest->ReadRowRangeEntries(
-                                written.first, ranges,
+        ASSERT_NOK_WITH_MSG(manifest->ReadSelectedEntries(
+                                written.first, written.second, &ranges, /*row_filter=*/nullptr,
                                 [](const ManifestEntry&) -> Result<bool> {
                                     return Status::IOError("filter error");
                                 },
-                                written.second, &entries),
+                                &entries),
                             "filter error");
-        ASSERT_NOK(manifest->ReadRowRangeEntries("missing-manifest", ranges, nullptr, std::nullopt,
-                                                 &entries));
+        ASSERT_NOK(manifest->ReadSelectedEntries("missing-manifest", std::nullopt, &ranges,
+                                                 /*row_filter=*/nullptr, nullptr, &entries));
     }
 }
 
@@ -626,8 +689,8 @@ TEST_F(RowRangeManifestFileTest, UncertainAndOverflowingRangesAreRetained) {
     ASSERT_OK_AND_ASSIGN(WrittenFile written, manifest->WriteWithoutRolling(source));
     ASSERT_OK_AND_ASSIGN(RowRangeIndex ranges, RowRangeIndex::Create({Range(0, 0)}));
     std::vector<ManifestEntry> actual;
-    ASSERT_OK(
-        manifest->ReadRowRangeEntries(written.first, ranges, nullptr, written.second, &actual));
+    ASSERT_OK(manifest->ReadSelectedEntries(written.first, written.second, &ranges,
+                                            /*row_filter=*/nullptr, nullptr, &actual));
     source.erase(source.begin() + 1);
     ASSERT_EQ(source, actual);
 }
@@ -684,11 +747,22 @@ TEST_F(RowRangeManifestFileTest, SchemaEvolutionAndVersionValidation) {
             std::vector<ManifestEntry> actual;
             if (mode >= 2) {
                 ASSERT_NOK_WITH_MSG(
-                    manifest->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &actual),
+                    manifest->ReadSelectedEntries(name, std::nullopt, &ranges,
+                                                  /*row_filter=*/nullptr, nullptr, &actual),
                     (mode == 2 ? "not compatible" : "Unsupported version: 999"));
+                bool filter_called = false;
+                ASSERT_NOK_WITH_MSG(manifest->ReadSelectedEntries(
+                                        name, std::nullopt, /*row_ranges=*/nullptr,
+                                        [&filter_called](const InternalRow&) -> Result<bool> {
+                                            filter_called = true;
+                                            return false;
+                                        },
+                                        nullptr, &actual),
+                                    (mode == 2 ? "not compatible" : "Unsupported version: 999"));
+                ASSERT_FALSE(filter_called);
             } else {
-                ASSERT_OK(
-                    manifest->ReadRowRangeEntries(name, ranges, nullptr, std::nullopt, &actual));
+                ASSERT_OK(manifest->ReadSelectedEntries(name, std::nullopt, &ranges,
+                                                        /*row_filter=*/nullptr, nullptr, &actual));
                 ASSERT_EQ(mode == 0 ? 1 : 0, actual.size());
                 if (mode == 0) {
                     ASSERT_FALSE(actual[0].File()->first_row_id.has_value());

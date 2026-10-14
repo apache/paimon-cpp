@@ -42,6 +42,7 @@
 #include "paimon/core/io/file_index_options.h"
 #include "paimon/core/manifest/file_entry.h"
 #include "paimon/core/manifest/file_kind.h"
+#include "paimon/core/manifest/manifest_entry_serializer.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
@@ -196,19 +197,10 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
     uint64_t lazy_decode_scanned_rows = 0;
     bool snapshot_cache_hit = false;
     if (use_snapshot_live_manifest_cache) {
-        PAIMON_RETURN_NOT_OK(ReadManifestEntriesWithCache(snapshot.value(), all_manifest_file_metas,
-                                                          cache_bucket.value(), &manifest_entries,
-                                                          &snapshot_cache_hit));
-        lazy_decode_scanned_rows = manifest_entries.size();
-        std::vector<ManifestEntry> filtered_entries;
-        filtered_entries.reserve(manifest_entries.size());
-        for (auto& entry : manifest_entries) {
-            PAIMON_ASSIGN_OR_RAISE(bool keep, FilterManifestEntry(entry));
-            if (keep) {
-                filtered_entries.emplace_back(std::move(entry));
-            }
-        }
-        manifest_entries = std::move(filtered_entries);
+        PAIMON_ASSIGN_OR_RAISE(lazy_decode_scanned_rows,
+                               ReadManifestEntriesWithCache(
+                                   snapshot.value(), all_manifest_file_metas, cache_bucket.value(),
+                                   &manifest_entries, &snapshot_cache_hit));
     } else {
         lazy_decode_scanned_rows = std::accumulate(
             filtered_manifest_file_metas.begin(), filtered_manifest_file_metas.end(), uint64_t{0},
@@ -396,44 +388,81 @@ Status FileStoreScan::ReadManifestEntries(const std::vector<ManifestFileMeta>& m
 // bucket counts, with the current count and schema in the cache key. Exact hits
 // can be returned directly; cache misses rebuild the target snapshot bucket from the target
 // snapshot's data manifests.
-Status FileStoreScan::ReadManifestEntriesWithCache(
+Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
     const Snapshot& snapshot, const std::vector<ManifestFileMeta>& all_manifest_metas,
     int32_t bucket, std::vector<ManifestEntry>* manifest_entries, bool* cache_hit) const {
     Duration cache_load_duration;
-    PAIMON_ASSIGN_OR_RAISE(SnapshotLiveManifestEntries cached_entries,
-                           LoadSnapshotLiveManifestEntries(bucket));
+    const int32_t max_snapshots = core_options_.GetScanManifestEntryCacheMaxSnapshots();
+    SnapshotLiveManifestEntries cached_entries(max_snapshots);
+    bool predicate_failed = false;
+    auto row_filter = CreateManifestEntryRowFilter(&predicate_failed);
+    bool partition_filtered = false;
+    uint64_t candidate_entries = 0;
+    *cache_hit = false;
+    Result<std::shared_ptr<CacheValue>> value = core_options_.GetCache()->Get(
+        CreateSnapshotLiveManifestEntriesCacheKey(bucket),
+        [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+            return std::shared_ptr<CacheValue>();
+        });
+    if (value.ok() && value.value()) {
+        Result<std::optional<SnapshotLiveManifestEntries::Selection>> selected =
+            SnapshotLiveManifestEntries::ReadSnapshot(value.value()->GetSegment(), snapshot.Id(),
+                                                      max_snapshots, row_filter, pool_);
+        if (predicate_failed) {
+            return selected.status();
+        }
+        if (selected.ok() && selected.value()) {
+            *cache_hit = true;
+            partition_filtered = static_cast<bool>(row_filter);
+            candidate_entries = selected.value()->candidate_entries;
+            *manifest_entries = std::move(selected.value()->entries);
+        } else if (selected.ok()) {
+            // Reuse the same cache value to retain complete historical snapshots on a miss.
+            // Query-filtered entries must never be written back into the cache.
+            Result<SnapshotLiveManifestEntries> deserialized =
+                SnapshotLiveManifestEntries::Deserialize(value.value()->GetSegment(), max_snapshots,
+                                                         pool_);
+            if (deserialized.ok()) {
+                cached_entries = std::move(deserialized.value());
+            }
+        }
+    }
     const uint64_t cache_load_duration_ms = cache_load_duration.Get();
     metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_LOAD_DURATION, cache_load_duration_ms);
     metrics_->ObserveHistogram(ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION,
                                static_cast<double>(cache_load_duration_ms));
-    std::optional<SnapshotLiveManifestEntries::Entry> cached =
-        cached_entries.LatestBeforeOrEqual(snapshot.Id());
-    if (cached && cached->snapshot_id == snapshot.Id()) {
-        *cache_hit = true;
-        *manifest_entries = *cached->entries;
-        return Status::OK();
+    if (!*cache_hit) {
+        std::vector<ManifestFileMeta> bucket_manifest_metas;
+        for (const auto& meta : all_manifest_metas) {
+            if ((!bucket_filter_ && bucket_selector_) || MayContainBucket(meta, bucket)) {
+                bucket_manifest_metas.push_back(meta);
+            }
+        }
+        PAIMON_RETURN_NOT_OK(
+            ReadAndMergeBucketFileEntries(bucket_manifest_metas, bucket, manifest_entries));
+        candidate_entries = manifest_entries->size();
+        std::vector<ManifestEntry> cache_entries = *manifest_entries;
+        cached_entries.Put(snapshot.Id(), std::move(cache_entries));
+        Duration cache_store_duration;
+        PAIMON_RETURN_NOT_OK(StoreSnapshotLiveManifestEntries(bucket, cached_entries));
+        const uint64_t cache_store_duration_ms = cache_store_duration.Get();
+        metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_STORE_DURATION,
+                             cache_store_duration_ms);
+        metrics_->ObserveHistogram(ScanMetrics::SNAPSHOT_CACHE_STORE_DURATION,
+                                   static_cast<double>(cache_store_duration_ms));
     }
-    *cache_hit = false;
-
-    // Rebuild the target snapshot bucket from all manifests and write the live entries back to the
-    // cache.
-    std::vector<ManifestFileMeta> bucket_manifest_metas;
-    for (const auto& meta : all_manifest_metas) {
-        if ((!bucket_filter_ && bucket_selector_) || MayContainBucket(meta, bucket)) {
-            bucket_manifest_metas.push_back(meta);
+    std::vector<ManifestEntry> filtered_entries;
+    filtered_entries.reserve(manifest_entries->size());
+    for (auto& entry : *manifest_entries) {
+        PAIMON_ASSIGN_OR_RAISE(bool keep, partition_filtered
+                                              ? FilterNonPartitionManifestEntry(entry)
+                                              : FilterManifestEntry(entry));
+        if (keep) {
+            filtered_entries.emplace_back(std::move(entry));
         }
     }
-    PAIMON_RETURN_NOT_OK(
-        ReadAndMergeBucketFileEntries(bucket_manifest_metas, bucket, manifest_entries));
-    std::vector<ManifestEntry> cache_entries = *manifest_entries;
-    cached_entries.Put(snapshot.Id(), std::move(cache_entries));
-    Duration cache_store_duration;
-    PAIMON_RETURN_NOT_OK(StoreSnapshotLiveManifestEntries(bucket, cached_entries));
-    const uint64_t cache_store_duration_ms = cache_store_duration.Get();
-    metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_STORE_DURATION, cache_store_duration_ms);
-    metrics_->ObserveHistogram(ScanMetrics::SNAPSHOT_CACHE_STORE_DURATION,
-                               static_cast<double>(cache_store_duration_ms));
-    return Status::OK();
+    *manifest_entries = std::move(filtered_entries);
+    return candidate_entries;
 }
 
 std::shared_ptr<CacheKey> FileStoreScan::CreateSnapshotLiveManifestEntriesCacheKey(
@@ -445,26 +474,6 @@ std::shared_ptr<CacheKey> FileStoreScan::CreateSnapshotLiveManifestEntriesCacheK
     }
     return SnapshotLiveManifestEntriesCacheKey::ForExplicit(
         table_path_, BranchManager::NormalizeBranch(core_options_.GetBranch()), bucket);
-}
-
-Result<SnapshotLiveManifestEntries> FileStoreScan::LoadSnapshotLiveManifestEntries(
-    int32_t bucket) const {
-    auto supplier = [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
-        return std::shared_ptr<CacheValue>();
-    };
-    std::shared_ptr<CacheKey> cache_key = CreateSnapshotLiveManifestEntriesCacheKey(bucket);
-    const auto max_snapshots = core_options_.GetScanManifestEntryCacheMaxSnapshots();
-    Result<std::shared_ptr<CacheValue>> cache_result =
-        core_options_.GetCache()->Get(cache_key, supplier);
-    if (!cache_result.ok() || !cache_result.value()) {
-        return SnapshotLiveManifestEntries(max_snapshots);
-    }
-    Result<SnapshotLiveManifestEntries> deserialized = SnapshotLiveManifestEntries::Deserialize(
-        cache_result.value()->GetSegment(), max_snapshots, pool_);
-    if (!deserialized.ok()) {
-        return SnapshotLiveManifestEntries(max_snapshots);
-    }
-    return std::move(deserialized.value());
 }
 
 Status FileStoreScan::StoreSnapshotLiveManifestEntries(
@@ -619,25 +628,35 @@ bool FileStoreScan::FilterManifestByRowRanges(const ManifestFileMeta& manifest) 
 
 Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
                                            std::vector<ManifestEntry>* entries) const {
+    const RowRangeIndex* row_ranges = nullptr;
     if (row_range_index_ && core_options_.DataEvolutionEnabled() &&
         core_options_.ScanManifestEntryLazyDecodeEnabled()) {
-        return manifest_file_->ReadRowRangeEntries(
-            manifest.FileName(), row_range_index_.value(),
-            [this](const ManifestEntry& entry) -> Result<bool> {
-                return FilterManifestEntry(entry);
-            },
-            manifest.FileSize(), entries);
+        row_ranges = &row_range_index_.value();
     }
-    std::vector<ManifestEntry> unfiltered_entries;
-    PAIMON_RETURN_NOT_OK(manifest_file_->Read(
-        manifest.FileName(),
-        [this](const ManifestEntry& entry) -> Result<bool> { return FilterManifestEntry(entry); },
-        manifest.FileSize(), &unfiltered_entries));
-    entries->reserve(entries->size() + unfiltered_entries.size());
-    for (auto& entry : unfiltered_entries) {
-        entries->emplace_back(std::move(entry));
+    auto row_filter = CreateManifestEntryRowFilter(/*predicate_failed=*/nullptr);
+    return manifest_file_->ReadSelectedEntries(
+        manifest.FileName(), manifest.FileSize(), row_ranges, row_filter,
+        [this, partition_filtered =
+                   static_cast<bool>(row_filter)](const ManifestEntry& entry) -> Result<bool> {
+            return partition_filtered ? FilterNonPartitionManifestEntry(entry)
+                                      : FilterManifestEntry(entry);
+        },
+        entries);
+}
+
+std::function<Result<bool>(const InternalRow&)> FileStoreScan::CreateManifestEntryRowFilter(
+    bool* predicate_failed) const {
+    if (!partition_filter_ || !core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+        return nullptr;
     }
-    return Status::OK();
+    return [this, predicate_failed](const InternalRow& row) -> Result<bool> {
+        PAIMON_ASSIGN_OR_RAISE(BinaryRow partition, ManifestEntrySerializer::GetPartitionView(row));
+        Result<bool> result = partition_filter_->Test(partition_schema_, partition);
+        if (!result.ok() && predicate_failed) {
+            *predicate_failed = true;
+        }
+        return result;
+    };
 }
 
 Result<bool> FileStoreScan::FilterManifestEntry(const ManifestEntry& entry) const {
@@ -648,6 +667,10 @@ Result<bool> FileStoreScan::FilterManifestEntry(const ManifestEntry& entry) cons
             return false;
         }
     }
+    return FilterNonPartitionManifestEntry(entry);
+}
+
+Result<bool> FileStoreScan::FilterNonPartitionManifestEntry(const ManifestEntry& entry) const {
     if (only_read_real_buckets_ && entry.Bucket() < 0) {
         return false;
     }

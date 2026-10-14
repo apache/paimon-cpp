@@ -134,53 +134,69 @@ Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t buc
         });
 }
 
-Status ManifestFile::ReadRowRangeEntries(
-    const std::string& file_name, const RowRangeIndex& row_ranges,
-    const std::function<Result<bool>(const ManifestEntry&)>& filter,
-    std::optional<int64_t> file_size, std::vector<ManifestEntry>* entries) const {
+Status ManifestFile::ReadSelectedEntries(
+    const std::string& file_name, std::optional<int64_t> file_size, const RowRangeIndex* row_ranges,
+    const std::function<Result<bool>(const InternalRow&)>& row_filter,
+    const std::function<Result<bool>(const ManifestEntry&)>& entry_filter,
+    std::vector<ManifestEntry>* entries) const {
+    if (!row_ranges && !row_filter) {
+        return Read(file_name, entry_filter, file_size, entries);
+    }
     return ReadArrowBatches(
         file_name, file_size,
-        [this, &row_ranges, &filter,
+        [this, row_ranges, &row_filter, &entry_filter,
          entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
-            // ManifestMetaReader has aligned both the entry and its nested file schema. Probe
-            // the two range columns without allocating DataFileMeta, stats or binary keys.
-            // The serialized entry has a leading _VERSION field.
-            const auto& file_column = batch->field(ManifestEntry::kFileFieldIndex + 1);
-            if (file_column->type_id() != arrow::Type::STRUCT) {
-                return Status::Invalid("Manifest entry file metadata must be a struct");
+            // ManifestMetaReader has aligned both the entry and its nested file schema.
+            // Only row-range scans need to probe the file columns before entry decoding.
+            std::shared_ptr<arrow::StructArray> files;
+            std::shared_ptr<arrow::Int64Array> counts;
+            std::shared_ptr<arrow::Int64Array> first_ids;
+            if (row_ranges) {
+                const auto& file_column = batch->field(ManifestEntry::kFileFieldIndex + 1);
+                if (file_column->type_id() != arrow::Type::STRUCT) {
+                    return Status::Invalid("Manifest entry file metadata must be a struct");
+                }
+                files = checked_pointer_cast<arrow::StructArray>(file_column);
+                const auto& count_column = files->field(DataFileMeta::kRowCountFieldIndex);
+                const auto& first_column = files->field(DataFileMeta::kFirstRowIdFieldIndex);
+                if (count_column->type_id() != arrow::Type::INT64 ||
+                    first_column->type_id() != arrow::Type::INT64) {
+                    return Status::Invalid("Manifest entry row range must contain int64 fields");
+                }
+                counts = checked_pointer_cast<arrow::Int64Array>(count_column);
+                first_ids = checked_pointer_cast<arrow::Int64Array>(first_column);
             }
-            auto files = checked_pointer_cast<arrow::StructArray>(file_column);
-            const auto& count_column = files->field(DataFileMeta::kRowCountFieldIndex);
-            const auto& first_column = files->field(DataFileMeta::kFirstRowIdFieldIndex);
-            if (count_column->type_id() != arrow::Type::INT64 ||
-                first_column->type_id() != arrow::Type::INT64) {
-                return Status::Invalid("Manifest entry row range must contain int64 fields");
-            }
-            auto counts = checked_pointer_cast<arrow::Int64Array>(count_column);
-            auto first_ids = checked_pointer_cast<arrow::Int64Array>(first_column);
             ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
             for (int64_t i = 0; i < batch->length(); ++i) {
                 row.SetRowId(i);
                 PAIMON_RETURN_NOT_OK(
                     ManifestEntrySerializer::ValidateVersion(row.GetInt(kVersionFieldIndex)));
-                if (files->IsNull(i)) {
-                    return Status::Invalid(
-                        "ManifestEntry convert from row failed, with null DataFileMeta");
+                if (row_ranges) {
+                    if (files->IsNull(i)) {
+                        return Status::Invalid(
+                            "ManifestEntry convert from row failed, with null DataFileMeta");
+                    }
+                    if (!first_ids->IsNull(i) && !counts->IsNull(i)) {
+                        const int64_t first = first_ids->Value(i);
+                        const int64_t count = counts->Value(i);
+                        // Missing or invalid ranges cannot prove an entry is irrelevant. In
+                        // particular, do not overflow when computing the inclusive upper bound.
+                        if (first >= 0 && count > 0 &&
+                            first <= std::numeric_limits<int64_t>::max() - (count - 1) &&
+                            !row_ranges->Intersects(first, first + (count - 1))) {
+                            continue;
+                        }
+                    }
                 }
-                if (!first_ids->IsNull(i) && !counts->IsNull(i)) {
-                    const int64_t first = first_ids->Value(i);
-                    const int64_t count = counts->Value(i);
-                    // Missing or invalid ranges cannot prove an entry is irrelevant. In
-                    // particular, do not overflow when computing the inclusive upper bound.
-                    if (first >= 0 && count > 0 &&
-                        first <= std::numeric_limits<int64_t>::max() - (count - 1) &&
-                        !row_ranges.Intersects(first, first + (count - 1))) {
+                if (row_filter) {
+                    PAIMON_ASSIGN_OR_RAISE(bool keep, row_filter(row));
+                    if (!keep) {
                         continue;
                     }
                 }
                 PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
-                if (filter) {
-                    PAIMON_ASSIGN_OR_RAISE(bool keep, filter(entry));
+                if (entry_filter) {
+                    PAIMON_ASSIGN_OR_RAISE(bool keep, entry_filter(entry));
                     if (!keep) {
                         continue;
                     }

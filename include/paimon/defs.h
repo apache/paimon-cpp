@@ -224,7 +224,8 @@ struct PAIMON_EXPORT Options {
     static const char SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[];
 
     /// "scan.manifest-entry.lazy-decode.enabled" - Whether to deserialize only manifest entries
-    /// for the target bucket when rebuilding the cache. Default value is true.
+    /// selected by bucket, partition, and row-range pruning before constructing file metadata.
+    /// Applies to supported manifest read paths with or without caching. Default value is true.
     static const char SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[];
 
     /// "prefetch.io-metrics.enabled" - Whether to collect per-I/O metrics for prefetch reads.
