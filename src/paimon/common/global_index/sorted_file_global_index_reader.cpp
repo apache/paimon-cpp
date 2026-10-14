@@ -305,8 +305,7 @@ Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::Compleme
             std::shared_ptr<BitmapGlobalIndexResult> bitmap_result =
                 std::dynamic_pointer_cast<BitmapGlobalIndexResult>(excluded_result);
             if (bitmap_result == nullptr) {
-                return Status::Invalid(
-                    "SortedFileGlobalIndexReader expects bitmap index results.");
+                return Status::Invalid("SortedFileGlobalIndexReader expects bitmap index results.");
             }
             PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* excluded, bitmap_result->GetBitmap());
             result -= *excluded;

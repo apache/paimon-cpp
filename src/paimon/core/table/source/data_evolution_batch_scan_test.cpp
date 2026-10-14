@@ -118,8 +118,7 @@ TEST(DataEvolutionBatchScanTest, TestWrapToIndexedSplitsClipsNegativePredicateCo
     ASSERT_EQ(plan->Splits().size(), 1);
     auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(plan->Splits()[0]);
     ASSERT_NE(indexed_split, nullptr);
-    ASSERT_EQ(indexed_split->RowRanges(),
-              std::vector<Range>({Range(10, 14), Range(16, 19)}));
+    ASSERT_EQ(indexed_split->RowRanges(), std::vector<Range>({Range(10, 14), Range(16, 19)}));
 }
 
 TEST(DataEvolutionBatchScanTest, TestWrapToIndexedSplitsWithoutIntersection) {

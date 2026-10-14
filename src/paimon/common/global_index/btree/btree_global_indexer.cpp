@@ -67,7 +67,7 @@ Result<std::unique_ptr<BTreeGlobalIndexer>> BTreeGlobalIndexer::Create(
 }
 
 Result<std::optional<std::vector<std::string>>> BTreeGlobalIndexer::GetExtraFieldNames() const {
-    // TODO: Support multi-field composite BTree indexes consistently with Java.
+    // TODO(xinyu.lxy): Support multi-field composite BTree indexes consistently with Java.
     return std::optional<std::vector<std::string>>(std::nullopt);
 }
 

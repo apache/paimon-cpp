@@ -130,8 +130,9 @@ Result<std::shared_ptr<BloomFilter>> BloomFilter::Create(int64_t expected_entrie
     return std::make_shared<BloomFilter>(expected_entries, bytes);
 }
 
-Result<std::shared_ptr<BloomFilter::Builder>> BloomFilter::FixedBuilder(
-    int64_t expected_entries, double fpp, MemoryPool* pool) {
+Result<std::shared_ptr<BloomFilter::Builder>> BloomFilter::FixedBuilder(int64_t expected_entries,
+                                                                        double fpp,
+                                                                        MemoryPool* pool) {
     if (pool == nullptr) {
         return Status::Invalid("Memory pool must not be null for bloom filter builder");
     }

@@ -104,12 +104,11 @@ class LazyFilteredBitmapReaderTest : public ::testing::Test {
         for (const GlobalIndexIOMeta& meta : metas) {
             total_row_count += meta.row_count;
         }
-        EXPECT_OK_AND_ASSIGN(
-            std::shared_ptr<LazyFilteredBitmapReader> reader,
-            LazyFilteredBitmapReader::Create(file_reader == nullptr ? file_manager_ : file_reader,
-                                             metas, arrow::utf8(), fallback_scan_max_size,
-                                             total_row_count, pool_,
-                                             /*executor=*/nullptr));
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<LazyFilteredBitmapReader> reader,
+                             LazyFilteredBitmapReader::Create(
+                                 file_reader == nullptr ? file_manager_ : file_reader, metas,
+                                 arrow::utf8(), fallback_scan_max_size, total_row_count, pool_,
+                                 /*executor=*/nullptr));
         return reader;
     }
 

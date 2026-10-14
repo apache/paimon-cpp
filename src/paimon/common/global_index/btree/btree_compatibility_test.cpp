@@ -570,9 +570,8 @@ TEST_F(BTreeCompatibilityTest, ReadAndQueryIntData) {
         auto records = ParseCsvFile(csv_path);
         ASSERT_EQ(static_cast<int32_t>(records.size()), count);
 
-        ASSERT_OK_AND_ASSIGN(auto reader,
-                             CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
-                                                   records.size()));
+        ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
+                                                                records.size()));
         RunIntQueries(reader, records);
     }
 }
@@ -587,9 +586,8 @@ TEST_F(BTreeCompatibilityTest, ReadAndQueryStringData) {
         auto records = ParseCsvFile(csv_path);
         ASSERT_EQ(static_cast<int32_t>(records.size()), count);
 
-        ASSERT_OK_AND_ASSIGN(auto reader,
-                             CreateReaderFromFiles(bin_path, meta_path, arrow::utf8(),
-                                                   records.size()));
+        ASSERT_OK_AND_ASSIGN(
+            auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::utf8(), records.size()));
         RunStringQueries(reader, records);
     }
 }
@@ -605,8 +603,7 @@ TEST_F(BTreeCompatibilityTest, ReadAndQueryFloatData) {
     ASSERT_EQ(static_cast<int32_t>(records.size()), count);
 
     ASSERT_OK_AND_ASSIGN(
-        auto reader,
-        CreateReaderFromFiles(bin_path, meta_path, arrow::float32(), records.size()));
+        auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::float32(), records.size()));
     RunFloatQueries(reader, records);
 }
 
@@ -620,8 +617,8 @@ TEST_F(BTreeCompatibilityTest, AllNulls) {
     ASSERT_FALSE(records.empty());
     auto count = static_cast<int32_t>(records.size());
 
-    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
-                                                            records.size()));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(), records.size()));
 
     // All rows should be null
     {
@@ -659,8 +656,8 @@ TEST_F(BTreeCompatibilityTest, NoNulls) {
     ASSERT_FALSE(records.empty());
     auto count = static_cast<int32_t>(records.size());
 
-    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
-                                                            records.size()));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(), records.size()));
 
     // No rows should be null
     {
@@ -727,8 +724,8 @@ TEST_F(BTreeCompatibilityTest, DuplicateKeys) {
     auto records = ParseCsvFile(csv_path);
     ASSERT_FALSE(records.empty());
 
-    ASSERT_OK_AND_ASSIGN(auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(),
-                                                            records.size()));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow::int32(), records.size()));
 
     // VisitIsNull
     {
@@ -923,8 +920,7 @@ TEST_F(BTreeCompatibilityTest, RowCountConsistency) {
         auto count = static_cast<int32_t>(records.size());
 
         ASSERT_OK_AND_ASSIGN(
-            auto reader,
-            CreateReaderFromFiles(bin_path, meta_path, arrow_type, records.size()));
+            auto reader, CreateReaderFromFiles(bin_path, meta_path, arrow_type, records.size()));
 
         ASSERT_OK_AND_ASSIGN(auto null_result, reader->VisitIsNull());
         auto null_ids = CollectRowIds(null_result);

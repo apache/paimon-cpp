@@ -65,8 +65,8 @@ Result<std::shared_ptr<BTreeGlobalIndexWriter>> BTreeGlobalIndexWriter::Create(
                            file_writer->NewFileName(BtreeDefs::kIdentifier));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output_stream,
                            file_writer->NewOutputStream(index_file_name));
-    auto sst_file_writer = std::make_unique<SstFileWriter>(
-        output_stream, bloom_filter_builder, block_size, compression_factory, pool);
+    auto sst_file_writer = std::make_unique<SstFileWriter>(output_stream, bloom_filter_builder,
+                                                           block_size, compression_factory, pool);
     return std::shared_ptr<BTreeGlobalIndexWriter>(new BTreeGlobalIndexWriter(
         field_name, arrow_type, key_serializer, file_writer, index_file_name, output_stream,
         std::move(sst_file_writer), pool));

@@ -58,8 +58,7 @@ class SortedFileGlobalIndexReader : public GlobalIndexReader {
 
  protected:
     SortedFileGlobalIndexReader(std::unique_ptr<SortedFileMetaSelector> file_selector,
-                                int64_t fallback_scan_max_size,
-                                int64_t total_row_count,
+                                int64_t fallback_scan_max_size, int64_t total_row_count,
                                 std::shared_ptr<Executor> executor);
 
     virtual Result<std::shared_ptr<GlobalIndexReader>> OpenReader(

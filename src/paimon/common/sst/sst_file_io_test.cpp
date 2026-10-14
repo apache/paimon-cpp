@@ -95,8 +95,7 @@ TEST_P(SstFileIOTest, TestSimple) {
     // write data
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter::Builder> bloom_filter_builder,
                          BloomFilter::FixedBuilder(30, 0.01, pool_.get()));
-    auto writer =
-        std::make_shared<SstFileWriter>(out, bloom_filter_builder, 50, factory, pool_);
+    auto writer = std::make_shared<SstFileWriter>(out, bloom_filter_builder, 50, factory, pool_);
     std::set<int32_t> value_hash;
     // k1-k5
     for (size_t i = 1; i <= 5; i++) {

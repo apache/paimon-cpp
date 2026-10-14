@@ -1225,11 +1225,11 @@ TEST_F(LuminaGlobalIndexTest, TestInvalidInputs) {
             auto file_reader = std::make_shared<GlobalIndexFileManager>(
                 fs_, path_factory, /*checkpoint_path_factory=*/nullptr);
 
-            ASSERT_NOK_WITH_MSG(global_index->CreateReader(CreateArrowSchema(data_type_).get(),
-                                                           file_reader, {meta, meta},
-                                                           meta.row_count,
-                                                           /*row_ranges=*/std::nullopt, pool_),
-                                "lumina index only has one index file per shard");
+            ASSERT_NOK_WITH_MSG(
+                global_index->CreateReader(CreateArrowSchema(data_type_).get(), file_reader,
+                                           {meta, meta}, meta.row_count,
+                                           /*row_ranges=*/std::nullopt, pool_),
+                "lumina index only has one index file per shard");
         }
         {
             auto data_type = arrow::struct_({arrow::field("f0", arrow::list(arrow::float32())),

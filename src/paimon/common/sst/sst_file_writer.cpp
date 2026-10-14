@@ -28,10 +28,7 @@ SstFileWriter::SstFileWriter(const std::shared_ptr<OutputStream>& out,
                              int32_t block_size,
                              const std::shared_ptr<BlockCompressionFactory>& factory,
                              const std::shared_ptr<MemoryPool>& pool)
-    : pool_(pool),
-      out_(out),
-      bloom_filter_builder_(bloom_filter_builder),
-      block_size_(block_size) {
+    : pool_(pool), out_(out), bloom_filter_builder_(bloom_filter_builder), block_size_(block_size) {
     // block_size * 1.1 exceeds INT32_MAX for block_size above ~1.9GB; saturate instead of
     // relying on the undefined double->int32_t conversion.
     data_block_writer_ =
@@ -49,8 +46,7 @@ Status SstFileWriter::Write(std::shared_ptr<Bytes>&& key, std::shared_ptr<Bytes>
         PAIMON_RETURN_NOT_OK(Flush());
     }
     if (bloom_filter_builder_) {
-        PAIMON_RETURN_NOT_OK(
-            bloom_filter_builder_->AddHash(MurmurHashUtils::HashBytes(key)));
+        PAIMON_RETURN_NOT_OK(bloom_filter_builder_->AddHash(MurmurHashUtils::HashBytes(key)));
     }
     return Status::OK();
 }

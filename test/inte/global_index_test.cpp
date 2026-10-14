@@ -3339,8 +3339,8 @@ TEST_P(GlobalIndexTest, TestBTreeWriteCommitScanReadIndexWithPartition) {
         ASSERT_EQ(result->ToString(), "{6}");
 
         // "Tony" is in the selected index file but outside the requested row range.
-        ASSERT_OK_AND_ASSIGN(
-            result, index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Tony", 4)));
+        ASSERT_OK_AND_ASSIGN(result,
+                             index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Tony", 4)));
         ASSERT_TRUE(result);
         ASSERT_EQ(result->ToString(), "{}");
     }

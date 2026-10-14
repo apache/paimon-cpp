@@ -47,12 +47,12 @@ class PAIMON_EXPORT BloomFilter {
 
     /// Creates a builder backed by a Bloom filter sized from the expected entry count.
     static Result<std::shared_ptr<Builder>> FixedBuilder(int64_t expected_entries, double fpp,
-                                                        MemoryPool* pool);
+                                                         MemoryPool* pool);
 
     /// Creates a builder which retains hashes and sizes the Bloom filter from the actual entry
     /// count when Build is called.
-    static Result<std::shared_ptr<Builder>> DynamicBuilder(
-        double fpp, const std::shared_ptr<MemoryPool>& pool);
+    static Result<std::shared_ptr<Builder>> DynamicBuilder(double fpp,
+                                                           const std::shared_ptr<MemoryPool>& pool);
 
  public:
     BloomFilter(int64_t expected_entries, int32_t byte_length);
