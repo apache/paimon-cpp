@@ -32,6 +32,16 @@ TEST(LocalFileTest, TestSchemeCaseInsensitive) {
     ASSERT_NOK(LocalFile::Create("s3:/tmp"));
 }
 
+TEST(LocalFileTest, TestGetFileStatusForMissingFile) {
+    auto test_root_dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(test_root_dir);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<LocalFile> file,
+                         LocalFile::Create(test_root_dir->Str() + "/missing-file"));
+
+    Result<FileStatus> status = file->GetFileStatus();
+    ASSERT_TRUE(status.status().IsNotExist()) << status.status().ToString();
+}
+
 TEST(LocalFileTest, TestReadWriteEmptyContent) {
     auto test_root_dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);
