@@ -542,8 +542,11 @@ if(PAIMON_BUILD_TESTS)
        AND CMAKE_SIZEOF_VOID_P EQUAL 8
        AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
         add_paimon_test(executor_submission_test
-                       SOURCES common/executor/executor_submission_test.cpp
-                       STATIC_LINK_LIBS paimon_static ${GTEST_LINK_TOOLCHAIN})
+                        SOURCES
+                        common/executor/executor_submission_test.cpp
+                        STATIC_LINK_LIBS
+                        paimon_static
+                        ${GTEST_LINK_TOOLCHAIN})
         target_link_options(paimon-executor-submission-test PRIVATE "LINKER:--wrap=_Znwm")
         set_tests_properties(paimon-executor-submission-test PROPERTIES TIMEOUT 30)
     endif()
