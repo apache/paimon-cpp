@@ -32,7 +32,8 @@ Result<std::shared_ptr<BTreeGlobalIndexReader>> BTreeGlobalIndexReader::Create(
     const std::shared_ptr<SstFileReader>& sst_file_reader, RoaringBitmap64&& null_bitmap,
     const std::optional<MemorySlice>& min_key_slice,
     const std::optional<MemorySlice>& max_key_slice,
-    const std::shared_ptr<KeySerializer>& key_serializer) {
+    const std::shared_ptr<KeySerializer>& key_serializer,
+    std::optional<RoaringBitmap64> row_id_filter) {
     if (key_serializer == nullptr) {
         return Status::Invalid("Cannot create BTreeGlobalIndexReader without a key serializer.");
     }
@@ -46,17 +47,19 @@ Result<std::shared_ptr<BTreeGlobalIndexReader>> BTreeGlobalIndexReader::Create(
     }
     return std::shared_ptr<BTreeGlobalIndexReader>(new BTreeGlobalIndexReader(
         sst_file_reader, std::move(null_bitmap), std::move(min_key), std::move(max_key),
-        min_key_slice, max_key_slice, key_serializer));
+        min_key_slice, max_key_slice, key_serializer, std::move(row_id_filter)));
 }
 
 BTreeGlobalIndexReader::BTreeGlobalIndexReader(
     const std::shared_ptr<SstFileReader>& sst_file_reader, RoaringBitmap64&& null_bitmap,
     std::optional<Literal> min_key, std::optional<Literal> max_key,
     std::optional<MemorySlice> min_key_slice, std::optional<MemorySlice> max_key_slice,
-    const std::shared_ptr<KeySerializer>& key_serializer)
+    const std::shared_ptr<KeySerializer>& key_serializer,
+    std::optional<RoaringBitmap64> row_id_filter)
     : sst_file_reader_(sst_file_reader),
       key_serializer_(key_serializer),
       null_bitmap_(std::move(null_bitmap)),
+      row_id_filter_(std::move(row_id_filter)),
       min_key_(std::move(min_key)),
       max_key_(std::move(max_key)),
       min_key_slice_(std::move(min_key_slice)),
@@ -73,7 +76,10 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitIsNotNul
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitIsNull() {
     return std::make_shared<BitmapGlobalIndexResult>(
         [reader = shared_from_this()]() -> Result<RoaringBitmap64> {
-            return reader->null_bitmap_;
+            if (!reader->row_id_filter_) {
+                return reader->null_bitmap_;
+            }
+            return RoaringBitmap64::And(reader->null_bitmap_, reader->row_id_filter_.value());
         });
 }
 
@@ -220,8 +226,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitEqual(
     const Literal& literal) {
     return std::make_shared<BitmapGlobalIndexResult>(
         [reader = shared_from_this(), literal = literal]() -> Result<RoaringBitmap64> {
-            return reader->RangeQuery(literal, literal, /*from_inclusive=*/true,
-                                      /*to_inclusive=*/true);
+            return reader->PointQuery(literal);
         });
 }
 
@@ -240,13 +245,31 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitIn(
         [reader = shared_from_this(), literals = literals]() -> Result<RoaringBitmap64> {
             RoaringBitmap64 result;
             for (const auto& literal : literals) {
-                PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 literal_result,
-                                       reader->RangeQuery(literal, literal, /*from_inclusive=*/true,
-                                                          /*to_inclusive=*/true));
+                // SQL IN never matches NULL. Skip it rather than trying to serialize a null key.
+                if (literal.IsNull()) {
+                    continue;
+                }
+                PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 literal_result, reader->PointQuery(literal));
                 result |= literal_result;
             }
             return result;
         });
+}
+
+Result<RoaringBitmap64> BTreeGlobalIndexReader::PointQuery(const Literal& literal) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> key_bytes, key_serializer_->Serialize(literal));
+    PAIMON_RETURN_NOT_OK(key_serializer_->ValidateSerializedKey(MemorySlice::Wrap(key_bytes)));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> row_ids, sst_file_reader_->Lookup(key_bytes));
+    if (row_ids == nullptr) {
+        return RoaringBitmap64();
+    }
+    std::vector<int64_t> deserialized_row_ids;
+    PAIMON_RETURN_NOT_OK(DeserializeRowIds(MemorySlice::Wrap(row_ids), &deserialized_row_ids));
+    RoaringBitmap64 result;
+    if (!deserialized_row_ids.empty()) {
+        result.AddMany(deserialized_row_ids.size(), deserialized_row_ids.data());
+    }
+    return result;
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitNotIn(
@@ -433,7 +456,9 @@ Status BTreeGlobalIndexReader::DeserializeRowIds(const MemorySlice& slice,
     out->reserve(out->size() + static_cast<size_t>(num_row_ids));
     for (int32_t i = 0; i < num_row_ids; i++) {
         PAIMON_ASSIGN_OR_RAISE(int64_t row_id, input.ReadVarLenLong());
-        out->push_back(row_id);
+        if (!row_id_filter_ || row_id_filter_->Contains(row_id)) {
+            out->push_back(row_id);
+        }
     }
     return Status::OK();
 }

@@ -98,7 +98,9 @@ Result<std::shared_ptr<GlobalIndexWriter>> BitmapGlobalIndexer::CreateWriter(
 
 Result<std::shared_ptr<GlobalIndexReader>> BitmapGlobalIndexer::CreateReader(
     ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-    const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool) const {
+    const std::vector<GlobalIndexIOMeta>& files, int64_t total_row_count,
+    const std::optional<std::vector<Range>>& /*row_ranges*/,
+    const std::shared_ptr<MemoryPool>& pool) const {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(arrow_schema));
     if (schema->num_fields() != 1) {
@@ -113,7 +115,7 @@ Result<std::shared_ptr<GlobalIndexReader>> BitmapGlobalIndexer::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<LazyFilteredBitmapReader> reader,
         LazyFilteredBitmapReader::Create(file_reader, files, schema->field(0)->type(),
-                                         fallback_scan_max_size_, pool, executor));
+                                         fallback_scan_max_size_, total_row_count, pool, executor));
     return std::shared_ptr<GlobalIndexReader>(std::move(reader));
 }
 

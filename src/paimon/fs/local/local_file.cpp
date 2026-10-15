@@ -164,6 +164,10 @@ Result<FileStatus> LocalFile::GetFileStatus() const {
     struct stat buf;
     if (stat(path_.c_str(), &buf) < 0) {
         int32_t cur_errno = errno;
+        if (cur_errno == ENOENT) {
+            return Status::NotExist(fmt::format("get file '{}' status failed, ec: {}", path_,
+                                                std::strerror(cur_errno)));
+        }
         return Status::IOError(
             fmt::format("get file '{}' status failed, ec: {}", path_, std::strerror(cur_errno)));
     }

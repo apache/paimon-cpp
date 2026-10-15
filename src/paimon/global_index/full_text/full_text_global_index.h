@@ -46,7 +46,8 @@ class FullTextGlobalIndex : public GlobalIndexer {
 
     Result<std::shared_ptr<GlobalIndexReader>> CreateReader(
         ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-        const std::vector<GlobalIndexIOMeta>& files,
+        const std::vector<GlobalIndexIOMeta>& files, int64_t total_row_count,
+        const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<MemoryPool>& pool) const override;
 
  private:

@@ -143,8 +143,8 @@ Result<std::vector<GlobalIndexIOMeta>> BitmapGlobalIndexWriter::Finish() {
     SortedIndexFileMeta index_meta(first_key_bytes, last_key_bytes, !null_rows_.IsEmpty());
     std::shared_ptr<Bytes> metadata = index_meta.Serialize(pool_.get());
     PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(file_name_));
-    return std::vector<GlobalIndexIOMeta>{
-        GlobalIndexIOMeta(file_writer_->ToPath(file_name_), file_size, std::move(metadata))};
+    return std::vector<GlobalIndexIOMeta>{GlobalIndexIOMeta(
+        file_writer_->ToPath(file_name_), file_size, row_count_, std::move(metadata))};
 }
 
 Status BitmapGlobalIndexWriter::FlushCurrentBitmap() {

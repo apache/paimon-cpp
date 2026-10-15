@@ -38,7 +38,9 @@ Result<std::shared_ptr<GlobalIndexWriter>> RangeBitmapGlobalIndex::CreateWriter(
 
 Result<std::shared_ptr<GlobalIndexReader>> RangeBitmapGlobalIndex::CreateReader(
     ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-    const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool) const {
+    const std::vector<GlobalIndexIOMeta>& files, int64_t /*total_row_count*/,
+    const std::optional<std::vector<Range>>& /*row_ranges*/,
+    const std::shared_ptr<MemoryPool>& pool) const {
     if (files.size() != 1) {
         return Status::Invalid(
             "invalid GlobalIndexIOMeta for RangeBitmapGlobalIndex, exist multiple metas");

@@ -36,6 +36,9 @@ struct BtreeDefs {
     /// "btree-index.block-size" - The block size to use for BTreeIndex.
     /// Default value is 64 KB.
     static inline const char kBtreeIndexBlockSize[] = "btree-index.block-size";
+    /// "btree-index.bloom-filter.enabled" - Whether to enable the Bloom filter for BTree index
+    /// point lookups. Default value is false.
+    static inline const char kBtreeIndexBloomFilterEnabled[] = "btree-index.bloom-filter.enabled";
     /// "btree-index.cache-size" - The cache size to use for BTreeIndex.
     /// Default value is 128 MB.
     static inline const char kBtreeIndexCacheSize[] = "btree-index.cache-size";
@@ -66,5 +69,6 @@ struct BtreeDefs {
     static inline const char kDefaultBtreeIndexFallbackScanMaxSize[] = "256MB";
     static inline const int32_t kDefaultBtreeIndexCompressionLevel = 1;
     static inline const double kDefaultBtreeIndexHighPriorityPoolRatio = 0.1;
+    static inline const bool kDefaultBtreeIndexBloomFilterEnabled = false;
 };
 }  // namespace paimon

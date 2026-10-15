@@ -38,6 +38,7 @@
 #include "paimon/global_index/io/global_index_file_writer.h"
 #include "paimon/io/buffered_input_stream.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/memory/memory_segment.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/testharness.h"
@@ -121,6 +122,14 @@ class BTreeGlobalIndexIntegrationTest : public ::testing::Test,
             << ", expected=" << RoaringBitmap64::From(expected).ToString();
     }
 
+    static int64_t TotalRowCount(const std::vector<GlobalIndexIOMeta>& metas) {
+        int64_t total_row_count = 0;
+        for (const GlobalIndexIOMeta& meta : metas) {
+            total_row_count += meta.row_count;
+        }
+        return total_row_count;
+    }
+
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<BlockCompressionFactory> compression_factory_;
     std::unique_ptr<UniqueTestDirectory> test_dir_;
@@ -133,8 +142,10 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadIntData) {
     auto field = arrow::field("int_field", arrow::int32());
     auto c_schema = CreateArrowSchema(field);
 
-    std::map<std::string, std::string> options = {{BtreeDefs::kBtreeIndexBlockSize, "4096"},
-                                                  {BtreeDefs::kBtreeIndexCompression, GetParam()}};
+    std::map<std::string, std::string> options = {
+        {BtreeDefs::kBtreeIndexBlockSize, "4096"},
+        {BtreeDefs::kBtreeIndexCompression, GetParam()},
+        {BtreeDefs::kBtreeIndexBloomFilterEnabled, "true"}};
     ASSERT_OK_AND_ASSIGN(auto indexer, BTreeGlobalIndexer::Create(options));
     ASSERT_OK_AND_ASSIGN(auto writer,
                          indexer->CreateWriter("int_field", c_schema.get(), file_writer, pool_));
@@ -163,12 +174,27 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadIntData) {
     ASSERT_OK(writer->AddBatch(&c_array, std::move(row_ids)));
     ASSERT_OK_AND_ASSIGN(auto metas, writer->Finish());
     ASSERT_EQ(metas.size(), 1);
+    ASSERT_EQ(metas[0].row_count, array->length());
+    ASSERT_OK_AND_ASSIGN(auto index_input, fs_->Open(metas[0].file_path));
+    ASSERT_OK(index_input->Seek(metas[0].file_size - BTreeFileFooter::kEncodingLength,
+                                SeekOrigin::FS_SEEK_SET));
+    MemorySegment footer_segment =
+        MemorySegment::AllocateHeapMemory(BTreeFileFooter::kEncodingLength, pool_.get());
+    ASSERT_OK_AND_ASSIGN(int64_t footer_bytes_read,
+                         index_input->Read(footer_segment.MutableData(), footer_segment.Size()));
+    ASSERT_EQ(footer_bytes_read, BTreeFileFooter::kEncodingLength);
+    MemorySliceInput footer_input = MemorySlice::Wrap(footer_segment).ToInput();
+    ASSERT_OK_AND_ASSIGN(auto footer, BTreeFileFooter::Read(&footer_input));
+    ASSERT_TRUE(footer->GetBloomFilterHandle().has_value());
+    ASSERT_EQ(footer->GetBloomFilterHandle()->ExpectedEntries(), 5);
+    ASSERT_OK(index_input->Close());
 
     // Now read back
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
     ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+                         indexer->CreateReader(c_schema.get(), file_reader, metas, array->length(),
+                                               /*row_ranges=*/std::nullopt, pool_));
 
     // All non-null row ids: {0,1,3,4,6,7,8,9,10}
     // Null row ids: {2,5,11}
@@ -214,6 +240,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadIntData) {
         Literal literal_3(3);
         ASSERT_OK_AND_ASSIGN(auto result, reader->VisitNotEqual(literal_3));
         CheckResult(result, {0, 1, 3, 4, 7, 8, 9, 10});
+
+        ASSERT_OK_AND_ASSIGN(result, reader->VisitNotEqual(Literal(FieldType::INT)));
+        CheckResult(result, {});
     }
 
     // --- VisitLessThan ---
@@ -270,6 +299,11 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadIntData) {
         ASSERT_OK_AND_ASSIGN(auto result, reader->VisitIn(in_literals));
         CheckResult(result, {0, 1, 7});
 
+        // SQL IN ignores NULL literals.
+        std::vector<Literal> in_with_null = {Literal(1), Literal(FieldType::INT), Literal(4)};
+        ASSERT_OK_AND_ASSIGN(result, reader->VisitIn(in_with_null));
+        CheckResult(result, {0, 1, 7});
+
         // In {99} (not present) -> empty
         std::vector<Literal> in_missing = {Literal(99)};
         ASSERT_OK_AND_ASSIGN(result, reader->VisitIn(in_missing));
@@ -282,6 +316,35 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadIntData) {
         std::vector<Literal> not_in_literals = {Literal(1), Literal(5)};
         ASSERT_OK_AND_ASSIGN(auto result, reader->VisitNotIn(not_in_literals));
         CheckResult(result, {3, 4, 6, 7});
+
+        std::vector<Literal> not_in_with_null = {Literal(1), Literal(FieldType::INT)};
+        ASSERT_OK_AND_ASSIGN(result, reader->VisitNotIn(not_in_with_null));
+        CheckResult(result, {});
+    }
+
+    // Verify that row ranges are converted to a row-id filter and applied to every query result.
+    std::vector<Range> row_ranges = {Range(1, 8), Range(10, 10)};
+    c_schema = CreateArrowSchema(field);
+    ASSERT_OK_AND_ASSIGN(auto filtered_reader,
+                         indexer->CreateReader(c_schema.get(), file_reader, metas, array->length(),
+                                               row_ranges, pool_));
+
+    {
+        ASSERT_OK_AND_ASSIGN(auto result, filtered_reader->VisitEqual(Literal(5)));
+        CheckResult(result, {8, 10});
+    }
+    {
+        std::vector<Literal> literals = {Literal(1), Literal(4), Literal(5)};
+        ASSERT_OK_AND_ASSIGN(auto result, filtered_reader->VisitIn(literals));
+        CheckResult(result, {1, 7, 8, 10});
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(auto result, filtered_reader->VisitLessThan(Literal(4)));
+        CheckResult(result, {1, 3, 4, 6});
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(auto result, filtered_reader->VisitIsNull());
+        CheckResult(result, {2, 5});
     }
 }
 
@@ -321,8 +384,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadStringData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,1,3,4,6,7,8}, Null rows: {2,5}
 
@@ -501,8 +565,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteEmptyStringKeyMetadata) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     Literal empty(FieldType::STRING, "", 0);
     ASSERT_OK_AND_ASSIGN(auto result, reader->VisitEqual(empty));
@@ -542,8 +607,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadBigIntData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
 
@@ -631,8 +697,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadFloatData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
 
@@ -719,8 +786,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadDoubleData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
 
@@ -806,8 +874,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadAllNonNull) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // All rows: {0,1,2,3,4,5}, No null rows
 
@@ -914,8 +983,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadBoolData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,1,3,4,6,7}, Null rows: {2,5}
 
@@ -987,8 +1057,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadTinyIntData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
 
@@ -1066,8 +1137,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadSmallIntData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
 
@@ -1146,8 +1218,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadTimestampCompactData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
 
@@ -1227,8 +1300,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadTimestampNonCompactData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
     // micros: 1000000 -> millis=1000, nanos_of_millis=0
@@ -1312,8 +1386,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadDecimalCompactData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
 
@@ -1402,8 +1477,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadDecimalNonCompactData) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,2,3,4,6}, Null rows: {1,5}
 
@@ -1453,8 +1529,10 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadAllNull) {
     auto field = arrow::field("int_field", arrow::int32());
     auto c_schema = CreateArrowSchema(field);
 
-    std::map<std::string, std::string> options = {{BtreeDefs::kBtreeIndexBlockSize, "128"},
-                                                  {BtreeDefs::kBtreeIndexCompression, GetParam()}};
+    std::map<std::string, std::string> options = {
+        {BtreeDefs::kBtreeIndexBlockSize, "128"},
+        {BtreeDefs::kBtreeIndexCompression, GetParam()},
+        {BtreeDefs::kBtreeIndexBloomFilterEnabled, "true"}};
     ASSERT_OK_AND_ASSIGN(auto indexer, BTreeGlobalIndexer::Create(options));
     ASSERT_OK_AND_ASSIGN(auto writer,
                          indexer->CreateWriter("int_field", c_schema.get(), file_writer, pool_));
@@ -1475,10 +1553,26 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadAllNull) {
     ASSERT_OK_AND_ASSIGN(auto metas, writer->Finish());
     ASSERT_EQ(metas.size(), 1);
 
+    // Bloom is enabled, but nulls are not indexed as keys, so an all-null index must not write
+    // an empty Bloom block or advertise a Bloom handle in the footer.
+    ASSERT_OK_AND_ASSIGN(auto index_input, fs_->Open(metas[0].file_path));
+    ASSERT_OK(index_input->Seek(metas[0].file_size - BTreeFileFooter::kEncodingLength,
+                                SeekOrigin::FS_SEEK_SET));
+    MemorySegment footer_segment =
+        MemorySegment::AllocateHeapMemory(BTreeFileFooter::kEncodingLength, pool_.get());
+    ASSERT_OK_AND_ASSIGN(int64_t footer_bytes_read,
+                         index_input->Read(footer_segment.MutableData(), footer_segment.Size()));
+    ASSERT_EQ(footer_bytes_read, BTreeFileFooter::kEncodingLength);
+    MemorySliceInput footer_input = MemorySlice::Wrap(footer_segment).ToInput();
+    ASSERT_OK_AND_ASSIGN(auto footer, BTreeFileFooter::Read(&footer_input));
+    ASSERT_FALSE(footer->GetBloomFilterHandle().has_value());
+    ASSERT_OK(index_input->Close());
+
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // All rows are null: {0,1,2,3}, No non-null rows
 
@@ -1646,8 +1740,10 @@ TEST_F(BTreeGlobalIndexIntegrationTest, WriteAndReadLargeDataWithSmallBlocks) {
 
         auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
         c_schema = CreateArrowSchema(field);
-        ASSERT_OK_AND_ASSIGN(auto reader,
-                             read_indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+        ASSERT_OK_AND_ASSIGN(
+            auto reader,
+            read_indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                       /*row_ranges=*/std::nullopt, pool_));
 
         // check input stream and read buffer size
         {
@@ -1763,10 +1859,12 @@ TEST_P(BTreeGlobalIndexIntegrationTest, CreateReaderWithMultiFieldSchema) {
                                                   {BtreeDefs::kBtreeIndexCompression, GetParam()}};
     ASSERT_OK_AND_ASSIGN(auto indexer, BTreeGlobalIndexer::Create(options));
 
-    GlobalIndexIOMeta meta("fake_path", 100, nullptr);
+    GlobalIndexIOMeta meta("fake_path", 100, /*row_count=*/0, nullptr);
     std::vector<GlobalIndexIOMeta> metas = {meta};
 
-    ASSERT_NOK_WITH_MSG(indexer->CreateReader(c_schema.get(), file_reader, metas, pool_),
+    ASSERT_NOK_WITH_MSG(indexer->CreateReader(c_schema.get(), file_reader, metas,
+                                              /*total_row_count=*/0,
+                                              /*row_ranges=*/std::nullopt, pool_),
                         "supposed to have single field");
 }
 
@@ -1777,7 +1875,7 @@ TEST_F(BTreeGlobalIndexIntegrationTest, CreateWriterWithMissingField) {
     ASSERT_TRUE(struct_type);
     ASSERT_NOK_WITH_MSG(
         BTreeGlobalIndexWriter::Create("nonexistent_field", struct_type, file_writer, 4096,
-                                       compression_factory_, pool_),
+                                       compression_factory_, /*bloom_filter_enabled=*/false, pool_),
         "not in arrow_array when Create BTreeGlobalIndexWriter");
 }
 
@@ -1873,7 +1971,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, InvalidReadOptions) {
     ASSERT_OK_AND_ASSIGN(auto indexer, BTreeGlobalIndexer::Create(options));
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
-    ASSERT_NOK_WITH_MSG(indexer->CreateReader(c_schema.get(), file_reader, /*files=*/{}, pool_),
+    ASSERT_NOK_WITH_MSG(indexer->CreateReader(c_schema.get(), file_reader, /*files=*/{},
+                                              /*total_row_count=*/0,
+                                              /*row_ranges=*/std::nullopt, pool_),
                         "In BTreeGlobalIndexer::CreateReader: option btree-index.read-buffer-size "
                         "is 4GB, exceed INT_MAX or less than 0");
 }
@@ -1919,7 +2019,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, TestIOException) {
         // read
         auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(local_fs, local_base);
         c_schema = CreateArrowSchema(field);
-        auto reader_result = indexer->CreateReader(c_schema.get(), file_reader, metas, pool_);
+        auto reader_result =
+            indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                  /*row_ranges=*/std::nullopt, pool_);
         CHECK_HOOK_STATUS(reader_result.status(), i);
         auto reader = std::move(reader_result).value();
 
@@ -1985,8 +2087,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadMultiFilesWithMetaSelector) 
     // SortedFileMetaSelector)
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     auto c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, all_metas, pool_));
+    ASSERT_OK_AND_ASSIGN(auto reader, indexer->CreateReader(c_schema.get(), file_reader, all_metas,
+                                                            TotalRowCount(all_metas),
+                                                            /*row_ranges=*/std::nullopt, pool_));
 
     // --- VisitEqual: key=12 -> only file1 is selected by meta selector -> row 5
     {
@@ -2127,8 +2230,9 @@ TEST_P(BTreeGlobalIndexIntegrationTest, TestRangeQuery) {
 
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
     c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, metas, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
 
     // Non-null rows: {0,1,2,3,4,6,7,8}, Null rows: {5}
 
