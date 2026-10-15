@@ -3740,7 +3740,8 @@ TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibilityLtzAcrossTimezones) {
         GetDataDir() + "/vortex/all_types_java_compat.db/all_types_java_compat";
     std::shared_ptr<arrow::Array> utc;
     std::shared_ptr<arrow::Array> shanghai;
-    for (const std::string& tz : {"UTC", "Asia/Shanghai"}) {
+    const std::string timezones[] = {"UTC", "Asia/Shanghai"};
+    for (const std::string& tz : timezones) {
         TimezoneGuard timezone_guard(tz);
         ScanContextBuilder scan_context_builder(table_path);
         ReadContextBuilder read_context_builder(table_path);
