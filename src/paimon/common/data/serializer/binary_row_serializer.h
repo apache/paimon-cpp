@@ -57,6 +57,9 @@ class BinaryRowSerializer {
 
     Result<BinaryRow> Deserialize(DataInputStream* source) const;
 
+    /// Skip a length-prefixed row without allocating or copying its payload.
+    static Status Skip(DataInputStream* source);
+
     Status Serialize(const BinaryRow& row, MemorySegmentOutputStream* target) const;
 
  private:

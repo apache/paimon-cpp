@@ -36,6 +36,37 @@ Request-specific filters are not stored in the cache. Partition, level, and
 predicate filters are still evaluated for each scan, so cached entries can be
 reused safely across different scan predicates for the same bucket.
 
+Selective manifest decoding
+---------------------------
+
+With ``Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED`` enabled (the default),
+scans evaluate partition filters before constructing ``ManifestEntry`` and
+``DataFileMeta`` objects or decoding file statistics. The same row filter runs
+on ordinary manifest reads, cached manifest Arrow batches, and exact snapshot
+cache hits. This avoids full metadata decoding for excluded partitions even
+when no cache is configured. Row-range reads apply both range and partition
+selection before decoding; ADD and DELETE entries receive the same selection.
+Level and data predicates still run through the normal scan filters.
+
+The snapshot cache keeps the complete merged entries for each bucket and
+snapshot in serialized form. A hit selects the exact retained snapshot.
+Rows belonging to other snapshots are skipped by their serialized lengths,
+without allocating or copying their payloads. When there is no partition filter,
+all entries of the selected snapshot are decoded. Disabling lazy decoding also
+restores full entry decoding before partition filtering.
+
+For example, if a bucket contains 604 entries across 84 partitions and a query
+needs six entries from one partition, the scan inspects 604 partition fields
+but fully decodes only six entries. This reduces metadata allocation and
+statistics decoding without introducing another cache or changing the
+serialized cache format.
+
+The filtered result is request-local. Manifest Arrow caches retain complete
+batches, and snapshot cache misses rebuild the complete bucket before storing
+it. A later scan with another partition filter or snapshot cannot reuse an
+incomplete result.
+The existing snapshot retention limit also applies to selective reads.
+
 Configuration
 -------------
 
@@ -67,11 +98,11 @@ the cache path. Set it to a positive value to enable the cache when
 is still controlled by the configured ``Cache`` implementation, for example the
 capacity of ``LruCache``.
 
-If no cache is provided through ``ScanContextBuilder::WithCache()``, this
-optimization is skipped. The snapshot manifest entry cache shares the same
-``Cache`` interface with raw manifest and data-file footer caches, but it uses a
-dedicated ``CacheKind`` and a table/branch/bucket key instead of file byte
-ranges.
+If no cache is provided through ``ScanContextBuilder::WithCache()``, snapshot
+caching is skipped; selective manifest decoding remains available. The snapshot
+manifest entry cache shares the same ``Cache`` interface with raw manifest and
+data-file footer caches, but it uses a dedicated ``CacheKind`` and a
+table/branch/bucket key instead of file byte ranges.
 
 Limitations
 -----------

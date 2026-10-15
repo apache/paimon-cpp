@@ -57,9 +57,15 @@ TEST_F(ManifestEntrySerializerTest, TestToFromRow) {
     for (const auto& entry : entries) {
         ASSERT_OK_AND_ASSIGN(auto row, serializer.ToRow(entry));
         ASSERT_EQ(entry.Bucket(), ManifestEntrySerializer::GetBucket(row));
+        ASSERT_OK_AND_ASSIGN(auto partition, ManifestEntrySerializer::GetPartitionView(row));
+        ASSERT_EQ(entry.Partition(), partition);
+        ASSERT_EQ(partition.GetSegment().Data(), row.GetStringView(2).data());
         ASSERT_OK_AND_ASSIGN(auto result_entry, serializer.FromRow(row));
         ASSERT_EQ(entry, result_entry);
         ASSERT_EQ(entry.ToString(), result_entry.ToString());
+        // The final entry owns its partition even after the source row is released.
+        row = BinaryRow::EmptyRow();
+        ASSERT_EQ(entry.Partition(), result_entry.Partition());
     }
 }
 

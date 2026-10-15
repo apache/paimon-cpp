@@ -29,9 +29,12 @@
 
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/cache/cache.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
+#include "paimon/common/data/serializer/binary_row_serializer.h"
 #include "paimon/common/io/cache/lru_cache.h"
+#include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/core/bucket/default_bucket_function.h"
 #include "paimon/core/io/meta_to_arrow_array_converter.h"
@@ -50,6 +53,7 @@
 #include "paimon/executor.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
 #include "paimon/predicate/literal.h"
@@ -61,6 +65,7 @@
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_format_reader_builder.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
@@ -689,14 +694,61 @@ TEST(AppendOnlyFileStoreScanTest, TestScanDurationMetric) {
 
 namespace {
 
+class CountingPartitionPredicate : public PredicateFilter {
+ public:
+    explicit CountingPartitionPredicate(const std::shared_ptr<PredicateFilter>& predicate,
+                                        const Status& first_row_error = Status::OK())
+        : predicate_(predicate), first_row_error_(first_row_error) {}
+
+    bool operator==(const Predicate& other) const override {
+        return *predicate_ == other;
+    }
+    const Function& GetFunction() const override {
+        return predicate_->GetFunction();
+    }
+    std::shared_ptr<Predicate> Negate() const override {
+        return predicate_->Negate();
+    }
+    std::string ToString() const override {
+        return predicate_->ToString();
+    }
+    Result<std::vector<char>> Test(const arrow::Array& array,
+                                   arrow::MemoryPool* pool) const override {
+        return predicate_->Test(array, pool);
+    }
+    Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema,
+                      const InternalRow& row) const override {
+        if (++row_calls_ == 1 && !first_row_error_.ok()) {
+            return first_row_error_;
+        }
+        return predicate_->Test(schema, row);
+    }
+    Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema, int64_t row_count,
+                      const InternalRow& min_values, const InternalRow& max_values,
+                      const InternalArray& null_counts) const override {
+        ++stats_calls_;
+        // Retain every manifest so even an empty result exercises entry filtering.
+        return true;
+    }
+
+    mutable std::atomic<int32_t> row_calls_{0};
+    mutable std::atomic<int32_t> stats_calls_{0};
+
+ private:
+    std::shared_ptr<PredicateFilter> predicate_;
+    Status first_row_error_;
+};
+
 std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
                                          const std::shared_ptr<Cache>& cache,
                                          const std::optional<int32_t>& bucket = std::nullopt,
                                          const std::shared_ptr<Predicate>& predicate = nullptr,
-                                         bool manifest_entry_lazy_decode_enabled = true) {
+                                         bool manifest_entry_lazy_decode_enabled = true,
+                                         int32_t max_snapshots = 8) {
     ScanContextBuilder context_builder(table_path);
     context_builder.AddOption(Options::FILE_FORMAT, "orc")
-        .AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "8")
+        .AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS,
+                   fmt::format("{}", max_snapshots))
         .AddOption(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
                    manifest_entry_lazy_decode_enabled ? "true" : "false")
         .WithCache(cache);
@@ -811,7 +863,8 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {
     TimezoneGuard guard("Asia/Shanghai");
     std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
-    auto cache = std::make_shared<LruCache>(/*max_weight=*/16 * 1024 * 1024);
+    auto cache =
+        std::make_shared<CountingRoutingCache>(CacheKind::SNAPSHOT_LIVE_MANIFEST, 16 * 1024 * 1024);
 
     // Seed the cache with an earlier snapshot.
     auto scan_base = BuildScan(table_path, cache, /*bucket=*/0);
@@ -819,7 +872,7 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {
                          scan_base->GetSnapshotManager()->LoadSnapshot(/*snapshot_id=*/3));
     scan_base->WithSnapshot(snapshot_3);
     ASSERT_OK_AND_ASSIGN(auto plan_base, scan_base->CreatePlan());
-    (void)plan_base;
+    ASSERT_EQ(cache->GetCount(CacheKind::SNAPSHOT_LIVE_MANIFEST), 1);
 
     // Advance to a newer snapshot: cache miss rebuilds the target snapshot bucket.
     auto scan_next = BuildScan(table_path, cache, /*bucket=*/0);
@@ -827,11 +880,30 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {
                          scan_next->GetSnapshotManager()->LoadSnapshot(/*snapshot_id=*/5));
     scan_next->WithSnapshot(snapshot_5);
     ASSERT_OK_AND_ASSIGN(auto plan_next, scan_next->CreatePlan());
+    ASSERT_EQ(cache->GetCount(CacheKind::SNAPSHOT_LIVE_MANIFEST), 2);
 
     auto scan_expected = BuildScan(table_path, /*cache=*/nullptr, /*bucket=*/0);
     scan_expected->WithSnapshot(snapshot_5);
     ASSERT_OK_AND_ASSIGN(auto plan_expected, scan_expected->CreatePlan());
     ASSERT_EQ(SortedFileNames(plan_expected->Files()), SortedFileNames(plan_next->Files()));
+
+    auto scan_retained = BuildScan(table_path, cache, /*bucket=*/0);
+    scan_retained->WithSnapshot(snapshot_3);
+    ASSERT_OK_AND_ASSIGN(auto plan_retained, scan_retained->CreatePlan());
+    ASSERT_EQ(SortedFileNames(plan_base->Files()), SortedFileNames(plan_retained->Files()));
+    ASSERT_EQ(cache->GetCount(CacheKind::SNAPSHOT_LIVE_MANIFEST), 3);
+    ASSERT_OK_AND_ASSIGN(uint64_t hit, scan_retained->GetScanMetrics()->GetCounter(
+                                           ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+    ASSERT_EQ(hit, 1);
+    auto scan_evicted = BuildScan(table_path, cache, /*bucket=*/0, /*predicate=*/nullptr,
+                                  /*manifest_entry_lazy_decode_enabled=*/true, /*max_snapshots=*/1);
+    scan_evicted->WithSnapshot(snapshot_3);
+    ASSERT_OK_AND_ASSIGN(auto plan_evicted, scan_evicted->CreatePlan());
+    ASSERT_EQ(SortedFileNames(plan_base->Files()), SortedFileNames(plan_evicted->Files()));
+    ASSERT_EQ(cache->GetCount(CacheKind::SNAPSHOT_LIVE_MANIFEST), 4);
+    ASSERT_OK_AND_ASSIGN(
+        hit, scan_evicted->GetScanMetrics()->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+    ASSERT_EQ(hit, 0);
 }
 
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheFallbackWithoutLazyDecode) {
@@ -851,4 +923,254 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheFallbackWithoutLa
     ASSERT_OK_AND_ASSIGN(auto plan_expected, scan_expected->CreatePlan());
     ASSERT_EQ(SortedFileNames(plan_expected->Files()), SortedFileNames(plan_fallback->Files()));
 }
+
+TEST(AppendOnlyFileStoreScanTest, SnapshotCachePropagatesPartitionPredicateError) {
+    TimezoneGuard guard("Asia/Shanghai");
+    const std::string table_path = GetDataDir() + "/orc/append_09.db/append_09/";
+    auto cache = std::make_shared<LruCache>(16 * 1024 * 1024);
+    auto warm = BuildScan(table_path, cache, /*bucket=*/0);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, warm->GetSnapshotManager()->LoadSnapshot(5));
+    warm->WithSnapshot(snapshot);
+    ASSERT_OK_AND_ASSIGN(auto warm_plan, warm->CreatePlan());
+    auto files = warm_plan->Files();
+    ASSERT_FALSE(files.empty());
+    const int32_t partition = files.front().Partition().GetInt(0);
+    auto predicate = PredicateBuilder::Equal(1, "f1", FieldType::INT, Literal(partition));
+    for (bool lazy_decode : {false, true}) {
+        SCOPED_TRACE(lazy_decode);
+        for (const Status& error : {Status::IOError("injected partition predicate error"),
+                                    Status::Invalid("injected partition predicate error")}) {
+            SCOPED_TRACE(error.ToString());
+            auto scan = BuildScan(table_path, cache, /*bucket=*/0, predicate, lazy_decode);
+            scan->WithSnapshot(snapshot);
+            auto failing =
+                std::make_shared<CountingPartitionPredicate>(scan->GetPartitionPredicate(), error);
+            scan->partition_filter_ = failing;
+            // A transient predicate failure must reach the caller, without an internal retry.
+            auto result = scan->CreatePlan();
+            ASSERT_FALSE(result.ok());
+            ASSERT_EQ(result.status().code(), error.code());
+            ASSERT_NE(result.status().message().find(error.message()), std::string::npos);
+            ASSERT_EQ(failing->row_calls_.load(), 1);
+            // The failure must leave the complete cached snapshot available for the next request.
+            ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+            ASSERT_FALSE(plan->Files().empty());
+            for (const auto& entry : plan->Files()) {
+                ASSERT_EQ(entry.Partition().GetInt(0), partition);
+            }
+            ASSERT_OK_AND_ASSIGN(uint64_t hit, scan->GetScanMetrics()->GetCounter(
+                                                   ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+            ASSERT_EQ(hit, 1);
+        }
+    }
+}
+
+TEST(AppendOnlyFileStoreScanTest, SnapshotCacheRebuildsCorruptValues) {
+    TimezoneGuard guard("Asia/Shanghai");
+    const std::string table_path = GetDataDir() + "/orc/append_09.db/append_09/";
+    auto source = BuildScan(table_path, /*cache=*/nullptr, /*bucket=*/0);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, source->GetSnapshotManager()->LoadSnapshot(5));
+    source->WithSnapshot(snapshot);
+    ASSERT_OK_AND_ASSIGN(auto source_plan, source->CreatePlan());
+    auto files = source_plan->Files();
+    ASSERT_FALSE(files.empty());
+    const ManifestEntry first = files.front();
+    const auto all_names = SortedFileNames(std::move(files));
+    auto predicate =
+        PredicateBuilder::Equal(1, "f1", FieldType::INT, Literal(first.Partition().GetInt(0)));
+    auto expected = BuildScan(table_path, /*cache=*/nullptr, /*bucket=*/0, predicate);
+    expected->WithSnapshot(snapshot);
+    ASSERT_OK_AND_ASSIGN(auto expected_plan, expected->CreatePlan());
+    const auto expected_names = SortedFileNames(expected_plan->Files());
+    auto pool = GetDefaultPool();
+    ManifestEntrySerializer serializer(pool);
+    BinaryRowSerializer row_serializer(serializer.NumFields(), pool);
+    for (const std::string corruption : {"magic", "version", "truncated", "partition"}) {
+        SCOPED_TRACE(corruption);
+        ASSERT_OK_AND_ASSIGN(BinaryRow row, serializer.ToRow(first));
+        if (corruption == "version") {
+            row.SetInt(0, 999);
+        } else if (corruption == "partition") {
+            // A negative partition arity fails before predicate evaluation, regardless of mode.
+            auto segment = row.GetSegment();
+            const int32_t offset =
+                static_cast<int32_t>(row.GetStringView(2).data() - segment.Data());
+            segment.PutValue<int32_t>(offset, -1);
+        }
+        MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
+        out.WriteValue<int32_t>(corruption == "magic" ? 0 : 0x534d4543);
+        out.WriteValue<int32_t>(1);
+        out.WriteValue<int64_t>(snapshot.Id());
+        out.WriteValue<int32_t>(1);
+        ASSERT_OK(row_serializer.Serialize(row, &out));
+        ASSERT_EQ(out.Segments().size(), 1);
+        const int64_t size = out.CurrentSize() - (corruption == "truncated" ? 1 : 0);
+        std::shared_ptr<Bytes> bytes =
+            Bytes::AllocateBytes(std::string(out.Segments().front().Data(), size), pool.get());
+        const auto segment = MemorySegment::Wrap(bytes);
+        ASSERT_NOK(SnapshotLiveManifestEntries::ReadSnapshot(segment, snapshot.Id(), 8,
+                                                             /*row_filter=*/nullptr, pool));
+        for (bool lazy_decode : {false, true}) {
+            SCOPED_TRACE(lazy_decode);
+            auto cache = std::make_shared<CountingRoutingCache>(CacheKind::SNAPSHOT_LIVE_MANIFEST,
+                                                                16 * 1024 * 1024);
+            auto scan = BuildScan(table_path, cache, /*bucket=*/0, predicate, lazy_decode);
+            scan->WithSnapshot(snapshot);
+            ASSERT_OK(cache->Put(scan->CreateSnapshotLiveManifestEntriesCacheKey(0),
+                                 std::make_shared<CacheValue>(segment, CacheCallback())));
+            for (int32_t attempt = 0; attempt < 2; ++attempt) {
+                ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+                ASSERT_EQ(SortedFileNames(plan->Files()), expected_names);
+                ASSERT_OK_AND_ASSIGN(uint64_t hit, scan->GetScanMetrics()->GetCounter(
+                                                       ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+                ASSERT_EQ(hit, attempt);
+                ASSERT_EQ(cache->GetCount(CacheKind::SNAPSHOT_LIVE_MANIFEST), attempt + 1);
+            }
+            auto unfiltered = BuildScan(table_path, cache, /*bucket=*/0, nullptr, lazy_decode);
+            unfiltered->WithSnapshot(snapshot);
+            ASSERT_OK_AND_ASSIGN(auto all, unfiltered->CreatePlan());
+            ASSERT_EQ(SortedFileNames(all->Files()), all_names);
+        }
+    }
+}
+
+TEST(AppendOnlyFileStoreScanTest, PartitionPruningAcrossCacheModes) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fields =
+        arrow::FieldVector{arrow::field("f0", arrow::int32()), arrow::field("f1", arrow::int32())};
+    std::map<std::string, std::string> options = {
+        {Options::BUCKET, "1"}, {Options::BUCKET_KEY, "f0"}, {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(auto helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {"f1"}, {}, options,
+                                            /*is_streaming_mode=*/false));
+    std::vector<std::unique_ptr<RecordBatch>> batches;
+    for (int32_t partition : {10, 20}) {
+        ASSERT_OK_AND_ASSIGN(
+            auto batch,
+            TestHelper::MakeRecordBatch(arrow::struct_(fields), fmt::format("[[1, {}]]", partition),
+                                        {{"f1", fmt::format("{}", partition)}}, /*bucket=*/0,
+                                        {RecordBatch::RowKind::INSERT}));
+        batches.push_back(std::move(batch));
+    }
+    ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
+    const std::string table_path = dir->Str() + "/foo.db/bar";
+    for (bool lazy_decode : {false, true}) {
+        SCOPED_TRACE(lazy_decode);
+        // Exercise uncached reads, manifest Arrow caching, and bucket snapshot caching.
+        for (int32_t mode : {0, 1, 2}) {
+            SCOPED_TRACE(mode);
+            auto cache = std::make_shared<CountingRoutingCache>(std::map<CacheKind, int64_t>{
+                {CacheKind::MANIFEST, 16 * 1024 * 1024},
+                {CacheKind::SNAPSHOT_LIVE_MANIFEST, 16 * 1024 * 1024}});
+            std::shared_ptr<Cache> scan_cache = mode == 0 ? nullptr : cache;
+            std::optional<int32_t> bucket = mode == 2 ? std::optional<int32_t>(0) : std::nullopt;
+            int32_t scans = 0;
+            int64_t manifest_loads = 0;
+            // A filtered cold read must retain other partitions for subsequent cached reads.
+            for (int32_t partition : {10, 20, 99, 10}) {
+                SCOPED_TRACE(partition);
+                auto predicate =
+                    PredicateBuilder::Equal(1, "f1", FieldType::INT, Literal(partition));
+                auto scan = BuildScan(table_path, scan_cache, bucket, predicate, lazy_decode);
+                auto counting =
+                    std::make_shared<CountingPartitionPredicate>(scan->GetPartitionPredicate());
+                scan->partition_filter_ = counting;
+                ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+                ASSERT_EQ(counting->row_calls_.load(), 2);
+                ASSERT_GT(counting->stats_calls_.load(), 0);
+                ASSERT_EQ(plan->Files().size(), partition == 99 ? 0 : 1);
+                if (partition != 99) {
+                    ASSERT_EQ(plan->Files()[0].Partition().GetInt(0), partition);
+                }
+                auto metrics = scan->GetScanMetrics();
+                ASSERT_OK_AND_ASSIGN(uint64_t hit,
+                                     metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+                ASSERT_EQ(hit, mode == 2 && scans > 0 ? 1 : 0);
+                if (mode == 2) {
+                    ASSERT_EQ(cache->GetCount(CacheKind::SNAPSHOT_LIVE_MANIFEST), scans + 1);
+                    ASSERT_OK_AND_ASSIGN(
+                        uint64_t scanned,
+                        metrics->GetCounter(ScanMetrics::LAST_LAZY_DECODE_SCANNED_ROWS));
+                    ASSERT_EQ(scanned, 2);
+                }
+                if (mode == 1) {
+                    if (scans == 0) {
+                        manifest_loads = cache->SupplierCallCount(CacheKind::MANIFEST);
+                        ASSERT_GT(manifest_loads, 0);
+                    }
+                    ASSERT_EQ(cache->SupplierCallCount(CacheKind::MANIFEST), manifest_loads);
+                    ASSERT_EQ(cache->GetCount(CacheKind::MANIFEST), (scans + 1) * manifest_loads);
+                }
+                ++scans;
+            }
+            auto unfiltered = BuildScan(table_path, scan_cache, bucket, nullptr, lazy_decode);
+            ASSERT_OK_AND_ASSIGN(auto all, unfiltered->CreatePlan());
+            ASSERT_EQ(all->Files().size(), 2);
+        }
+    }
+}
+
+TEST(AppendOnlyFileStoreScanTest, PartitionPruningSkipsExcludedMetadataInCreatePlan) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fields =
+        arrow::FieldVector{arrow::field("f0", arrow::int32()), arrow::field("f1", arrow::int32())};
+    ASSERT_OK_AND_ASSIGN(
+        auto helper,
+        TestHelper::Create(
+            dir->Str(), arrow::schema(fields), {"f1"}, {},
+            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "f0"}, {Options::FILE_FORMAT, "orc"}},
+            /*is_streaming_mode=*/false));
+    const std::string table_path = dir->Str() + "/foo.db/bar";
+    auto pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(
+        auto file,
+        DataFileMeta::ForAppend("file.orc", 10, 1, SimpleStats::EmptyStats(), 0, 0, 0, std::nullopt,
+                                std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+    ManifestEntry kept(FileKind::Add(), BinaryRowGenerator::GenerateRow({10}, pool.get()), 0, 1,
+                       file);
+    ManifestEntry excluded(FileKind(static_cast<int8_t>(2)),
+                           BinaryRowGenerator::GenerateRow({20}, pool.get()), 0, 1, file);
+    auto writer = BuildScan(table_path, nullptr);
+    using WrittenFile = std::pair<std::string, int64_t>;
+    ASSERT_OK_AND_ASSIGN(WrittenFile written,
+                         writer->manifest_file_->WriteWithoutRolling({kept, excluded}));
+    // Both partitions share one manifest, whose statistics cannot prune the requested partition.
+    ManifestFileMeta meta(written.first, written.second, 2, 0,
+                          BinaryRowGenerator::GenerateStats({10}, {20}, {0}, pool.get()), 0, 0, 0,
+                          0, 0, std::nullopt, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(WrittenFile base, writer->manifest_list_->Write({}));
+    ASSERT_OK_AND_ASSIGN(WrittenFile delta, writer->manifest_list_->Write({meta}));
+    Snapshot snapshot(1, 0, base.first, base.second, delta.first, delta.second, std::nullopt,
+                      std::nullopt, std::nullopt, "test", 0, Snapshot::CommitKind::Append(), 0, 2,
+                      2, std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+    auto predicate = PredicateBuilder::Equal(1, "f1", FieldType::INT, Literal(10));
+    for (int32_t mode : {0, 1, 2}) {
+        SCOPED_TRACE(mode);
+        std::shared_ptr<Cache> cache =
+            mode == 0 ? nullptr : std::make_shared<LruCache>(16 * 1024 * 1024);
+        std::optional<int32_t> bucket = mode == 2 ? std::optional<int32_t>(0) : std::nullopt;
+        auto scan = BuildScan(table_path, cache, bucket, predicate);
+        scan->WithSnapshot(snapshot);
+        if (mode == 2) {
+            // Seed the complete snapshot directly: rebuilding must decode every partition.
+            SnapshotLiveManifestEntries entries(8);
+            entries.Put(1, {kept, excluded});
+            ASSERT_OK(scan->StoreSnapshotLiveManifestEntries(0, entries));
+        }
+        for (int32_t attempt = 0; attempt < 2; ++attempt) {
+            ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+            ASSERT_EQ(plan->Files(), std::vector<ManifestEntry>{kept});
+            ASSERT_OK_AND_ASSIGN(uint64_t hit, scan->GetScanMetrics()->GetCounter(
+                                                   ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+            ASSERT_EQ(hit, mode == 2 ? 1 : 0);
+        }
+        auto full_decode = BuildScan(table_path, cache, bucket, predicate,
+                                     /*manifest_entry_lazy_decode_enabled=*/false);
+        full_decode->WithSnapshot(snapshot);
+        ASSERT_NOK_WITH_MSG(full_decode->CreatePlan(), "Unsupported byte value 2 for file kind.");
+    }
+}
+
 }  // namespace paimon::test

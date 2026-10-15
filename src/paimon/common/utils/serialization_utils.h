@@ -21,7 +21,9 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "fmt/format.h"
@@ -75,21 +77,16 @@ class SerializationUtils {
 
     /// Schemaless deserialization for `BinaryRow`.
     static Result<BinaryRow> DeserializeBinaryRow(const std::shared_ptr<Bytes>& bytes) {
-        if (PAIMON_UNLIKELY(bytes->size() < 4)) {
-            return Status::Invalid(fmt::format("bytes size {} is less than 4", bytes->size()));
+        return DeserializeBinaryRow(MemorySegment::Wrap(bytes));
+    }
+
+    /// Borrow a schemaless row. The caller must keep the backing bytes alive while using it.
+    static Result<BinaryRow> DeserializeBinaryRowView(std::string_view bytes) {
+        if (PAIMON_UNLIKELY(bytes.size() > std::numeric_limits<int32_t>::max())) {
+            return Status::Invalid("binary row exceeds maximum segment size");
         }
-        // The buffer is byte-filled, so memcpy avoids the strict-aliasing UB of reinterpret_cast.
-        int32_t arity;
-        memcpy(&arity, bytes->data(), sizeof(int32_t));
-        if (SystemByteOrder() == ByteOrder::PAIMON_LITTLE_ENDIAN) {
-            arity = EndianSwapValue(arity);
-        }
-        if (PAIMON_UNLIKELY(arity < 0)) {
-            return Status::Invalid("arity is less than 0");
-        }
-        BinaryRow row(arity);
-        row.PointTo(MemorySegment::Wrap(bytes), 4, bytes->size() - 4);
-        return row;
+        return DeserializeBinaryRow(
+            MemorySegment::WrapView(bytes.data(), static_cast<int32_t>(bytes.size())));
     }
 
     /// Schemaless deserialization for `BinaryRow` from a `DataInputStream`.
@@ -99,6 +96,33 @@ class SerializationUtils {
         std::shared_ptr<Bytes> bytes = Bytes::AllocateBytes(read_length, pool);
         PAIMON_RETURN_NOT_OK(input->ReadBytes(bytes.get()));
         return DeserializeBinaryRow(bytes);
+    }
+
+ private:
+    static Result<BinaryRow> DeserializeBinaryRow(const MemorySegment& segment) {
+        if (PAIMON_UNLIKELY(segment.Size() < 4)) {
+            return Status::Invalid(fmt::format("bytes size {} is less than 4", segment.Size()));
+        }
+        // The buffer is byte-filled, so memcpy avoids the strict-aliasing UB of reinterpret_cast.
+        int32_t arity;
+        memcpy(&arity, segment.Data(), sizeof(int32_t));
+        if (SystemByteOrder() == ByteOrder::PAIMON_LITTLE_ENDIAN) {
+            arity = EndianSwapValue(arity);
+        }
+        if (PAIMON_UNLIKELY(arity < 0)) {
+            return Status::Invalid("arity is less than 0");
+        }
+        const int32_t payload_size = segment.Size() - 4;
+        // Bound the arity before the bitset helper, then compute the total size without overflow.
+        if (PAIMON_UNLIKELY(arity > payload_size / 8 ||
+                            BinaryRow::CalculateBitSetWidthInBytes(arity) +
+                                    static_cast<int64_t>(arity) * 8 >
+                                payload_size)) {
+            return Status::Invalid("binary row fixed fields exceed serialized length");
+        }
+        BinaryRow row(arity);
+        row.PointTo(segment, 4, segment.Size() - 4);
+        return row;
     }
 };
 
