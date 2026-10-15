@@ -26,6 +26,7 @@
 #include "arrow/type.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
@@ -95,25 +96,22 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
     if (finished_ || sink_ == nullptr) {
         return Status::Invalid("cannot add a batch after Vortex writer is finished");
     }
-    // arrow-rs cannot represent a sliced (offset > 0) top-level struct: importing one trips a slice
-    // assertion that aborts the process, so rebase such a batch to offset 0 first. Offset-0 batches
-    // are handed over untouched.
-    ::ArrowArray* vortex_batch = batch;
+    // arrow-rs rejects sliced arrays at any nesting level with an assertion that aborts, and a
+    // sliced child hides inside an offset-0 batch, so rebase every batch to offset 0 first.
     ::ArrowArray rebased_batch{};
-    if (batch->offset != 0) {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            std::shared_ptr<arrow::Array> imported,
-            arrow::ImportArray(batch, arrow::struct_(schema_->fields())));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized,
-                               ArrowUtils::NormalizeArrayOffsets(imported, arrow_pool_.get()));
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*normalized, &rebased_batch));
-        vortex_batch = &rebased_batch;
-    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> imported,
+                                      arrow::ImportArray(batch, arrow::struct_(schema_->fields())));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized,
+                           ArrowUtils::NormalizeArrayOffsets(imported, arrow_pool_.get()));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*normalized, &rebased_batch));
+    // The rebased buffers belong to arrow_pool_, which dies with this writer; keep it alive until
+    // Rust releases the exported array.
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(&rebased_batch, nullptr, arrow_pool_));
     ::ArrowSchema ffi_schema = {};
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, &ffi_schema));
     vx_error* error = nullptr;
     // vx_array_from_arrow consumes both `vortex_batch` and `ffi_schema` on success and on failure.
-    VxArrayPtr array(vx_array_from_arrow(vortex_batch, &ffi_schema, /*nullable=*/false, &error),
+    VxArrayPtr array(vx_array_from_arrow(&rebased_batch, &ffi_schema, /*nullable=*/false, &error),
                      vx_array_free);
     if (array == nullptr) {
         return VortexFfiError("convert Arrow batch to Vortex array", error);

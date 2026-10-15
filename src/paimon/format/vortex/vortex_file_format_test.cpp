@@ -655,6 +655,58 @@ TEST_F(VortexFileFormatTest, ReadPreservesRowOrderAcrossBatches) {
 // sliced (offset > 0) top-level struct (the parent offset is re-applied to already-offset children,
 // tripping an arrow-data slice assertion), so VortexFormatWriter::AddBatch rebases such a batch to
 // offset 0 before handing it to Vortex. batch_size=2 over 4 rows produces a slice at offset 2.
+// A sliced nested column hides inside an offset-0 batch, which arrow-rs rejects with an aborting
+// assertion unless every level is rebased first.
+TEST_F(VortexFileFormatTest, WriteThenReadSlicedNestedStructColumn) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "sliced-nested.vortex");
+    arrow::FieldVector fields = {
+        arrow::field("r", arrow::struct_({arrow::field("a", arrow::int32())}))};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> full =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[{"a":1}],[{"a":2}],[{"a":3}],[{"a":4}]])")
+            .ValueOrDie();
+    const auto& full_struct = checked_cast<const arrow::StructArray&>(*full);
+    std::shared_ptr<arrow::Array> sliced_inner = full_struct.field(0)->Slice(1, 3);
+    arrow::Result<std::shared_ptr<arrow::Array>> wrapped =
+        arrow::StructArray::Make({sliced_inner}, {"r"});
+    ASSERT_TRUE(wrapped.ok()) << wrapped.status().ToString();
+    ASSERT_EQ(wrapped.ValueOrDie()->offset(), 0);
+    ASSERT_OK(WriteFile(path, schema, wrapped.ValueOrDie(), /*batch_size=*/2));
+
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[{"a":2}],[{"a":3}],[{"a":4}]])")
+            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual,
+                         ReadFile(path, schema, /*batch_size=*/2, /*expected_row_count=*/3));
+    ASSERT_TRUE(actual->Equals(expected))
+        << "actual: " << actual->ToString() << "\nexpected: " << expected->ToString();
+}
+
+// The exported rebased batch must keep whatever lifetime it was given until it is released, which
+// is what keeps the writer's Arrow pool alive under Rust-held buffers.
+TEST_F(VortexFileFormatTest, ExportedRebasedBatchRetainsItsLifetime) {
+    arrow::FieldVector fields = {
+        arrow::field("r", arrow::struct_({arrow::field("a", arrow::int32())}))};
+    std::shared_ptr<arrow::Array> full =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[{"a":1}],[{"a":2}],[{"a":3}],[{"a":4}]])")
+            .ValueOrDie();
+    const auto& full_struct = checked_cast<const arrow::StructArray&>(*full);
+    arrow::Result<std::shared_ptr<arrow::Array>> wrapped =
+        arrow::StructArray::Make({full_struct.field(0)->Slice(1, 3)}, {"r"});
+    ASSERT_TRUE(wrapped.ok()) << wrapped.status().ToString();
+    ::ArrowArray exported{};
+    ASSERT_TRUE(arrow::ExportArray(*wrapped.ValueOrDie(), &exported).ok());
+
+    auto probe = std::make_shared<int>(0);
+    ASSERT_OK(AddArrowArrayLifetime(&exported, nullptr, probe));
+    ASSERT_GT(probe.use_count(), 1);
+    ArrowArrayRelease(&exported);
+    ASSERT_EQ(probe.use_count(), 1);
+}
+
 TEST_F(VortexFileFormatTest, WriteThenReadSlicedStructColumn) {
     std::string path = PathUtil::JoinPath(directory_->Str(), "sliced-struct.vortex");
     std::shared_ptr<arrow::DataType> r_type =
