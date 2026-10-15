@@ -333,8 +333,7 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (is_system_table) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, LoadTableSchema(identifier));
-        return std::make_shared<Table>(schema, identifier.GetDatabaseName(),
-                                       identifier.GetObjectName());
+        return std::make_shared<Table>(schema, identifier);
     }
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(identifier));
     // `Table::Create` reads the same schema file and rejects a format table there.

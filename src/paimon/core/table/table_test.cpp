@@ -25,12 +25,37 @@
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
+#include "paimon/commit_context.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
+#include "paimon/read_context.h"
+#include "paimon/scan_context.h"
 #include "paimon/schema/schema.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
+#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/write_context.h"
 
 namespace paimon::test {
+
+namespace {
+
+// Creates a managed table directory and opens it as a `Table` under `identifier`.
+Result<std::shared_ptr<Table>> CreateManagedTable(const std::shared_ptr<FileSystem>& file_system,
+                                                  const std::string& path,
+                                                  const Identifier& identifier) {
+    SchemaManager schema_manager(file_system, path);
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
+    PAIMON_ASSIGN_OR_RAISE([[maybe_unused]] std::unique_ptr<TableSchema> created,
+                           schema_manager.CreateTable(schema, /*partition_keys=*/{},
+                                                      /*primary_keys=*/{}, /*options=*/{}));
+    return Table::Create(file_system, path, identifier);
+}
+
+}  // namespace
 
 TEST(TableTest, TestCreateWithUnknownDatabase) {
     auto dir = UniqueTestDirectory::Create();
@@ -121,6 +146,91 @@ TEST(TableTest, TestCreateFailedWithNonExistSchema) {
     ASSERT_NOK_WITH_MSG(
         Table::Create(fs, dir->Str(), Identifier(Identifier::kUnknownDatabase, "tbl1")),
         "load table schema for Identifier{database='unknown', object='tbl1'} failed");
+}
+
+TEST(TableTest, TestNewScanCreatesATableScan) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx,
+                         ScanContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
+                         table->NewScan(std::move(ctx)));
+}
+
+TEST(TableTest, TestNewReadCreatesATableRead) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> ctx,
+                         ReadContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
+                         table->NewRead(std::move(ctx)));
+}
+
+TEST(TableTest, TestNewWriteCreatesAFileStoreWrite) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+    // A catalog write reads the current schema from the catalog on the main branch.
+    catalog->SetTableSchema(table->LatestSchema());
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> ctx,
+        WriteContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreWrite> write,
+                         table->NewWrite(std::move(ctx)));
+}
+
+TEST(TableTest, TestNewCommitCreatesAFileStoreCommit) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+    // Like a write, a catalog commit reads the current schema from the catalog.
+    catalog->SetTableSchema(table->LatestSchema());
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<CommitContext> ctx,
+        CommitContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreCommit> commit,
+                         table->NewCommit(std::move(ctx)));
+}
+
+TEST(TableTest, TestNewScanReadWriteCommitRejectANullContext) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        CreateManagedTable(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl")));
+
+    // The operators report the null context themselves; the table stands in without swallowing
+    // the error, so behavior matches `TableScan::Create` and friends.
+    ASSERT_NOK_WITH_MSG(table->NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewRead(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewWrite(nullptr), "write context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewCommit(nullptr), "commit context is null pointer");
 }
 
 }  // namespace paimon::test

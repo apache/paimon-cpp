@@ -21,11 +21,19 @@
 #include <optional>
 
 #include "fmt/format.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/read_context.h"
+#include "paimon/scan_context.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
+#include "paimon/write_context.h"
 
 namespace paimon {
 
@@ -52,12 +60,25 @@ Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& 
         CatalogUtils::CheckManagedTableType(identifier, *latest_schema, "Table::Create"));
 
     auto schema = checked_pointer_cast<Schema>(*latest_schema);
-    return std::make_shared<Table>(schema, identifier.GetDatabaseName(),
-                                   identifier.GetObjectName());
+    return std::make_shared<Table>(schema, identifier);
 }
 
-std::string Table::FullName() const {
-    return database_ == Identifier::kUnknownDatabase ? table_name_ : database_ + "." + table_name_;
+Result<std::unique_ptr<TableScan>> Table::NewScan(std::unique_ptr<ScanContext> context) const {
+    return TableScan::Create(std::move(context));
+}
+
+Result<std::unique_ptr<TableRead>> Table::NewRead(std::unique_ptr<ReadContext> context) const {
+    return TableRead::Create(std::move(context));
+}
+
+Result<std::unique_ptr<FileStoreWrite>> Table::NewWrite(
+    std::unique_ptr<WriteContext> context) const {
+    return FileStoreWrite::Create(std::move(context));
+}
+
+Result<std::unique_ptr<FileStoreCommit>> Table::NewCommit(
+    std::unique_ptr<CommitContext> context) const {
+    return FileStoreCommit::Create(std::move(context));
 }
 
 }  // namespace paimon

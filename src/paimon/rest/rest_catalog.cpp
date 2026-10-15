@@ -448,8 +448,7 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, LoadTableSchema(identifier, &uuid));
     PAIMON_RETURN_NOT_OK(
         CatalogUtils::CheckManagedTableType(identifier, schema, "Catalog::GetTable"));
-    return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetObjectName(),
-                                   uuid);
+    return std::make_shared<Table>(schema, identifier, uuid);
 }
 
 std::string RestCatalog::GetRootPath() const {
