@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <functional>
 #include <future>
+#include <memory>
 #include <new>
 #include <utility>
 
@@ -68,6 +69,7 @@ struct SubmissionResult {
     bool fired;
     bool caught;
     bool recovered;
+    bool released;
     int32_t runs;
 };
 
@@ -76,7 +78,10 @@ SubmissionResult Submit(uint32_t workers, int32_t ordinal, bool recover, bool sh
     std::promise<void> marker;
     auto ready = marker.get_future();
     auto executor = CreateDefaultExecutor(workers).value();
-    std::function<void()> task = [&]() { ++runs; };
+    auto owner = std::make_shared<int32_t>(0);
+    std::weak_ptr<int32_t> retained = owner;
+    std::function<void()> task = [&, owner]() { ++runs; };
+    owner.reset();
     std::function<void()> recovery = [&]() { marker.set_value(); };
     bool caught = false;
     {
@@ -87,7 +92,7 @@ SubmissionResult Submit(uint32_t workers, int32_t ordinal, bool recover, bool sh
             caught = true;
         }
     }
-    SubmissionResult result = {allocations, fired, caught, false, 0};
+    SubmissionResult result = {allocations, fired, caught, false, retained.expired(), 0};
     if (recover) {
         executor->Add(std::move(recovery));
         result.recovered = ready.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
@@ -117,11 +122,13 @@ TEST(ExecutorSubmissionTest, StartupAllocationFailuresDoNotAcceptCallback) {
             EXPECT_TRUE(result.caught);
             EXPECT_EQ(result.allocations, ordinal);
             EXPECT_TRUE(result.recovered);
+            EXPECT_TRUE(result.released);
             EXPECT_EQ(result.runs, 0);
             for (bool shutdown : {false, true}) {
                 const auto cleanup = Submit(workers, ordinal, false, shutdown);
                 EXPECT_TRUE(cleanup.fired);
                 EXPECT_TRUE(cleanup.caught);
+                EXPECT_TRUE(cleanup.released);
                 EXPECT_EQ(cleanup.runs, 0);
             }
         }
