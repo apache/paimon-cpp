@@ -172,10 +172,15 @@ Status RealtimeDeduplicateWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         arrow::StructArray::Make({validated.data->field(key_position)}, {deduplicate_key_field_}));
 
     // Pin the complete lookup under the short store lock, then perform sidecar lookup without
-    // holding it. The writer mutex keeps application writes ordered while Advance may proceed.
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const KeyOffsetLookup> lookup,
-                           realtime_store_->AcquireKeyOffsetLookup());
-    PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 previous_offsets, lookup->LookupOffsets(keys));
+    // holding it. Release the building-index snapshot before mutating the index, so ordinary
+    // writes do not copy the entire map. The writer mutex keeps writes ordered while Advance may
+    // proceed.
+    RoaringBitmap64 previous_offsets;
+    {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const KeyOffsetLookup> lookup,
+                               realtime_store_->AcquireKeyOffsetLookup());
+        PAIMON_ASSIGN_OR_RAISE(previous_offsets, lookup->LookupOffsets(keys));
+    }
     PAIMON_RETURN_NOT_OK(realtime_store_->WriteAndLookup(validated.data, row_kinds,
                                                          validated.offset_range, previous_offsets));
     next_offset_ = validated.offset_range.end;

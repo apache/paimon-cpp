@@ -25,6 +25,7 @@
 
 #include "arrow/api.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -108,6 +109,13 @@ TEST(RealtimeUtilsTest, TestValidateDeduplicateFileIndex) {
                          CoreOptions::FromMap({{"file-index.bitmap.columns", "id"}}));
     ASSERT_NOK_WITH_MSG(RealtimeUtils::ValidateDeduplicateFileIndex(wrong_column_options),
                         "requires file-index.bitmap.columns to include _REALTIME_OFFSET");
+
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions disabled_read_options,
+        CoreOptions::FromMap({{"file-index.bitmap.columns", SpecialFields::RealtimeOffset().Name()},
+                              {Options::FILE_INDEX_READ_ENABLED, "false"}}));
+    ASSERT_NOK_WITH_MSG(RealtimeUtils::ValidateDeduplicateFileIndex(disabled_read_options),
+                        "requires 'file-index.read.enabled=true'");
 }
 
 }  // namespace paimon::test

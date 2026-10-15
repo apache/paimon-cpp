@@ -95,6 +95,10 @@ class RealtimeUtils {
     // TODO(xinyu.lxy): Relax the bitmap-only restriction after other exact file indexes can
     // return row positions for realtime offsets.
     static Status ValidateDeduplicateFileIndex(const CoreOptions& options) {
+        if (!options.FileIndexReadEnabled()) {
+            return Status::Invalid(
+                "real-time deduplicate mode requires 'file-index.read.enabled=true'");
+        }
         PAIMON_ASSIGN_OR_RAISE(FileIndexOptions file_indexes,
                                FileIndexOptions::FromCoreOptions(options));
         const std::string& offset_name = SpecialFields::RealtimeOffset().Name();

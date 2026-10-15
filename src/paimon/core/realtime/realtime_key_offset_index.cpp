@@ -220,7 +220,9 @@ Result<std::string> DataFileKeyOffsetIndexWriter::Finish(
     PAIMON_RETURN_NOT_OK(data_output.WriteValue<int64_t>(offsets_.size()));
     for (const auto& [key, offset] : offsets_) {
         PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(static_cast<int32_t>(key.size())));
-        PAIMON_RETURN_NOT_OK(WriteRaw(output, key.data(), key.size()));
+        if (!key.empty()) {
+            PAIMON_RETURN_NOT_OK(WriteRaw(output, key.data(), key.size()));
+        }
         PAIMON_RETURN_NOT_OK(data_output.WriteValue<int64_t>(offset));
     }
     PAIMON_RETURN_NOT_OK(output->Flush());
@@ -273,11 +275,13 @@ Result<std::shared_ptr<DataFileKeyOffsetIndexReader>> DataFileKeyOffsetIndexRead
     auto offsets = std::make_shared<std::map<std::string, int64_t>>();
     for (int64_t entry = 0; entry < entry_count; ++entry) {
         PAIMON_ASSIGN_OR_RAISE(int32_t key_size, data_input.ReadValue<int32_t>());
-        if (key_size <= 0) {
+        if (key_size < 0) {
             return Status::Invalid("invalid key size in realtime .offset index");
         }
         std::string key(key_size, '\0');
-        PAIMON_RETURN_NOT_OK(data_input.Read(key.data(), key_size));
+        if (key_size > 0) {
+            PAIMON_RETURN_NOT_OK(data_input.Read(key.data(), key_size));
+        }
         PAIMON_ASSIGN_OR_RAISE(int64_t offset, data_input.ReadValue<int64_t>());
         if (offset < 0) {
             return Status::Invalid("negative offset in realtime .offset index");

@@ -198,6 +198,12 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
     ASSERT_NOK_WITH_MSG(
         CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, no_offset_index_options),
         "requires file-index.bitmap.columns to include _REALTIME_OFFSET");
+
+    std::map<std::string, std::string> disabled_file_index_read_options = valid_options;
+    disabled_file_index_read_options[Options::FILE_INDEX_READ_ENABLED] = "false";
+    ASSERT_NOK_WITH_MSG(
+        CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, disabled_file_index_read_options),
+        "requires 'file-index.read.enabled=true'");
 }
 
 TEST(SchemaValidationTest, TestVectorType) {

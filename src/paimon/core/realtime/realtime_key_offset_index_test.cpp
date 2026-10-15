@@ -164,6 +164,39 @@ TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripAndAbort) {
     AssertOffsets(result, {7, 9});
 }
 
+TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripWithEmptyStringKey) {
+    std::unique_ptr<UniqueTestDirectory> directory = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, directory);
+    const std::shared_ptr<arrow::Field> key_field = arrow::field("id", arrow::utf8());
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(directory->Str(), /*format_identifier=*/"parquet",
+                                 /*data_file_prefix=*/"data-",
+                                 /*external_path_provider=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
+        DataFileKeyOffsetIndexWriter::Create(key_field, path_factory, directory->GetFileSystem(),
+                                             GetDefaultPool(), /*options=*/{}));
+    ASSERT_OK(writer->AddBatch(MakeKeys(key_field, R"([[""], ["alpha"]])"),
+                               MakeOffsets("[7, 9]")));
+
+    std::shared_ptr<DataFileMeta> data_file = MakeDataFile("data-0.parquet", /*row_count=*/2);
+    ASSERT_OK_AND_ASSIGN(std::string sidecar, writer->Finish(data_file));
+    data_file->extra_files.emplace_back(sidecar);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
+        DataFileKeyOffsetIndexReader::Create(key_field, data_file, path_factory,
+                                             directory->GetFileSystem(), GetDefaultPool(), {}));
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 empty_key_offset,
+                         reader->LookupOffsets(MakeKeys(key_field, R"([[""]])")));
+    AssertOffsets(empty_key_offset, {7});
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 nonempty_key_offset,
+                         reader->LookupOffsets(MakeKeys(key_field, R"([["alpha"]])")));
+    AssertOffsets(nonempty_key_offset, {9});
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 missing_key_offset,
+                         reader->LookupOffsets(MakeKeys(key_field, R"([["missing"]])")));
+    ASSERT_TRUE(missing_key_offset.IsEmpty());
+}
+
 TEST(RealtimeKeyOffsetIndexTest, TestSidecarValidation) {
     std::unique_ptr<UniqueTestDirectory> directory = UniqueTestDirectory::Create();
     ASSERT_NE(nullptr, directory);
