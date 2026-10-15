@@ -76,6 +76,13 @@ Result<std::unique_ptr<DataFileIndexWriter>> DataFileIndexWriter::Create(
             return Status::Invalid(
                 fmt::format("File index type '{}' is not registered", definition.index_type));
         }
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::vector<std::string>> extra_field_names,
+                               indexer->GetExtraFieldNames());
+        if (extra_field_names) {
+            return Status::NotImplemented(
+                fmt::format("File index '{}.{}' requires extra fields, which are not supported",
+                            definition.index_type, definition.column_name));
+        }
         ::ArrowSchema c_schema;
         ArrowSchemaMarkReleased(&c_schema);
         ScopeGuard schema_guard([&c_schema]() { ArrowSchemaRelease(&c_schema); });
@@ -157,7 +164,8 @@ Result<std::shared_ptr<Bytes>> DataFileIndexWriter::SerializeContainer() {
                            FileIndexFormat::CreateWriter(output, pool_));
     PAIMON_RETURN_NOT_OK(format_writer->WriteColumnIndexes(column_indexes));
     PAIMON_RETURN_NOT_OK(format_writer->Close());
-    return output->Finish(pool_.get());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, output->Finish(pool_.get()));
+    return bytes;
 }
 
 Result<FileIndexWriteResult> DataFileIndexWriter::Finish(const std::string& data_file_path) {

@@ -1,0 +1,20 @@
+{
+    "version": 3,
+    "id": 0,
+    "fields": [
+        {
+            "id": 0,
+            "name": "payload",
+            "type": "BYTES"
+        }
+    ],
+    "highestFieldId": 0,
+    "partitionKeys": [],
+    "primaryKeys": [],
+    "options": {
+        "bucket": "-1",
+        "file.format": "parquet",
+        "target-file-size": "1048576"
+    },
+    "timeMillis": 1791518774564
+}

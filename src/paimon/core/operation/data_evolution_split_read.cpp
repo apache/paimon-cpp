@@ -39,9 +39,9 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
-#include "paimon/common/global_index/complete_index_score_batch_reader.h"
 #include "paimon/common/reader/blob_fallback_batch_reader.h"
 #include "paimon/common/reader/blob_view_resolving_batch_reader.h"
+#include "paimon/common/reader/complete_index_score_batch_reader.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
@@ -55,6 +55,7 @@
 #include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/file_index_evaluator.h"
+#include "paimon/core/io/file_index_options.h"
 #include "paimon/core/utils/blob_view_lookup.h"
 #include "paimon/core/utils/data_evolution_utils.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -96,8 +97,17 @@ class PositionShiftedDeletionVector : public DeletionVector {
     /// IsEmpty; the row counting that does consult a vector's cardinality builds its factory
     /// from the split's deletion files, never from this view.
     Result<int64_t> GetCardinality() const override {
-        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 valid, inner_->IsValid(offset_, length_));
-        return length_ - valid.Cardinality();
+        int64_t count = 0;
+        PAIMON_RETURN_NOT_OK(ForEachDeletedPosition([&count](int64_t) { ++count; }));
+        return count;
+    }
+
+    Status ForEachDeletedPosition(const std::function<void(int64_t)>& consumer) const override {
+        return inner_->ForEachDeletedPosition([&](int64_t position) {
+            if (position >= offset_ && position - offset_ < length_) {
+                consumer(position - offset_);
+            }
+        });
     }
 
     Status Delete(int64_t) override {
@@ -270,17 +280,26 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewRes
     if (read_blob_view_fields.empty()) {
         return std::move(inner_reader);
     }
+    // The explicit upstream warehouse is optional. Absent it, fall back to the warehouse this
+    // (downstream) table itself lives in, which is where a co-located upstream table is resolved
+    // from; a metastore-backed catalog resolves the upstream location by identifier anyway, so the
+    // root is only a hint there. Stripping the trailing `<database>.db/<table>` (or
+    // `<database>/<table>`) components off this table's path yields that warehouse.
     std::optional<std::string> warehouse_path = options_.GetBlobViewUpstreamWarehouse();
     if (!warehouse_path) {
-        return Status::Invalid(
-            "invalid config for blob view, supposed to set BLOB_VIEW_UPSTREAM_WAREHOUSE");
+        // TODO(yonghao.fyh): refactor warehouse path in the future
+        warehouse_path =
+            PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(context_->GetPath()));
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> pre_reader,
                            CreateBlobViewReader(data_split, read_blob_view_fields, row_ranges));
     PAIMON_ASSIGN_OR_RAISE(std::unordered_set<BlobViewStruct> blob_view_structs,
                            ExtractBlobViewStructs(pre_reader.get()));
+    // The dependency table is read through a catalog of its own, told how to resolve a scheme but
+    // not handed this read's file system: that one authenticates as this table, and the table about
+    // to be read is a different one whose credentials the metastore issues only for it.
     auto catalog_context = std::make_shared<CatalogContext>(
-        warehouse_path.value(), options_.ToMap(), options_.GetFileSystem());
+        warehouse_path.value(), options_.ToMap(), context_->GetFileSystemSchemeToIdentifierMap());
     // use global thread number
     uint32_t cpu_count = std::thread::hardware_concurrency();
     uint32_t thread_num = cpu_count > 0 ? cpu_count : 1;
@@ -540,10 +559,15 @@ Result<bool> DataEvolutionSplitRead::SkipByFileIndex(
         }
 
         auto written_schema = DataField::ConvertDataFieldsToArrowSchema(written_fields);
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FileIndexResult> index_result,
-            FileIndexEvaluator::Evaluate(written_schema, data_predicate, data_file_path_factory,
-                                         file, options_.GetFileSystem(), pool_));
+        auto field_name_mapping = FieldMappingBuilder::CreateFieldNameMapping(
+            context_->GetTableSchema()->Fields(), written_fields);
+        std::map<std::string, std::string> file_index_options;
+        PAIMON_ASSIGN_OR_RAISE(file_index_options, FileIndexOptions::RewriteFieldNames(
+                                                       options_.ToMap(), field_name_mapping));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
+                               FileIndexEvaluator::Evaluate(written_schema, file_index_options,
+                                                            data_predicate, data_file_path_factory,
+                                                            file, options_.GetFileSystem(), pool_));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, index_result->IsRemain());
         if (!is_remain) {
             return true;
@@ -557,13 +581,15 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
     const std::shared_ptr<arrow::Schema>& data_schema,
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::map<std::string, std::string>& file_index_options,
+    std::vector<float>* index_scores) const {
     std::shared_ptr<FileIndexResult> file_index_result;
     if (options_.FileIndexReadEnabled()) {
-        PAIMON_ASSIGN_OR_RAISE(
-            file_index_result,
-            FileIndexEvaluator::Evaluate(data_schema, predicate, data_file_path_factory, file,
-                                         options_.GetFileSystem(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(file_index_result,
+                               FileIndexEvaluator::Evaluate(data_schema, file_index_options,
+                                                            predicate, data_file_path_factory, file,
+                                                            options_.GetFileSystem(), pool_));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {
             return std::unique_ptr<FileBatchReader>();

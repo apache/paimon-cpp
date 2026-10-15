@@ -24,10 +24,12 @@
 #include <string>
 
 #include "paimon/format/format_writer.h"
+#include "paimon/format/written_file_stats_provider.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/metrics.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/type_fwd.h"
 #include "parquet/arrow/writer.h"
 
 namespace arrow {
@@ -42,13 +44,14 @@ class OutputStream;
 class ArrowOutputStreamAdapter;
 }  // namespace paimon
 namespace parquet {
+class FileMetaData;
 class WriterProperties;
 }  // namespace parquet
 struct ArrowArray;
 
 namespace paimon::parquet {
 
-class ParquetFormatWriter : public FormatWriter {
+class ParquetFormatWriter : public FormatWriter, public WrittenFileStatsProvider {
  public:
     static Result<std::unique_ptr<ParquetFormatWriter>> Create(
         const std::shared_ptr<OutputStream>& output_stream,
@@ -69,6 +72,9 @@ class ParquetFormatWriter : public FormatWriter {
     }
 
     Status AddMetadata(const std::map<std::string, std::string>& metadata) override;
+
+    Result<ColumnStatsVector> ExtractWrittenFileStats(
+        const std::shared_ptr<MemoryPool>& pool) const override;
 
  private:
     ParquetFormatWriter(std::unique_ptr<::parquet::arrow::FileWriter> writer,
@@ -103,6 +109,8 @@ class ParquetFormatWriter : public FormatWriter {
     // Struct view of schema_, matched against the layout of each incoming batch.
     std::shared_ptr<arrow::DataType> logical_struct_type_;
     std::shared_ptr<Metrics> metrics_;
+    // Footer metadata of the file, set once Finish() has succeeded.
+    std::shared_ptr<::parquet::FileMetaData> file_metadata_;
     int64_t total_records_written_ = 0;
     uint64_t max_memory_use_;
 };

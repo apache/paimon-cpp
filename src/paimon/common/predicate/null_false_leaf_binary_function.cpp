@@ -98,12 +98,15 @@ std::optional<FieldType> ArrayFieldType(const arrow::Array& array) {
     const std::shared_ptr<arrow::DataType>& type = array.type();
     if (type->id() == arrow::Type::DICTIONARY) {
         const auto& dict_type = checked_cast<const arrow::DictionaryType&>(*type);
-        const bool is_string = dict_type.value_type()->id() == arrow::Type::STRING &&
-                               dict_type.index_type()->id() == arrow::Type::INT32;
-        const bool is_large_string = dict_type.value_type()->id() == arrow::Type::LARGE_STRING &&
-                                     dict_type.index_type()->id() == arrow::Type::INT64;
-        if (is_string || is_large_string) {
-            return FieldType::STRING;
+        const arrow::Type::type value_type = dict_type.value_type()->id();
+        const arrow::Type::type index_type = dict_type.index_type()->id();
+        if ((value_type == arrow::Type::STRING || value_type == arrow::Type::BINARY) &&
+            index_type == arrow::Type::INT32) {
+            return value_type == arrow::Type::STRING ? FieldType::STRING : FieldType::BINARY;
+        }
+        if ((value_type == arrow::Type::LARGE_STRING || value_type == arrow::Type::LARGE_BINARY) &&
+            index_type == arrow::Type::INT64) {
+            return value_type == arrow::Type::LARGE_STRING ? FieldType::STRING : FieldType::BINARY;
         }
         return std::nullopt;
     }

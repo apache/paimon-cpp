@@ -31,6 +31,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/system_table_schema.h"
@@ -236,6 +237,78 @@ TEST(FileSystemCatalogTest, TestOptionsSystemTableCatalog) {
                         "Cannot 'dropTable' for system table");
     ASSERT_NOK_WITH_MSG(catalog.RenameTable(options_identifier, Identifier("db1", "tbl2"), false),
                         "Cannot 'renameTable' for system table");
+}
+
+TEST(FileSystemCatalogTest, TestBranchTableLoadsBranchSchema) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK(catalog.CreateDatabase("db1", options, /*ignore_if_exists=*/false));
+
+    auto typed_schema = arrow::schema(
+        {arrow::field("main_c0", arrow::int32()), arrow::field("main_c1", arrow::utf8())});
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*typed_schema, &c_schema).ok());
+    Identifier identifier("db1", "tbl1");
+    ASSERT_OK(catalog.CreateTable(identifier, &c_schema, {}, {}, options,
+                                  /*ignore_if_exists=*/false));
+    ArrowSchemaRelease(&c_schema);
+
+    ASSERT_OK_AND_ASSIGN(std::string table_path, catalog.GetTableLocation(identifier));
+    SchemaManager branch_schema_manager(core_options.GetFileSystem(), table_path, "b1");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> branch_schema,
+        TableSchema::Create(
+            /*schema_id=*/3,
+            arrow::schema({arrow::field("b1_c0", arrow::int32(), /*nullable=*/false)}), {}, {},
+            options));
+    ASSERT_OK_AND_ASSIGN(std::string branch_schema_json, branch_schema->ToJsonString());
+    ASSERT_OK(core_options.GetFileSystem()->AtomicStore(branch_schema_manager.ToSchemaPath(3),
+                                                        branch_schema_json));
+
+    Identifier branch_identifier("db1", "tbl1$branch_b1");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Schema> loaded_schema,
+                         catalog.LoadTableSchema(branch_identifier));
+    auto data_schema = std::dynamic_pointer_cast<DataSchema>(loaded_schema);
+    ASSERT_NE(nullptr, data_schema);
+    ASSERT_EQ((std::vector<std::string>{"b1_c0"}), data_schema->FieldNames());
+    ASSERT_EQ(3, data_schema->Id());
+
+    ASSERT_OK_AND_ASSIGN(bool exists, catalog.TableExists(branch_identifier));
+    ASSERT_TRUE(exists);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(branch_identifier));
+    data_schema = std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    ASSERT_NE(nullptr, data_schema);
+    ASSERT_EQ((std::vector<std::string>{"b1_c0"}), data_schema->FieldNames());
+    ASSERT_EQ(3, data_schema->Id());
+
+    for (const auto& main_identifier :
+         {Identifier("db1", "tbl1$branch_main"), Identifier("db1", "tbl1$branch_MAIN")}) {
+        ASSERT_OK_AND_ASSIGN(loaded_schema, catalog.LoadTableSchema(main_identifier));
+        data_schema = std::dynamic_pointer_cast<DataSchema>(loaded_schema);
+        ASSERT_NE(nullptr, data_schema);
+        ASSERT_EQ((std::vector<std::string>{"main_c0", "main_c1"}), data_schema->FieldNames());
+        ASSERT_EQ(0, data_schema->Id());
+    }
+
+    Identifier audit_log_identifier("db1", "tbl1$branch_b1$audit_log");
+    ASSERT_OK_AND_ASSIGN(exists, catalog.TableExists(audit_log_identifier));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(loaded_schema, catalog.LoadTableSchema(audit_log_identifier));
+    ASSERT_EQ((std::vector<std::string>{"rowkind", "b1_c0"}), loaded_schema->FieldNames());
+
+    for (const auto& missing_identifier : {Identifier("db1", "tbl1$branch_missing"),
+                                           Identifier("db1", "tbl1$branch_missing$options")}) {
+        ASSERT_OK_AND_ASSIGN(exists, catalog.TableExists(missing_identifier));
+        ASSERT_FALSE(exists);
+        Status missing_schema = catalog.LoadTableSchema(missing_identifier).status();
+        ASSERT_TRUE(missing_schema.IsNotExist()) << missing_schema.ToString();
+    }
 }
 
 TEST(FileSystemCatalogTest, TestBranchIdentifierRejectedForTableOperations) {
@@ -1253,6 +1326,64 @@ TEST(FileSystemCatalogTest, TestListSnapshots) {
 
     // Verify ascending order by snapshot_id
     ASSERT_LT(snapshots[0].snapshot_id, snapshots[1].snapshot_id);
+}
+
+TEST(FileSystemCatalogTest, TestGetLatestSnapshot) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+
+    std::string test_data_path = GetDataDir() + "/append_table_with_multiple_file_format.db";
+    std::string db_path = dir->Str() + "/append_table_with_multiple_file_format.db";
+    ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, db_path));
+
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    const Catalog& public_catalog = catalog;
+    Identifier identifier("append_table_with_multiple_file_format",
+                          "append_table_with_multiple_file_format");
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> snapshot,
+                         public_catalog.GetLatestSnapshot(identifier));
+    ASSERT_TRUE(snapshot);
+    ASSERT_EQ(snapshot->snapshot_id, 2);
+    ASSERT_EQ(snapshot->schema_id, 1);
+}
+
+TEST(FileSystemCatalogTest, TestGetLatestSnapshotEmptyMissingAndBranch) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+
+    std::string empty_test_data_path = GetDataDir() + "/orc/append_table_with_nested_type.db";
+    std::string empty_db_path = dir->Str() + "/append_table_with_nested_type.db";
+    ASSERT_TRUE(TestUtil::CopyDirectory(empty_test_data_path, empty_db_path));
+    std::string branch_test_data_path = GetDataDir() + "/orc/append_table_with_rt_branch.db";
+    std::string branch_db_path = dir->Str() + "/append_table_with_rt_branch.db";
+    ASSERT_TRUE(TestUtil::CopyDirectory(branch_test_data_path, branch_db_path));
+
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK_AND_ASSIGN(
+        std::optional<SnapshotInfo> empty,
+        catalog.GetLatestSnapshot(
+            Identifier("append_table_with_nested_type", "append_table_with_nested_type"), ""));
+    ASSERT_FALSE(empty);
+    Identifier identifier("append_table_with_rt_branch", "append_table_with_rt_branch");
+    ASSERT_OK_AND_ASSIGN(std::optional<SnapshotInfo> branch_snapshot,
+                         catalog.GetLatestSnapshot(identifier, "rt"));
+    ASSERT_TRUE(branch_snapshot);
+    ASSERT_EQ(branch_snapshot->snapshot_id, 1);
+    ASSERT_EQ(branch_snapshot->total_record_count, 4);
+
+    ASSERT_TRUE(catalog.GetLatestSnapshot(Identifier(identifier.GetDatabaseName(), "missing"), "")
+                    .status()
+                    .IsNotExist());
+    ASSERT_OK_AND_ASSIGN(empty, catalog.GetLatestSnapshot(identifier, "missing"));
+    ASSERT_FALSE(empty);
 }
 
 namespace {

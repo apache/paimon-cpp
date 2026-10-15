@@ -32,8 +32,11 @@
 #include "paimon/core/io/data_file_index_writer.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/single_file_writer.h"
+#include "paimon/format/format_stats_extractor.h"
+#include "paimon/format/written_file_stats_provider.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/type_fwd.h"
 
 namespace paimon {
 
@@ -95,6 +98,19 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
 
     const FileIndexWriteResult& GetFileIndexWriteResult() const {
         return file_index_result_;
+    }
+
+    /// Extracts the column statistics of the closed file from the format writer when it provides
+    /// them, and reads them back from the file through `stats_extractor` otherwise.
+    Result<ColumnStatsVector> ExtractFileStats(
+        const std::shared_ptr<FormatStatsExtractor>& stats_extractor,
+        const std::shared_ptr<MemoryPool>& pool) const {
+        const auto* stats_provider =
+            dynamic_cast<const WrittenFileStatsProvider*>(this->GetFormatWriter());
+        if (stats_provider != nullptr) {
+            return stats_provider->ExtractWrittenFileStats(pool);
+        }
+        return stats_extractor->Extract(this->fs_, this->path_, pool);
     }
 
     Status BeforeFinish() override {

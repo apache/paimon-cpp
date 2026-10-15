@@ -508,6 +508,18 @@ Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& i
     return result;
 }
 
+Result<std::optional<SnapshotInfo>> RestCatalog::GetLatestSnapshot(
+    const Identifier& identifier, const std::string& branch) const {
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotBranch(identifier, "getLatestSnapshot"));
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "getLatestSnapshot"));
+    Identifier load_identifier(identifier.GetDatabaseName(), identifier.GetTableName(), branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, api_->LoadSnapshot(load_identifier));
+    if (!snapshot) {
+        return std::optional<SnapshotInfo>();
+    }
+    return std::optional<SnapshotInfo>(snapshot->ToSnapshotInfo());
+}
+
 Result<std::optional<Snapshot>> RestCatalog::LoadSnapshot(const Identifier& identifier) const {
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "loadSnapshot"));
     PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));

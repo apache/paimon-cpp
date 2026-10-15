@@ -1,0 +1,12 @@
+Paimon schema:
+payload: BYTES
+
+The Parquet file was written from an Arrow dictionary<int32, binary> array with
+ArrowWriterProperties::store_schema enabled. Its serialized ARROW:schema metadata therefore
+restores payload as dictionary<int32, binary>, while the Paimon table schema remains BYTES.
+
+Rows:
+alpha
+null
+beta
+alpha

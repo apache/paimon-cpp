@@ -14,10 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# CentOS 7 cross-build verification image for paimon-cpp + tantivy-fts.
+# CentOS 7 cross-build verification image for paimon-cpp + the full-text index.
 #
 # Purpose:
-#   Prove the tantivy-fts stack builds on the OLDEST reasonable Linux target
+#   Prove the full-text index stack builds on the OLDEST reasonable Linux target
 #   (glibc 2.17, EOL 2024-06-30). The default Ubuntu 24.04 dev container
 #   proves nothing about glibc compatibility; this image does.
 #
@@ -95,7 +95,7 @@ enabled=0\n' > /etc/yum.repos.d/CentOS-Base.repo \
 # EPEL provides ninja-build and a newer python3 than the base 3.6.
 # SCL (Software Collections) provides devtoolset-11 (gcc 11) and rh-python38
 # without overriding the system gcc/python. CentOS 7's default gcc 4.8 is
-# too old for C++17/20 used by lucene++ and our tantivy wrapper.
+# too old for C++17/20 used by lucene++ and our full-text wrapper.
 #
 # Same story as CentOS-Base.repo: both epel + SCL default to mirrorlist
 # endpoints that are effectively dead; overwrite with aliyun URLs that we

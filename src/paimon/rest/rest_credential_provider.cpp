@@ -65,7 +65,12 @@ size_t RestToken::Hash::operator()(const RestToken& rest_token) const {
 
 RestCredentialProvider::RestCredentialProvider(const std::shared_ptr<RestApi>& api,
                                                const Identifier& identifier, Clock clock)
-    : api_(api),
+    : RestCredentialProvider([api, identifier]() { return api->LoadTableToken(identifier); },
+                             identifier, std::move(clock)) {}
+
+RestCredentialProvider::RestCredentialProvider(TokenLoader token_loader,
+                                               const Identifier& identifier, Clock clock)
+    : token_loader_(std::move(token_loader)),
       identifier_(identifier),
       clock_(std::move(clock)),
       logger_(Logger::GetLogger("RestCredentialProvider")) {}
@@ -139,7 +144,7 @@ std::map<std::string, std::string> RestCredentialProvider::MergeOptionsWithCrede
 Status RestCredentialProvider::RefreshToken() const {
     PAIMON_LOG_INFO(logger_, "begin refresh data token for identifier [%s]",
                     identifier_.ToString().c_str());
-    PAIMON_ASSIGN_OR_RAISE(GetTableTokenResponse response, api_->LoadTableToken(identifier_));
+    PAIMON_ASSIGN_OR_RAISE(GetTableTokenResponse response, token_loader_());
     PAIMON_LOG_INFO(logger_, "end refresh data token for identifier [%s] expiresAtMillis [%ld]",
                     identifier_.ToString().c_str(),
                     static_cast<int64_t>(response.GetExpiresAtMillis()));

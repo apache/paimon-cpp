@@ -270,17 +270,25 @@ ParquetStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fi
 
     std::shared_ptr<::parquet::FileMetaData> file_metadata =
         file_reader_builder.raw_reader()->metadata();
-    int32_t field_count = file_metadata->schema()->group_node()->field_count();
+    return ExtractFromMetadata(*file_metadata, pool);
+}
+
+Result<std::pair<ColumnStatsVector, FormatStatsExtractor::FileInfo>>
+ParquetStatsExtractor::ExtractFromMetadata(const ::parquet::FileMetaData& file_metadata,
+                                           const std::shared_ptr<MemoryPool>& pool) const {
+    int32_t field_count = file_metadata.schema()->group_node()->field_count();
 
     ColumnStatsVector result_stats;
     result_stats.reserve(field_count);
 
     std::unordered_map<std::string, std::shared_ptr<::parquet::Statistics>> merged_stats;
 
-    for (int32_t row_group_idx = 0; row_group_idx < file_metadata->num_row_groups();
+    for (int32_t row_group_idx = 0; row_group_idx < file_metadata.num_row_groups();
          ++row_group_idx) {
-        for (int32_t col_idx = 0; col_idx < file_metadata->num_columns(); ++col_idx) {
-            auto column_chunk = file_metadata->RowGroup(row_group_idx)->ColumnChunk(col_idx);
+        std::unique_ptr<::parquet::RowGroupMetaData> row_group =
+            file_metadata.RowGroup(row_group_idx);
+        for (int32_t col_idx = 0; col_idx < row_group->num_columns(); ++col_idx) {
+            auto column_chunk = row_group->ColumnChunk(col_idx);
             if (!column_chunk->is_stats_set()) {
                 continue;
             }
@@ -291,7 +299,7 @@ ParquetStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fi
     }
 
     for (int32_t field_idx = 0; field_idx < field_count; ++field_idx) {
-        auto node = file_metadata->schema()->group_node()->field(field_idx);
+        auto node = file_metadata.schema()->group_node()->field(field_idx);
         if (node->is_group()) {
             // nested type do not have parquet stats
             const auto& logical_type = node->logical_type();
@@ -318,7 +326,7 @@ ParquetStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fi
             result_stats.push_back(col_stats);
         }
     }
-    return std::make_pair(std::move(result_stats), FileInfo(file_metadata->num_rows()));
+    return std::make_pair(std::move(result_stats), FileInfo(file_metadata.num_rows()));
 }
 
 }  // namespace paimon::parquet

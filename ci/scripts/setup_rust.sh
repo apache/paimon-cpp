@@ -15,8 +15,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Install the Rust toolchain used by the Lance, Mosaic, and tantivy-fts FFI builds, plus
-# cbindgen required by Lance and tantivy-fts.
+# Install the Rust toolchain used by the Lance, Mosaic, and full-text index FFI builds, plus
+# cbindgen required by Lance.
 #
 # The dev container (see .devcontainer/) already has these preinstalled;
 # this script is for the GitHub Actions runners and is called before ci/scripts/build_paimon.sh.
@@ -26,8 +26,8 @@
 set -eux
 
 RUSTUP_VERSION=${RUSTUP_VERSION:-1.29.0}
-# 1.88.0 is the minimum required by transitive crates (e.g. time 0.3.47).
-RUST_VERSION=${RUST_VERSION:-1.88.0}
+# 1.90.0 is the minimum required by paimon-full-text 0.1.0 (rust-version in its Cargo.toml).
+RUST_VERSION=${RUST_VERSION:-1.90.0}
 CBINDGEN_VERSION=${CBINDGEN_VERSION:-0.29.2}
 PROTOC_VERSION=27.4
 

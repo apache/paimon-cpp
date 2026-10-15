@@ -18,26 +18,79 @@
 
 #include "paimon/read_context.h"
 
+#include <map>
+#include <string>
 #include <utility>
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/catalog_options.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
+#include "paimon/common/utils/url_utils.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/vector_search.h"
+#include "paimon/rest/rest_api.h"
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 namespace paimon {
 class Predicate;
 
+namespace {
+
+/// True when the catalog-level options - the ones the catalog was created with, not the read's own
+/// table options - select the REST protocol, the only kind turning a `header.`-prefixed option into
+/// a request header. `Catalog::Create` dispatches on this same `metastore` key, so a catalog that
+/// speaks REST is exactly one whose `GetOptions()` names it. The Java counterpart answers this from
+/// the catalog loader / `catalogContext.options()` it was built with.
+bool IsRestMetastore(const std::map<std::string, std::string>& catalog_options) {
+    auto metastore = catalog_options.find(CatalogOptions::METASTORE);
+    if (metastore == catalog_options.end()) {
+        return false;
+    }
+    // Matched leniently in lower case, the way `Catalog::Create` matches it.
+    const std::string name = StringUtils::ToLowerCase(metastore->second);
+    return name == "rest";
+}
+
+/// `{"database":"db1","object":"t1"}`, the flat JSON the metastore parses a header value back into.
+/// The field names are the Java `Identifier.FIELD_DATABASE_NAME` and `FIELD_OBJECT_NAME`, and the
+/// object name keeps any branch and system-table suffix, as the `getObjectName()` the Java
+/// serializer reads does, so a read of a branch reports that branch.
+std::string IdentifierToFlatJson(const Identifier& identifier) {
+    rapidjson::Document document(rapidjson::kObjectType);
+    auto& allocator = document.GetAllocator();
+    document.AddMember(rapidjson::StringRef("database"),
+                       rapidjson::Value(identifier.GetDatabaseName(), allocator), allocator);
+    // C++ `GetTableName()` returns the stored object name - branch and system-table suffix
+    // included - which is the Java `getObjectName()` this field mirrors, not Java's stripped
+    // `getTableName()` (that one is `GetDataTableName()` here). So a branch read reports the
+    // branch.
+    document.AddMember(rapidjson::StringRef("object"),
+                       rapidjson::Value(identifier.GetTableName(), allocator), allocator);
+    // Compact, not the pretty form `RapidJsonUtil::ToJson` writes: the value goes into a header.
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    document.Accept(writer);
+    return buffer.GetString();
+}
+
+}  // namespace
+
 ReadContext::ReadContext(
     const std::string& path, const std::string& branch,
     const std::vector<std::string>& read_field_names, const std::vector<int32_t>& read_field_ids,
-    const std::shared_ptr<Predicate>& predicate, bool enable_predicate_filter, bool enable_prefetch,
-    bool enable_late_materializing, uint32_t prefetch_batch_count,
+    const std::shared_ptr<Predicate>& predicate, const std::shared_ptr<VectorSearch>& vector_search,
+    const std::shared_ptr<FullTextSearch>& full_text_search, bool enable_predicate_filter,
+    bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
     uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
     uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
     const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
@@ -52,6 +105,8 @@ ReadContext::ReadContext(
       read_field_names_(read_field_names),
       read_field_ids_(read_field_ids),
       predicate_(predicate),
+      vector_search_(vector_search),
+      full_text_search_(full_text_search),
       enable_predicate_filter_(enable_predicate_filter),
       enable_prefetch_(enable_prefetch),
       enable_late_materializing_(enable_late_materializing),
@@ -101,6 +156,8 @@ class ReadContextBuilder::Impl {
         fs_scheme_to_identifier_map_.clear();
         options_.clear();
         predicate_.reset();
+        vector_search_.reset();
+        full_text_search_.reset();
         enable_predicate_filter_ = false;
         enable_prefetch_ = false;
         enable_late_materializing_ = false;
@@ -136,6 +193,8 @@ class ReadContextBuilder::Impl {
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Predicate> predicate_;
+    std::shared_ptr<VectorSearch> vector_search_;
+    std::shared_ptr<FullTextSearch> full_text_search_;
     bool enable_predicate_filter_ = false;
     bool enable_prefetch_ = false;
     bool enable_late_materializing_ = false;
@@ -207,6 +266,18 @@ ReadContextBuilder& ReadContextBuilder::SetReadSchema(std::unique_ptr<ArrowSchem
 
 ReadContextBuilder& ReadContextBuilder::SetPredicate(const std::shared_ptr<Predicate>& predicate) {
     impl_->predicate_ = predicate;
+    return *this;
+}
+
+ReadContextBuilder& ReadContextBuilder::SetVectorSearch(
+    const std::shared_ptr<VectorSearch>& vector_search) {
+    impl_->vector_search_ = vector_search;
+    return *this;
+}
+
+ReadContextBuilder& ReadContextBuilder::SetFullTextSearch(
+    const std::shared_ptr<FullTextSearch>& full_text_search) {
+    impl_->full_text_search_ = full_text_search;
     return *this;
 }
 
@@ -312,6 +383,9 @@ ReadContextBuilder& ReadContextBuilder::WithCache(const std::shared_ptr<Cache>& 
 }
 
 Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
+    if (impl_->vector_search_ && impl_->full_text_search_) {
+        return Status::Invalid("VectorSearch and FullTextSearch cannot be configured together");
+    }
     if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
         return Status::Invalid("cannot read with null format table");
     }
@@ -353,9 +427,9 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::string branch,
-                           BranchManager::ResolveBranch(/*identifier=*/std::nullopt,
-                                                        impl_->options_, impl_->branch_, "read"));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::string branch,
+        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "read"));
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0");
     }
@@ -380,15 +454,33 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->enable_multi_thread_row_to_batch_ && impl_->row_to_batch_thread_number_ <= 0) {
         return Status::Invalid("row to batch thread number should be greater than 0");
     }
+
+    const std::string read_via_option =
+        std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
+    if (impl_->catalog_ != nullptr && impl_->identifier_ &&
+        IsRestMetastore(impl_->catalog_->GetOptions())) {
+        // A blob-view dependency read (BlobViewLookup) rebuilds its own catalog from a
+        // CatalogContext whose options come from these read options, so they carry none of the
+        // catalog-level connection settings. Hand over the ones RestApi::Create needs to come back
+        // as the same REST catalog - metastore, uri and the auth options - instead of letting it
+        // silently degrade to a filesystem catalog; a key the caller already set wins.
+        for (const auto& [key, value] : impl_->catalog_->GetOptions()) {
+            impl_->options_.emplace(key, value);
+        }
+        // Reports the outermost starting table; an existing value, set by an outer read, is kept.
+        impl_->options_.emplace(
+            read_via_option,
+            UrlUtils::EncodeString(IdentifierToFlatJson(impl_->identifier_.value())));
+    }
     auto ctx = std::make_unique<ReadContext>(
         impl_->path_, branch, impl_->read_field_names_, impl_->read_field_ids_, impl_->predicate_,
-        impl_->enable_predicate_filter_, impl_->enable_prefetch_, impl_->enable_late_materializing_,
-        impl_->prefetch_batch_count_, impl_->prefetch_max_parallel_num_,
-        impl_->enable_multi_thread_row_to_batch_, impl_->row_to_batch_thread_number_,
-        impl_->table_schema_, impl_->memory_pool_, impl_->executor_, impl_->specific_file_system_,
-        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
-        impl_->read_ahead_cache_enabled_, impl_->cache_config_, impl_->cache_, impl_->format_table_,
-        impl_->warmup_level_);
+        impl_->vector_search_, impl_->full_text_search_, impl_->enable_predicate_filter_,
+        impl_->enable_prefetch_, impl_->enable_late_materializing_, impl_->prefetch_batch_count_,
+        impl_->prefetch_max_parallel_num_, impl_->enable_multi_thread_row_to_batch_,
+        impl_->row_to_batch_thread_number_, impl_->table_schema_, impl_->memory_pool_,
+        impl_->executor_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
+        impl_->realtime_context_, impl_->options_, impl_->read_ahead_cache_enabled_,
+        impl_->cache_config_, impl_->cache_, impl_->format_table_, impl_->warmup_level_);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
         ctx->SetReadSchema(std::move(impl_->read_schema_));
     }

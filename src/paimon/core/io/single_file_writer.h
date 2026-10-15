@@ -155,6 +155,12 @@ class SingleFileWriter : public FileWriter<T, R> {
     /// Serializes schema and forwards it as file metadata to FormatWriter.
     Status UpdateSchema(const std::shared_ptr<arrow::Schema>& schema);
 
+    /// Returns the format writer of this file, which outlives Close(), or nullptr before Init()
+    /// has succeeded.
+    const FormatWriter* GetFormatWriter() const {
+        return writer_.get();
+    }
+
     int64_t output_bytes_ = -1;
     std::string compression_;
     std::function<Status(T, ArrowArray*)> converter_;

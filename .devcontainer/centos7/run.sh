@@ -107,12 +107,12 @@ case "${cmd}" in
                 -DPAIMON_ENABLE_LUMINA=OFF \
                 -DPAIMON_ENABLE_JINDO=OFF \
                 -DPAIMON_ENABLE_LUCENE=ON \
-                -DPAIMON_ENABLE_TANTIVY=ON \
+                -DPAIMON_ENABLE_FULL_TEXT=ON \
                 -DPAIMON_ENABLE_ORC=ON \
                 -DPAIMON_ENABLE_AVRO=ON
             cmake --build build-centos7 -j "$(nproc)"
             ctest --test-dir build-centos7 \
-                -R "paimon-lucene-index-test|paimon-global-index-test|paimon-tantivy-.*-test" \
+                -R "paimon-lucene-index-test|paimon-global-index-test|paimon-full-text-index-test" \
                 --output-on-failure
         '
         ;;

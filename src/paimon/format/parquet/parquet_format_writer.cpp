@@ -37,8 +37,11 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/casting/casting_utils.h"
+#include "paimon/format/format_stats_extractor.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
+#include "paimon/format/parquet/parquet_stats_extractor.h"
 #include "parquet/arrow/writer.h"
+#include "parquet/metadata.h"
 #include "parquet/properties.h"
 
 namespace arrow {
@@ -130,7 +133,20 @@ Status ParquetFormatWriter::Flush() {
 Status ParquetFormatWriter::Finish() {
     PAIMON_RETURN_NOT_OK(Flush());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(writer_->Close());
+    file_metadata_ = writer_->metadata();
     return Status::OK();
+}
+
+Result<ColumnStatsVector> ParquetFormatWriter::ExtractWrittenFileStats(
+    const std::shared_ptr<MemoryPool>& pool) const {
+    if (!file_metadata_) {
+        return Status::Invalid("Cannot extract stats before the parquet file is finished.");
+    }
+    using StatsWithFileInfo = std::pair<ColumnStatsVector, FormatStatsExtractor::FileInfo>;
+    ParquetStatsExtractor stats_extractor(schema_);
+    PAIMON_ASSIGN_OR_RAISE(StatsWithFileInfo result,
+                           stats_extractor.ExtractFromMetadata(*file_metadata_, pool));
+    return std::move(result.first);
 }
 
 Status ParquetFormatWriter::AddMetadata(const std::map<std::string, std::string>& metadata) {

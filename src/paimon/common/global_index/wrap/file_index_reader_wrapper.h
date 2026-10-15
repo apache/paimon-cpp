@@ -132,10 +132,10 @@ class FileIndexReaderWrapper : public GlobalIndexReader {
             "FileIndexReaderWrapper is not supposed to handle vector search query");
     }
 
-    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+    /// File index full-text search returns unscored rows, so there is no scored result here.
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override {
-        std::shared_ptr<FileIndexResult> remain = FileIndexResult::Remain();
-        return transform_(remain);
+        return std::shared_ptr<ScoredGlobalIndexResult>();
     }
 
     /// Converts a `FileIndexResult` to a `GlobalIndexResult` by mapping 32-bit row IDs

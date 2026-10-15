@@ -51,3 +51,7 @@ Interface
 .. doxygenclass:: paimon::FormatStatsExtractor
    :members:
    :undoc-members:
+
+.. doxygenclass:: paimon::WrittenFileStatsProvider
+   :members:
+   :undoc-members:

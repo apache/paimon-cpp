@@ -77,6 +77,20 @@ TEST(DeletionVectorsIndexFileTest, Basic) {
     ASSERT_TRUE(is_deleted);
     ASSERT_OK_AND_ASSIGN(is_deleted, read_back.at("dv2")->IsDeleted(99));
     ASSERT_FALSE(is_deleted);
+
+    // Metadata order need not match the physical order of deletion vectors.
+    LinkedHashMap<std::string, DeletionVectorMeta> reversed;
+    for (const auto& name : {"dv2", "dv1"}) {
+        reversed.insert_or_assign(name, meta->DvRanges().value().find(name)->second);
+    }
+    auto reversed_meta = std::make_shared<IndexFileMeta>(
+        meta->IndexType(), meta->FileName(), meta->FileSize(), 2, reversed, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(auto reversed_read, index_file->ReadAllDeletionVectors(reversed_meta));
+    ASSERT_EQ(reversed_read.size(), 2);
+    ASSERT_TRUE(reversed_read.at("dv1")->IsDeleted(0).value());
+    ASSERT_FALSE(reversed_read.at("dv1")->IsDeleted(100).value());
+    ASSERT_TRUE(reversed_read.at("dv2")->IsDeleted(100).value());
+    ASSERT_FALSE(reversed_read.at("dv2")->IsDeleted(0).value());
 }
 
 TEST(DeletionVectorsIndexFileTest, ExternalPathAndIndexFileMeta) {

@@ -18,7 +18,12 @@
 
 #include "paimon/core/operation/internal_read_context.h"
 
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
@@ -29,6 +34,8 @@
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -66,6 +73,46 @@ TEST(InternalReadContext, TestReadWithSpecifiedSchema) {
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
     auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields);
     ASSERT_TRUE(internal_context->GetReadSchema()->Equals(expected_schema));
+}
+
+TEST(InternalReadContext, TestHeaderOptionSurvivesIntoCoreOptions) {
+    // The `header.` option a read through a REST catalog reports its starting table with has to
+    // still be among the options a dependency table is read through: `DataEvolutionSplitRead`
+    // builds that catalog context out of `CoreOptions::ToMap()`, so an option dropped on the way
+    // here would quietly drop the `X-Paimon-Read-Via` delegation header along with it.
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    ReadContextBuilder context_builder(path);
+    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+
+    // The merge `TableRead::Create` performs: the table's own options first, then the ones the read
+    // context carries over them, which is where a header option arrives from.
+    const std::string read_via = "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%22%7D";
+    std::map<std::string, std::string> options = table_schema->Options();
+    options["header.X-Paimon-Read-Via"] = read_via;
+    ASSERT_OK_AND_ASSIGN(auto internal_context, InternalReadContext::Create(std::move(read_context),
+                                                                            table_schema, options));
+    ASSERT_EQ(internal_context->GetCoreOptions().ToMap().at("header.X-Paimon-Read-Via"), read_via);
+}
+
+TEST(InternalReadContext, TestFileSystemSchemeMapReachesTheDependencyRead) {
+    // A blob view reads its dependency table through a catalog of its own, which builds a file
+    // system out of the options and this map rather than borrowing the one of the read it descends
+    // from. Nothing reading a local path would notice the map going missing: a location is
+    // resolved through it only when its scheme is not the default of the options, so dropping it
+    // surfaces as a `dfs://` dependency table that cannot be opened, far away from the cause.
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    const std::map<std::string, std::string> scheme_map = {{"file", "local"}};
+    ReadContextBuilder context_builder(path);
+    context_builder.WithFileSystemSchemeToIdentifierMap(scheme_map);
+    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(auto internal_context,
+                         InternalReadContext::Create(std::move(read_context), table_schema,
+                                                     table_schema->Options()));
+    ASSERT_EQ(internal_context->GetFileSystemSchemeToIdentifierMap(), scheme_map);
 }
 
 TEST(InternalReadContext, TestReadWithSpecifiedFieldId) {
@@ -150,6 +197,85 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
                                                         table_schema->Options()),
                             "Get field _INDEX_SCORE failed: not exist in table schema");
     }
+}
+
+TEST(InternalReadContext, TestVectorSearchIndexScoreProjection) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    std::shared_ptr<VectorSearch> vector_search = std::make_shared<VectorSearch>(
+        "f3", /*limit=*/2, std::vector<float>{1.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
+
+    {
+        ReadContextBuilder builder(path);
+        builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(vector_search);
+        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto internal_context,
+                             InternalReadContext::Create(std::move(read_context), table_schema,
+                                                         table_schema->Options()));
+        std::shared_ptr<arrow::Schema> expected = DataField::ConvertDataFieldsToArrowSchema(
+            {DataField(0, arrow::field("f0", arrow::utf8())), SpecialFields::IndexScore()});
+        EXPECT_TRUE(internal_context->GetReadSchema()->Equals(expected));
+    }
+    {
+        ReadContextBuilder builder(path);
+        builder.SetReadFieldIds({0, SpecialFieldIds::INDEX_SCORE}).SetVectorSearch(vector_search);
+        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto internal_context,
+                             InternalReadContext::Create(std::move(read_context), table_schema,
+                                                         table_schema->Options()));
+        EXPECT_EQ(arrow::Type::FLOAT, internal_context->GetReadSchema()->field(1)->type()->id());
+    }
+    {
+        std::shared_ptr<arrow::Schema> projected = arrow::schema(
+            {arrow::field("_INDEX_SCORE", arrow::float32()), arrow::field("f0", arrow::utf8())});
+        auto c_schema = std::make_unique<ArrowSchema>();
+        ASSERT_TRUE(arrow::ExportSchema(*projected, c_schema.get()).ok());
+        ReadContextBuilder builder(path);
+        builder.SetReadSchema(std::move(c_schema)).SetVectorSearch(vector_search);
+        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto internal_context,
+                             InternalReadContext::Create(std::move(read_context), table_schema,
+                                                         table_schema->Options()));
+        EXPECT_EQ(std::vector<std::string>({"_INDEX_SCORE", "f0"}),
+                  internal_context->GetReadSchema()->field_names());
+    }
+}
+
+TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
+    std::string path = paimon::test::GetDataDir() +
+                       "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
+    std::shared_ptr<VectorSearch> search =
+        std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr,
+                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    ReadContextBuilder builder(path);
+    builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(search);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<InternalReadContext> internal,
+        InternalReadContext::Create(context, table_schema, table_schema->Options()));
+    EXPECT_TRUE(internal->HasVectorOrFullTextSearch());
+
+    std::map<std::string, std::string> options = table_schema->Options();
+    options[Options::DELETION_VECTORS_ENABLED] = "false";
+    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, options),
+                        "primary-key tables requires deletion vectors");
+}
+
+TEST(InternalReadContext, TestFileFullTextSearchScoreIsNotSupported) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
+    auto search =
+        std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"query"}})", /*limit=*/1);
+    ReadContextBuilder builder(path);
+    builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetFullTextSearch(search);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, table_schema->Options()),
+                        "does not support score output");
 }
 
 TEST(InternalReadContext, TestReadWithValueKindField) {

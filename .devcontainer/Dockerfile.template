@@ -71,7 +71,7 @@ RUN apt update && \
     vim \
     wget \
     sudo \
-    # ---- additions for tantivy-fts migration (Rust + Sanitizer + LLVM) ----
+    # ---- additions for the Rust FFI builds (Rust + Sanitizer + LLVM) ----
     clang \
     clang-format \
     clang-tidy \

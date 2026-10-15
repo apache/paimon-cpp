@@ -185,7 +185,11 @@ boolean flags to ``cmake``.
 * ``-DPAIMON_ENABLE_LUMINA=ON``: Support for the Lumina vector index. Requires
   Linux ``x86_64``; see :ref:`cpp-building-platforms`.
 * ``-DPAIMON_ENABLE_LUCENE=ON``: Support for Lucene full-text search indexes
-* ``-DPAIMON_ENABLE_TANTIVY=ON``: Enable the experimental Tantivy full-text index Rust FFI.
+* ``-DPAIMON_ENABLE_FULL_TEXT=ON``: Experimental full-text global index (index type
+  ``full-text``) backed by the ``paimon-full-text-index`` 0.1.0 Rust engine. It uses the same index
+  file format as Java Paimon. Requires Rust 1.90 or newer.
+  The engine is built from the Apache Paimon Full Text source release, which can be provided
+  through ``PAIMON_FULL_TEXT_URL``.
 * ``-DPAIMON_ENABLE_REST=ON``: Support for the REST catalog
   (``metastore=rest``), requires the libcurl and OpenSSL development packages.
 

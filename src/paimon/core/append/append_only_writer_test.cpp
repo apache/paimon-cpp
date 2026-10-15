@@ -429,7 +429,8 @@ TEST_F(AppendOnlyWriterTest, TestWritePublishesEmbeddedBitmapIndex) {
 
     auto input = std::make_shared<ByteArrayInputStream>(files[0]->embedded_index->data(),
                                                         files[0]->embedded_index->size());
-    ASSERT_OK_AND_ASSIGN(auto index_reader, FileIndexFormat::CreateReader(input, memory_pool_));
+    ASSERT_OK_AND_ASSIGN(auto index_reader,
+                         FileIndexFormat::CreateReader(input, memory_pool_, /*options=*/{}));
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
     ASSERT_OK_AND_ASSIGN(auto column_readers, index_reader->ReadColumnIndex("f0", &c_schema));

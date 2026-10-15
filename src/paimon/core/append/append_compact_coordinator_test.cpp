@@ -528,7 +528,7 @@ TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnDataEvolutionTable) {
                         "not support for data evolution in UNAWARE_BUCKET mode");
 }
 
-TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnArrayBlobTable) {
+TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnContainerBlobTable) {
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
                                                   {Options::BUCKET, "-1"},
                                                   {Options::FILE_SYSTEM, "local"},
@@ -537,7 +537,9 @@ TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnArrayBlobTable) {
 
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::int32()),
-        arrow::field("a0", arrow::list(BlobUtils::ToArrowField("item", /*nullable=*/true)))};
+        arrow::field("a0", arrow::list(BlobUtils::ToArrowField("item", /*nullable=*/true))),
+        arrow::field(
+            "m0", arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true)))};
     CreateTable(fields, /*partition_keys=*/{}, options);
 
     ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::Run(TablePath(), options, /*partitions=*/{},

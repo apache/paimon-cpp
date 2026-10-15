@@ -22,17 +22,32 @@
 #include <utility>
 #include <vector>
 
+#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_reader.h"
 #include "paimon/file_index/file_index_result.h"
+#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/result.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon {
 class Literal;
 
-/// Empty file index which has no writer and no serialized bytes.
+/// Reader for a file index entry with no serialized index data.
 /// No data in the file index, which mean this file has no related records.
+/// Vector and full-text searches return no matches.
 class EmptyFileIndexReader : public FileIndexReader {
  public:
+    Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& vector_search) override {
+        return ScoredFileIndexResult::Create(RoaringBitmap32(), {});
+    }
+
+    Result<std::shared_ptr<FileIndexResult>> VisitFullTextSearch(
+        const std::shared_ptr<FullTextSearch>& full_text_search) override {
+        return std::make_shared<BitmapIndexResult>(
+            []() -> Result<RoaringBitmap32> { return RoaringBitmap32(); });
+    }
+
     Result<std::shared_ptr<FileIndexResult>> VisitEqual(const Literal& literal) override {
         return FileIndexResult::Skip();
     }

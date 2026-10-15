@@ -58,7 +58,7 @@ Result<ManifestEntry> ManifestEntrySerializer::ConvertFrom(int32_t version,
                            SerializationUtils::DeserializeBinaryRow(partition_bytes));
     auto bucket = row.GetInt(2);
     auto total_buckets = row.GetInt(3);
-    auto file = row.GetRow(4, data_file_meta_serializer_.NumFields());
+    auto file = row.GetRow(ManifestEntry::kFileFieldIndex, data_file_meta_serializer_.NumFields());
     if (!file) {
         return Status::Invalid("ManifestEntry convert from row failed, with null DataFileMeta");
     }
@@ -80,7 +80,7 @@ Result<BinaryRow> ManifestEntrySerializer::ToRow(const ManifestEntry& record) co
     writer.WriteInt(4, record.TotalBuckets());
     PAIMON_ASSIGN_OR_RAISE(BinaryRow data_file_meta_row,
                            data_file_meta_serializer_.ToRow(record.File()));
-    writer.WriteRow(5, data_file_meta_row);
+    writer.WriteRow(ManifestEntry::kFileFieldIndex + 1, data_file_meta_row);
     writer.Complete();
     return row;
 }

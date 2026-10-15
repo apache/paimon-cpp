@@ -147,7 +147,7 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> BitmapIndexReader::VisitVectorS
     return Status::Invalid("Vector search is not supported in BitmapIndexReader.");
 }
 
-Result<std::shared_ptr<GlobalIndexResult>> BitmapIndexReader::VisitFullTextSearch(
+Result<std::shared_ptr<ScoredGlobalIndexResult>> BitmapIndexReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
     return Status::Invalid("Full text search is not supported in BitmapIndexReader.");
 }

@@ -75,10 +75,11 @@ Writing BLOB Columns
 ~~~~~~~~~~~~~~~~~~~~
 
 A ``BLOB`` column is a ``LargeBinary`` field carrying Paimon's BLOB field
-metadata, and an ``ARRAY<BLOB>`` column is a top-level ``List`` field whose
-element field carries it. Build the BLOB field with ``paimon::Blob::ArrowField``
-and import it into Arrow; the element field of an ``ARRAY<BLOB>`` column must
-keep that metadata:
+metadata, an ``ARRAY<BLOB>`` column is a top-level ``List`` field whose element
+field carries it, and a ``MAP<kt, BLOB>`` column is a top-level ``Map`` field
+whose values are ``LargeBinary``. Build the BLOB field with
+``paimon::Blob::ArrowField`` and import it into Arrow; the element field of an
+``ARRAY<BLOB>`` column must keep that metadata:
 
 .. code-block:: cpp
 
@@ -87,14 +88,16 @@ keep that metadata:
    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Field> element,
                                      arrow::ImportField(c_element.get()));
    std::shared_ptr<arrow::Schema> schema = arrow::schema(
-       {arrow::field("id", arrow::int32()), arrow::field("frames", arrow::list(element))});
+       {arrow::field("id", arrow::int32()), arrow::field("frames", arrow::list(element)),
+        arrow::field("views", arrow::map(arrow::utf8(), element))});
 
-For a column stored in blob files, which includes every ``ARRAY<BLOB>`` column,
-each value or element holds either the raw bytes or a serialized
-``paimon::BlobDescriptor`` produced by ``paimon::Blob::ToDescriptor``; the writer
-copies the referenced data into the blob file. A BLOB column listed in
-``blob-descriptor-field`` or ``blob-view-field`` keeps the reference in the data
-file instead, so the referenced data must remain available.
+For a column stored in blob files, which includes every ``ARRAY<BLOB>`` and
+``MAP<kt, BLOB>`` column, each value, element or map value holds either the raw
+bytes or a serialized ``paimon::BlobDescriptor`` produced by
+``paimon::Blob::ToDescriptor``; the writer copies the referenced data into the
+blob file. A BLOB column listed in ``blob-descriptor-field`` or
+``blob-view-field`` keeps the reference in the data file instead, so the
+referenced data must remain available.
 
 If the referenced data cannot be reached, the write fails unless a write-null
 option covers the failure: ``blob-write-null-on-missing-file`` covers a
@@ -102,11 +105,14 @@ referenced file that does not exist, and ``blob-write-null-on-fetch-failure``
 covers any other failure to resolve the descriptor or open the data, including
 a missing file when the former is disabled and an offset past the end of the
 file for a descriptor with a dynamic length (``-1``). A covered value is written
-as NULL; in an ``ARRAY<BLOB>`` only that element becomes NULL, not the array.
+as NULL; in an ``ARRAY<BLOB>`` or a ``MAP<kt, BLOB>`` only that element or map
+value becomes NULL, not the array or map.
 Any other failure fails the write, such as a failure to write the blob file or
 to close a referenced file. As in Paimon Java, this includes a file too short
 for the range of a descriptor with a known length, which is only detected while
 the data is copied.
+Except for the placeholder marker defined below, a ``MAP<kt, BLOB>`` value with
+a repeated or null key also fails the write, before any of its data is written.
 See :doc:`data_types` for the table requirements and restrictions.
 
 A data-evolution write can update columns of existing rows. The write does not
@@ -125,20 +131,40 @@ payload was serialized with.
 In such an update, a row whose BLOB or ``ARRAY<BLOB>`` value stays unchanged is
 marked with the reserved bytes ``_PAIMON_BLOB_PLACEHOLDER``: as the value itself
 for a BLOB column, or as the only element of the array for an ``ARRAY<BLOB>``
-column. As in Paimon Java, the marker works whatever other columns the update
-carries. Such a row keeps its value from the older files when read. Every write
-stores a value equal to the reserved bytes as such a marker, so that value is
-not supported.
+column. Every write stores a value equal to the reserved bytes as such a marker,
+so that value is not supported. A row whose ``MAP<kt, BLOB>`` value stays
+unchanged is marked with a map of exactly two entries with equal keys and null
+values, which no other map can hold since its keys must be unique. As in Paimon
+Java, a marker works whatever other columns the update carries, and its row
+keeps its value from the older files when read.
+
+Append the two entries of a ``MAP<kt, BLOB>`` marker one by one, for example
+with ``arrow::MapBuilder``, since a JSON object or a dictionary merges equal
+keys into one entry:
+
+.. code-block:: cpp
+
+   // map_builder builds the MAP<STRING, BLOB> column of the update.
+   auto* keys = static_cast<arrow::StringBuilder*>(map_builder->key_builder());
+   auto* values = static_cast<arrow::LargeBinaryBuilder*>(map_builder->item_builder());
+   ARROW_RETURN_NOT_OK(map_builder->Append());
+   for (int32_t i = 0; i < 2; ++i) {
+       ARROW_RETURN_NOT_OK(keys->Append("k"));
+       ARROW_RETURN_NOT_OK(values->AppendNull());
+   }
 
 .. note::
    The C++ writer differs from Paimon Java in these respects:
 
-   - A placeholder is identified by the reserved bytes; Java uses a dedicated
-     placeholder object, which cannot collide with a user value.
+   - A placeholder is identified by the reserved bytes, which can collide with a
+     user value, or by the two-entry map marker above; Java uses a dedicated
+     placeholder object.
+   - A ``MAP<kt, BLOB>`` key cannot be null, as Arrow map keys are not
+     nullable, and cannot be TIME; Java allows one null key and TIME keys.
    - A missing file is detected with ``FileSystem::Exists``. Java detects a
-     missing file for an ``ARRAY<BLOB>`` element only from an HTTP 404, and
-     does not write NULL for a 404 under ``blob-write-null-on-fetch-failure``
-     alone.
+     missing file for an ``ARRAY<BLOB>`` element or a ``MAP<kt, BLOB>`` value
+     only from an HTTP 404, and does not write NULL for a 404 under
+     ``blob-write-null-on-fetch-failure`` alone.
    - A descriptor with a dynamic length is copied up to the file length read
      when it is opened, so data appended to the file during the copy is left
      out, and a file truncated during the copy fails the write. Java reads it

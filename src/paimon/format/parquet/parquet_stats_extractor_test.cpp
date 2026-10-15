@@ -49,6 +49,8 @@
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 #include "parquet/arrow/reader.h"
+#include "parquet/file_reader.h"
+#include "parquet/metadata.h"
 #include "parquet/properties.h"
 
 namespace paimon::parquet::test {
@@ -91,6 +93,7 @@ class ParquetStatsExtractorTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(auto result,
                              stats_extractor.ExtractWithFileInfo(fs, file_path, GetDefaultPool()));
         auto& col_stats_vec = result.first;
+        CheckWrittenFileStats(*format_writer, col_stats_vec);
         ASSERT_EQ(fields.size(), col_stats_vec.size());
         ASSERT_EQ(col_stats_vec.size(), expected_stats.size());
         for (size_t i = 0; i < expected_stats.size(); i++) {
@@ -104,6 +107,23 @@ class ParquetStatsExtractorTest : public ::testing::Test {
         }
         auto row_count = result.second.GetRowCount();
         ASSERT_EQ(row_count, expect_row_count);
+    }
+
+    static void CheckWrittenFileStats(const ParquetFormatWriter& format_writer,
+                                      const ColumnStatsVector& read_back_stats) {
+        std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+        ASSERT_OK_AND_ASSIGN(ColumnStatsVector written_stats,
+                             format_writer.ExtractWrittenFileStats(pool));
+        ASSERT_EQ(read_back_stats.size(), written_stats.size());
+        for (size_t i = 0; i < read_back_stats.size(); ++i) {
+            ASSERT_EQ(read_back_stats[i]->GetFieldType(), written_stats[i]->GetFieldType()) << i;
+            ASSERT_EQ(read_back_stats[i]->ToString(), written_stats[i]->ToString()) << i;
+        }
+        ASSERT_OK_AND_ASSIGN(SimpleStats read_back_simple_stats,
+                             SimpleStatsConverter::ToBinary(read_back_stats, pool.get()));
+        ASSERT_OK_AND_ASSIGN(SimpleStats written_simple_stats,
+                             SimpleStatsConverter::ToBinary(written_stats, pool.get()));
+        ASSERT_EQ(read_back_simple_stats, written_simple_stats);
     }
 
  private:
@@ -311,6 +331,7 @@ TEST_F(ParquetStatsExtractorTest, TestNullForAllType) {
 
     auto column_stats = ret.first;
     auto file_info = ret.second;
+    CheckWrittenFileStats(*format_writer, column_stats);
     ASSERT_EQ(src_array->length(), file_info.GetRowCount());
     ASSERT_OK_AND_ASSIGN(auto stats, SimpleStatsConverter::ToBinary(column_stats, pool.get()));
     // test compatible with java
@@ -361,5 +382,106 @@ TEST_F(ParquetStatsExtractorTest, TestExtractStatsTimestampType) {
         };
         CheckStats(fields, data_str, expected_stats_str, /*expect_row_count=*/1);
     }
+}
+
+TEST_F(ParquetStatsExtractorTest, TestWrittenFileStatsAcrossRowGroups) {
+    arrow::FieldVector fields = {
+        arrow::field("f_int", arrow::int32()),
+        arrow::field("f_bigint", arrow::int64()),
+        arrow::field("f_float", arrow::float32()),
+        arrow::field("f_double", arrow::float64()),
+        arrow::field("f_string", arrow::utf8()),
+        arrow::field("f_binary", arrow::binary()),
+        arrow::field("f_decimal_int32", arrow::decimal128(9, 2)),
+        arrow::field("f_decimal_int64", arrow::decimal128(18, 4)),
+        arrow::field("f_decimal_fixed", arrow::decimal128(30, 2)),
+        arrow::field("f_ts_int96", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f_ts_micro", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("f_date", arrow::date32()),
+        arrow::field("f_all_null", arrow::int32()),
+        arrow::field("f_list", arrow::list(arrow::int32())),
+        arrow::field("f_struct", arrow::struct_({arrow::field("f0", arrow::int32())})),
+        arrow::field("f_map",
+                     arrow::map(arrow::utf8(), arrow::map(arrow::int32(), arrow::int64()))),
+    };
+    std::string data_str = R"([
+        [3, 30, NaN, 0.5, "b", "y", "1.50", "10.0001", "12345678901234567890.12", "1970-01-01 00:00:01", "1970-01-01 00:00:00.000001", 10, null, [1, 2], [1], [["a", [[1, 10], [2, 20]]], ["b", []]]],
+        [1, -10, 1.5, NaN, "a", "x", "-2.25", "-3.5000", "-1.00", "1970-01-01 00:00:02", "1970-01-01 00:00:00.000002", 12, null, [3], [2], [["c", null]]],
+        [null, 20, NaN, NaN, "d", null, null, "7.0000", "0.01", null, null, null, null, null, null, null],
+        [5, null, NaN, -1.25, null, "z", "3.00", null, null, "1970-01-01 00:00:03", "1970-01-01 00:00:00.000003", 11, null, [], [3], []],
+        [2, 40, -2.5, 2.75, "c", "w", "0.75", "1.2500", "99.99", "1970-01-01 00:00:04", "1970-01-01 00:00:00.000004", 9, null, [4], [4], [["d", [[3, null]]]]]
+    ])";
+    auto schema = arrow::schema(fields);
+    std::shared_ptr<FileSystem> fs = std::make_shared<LocalFileSystem>();
+    std::string file_name = dir_->Str() + "/multiple_row_groups.parquet";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                         fs->Create(file_name, /*overwrite=*/false));
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    ::parquet::WriterProperties::Builder builder;
+    builder.enable_store_decimal_as_integer();
+    builder.max_row_group_length(2);
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ParquetFormatWriter> format_writer,
+        ParquetFormatWriter::Create(out, schema, builder.build(),
+                                    DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE, GetArrowPool(pool)));
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), data_str).ValueOrDie();
+    ArrowArray c_array;
+    ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+    ASSERT_OK(format_writer->AddBatch(&c_array));
+    ASSERT_NOK_WITH_MSG(format_writer->ExtractWrittenFileStats(pool),
+                        "Cannot extract stats before the parquet file is finished");
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+
+    std::unique_ptr<::parquet::ParquetFileReader> parquet_reader =
+        ::parquet::ParquetFileReader::OpenFile(file_name);
+    ASSERT_EQ(3, parquet_reader->metadata()->num_row_groups());
+
+    ParquetStatsExtractor extractor(schema);
+    ASSERT_OK_AND_ASSIGN(auto result, extractor.ExtractWithFileInfo(fs, file_name, pool));
+    ASSERT_EQ(5, result.second.GetRowCount());
+    const ColumnStatsVector& column_stats = result.first;
+    ASSERT_EQ(fields.size(), column_stats.size());
+    ASSERT_EQ("min 1, max 5, null count 1", column_stats[0]->ToString());
+    ASSERT_EQ("min -2.5, max 1.5, null count 0", column_stats[2]->ToString());
+    ASSERT_EQ("min a, max d, null count 1", column_stats[4]->ToString());
+    ASSERT_EQ("min null, max null, null count 5", column_stats[12]->ToString());
+    ASSERT_EQ(FieldType::MAP, column_stats[15]->GetFieldType());
+    ASSERT_EQ("min null, max null, null count null", column_stats[15]->ToString());
+    CheckWrittenFileStats(*format_writer, column_stats);
+}
+
+TEST_F(ParquetStatsExtractorTest, TestWrittenFileStatsOfEmptyFile) {
+    arrow::FieldVector fields = {
+        arrow::field("f_int", arrow::int32()),
+        arrow::field("f_string", arrow::utf8()),
+        arrow::field("f_list", arrow::list(arrow::int32())),
+    };
+    auto schema = arrow::schema(fields);
+    std::shared_ptr<FileSystem> fs = std::make_shared<LocalFileSystem>();
+    std::string file_name = dir_->Str() + "/empty.parquet";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                         fs->Create(file_name, /*overwrite=*/false));
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    ::parquet::WriterProperties::Builder builder;
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ParquetFormatWriter> format_writer,
+        ParquetFormatWriter::Create(out, schema, builder.build(),
+                                    DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE, GetArrowPool(pool)));
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+
+    ParquetStatsExtractor extractor(schema);
+    ASSERT_OK_AND_ASSIGN(auto result, extractor.ExtractWithFileInfo(fs, file_name, pool));
+    ASSERT_EQ(0, result.second.GetRowCount());
+    const ColumnStatsVector& column_stats = result.first;
+    ASSERT_EQ(fields.size(), column_stats.size());
+    for (const auto& stats : column_stats) {
+        ASSERT_EQ("min null, max null, null count null", stats->ToString());
+    }
+    CheckWrittenFileStats(*format_writer, column_stats);
 }
 }  // namespace paimon::parquet::test

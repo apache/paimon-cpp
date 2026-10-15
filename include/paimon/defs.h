@@ -408,7 +408,6 @@ struct PAIMON_EXPORT Options {
 
     /// "deletion-vectors.bitmap64" - Enable 64 bit bitmap implementation. Note that only 64 bit
     /// bitmap implementation is compatible with Iceberg. Default value is "false".
-    /// @note: bitmap64 dv is not supported.
     static const char DELETION_VECTOR_BITMAP64[];
 
     /// "changelog-producer" - Whether to double write to a changelog file. This changelog file
@@ -569,22 +568,26 @@ struct PAIMON_EXPORT Options {
     /// tables at read time. Set to false to preserve serialized BlobViewStruct bytes when
     /// forwarding blob view values to another blob-view table. Default value is "true".
     static const char BLOB_VIEW_RESOLVE_ENABLED[];
-    /// "blob-view-upstream-warehouse" - Since the catalog capabilities are partially missing, when
-    /// Blob View is enabled, cpp paimon cannot automatically obtain the upstream table warehouse
-    /// path and requires manual configuration by the user. No default value.
+    /// "blob-view-upstream-warehouse" - Warehouse root the upstream table a blob-view field points
+    /// at is resolved from. Since the catalog capabilities are partially missing, cpp paimon cannot
+    /// always obtain it automatically, so it may be configured explicitly. When it is not set, the
+    /// read falls back to the warehouse the downstream table itself lives in, which resolves a
+    /// co-located upstream table. No default value.
     static const char BLOB_VIEW_UPSTREAM_WAREHOUSE[];
     /// "blob-write-null-on-missing-file" - Whether to write NULL for a descriptor BLOB value,
-    /// including an ARRAY<BLOB> element, when the referenced file does not exist at write time.
+    /// including an ARRAY<BLOB> element or a MAP<..., BLOB> value, when the referenced file does
+    /// not exist at write time.
     /// When false, a missing file is treated like any other fetch failure, following
     /// "blob-write-null-on-fetch-failure". Default value is "false".
     static const char BLOB_WRITE_NULL_ON_MISSING_FILE[];
     /// "blob-write-null-on-fetch-failure" - Whether to write NULL for a descriptor BLOB value,
-    /// including an ARRAY<BLOB> element, when the referenced data cannot be reached at write time,
-    /// i.e. the descriptor cannot be deserialized or the data cannot be opened (e.g. the offset of
-    /// a descriptor with dynamic length -1 is past the end of the file). A missing file is handled
-    /// by "blob-write-null-on-missing-file" when that option is enabled. When false, such a
-    /// failure fails the write. A failure while copying the data, such as a read error or a file
-    /// too short for the range of a descriptor with a known length, always fails the write.
+    /// including an ARRAY<BLOB> element or a MAP<..., BLOB> value, when the referenced data cannot
+    /// be reached at write time, i.e. the descriptor cannot be deserialized or the data cannot be
+    /// opened (e.g. the offset of a descriptor with dynamic length -1 is past the end of the
+    /// file). A missing file is handled by "blob-write-null-on-missing-file" when that option is
+    /// enabled. When false, such a failure fails the write. A failure while copying the data, such
+    /// as a read error or a file too short for the range of a descriptor with a known length,
+    /// always fails the write.
     /// Default value is "false".
     static const char BLOB_WRITE_NULL_ON_FETCH_FAILURE[];
     /// "global-index.enabled" - Whether to enable global index for scan. Default value is "true".

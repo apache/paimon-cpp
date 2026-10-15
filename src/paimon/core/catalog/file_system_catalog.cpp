@@ -105,7 +105,7 @@ Result<bool> FileSystemCatalog::TableExists(const Identifier& identifier) const 
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
         return GlobalSystemTableLoader::IsSupported(identifier.GetTableName(), catalog_options_);
     }
-    // The branch component is dropped when the data table identifier is rebuilt below, so the
+    // The system table suffix is dropped when the data table identifier is rebuilt below, so the
     // identifier is validated as a whole here.
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
@@ -115,8 +115,9 @@ Result<bool> FileSystemCatalog::TableExists(const Identifier& identifier) const 
         if (!system_table_name || !SystemTableLoader::IsSupported(system_table_name.value())) {
             return false;
         }
-        PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
-        Identifier data_identifier(identifier.GetDatabaseName(), data_table_name);
+        PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
+        PAIMON_ASSIGN_OR_RAISE(Identifier data_identifier,
+                               CatalogUtils::BranchIdentifier(identifier, branch));
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                                TableSchemaExists(data_identifier));
         return latest_schema != std::nullopt;
@@ -181,7 +182,11 @@ Result<std::optional<std::shared_ptr<TableSchema>>> FileSystemCatalog::TableSche
             "do not support checking TableSchemaExists for system table.");
     }
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, NewDataTablePath(warehouse_, identifier));
-    SchemaManager schema_manager(fs_, table_path);
+    PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
+    if (StringUtils::EqualsIgnoreCase(branch, Identifier::kDefaultMainBranch)) {
+        branch = Identifier::kDefaultMainBranch;
+    }
+    SchemaManager schema_manager(fs_, table_path, branch);
     return schema_manager.Latest();
 }
 
@@ -291,7 +296,7 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
                                system_table->ArrowSchema());
         return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
     }
-    // The branch component is dropped when the data table identifier is rebuilt below, so the
+    // The system table suffix is dropped when the data table identifier is rebuilt below, so the
     // identifier is validated as a whole here.
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
@@ -301,15 +306,16 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
         if (!system_table_name || !SystemTableLoader::IsSupported(system_table_name.value())) {
             return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
         }
-        PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
-        Identifier data_identifier(identifier.GetDatabaseName(), data_table_name);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+        PAIMON_ASSIGN_OR_RAISE(
+            Identifier data_identifier,
+            CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                                TableSchemaExists(data_identifier));
         if (!latest_schema) {
             return Status::NotExist(fmt::format("{} not exist", data_identifier.ToString()));
         }
         std::map<std::string, std::string> dynamic_options;
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
         if (branch) {
             dynamic_options[Options::BRANCH] = branch.value();
         }
@@ -539,6 +545,22 @@ Result<std::vector<SnapshotInfo>> FileSystemCatalog::ListSnapshots(
         result.push_back(snap.ToSnapshotInfo());
     }
     return result;
+}
+
+Result<std::optional<SnapshotInfo>> FileSystemCatalog::GetLatestSnapshot(
+    const Identifier& identifier, const std::string& branch) const {
+    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(branch));
+    PAIMON_ASSIGN_OR_RAISE(bool exists, TableExists(identifier));
+    if (!exists) {
+        return Status::NotExist(fmt::format("table {} does not exist", identifier.ToString()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(identifier));
+    SnapshotManager mgr(fs_, table_path, branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, mgr.LatestSnapshot());
+    if (!snapshot) {
+        return std::optional<SnapshotInfo>();
+    }
+    return std::optional<SnapshotInfo>(snapshot->ToSnapshotInfo());
 }
 
 Result<std::shared_ptr<FormatTable>> FileSystemCatalog::LoadFormatTable(

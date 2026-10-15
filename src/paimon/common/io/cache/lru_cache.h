@@ -32,7 +32,7 @@ namespace paimon {
 /// LRU Cache implementation with weight-based eviction for block cache.
 ///
 /// Wraps GenericLruCache with CacheKey/CacheValue types. Capacity is measured
-/// in bytes (sum of MemorySegment sizes). When an entry is evicted, its
+/// in bytes (sum of CacheValue::GetMemoryUsage()). When an entry is evicted, its
 /// CacheCallback is invoked to notify the upper layer.
 ///
 /// @note Thread-safe: all public methods are protected by the underlying GenericLruCache lock.

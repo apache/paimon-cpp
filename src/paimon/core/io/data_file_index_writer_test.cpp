@@ -125,7 +125,7 @@ class DataFileIndexWriterTest : public ::testing::Test {
     Result<std::unique_ptr<FileIndexFormat::Reader>> CreateReader(
         const std::shared_ptr<Bytes>& bytes) const {
         auto input = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
-        return FileIndexFormat::CreateReader(input, pool_);
+        return FileIndexFormat::CreateReader(input, pool_, /*options=*/{});
     }
 
     Result<std::vector<std::shared_ptr<FileIndexReader>>> ReadColumn(
@@ -244,7 +244,7 @@ TEST_F(DataFileIndexWriterTest, TestExternalIndexAndAbortCleanup) {
     ASSERT_OK_AND_ASSIGN(bool exists, file_system_->Exists(index_path));
     ASSERT_TRUE(exists);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system_->Open(index_path));
-    ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input, pool_));
+    ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input, pool_, /*options=*/{}));
     ASSERT_OK_AND_ASSIGN(auto bitmap_readers, ReadColumn(reader.get(), "f0"));
     ASSERT_EQ(1, bitmap_readers.size());
     ASSERT_OK_AND_ASSIGN(auto equal_result, bitmap_readers[0]->VisitEqual(Literal(1)));

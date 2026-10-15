@@ -19,12 +19,14 @@
 
 #include "paimon/common/reader/concat_batch_reader.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "arrow/c/abi.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/reader/file_batch_reader.h"
 
 namespace paimon {
 class MemoryPool;
@@ -34,7 +36,15 @@ ConcatBatchReader::ConcatBatchReader(std::vector<std::unique_ptr<BatchReader>>&&
     : arrow_pool_(arrow_pool),
       finished_reader_metrics_(std::make_shared<MetricsImpl>()),
       readers_(std::move(readers)),
-      current_(0) {}
+      file_readers_(readers_.size(), nullptr),
+      current_(0) {
+    // Non-file readers keep their null slots so the warmup window stays aligned with readers_.
+    for (size_t i = 0; i < readers_.size(); i++) {
+        if (auto* file_reader = dynamic_cast<FileBatchReader*>(readers_[i].get())) {
+            file_readers_[i] = file_reader;
+        }
+    }
+}
 
 Result<BatchReader::ReadBatch> ConcatBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
@@ -66,10 +76,23 @@ void ConcatBatchReader::CloseAndReleaseReader(size_t reader_index) {
     reader->Close();
     finished_reader_metrics_->Merge(reader->GetReaderMetrics());
     reader.reset();
+    file_readers_[reader_index] = nullptr;
+}
+
+void ConcatBatchReader::WarmupRange(size_t idx, size_t count) {
+    const size_t end = std::min(idx + count, file_readers_.size());
+    for (size_t i = idx; i < end; i++) {
+        if (file_readers_[i] != nullptr) {
+            file_readers_[i]->Warmup();
+        }
+    }
 }
 
 Result<BatchReader::ReadBatchWithBitmap> ConcatBatchReader::NextBatchWithBitmap() {
     while (current_ < readers_.size()) {
+        // Lookahead: when the file system reads asynchronously, the next file's first read is paid
+        // while this file is still being consumed, instead of serially after its EOF.
+        WarmupRange(current_, 1 + kWarmupLookahead);
         auto& current_reader = readers_[current_];
         PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap result,
                                current_reader->NextBatchWithBitmap());

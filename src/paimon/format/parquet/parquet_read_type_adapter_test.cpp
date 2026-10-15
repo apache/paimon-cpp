@@ -109,6 +109,24 @@ TEST(ParquetReadTypeAdapterTest, TestAlreadyLogicalBlobCompatibility) {
                         "source type large_binary and target type binary mismatch");
 }
 
+TEST(ParquetReadTypeAdapterTest, TestDictionaryBinaryCompatibility) {
+    std::shared_ptr<arrow::DataType> dictionary_type =
+        arrow::dictionary(arrow::int32(), arrow::binary());
+
+    ASSERT_OK_AND_ASSIGN(bool needs_conversion, ParquetReadTypeAdapter::NeedsArrayConversion(
+                                                    dictionary_type, arrow::binary()));
+    ASSERT_FALSE(needs_conversion);
+
+    ASSERT_NOK_WITH_MSG(
+        ParquetReadTypeAdapter::NeedsArrayConversion(dictionary_type, arrow::utf8()),
+        "source type dictionary<values=binary, indices=int32, ordered=0> and target type string "
+        "mismatch");
+    ASSERT_NOK_WITH_MSG(ParquetReadTypeAdapter::NeedsArrayConversion(
+                            arrow::dictionary(arrow::int32(), arrow::int32()), arrow::int32()),
+                        "source type dictionary<values=int32, indices=int32, ordered=0> and "
+                        "target type int32 mismatch");
+}
+
 TEST(ParquetReadTypeAdapterTest, TestAdaptArray) {
     auto timezone = DateTimeUtils::GetLocalTimezoneName();
     arrow::FieldVector fields = {

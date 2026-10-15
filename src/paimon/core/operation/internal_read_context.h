@@ -69,6 +69,15 @@ class InternalReadContext {
     const std::shared_ptr<Predicate>& GetPredicate() const {
         return read_context_->GetPredicate();
     }
+    const std::shared_ptr<VectorSearch>& GetVectorSearch() const {
+        return read_context_->GetVectorSearch();
+    }
+    const std::shared_ptr<FullTextSearch>& GetFullTextSearch() const {
+        return read_context_->GetFullTextSearch();
+    }
+    bool HasVectorOrFullTextSearch() const {
+        return read_context_->HasVectorOrFullTextSearch();
+    }
     bool EnablePredicateFilter() const {
         return read_context_->EnablePredicateFilter();
     }
@@ -102,6 +111,11 @@ class InternalReadContext {
     std::shared_ptr<RealtimeContext> GetRealtimeContext() const {
         return read_context_->GetRealtimeContext();
     }
+    /// The scheme map the file system of this read was resolved with, which a catalog reading a
+    /// dependency table on its behalf needs to resolve that table's location the same way.
+    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
+        return read_context_->GetFileSystemSchemeToIdentifierMap();
+    }
 
     bool ReadAheadCacheEnabled() const {
         return read_context_->ReadAheadCacheEnabled();
@@ -131,9 +145,11 @@ class InternalReadContext {
                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     static std::optional<DataField> TryResolveSpecialFieldById(int32_t field_id,
-                                                               const CoreOptions& core_options);
-    static std::optional<DataField> TryResolveSpecialFieldByName(const std::string& name,
-                                                                 const CoreOptions& core_options);
+                                                               const CoreOptions& core_options,
+                                                               bool has_vector_or_full_text_search);
+    static std::optional<DataField> TryResolveSpecialFieldByName(
+        const std::string& name, const CoreOptions& core_options,
+        bool has_vector_or_full_text_search);
     static Result<std::shared_ptr<arrow::Field>> AlignReadFieldWithTableFieldIds(
         const std::shared_ptr<arrow::Field>& read_field,
         const std::shared_ptr<arrow::Field>& table_field);

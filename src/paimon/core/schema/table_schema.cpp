@@ -27,6 +27,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -57,7 +58,6 @@ Result<std::unique_ptr<TableSchema>> TableSchema::Create(
     for (const auto& primary_key : primary_keys) {
         primary_key_set.insert(primary_key);
     }
-    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateContainerBlobWriteSchema(schema));
     for (const auto& field : schema->fields()) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> field_with_id,
                                AssignFieldIdsRecursively(field, /*set_field_id=*/true, &field_id));
@@ -132,6 +132,14 @@ Result<std::shared_ptr<arrow::Field>> TableSchema::AssignFieldIdsRecursively(
         auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
         std::shared_ptr<arrow::Field> key_field = map_type->key_field();
         std::shared_ptr<arrow::Field> value_field = map_type->item_field();
+        // Arrow's C schema bridge drops the metadata of a map value field, which marks a BLOB.
+        // Paimon BYTES is BINARY, so a LARGE_BINARY map value can only be a BLOB (see
+        // BlobUtils::IsMapBlobField); restore the marker.
+        if (value_field->type()->id() == arrow::Type::LARGE_BINARY &&
+            !BlobUtils::IsBlobMetadata(value_field->metadata())) {
+            value_field = value_field->WithMergedMetadata(arrow::KeyValueMetadata::Make(
+                {BlobDefs::kExtensionTypeKey}, {BlobDefs::kExtensionTypeValue}));
+        }
         PAIMON_ASSIGN_OR_RAISE(
             key_field, AssignFieldIdsRecursively(key_field, /*set_field_id=*/false, field_id));
         PAIMON_ASSIGN_OR_RAISE(

@@ -82,6 +82,23 @@ class FieldMappingTest : public ::testing::Test {
     std::shared_ptr<arrow::Schema> schema_ = DataField::ConvertDataFieldsToArrowSchema(fields_);
 };
 
+TEST_F(FieldMappingTest, TestFieldNameMappingUsesIdsAcrossRenameAndReorder) {
+    std::vector<DataField> table_fields = {
+        DataField(2, arrow::field("vec", arrow::list(arrow::float32()))),
+        DataField(0, arrow::field("id", arrow::int32())),
+        DataField(4, arrow::field("title", arrow::utf8()))};
+    std::vector<DataField> file_fields = {
+        DataField(0, arrow::field("id", arrow::int32())),
+        DataField(2, arrow::field("embedding", arrow::list(arrow::float32()))),
+        DataField(3, arrow::field("title", arrow::utf8()))};
+    auto mapping = FieldMappingBuilder::CreateFieldNameMapping(table_fields, file_fields);
+    const std::map<std::string, std::string> expected = {{"id", "id"}, {"vec", "embedding"}};
+    ASSERT_EQ(expected, mapping);
+
+    // test empty file fields
+    ASSERT_TRUE(FieldMappingBuilder::CreateFieldNameMapping(table_fields, {}).empty());
+}
+
 TEST_F(FieldMappingTest, TestEmptyPartitionKeys) {
     // test no partition keys in schema
     std::string val("hello");

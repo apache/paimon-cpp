@@ -23,12 +23,15 @@
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog_options.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/mock/mock_file_system.h"
@@ -75,6 +78,93 @@ TEST(ReadContextTest, TestWithCatalogNullRejected) {
                         "cannot read through a null catalog");
 }
 
+TEST(ReadContextTest, TestReadViaHeaderReportsTheStartingTable) {
+    // A read through a REST catalog carries the table it started from, so that the metastore can
+    // authorize a dependency table - the blob table behind a BlobView - through that table's owner.
+    // The value is the identifier's flat JSON in the form-urlencoded flavor the REST server
+    // expects, byte for byte what the Java client sends.
+    const std::string expected = "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%22%7D";
+    for (const std::string metastore : {"rest"}) {
+        auto catalog = std::make_shared<MockVersionManagedCatalog>();
+        catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+        catalog->SetOptions({{CatalogOptions::METASTORE, metastore}});
+
+        ReadContextBuilder builder("table_root_path");
+        ASSERT_OK_AND_ASSIGN(auto ctx,
+                             builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+
+        const std::map<std::string, std::string>& options = ctx->GetOptions();
+        ASSERT_EQ(options.count("header.X-Paimon-Read-Via"), 1u) << metastore;
+        ASSERT_EQ(options.at("header.X-Paimon-Read-Via"), expected) << metastore;
+        // The catalog-level connection options are handed to the read options so the blob-view
+        // dependency catalog can be rebuilt as the same REST catalog; here that is the metastore.
+        ASSERT_EQ(options.count(CatalogOptions::METASTORE), 1u) << metastore;
+        ASSERT_EQ(options.at(CatalogOptions::METASTORE), metastore) << metastore;
+        ASSERT_EQ(options.size(), 2u) << metastore;
+    }
+}
+
+TEST(ReadContextTest, TestReadViaHeaderKeepsTheOutermostView) {
+    // A view read on behalf of another view arrives with the header already set, and the outermost
+    // view is the one the metastore hears about: the option in hand wins, as it does in the Java
+    // `CatalogEnvironment.dependencyReadContext()`.
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    catalog->SetOptions({{CatalogOptions::METASTORE, "rest"}});
+
+    ReadContextBuilder builder("table_root_path");
+    builder.AddOption("header.X-Paimon-Read-Via", "outer-view");
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+    ASSERT_EQ(ctx->GetOptions().at("header.X-Paimon-Read-Via"), "outer-view");
+}
+
+TEST(ReadContextTest, TestReadViaHeaderNeedsARestCatalogAndATable) {
+    // Only a REST metastore turns a `header.` option into a request header, and only a read naming
+    // a table has one to report: the two guards the Java counterpart checks before copying the
+    // options over. A catalog that is not one is told nothing.
+    for (const std::string metastore : {"filesystem", "hive", "alake"}) {
+        auto catalog = std::make_shared<MockVersionManagedCatalog>();
+        catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+        catalog->SetOptions({{CatalogOptions::METASTORE, metastore}});
+
+        ReadContextBuilder builder("table_root_path");
+        ASSERT_OK_AND_ASSIGN(auto ctx,
+                             builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+        ASSERT_EQ(ctx->GetOptions().count("header.X-Paimon-Read-Via"), 0u) << metastore;
+    }
+
+    // Nor is one added when the options leave the metastore out, which reads as a filesystem
+    // catalog, or when the read goes through no catalog and so names no table - however the
+    // metastore is spelled, since `Catalog::Create` matches it in lower case.
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    ReadContextBuilder no_metastore_builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(
+        auto no_metastore_ctx,
+        no_metastore_builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+    ASSERT_EQ(no_metastore_ctx->GetOptions().count("header.X-Paimon-Read-Via"), 0u);
+
+    ReadContextBuilder no_catalog_builder("table_root_path");
+    no_catalog_builder.AddOption(CatalogOptions::METASTORE, "REST");
+    ASSERT_OK_AND_ASSIGN(auto no_catalog_ctx, no_catalog_builder.Finish());
+    ASSERT_EQ(no_catalog_ctx->GetOptions().count("header.X-Paimon-Read-Via"), 0u);
+}
+
+TEST(ReadContextTest, TestReadViaHeaderReportsTheBranchOfTheStartingTable) {
+    // What is reported is the object name, the branch suffix included, because that is what the
+    // Java `getObjectName()` its serializer reads returns: a read of a branch says so instead of
+    // naming the data table. The metastore is matched in upper case here as well.
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    catalog->SetOptions({{CatalogOptions::METASTORE, "REST"}});
+
+    ReadContextBuilder builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(auto ctx,
+                         builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).Finish());
+    ASSERT_EQ(ctx->GetOptions().at("header.X-Paimon-Read-Via"),
+              "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%24branch_dev%22%7D");
+}
+
 TEST(ReadContextTest, TestDefaultValue) {
     ReadContextBuilder builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
@@ -85,6 +175,7 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetReadFieldIds().empty());
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetPredicate());
+    ASSERT_FALSE(ctx->HasVectorOrFullTextSearch());
     ASSERT_FALSE(ctx->EnablePredicateFilter());
     ASSERT_FALSE(ctx->EnablePrefetch());
     ASSERT_TRUE(ctx->ReadAheadCacheEnabled());
@@ -222,6 +313,31 @@ TEST(ReadContextTest, TestBranch) {
     ASSERT_NOK_WITH_MSG(escaping_builder.Finish(), "branch name cannot contain path separators");
 }
 
+TEST(ReadContextTest, TestBranchAgreesWithIdentifier) {
+    // A read through a catalog names its table with an Identifier that can itself carry a branch,
+    // so that branch and the one WithBranch() names must agree, exactly as the write and commit
+    // builders already require: one read cannot be aimed at two branches at once.
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+
+    // The identifier's branch is honored when WithBranch() stays silent.
+    ReadContextBuilder identifier_builder("table_root_path");
+    identifier_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev"));
+    ASSERT_OK_AND_ASSIGN(auto identifier_ctx, identifier_builder.Finish());
+    ASSERT_EQ("dev", identifier_ctx->GetBranch());
+
+    // An agreeing WithBranch() is accepted.
+    ReadContextBuilder agreeing_builder("table_root_path");
+    agreeing_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).WithBranch("dev");
+    ASSERT_OK_AND_ASSIGN(auto agreeing_ctx, agreeing_builder.Finish());
+    ASSERT_EQ("dev", agreeing_ctx->GetBranch());
+
+    // A disagreeing WithBranch() is refused, and both branches are named.
+    ReadContextBuilder mixed_builder("table_root_path");
+    mixed_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).WithBranch("rt");
+    ASSERT_NOK_WITH_MSG(mixed_builder.Finish(), "but both 'dev' and 'rt' were named");
+}
+
 TEST(ReadContextTest, TestFileSystemAndSchemeMapConflict) {
     ReadContextBuilder builder("table_root_path");
     auto fs = std::make_shared<MockFileSystem>();
@@ -274,6 +390,41 @@ TEST(ReadContextTest, TestSetInvalidReadSchemaIgnored) {
 
     ASSERT_FALSE(ctx->HasReadSchema());
     ASSERT_EQ(ctx->GetReadSchema(), nullptr);
+}
+
+TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
+    std::shared_ptr<VectorSearch> vector_search = std::make_shared<VectorSearch>(
+        "embedding", /*limit=*/3, std::vector<float>{1.0f, 2.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::COSINE, std::map<std::string, std::string>{});
+    ReadContextBuilder builder("table_root_path");
+    ASSERT_EQ(&builder, &builder.SetVectorSearch(vector_search));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context, builder.Finish());
+    EXPECT_EQ(vector_search, vector_context->GetVectorSearch());
+    EXPECT_FALSE(vector_context->GetFullTextSearch());
+    EXPECT_TRUE(vector_context->HasVectorOrFullTextSearch());
+
+    std::shared_ptr<FullTextSearch> full_text_search =
+        std::make_shared<FullTextSearch>("body", R"({"match":{"query":"paimon"}})", /*limit=*/5);
+    ASSERT_EQ(&builder, &builder.SetFullTextSearch(full_text_search));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> full_text_context, builder.Finish());
+    EXPECT_FALSE(full_text_context->GetVectorSearch());
+    EXPECT_EQ(full_text_search, full_text_context->GetFullTextSearch());
+    EXPECT_TRUE(full_text_context->HasVectorOrFullTextSearch());
+
+    // Finish resets search configuration just like every other per-read option.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> reset_context, builder.Finish());
+    EXPECT_FALSE(reset_context->HasVectorOrFullTextSearch());
+}
+
+TEST(ReadContextTest, TestRejectConflictingFileIndexSearch) {
+    std::shared_ptr<VectorSearch> vector_search =
+        std::make_shared<VectorSearch>("embedding", /*limit=*/3, std::vector<float>{1.0f}, nullptr,
+                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    std::shared_ptr<FullTextSearch> full_text_search =
+        std::make_shared<FullTextSearch>("body", R"({"match":{"query":"paimon"}})", /*limit=*/5);
+    ReadContextBuilder conflicting("table_root_path");
+    conflicting.SetVectorSearch(vector_search).SetFullTextSearch(full_text_search);
+    ASSERT_NOK_WITH_MSG(conflicting.Finish(), "cannot be configured together");
 }
 
 }  // namespace paimon::test

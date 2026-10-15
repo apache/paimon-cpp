@@ -67,6 +67,8 @@ jobs:
           - name: gcc-debug-x86_64
             cc: gcc-14
             cxx: g++-14
+            # Also read the full-text archives written by Paimon C++ with the Python reader.
+            build_args: --verify_full_text_archives
           - name: clang-debug-x86_64
             fetch_depth: '0' # fetch the PR target branch history for clang-tidy
             timeout_minutes: 180

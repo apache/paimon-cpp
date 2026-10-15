@@ -19,18 +19,15 @@
 
 #include "paimon/common/global_index/bitmap/bitmap_global_index_factory.h"
 
-#include <utility>
+#include "paimon/common/global_index/bitmap/bitmap_global_indexer.h"
 
-#include "paimon/common/file_index/bitmap/bitmap_file_index.h"
-#include "paimon/common/global_index/bitmap/bitmap_global_index.h"
 namespace paimon {
 
 const char BitmapGlobalIndexFactory::IDENTIFIER[] = "bitmap-global";
 
 Result<std::unique_ptr<GlobalIndexer>> BitmapGlobalIndexFactory::Create(
     const std::map<std::string, std::string>& options) const {
-    auto bitmap_file_index = std::make_shared<BitmapFileIndex>(options);
-    return std::make_unique<BitmapGlobalIndex>(bitmap_file_index);
+    return BitmapGlobalIndexer::Create(options);
 }
 
 REGISTER_PAIMON_FACTORY(BitmapGlobalIndexFactory);

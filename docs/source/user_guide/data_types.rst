@@ -294,9 +294,13 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
    * - ``BLOB``
 
        ``ARRAY<BLOB>``
+
+       ``MAP<kt, BLOB>``
      - LargeBinary
 
        List<LargeBinary>
+
+       Map<kt, LargeBinary>
      - Data type of a binary large object, such as an image or a video, stored
        in dedicated ``.blob`` files instead of the normal data files. A BLOB
        column listed in ``blob-descriptor-field`` or ``blob-view-field`` instead
@@ -308,12 +312,17 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        field. An ``ARRAY<BLOB>`` field is a top-level ``List`` field whose
        element field is a BLOB field, which stores an ordered collection of
        objects (e.g. the frames of one sample) in a single blob entry. Both the
-       array and its elements may be null.
+       array and its elements may be null. A ``MAP<kt, BLOB>`` field is a
+       top-level ``Map`` field whose values are ``LargeBinary``, which stores
+       keyed objects (e.g. the views of one sample) in a single blob entry. Both
+       the map and its values may be null, while its keys must be unique and
+       non-null. ``kt`` must be BOOLEAN, TINYINT, SMALLINT, INT, BIGINT, DATE,
+       DECIMAL, CHAR, VARCHAR, BINARY or VARBINARY.
 
-       Tables with BLOB or ``ARRAY<BLOB>`` columns must enable
-       ``row-tracking.enabled`` and ``data-evolution.enabled``, and must have
-       at least one non-BLOB column. These columns cannot be partition keys.
-       ``ARRAY<BLOB>`` cannot be nested inside other types or listed in
-       ``blob-descriptor-field`` or ``blob-view-field``. Paimon C++ does not
-       support compacting these tables yet, and can read but not write
-       ``MAP<kt, BLOB>`` columns. See :doc:`write` for writing BLOB columns.
+       Tables with BLOB, ``ARRAY<BLOB>`` or ``MAP<kt, BLOB>`` columns must
+       enable ``row-tracking.enabled`` and ``data-evolution.enabled``, and must
+       have at least one non-BLOB column. These columns cannot be partition
+       keys. ``ARRAY<BLOB>`` and ``MAP<kt, BLOB>`` cannot be nested inside other
+       types or listed in ``blob-descriptor-field`` or ``blob-view-field``.
+       Paimon C++ does not support compacting these tables yet. See :doc:`write`
+       for writing BLOB columns.

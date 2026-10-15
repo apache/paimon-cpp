@@ -3424,6 +3424,41 @@ TEST_P(ScanAndReadInteTest, TestCastTimestampType) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
+TEST_F(ScanAndReadInteTest, TestParquetDictionaryBinaryStoredArrowSchema) {
+    const std::string table_path = GetDataDir() +
+                                   "/parquet/append_dictionary_binary.db/"
+                                   "append_dictionary_binary";
+
+    ScanContextBuilder scan_context_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+    ASSERT_EQ(1, plan->SnapshotId().value());
+    ASSERT_EQ(1, plan->Splits().size());
+
+    ReadContextBuilder read_context_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                         table_read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+
+    std::shared_ptr<arrow::DataType> expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("payload", arrow::binary()),
+    });
+    std::shared_ptr<arrow::Array> expected_array =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            expected_type, R"([[0, "alpha"], [0, null], [0, "beta"], [0, "alpha"]])")
+            .ValueOrDie();
+    std::shared_ptr<arrow::ChunkedArray> expected =
+        std::make_shared<arrow::ChunkedArray>(expected_array);
+    ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
+}
+
 #ifdef PAIMON_ENABLE_LANCE
 TEST_F(ScanAndReadInteTest, TestLanceJavaCompatibility) {
     TimezoneGuard timezone_guard("UTC");

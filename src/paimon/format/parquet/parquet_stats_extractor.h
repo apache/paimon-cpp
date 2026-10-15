@@ -67,6 +67,13 @@ class ParquetStatsExtractor : public FormatStatsExtractor {
         const std::shared_ptr<FileSystem>& file_system, const std::string& path,
         const std::shared_ptr<MemoryPool>& pool) override;
 
+    /// Extracts the statistics of each column and the `FileInfo` from the metadata of a Parquet
+    /// file, whether decoded from the footer of the file or still held by the writer that has
+    /// just closed it.
+    Result<std::pair<ColumnStatsVector, FileInfo>> ExtractFromMetadata(
+        const ::parquet::FileMetaData& file_metadata,
+        const std::shared_ptr<MemoryPool>& pool) const;
+
  private:
     void PrintConvertedType(const ::parquet::schema::Node* node);
 

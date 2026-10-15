@@ -80,6 +80,11 @@ class RestApi {
     static constexpr const char* kOptionUrlPrefix = "prefix";
     /// Options with this prefix are sent as http headers (with the prefix stripped).
     static constexpr const char* kHeaderOptionPrefix = "header.";
+    /// Optional header carrying the URL-encoded `Identifier` JSON of the table which initiated a
+    /// dependency read. It only provides request context; servers must not treat it as
+    /// authorization proof. Mirrors the Java `RESTApi.READ_VIA_HEADER`, and a REST catalog turns
+    /// the `kHeaderOptionPrefix`-prefixed option into this header.
+    static constexpr const char* kReadViaHeader = "X-Paimon-Read-Via";
     /// Credentials are refreshed once they expire in less than this, so that a request
     /// signed with them cannot expire while it is in flight.
     static constexpr int64_t kTokenExpirationSafeTimeMillis = 3600000;

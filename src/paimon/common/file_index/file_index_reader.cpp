@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "paimon/predicate/literal.h"
+#include "paimon/status.h"
 
 namespace paimon {
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIsNotNull() {
@@ -99,5 +100,15 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitNotIn(
         }
     }
     return file_index_result;
+}
+
+Result<std::shared_ptr<ScoredFileIndexResult>> FileIndexReader::VisitVectorSearch(
+    const std::shared_ptr<VectorSearch>& vector_search) {
+    return Status::NotImplemented("This file index does not support vector search");
+}
+
+Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitFullTextSearch(
+    const std::shared_ptr<FullTextSearch>& full_text_search) {
+    return Status::NotImplemented("This file index does not support full text search");
 }
 }  // namespace paimon

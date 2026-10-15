@@ -24,9 +24,9 @@
   "options" : {
     "bucket" : "-1",
     "data-evolution.enabled" : "true",
-    "manifest.format" : "orc",
+    "manifest.format" : "avro",
     "file.format" : "orc",
     "row-tracking.enabled" : "true"
   },
-  "timeMillis" : 1764582620437
+  "timeMillis" : 1789726325685
 }

@@ -164,22 +164,11 @@ Result<std::unique_ptr<BatchReader>> CreateBatchReader(
     return table_read->CreateReader(indexed_split);
 }
 
-Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
+Result<std::shared_ptr<arrow::Array>> DecodeDictionaryArrays(
     const std::shared_ptr<arrow::Array>& array, arrow::MemoryPool* pool) {
     arrow::Type::type type_id = array->type_id();
     if (type_id == arrow::Type::DICTIONARY) {
-        const auto* dictionary_type =
-            checked_cast<const arrow::DictionaryType*>(array->type().get());
-        arrow::Type::type value_type = dictionary_type->value_type()->id();
-        if (value_type != arrow::Type::STRING && value_type != arrow::Type::LARGE_STRING) {
-            return Status::Invalid(fmt::format(
-                "GlobalIndexWriteTask cannot decode dictionary array with value type {}",
-                dictionary_type->value_type()->ToString()));
-        }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<arrow::Array> casted_array,
-            CastingUtils::Cast(array, arrow::utf8(), arrow::compute::CastOptions::Safe(), pool));
-        return casted_array;
+        return CastingUtils::DecodeDictionary(array, pool);
     }
     if (type_id != arrow::Type::STRUCT && type_id != arrow::Type::MAP &&
         type_id != arrow::Type::LIST) {
@@ -193,7 +182,7 @@ Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
         for (int32_t i = 0; i < struct_array->num_fields(); i++) {
             std::shared_ptr<arrow::Array> child = struct_array->field(i);
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> casted_child,
-                                   CastDictionaryArrayToString(child, pool));
+                                   DecodeDictionaryArrays(child, pool));
             if (casted_child != child && children.empty()) {
                 children = struct_array->fields();
             }
@@ -221,9 +210,9 @@ Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
         std::shared_ptr<arrow::Array> original_keys = map_array->keys();
         std::shared_ptr<arrow::Array> original_items = map_array->items();
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> keys,
-                               CastDictionaryArrayToString(original_keys, pool));
+                               DecodeDictionaryArrays(original_keys, pool));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> items,
-                               CastDictionaryArrayToString(original_items, pool));
+                               DecodeDictionaryArrays(original_items, pool));
         if (keys == original_keys && items == original_items) {
             return array;
         }
@@ -239,7 +228,7 @@ Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
     std::shared_ptr<arrow::ListArray> list_array = checked_pointer_cast<arrow::ListArray>(array);
     std::shared_ptr<arrow::Array> original_values = list_array->values();
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> values,
-                           CastDictionaryArrayToString(original_values, pool));
+                           DecodeDictionaryArrays(original_values, pool));
     if (values == original_values) {
         return array;
     }
@@ -296,7 +285,7 @@ Result<std::vector<GlobalIndexIOMeta>> BuildIndex(
                                 writer_field_name));
             }
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> decoded_writer_array,
-                                   CastDictionaryArrayToString(writer_array, arrow_pool));
+                                   DecodeDictionaryArrays(writer_array, arrow_pool));
             writer_arrays.push_back(std::move(decoded_writer_array));
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(

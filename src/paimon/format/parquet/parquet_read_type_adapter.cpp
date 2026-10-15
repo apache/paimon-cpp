@@ -25,6 +25,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
@@ -100,6 +101,17 @@ Result<bool> ParquetReadTypeAdapter::NeedsArrayConversionImpl(
     const std::shared_ptr<arrow::DataType>& src_data_type = src_field->type();
     const std::shared_ptr<arrow::DataType>& target_data_type = target_field->type();
     arrow::Type::type type = src_data_type->id();
+    if (type == arrow::Type::DICTIONARY) {
+        // ARROW:schema may restore a Parquet leaf as a dictionary even though the Paimon schema
+        // describes its logical value type. Keep the encoded representation when its value
+        // layout is supported and already matches that logical type.
+        const auto& dictionary_type = checked_cast<const arrow::DictionaryType&>(*src_data_type);
+        const std::shared_ptr<arrow::DataType>& value_type = dictionary_type.value_type();
+        if (ArrowUtils::IsDictionaryLayoutRecoverableValueType(*value_type) &&
+            value_type->Equals(target_data_type)) {
+            return false;
+        }
+    }
     if (type != target_data_type->id()) {
         return Status::Invalid(fmt::format("source type {} and target type {} mismatch",
                                            src_data_type->ToString(),

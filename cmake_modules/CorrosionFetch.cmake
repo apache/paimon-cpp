@@ -14,8 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Pull Corrosion-rs via FetchContent so we can import crates/tantivy_ffi as
-# CMake targets for the tantivy-fulltext global index.
+# Pull Corrosion-rs via FetchContent so we can import crates/lance_ffi as
+# CMake targets for the Lance file format.
 #
 # Pinned to v0.5.2 (stable release). Requires CMake >= 3.22.
 

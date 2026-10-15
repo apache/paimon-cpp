@@ -39,6 +39,7 @@
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/file_index_evaluator.h"
+#include "paimon/core/io/file_index_options.h"
 #include "paimon/core/manifest/file_entry.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/manifest_file.h"
@@ -115,9 +116,14 @@ Result<bool> FileStoreScan::TestFileIndex(const std::shared_ptr<Predicate>& pred
     assert(data_predicate);
     std::shared_ptr<arrow::Schema> data_arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(data_schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileIndexResult> index_result,
-        FileIndexEvaluator::Evaluate(data_arrow_schema, data_predicate, meta, pool_));
+    auto field_name_mapping =
+        FieldMappingBuilder::CreateFieldNameMapping(table_schema_->Fields(), data_schema->Fields());
+    std::map<std::string, std::string> file_index_options;
+    PAIMON_ASSIGN_OR_RAISE(file_index_options, FileIndexOptions::RewriteFieldNames(
+                                                   core_options_.ToMap(), field_name_mapping));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
+                           FileIndexEvaluator::Evaluate(data_arrow_schema, file_index_options,
+                                                        data_predicate, meta, pool_));
     return index_result->IsRemain();
 }
 
@@ -613,6 +619,15 @@ bool FileStoreScan::FilterManifestByRowRanges(const ManifestFileMeta& manifest) 
 
 Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
                                            std::vector<ManifestEntry>* entries) const {
+    if (row_range_index_ && core_options_.DataEvolutionEnabled() &&
+        core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+        return manifest_file_->ReadRowRangeEntries(
+            manifest.FileName(), row_range_index_.value(),
+            [this](const ManifestEntry& entry) -> Result<bool> {
+                return FilterManifestEntry(entry);
+            },
+            manifest.FileSize(), entries);
+    }
     std::vector<ManifestEntry> unfiltered_entries;
     PAIMON_RETURN_NOT_OK(manifest_file_->Read(
         manifest.FileName(),

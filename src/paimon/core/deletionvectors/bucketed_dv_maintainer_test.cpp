@@ -137,20 +137,33 @@ TEST(BucketedDvMaintainerTest, TestNotifyNewDeletionOnExistingVectorOnlyMarksWhe
     ASSERT_TRUE(modified_write.has_value());
 }
 
-TEST(BucketedDvMaintainerTest, TestNotifyNewDeletionReturnsNotImplementedForBitmap64) {
-    auto dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(dir);
-    auto index_file = CreateDvIndexFile(dir->Str(), /*bitmap64=*/true);
-    BucketedDvMaintainer maintainer(index_file, /*deletion_vectors=*/{});
-
-    Status status = maintainer.NotifyNewDeletion("file-new", /*position=*/1);
-    ASSERT_TRUE(status.IsNotImplemented());
-
-    auto lookup = maintainer.DeletionVectorOf("file-new");
-    ASSERT_FALSE(lookup.has_value());
-
-    ASSERT_OK_AND_ASSIGN(auto write_result, maintainer.WriteDeletionVectorsIndex());
-    ASSERT_FALSE(write_result.has_value());
+TEST(BucketedDvMaintainerTest, MixedFormatsAfterConfigurationChanges) {
+    for (bool initial_bitmap64 : {false, true}) {
+        auto dir = UniqueTestDirectory::Create();
+        auto index = CreateDvIndexFile(dir->Str(), initial_bitmap64);
+        BucketedDvMaintainer initial(index, {});
+        ASSERT_OK(initial.NotifyNewDeletion("old", 1));
+        ASSERT_OK_AND_ASSIGN(auto first, initial.WriteDeletionVectorsIndex());
+        ASSERT_TRUE(first.has_value());
+        auto changed_index = CreateDvIndexFile(dir->Str(), !initial_bitmap64);
+        ASSERT_OK_AND_ASSIGN(auto restored, changed_index->ReadAllDeletionVectors(first.value()));
+        BucketedDvMaintainer changed(changed_index, restored);
+        ASSERT_OK(changed.NotifyNewDeletion("old", 7));
+        ASSERT_OK(changed.NotifyNewDeletion("new", 3));
+        const std::string high_file = initial_bitmap64 ? "old" : "new";
+        ASSERT_OK(changed.NotifyNewDeletion(high_file, (1LL << 32) + 9));
+        ASSERT_OK_AND_ASSIGN(auto second, changed.WriteDeletionVectorsIndex());
+        ASSERT_TRUE(second.has_value());
+        ASSERT_OK_AND_ASSIGN(auto mixed, changed_index->ReadAllDeletionVectors(second.value()));
+        ASSERT_EQ(dynamic_cast<Bitmap64DeletionVector*>(mixed.at("old").get()) != nullptr,
+                  initial_bitmap64);
+        ASSERT_EQ(dynamic_cast<Bitmap64DeletionVector*>(mixed.at("new").get()) != nullptr,
+                  !initial_bitmap64);
+        ASSERT_TRUE(mixed.at("old")->IsDeleted(7).value());
+        ASSERT_TRUE(mixed.at(high_file)->IsDeleted((1LL << 32) + 9).value());
+        ASSERT_OK(changed.NotifyNewDeletion(high_file, (1LL << 32) + 9));
+        ASSERT_FALSE(changed.WriteDeletionVectorsIndex().value().has_value());
+    }
 }
 
 }  // namespace paimon::test

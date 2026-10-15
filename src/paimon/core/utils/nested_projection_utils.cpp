@@ -713,10 +713,9 @@ NestedProjectionUtils::FilterMapArrayBySelectedKeysRecursively(
 
 namespace {
 // Strips physical-only differences from a leaf type: ORC lazy decoding wraps
-// strings in a dictionary and may widen them to large_string. binary is not
-// dictionary-encoded and large_binary is blob's real type, so neither is
-// normalized. Two leaves with equal normalized types hold the same logical
-// values.
+// strings in a dictionary and may widen them to large_string. Unwrap dictionaries
+// for every value type, but preserve large_binary because it is blob's real type.
+// Two leaves with equal normalized types hold the same logical values.
 std::shared_ptr<arrow::DataType> NormalizeLeafRepresentation(
     const std::shared_ptr<arrow::DataType>& type) {
     auto t = type;

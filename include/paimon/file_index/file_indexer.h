@@ -19,6 +19,9 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "paimon/file_index/file_index_reader.h"
 #include "paimon/file_index/file_index_result.h"
@@ -34,6 +37,11 @@ namespace paimon {
 class PAIMON_EXPORT FileIndexer {
  public:
     virtual ~FileIndexer() = default;
+
+    /// Extra columns required while building this index, in addition to the indexed column.
+    virtual Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const {
+        return std::optional<std::vector<std::string>>(std::nullopt);
+    }
 
     /// Create `FileIndexReader` with input stream.
     ///
@@ -51,8 +59,8 @@ class PAIMON_EXPORT FileIndexer {
 
     /// Create `FileIndexWriter` for arrow schema.
     ///
-    /// @param arrow_schema ArrowSchema derived from arrow schema or struct type with
-    /// specified indexed field.
+    /// @param arrow_schema ArrowSchema containing the indexed field first, followed by any
+    /// fields requested through `GetExtraFieldNames()`.
     /// @param pool Memory pool for memory allocation.
     /// @return A `FileIndexWriter` to write index.
     virtual Result<std::shared_ptr<FileIndexWriter>> CreateWriter(

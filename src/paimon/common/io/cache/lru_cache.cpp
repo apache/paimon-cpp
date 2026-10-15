@@ -26,7 +26,7 @@ LruCache::LruCache(int64_t max_weight)
           .expire_after_access_ms = -1,
           .weigh_func = [](const std::shared_ptr<CacheKey>& /*key*/,
                            const std::shared_ptr<CacheValue>& value) -> int64_t {
-              return value ? value->GetSegment().Size() : 0;
+              return value ? value->GetMemoryUsage() : 0;
           },
           .removal_callback =
               [](const std::shared_ptr<CacheKey>& key, const std::shared_ptr<CacheValue>& value,

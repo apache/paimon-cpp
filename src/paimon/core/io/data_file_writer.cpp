@@ -79,7 +79,7 @@ Result<std::vector<std::shared_ptr<ColumnStats>>> DataFileWriter::GetFieldStats(
         assert(false);
         return Status::Invalid("simple stats extractor is null pointer.");
     }
-    return stats_extractor_->Extract(fs_, path_, pool_);
+    return ExtractFileStats(stats_extractor_, pool_);
 }
 
 }  // namespace paimon

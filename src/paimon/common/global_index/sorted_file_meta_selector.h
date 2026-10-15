@@ -77,6 +77,8 @@ class SortedFileMetaSelector : public FunctionVisitor<std::vector<GlobalIndexIOM
 
     Result<MemorySlice> SerializeLiteral(const Literal& literal) const;
 
+    static std::shared_ptr<Bytes> PrefixUpperBound(const MemorySlice& prefix, MemoryPool* pool);
+
     /// Create a non-owning MemorySlice view over the raw bytes of a key,
     /// avoiding shared_ptr reference-count overhead.
     static MemorySlice WrapKeySlice(const std::shared_ptr<Bytes>& key);
