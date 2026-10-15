@@ -176,8 +176,7 @@ TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripWithEmptyStringKey) {
         std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
         DataFileKeyOffsetIndexWriter::Create(key_field, path_factory, directory->GetFileSystem(),
                                              GetDefaultPool(), /*options=*/{}));
-    ASSERT_OK(writer->AddBatch(MakeKeys(key_field, R"([[""], ["alpha"]])"),
-                               MakeOffsets("[7, 9]")));
+    ASSERT_OK(writer->AddBatch(MakeKeys(key_field, R"([[""], ["alpha"]])"), MakeOffsets("[7, 9]")));
 
     std::shared_ptr<DataFileMeta> data_file = MakeDataFile("data-0.parquet", /*row_count=*/2);
     ASSERT_OK_AND_ASSIGN(std::string sidecar, writer->Finish(data_file));
