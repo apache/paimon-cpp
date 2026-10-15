@@ -536,6 +536,16 @@ add_subdirectory(common/file_index)
 add_subdirectory(common/global_index)
 
 if(PAIMON_BUILD_TESTS)
+    # Wrap actual executor allocations, not calls inside an already linked DSO.
+    if(PAIMON_BUILD_STATIC
+       AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+       AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
+        add_paimon_test(executor_submission_test
+                       SOURCES common/executor/executor_submission_test.cpp
+                       STATIC_LINK_LIBS paimon_static ${GTEST_LINK_TOOLCHAIN})
+        target_link_options(paimon-executor-submission-test PRIVATE "LINKER:--wrap=_Znwm")
+    endif()
+
     # The shared HTTP client is compiled only for the components that need libcurl,
     # so its test follows the same gate.
     set(PAIMON_COMMON_HTTP_CLIENT_TEST_SRCS)
