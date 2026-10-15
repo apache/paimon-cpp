@@ -37,7 +37,7 @@ class TableScan;
 class TableRead;
 
 /// A table provides basic abstraction for table type.
-class PAIMON_EXPORT Table {
+class PAIMON_EXPORT Table : public std::enable_shared_from_this<Table> {
  public:
     /// Creates a table by loading the latest schema from the specified table path.
     ///
@@ -84,27 +84,35 @@ class PAIMON_EXPORT Table {
     }
 
     /// Creates a scan of this table from a finished scan context, standing in for
-    /// `TableScan::Create`.
+    /// `TableScan::Create`. The scan is handed the table's shared owner, so it shares the
+    /// caller's hold on the table.
     /// @param context The finished scan context.
-    /// @return The scan, or the error `TableScan::Create` reports.
+    /// @return The scan, or the error `TableScan::Create` reports. A table no `shared_ptr` holds
+    ///         cannot hand itself over and reports that.
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const;
 
     /// Creates a read of this table from a finished read context, standing in for
-    /// `TableRead::Create`.
+    /// `TableRead::Create`. The read is handed the table's shared owner, so it shares the
+    /// caller's hold on the table.
     /// @param context The finished read context.
-    /// @return The read, or the error `TableRead::Create` reports.
+    /// @return The read, or the error `TableRead::Create` reports. A table no `shared_ptr` holds
+    ///         cannot hand itself over and reports that.
     Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const;
 
     /// Creates a write of this table from a finished write context, standing in for
-    /// `FileStoreWrite::Create`.
+    /// `FileStoreWrite::Create`. The write is handed the table's shared owner, so it shares the
+    /// caller's hold on the table.
     /// @param context The finished write context.
-    /// @return The write, or the error `FileStoreWrite::Create` reports.
+    /// @return The write, or the error `FileStoreWrite::Create` reports. A table no `shared_ptr`
+    ///         holds cannot hand itself over and reports that.
     Result<std::unique_ptr<FileStoreWrite>> NewWrite(std::unique_ptr<WriteContext> context) const;
 
     /// Creates a commit of this table from a finished commit context, standing in for
-    /// `FileStoreCommit::Create`.
+    /// `FileStoreCommit::Create`. The commit is handed the table's shared owner, so it shares
+    /// the caller's hold on the table.
     /// @param context The finished commit context.
-    /// @return The commit, or the error `FileStoreCommit::Create` reports.
+    /// @return The commit, or the error `FileStoreCommit::Create` reports. A table no
+    ///         `shared_ptr` holds cannot hand itself over and reports that.
     Result<std::unique_ptr<FileStoreCommit>> NewCommit(
         std::unique_ptr<CommitContext> context) const;
 

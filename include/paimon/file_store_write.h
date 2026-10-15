@@ -37,6 +37,7 @@
 
 namespace paimon {
 class RecordBatch;
+class Table;
 class WriteContext;
 
 /// Interface for write operations in a file store.
@@ -48,6 +49,15 @@ class PAIMON_EXPORT FileStoreWrite {
     ///
     /// @return A Result containing a unique pointer to the `FileStoreWrite` instance.
     static Result<std::unique_ptr<FileStoreWrite>> Create(std::unique_ptr<WriteContext> context);
+
+    /// Create an instance of `FileStoreWrite` for a table the caller already opened.
+    ///
+    /// @param context A unique pointer to the `WriteContext` used for write operations.
+    /// @param table The opened table, or null when the caller has no table to hand over.
+    ///
+    /// @return A Result containing a unique pointer to the `FileStoreWrite` instance.
+    static Result<std::unique_ptr<FileStoreWrite>> Create(
+        std::unique_ptr<WriteContext> context, const std::shared_ptr<const Table>& table);
 
     virtual ~FileStoreWrite() = default;
 

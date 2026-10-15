@@ -32,6 +32,7 @@
 
 namespace paimon {
 class ScanContext;
+class Table;
 
 /// A scanner interface for reading table's meta and create a plan.
 class PAIMON_EXPORT TableScan {
@@ -41,6 +42,14 @@ class PAIMON_EXPORT TableScan {
     /// @param context A unique pointer to the `ScanContext` used for scan operations.
     /// @return A Result containing a unique pointer to the `TableScan` instance.
     static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context);
+
+    /// Create an instance of `TableScan` for a table the caller already opened.
+    ///
+    /// @param context A unique pointer to the `ScanContext` used for scan operations.
+    /// @param table The opened table, or null when the caller has no table to hand over.
+    /// @return A Result containing a unique pointer to the `TableScan` instance.
+    static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context,
+                                                     const std::shared_ptr<const Table>& table);
 
     virtual ~TableScan() = default;
 

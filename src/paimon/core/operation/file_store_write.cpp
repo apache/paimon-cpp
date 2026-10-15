@@ -164,6 +164,11 @@ Status FileStoreWrite::RefreshCommittedSnapshot(int64_t) {
 }
 
 Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<WriteContext> ctx) {
+    return Create(std::move(ctx), nullptr);
+}
+
+Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(
+    std::unique_ptr<WriteContext> ctx, [[maybe_unused]] const std::shared_ptr<const Table>& table) {
     if (ctx == nullptr) {
         return Status::Invalid("write context is null pointer");
     }

@@ -233,4 +233,20 @@ TEST(TableTest, TestNewScanReadWriteCommitRejectANullContext) {
     ASSERT_NOK_WITH_MSG(table->NewCommit(nullptr), "commit context is null pointer");
 }
 
+TEST(TableTest, TestNewScanReadWriteCommitRequireTheTableToBeSharedOwned) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        CreateManagedTable(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl")));
+
+    // An operator takes the table's shared owner from the table, and a stack object has none to
+    // take, so rather than crash reaching for one, the table reports it cannot hand itself over.
+    Table stack_table(table->LatestSchema(), Identifier("db", "tbl"));
+    ASSERT_NOK_WITH_MSG(stack_table.NewScan(nullptr), "table is not held by a shared_ptr");
+    ASSERT_NOK_WITH_MSG(stack_table.NewRead(nullptr), "table is not held by a shared_ptr");
+    ASSERT_NOK_WITH_MSG(stack_table.NewWrite(nullptr), "table is not held by a shared_ptr");
+    ASSERT_NOK_WITH_MSG(stack_table.NewCommit(nullptr), "table is not held by a shared_ptr");
+}
+
 }  // namespace paimon::test
