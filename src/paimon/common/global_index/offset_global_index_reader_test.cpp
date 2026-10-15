@@ -19,6 +19,7 @@
 
 #include "paimon/common/global_index/offset_global_index_reader.h"
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -65,7 +66,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitEqualWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1, 3});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100, /*to=*/199);
 
     Literal literal_5(5);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitEqual(literal_5));
@@ -77,7 +78,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitIsNotNullWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 2, 4, 6});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 50);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 50, /*to=*/149);
 
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitIsNotNull());
     // row ids {0, 2, 4, 6} + offset 50 -> {50, 52, 54, 56}
@@ -88,7 +89,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitIsNullWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({1, 3});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 200);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 200, /*to=*/299);
 
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitIsNull());
     // row ids {1, 3} + offset 200 -> {201, 203}
@@ -99,7 +100,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitLessThanWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10, /*to=*/109);
 
     Literal literal_5(5);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitLessThan(literal_5));
@@ -111,7 +112,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitGreaterOrEqualWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({3, 4, 5});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 1000);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 1000, /*to=*/1099);
 
     Literal literal_10(10);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitGreaterOrEqual(literal_10));
@@ -123,7 +124,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitInWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 2});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 5);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 5, /*to=*/104);
 
     std::vector<Literal> literals = {Literal(1), Literal(3)};
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitIn(literals));
@@ -135,7 +136,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitNotInWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({1, 3, 5});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 20);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 20, /*to=*/119);
 
     std::vector<Literal> literals = {Literal(2)};
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitNotIn(literals));
@@ -147,7 +148,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitNotEqualWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 2, 4});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 7);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 7, /*to=*/106);
 
     Literal literal_1(1);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitNotEqual(literal_1));
@@ -159,7 +160,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitLessOrEqualWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1, 2});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 30);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 30, /*to=*/129);
 
     Literal literal_3(3);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitLessOrEqual(literal_3));
@@ -171,7 +172,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitGreaterThanWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({4, 5});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 15);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 15, /*to=*/114);
 
     Literal literal_3(3);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitGreaterThan(literal_3));
@@ -183,7 +184,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestZeroOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1, 2});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 0);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 0, /*to=*/99);
 
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitIsNotNull());
     // row ids {0, 1, 2} + offset 0 -> {0, 1, 2}
@@ -194,7 +195,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestEmptyResultWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100, /*to=*/199);
 
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitIsNotNull());
     // empty result + offset 100 -> still empty
@@ -203,14 +204,14 @@ TEST_F(OffsetGlobalIndexReaderTest, TestEmptyResultWithOffset) {
 
 TEST_F(OffsetGlobalIndexReaderTest, TestIsThreadSafeDelegated) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100, /*to=*/199);
     // MockGlobalIndexReader returns true for IsThreadSafe
     ASSERT_TRUE(offset_reader->IsThreadSafe());
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestGetIndexTypeDelegated) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100, /*to=*/199);
     ASSERT_EQ(offset_reader->GetIndexType(), "fake");
 }
 
@@ -218,7 +219,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetScoredResult({0, 3, 5}, {0.5f, 0.9f, 0.1f});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10, /*to=*/109);
 
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(nullptr));
     // row ids {0, 3, 5} + offset 10 -> {10, 13, 15}
@@ -227,26 +228,19 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchWithOffset) {
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchConvertsIncludeRowIds) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10, /*to=*/19);
     {
         auto search =
             std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7,
-                                             RoaringBitmap64::From({5l, 10l, 13l, 15l}));
+                                             RoaringBitmap64::From({5l, 10l, 13l, 19l, 20l, 150l}));
         ASSERT_OK(offset_reader->VisitFullTextSearch(search));
         auto captured = fake_reader->CapturedFullTextSearch();
         ASSERT_TRUE(captured);
         ASSERT_EQ(captured->field_name, "f0");
         ASSERT_EQ(captured->query, R"({"match":{"query":"paimon"}})");
         ASSERT_EQ(captured->limit, 7);
-        ASSERT_EQ(captured->include_row_ids, RoaringBitmap64::From({0l, 3l, 5l}));
-        ASSERT_EQ(search->include_row_ids, RoaringBitmap64::From({5l, 10l, 13l, 15l}));
-    }
-    {
-        auto search = std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})",
-                                                       /*limit=*/7, RoaringBitmap64::From({5l}));
-        ASSERT_OK(offset_reader->VisitFullTextSearch(search));
-        ASSERT_TRUE(fake_reader->CapturedFullTextSearch()->include_row_ids);
-        ASSERT_TRUE(fake_reader->CapturedFullTextSearch()->include_row_ids->IsEmpty());
+        ASSERT_EQ(captured->include_row_ids, RoaringBitmap64::From({0l, 3l, 9l}));
+        ASSERT_EQ(search->include_row_ids, RoaringBitmap64::From({5l, 10l, 13l, 19l, 20l, 150l}));
     }
     {
         auto search =
@@ -254,13 +248,112 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchConvertsIncludeRowIds
         ASSERT_OK(offset_reader->VisitFullTextSearch(search));
         ASSERT_EQ(fake_reader->CapturedFullTextSearch(), search);
     }
+    {
+        auto search = std::make_shared<FullTextSearch>(
+            "f0", R"({"match":{"query":"paimon"}})", /*limit=*/7, RoaringBitmap64::From({5l, 20l}));
+        ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(search));
+        CheckScoredResult(result, {}, {});
+        ASSERT_EQ(fake_reader->InvocationCount(), 2);
+    }
+}
+
+TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchRejectsNonPositiveLimit) {
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10, /*to=*/19);
+    auto covered_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10, /*to=*/19,
+                                                                    /*skip_to=*/19);
+    for (int32_t limit : {0, -1}) {
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", limit);
+        ASSERT_NOK_WITH_MSG(offset_reader->VisitFullTextSearch(search),
+                            "full-text search requires a positive limit");
+        ASSERT_NOK_WITH_MSG(covered_reader->VisitFullTextSearch(search),
+                            "full-text search requires a positive limit");
+        search->include_row_ids = RoaringBitmap64::From({5, 20});
+        ASSERT_NOK_WITH_MSG(offset_reader->VisitFullTextSearch(search),
+                            "full-text search requires a positive limit");
+    }
+    ASSERT_EQ(fake_reader->InvocationCount(), 0);
+}
+
+TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchSkipsRows) {
+    auto fake_reader = std::make_shared<MockGlobalIndexReader>();
+    fake_reader->SetScoredResult({3, 9}, {0.5f, 0.9f});
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10, /*to=*/19,
+                                                                   /*skip_to=*/12);
+    {
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7);
+        ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(search));
+        CheckScoredResult(result, {13, 19}, {0.5f, 0.9f});
+        ASSERT_EQ(fake_reader->CapturedFullTextSearch()->include_row_ids,
+                  RoaringBitmap64::From({3l, 4l, 5l, 6l, 7l, 8l, 9l}));
+    }
+    {
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7,
+                                             RoaringBitmap64::From({5l, 12l, 13l, 19l, 20l}));
+        ASSERT_OK(offset_reader->VisitFullTextSearch(search));
+        ASSERT_EQ(fake_reader->CapturedFullTextSearch()->include_row_ids,
+                  RoaringBitmap64::From({3l, 9l}));
+    }
+    {
+        auto search = std::make_shared<FullTextSearch>(
+            "f0", R"({"match":{"query":"paimon"}})", /*limit=*/7, RoaringBitmap64::From({5l, 12l}));
+        ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(search));
+        CheckScoredResult(result, {}, {});
+        ASSERT_EQ(fake_reader->InvocationCount(), 2);
+    }
+}
+
+TEST_F(OffsetGlobalIndexReaderTest, TestVisitFullTextSearchEndingAtLargestRowId) {
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    {
+        auto fake_reader = std::make_shared<MockGlobalIndexReader>();
+        fake_reader->SetScoredResult({7, 9}, {0.5f, 0.9f});
+        auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(
+            fake_reader, kMax - 9, /*to=*/kMax, /*skip_to=*/kMax - 3);
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7);
+        ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(search));
+        CheckScoredResult(result, {kMax - 2, kMax}, {0.5f, 0.9f});
+        ASSERT_EQ(fake_reader->CapturedFullTextSearch()->include_row_ids,
+                  RoaringBitmap64::From({7l, 8l, 9l}));
+
+        search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7,
+                                             RoaringBitmap64::From({kMax - 5, kMax - 2, kMax}));
+        ASSERT_OK(offset_reader->VisitFullTextSearch(search));
+        ASSERT_EQ(fake_reader->CapturedFullTextSearch()->include_row_ids,
+                  RoaringBitmap64::From({7l, 9l}));
+    }
+    {
+        auto fake_reader = std::make_shared<MockGlobalIndexReader>();
+        auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(
+            fake_reader, /*offset=*/0, /*to=*/kMax, /*skip_to=*/kMax - 1);
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7);
+        ASSERT_OK(offset_reader->VisitFullTextSearch(search));
+        ASSERT_EQ(fake_reader->CapturedFullTextSearch()->include_row_ids,
+                  RoaringBitmap64::From({kMax}));
+    }
+    {
+        auto fake_reader = std::make_shared<MockGlobalIndexReader>();
+        auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(
+            fake_reader, kMax - 9, /*to=*/kMax, /*skip_to=*/kMax);
+        auto search =
+            std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"paimon"}})", /*limit=*/7);
+        ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitFullTextSearch(search));
+        CheckScoredResult(result, {}, {});
+        ASSERT_EQ(fake_reader->InvocationCount(), 0);
+    }
 }
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitVectorSearchWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetScoredResult({0, 2, 5}, {0.9f, 0.7f, 0.3f});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 100, /*to=*/199);
 
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitVectorSearch(nullptr));
     // row ids {0, 2, 5} + offset 100 -> {100, 102, 105}, scores unchanged
@@ -269,7 +362,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitVectorSearchWithOffset) {
 
 TEST_F(OffsetGlobalIndexReaderTest, TestVisitVectorSearchNotSupported) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 10, /*to=*/109);
     // Propagate the wrapped reader's unsupported-search error.
     fake_reader->SetReturnError("vector search not supported");
     ASSERT_NOK_WITH_MSG(offset_reader->VisitVectorSearch(nullptr), "vector search not supported");
@@ -279,7 +372,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitStartsWithWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 1, 4});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 50);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 50, /*to=*/149);
 
     Literal prefix(FieldType::STRING, "abc", 3);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitStartsWith(prefix));
@@ -291,7 +384,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitEndsWithWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({2, 3});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 25);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 25, /*to=*/124);
 
     Literal suffix(FieldType::STRING, "xyz", 3);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitEndsWith(suffix));
@@ -303,7 +396,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitContainsWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({1, 5, 6});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 300);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 300, /*to=*/399);
 
     Literal literal(FieldType::STRING, "foo", 3);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitContains(literal));
@@ -315,7 +408,7 @@ TEST_F(OffsetGlobalIndexReaderTest, TestVisitLikeWithOffset) {
     auto fake_reader = std::make_shared<MockGlobalIndexReader>();
     fake_reader->SetDefaultResult({0, 3, 7});
 
-    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 40);
+    auto offset_reader = std::make_shared<OffsetGlobalIndexReader>(fake_reader, 40, /*to=*/139);
 
     Literal pattern(FieldType::STRING, "ab%", 3);
     ASSERT_OK_AND_ASSIGN(auto result, offset_reader->VisitLike(pattern));

@@ -58,6 +58,9 @@ class UnionGlobalIndexReader : public GlobalIndexReader {
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;
 
+    /// Merges the scored results of all readers and keeps the `full_text_search->limit` rows with
+    /// the highest scores among them, breaking ties by ascending row id. A row id returned by more
+    /// than one reader keeps the score from the first of those readers.
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override;
 

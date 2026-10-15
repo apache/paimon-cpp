@@ -83,7 +83,8 @@ struct PAIMON_EXPORT FullTextSearch {
     /// and rejects `boost` queries and a `fuzziness` other than 0. An invalid query is reported as
     /// an error `Status`.
     std::string query;
-    /// Maximum number of highest-scoring rows requested from each index shard; must be positive.
+    /// Maximum number of highest-scoring rows to return; must be positive. Each index shard is
+    /// asked for this many rows before the shard results are merged.
     int32_t limit;
     /// The row ids to search within, aligned with Java `includeRowIds`. The row id domain is
     /// determined by the reader: global row ids for GlobalIndexReader and physical file-local row

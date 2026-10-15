@@ -18,6 +18,8 @@
  */
 #include "paimon/core/global_index/global_index_scan_impl.h"
 
+#include <algorithm>
+#include <limits>
 #include <string>
 #include <thread>
 #include <utility>
@@ -185,7 +187,13 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
         }
         std::vector<std::shared_ptr<GlobalIndexReader>> union_readers;
         union_readers.reserve(range_to_metas.size());
+        // Assign each full-text row to one reader before requesting per-reader top-k, following
+        // Java `DataEvolutionFullTextScan#chooseIndexRanges`. Here ranges of the same index type
+        // are processed in (from, to) order; each skips rows covered by earlier ranges.
+        int64_t covered_to = std::numeric_limits<int64_t>::min();
         for (const auto& [range, metas] : range_to_metas) {
+            int64_t skip_to = covered_to;
+            covered_to = std::max(covered_to, range.to);
             if (row_range_index && !row_range_index->Intersects(range.from, range.to)) {
                 continue;
             }
@@ -199,8 +207,8 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<GlobalIndexReader> index_reader,
                 indexer->CreateReader(&c_arrow_schema, index_file_manager_, index_io_metas, pool_));
-            union_readers.push_back(
-                std::make_shared<OffsetGlobalIndexReader>(std::move(index_reader), range.from));
+            union_readers.push_back(std::make_shared<OffsetGlobalIndexReader>(
+                std::move(index_reader), range.from, range.to, skip_to));
         }
         if (union_readers.empty()) {
             continue;

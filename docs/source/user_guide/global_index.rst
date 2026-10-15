@@ -168,9 +168,12 @@ index shard, the engine ranks matching rows by BM25 score and returns at most ``
 the highest scores. ``include_row_ids`` holds global row ids and restricts the rows that are
 ranked; an empty set matches no rows.
 
-For both ``full-text`` and ``lucene-fts``, searches across multiple shards currently return the
-union of the shard candidates, which can exceed ``limit``. Applying a final global top-k is tracked
-in `issue #402 <https://github.com/apache/paimon-cpp/issues/402>`_.
+For both ``full-text`` and ``lucene-fts``, a search across multiple index shards keeps the
+``limit`` highest-scoring rows returned by the shards, breaking ties by ascending row id, as Java
+Paimon does. Which rows tied at a shard's cutoff score the shard returns is up to its engine. A row
+in overlapping index ranges is ranked only by the range that starts first, or ends first if both
+start at the same row. A shard ignores the ``include_row_ids`` outside the rows it ranks and is not
+searched if none remain. The result iterates rows by ascending row id, not by score.
 
 **Configuration:**
 

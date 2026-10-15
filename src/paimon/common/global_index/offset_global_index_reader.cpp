@@ -19,13 +19,28 @@
 
 #include "paimon/common/global_index/offset_global_index_reader.h"
 
+#include <limits>
 #include <utility>
+#include <vector>
+
+#include "paimon/global_index/bitmap_scored_global_index_result.h"
+#include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
+namespace {
+std::shared_ptr<ScoredGlobalIndexResult> EmptyScoredResult() {
+    return std::make_shared<BitmapScoredGlobalIndexResult>(RoaringBitmap64(), std::vector<float>());
+}
+}  // namespace
 
 OffsetGlobalIndexReader::OffsetGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped,
-                                                 int64_t offset)
-    : wrapped_(std::move(wrapped)), offset_(offset) {}
+                                                 int64_t offset, int64_t to)
+    : OffsetGlobalIndexReader(std::move(wrapped), offset, to,
+                              /*skip_to=*/std::numeric_limits<int64_t>::min()) {}
+
+OffsetGlobalIndexReader::OffsetGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped,
+                                                 int64_t offset, int64_t to, int64_t skip_to)
+    : wrapped_(std::move(wrapped)), offset_(offset), to_(to), skip_to_(skip_to) {}
 
 Result<std::shared_ptr<GlobalIndexResult>> OffsetGlobalIndexReader::VisitIsNotNull() {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result, wrapped_->VisitIsNotNull());
@@ -137,11 +152,34 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> OffsetGlobalIndexReader::VisitV
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> OffsetGlobalIndexReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
-    // Convert global include row ids to local row ids. The shard end is unknown here, so row ids
-    // past the shard are kept; they match no local row.
     std::shared_ptr<FullTextSearch> local_search = full_text_search;
-    if (full_text_search && full_text_search->include_row_ids) {
-        local_search = full_text_search->OffsetRange(offset_, RoaringBitmap64::MAX_VALUE);
+    if (full_text_search) {
+        if (full_text_search->limit <= 0) {
+            return Status::Invalid("full-text search requires a positive limit");
+        }
+        // Rows up to `skip_to_` are ranked by a reader over an overlapping row range.
+        if (skip_to_ >= to_) {
+            return EmptyScoredResult();
+        }
+        bool skips_rows = skip_to_ >= offset_;
+        if (full_text_search->include_row_ids) {
+            local_search = full_text_search->OffsetRange(offset_, to_);
+            if (skips_rows) {
+                local_search->include_row_ids->RemoveRange(0, skip_to_ - offset_ + 1);
+            }
+            if (local_search->include_row_ids->IsEmpty()) {
+                return EmptyScoredResult();
+            }
+        } else if (skips_rows) {
+            // `local_to` may be the largest int64 value, so add it apart from the half-open range.
+            int64_t local_to = to_ - offset_;
+            RoaringBitmap64 local_row_ids;
+            local_row_ids.AddRange(skip_to_ - offset_ + 1, local_to);
+            local_row_ids.Add(local_to);
+            local_search = std::make_shared<FullTextSearch>(
+                full_text_search->field_name, full_text_search->query, full_text_search->limit,
+                std::move(local_row_ids));
+        }
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredGlobalIndexResult> result,
                            wrapped_->VisitFullTextSearch(local_search));

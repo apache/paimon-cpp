@@ -19,6 +19,7 @@
 
 #include "paimon/common/global_index/union_global_index_reader.h"
 
+#include <limits>
 #include <map>
 #include <memory>
 #include <queue>
@@ -31,6 +32,7 @@
 #include "paimon/executor.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/testing/mock/mock_global_index_reader.h"
 #include "paimon/testing/utils/testharness.h"
@@ -144,6 +146,10 @@ class UnionGlobalIndexReaderTest : public ::testing::Test {
             << "result=" << bitmap->ToString()
             << ", expected=" << RoaringBitmap64::From(expected_row_ids).ToString();
         ASSERT_EQ(typed_result->GetScores(), expected_scores);
+    }
+
+    static std::shared_ptr<FullTextSearch> MakeFullTextSearch(int32_t limit) {
+        return std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"apple"}})", limit);
     }
 };
 
@@ -435,8 +441,88 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchUnion) {
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
     UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
 
-    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(nullptr));
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(MakeFullTextSearch(10)));
     CheckScoredResult(result, {1, 2, 5, 6}, {0.9f, 0.8f, 0.5f, 0.6f});
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchKeepsTopKAcrossReaders) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({100, 110, 120}, {0.9f, 0.5f, 0.1f});
+    reader2->SetScoredResult({0, 10, 20}, {0.5f, 0.8f, 0.3f});
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    UnionGlobalIndexReader union_reader(std::move(readers), executor);
+
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(MakeFullTextSearch(3)));
+    CheckScoredResult(result, {0, 10, 100}, {0.5f, 0.8f, 0.9f});
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchDuplicateRowIdKeepsFirstScore) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({1, 2}, {0.6f, 0.3f});
+    reader2->SetScoredResult({2, 3}, {0.9f, 0.5f});
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    UnionGlobalIndexReader union_reader(std::move(readers), executor);
+
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(MakeFullTextSearch(10)));
+    CheckScoredResult(result, {1, 2, 3}, {0.6f, 0.3f, 0.5f});
+    ASSERT_OK_AND_ASSIGN(result, union_reader.VisitFullTextSearch(MakeFullTextSearch(2)));
+    CheckScoredResult(result, {1, 3}, {0.6f, 0.5f});
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchOrdersSpecialScoresAsJava) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({1, 2, 3}, {-0.0f, std::numeric_limits<float>::quiet_NaN(), 1.0f});
+    reader2->SetScoredResult({4, 5}, {0.0f, std::numeric_limits<float>::infinity()});
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+
+    std::vector<std::pair<int32_t, std::vector<int64_t>>> limit_and_row_ids = {
+        {1, {2}}, {2, {2, 5}}, {3, {2, 3, 5}}, {4, {2, 3, 4, 5}}};
+    for (const auto& [limit, expected_row_ids] : limit_and_row_ids) {
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             union_reader.VisitFullTextSearch(MakeFullTextSearch(limit)));
+        auto typed_result = std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(result);
+        ASSERT_TRUE(typed_result);
+        ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* bitmap, typed_result->GetBitmap());
+        ASSERT_EQ(*bitmap, RoaringBitmap64::From(expected_row_ids)) << "limit=" << limit;
+    }
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchAllNullptr) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(MakeFullTextSearch(10)));
+    ASSERT_FALSE(result);
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchErrors) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({1}, {0.9f});
+    reader2->SetReturnError("full-text search failure");
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+
+    ASSERT_NOK_WITH_MSG(union_reader.VisitFullTextSearch(nullptr), "null FullTextSearch pointer");
+    ASSERT_NOK_WITH_MSG(union_reader.VisitFullTextSearch(MakeFullTextSearch(0)),
+                        "full-text search requires a positive limit");
+    ASSERT_EQ(reader1->InvocationCount(), 0);
+    ASSERT_EQ(reader2->InvocationCount(), 0);
+    ASSERT_NOK_WITH_MSG(union_reader.VisitFullTextSearch(MakeFullTextSearch(10)),
+                        "full-text search failure");
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchAllNullptr) {

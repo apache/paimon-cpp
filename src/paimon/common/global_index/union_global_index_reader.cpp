@@ -19,12 +19,62 @@
 
 #include "paimon/common/global_index/union_global_index_reader.h"
 
+#include <algorithm>
 #include <future>
+#include <unordered_set>
 #include <utility>
 
 #include "paimon/common/executor/future.h"
+#include "paimon/common/utils/fields_comparator.h"
+#include "paimon/global_index/bitmap_scored_global_index_result.h"
+#include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
+namespace {
+/// Returns whether `left` ranks before `right` as in Java `ScoredGlobalIndexResult#topK`: a higher
+/// score first, then a lower row id. Scores are compared as Java `Double#compare` does.
+bool RanksBefore(const std::pair<int64_t, float>& left, const std::pair<int64_t, float>& right) {
+    int32_t score_order = FieldsComparator::CompareFloatingPoint(left.second, right.second);
+    if (score_order != 0) {
+        return score_order > 0;
+    }
+    return left.first < right.first;
+}
+
+/// Merges scored results and keeps the `limit` rows that rank first, as Java
+/// `ScoredGlobalIndexResult#merge` followed by `#topK` does. A row id in more than one result keeps
+/// its first score.
+Result<std::shared_ptr<ScoredGlobalIndexResult>> MergeTopK(
+    const std::vector<std::shared_ptr<ScoredGlobalIndexResult>>& results, int32_t limit) {
+    std::unordered_set<int64_t> merged_row_ids;
+    std::vector<std::pair<int64_t, float>> rows;
+    for (const auto& result : results) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScoredGlobalIndexResult::ScoredIterator> iter,
+                               result->CreateScoredIterator());
+        while (iter->HasNext()) {
+            std::pair<int64_t, float> row = iter->NextWithScore();
+            if (merged_row_ids.insert(row.first).second) {
+                rows.push_back(row);
+            }
+        }
+    }
+    auto top_k = static_cast<size_t>(limit);
+    if (rows.size() > top_k) {
+        std::nth_element(rows.begin(), rows.begin() + top_k, rows.end(), RanksBefore);
+        rows.resize(top_k);
+    }
+    std::sort(rows.begin(), rows.end());
+    RoaringBitmap64 bitmap;
+    std::vector<float> scores;
+    scores.reserve(rows.size());
+    for (const auto& [row_id, score] : rows) {
+        bitmap.Add(row_id);
+        scores.push_back(score);
+    }
+    return std::make_shared<BitmapScoredGlobalIndexResult>(std::move(bitmap), std::move(scores));
+}
+}  // namespace
+
 UnionGlobalIndexReader::UnionGlobalIndexReader(
     std::vector<std::shared_ptr<GlobalIndexReader>>&& readers,
     const std::shared_ptr<Executor>& executor)
@@ -133,9 +183,33 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::VisitVe
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
-    return UnionScored([full_text_search](const std::shared_ptr<GlobalIndexReader>& reader) {
-        return reader->VisitFullTextSearch(full_text_search);
-    });
+    if (!full_text_search) {
+        return Status::Invalid("VisitFullTextSearch: null FullTextSearch pointer");
+    }
+    if (full_text_search->limit <= 0) {
+        return Status::Invalid("full-text search requires a positive limit");
+    }
+    // If the readers rank disjoint rows, the top `limit` rows of each reader include all of its
+    // rows scoring above the `limit`-th highest score of all readers, so merging them loses none
+    // of those rows. Rows tied at that score may already have been cut by a reader's engine.
+    ScoredReaderAction action =
+        [full_text_search](const std::shared_ptr<GlobalIndexReader>& reader) {
+            return reader->VisitFullTextSearch(full_text_search);
+        };
+    auto results = ExecuteAllReaders<Result<std::shared_ptr<ScoredGlobalIndexResult>>>(action);
+    std::vector<std::shared_ptr<ScoredGlobalIndexResult>> scored_results;
+    scored_results.reserve(results.size());
+    for (auto& result_or_status : results) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredGlobalIndexResult> result,
+                               std::move(result_or_status));
+        if (result != nullptr) {
+            scored_results.push_back(std::move(result));
+        }
+    }
+    if (scored_results.empty()) {
+        return std::shared_ptr<ScoredGlobalIndexResult>();
+    }
+    return MergeTopK(scored_results, full_text_search->limit);
 }
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::UnionScored(

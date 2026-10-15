@@ -31,11 +31,22 @@ namespace paimon {
 /// results. This is used to convert local row IDs into global row IDs.
 class OffsetGlobalIndexReader : public GlobalIndexReader {
  public:
-    /// Constructs an OffsetGlobalIndexReader.
+    /// Constructs an OffsetGlobalIndexReader whose full-text searches rank all rows it covers.
     /// @param wrapped The inner reader to delegate queries to. Its results are expected to
     ///                contain local row ids.
-    /// @param offset  The offset to add to each row id in the results.
-    OffsetGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped, int64_t offset);
+    /// @param offset  The first global row id covered by the wrapped reader, added to each row id
+    ///                in the results.
+    /// @param to      The last global row id (inclusive) covered by the wrapped reader.
+    OffsetGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped, int64_t offset,
+                            int64_t to);
+
+    /// Constructs an OffsetGlobalIndexReader whose full-text searches rank rows in [`offset`,
+    /// `to`], excluding rows up to `skip_to` (inclusive) assigned to earlier readers.
+    /// No row is ranked if `skip_to` >= `to`. Storing the inclusive end avoids computing
+    /// INT64_MAX + 1 when an earlier range covers the largest row id.
+    /// @param skip_to The last global row id already assigned to an earlier reader.
+    OffsetGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped, int64_t offset,
+                            int64_t to, int64_t skip_to);
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override;
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNull() override;
@@ -78,6 +89,8 @@ class OffsetGlobalIndexReader : public GlobalIndexReader {
  private:
     std::shared_ptr<GlobalIndexReader> wrapped_;
     int64_t offset_;
+    int64_t to_;
+    int64_t skip_to_;
 };
 
 }  // namespace paimon
