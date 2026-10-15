@@ -201,8 +201,8 @@ void VortexOutputContext::WaitForIdleCallbacks() {
     constexpr auto kWarnAfter = std::chrono::seconds(30);
     if (!callback_cv_.wait_for(lock, kWarnAfter, [this] { return in_flight_ == 0; })) {
         PAIMON_LOG_WARN(VortexOutputLogger(),
-                        "Still waiting for an in-flight Vortex write callback after %lld seconds",
-                        static_cast<long long>(kWarnAfter.count()));
+                        "Still waiting for an in-flight Vortex write callback after %d seconds",
+                        static_cast<int>(kWarnAfter.count()));
         callback_cv_.wait(lock, [this] { return in_flight_ == 0; });
     }
 }
