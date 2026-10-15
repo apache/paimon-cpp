@@ -142,8 +142,11 @@ TEST(ExecutorSubmissionTest, QueueAllocationFailurePreservesAcceptedPrefix) {
     auto ready = marker.get_future();
     std::atomic<int32_t> runs = 0;
     std::array<std::function<void()>, 128> tasks;
-    for (auto& task : tasks) {
-        task = [&]() { ++runs; };
+    std::array<std::weak_ptr<int32_t>, 128> retained;
+    for (std::size_t index = 0; index < tasks.size(); ++index) {
+        auto owner = std::make_shared<int32_t>(0);
+        retained[index] = owner;
+        tasks[index] = [&, owner]() { ++runs; };
     }
     std::function<void()> recovery = [&]() { marker.set_value(); };
     auto executor = CreateDefaultExecutor(1).value();
@@ -152,6 +155,7 @@ TEST(ExecutorSubmissionTest, QueueAllocationFailurePreservesAcceptedPrefix) {
     int32_t accepted = 0;
     bool caught = false;
     bool hit = false;
+    bool released = false;
     for (auto& task : tasks) {
         {
             AllocationFault fault(1);
@@ -163,6 +167,7 @@ TEST(ExecutorSubmissionTest, QueueAllocationFailurePreservesAcceptedPrefix) {
         }
         if (fired) {
             hit = true;
+            released = retained[accepted].expired();
             break;
         }
         ++accepted;
@@ -174,6 +179,7 @@ TEST(ExecutorSubmissionTest, QueueAllocationFailurePreservesAcceptedPrefix) {
     executor.reset();
     EXPECT_TRUE(hit);
     EXPECT_TRUE(caught);
+    EXPECT_TRUE(released);
     EXPECT_TRUE(recovered);
     EXPECT_GT(accepted, 0);
     EXPECT_EQ(runs.load(), accepted);
