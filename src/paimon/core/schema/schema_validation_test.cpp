@@ -128,7 +128,7 @@ TEST(SchemaValidationTest, TestVectorType) {
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, orc_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR currently only supports parquet/lance data files");
+                        "VECTOR currently only supports parquet/lance/vortex data files");
 
     std::map<std::string, std::string> changelog_options = {
         {Options::BUCKET, "1"},
@@ -229,7 +229,7 @@ TEST(SchemaValidationTest, TestVectorType) {
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, data_evolution_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR currently only supports parquet/lance data files");
+                        "VECTOR currently only supports parquet/lance/vortex data files");
 }
 
 #ifdef PAIMON_ENABLE_MOSAIC
@@ -407,6 +407,89 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
 #endif
 
 #ifdef PAIMON_ENABLE_VORTEX
+TEST(SchemaValidationTest, TestDedicatedVectorStore) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto id = arrow::field("id", arrow::int64());
+    auto embedding = arrow::field("embedding", vector_type);
+    std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::VECTOR_FILE_FORMAT, "vortex"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    auto validate = [&](const arrow::FieldVector& fields,
+                        const std::map<std::string, std::string>& opts) -> Status {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
+                               TableSchema::Create(0, arrow::schema(fields), {}, {}, opts));
+        return SchemaValidation::ValidateTableSchema(*table_schema);
+    };
+    ASSERT_OK(validate({id, embedding}, options));
+    ASSERT_NOK_WITH_MSG(validate({id}, options), "exactly one top-level VECTOR");
+    ASSERT_NOK_WITH_MSG(validate({embedding}, options), "normal non-partition column");
+    ASSERT_NOK_WITH_MSG(validate({id, embedding, arrow::field("other", vector_type)}, options),
+                        "exactly one top-level VECTOR");
+    ASSERT_NOK_WITH_MSG(
+        validate({id, arrow::field("nested", arrow::struct_({embedding}))}, options),
+        "top-level VECTOR");
+    ASSERT_NOK_WITH_MSG(validate({id, embedding, BlobUtils::ToArrowField("blob", false)}, options),
+                        "does not yet support BLOB columns");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> partition_only_schema,
+        TableSchema::Create(0, arrow::schema({id, embedding}), {"id"}, {}, options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*partition_only_schema),
+                        "normal non-partition column");
+    auto invalid_options = options;
+    invalid_options[Options::ROW_TRACKING_ENABLED] = "false";
+    ASSERT_NOK(validate({id, embedding}, invalid_options));
+    invalid_options = options;
+    invalid_options[Options::BUCKET] = "1";
+    ASSERT_NOK(validate({id, embedding}, invalid_options));
+    invalid_options = options;
+    invalid_options[Options::DATA_EVOLUTION_ENABLED] = "false";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options),
+                        "requires row-tracking.enabled and data-evolution.enabled");
+    invalid_options = options;
+    invalid_options[Options::FILE_FORMAT] = "vortex";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options), "requires parquet main files");
+    invalid_options = options;
+    invalid_options[Options::FILE_FORMAT_PER_LEVEL] = "0:vortex";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options), "requires parquet main files");
+    invalid_options = options;
+    invalid_options[Options::VECTOR_FILE_FORMAT] = "parquet";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options), "only supports vortex");
+    invalid_options = options;
+    invalid_options[Options::VECTOR_TARGET_FILE_SIZE] = "0 b";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options), "must be positive");
+
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_EQ(core_options.GetVectorTargetFileSize(),
+              core_options.GetTargetFileSize(/*has_primary_key=*/false));
+    options[Options::VECTOR_TARGET_FILE_SIZE] = "1 mb";
+    ASSERT_OK_AND_ASSIGN(core_options, CoreOptions::FromMap(options));
+    ASSERT_EQ(core_options.GetVectorTargetFileSize(), 1024 * 1024);
+}
+
+TEST(SchemaValidationTest, TestVortexVectorType) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int64()), arrow::field("embedding", vector_type)});
+    for (const auto& [option_key, option_value] : std::vector<std::pair<std::string, std::string>>{
+             {Options::FILE_FORMAT, "vortex"},
+             {Options::FILE_FORMAT, "VORTEX"},
+             {Options::FILE_FORMAT_PER_LEVEL, "1:vortex"},
+             {Options::CHANGELOG_FILE_FORMAT, "vortex"}}) {
+        SCOPED_TRACE(option_key + "=" + option_value);
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                      {Options::FILE_FORMAT, "parquet"}};
+        options[option_key] = option_value;
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 /*primary_keys=*/{"id"}, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+}
+
 TEST(SchemaValidationTest, TestVortexDataTypes) {
     std::shared_ptr<TableSchema> table_schema;
     // Vortex as the default file format: unsupported types are rejected at validation time.

@@ -49,6 +49,7 @@
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/format/format_table_file_store_write.h"
@@ -248,6 +249,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions options,
         CoreOptions::FromMap(opts, specific_fs, ctx->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateVectorStore(*schema, options));
+    if (options.GetVectorFileFormat() && !ctx->GetWriteSchema().empty()) {
+        return Status::NotImplemented(
+            "Dedicated VECTOR storage does not yet support custom write schemas or partial writes");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 

@@ -358,7 +358,9 @@ struct CoreOptions::Impl {
 
     std::optional<int64_t> target_file_size;
     std::optional<int64_t> blob_target_file_size;
+    std::optional<int64_t> vector_target_file_size;
     std::shared_ptr<FileFormat> file_format;
+    std::shared_ptr<FileFormat> vector_file_format;
     std::shared_ptr<FileSystem> file_system;
     std::shared_ptr<FileFormat> manifest_file_format;
     std::shared_ptr<Cache> cache;
@@ -598,6 +600,15 @@ struct CoreOptions::Impl {
         // Parse file.format - data file format, default "parquet"
         PAIMON_RETURN_NOT_OK(parser.ParseObject<FileFormatFactory>(
             Options::FILE_FORMAT, /*default_identifier=*/"parquet", &file_format));
+        if (parser.ContainsKey(Options::VECTOR_FILE_FORMAT)) {
+            PAIMON_RETURN_NOT_OK(parser.ParseObject<FileFormatFactory>(
+                Options::VECTOR_FILE_FORMAT, /*default_identifier=*/"vortex", &vector_file_format));
+        }
+        PAIMON_RETURN_NOT_OK(
+            parser.ParseMemorySize(Options::VECTOR_TARGET_FILE_SIZE, &vector_target_file_size));
+        if (vector_target_file_size && vector_target_file_size.value() <= 0) {
+            return Status::Invalid("vector.target-file-size must be positive");
+        }
         // Parse file.compression - default file compression, default "zstd"
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::FILE_COMPRESSION, &file_compression));
         // Parse changelog-file.format - no default value
@@ -1119,6 +1130,10 @@ std::shared_ptr<FileFormat> CoreOptions::GetFileFormat() const {
     return impl_->file_format;
 }
 
+std::shared_ptr<FileFormat> CoreOptions::GetVectorFileFormat() const {
+    return impl_->vector_file_format;
+}
+
 std::shared_ptr<FileSystem> CoreOptions::GetFileSystem() const {
     return impl_->file_system;
 }
@@ -1163,6 +1178,10 @@ int64_t CoreOptions::GetBlobTargetFileSize() const {
 
 bool CoreOptions::BlobSplitByFileSize() const {
     return impl_->blob_split_by_file_size.value_or(!impl_->blob_as_descriptor);
+}
+
+int64_t CoreOptions::GetVectorTargetFileSize() const {
+    return impl_->vector_target_file_size.value_or(GetTargetFileSize(/*has_primary_key=*/false));
 }
 
 int64_t CoreOptions::GetCompactionFileSize(bool has_primary_key) const {

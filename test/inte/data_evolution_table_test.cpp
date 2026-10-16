@@ -30,6 +30,7 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/vector_store_utils.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/defs.h"
@@ -1795,6 +1796,179 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
                               /*row_ranges=*/row_ranges));
     }
 }
+
+#ifdef PAIMON_ENABLE_VORTEX
+TEST_P(DataEvolutionTableTest, TestReadJavaDedicatedVectorStore) {
+    if (FileFormat() != "parquet") {
+        GTEST_SKIP() << "The Java fixture uses parquet main files";
+    }
+    const std::string fixture_path = PathUtil::JoinPath(
+        GetDataDir(), "vortex/dedicated_vector_java_compat.db/dedicated_vector_java_compat");
+    const std::string table_path = PathUtil::JoinPath(dir_->Str(), "java_dedicated_vector");
+    // Preserve the Java-produced files: this test only scans and reads the copied table.
+    ASSERT_TRUE(TestUtil::CopyDirectory(fixture_path, table_path));
+
+    // Java DataTypes.FLOAT() serializes the VECTOR element as nullable in schema-0.
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/true), 3);
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", vector_type),
+                                 arrow::field("tag", arrow::utf8())};
+    auto expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, [1, 2, 3], "a"], [2, null, "b"], [3, [-1, 0, 1], "c"],
+            [4, null, "d"], [5, [7, 8, 9], "e"], [6, [10, 11, 12], "f"]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, expected));
+    auto normal_projection =
+        arrow::StructArray::Make({expected->field(0), expected->field(2)}, {fields[0], fields[2]})
+            .ValueOrDie();
+    ASSERT_OK(ScanAndRead(table_path, {"id", "tag"}, normal_projection));
+    auto vector_projection =
+        arrow::StructArray::Make({expected->field(1)}, {fields[1]}).ValueOrDie();
+    ASSERT_OK(ScanAndRead(table_path, {"embedding"}, vector_projection));
+
+    // Row ids 1-4 cross the two Java commits and include a null vector from each commit.
+    auto selected_rows = checked_pointer_cast<arrow::StructArray>(expected->Slice(1, 4));
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, selected_rows,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 4)}));
+    auto selected_vectors =
+        checked_pointer_cast<arrow::StructArray>(vector_projection->Slice(1, 4));
+    ASSERT_OK(ScanAndRead(table_path, {"embedding"}, selected_vectors,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 4)}));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    std::map<int64_t, std::vector<std::shared_ptr<DataFileMeta>>> row_groups;
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(data_split, nullptr);
+        for (const auto& file : data_split->DataFiles()) {
+            ASSERT_TRUE(file->first_row_id.has_value());
+            row_groups[file->first_row_id.value()].push_back(file);
+        }
+    }
+    ASSERT_EQ(row_groups.size(), 2);
+    ASSERT_EQ(row_groups.count(0), 1);
+    ASSERT_EQ(row_groups.count(3), 1);
+    for (const auto& [first_row_id, files] : row_groups) {
+        SCOPED_TRACE(first_row_id);
+        ASSERT_EQ(files.size(), 2);
+        int32_t vector_file_count = 0;
+        for (const auto& file : files) {
+            ASSERT_EQ(file->row_count, 3);
+            if (VectorStoreUtils::IsVectorStoreFile(file->file_name)) {
+                ++vector_file_count;
+                ASSERT_TRUE(StringUtils::EndsWith(file->file_name, ".vector.vortex"));
+                ASSERT_EQ(file->write_cols, std::vector<std::string>({"embedding"}));
+            } else {
+                ASSERT_TRUE(StringUtils::EndsWith(file->file_name, ".parquet"));
+                ASSERT_EQ(file->write_cols, std::vector<std::string>({"id", "tag"}));
+            }
+        }
+        ASSERT_EQ(vector_file_count, 1);
+    }
+}
+
+TEST_P(DataEvolutionTableTest, TestDedicatedVectorStore) {
+    if (FileFormat() != "parquet") {
+        GTEST_SKIP() << "Dedicated VECTOR storage requires parquet main files";
+    }
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", vector_type),
+                                 arrow::field("tag", arrow::utf8())};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},       {Options::VECTOR_FILE_FORMAT, "vortex"},
+        {Options::FILE_SYSTEM, "local"},         {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::TARGET_FILE_ROW_NUM, "2"},     {Options::READ_BATCH_SIZE, "2"}};
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto input = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [0, [0, 0, 0], "skip"],
+            [1, [1, 2, 3], "a"], [2, null, "b"],
+            [3, null, "c"], [4, null, "d"],
+            [5, [7, 8, 9], "e"]
+        ])")
+            .ValueOrDie());
+    // Sliced input also exercises a pair containing only null vectors.
+    std::vector<std::shared_ptr<arrow::Array>> batches = {input->Slice(1, 2), input->Slice(3, 2),
+                                                          input->Slice(5, 1)};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         WriteArrays(table_path, {}, {}, batches));
+    ASSERT_EQ(messages.size(), 1);
+    auto message = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_NE(message, nullptr);
+    const auto& files = message->data_increment_.new_files_;
+    ASSERT_EQ(files.size(), 6);
+    for (size_t i = 0; i < files.size(); i += 2) {
+        ASSERT_FALSE(VectorStoreUtils::IsVectorStoreFile(files[i]->file_name));
+        ASSERT_TRUE(StringUtils::EndsWith(files[i + 1]->file_name, ".vector.vortex"));
+        ASSERT_EQ(files[i]->row_count, files[i + 1]->row_count);
+        ASSERT_EQ(files[i]->write_cols, std::vector<std::string>({"id", "tag"}));
+        ASSERT_EQ(files[i + 1]->write_cols, std::vector<std::string>({"embedding"}));
+    }
+    ASSERT_OK(Commit(table_path, messages));
+    auto expected = checked_pointer_cast<arrow::StructArray>(input->Slice(1));
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, expected));
+    auto normal_projection =
+        arrow::StructArray::Make({expected->field(0), expected->field(2)}, {fields[0], fields[2]})
+            .ValueOrDie();
+    ASSERT_OK(ScanAndRead(table_path, {"id", "tag"}, normal_projection));
+    auto vector_projection = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}), R"([
+            [null], [null], [null], [[7, 8, 9]]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"embedding"}, vector_projection, /*predicate=*/nullptr,
+                          /*row_ranges=*/{Range(1, 4)}));
+
+    ASSERT_OK_AND_ASSIGN(messages, WriteArray(table_path, {}, input->Slice(1, 2)));
+    ASSERT_OK(Commit(table_path, messages));
+    auto appended_expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, [1, 2, 3], "a"], [2, null, "b"],
+            [3, null, "c"], [4, null, "d"], [5, [7, 8, 9], "e"],
+            [1, [1, 2, 3], "a"], [2, null, "b"]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, appended_expected));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    std::map<int64_t, std::vector<std::shared_ptr<DataFileMeta>>> row_groups;
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(data_split, nullptr);
+        for (const auto& file : data_split->DataFiles()) {
+            ASSERT_TRUE(file->first_row_id.has_value());
+            row_groups[file->first_row_id.value()].push_back(file);
+        }
+    }
+    ASSERT_EQ(row_groups.size(), 4);
+    ASSERT_EQ(row_groups.count(0), 1);
+    ASSERT_EQ(row_groups.count(2), 1);
+    ASSERT_EQ(row_groups.count(4), 1);
+    ASSERT_EQ(row_groups.count(5), 1);
+    for (const auto& [first_row_id, group] : row_groups) {
+        ASSERT_EQ(group.size(), 2);
+        ASSERT_EQ(group[0]->row_count, group[1]->row_count);
+    }
+
+    WriteContextBuilder partial_builder(table_path, "partial");
+    partial_builder.WithWriteSchema({"embedding"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> partial_context, partial_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(partial_context)).status(),
+                        "partial writes");
+
+    WriteContextBuilder invalid_builder(table_path, "invalid");
+    invalid_builder.AddOption(Options::DATA_EVOLUTION_ENABLED, "false");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> invalid_context, invalid_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(invalid_context)).status(),
+                        "requires row-tracking.enabled and data-evolution.enabled");
+}
+#endif
 
 TEST_P(DataEvolutionTableTest, TestVectorReadWrite) {
     if (FileFormat() != "parquet" && FileFormat() != "lance") {

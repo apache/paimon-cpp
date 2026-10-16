@@ -51,6 +51,9 @@ class SchemaValidation {
 
     static Status ValidateTableSchema(const TableSchema& schema);
 
+    /// Checks the deliberately limited dedicated-vector write path, including runtime overrides.
+    static Status ValidateVectorStore(const TableSchema& schema, const CoreOptions& options);
+
     /// Validates a schema a table is about to be created from, whichever catalog is creating it.
     ///
     /// It picks the rules by the schema's `type` option: a format table owns no bucket, manifest

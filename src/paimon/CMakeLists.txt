@@ -316,6 +316,8 @@ set(PAIMON_CORE_SRCS
     core/io/shredding_key_value_data_file_writer_factory.cpp
     core/io/multiple_blob_file_writer.cpp
     core/io/rolling_blob_file_writer.cpp
+    core/io/rolling_vector_file_writer.cpp
+    core/io/vector_data_file_writer_factory.cpp
     core/manifest/file_kind.cpp
     core/manifest/file_source.cpp
     core/manifest/index_manifest_entry_serializer.cpp
@@ -833,6 +835,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/file_index_evaluator_test.cpp
                     core/io/single_file_writer_test.cpp
                     core/io/rolling_blob_file_writer_test.cpp
+                    core/io/rolling_vector_file_writer_test.cpp
                     core/global_index/global_index_file_manager_test.cpp
                     core/global_index/global_index_evaluator_impl_test.cpp
                     core/global_index/indexed_split_test.cpp
