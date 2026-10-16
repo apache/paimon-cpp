@@ -20,9 +20,11 @@
 #include "paimon/table/source/table_scan.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
@@ -35,6 +37,7 @@
 #include "paimon/common/predicate/greater_or_equal.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
@@ -195,6 +198,9 @@ class CancellingPlanningFileSystem : public LocalFileSystem {
             token_->Cancel();
         }
         const bool manifest = StringUtils::StartsWith(name, "manifest-");
+        if (manifest && !StringUtils::StartsWith(name, "manifest-list-") && pause_manifest_open) {
+            pause_manifest_open();
+        }
         return std::unique_ptr<InputStream>(new PlanningInputStream(
             std::move(stream), streams, token_,
             manifest && phase_ == CancelMetadataAt::ManifestRead,
@@ -240,6 +246,7 @@ class CancellingPlanningFileSystem : public LocalFileSystem {
 
     mutable int32_t operations = 0;
     Status hint_status;
+    std::function<void()> pause_manifest_open;
     mutable int32_t after_cancel = 0;
     mutable int32_t known_size_opens = 0;
     mutable int32_t manifest_list_opens = 0;
@@ -881,6 +888,43 @@ TEST(TableScanTest, CancellationBypassesColdAndWarmSharedCachesWithoutPoisoningT
         ASSERT_EQ(actual_rows, expected_rows);
         ASSERT_GT(cache->GetCount(), gets);
     }
+}
+
+TEST(TableScanTest, CancellationFromAnotherThreadWhileManifestIoIsPaused) {
+    const auto path = GetDataDir() + "/parquet/append_09.db/append_09";
+    std::promise<void> entered;
+    std::promise<void> resume;
+    auto waiting_for_io = entered.get_future();
+    auto resume_io = resume.get_future().share();
+    auto token = std::make_shared<ScanCancellationToken>();
+    auto fs = std::make_shared<CancellingPlanningFileSystem>(token.get(), CancelMetadataAt::None);
+    auto executor = std::make_shared<RecordingPlanningExecutor>();
+    fs->pause_manifest_open = [&]() {
+        entered.set_value();
+        resume_io.wait();
+    };
+    ScanContextBuilder builder(path);
+    builder.WithCancellationToken(token).WithFileSystem(fs).WithExecutor(executor);
+    ASSERT_OK_AND_ASSIGN(auto scan, FinishPlanningScan(builder));
+    auto planning = std::async(std::launch::async, [&]() { return scan->CreatePlan(); });
+    ScopeGuard unblock_before_join([&]() { resume.set_value(); });
+    ASSERT_EQ(waiting_for_io.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+    ASSERT_EQ(fs->manifest_file_opens, 1);
+    ASSERT_FALSE(token->IsCancelled());
+    const auto reads_before_cancel = fs->streams->reads;
+    token->Cancel();
+    ASSERT_EQ(planning.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+    resume.set_value();
+    unblock_before_join.Release();
+    auto result = planning.get();
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsCancelled()) << result.status().ToString();
+    ASSERT_EQ(fs->streams->reads, reads_before_cancel);
+    ASSERT_EQ(fs->after_cancel, 0);
+    ASSERT_EQ(fs->streams->live, 0);
+    ASSERT_EQ(fs->streams->unclosed, 0);
+    ASSERT_EQ(executor->submissions, 0);
+    ASSERT_EQ(executor->shutdowns, 0);
 }
 
 TEST(TableScanTest, CancellationOfOneConcurrentScanDoesNotCancelAnother) {
