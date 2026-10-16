@@ -619,7 +619,7 @@ TEST(FileSystemCatalogTest, TestCreateTableWithBlob) {
     ASSERT_EQ(table->FullName(), "db1.tbl1");
 
     ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier("db1", "table_xaxa")),
-                        "Identifier{database='db1', table='table_xaxa'} not exist");
+                        "Identifier{database='db1', object='table_xaxa'} not exist");
 
     ArrowSchemaRelease(&schema);
 }
@@ -832,7 +832,7 @@ TEST(FileSystemCatalogTest, TestValidateTableSchema) {
                                   /*ignore_if_exists=*/false));
 
     ASSERT_NOK_WITH_MSG(catalog.LoadTableSchema(Identifier("db0", "tbl0")),
-                        "Identifier{database=\'db0\', table=\'tbl0\'} not exist");
+                        "Identifier{database=\'db0\', object=\'tbl0\'} not exist");
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Schema> table_schema, catalog.LoadTableSchema(identifier));
     auto data_schema = std::dynamic_pointer_cast<DataSchema>(table_schema);
     ASSERT_TRUE(data_schema != nullptr);
@@ -872,7 +872,7 @@ TEST(FileSystemCatalogTest, TestValidateTableSchema) {
 
     ASSERT_OK(fs->Delete(schema_path));
     ASSERT_NOK_WITH_MSG(catalog.LoadTableSchema(identifier),
-                        "Identifier{database=\'db1\', table=\'tbl1\'} not exist");
+                        "Identifier{database=\'db1\', object=\'tbl1\'} not exist");
 
     ASSERT_NOK_WITH_MSG(catalog.LoadTableSchema(Identifier("db1", "tbl$11")), "not exist");
     ArrowSchemaRelease(&schema);
@@ -952,7 +952,7 @@ TEST(FileSystemCatalogTest, TestDropTable) {
     ASSERT_NOK_WITH_MSG(
         catalog.DropTable(Identifier("test_db", "non_existent_tbl"),
                           /*ignore_if_not_exists=*/false),
-        "table Identifier{database='test_db', table='non_existent_tbl'} does not exist");
+        "table Identifier{database='test_db', object='non_existent_tbl'} does not exist");
 
     // Test 3: Drop existing table
     arrow::FieldVector fields = {
@@ -971,7 +971,7 @@ TEST(FileSystemCatalogTest, TestDropTable) {
     ASSERT_NOK_WITH_MSG(catalog.DropTable(Identifier("test_db", "tbl$system"),
                                           /*ignore_if_not_exists=*/false),
                         "Cannot 'dropTable' for system table 'Identifier{database='test_db', "
-                        "table='tbl$system'}', please use data table.");
+                        "object='tbl$system'}', please use data table.");
 
     ArrowSchemaRelease(&schema);
 }
@@ -996,7 +996,7 @@ TEST(FileSystemCatalogTest, TestRenameTable) {
         catalog.RenameTable(Identifier("test_db", "non_existent_tbl"),
                             Identifier("test_db", "new_tbl"),
                             /*ignore_if_not_exists=*/false),
-        "source table Identifier{database='test_db', table='non_existent_tbl'} does not exist");
+        "source table Identifier{database='test_db', object='non_existent_tbl'} does not exist");
 
     // Test 3: Normal rename
     arrow::FieldVector fields = {
@@ -1023,7 +1023,7 @@ TEST(FileSystemCatalogTest, TestRenameTable) {
     ASSERT_NOK_WITH_MSG(
         catalog.RenameTable(Identifier("test_db", "new_tbl"), Identifier("test_db", "tbl2"),
                             /*ignore_if_not_exists=*/false),
-        "target table Identifier{database='test_db', table='tbl2'} already exists");
+        "target table Identifier{database='test_db', object='tbl2'} already exists");
 
     // Test 5: Cross-database rename
     ASSERT_OK(catalog.CreateDatabase("test_db2", options, /*ignore_if_exists=*/false));
@@ -1626,7 +1626,7 @@ TEST(FileSystemCatalogTest, TestIdentifierNameValidationRules) {
         std::string table_error;
     };
     const std::vector<InvalidName> invalid_names = {
-        {"", "cannot be empty or whitespace", "Invalid table name"},
+        {"", "cannot be empty or whitespace", "Invalid object name"},
         {"   ", "cannot be empty or whitespace", "cannot be empty or whitespace"},
         {".", "cannot be '.' or '..'", "cannot be '.' or '..'"},
         {"..", "cannot be '.' or '..'", "cannot be '.' or '..'"},

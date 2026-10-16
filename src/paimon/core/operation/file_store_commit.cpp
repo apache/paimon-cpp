@@ -174,6 +174,12 @@ Result<std::unique_ptr<FileStoreCommit>> NewFormatTableCommit(
 
 Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     std::unique_ptr<CommitContext> ctx) {
+    return Create(std::move(ctx), nullptr);
+}
+
+Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
+    std::unique_ptr<CommitContext> ctx,
+    [[maybe_unused]] const std::shared_ptr<const Table>& table) {
     if (ctx == nullptr) {
         return Status::Invalid("commit context is null pointer");
     }

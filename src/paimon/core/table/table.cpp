@@ -21,14 +21,36 @@
 #include <optional>
 
 #include "fmt/format.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/read_context.h"
+#include "paimon/scan_context.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
+#include "paimon/write_context.h"
 
 namespace paimon {
+
+namespace {
+
+/// The table's shared owner, which a `NewScan()`, `NewRead()`, `NewWrite()` or `NewCommit()` call
+/// hands to the operator it creates. A table no `shared_ptr` holds has no owner to hand over, and
+/// `shared_from_this()` would throw rather than say so, so the failure is stood up as a status.
+Result<std::shared_ptr<const Table>> SharedOwnerOf(const Table* table) {
+    if (std::shared_ptr<const Table> owner = table->weak_from_this().lock()) {
+        return owner;
+    }
+    return Status::Invalid("table is not held by a shared_ptr");
+}
+
+}  // namespace
 
 Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& file_system,
                                              const std::string& table_path,
@@ -58,11 +80,29 @@ Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& 
         CatalogUtils::CheckManagedTableType(identifier, *latest_schema, "Table::Create"));
 
     auto schema = checked_pointer_cast<Schema>(*latest_schema);
-    return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetTableName());
+    return std::make_shared<Table>(schema, identifier);
 }
 
-std::string Table::FullName() const {
-    return database_ == Identifier::kUnknownDatabase ? table_name_ : database_ + "." + table_name_;
+Result<std::unique_ptr<TableScan>> Table::NewScan(std::unique_ptr<ScanContext> context) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const Table> table, SharedOwnerOf(this));
+    return TableScan::Create(std::move(context), table);
+}
+
+Result<std::unique_ptr<TableRead>> Table::NewRead(std::unique_ptr<ReadContext> context) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const Table> table, SharedOwnerOf(this));
+    return TableRead::Create(std::move(context), table);
+}
+
+Result<std::unique_ptr<FileStoreWrite>> Table::NewWrite(
+    std::unique_ptr<WriteContext> context) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const Table> table, SharedOwnerOf(this));
+    return FileStoreWrite::Create(std::move(context), table);
+}
+
+Result<std::unique_ptr<FileStoreCommit>> Table::NewCommit(
+    std::unique_ptr<CommitContext> context) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const Table> table, SharedOwnerOf(this));
+    return FileStoreCommit::Create(std::move(context), table);
 }
 
 }  // namespace paimon

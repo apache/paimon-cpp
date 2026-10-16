@@ -253,6 +253,12 @@ Result<std::vector<std::map<std::string, std::string>>> TableScan::ListPartition
 }
 
 Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context) {
+    return Create(std::move(context), nullptr);
+}
+
+Result<std::unique_ptr<TableScan>> TableScan::Create(
+    std::unique_ptr<ScanContext> context,
+    [[maybe_unused]] const std::shared_ptr<const Table>& table) {
     if (context == nullptr) {
         return Status::Invalid("scan context is null pointer");
     }

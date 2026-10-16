@@ -48,11 +48,8 @@ std::string BranchObjectName(const std::string& table, const std::string& branch
 
 }  // namespace
 
-Identifier::Identifier(const std::string& table)
-    : Identifier(std::string(kUnknownDatabase), table) {}
-
-Identifier::Identifier(const std::string& database, const std::string& table)
-    : database_(database), table_(table) {}
+Identifier::Identifier(const std::string& database, const std::string& object)
+    : database_(database), object_(object) {}
 
 Identifier::Identifier(const std::string& database, const std::string& table,
                        const std::string& branch)
@@ -62,24 +59,24 @@ bool Identifier::operator==(const Identifier& other) const {
     if (this == &other) {
         return true;
     }
-    return database_ == other.database_ && table_ == other.table_;
+    return database_ == other.database_ && object_ == other.object_;
 }
 
 const std::string& Identifier::GetDatabaseName() const {
     return database_;
 }
 
-const std::string& Identifier::GetTableName() const {
-    return table_;
+const std::string& Identifier::GetObjectName() const {
+    return object_;
 }
 
 Result<std::string> Identifier::GetDataTableName() const {
-    PAIMON_RETURN_NOT_OK(SplitTableName());
+    PAIMON_RETURN_NOT_OK(SplitObjectName());
     return data_table_;
 }
 
 Result<std::optional<std::string>> Identifier::GetBranchName() const {
-    PAIMON_RETURN_NOT_OK(SplitTableName());
+    PAIMON_RETURN_NOT_OK(SplitObjectName());
     return branch_;
 }
 
@@ -89,7 +86,7 @@ Result<std::string> Identifier::GetBranchNameOrDefault() const {
 }
 
 Result<std::optional<std::string>> Identifier::GetSystemTableName() const {
-    PAIMON_RETURN_NOT_OK(SplitTableName());
+    PAIMON_RETURN_NOT_OK(SplitObjectName());
     return system_table_;
 }
 
@@ -99,21 +96,21 @@ Result<bool> Identifier::IsSystemTable() const {
 }
 
 std::string Identifier::ToString() const {
-    return fmt::format("Identifier{{database='{}', table='{}'}}", database_, table_);
+    return fmt::format("Identifier{{database='{}', object='{}'}}", database_, object_);
 }
 
 int32_t Identifier::HashCode() const {
     int32_t hash = MurmurHashUtils::HashUnsafeBytes(reinterpret_cast<const void*>(database_.data()),
                                                     /*offset=*/0, database_.size());
-    return MurmurHashUtils::HashUnsafeBytes(reinterpret_cast<const void*>(table_.data()),
-                                            /*offset=*/0, table_.size(), hash);
+    return MurmurHashUtils::HashUnsafeBytes(reinterpret_cast<const void*>(object_.data()),
+                                            /*offset=*/0, object_.size(), hash);
 }
 
 std::string Identifier::GetFullName() const {
     if (database_ == kUnknownDatabase) {
-        return table_;
+        return object_;
     }
-    return fmt::format("{}.{}", database_, table_);
+    return fmt::format("{}.{}", database_, object_);
 }
 
 Result<Identifier> Identifier::FromString(const std::string& full_name) {
@@ -124,14 +121,14 @@ Result<Identifier> Identifier::FromString(const std::string& full_name) {
     const auto dot_pos = full_name.find('.');
     if (dot_pos == std::string::npos || dot_pos == 0 || dot_pos == full_name.size() - 1) {
         return Status::Invalid(
-            fmt::format("cannot get splits from '{}' to get database and table", full_name));
+            fmt::format("cannot get splits from '{}' to get database and object", full_name));
     }
     std::string database = full_name.substr(0, dot_pos);
-    std::string table = full_name.substr(dot_pos + 1);
-    return Identifier(database, table);
+    std::string object = full_name.substr(dot_pos + 1);
+    return Identifier(database, object);
 }
 
-Status Identifier::SplitTableName() const {
+Status Identifier::SplitObjectName() const {
     if (parsed_) {
         return Status::OK();
     }
@@ -139,9 +136,9 @@ Status Identifier::SplitTableName() const {
     std::optional<std::string> branch;
     std::optional<std::string> system_table;
     std::vector<std::string> splits =
-        StringUtils::Split(table_, kSystemTableSplitter, /*ignore_empty=*/false);
+        StringUtils::Split(object_, kSystemTableSplitter, /*ignore_empty=*/false);
     if (splits.size() == 1) {
-        data_table = table_;
+        data_table = object_;
     } else if (splits.size() == 2) {
         data_table = splits[0];
         if (StringUtils::StartsWith(splits[1], kSystemBranchPrefix, /*start_pos=*/0)) {
@@ -152,20 +149,20 @@ Status Identifier::SplitTableName() const {
     } else if (splits.size() == 3) {
         if (!StringUtils::StartsWith(splits[1], kSystemBranchPrefix, /*start_pos=*/0)) {
             return Status::Invalid(fmt::format(
-                "System table can only contain one '$' separator, but this is: {}", table_));
+                "System table can only contain one '$' separator, but this is: {}", object_));
         }
         data_table = splits[0];
         branch = splits[1].substr(std::strlen(kSystemBranchPrefix));
         system_table = splits[2];
     } else {
-        return Status::Invalid(fmt::format("Invalid table name: {}", table_));
+        return Status::Invalid(fmt::format("Invalid object name: {}", object_));
     }
     // A blank branch names the main branch everywhere else here, and the constructor above folds
     // it into the bare table name, so an object name spelling one was hand-built and would be
     // addressed as a branch of its own.
     if (data_table.empty() || (branch && StringUtils::IsNullOrWhitespaceOnly(branch.value())) ||
         (system_table && system_table->empty())) {
-        return Status::Invalid(fmt::format("Invalid table name: {}", table_));
+        return Status::Invalid(fmt::format("Invalid object name: {}", object_));
     }
     data_table_ = std::move(data_table);
     branch_ = std::move(branch);

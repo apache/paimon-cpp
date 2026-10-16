@@ -32,6 +32,7 @@
 
 namespace paimon {
 class ReadContext;
+class Table;
 
 /// Given a `Split` or a list of `Split`, generate a reader for batch reading.
 ///
@@ -47,6 +48,14 @@ class PAIMON_EXPORT TableRead {
     /// @param context A unique pointer to the `ReadContext` used for read operations.
     /// @return A Result containing a unique pointer to the `TableRead` instance.
     static Result<std::unique_ptr<TableRead>> Create(std::unique_ptr<ReadContext> context);
+
+    /// Create an instance of `TableRead` for a table the caller already opened.
+    ///
+    /// @param context A unique pointer to the `ReadContext` used for read operations.
+    /// @param table The opened table, or null when the caller has no table to hand over.
+    /// @return A Result containing a unique pointer to the `TableRead` instance.
+    static Result<std::unique_ptr<TableRead>> Create(std::unique_ptr<ReadContext> context,
+                                                     const std::shared_ptr<const Table>& table);
 
     /// Creates a `BatchReader` instance for reading data.
     ///

@@ -170,6 +170,11 @@ Result<std::unique_ptr<TableRead>> NewFormatTableRead(const std::shared_ptr<Form
 }  // namespace
 
 Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext> ctx) {
+    return Create(std::move(ctx), nullptr);
+}
+
+Result<std::unique_ptr<TableRead>> TableRead::Create(
+    std::unique_ptr<ReadContext> ctx, [[maybe_unused]] const std::shared_ptr<const Table>& table) {
     std::shared_ptr<ReadContext> context = std::move(ctx);
     if (context == nullptr) {
         return Status::Invalid("read context is null pointer");

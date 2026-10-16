@@ -26,6 +26,7 @@
 #include "arrow/ipc/api.h"
 #include "paimon/api.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/catalog/table.h"
 
 arrow::Result<std::shared_ptr<arrow::StructArray>> PrepareData(const arrow::FieldVector& fields) {
     arrow::StringBuilder f0_builder;
@@ -81,6 +82,11 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
                                               /*primary_keys=*/{}, options,
                                               /*ignore_if_exists=*/false));
 
+    // The table every operator below is created from. Each call hands the table's shared owner
+    // to the operator it creates.
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
+                           catalog->GetTable(paimon::Identifier(db_name, table_name)));
+
     std::string table_path = root_path + "/" + db_name + ".db/" + table_name;
 
     std::string commit_user = "some_commit_user";
@@ -89,7 +95,7 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
                            context_builder.SetOptions(options).Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
-                           paimon::FileStoreWrite::Create(std::move(write_context)));
+                           table->NewWrite(std::move(write_context)));
 
     // prepare data
     auto struct_array = PrepareData(fields);
@@ -113,7 +119,7 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> commit_context,
                            commit_context_builder.SetOptions(options).Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> committer,
-                           paimon::FileStoreCommit::Create(std::move(commit_context)));
+                           table->NewCommit(std::move(commit_context)));
     PAIMON_RETURN_NOT_OK(committer->Commit(commit_message));
 
     // scan
@@ -121,7 +127,7 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                            scan_context_builder.SetOptions(options).Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scanner,
-                           paimon::TableScan::Create(std::move(scan_context)));
+                           table->NewScan(std::move(scan_context)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Plan> plan, scanner->CreatePlan());
 
     // read
@@ -129,7 +135,7 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
                            read_context_builder.SetOptions(options).Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> table_read,
-                           paimon::TableRead::Create(std::move(read_context)));
+                           table->NewRead(std::move(read_context)));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     arrow::ArrayVector result_array_vector;

@@ -33,8 +33,11 @@
 
 namespace paimon {
 
+class TableScan;
+class TableRead;
+
 /// A table provides basic abstraction for table type.
-class PAIMON_EXPORT Table {
+class PAIMON_EXPORT Table : public std::enable_shared_from_this<Table> {
  public:
     /// Creates a table by loading the latest schema from the specified table path.
     ///
@@ -47,19 +50,21 @@ class PAIMON_EXPORT Table {
                                                  const Identifier& identifier);
 
     /// @param uuid Metastore UUID, or empty if unavailable.
-    Table(const std::shared_ptr<Schema>& schema, const std::string& database,
-          const std::string& table_name, const std::string& uuid = "")
-        : schema_(schema), database_(database), table_name_(table_name), uuid_(uuid) {}
+    Table(const std::shared_ptr<Schema>& schema, const Identifier& identifier,
+          const std::string& uuid = "")
+        : schema_(schema), identifier_(identifier), uuid_(uuid) {}
 
     ~Table() = default;
 
     /// A name to identify this table.
     std::string Name() const {
-        return table_name_;
+        return identifier_.GetObjectName();
     }
 
     /// Full name of the table, default is database.tableName.
-    std::string FullName() const;
+    std::string FullName() const {
+        return identifier_.GetFullName();
+    }
 
     /// Returns the metastore UUID, falling back to `FullName()`.
     /// @note Use `CatalogUuid()` for commit requests to avoid sending a table name as an ID.
@@ -78,10 +83,42 @@ class PAIMON_EXPORT Table {
         return schema_;
     }
 
+    /// Creates a scan of this table from a finished scan context, standing in for
+    /// `TableScan::Create`. The scan is handed the table's shared owner, so it shares the
+    /// caller's hold on the table.
+    /// @param context The finished scan context.
+    /// @return The scan, or the error `TableScan::Create` reports. A table no `shared_ptr` holds
+    ///         cannot hand itself over and reports that.
+    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const;
+
+    /// Creates a read of this table from a finished read context, standing in for
+    /// `TableRead::Create`. The read is handed the table's shared owner, so it shares the
+    /// caller's hold on the table.
+    /// @param context The finished read context.
+    /// @return The read, or the error `TableRead::Create` reports. A table no `shared_ptr` holds
+    ///         cannot hand itself over and reports that.
+    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const;
+
+    /// Creates a write of this table from a finished write context, standing in for
+    /// `FileStoreWrite::Create`. The write is handed the table's shared owner, so it shares the
+    /// caller's hold on the table.
+    /// @param context The finished write context.
+    /// @return The write, or the error `FileStoreWrite::Create` reports. A table no `shared_ptr`
+    ///         holds cannot hand itself over and reports that.
+    Result<std::unique_ptr<FileStoreWrite>> NewWrite(std::unique_ptr<WriteContext> context) const;
+
+    /// Creates a commit of this table from a finished commit context, standing in for
+    /// `FileStoreCommit::Create`. The commit is handed the table's shared owner, so it shares
+    /// the caller's hold on the table.
+    /// @param context The finished commit context.
+    /// @return The commit, or the error `FileStoreCommit::Create` reports. A table no
+    ///         `shared_ptr` holds cannot hand itself over and reports that.
+    Result<std::unique_ptr<FileStoreCommit>> NewCommit(
+        std::unique_ptr<CommitContext> context) const;
+
  private:
     std::shared_ptr<Schema> schema_;
-    std::string database_;
-    std::string table_name_;
+    Identifier identifier_;
     std::string uuid_;
 };
 

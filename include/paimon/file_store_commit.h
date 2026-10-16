@@ -39,6 +39,7 @@
 namespace paimon {
 class CommitContext;
 class CommitMessage;
+class Table;
 
 /// Interface for commit operations in a file store.
 ///
@@ -56,6 +57,15 @@ class PAIMON_EXPORT FileStoreCommit {
     ///
     /// @return A Result containing a unique pointer to the `FileStoreCommit` instance.
     static Result<std::unique_ptr<FileStoreCommit>> Create(std::unique_ptr<CommitContext> context);
+
+    /// Create an instance of `FileStoreCommit` for a table the caller already opened.
+    ///
+    /// @param context A unique pointer to the `CommitContext` used for commit operations.
+    /// @param table The opened table, or null when the caller has no table to hand over.
+    ///
+    /// @return A Result containing a unique pointer to the `FileStoreCommit` instance.
+    static Result<std::unique_ptr<FileStoreCommit>> Create(
+        std::unique_ptr<CommitContext> context, const std::shared_ptr<const Table>& table);
 
     virtual ~FileStoreCommit() = default;
 

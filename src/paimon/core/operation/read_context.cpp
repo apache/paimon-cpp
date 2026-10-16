@@ -70,12 +70,10 @@ std::string IdentifierToFlatJson(const Identifier& identifier) {
     auto& allocator = document.GetAllocator();
     document.AddMember(rapidjson::StringRef("database"),
                        rapidjson::Value(identifier.GetDatabaseName(), allocator), allocator);
-    // C++ `GetTableName()` returns the stored object name - branch and system-table suffix
-    // included - which is the Java `getObjectName()` this field mirrors, not Java's stripped
-    // `getTableName()` (that one is `GetDataTableName()` here). So a branch read reports the
-    // branch.
+    // `GetObjectName()` keeps any branch and system-table suffix, matching the Java
+    // `getObjectName()` this field mirrors. So a branch read reports the branch.
     document.AddMember(rapidjson::StringRef("object"),
-                       rapidjson::Value(identifier.GetTableName(), allocator), allocator);
+                       rapidjson::Value(identifier.GetObjectName(), allocator), allocator);
     // Compact, not the pretty form `RapidJsonUtil::ToJson` writes: the value goes into a header.
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
