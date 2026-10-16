@@ -266,6 +266,11 @@ class FileStoreScan {
                                const std::shared_ptr<TableSchema>& data_schema) const;
 
  private:
+    Result<std::optional<Snapshot>> ReadSnapshot() const;
+    Status ReadManifestLists(const std::optional<Snapshot>& snapshot,
+                             std::vector<ManifestFileMeta>* all_manifests,
+                             std::vector<ManifestFileMeta>* filtered_manifests) const;
+
     Status ReadManifests(std::optional<Snapshot>* snapshot_ptr,
                          std::vector<ManifestFileMeta>* all_manifests_ptr,
                          std::vector<ManifestFileMeta>* filtered_manifests_ptr) const;
@@ -277,10 +282,11 @@ class FileStoreScan {
                                std::vector<ManifestEntry>* manifest_entries) const;
 
     Status ReadManifestEntriesWithCache(const Snapshot& snapshot,
-                                        const std::vector<ManifestFileMeta>& bucket_manifest_metas,
+                                        std::vector<ManifestFileMeta>* all_manifest_metas,
+                                        std::vector<ManifestFileMeta>* filtered_manifest_metas,
                                         int32_t bucket,
                                         std::vector<ManifestEntry>* manifest_entries,
-                                        bool* cache_hit) const;
+                                        bool* cache_hit, int64_t* all_data_files) const;
     std::shared_ptr<CacheKey> CreateSnapshotLiveManifestEntriesCacheKey(int32_t bucket) const;
     Result<SnapshotLiveManifestEntries> LoadSnapshotLiveManifestEntries(int32_t bucket) const;
     Status StoreSnapshotLiveManifestEntries(int32_t bucket,
