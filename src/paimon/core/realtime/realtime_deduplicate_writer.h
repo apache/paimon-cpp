@@ -101,7 +101,6 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
     std::shared_ptr<BucketedDvMaintainer> dv_maintainer_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<RealtimeDeduplicateState> deduplicate_state_;
-    std::vector<std::shared_ptr<DataFileMeta>> prepared_data_files_;
     std::map<std::string, std::string> options_;
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> sealed_segments_;
     int64_t next_offset_;

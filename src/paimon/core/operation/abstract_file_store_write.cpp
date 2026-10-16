@@ -146,8 +146,16 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BatchWriter> writer,
                            GetWriter(partition, batch->GetBucket()));
     assert(writer);
-    PAIMON_RETURN_NOT_OK(writer->Write(std::move(batch)));
-    return writer_memory_manager_->OnWriteCompleted(writer.get());
+    Status status = writer->Write(std::move(batch));
+    if (status.ok()) {
+        status = writer_memory_manager_->OnWriteCompleted(writer.get());
+    }
+    if (!status.ok() && IsRealtimeWrite()) {
+        // Bucket writes and memory flushing can fail after changing buffered data or indexes.
+        // Fence the shared context so no retry or prepare can publish that partial state.
+        return PoisonRealtimeWrite(status);
+    }
+    return status;
 }
 
 Status AbstractFileStoreWrite::Seal() {
@@ -476,8 +484,8 @@ std::shared_ptr<Metrics> AbstractFileStoreWrite::GetMetrics() const {
 Status AbstractFileStoreWrite::CheckRealtimeWriteUsable() const {
     if (IsRealtimeWrite() && realtime_write_poisoned_.load()) {
         return Status::Invalid(
-            "real-time writer cannot be reused after Seal or PrepareCommitWithProgress failed, "
-            "or after it closed with unprepared data; recreate RealtimeContext and "
+            "real-time writer cannot be reused after Write, Seal or PrepareCommitWithProgress "
+            "failed, or after it closed with unprepared data; recreate RealtimeContext and "
             "FileStoreWrite, then let upstream recover input from the durable recovery offset "
             "persisted in the snapshot");
     }

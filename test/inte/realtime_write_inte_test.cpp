@@ -1389,6 +1389,74 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWriterHandoffRestoresCommit
     ASSERT_OK(second_writer->Close());
 }
 
+TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWriterHandoffRetainsPreparedFiles) {
+    ConfigureRealtimeDeduplicateTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> first_writer,
+                         CreateRealtimeWriter(realtime_context));
+    const std::vector<Row> initial_rows = {
+        {1, "old-one", "p0"}, {2, "keep-two", "p0"}, {3, "delete-three", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> initial_batch,
+                         MakeBatch(initial_rows, /*partitioned=*/false));
+    ASSERT_OK(first_writer->Write(std::move(initial_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         first_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_EQ(OffsetRange(0, 3), progress[0].offset_range);
+    std::shared_ptr<CommitMessageImpl> initial_message =
+        std::dynamic_pointer_cast<CommitMessageImpl>(progress[0].commit_message);
+    ASSERT_NE(nullptr, initial_message);
+    ASSERT_EQ(1, initial_message->GetNewFilesIncrement().NewFiles().size());
+    ASSERT_TRUE(initial_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_OK(first_writer->Close());
+    first_writer.reset();
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> second_writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> restored_rows, ReadRows(realtime_context));
+    ASSERT_EQ(initial_rows, restored_rows);
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> update_batch,
+        MakeBatch({Row{1, "new-one", "p0"}, Row{3, "ignored", "p0"}, Row{4, "four", "p0"}},
+                  /*partitioned=*/false, /*bucket=*/0,
+                  {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::DELETE,
+                   RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(second_writer->Write(std::move(update_batch)));
+    const std::vector<Row> expected_rows = {
+        {2, "keep-two", "p0"}, {1, "new-one", "p0"}, {4, "four", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_prepare, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_before_prepare);
+
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> update_progress,
+                         second_writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, update_progress.size());
+    ASSERT_EQ(OffsetRange(3, 6), update_progress[0].offset_range);
+    std::shared_ptr<CommitMessageImpl> update_message =
+        std::dynamic_pointer_cast<CommitMessageImpl>(update_progress[0].commit_message);
+    ASSERT_NE(nullptr, update_message);
+    ASSERT_EQ(1, update_message->GetNewFilesIncrement().NewFiles().size());
+    ASSERT_EQ(2, update_message->GetNewFilesIncrement().NewFiles()[0]->row_count);
+    const std::vector<std::shared_ptr<IndexFileMeta>>& deletion_vector_files =
+        update_message->GetCompactIncrement().NewIndexFiles();
+    ASSERT_EQ(1, deletion_vector_files.size());
+    ASSERT_EQ(DeletionVectorsIndexFile::DELETION_VECTORS_INDEX,
+              deletion_vector_files[0]->IndexType());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_after_prepare);
+
+    progress.push_back(std::move(update_progress[0]));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(progress, /*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_before_refresh);
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
+    ASSERT_EQ(expected_rows, disk_rows);
+    ASSERT_OK(second_writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_after_refresh);
+    ASSERT_OK(second_writer->Close());
+}
+
 TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWithinOneBatch) {
     ConfigureRealtimeDeduplicateTable();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,

@@ -421,21 +421,18 @@ TEST(RealtimeContextTest, TestNewDeduplicateSnapshotRefreshesLookupAtSameOffset)
     const RealtimeOffsetMap committed_offsets = {{partition_bucket, /*offset=*/10}};
     ASSERT_OK(context->AdvanceCommittedProgress(/*snapshot_id=*/5, committed_offsets,
                                                 /*committed_data_files=*/{}));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> snapshot_5_lookup,
-                         store_state.deduplicate_state->AcquireCommittedFileLookup());
+    const std::shared_ptr<RealtimeOffsetFileIndexLookup> snapshot_5_lookup =
+        store_state.deduplicate_state->committed_file_lookup_;
+    ASSERT_NE(nullptr, snapshot_5_lookup);
     ASSERT_NE(initial_lookup, snapshot_5_lookup);
 
     ASSERT_OK(context->AdvanceCommittedProgress(/*snapshot_id=*/5, committed_offsets,
                                                 /*committed_data_files=*/{}));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> duplicate_snapshot_lookup,
-                         store_state.deduplicate_state->AcquireCommittedFileLookup());
-    ASSERT_EQ(snapshot_5_lookup, duplicate_snapshot_lookup);
+    ASSERT_EQ(snapshot_5_lookup, store_state.deduplicate_state->committed_file_lookup_);
 
     ASSERT_OK(context->AdvanceCommittedProgress(/*snapshot_id=*/6, committed_offsets,
                                                 /*committed_data_files=*/{}));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> snapshot_6_lookup,
-                         store_state.deduplicate_state->AcquireCommittedFileLookup());
-    ASSERT_NE(snapshot_5_lookup, snapshot_6_lookup);
+    ASSERT_NE(snapshot_5_lookup, store_state.deduplicate_state->committed_file_lookup_);
 }
 
 TEST(RealtimeContextTest, TestRemovedInactivePartitionDoesNotRequireReopen) {

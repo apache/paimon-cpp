@@ -18,9 +18,7 @@
 
 #include "paimon/core/realtime/realtime_deduplicate_writer.h"
 
-#include <algorithm>
 #include <optional>
-#include <set>
 #include <utility>
 
 #include "arrow/api.h"
@@ -220,28 +218,12 @@ Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compa
     std::vector<std::shared_ptr<DataFileMeta>> new_files;
     std::vector<std::shared_ptr<IndexFileMeta>> new_index_files;
     std::vector<std::shared_ptr<IndexFileMeta>> deleted_index_files;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeOffsetFileIndexLookup> committed_file_lookup,
-                           deduplicate_state_->AcquireCommittedFileLookup());
-    std::vector<std::shared_ptr<DataFileMeta>> lookup_data_files =
-        committed_file_lookup->DataFiles();
-    std::set<std::string> committed_file_names;
-    for (const std::shared_ptr<DataFileMeta>& data_file : lookup_data_files) {
-        committed_file_names.insert(data_file->file_name);
-    }
-    prepared_data_files_.erase(
-        std::remove_if(prepared_data_files_.begin(), prepared_data_files_.end(),
-                       [&committed_file_names](const std::shared_ptr<DataFileMeta>& data_file) {
-                           return committed_file_names.count(data_file->file_name) > 0;
-                       }),
-        prepared_data_files_.end());
-    lookup_data_files.insert(lookup_data_files.end(), prepared_data_files_.begin(),
-                             prepared_data_files_.end());
     bool has_deletions = false;
     for (const std::shared_ptr<RealtimeSegmentHandle>& segment : segments) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const RoaringBitmap64> offset_deletions,
                                ArrowDeduplicateRealtimeStore::OffsetDeletionsOf(segment));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeOffsetFileIndexLookup> prepared_lookup,
-                               committed_file_lookup->WithDataFiles(lookup_data_files));
+                               deduplicate_state_->AcquireFileLookup());
         using FileDeletions = std::map<std::string, RoaringBitmap32>;
         PAIMON_ASSIGN_OR_RAISE(FileDeletions file_deletions,
                                prepared_lookup->LookupFilePositions(*offset_deletions));
@@ -290,8 +272,8 @@ Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compa
         new_files.push_back(data_file);
         AppendAll(increment.NewIndexFiles(), &new_index_files);
         AppendAll(increment.DeletedIndexFiles(), &deleted_index_files);
-        prepared_data_files_.push_back(data_file);
-        lookup_data_files.push_back(data_file);
+        PAIMON_RETURN_NOT_OK(
+            deduplicate_state_->RegisterPreparedDataFile(data_file, segment->GetOffsetRange()));
         offset_index_guard.Release();
     }
 

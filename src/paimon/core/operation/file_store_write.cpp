@@ -286,6 +286,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     if (ctx->GetRealtimeContext() && !options.RealtimeEnabled()) {
         return Status::Invalid("real-time write requires realtime.enabled=true");
     }
+    if (ctx->GetRealtimeContext()) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                               RealtimeContextImpl::Cast(ctx->GetRealtimeContext()));
+        PAIMON_RETURN_NOT_OK(realtime_context_impl->CheckUsable());
+    }
     if (schema->PrimaryKeys().empty()) {
         // append table
         const bool realtime_deduplicate = !options.GetRealtimeDeduplicateKeyFields().empty();

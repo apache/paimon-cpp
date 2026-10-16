@@ -130,10 +130,10 @@ Result<std::map<std::string, RoaringBitmap32>> RealtimeOffsetFileIndexLookup::Lo
 
         std::shared_ptr<Predicate> predicate =
             PredicateBuilder::In(offset_position, offset_name, FieldType::BIGINT, literals);
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
-                               FileIndexEvaluator::Evaluate(data_schema_, options_, predicate,
-                                                            path_factory_, file, file_system_,
-                                                            memory_pool_));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileIndexResult> index_result,
+            FileIndexEvaluator::Evaluate(data_schema_, options_, predicate, path_factory_, file,
+                                         file_system_, memory_pool_));
         PAIMON_ASSIGN_OR_RAISE(bool remains, index_result->IsRemain());
         if (!remains) {
             continue;

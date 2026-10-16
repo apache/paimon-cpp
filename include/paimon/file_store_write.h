@@ -59,6 +59,9 @@ class PAIMON_EXPORT FileStoreWrite {
     ///       requires it in the table schema and persists it as a normal data-file column.
     /// @note If a field in table schema is marked as non-nullable (`nullable = false`),
     ///       the corresponding array in `batch` must have zero null entries.
+    /// @note A failure while writing or flushing a real-time batch invalidates the writer and its
+    ///       `RealtimeContext`. Recreate both and let upstream replay input from the durable
+    ///       recovery offset persisted in the snapshot; retrying the failed writer is unsupported.
     virtual Status Write(std::unique_ptr<RecordBatch>&& batch) = 0;
 
     /// Slices the current in-memory real-time data into a sealed segment so it can be reclaimed
