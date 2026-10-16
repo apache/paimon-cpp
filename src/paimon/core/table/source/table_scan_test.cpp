@@ -673,7 +673,7 @@ TEST(TableScanTest, CancellationDuringFailedHintPreservesOriginalError) {
         ASSERT_TRUE(token->IsCancelled());
         ASSERT_FALSE(result.ok());
         ASSERT_TRUE(result.status().IsIOError());
-        ASSERT_EQ(result.status().ToString(), fs->hint_status.ToString());
+        ASSERT_NOK_WITH_MSG(result, fs->hint_status.message());
         ASSERT_EQ(fs->after_cancel, 0);
         ASSERT_EQ(fs->manifest_list_opens, 0);
         ASSERT_EQ(fs->manifest_file_opens, 0);

@@ -121,7 +121,7 @@ TEST(SnapshotManagerTest, CancellationStopsSuccessfulAndFailedHintReads) {
         ASSERT_FALSE(result.ok());
         if (fail_hint) {
             ASSERT_TRUE(result.status().IsIOError());
-            ASSERT_EQ(result.status().ToString(), fs->hint_status.ToString());
+            ASSERT_NOK_WITH_MSG(result, fs->hint_status.message());
         } else {
             ASSERT_TRUE(result.status().IsCancelled());
         }
