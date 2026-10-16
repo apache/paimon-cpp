@@ -31,11 +31,183 @@
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/result.h"
+#include "paimon/scan_cancellation.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+namespace {
+class CancellingSnapshotFileSystem : public LocalFileSystem {
+ public:
+    explicit CancellingSnapshotFileSystem(ScanCancellationToken* token) : token_(token) {}
+
+    Status ReadFile(const std::string& path, std::string* content) override {
+        ++reads;
+        if (token_->IsCancelled()) {
+            ++after_cancel;
+        }
+        const auto name = PathUtil::GetName(path);
+        const bool hint = name == SnapshotManager::LATEST || name == SnapshotManager::EARLIEST;
+        Status result =
+            hint && !hint_status.ok() ? hint_status : LocalFileSystem::ReadFile(path, content);
+        if ((hint && cancel_hint) || (!hint && cancel_snapshot)) {
+            token_->Cancel();
+        }
+        return result;
+    }
+
+    Result<bool> Exists(const std::string& path) const override {
+        ++probes;
+        if (token_->IsCancelled()) {
+            ++after_cancel;
+        }
+        return LocalFileSystem::Exists(path);
+    }
+
+    Status ListDir(const std::string& path, std::vector<BasicFileStatus>* entries) const override {
+        ++lists;
+        if (token_->IsCancelled()) {
+            ++after_cancel;
+        }
+        auto result = LocalFileSystem::ListDir(path, entries);
+        if (cancel_list) {
+            token_->Cancel();
+        }
+        return result;
+    }
+
+    Status hint_status;
+    bool cancel_hint = false;
+    bool cancel_snapshot = false;
+    bool cancel_list = false;
+    int32_t reads = 0;
+    mutable int32_t probes = 0;
+    mutable int32_t lists = 0;
+    mutable int32_t after_cancel = 0;
+
+ private:
+    ScanCancellationToken* token_;
+};
+}  // namespace
+
+TEST(SnapshotManagerTest, CancelledMetadataEntryPointsDoNotRead) {
+    ScanCancellationToken token;
+    auto fs = std::make_shared<CancellingSnapshotFileSystem>(&token);
+    SnapshotManager manager(fs, GetDataDir() + "/parquet/append_09.db/append_09");
+    token.Cancel();
+    ASSERT_TRUE(manager.LatestSnapshot(&token).status().IsCancelled());
+    ASSERT_TRUE(manager.LatestSnapshotId(&token).status().IsCancelled());
+    ASSERT_TRUE(manager.LatestSnapshotWithSource(&token).status().IsCancelled());
+    ASSERT_TRUE(manager.EarliestSnapshotId(&token).status().IsCancelled());
+    ASSERT_TRUE(manager.LoadSnapshot(1, &token).status().IsCancelled());
+    ASSERT_EQ(fs->reads, 0);
+    ASSERT_EQ(fs->probes, 0);
+    ASSERT_EQ(fs->lists, 0);
+}
+
+TEST(SnapshotManagerTest, CancellationStopsSuccessfulAndFailedHintReads) {
+    for (bool fail_hint : {false, true}) {
+        SCOPED_TRACE(fail_hint);
+        ScanCancellationToken token;
+        auto fs = std::make_shared<CancellingSnapshotFileSystem>(&token);
+        fs->cancel_hint = true;
+        if (fail_hint) {
+            fs->hint_status = Status::IOError("hint unavailable");
+        }
+        SnapshotManager manager(fs, GetDataDir() + "/parquet/append_09.db/append_09");
+        auto result = manager.LatestSnapshot(&token);
+        ASSERT_FALSE(result.ok());
+        if (fail_hint) {
+            ASSERT_TRUE(result.status().IsIOError());
+            ASSERT_EQ(result.status().ToString(), fs->hint_status.ToString());
+        } else {
+            ASSERT_TRUE(result.status().IsCancelled());
+        }
+        ASSERT_TRUE(token.IsCancelled());
+        ASSERT_EQ(fs->reads, 1);
+        ASSERT_EQ(fs->lists, 0);
+        ASSERT_EQ(fs->after_cancel, 0);
+    }
+}
+
+TEST(SnapshotManagerTest, TypedHintCancellationDoesNotBecomeAListingFallback) {
+    ScanCancellationToken token;
+    auto fs = std::make_shared<CancellingSnapshotFileSystem>(&token);
+    fs->hint_status = Status::Cancelled("filesystem cancelled hint read");
+    SnapshotManager manager(fs, GetDataDir() + "/parquet/append_09.db/append_09");
+    auto result = manager.LatestSnapshotId(&token);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsCancelled());
+    ASSERT_FALSE(token.IsCancelled());
+    ASSERT_EQ(fs->reads, 1);
+    ASSERT_EQ(fs->probes, 0);
+    ASSERT_EQ(fs->lists, 0);
+
+    // The absent-token path retains its existing best-effort hint semantics.
+    ASSERT_OK_AND_ASSIGN(auto latest, manager.LatestSnapshotId());
+    ASSERT_EQ(latest, std::optional<int64_t>(5));
+    ASSERT_EQ(fs->reads, 4);
+    ASSERT_EQ(fs->lists, 1);
+
+    fs->hint_status = Status::IOError("best-effort hint unavailable");
+    ASSERT_OK_AND_ASSIGN(auto live_latest, manager.LatestSnapshotId(&token));
+    ASSERT_EQ(live_latest, std::optional<int64_t>(5));
+    ASSERT_FALSE(token.IsCancelled());
+}
+
+TEST(SnapshotManagerTest, CancellationAfterEmptyListingDoesNotReturnNoSnapshot) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ScanCancellationToken token;
+    auto fs = std::make_shared<CancellingSnapshotFileSystem>(&token);
+    fs->cancel_list = true;
+    SnapshotManager manager(fs, dir->Str());
+    ASSERT_TRUE(manager.LatestSnapshot(&token).status().IsCancelled());
+    ASSERT_GT(fs->reads, 0);
+    ASSERT_EQ(fs->lists, 1);
+    ASSERT_EQ(fs->after_cancel, 0);
+}
+
+TEST(SnapshotManagerTest, CancellationAfterSnapshotReadDoesNotPublishSnapshot) {
+    ScanCancellationToken token;
+    auto fs = std::make_shared<CancellingSnapshotFileSystem>(&token);
+    fs->cancel_snapshot = true;
+    SnapshotManager manager(fs, GetDataDir() + "/parquet/append_09.db/append_09");
+    ASSERT_TRUE(manager.LoadSnapshot(1, &token).status().IsCancelled());
+    ASSERT_EQ(fs->reads, 1);
+}
+
+TEST(SnapshotManagerTest, CatalogFallbackRecognizesCancellationBeforeFileSystemWork) {
+    ScanCancellationToken token;
+    auto fs = std::make_shared<CancellingSnapshotFileSystem>(&token);
+    SnapshotManager manager(fs, GetDataDir() + "/parquet/append_09.db/append_09");
+    manager.SetSnapshotLoader([&token]() -> Result<std::optional<Snapshot>> {
+        token.Cancel();
+        return Status::NotImplemented("use filesystem");
+    });
+    ASSERT_TRUE(manager.LatestSnapshot(&token).status().IsCancelled());
+    ASSERT_EQ(fs->reads, 0);
+    ASSERT_EQ(fs->lists, 0);
+    ASSERT_EQ(fs->probes, 0);
+}
+
+TEST(SnapshotManagerTest, CatalogFailureIsNotReplacedByCancellation) {
+    ScanCancellationToken token;
+    auto fs = std::make_shared<CancellingSnapshotFileSystem>(&token);
+    SnapshotManager manager(fs, GetDataDir() + "/parquet/append_09.db/append_09");
+    manager.SetSnapshotLoader([&token]() -> Result<std::optional<Snapshot>> {
+        token.Cancel();
+        return Status::IOError("original catalog failure");
+    });
+    auto result = manager.LatestSnapshot(&token);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsIOError());
+    ASSERT_EQ(fs->reads, 0);
+    ASSERT_EQ(fs->lists, 0);
+    ASSERT_EQ(fs->probes, 0);
+}
 
 TEST(SnapshotManagerTest, TestSnapshotDirectory) {
     auto fs = std::make_shared<LocalFileSystem>();

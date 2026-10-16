@@ -29,6 +29,7 @@
 
 namespace paimon {
 class FileSystem;
+class ScanCancellationToken;
 
 /// Utils for file reading and writing.
 class FileUtils {
@@ -37,21 +38,24 @@ class FileUtils {
     ///
     /// @return Status
     static Status ListVersionedFiles(const std::shared_ptr<FileSystem>& fs, const std::string& dir,
-                                     const std::string& prefix, std::vector<int64_t>* files);
+                                     const std::string& prefix, std::vector<int64_t>* files,
+                                     const ScanCancellationToken* token = nullptr);
 
     /// List original versioned files for the directory.
     ///
     /// @return Status
     static Status ListOriginalVersionedFiles(const std::shared_ptr<FileSystem>& fs,
                                              const std::string& dir, const std::string& prefix,
-                                             std::vector<std::string>* files);
+                                             std::vector<std::string>* files,
+                                             const ScanCancellationToken* token = nullptr);
 
     /// List versioned file status for the directory.
     ///
     /// @return Status
     static Status ListVersionedFileStatus(const std::shared_ptr<FileSystem>& fs,
                                           const std::string& dir, const std::string& prefix,
-                                          std::vector<BasicFileStatus>* file_status_list);
+                                          std::vector<BasicFileStatus>* file_status_list,
+                                          const ScanCancellationToken* token = nullptr);
 };
 
 }  // namespace paimon

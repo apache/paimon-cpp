@@ -24,6 +24,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_utils.h"
@@ -55,32 +56,43 @@ std::string SchemaManager::ToSchemaPath(int64_t schema_id) const {
     return PathUtil::JoinPath(BranchPath(),
                               "/schema/" + std::string(SCHEMA_PREFIX) + std::to_string(schema_id));
 }
-Result<std::optional<std::shared_ptr<TableSchema>>> SchemaManager::Latest() const {
+Result<std::optional<std::shared_ptr<TableSchema>>> SchemaManager::Latest(
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::vector<int64_t> versions;
-    PAIMON_RETURN_NOT_OK(FileUtils::ListVersionedFiles(file_system_, SchemaDirectory(),
-                                                       std::string(SCHEMA_PREFIX), &versions));
+    PAIMON_RETURN_NOT_OK(FileUtils::ListVersionedFiles(
+        file_system_, SchemaDirectory(), std::string(SCHEMA_PREFIX), &versions, token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (versions.empty()) {
         return std::optional<std::shared_ptr<TableSchema>>();
     }
     int64_t max_schema_id = versions[0];
     for (const auto& version : versions) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         max_schema_id = std::max(max_schema_id, version);
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema, ReadSchema(max_schema_id));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema, ReadSchema(max_schema_id, token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return std::optional<std::shared_ptr<TableSchema>>(schema);
 }
 
-Result<std::shared_ptr<TableSchema>> SchemaManager::ReadSchema(int64_t schema_id) const {
+Result<std::shared_ptr<TableSchema>> SchemaManager::ReadSchema(
+    int64_t schema_id, const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     auto cached = schema_cache_.Find(schema_id);
     if (cached) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         return cached.value();
     }
     auto path = ToSchemaPath(schema_id);
     std::string content;
     PAIMON_RETURN_NOT_OK(file_system_->ReadFile(path, &content));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
                            TableSchema::CreateFromJson(content));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     schema_cache_.Insert(schema_id, schema);
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return schema;
 }
 

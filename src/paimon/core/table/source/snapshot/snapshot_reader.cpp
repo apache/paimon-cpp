@@ -40,20 +40,28 @@
 
 namespace paimon {
 Result<std::shared_ptr<Plan>> SnapshotReader::Read() const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan::RawPlan> raw_plan, scan_->CreatePlan());
     const std::optional<Snapshot>& snapshot = raw_plan->GetSnapshot();
-    FileStoreScan::RawPlan::GroupFiles files =
-        FileStoreScan::RawPlan::GroupByPartFiles(raw_plan->Files(FileKind::Add()));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> add_entries,
+                           raw_plan->Files(FileKind::Add(), GetCancellationToken()));
+    PAIMON_ASSIGN_OR_RAISE(
+        FileStoreScan::RawPlan::GroupFiles files,
+        FileStoreScan::RawPlan::GroupByPartFiles(std::move(add_entries), GetCancellationToken()));
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::shared_ptr<Split>> data_splits,
         GenerateSplits(snapshot, scan_mode_ != ScanMode::ALL, split_generator_, std::move(files)));
-    return std::make_shared<PlanImpl>(raw_plan->SnapshotId(), data_splits);
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
+    auto plan = std::make_shared<PlanImpl>(raw_plan->SnapshotId(), data_splits);
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
+    return plan;
 }
 
 Result<std::vector<std::shared_ptr<Split>>> SnapshotReader::GenerateSplits(
     const std::optional<Snapshot>& snapshot, bool is_streaming,
     const std::unique_ptr<SplitGenerator>& split_generator,
     FileStoreScan::RawPlan::GroupFiles&& grouped_manifest_entries) const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     std::vector<std::shared_ptr<Split>> splits;
     // Read deletion indexes at once to reduce file IO
     std::unordered_map<std::pair<BinaryRow, int32_t>, std::vector<std::shared_ptr<IndexFileMeta>>>
@@ -69,13 +77,16 @@ Result<std::vector<std::shared_ptr<Split>>> SnapshotReader::GenerateSplits(
         }
     }
     for (auto& [partition, bucket_map] : grouped_manifest_entries) {
+        PAIMON_RETURN_NOT_OK(CheckCancelled());
         for (auto& [bucket, manifest_entries] : bucket_map) {
+            PAIMON_RETURN_NOT_OK(CheckCancelled());
             // collect data file metas
             assert(!manifest_entries.empty());
             auto total_buckets = manifest_entries[0].TotalBuckets();
             std::vector<std::shared_ptr<DataFileMeta>> files;
             files.reserve(manifest_entries.size());
             for (auto& entry : manifest_entries) {
+                PAIMON_RETURN_NOT_OK(CheckCancelled());
                 files.emplace_back(std::move(entry.File()));
             }
             std::vector<SplitGenerator::SplitGroup> split_groups;
@@ -83,10 +94,12 @@ Result<std::vector<std::shared_ptr<Split>>> SnapshotReader::GenerateSplits(
                 PAIMON_ASSIGN_OR_RAISE(split_groups,
                                        split_generator->SplitForStreaming(std::move(files)));
             } else {
-                PAIMON_ASSIGN_OR_RAISE(split_groups,
-                                       split_generator->SplitForBatch(std::move(files)));
+                PAIMON_ASSIGN_OR_RAISE(split_groups, split_generator->SplitForBatchWithCancellation(
+                                                         std::move(files), GetCancellationToken()));
             }
+            PAIMON_RETURN_NOT_OK(CheckCancelled());
             for (auto& split_group : split_groups) {
+                PAIMON_RETURN_NOT_OK(CheckCancelled());
                 std::vector<std::shared_ptr<DataFileMeta>>& data_files = split_group.files;
                 PAIMON_ASSIGN_OR_RAISE(std::string bucket_path,
                                        path_factory_->BucketPath(partition, bucket));
@@ -106,10 +119,12 @@ Result<std::vector<std::shared_ptr<Split>>> SnapshotReader::GenerateSplits(
                     builder.WithDataDeletionFiles(deletion_files);
                 }
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataSplit> data_split, builder.Build());
+                PAIMON_RETURN_NOT_OK(CheckCancelled());
                 splits.emplace_back(data_split);
             }
         }
     }
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     return splits;
 }
 

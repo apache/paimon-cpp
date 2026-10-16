@@ -30,11 +30,14 @@
 #include "arrow/array/util.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
 #include "arrow/compute/cast.h"
 #include "arrow/type.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/scan_cancellation.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -42,34 +45,68 @@ class MemoryPool;
 
 ManifestMetaReader::ManifestMetaReader(std::unique_ptr<BatchReader>&& reader,
                                        const std::shared_ptr<arrow::DataType>& target_type,
-                                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
-    : reader_(std::move(reader)), target_type_(target_type), pool_(arrow_pool) {}
+                                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+                                       const ScanCancellationToken* token)
+    : reader_(std::move(reader)), target_type_(target_type), pool_(arrow_pool), token_(token) {}
 
 Result<BatchReader::ReadBatch> ManifestMetaReader::NextBatch() {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token_));
     PAIMON_ASSIGN_OR_RAISE(ReadBatch src_result, reader_->NextBatch());
     auto& c_array = src_result.first;
     auto& c_schema = src_result.second;
+    ScopeGuard release_source([&]() {
+        if (c_array && c_array->release) {
+            ArrowArrayRelease(c_array.get());
+        }
+        if (c_schema && c_schema->release) {
+            ArrowSchemaRelease(c_schema.get());
+        }
+    });
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token_));
     if (!c_array) {
         return BatchReader::MakeEofBatch();
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token_));
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> target_array,
-                           AlignArrayWithSchema(arrow_array, target_type_, pool_.get()));
+                           AlignArrayWithSchema(arrow_array, target_type_, pool_.get(), token_));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token_));
     std::unique_ptr<ArrowArray> target_c_arrow_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> target_c_schema = std::make_unique<ArrowSchema>();
+    ScopeGuard release_target([&]() {
+        if (target_c_arrow_array && target_c_arrow_array->release) {
+            ArrowArrayRelease(target_c_arrow_array.get());
+        }
+        if (target_c_schema && target_c_schema->release) {
+            ArrowSchemaRelease(target_c_schema.get());
+        }
+    });
 
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*target_array, target_c_arrow_array.get(), target_c_schema.get()));
     PAIMON_RETURN_NOT_OK(
         AddArrowArrayLifetime(target_c_arrow_array.get(), target_c_schema.get(), pool_));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token_));
     return std::make_pair(std::move(target_c_arrow_array), std::move(target_c_schema));
 }
 
 Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
     const std::shared_ptr<arrow::Array>& src_array,
-    const std::shared_ptr<arrow::DataType>& target_type, arrow::MemoryPool* pool) {
+    const std::shared_ptr<arrow::DataType>& target_type, arrow::MemoryPool* pool,
+    const ScanCancellationToken* token) {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> result,
+                           AlignArrayWithSchemaImpl(src_array, target_type, pool, token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+    return result;
+}
+
+Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchemaImpl(
+    const std::shared_ptr<arrow::Array>& src_array,
+    const std::shared_ptr<arrow::DataType>& target_type, arrow::MemoryPool* pool,
+    const ScanCancellationToken* token) {
     if (!src_array || !target_type) {
         return Status::Invalid("Align array with schema failed, array or target type is null");
     }
@@ -83,9 +120,10 @@ Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
                     "type");
             }
             auto list_target_type = checked_pointer_cast<arrow::ListType>(target_type);
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> converted,
-                                   AlignArrayWithSchema(list_src_array->values(),
-                                                        list_target_type->value_type(), pool));
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<arrow::Array> converted,
+                AlignArrayWithSchema(list_src_array->values(), list_target_type->value_type(), pool,
+                                     token));
             auto new_list_type = std::make_shared<arrow::ListType>(converted->type());
             return std::make_shared<arrow::ListArray>(
                 new_list_type, list_src_array->length(), list_src_array->value_offsets(), converted,
@@ -100,12 +138,12 @@ Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
                     "type");
             }
             auto map_target_type = checked_pointer_cast<arrow::MapType>(target_type);
-            PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<arrow::Array> key_converted,
-                AlignArrayWithSchema(map_src_array->keys(), map_target_type->key_type(), pool));
-            PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<arrow::Array> value_converted,
-                AlignArrayWithSchema(map_src_array->items(), map_target_type->item_type(), pool));
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> key_converted,
+                                   AlignArrayWithSchema(map_src_array->keys(),
+                                                        map_target_type->key_type(), pool, token));
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> value_converted,
+                                   AlignArrayWithSchema(map_src_array->items(),
+                                                        map_target_type->item_type(), pool, token));
             auto new_map_type =
                 std::make_shared<arrow::MapType>(key_converted->type(), value_converted->type());
             return std::make_shared<arrow::MapArray>(
@@ -126,6 +164,7 @@ Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
             field_names.reserve(target_type->num_fields());
             converted_array.reserve(target_type->num_fields());
             for (int32_t i = 0; i < struct_target_type->num_fields(); i++) {
+                PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
                 const auto& target_field = struct_target_type->field(i);
                 const std::string& target_name = target_field->name();
                 field_names.push_back(target_name);
@@ -133,16 +172,18 @@ Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
                 if (src_field) {
                     PAIMON_ASSIGN_OR_RAISE(
                         std::shared_ptr<arrow::Array> converted,
-                        AlignArrayWithSchema(src_field, target_field->type(), pool));
+                        AlignArrayWithSchema(src_field, target_field->type(), pool, token));
                     converted_array.push_back(converted);
                 } else {
                     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                         std::shared_ptr<arrow::Array> null_array,
                         arrow::MakeArrayOfNull(target_field->type(), struct_src_array->length(),
                                                pool));
+                    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
                     converted_array.push_back(null_array);
                 }
             }
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
             PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                 std::shared_ptr<arrow::Array> arrow_array,
                 arrow::StructArray::Make(

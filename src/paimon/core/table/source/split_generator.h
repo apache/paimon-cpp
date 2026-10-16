@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/result.h"
 
@@ -69,6 +70,17 @@ class SplitGenerator {
     virtual ~SplitGenerator() = default;
     virtual Result<std::vector<SplitGroup>> SplitForBatch(
         std::vector<std::shared_ptr<DataFileMeta>>&& files) const = 0;
+
+    virtual Result<std::vector<SplitGroup>> SplitForBatchWithCancellation(
+        std::vector<std::shared_ptr<DataFileMeta>>&& files,
+        const ScanCancellationToken* token) const {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+        if (token) {
+            return Status::NotImplemented(
+                "split generator does not support cooperative cancellation");
+        }
+        return SplitForBatch(std::move(files));
+    }
 
     virtual Result<std::vector<SplitGroup>> SplitForStreaming(
         std::vector<std::shared_ptr<DataFileMeta>>&& files) const = 0;

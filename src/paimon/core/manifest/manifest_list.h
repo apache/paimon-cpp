@@ -66,10 +66,10 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @param snapshot The input snapshot.
     /// @param manifests The vector to store the manifest file metadata.
     /// @return Status indicating whether the operation was successful or not.
-    Status ReadAllManifests(const Snapshot& snapshot,
-                            std::vector<ManifestFileMeta>* manifests) const {
-        PAIMON_RETURN_NOT_OK(ReadDataManifests(snapshot, manifests));
-        return ReadChangelogManifests(snapshot, manifests);
+    Status ReadAllManifests(const Snapshot& snapshot, std::vector<ManifestFileMeta>* manifests,
+                            const ScanCancellationToken* token = nullptr) const {
+        PAIMON_RETURN_NOT_OK(ReadDataManifests(snapshot, manifests, token));
+        return ReadChangelogManifests(snapshot, manifests, token);
     }
 
     /// Return a `ManifestFileMeta` for each data manifest in this snapshot.
@@ -77,10 +77,10 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @param snapshot The input snapshot.
     /// @param manifests The vector to store the manifest file metadata.
     /// @return Status indicating whether the operation was successful or not.
-    Status ReadDataManifests(const Snapshot& snapshot,
-                             std::vector<ManifestFileMeta>* manifests) const {
-        PAIMON_RETURN_NOT_OK(ReadBaseManifests(snapshot, manifests));
-        return ReadDeltaManifests(snapshot, manifests);
+    Status ReadDataManifests(const Snapshot& snapshot, std::vector<ManifestFileMeta>* manifests,
+                             const ScanCancellationToken* token = nullptr) const {
+        PAIMON_RETURN_NOT_OK(ReadBaseManifests(snapshot, manifests, token));
+        return ReadDeltaManifests(snapshot, manifests, token);
     }
 
     /// Return a `ManifestFileMeta` for each base manifest in this snapshot.
@@ -88,10 +88,10 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @param snapshot The input snapshot.
     /// @param manifests The vector to store the manifest file metadata.
     /// @return Status indicating whether the operation was successful or not.
-    Status ReadBaseManifests(const Snapshot& snapshot,
-                             std::vector<ManifestFileMeta>* manifests) const {
+    Status ReadBaseManifests(const Snapshot& snapshot, std::vector<ManifestFileMeta>* manifests,
+                             const ScanCancellationToken* token = nullptr) const {
         return Read(snapshot.BaseManifestList(), /*filter=*/nullptr,
-                    snapshot.BaseManifestListSize(), manifests);
+                    snapshot.BaseManifestListSize(), manifests, token);
     }
 
     /// Return a `ManifestFileMeta` for each delta manifest in this snapshot.
@@ -99,10 +99,10 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @param snapshot The input snapshot.
     /// @param manifests The vector to store the manifest file metadata.
     /// @return Status indicating whether the operation was successful or not.
-    Status ReadDeltaManifests(const Snapshot& snapshot,
-                              std::vector<ManifestFileMeta>* manifests) const {
+    Status ReadDeltaManifests(const Snapshot& snapshot, std::vector<ManifestFileMeta>* manifests,
+                              const ScanCancellationToken* token = nullptr) const {
         return Read(snapshot.DeltaManifestList(), /*filter=*/nullptr,
-                    snapshot.DeltaManifestListSize(), manifests);
+                    snapshot.DeltaManifestListSize(), manifests, token);
     }
 
     /// Return a `ManifestFileMeta` for each changelog manifest in this snapshot.
@@ -111,12 +111,14 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @param manifests The vector to store the manifest file metadata.
     /// @return Status indicating whether the operation was successful or not.
     Status ReadChangelogManifests(const Snapshot& snapshot,
-                                  std::vector<ManifestFileMeta>* manifests) const {
+                                  std::vector<ManifestFileMeta>* manifests,
+                                  const ScanCancellationToken* token = nullptr) const {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         const std::optional<std::string>& changelog_manifest_list =
             snapshot.ChangelogManifestList();
         if (changelog_manifest_list) {
             return Read(changelog_manifest_list.value(), /*filter=*/nullptr,
-                        snapshot.ChangelogManifestListSize(), manifests);
+                        snapshot.ChangelogManifestListSize(), manifests, token);
         } else {
             return Status::OK();
         }

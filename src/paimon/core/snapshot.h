@@ -35,6 +35,7 @@
 
 namespace paimon {
 class FileSystem;
+class ScanCancellationToken;
 
 // This file is the entrance to all data committed at some specific time point.
 class Snapshot : public Jsonizable<Snapshot> {
@@ -242,8 +243,8 @@ class Snapshot : public Jsonizable<Snapshot> {
 
     void FromJson(const rapidjson::Value& obj) noexcept(false) override;
 
-    static Result<Snapshot> FromPath(const std::shared_ptr<FileSystem>& fs,
-                                     const std::string& path);
+    static Result<Snapshot> FromPath(const std::shared_ptr<FileSystem>& fs, const std::string& path,
+                                     const ScanCancellationToken* token = nullptr);
 
  private:
     // version of snapshot

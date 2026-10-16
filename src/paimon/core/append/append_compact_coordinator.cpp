@@ -256,7 +256,7 @@ Result<LinkedHashMap<BinaryRow, std::vector<std::shared_ptr<DataFileMeta>>>> Sca
     }
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan::RawPlan> plan, scan->CreatePlan());
-    std::vector<ManifestEntry> add_entries = plan->Files(FileKind::Add());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> add_entries, plan->Files(FileKind::Add()));
 
     int64_t compaction_file_size = core_options.GetCompactionFileSize(/*has_primary_key=*/false);
     LinkedHashMap<BinaryRow, std::vector<std::shared_ptr<DataFileMeta>>> partition_files;

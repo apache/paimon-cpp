@@ -38,6 +38,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/meta_to_arrow_array_converter.h"
 #include "paimon/core/utils/manifest_meta_reader.h"
@@ -70,10 +71,12 @@ class ObjectsFile {
     ///                  std::nullopt when the length is not known; the read then discovers it
     ///                  itself.
     Status Read(const std::string& file_name, const std::function<Result<bool>(const T&)>& filter,
-                std::optional<int64_t> file_size, std::vector<T>* result) const;
+                std::optional<int64_t> file_size, std::vector<T>* result,
+                const ScanCancellationToken* token = nullptr) const;
     Status ReadIfFileExist(const std::string& file_name,
                            const std::function<Result<bool>(const T&)>& filter,
-                           std::optional<int64_t> file_size, std::vector<T>* result) const;
+                           std::optional<int64_t> file_size, std::vector<T>* result,
+                           const ScanCancellationToken* token = nullptr) const;
 
     void DeleteQuietly(const std::string& file_name) {
         std::string path = path_factory_->ToPath(file_name);
@@ -97,7 +100,8 @@ class ObjectsFile {
     Status ReadArrowBatches(
         const std::string& file_name, std::optional<int64_t> file_size,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
+        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader,
+        const ScanCancellationToken* token = nullptr) const;
 
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
@@ -121,7 +125,8 @@ class ObjectsFile {
     Status ReadUncachedArrowBatches(
         const std::string& file_name, std::optional<int64_t> file_size,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
+        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader,
+        const ScanCancellationToken* token = nullptr) const;
 
     /// Opens the file for reading, handing over the length when the caller already has it.
     Result<std::unique_ptr<InputStream>> OpenForRead(const std::string& file_path,
@@ -152,12 +157,14 @@ ObjectsFile<T>::ObjectsFile(const std::shared_ptr<FileSystem>& file_system,
 template <typename T>
 Status ObjectsFile<T>::ReadIfFileExist(const std::string& file_name,
                                        const std::function<Result<bool>(const T&)>& filter,
-                                       std::optional<int64_t> file_size,
-                                       std::vector<T>* result) const {
+                                       std::optional<int64_t> file_size, std::vector<T>* result,
+                                       const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::string file_path = path_factory_->ToPath(file_name);
     PAIMON_ASSIGN_OR_RAISE(bool path_exist, file_system_->Exists(file_path));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (path_exist) {
-        return Read(file_name, filter, file_size, result);
+        return Read(file_name, filter, file_size, result, token);
     }
     return Status::OK();
 }
@@ -165,18 +172,25 @@ Status ObjectsFile<T>::ReadIfFileExist(const std::string& file_name,
 template <typename T>
 Status ObjectsFile<T>::Read(const std::string& file_name,
                             const std::function<Result<bool>(const T&)>& filter,
-                            std::optional<int64_t> file_size, std::vector<T>* result) const {
+                            std::optional<int64_t> file_size, std::vector<T>* result,
+                            const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return ReadArrowBatches(
         file_name, file_size,
-        [this, &filter, result](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {
+        [this, &filter, result,
+         token](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
             result->reserve(result->size() + struct_array->length());
             const arrow::ArrayVector& fields = struct_array->fields();
             ColumnarRow row(fields, pool_, /*row_id=*/0);
             for (int64_t i = 0; i < struct_array->length(); i++) {
+                PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
                 row.SetRowId(i);
                 PAIMON_ASSIGN_OR_RAISE(T obj, serializer_->FromRow(row));
+                PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
                 if (filter) {
                     PAIMON_ASSIGN_OR_RAISE(bool filter_res, filter(obj));
+                    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
                     if (filter_res) {
                         result->push_back(std::move(obj));
                     }
@@ -184,36 +198,62 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
                     result->push_back(std::move(obj));
                 }
             }
-            return Status::OK();
+            return CheckScanCancellation(token);
         },
-        /*prepare_reader=*/nullptr);
+        /*prepare_reader=*/nullptr, token);
 }
 
 template <typename T>
 Status ObjectsFile<T>::ReadUncachedArrowBatches(
     const std::string& file_name, std::optional<int64_t> file_size,
     const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const {
+    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader,
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::string file_path = path_factory_->ToPath(file_name);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> file_input_stream,
                            OpenForRead(file_path, file_size));
+    ScopeGuard close_stream([&]() {
+        if (token) {
+            (void)file_input_stream->Close();
+        }
+    });
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> batch_reader,
                            reader_builder_->Build(file_input_stream));
+    ScopeGuard close_unwrapped_reader([&]() {
+        if (token && batch_reader) {
+            batch_reader->Close();
+        }
+    });
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (prepare_reader) {
         PAIMON_RETURN_NOT_OK(prepare_reader(&batch_reader));
     }
-    auto reader = std::make_unique<ManifestMetaReader>(std::move(batch_reader),
-                                                       serializer_->GetDataType(), arrow_pool_);
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+    auto reader = std::make_unique<ManifestMetaReader>(
+        std::move(batch_reader), serializer_->GetDataType(), arrow_pool_, token);
     while (true) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch arrow_array, reader->NextBatch());
         auto& c_array = arrow_array.first;
         auto& c_schema = arrow_array.second;
+        ScopeGuard release_roots([&]() {
+            if (c_array && c_array->release) {
+                ArrowArrayRelease(c_array.get());
+            }
+            if (c_schema && c_schema->release) {
+                ArrowSchemaRelease(c_schema.get());
+            }
+        });
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         if (!c_array) {
             break;
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> typed_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         if (!typed_array || typed_array->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid(fmt::format("file {}, cannot cast to struct array", file_name));
         }
@@ -221,7 +261,13 @@ Status ObjectsFile<T>::ReadUncachedArrowBatches(
             checked_pointer_cast<arrow::StructArray>(typed_array);
         PAIMON_RETURN_NOT_OK(consumer(struct_array));
     }
-    return Status::OK();
+    if (token) {
+        reader.reset();
+        Status close_status = file_input_stream->Close();
+        close_stream.Release();
+        PAIMON_RETURN_NOT_OK(close_status);
+    }
+    return CheckScanCancellation(token);
 }
 
 template <typename T>
@@ -313,9 +359,11 @@ template <typename T>
 Status ObjectsFile<T>::ReadArrowBatches(
     const std::string& file_name, std::optional<int64_t> file_size,
     const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const {
-    if (!cache_) {
-        return ReadUncachedArrowBatches(file_name, file_size, consumer, prepare_reader);
+    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader,
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+    if (!cache_ || token) {
+        return ReadUncachedArrowBatches(file_name, file_size, consumer, prepare_reader, token);
     }
     const std::string path = path_factory_->ToPath(file_name);
     auto key = CacheKey::ForKind(path, /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);

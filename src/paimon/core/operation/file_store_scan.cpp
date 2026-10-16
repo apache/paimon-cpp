@@ -98,8 +98,13 @@ Result<bool> FileStoreScan::TestFileIndex(const std::shared_ptr<Predicate>& pred
                                           const std::shared_ptr<DataFileMeta>& meta,
                                           const std::shared_ptr<SimpleStatsEvolution>& evolution,
                                           const std::shared_ptr<TableSchema>& data_schema) const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     if (!core_options_.FileIndexReadEnabled() || meta->embedded_index == nullptr) {
         return true;
+    }
+    if (cancellation_token_) {
+        return Status::NotImplemented(
+            "cooperative scan cancellation does not support embedded file-index evaluation");
     }
 
     std::shared_ptr<Predicate> data_predicate = predicate;
@@ -127,30 +132,42 @@ Result<bool> FileStoreScan::TestFileIndex(const std::shared_ptr<Predicate>& pred
     return index_result->IsRemain();
 }
 
-std::vector<ManifestEntry> FileStoreScan::RawPlan::Files(const FileKind& kind) {
+Result<std::vector<ManifestEntry>> FileStoreScan::RawPlan::Files(
+    const FileKind& kind, const ScanCancellationToken* token) {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::vector<ManifestEntry> entries = Files();
     std::vector<ManifestEntry> filtered_entries;
     filtered_entries.reserve(entries.size());
     for (auto& entry : entries) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         if (entry.Kind() == kind) {
             filtered_entries.emplace_back(std::move(entry));
         }
     }
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return filtered_entries;
 }
 
-FileStoreScan::RawPlan::GroupFiles FileStoreScan::RawPlan::GroupByPartFiles(
-    std::vector<ManifestEntry>&& files) {
+Result<FileStoreScan::RawPlan::GroupFiles> FileStoreScan::RawPlan::GroupByPartFiles(
+    std::vector<ManifestEntry>&& files, const ScanCancellationToken* token) {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     LinkedHashMap<BinaryRow, LinkedHashMap<int32_t, std::vector<ManifestEntry>>> group_by;
     for (auto& entry : files) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         auto& bucket_map = group_by[entry.Partition()];
         auto& file_list = bucket_map[entry.Bucket()];
         file_list.emplace_back(std::move(entry));
     }
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return group_by;
 }
 
 Result<std::vector<PartitionEntry>> FileStoreScan::ReadPartitionEntries() const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
+    if (cancellation_token_) {
+        return Status::NotImplemented(
+            "cooperative scan cancellation supports batch plans, not partition-entry scans");
+    }
     std::optional<Snapshot> snapshot;
     std::vector<ManifestFileMeta> all_manifest_file_metas;
     std::vector<ManifestFileMeta> filtered_manifest_file_metas;
@@ -173,6 +190,7 @@ Result<std::vector<PartitionEntry>> FileStoreScan::ReadPartitionEntries() const 
 }
 
 Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     Duration duration;
     Duration manifest_read_duration;
     metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_LOAD_DURATION, 0);
@@ -203,6 +221,7 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         std::vector<ManifestEntry> filtered_entries;
         filtered_entries.reserve(manifest_entries.size());
         for (auto& entry : manifest_entries) {
+            PAIMON_RETURN_NOT_OK(CheckCancelled());
             PAIMON_ASSIGN_OR_RAISE(bool keep, FilterManifestEntry(entry));
             if (keep) {
                 filtered_entries.emplace_back(std::move(entry));
@@ -210,17 +229,18 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         }
         manifest_entries = std::move(filtered_entries);
     } else {
-        lazy_decode_scanned_rows = std::accumulate(
-            filtered_manifest_file_metas.begin(), filtered_manifest_file_metas.end(), uint64_t{0},
-            [](uint64_t sum, const ManifestFileMeta& meta) {
-                return sum + static_cast<uint64_t>(meta.NumAddedFiles() + meta.NumDeletedFiles());
-            });
+        for (const auto& meta : filtered_manifest_file_metas) {
+            PAIMON_RETURN_NOT_OK(CheckCancelled());
+            lazy_decode_scanned_rows +=
+                static_cast<uint64_t>(meta.NumAddedFiles() + meta.NumDeletedFiles());
+        }
         PAIMON_RETURN_NOT_OK(ReadManifestEntries(filtered_manifest_file_metas, &manifest_entries));
     }
     const uint64_t lazy_decode_materialized_rows = manifest_entries.size();
     const uint64_t manifest_read_duration_ms = manifest_read_duration.Get();
     PAIMON_ASSIGN_OR_RAISE(manifest_entries,
                            PostFilterManifestEntries(std::move(manifest_entries)));
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
 
     if (WholeBucketFilterEnabled()) {
         // We group files by bucket here, and filter them by the whole bucket filter.
@@ -230,29 +250,33 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         // we use LinkedHashMap to avoid disorder
         LinkedHashMap<std::pair<BinaryRow, int32_t>, std::vector<ManifestEntry>> grouped_entries;
         for (auto& entry : manifest_entries) {
+            PAIMON_RETURN_NOT_OK(CheckCancelled());
             auto key = std::make_pair(entry.Partition(), entry.Bucket());
             grouped_entries[key].push_back(std::move(entry));
         }
         manifest_entries.clear();
         for (const auto& [_, entries] : grouped_entries) {
+            PAIMON_RETURN_NOT_OK(CheckCancelled());
             auto tmp_entries = entries;
             PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> filtered_bucket_entries,
                                    FilterWholeBucketByStats(std::move(tmp_entries)));
             for (auto& entry : filtered_bucket_entries) {
+                PAIMON_RETURN_NOT_OK(CheckCancelled());
                 manifest_entries.emplace_back(std::move(entry));
             }
         }
     }
     if (drop_stats_) {
         for (ManifestEntry& entry : manifest_entries) {
+            PAIMON_RETURN_NOT_OK(CheckCancelled());
             entry = entry.CopyWithoutStats();
         }
     }
-    const int64_t all_data_files = std::accumulate(
-        all_manifest_file_metas.begin(), all_manifest_file_metas.end(), int64_t{0},
-        [](const int64_t sum, const ManifestFileMeta& manifest_file_meta) {
-            return sum + manifest_file_meta.NumAddedFiles() - manifest_file_meta.NumDeletedFiles();
-        });
+    int64_t all_data_files = 0;
+    for (const auto& meta : all_manifest_file_metas) {
+        PAIMON_RETURN_NOT_OK(CheckCancelled());
+        all_data_files += meta.NumAddedFiles() - meta.NumDeletedFiles();
+    }
     const uint64_t scan_duration_ms = duration.Get();
     metrics_->SetCounter(ScanMetrics::LAST_SCAN_DURATION, scan_duration_ms);
     metrics_->ObserveHistogram(ScanMetrics::SCAN_DURATION, static_cast<double>(scan_duration_ms));
@@ -280,21 +304,26 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
     metrics_->SetCounter(ScanMetrics::LAST_LAZY_DECODE_SCANNED_ROWS, lazy_decode_scanned_rows);
     metrics_->SetCounter(ScanMetrics::LAST_LAZY_DECODE_MATERIALIZED_ROWS,
                          lazy_decode_materialized_rows);
-    return std::make_shared<FileStoreScan::RawPlan>(scan_mode_, snapshot,
-                                                    std::move(manifest_entries));
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
+    auto plan =
+        std::make_shared<FileStoreScan::RawPlan>(scan_mode_, snapshot, std::move(manifest_entries));
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
+    return plan;
 }
 
 Status FileStoreScan::ReadManifests(std::optional<Snapshot>* snapshot_ptr,
                                     std::vector<ManifestFileMeta>* all_manifests_ptr,
                                     std::vector<ManifestFileMeta>* filter_manifests_ptr) const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     auto& snapshot = *snapshot_ptr;
     auto& all_manifests = *all_manifests_ptr;
     auto& filtered_manifests = *filter_manifests_ptr;
     if (specified_snapshot_ != std::nullopt) {
         snapshot = specified_snapshot_;
     } else {
-        PAIMON_ASSIGN_OR_RAISE(snapshot, snapshot_manager_->LatestSnapshot());
+        PAIMON_ASSIGN_OR_RAISE(snapshot, snapshot_manager_->LatestSnapshot(GetCancellationToken()));
     }
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     if (snapshot == std::nullopt) {
         all_manifests = std::vector<ManifestFileMeta>();
         filtered_manifests = std::vector<ManifestFileMeta>();
@@ -302,18 +331,24 @@ Status FileStoreScan::ReadManifests(std::optional<Snapshot>* snapshot_ptr,
     }
     PAIMON_RETURN_NOT_OK(ReadManifestsWithSnapshot(snapshot.value(), &all_manifests));
     for (const auto& meta : all_manifests) {
+        PAIMON_RETURN_NOT_OK(CheckCancelled());
         PAIMON_ASSIGN_OR_RAISE(bool filter_meta_result, FilterManifestFileMeta(meta));
         if (filter_meta_result) {
             filtered_manifests.push_back(meta);
         }
     }
-    return Status::OK();
+    return CheckCancelled();
 }
 
 Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
                                                 std::vector<ManifestFileMeta>* manifests) const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     switch (scan_mode_) {
         case ScanMode::ALL: {
+            if (cancellation_token_) {
+                return manifest_list_->ReadDataManifests(snapshot, manifests,
+                                                         GetCancellationToken());
+            }
             // The base and the delta manifest list are two independent files and neither read
             // depends on the other, so issue both together instead of paying the two metadata
             // round trips one after the other. The result keeps the base-then-delta order that
@@ -341,9 +376,10 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
             return Status::OK();
         }
         case ScanMode::DELTA:
-            return manifest_list_->ReadDeltaManifests(snapshot, manifests);
+            return manifest_list_->ReadDeltaManifests(snapshot, manifests, GetCancellationToken());
         case ScanMode::CHANGELOG:
-            return manifest_list_->ReadChangelogManifests(snapshot, manifests);
+            return manifest_list_->ReadChangelogManifests(snapshot, manifests,
+                                                          GetCancellationToken());
         default:
             return Status::NotImplemented("Unknown scan mode ",
                                           std::to_string(static_cast<int32_t>(scan_mode_)));
@@ -353,8 +389,10 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
 Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manifest_metas,
                                       std::vector<ManifestEntry>* manifest_entries,
                                       bool apply_scan_filter) const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
     for (const auto& meta : manifest_metas) {
+        PAIMON_RETURN_NOT_OK(CheckCancelled());
         auto read_meta_task = [this, meta,
                                apply_scan_filter]() -> Result<std::vector<ManifestEntry>> {
             std::vector<ManifestEntry> tmp_entries;
@@ -362,11 +400,23 @@ Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manif
                 PAIMON_RETURN_NOT_OK(ReadManifestFileMeta(meta, &tmp_entries));
             } else {
                 PAIMON_RETURN_NOT_OK(manifest_file_->Read(meta.FileName(), /*filter=*/nullptr,
-                                                          meta.FileSize(), &tmp_entries));
+                                                          meta.FileSize(), &tmp_entries,
+                                                          GetCancellationToken()));
             }
             return tmp_entries;
         };
+        if (cancellation_token_) {
+            PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> entries, read_meta_task());
+            for (auto& entry : entries) {
+                PAIMON_RETURN_NOT_OK(CheckCancelled());
+                manifest_entries->emplace_back(std::move(entry));
+            }
+            continue;
+        }
         futures.push_back(Via(executor_.get(), read_meta_task));
+    }
+    if (cancellation_token_) {
+        return CheckCancelled();
     }
 
     // sequential execute
@@ -537,20 +587,24 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
 }
 
 Status FileStoreScan::MergeLiveEntries(const std::vector<ManifestEntry>& unmerged_entries,
-                                       std::vector<ManifestEntry>* live_entries) {
+                                       std::vector<ManifestEntry>* live_entries,
+                                       const ScanCancellationToken* token) {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::unordered_set<FileEntry::Identifier> deleted_entries;
     for (const auto& entry : unmerged_entries) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         if (entry.Kind() == FileKind::Delete()) {
             deleted_entries.insert(entry.CreateIdentifier());
         }
     }
     for (const auto& entry : unmerged_entries) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         if (entry.Kind() == FileKind::Add() &&
             deleted_entries.find(entry.CreateIdentifier()) == deleted_entries.end()) {
             live_entries->push_back(entry);
         }
     }
-    return Status::OK();
+    return CheckScanCancellation(token);
 }
 
 Status FileStoreScan::ReadAndMergeFileEntries(const std::vector<ManifestFileMeta>& manifest_metas,
@@ -558,7 +612,7 @@ Status FileStoreScan::ReadAndMergeFileEntries(const std::vector<ManifestFileMeta
     std::vector<ManifestEntry> unmerged_entries;
     PAIMON_RETURN_NOT_OK(
         ReadFileEntries(manifest_metas, &unmerged_entries, /*apply_scan_filter=*/true));
-    return MergeLiveEntries(unmerged_entries, merged_entries);
+    return MergeLiveEntries(unmerged_entries, merged_entries, GetCancellationToken());
 }
 
 Status FileStoreScan::ReadAndNoMergeFileEntries(
@@ -619,6 +673,7 @@ bool FileStoreScan::FilterManifestByRowRanges(const ManifestFileMeta& manifest) 
 
 Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
                                            std::vector<ManifestEntry>* entries) const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     if (row_range_index_ && core_options_.DataEvolutionEnabled() &&
         core_options_.ScanManifestEntryLazyDecodeEnabled()) {
         return manifest_file_->ReadRowRangeEntries(
@@ -632,15 +687,18 @@ Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
     PAIMON_RETURN_NOT_OK(manifest_file_->Read(
         manifest.FileName(),
         [this](const ManifestEntry& entry) -> Result<bool> { return FilterManifestEntry(entry); },
-        manifest.FileSize(), &unfiltered_entries));
+        manifest.FileSize(), &unfiltered_entries, GetCancellationToken()));
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     entries->reserve(entries->size() + unfiltered_entries.size());
     for (auto& entry : unfiltered_entries) {
+        PAIMON_RETURN_NOT_OK(CheckCancelled());
         entries->emplace_back(std::move(entry));
     }
-    return Status::OK();
+    return CheckCancelled();
 }
 
 Result<bool> FileStoreScan::FilterManifestEntry(const ManifestEntry& entry) const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     if (partition_filter_) {
         PAIMON_ASSIGN_OR_RAISE(bool res,
                                partition_filter_->Test(partition_schema_, entry.Partition()));

@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "paimon/common/utils/range_helper.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 
 namespace paimon {
@@ -120,11 +121,17 @@ Result<std::optional<int64_t>> DataSplitImpl::MergedRowCount() const {
 }
 
 Result<std::optional<int64_t>> DataSplitImpl::MergedRowCount(
-    DeletionVector::Factory dv_factory) const {
+    DeletionVector::Factory dv_factory, const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> raw_merged_row_count,
-                           RawMergedRowCount(dv_factory));
+                           RawMergedRowCount(dv_factory, token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (raw_merged_row_count.has_value()) {
         return raw_merged_row_count;
+    }
+    if (token) {
+        return Status::NotImplemented(
+            "cooperative scan cancellation does not support data-evolution row counting");
     }
     if (DataEvolutionRowCountAvailable()) {
         PAIMON_ASSIGN_OR_RAISE(int64_t merged_row_count, DataEvolutionMergedRowCount());
@@ -134,13 +141,15 @@ Result<std::optional<int64_t>> DataSplitImpl::MergedRowCount(
 }
 
 Result<std::optional<int64_t>> DataSplitImpl::RawMergedRowCount(
-    DeletionVector::Factory dv_factory) const {
+    DeletionVector::Factory dv_factory, const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (!raw_convertible_) {
         return std::optional<int64_t>();
     }
 
     int64_t sum = 0;
     for (size_t i = 0; i < data_files_.size(); i++) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         const auto& data_file = data_files_[i];
         const std::optional<DeletionFile> deletion_file =
             data_deletion_files_.empty() ? std::nullopt : data_deletion_files_[i];
@@ -154,15 +163,18 @@ Result<std::optional<int64_t>> DataSplitImpl::RawMergedRowCount(
             }
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DeletionVector> deletion_vector,
                                    dv_factory(data_file->file_name));
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
             if (!deletion_vector) {
                 return Status::Invalid(
                     "deletion vector not found for file with missing cardinality");
             }
             PAIMON_ASSIGN_OR_RAISE(int64_t deleted_row_count, deletion_vector->GetCardinality());
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
             sum += data_file->row_count - deleted_row_count;
         }
     }
 
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return std::optional<int64_t>(sum);
 }
 

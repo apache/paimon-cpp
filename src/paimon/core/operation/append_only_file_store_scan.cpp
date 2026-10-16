@@ -72,6 +72,7 @@ AppendOnlyFileStoreScan::AppendOnlyFileStoreScan(
 }
 
 Result<bool> AppendOnlyFileStoreScan::FilterByStats(const ManifestEntry& entry) const {
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     if (!predicates_) {
         return true;
     }
@@ -80,9 +81,12 @@ Result<bool> AppendOnlyFileStoreScan::FilterByStats(const ManifestEntry& entry) 
     std::shared_ptr<Predicate> trimmed_predicates = predicates_;
     int64_t data_schema_id = meta->schema_id;
     if (data_schema_id != table_schema_->Id()) {
-        PAIMON_ASSIGN_OR_RAISE(data_schema, schema_manager_->ReadSchema(data_schema_id));
+        PAIMON_ASSIGN_OR_RAISE(data_schema,
+                               schema_manager_->ReadSchema(data_schema_id, GetCancellationToken()));
     }
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     auto evolution = evolutions_->GetOrCreate(data_schema);
+    PAIMON_RETURN_NOT_OK(CheckCancelled());
     if (data_schema_id != table_schema_->Id()) {
         // remove fields with casting in predicate
         PAIMON_ASSIGN_OR_RAISE(trimmed_predicates,
@@ -106,6 +110,7 @@ Result<bool> AppendOnlyFileStoreScan::FilterByStats(const ManifestEntry& entry) 
             bool predicate_result,
             predicate_filter->Test(schema_, meta->row_count, *(new_stats.min_values),
                                    *(new_stats.max_values), *(new_stats.null_counts)));
+        PAIMON_RETURN_NOT_OK(CheckCancelled());
         if (!predicate_result) {
             return false;
         }
