@@ -131,6 +131,8 @@ class ArrowRealtimeStoreTest : public testing::Test {
     std::shared_ptr<ArrowRealtimeStore> store_;
 };
 
+}  // namespace
+
 TEST_F(ArrowRealtimeStoreTest, TestWriteValidationAndSeal) {
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> empty_segment,
                          store_->SealForCommit());
@@ -239,7 +241,8 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
                              store_->CreateQueryReaders(view, context));
         ASSERT_EQ(1, readers.size());
         readers[0] =
-            std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(12, 15));
+            std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(12, 15),
+                                                        /*keep_offset=*/false);
 
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap first,
                              readers[0]->NextBatchWithBitmap());
@@ -271,7 +274,8 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
                          store_->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
     readers[0] =
-        std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(15, 15));
+        std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(15, 15),
+                                                    /*keep_offset=*/false);
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap eof, readers[0]->NextBatchWithBitmap());
     ASSERT_TRUE(BatchReader::IsEofBatch(eof));
 }
@@ -401,6 +405,14 @@ TEST_F(ArrowRealtimeStoreTest, TestFactoryRejectsSpillWithoutTempDirectory) {
                         "realtime.spill-enabled requires a non-empty temporary directory");
 }
 
+TEST_F(ArrowRealtimeStoreTest, TestFactoryRejectsFrameworkOwnedMode) {
+    ArrowRealtimeStoreFactory factory;
+    std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
+    RealtimeStoreCreateRequest request{std::move(write_schema), /*options=*/{}, pool_,
+                                       RealtimeStoreMode::DEDUPLICATE, StatisticsMode::NONE};
+    ASSERT_NOK_WITH_MSG(factory.Create(std::move(request)), "invalid real-time store mode");
+}
+
 TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     ArrowRealtimeStoreFactory factory;
     std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
@@ -426,7 +438,8 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
     readers[0] =
-        std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(3, 4));
+        std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(3, 4),
+                                                    /*keep_offset=*/false);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> filtered,
                          ReadResultCollector::CollectResult(std::move(readers[0])));
@@ -478,5 +491,4 @@ TEST_F(ArrowRealtimeStoreTest, TestRejectsHandlesFromAnotherStoreImplementation)
     ASSERT_NOK_WITH_MSG(store_->CreateQueryReaders(view, context), "mem query read schema is null");
 }
 
-}  // namespace
 }  // namespace paimon::test

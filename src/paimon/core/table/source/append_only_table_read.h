@@ -37,6 +37,7 @@ class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
 class RealtimeSplit;
+class RoaringBitmap64;
 
 class AppendOnlyTableRead : public TableRead {
  public:
@@ -59,6 +60,10 @@ class AppendOnlyTableRead : public TableRead {
         const std::shared_ptr<RealtimeSplit>& realtime_split, bool release_ticket);
 
     Result<std::unique_ptr<BatchReader>> CreateDiskReader(const std::shared_ptr<Split>& split);
+
+    Result<std::unique_ptr<BatchReader>> CreateDeduplicateDiskReader(
+        const std::shared_ptr<Split>& split,
+        const std::shared_ptr<const RoaringBitmap64>& offset_deletions);
 
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
     std::shared_ptr<InternalReadContext> context_;

@@ -1476,7 +1476,7 @@ TEST_F(FileStoreCommitImplTest, TestRealtimeCommitIsIdempotentThroughTheCatalog)
     CatalogCommitSpec spec;
     spec.catalog = catalog;
     spec.commit_user = "realtime_commit_user";
-    spec.options = {{Options::REALTIME_ENABLED, "true"}};
+    spec.options = {{Options::REALTIME_ENABLED, "true"}, {Options::BUCKET, "2"}};
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
@@ -1504,7 +1504,7 @@ TEST_F(FileStoreCommitImplTest, TestRealtimeCommitReportsAnUnpublishedHistory) {
     CatalogCommitSpec spec;
     spec.catalog = catalog;
     spec.commit_user = "realtime_commit_user";
-    spec.options = {{Options::REALTIME_ENABLED, "true"}};
+    spec.options = {{Options::REALTIME_ENABLED, "true"}, {Options::BUCKET, "2"}};
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
@@ -1797,6 +1797,7 @@ TEST_F(FileStoreCommitImplTest, TestRealtimeCommitRebasesAfterSnapshotConflict) 
     CommitContextBuilder realtime_builder(table_path_, "realtime_commit_user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> realtime_context,
                          realtime_builder.AddOption(Options::REALTIME_ENABLED, "true")
+                             .AddOption(Options::BUCKET, "2")
                              .AddOption(Options::COMMIT_MAX_RETRIES, "1")
                              .AddOption(Options::COMMIT_MIN_RETRY_WAIT, "1ms")
                              .AddOption(Options::COMMIT_MAX_RETRY_WAIT, "1ms")

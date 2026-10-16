@@ -179,7 +179,7 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
         }
 
         RealtimePartitionBucketView& memory = memory_iter->second;
-        if (!pk_table_) {
+        if (!pk_table_ && memory.mode != RealtimeStoreMode::DEDUPLICATE) {
             // Append tables can schedule all but the tail disk split independently. The tail split
             // carries the immutable memory view so disk and memory are still concatenated by one
             // RealtimeSplit without collapsing the whole partition-bucket into one scheduling unit.

@@ -176,15 +176,28 @@ Result<std::unique_ptr<RealtimeStoreReadPipeline>> RealtimeStoreReadPipeline::Cr
         }
     }
 
+    const bool keep_realtime_offset =
+        logical_schema->GetFieldIndex(SpecialFields::RealtimeOffset().Name()) >= 0;
     bool needs_conversion = !plans.empty();
     // PK: _SEQUENCE_NUMBER, _VALUE_KIND, _REALTIME_OFFSET, then requested physical fields.
-    // Append: _REALTIME_OFFSET, then requested physical fields.
+    // Append: _REALTIME_OFFSET, then requested physical fields. In DEDUPLICATE mode the offset is
+    // a normal user field: preserve its requested position, or inject it only as a hidden field
+    // when the query does not project it.
     arrow::FieldVector store_read_fields;
     store_read_fields.reserve(store_write_schema->num_fields());
     for (const std::shared_ptr<arrow::Field>& write_field : store_write_schema->fields()) {
         if (SpecialFields::IsSystemField(write_field->name())) {
             store_read_fields.push_back(write_field);
         }
+    }
+    if (!keep_realtime_offset) {
+        const std::shared_ptr<arrow::Field> offset_field =
+            store_write_schema->GetFieldByName(SpecialFields::RealtimeOffset().Name());
+        if (!offset_field) {
+            return Status::Invalid(
+                "real-time store write schema does not contain _REALTIME_OFFSET");
+        }
+        store_read_fields.push_back(offset_field);
     }
     for (const std::shared_ptr<arrow::Field>& read_field : logical_schema->fields()) {
         if (SpecialFields::IsSystemField(read_field->name())) {
@@ -219,8 +232,9 @@ Result<std::unique_ptr<BatchReader>> RealtimeStoreReadPipeline::Wrap(
     if (!store_reader) {
         return Status::Invalid("real-time store read pipeline received a null reader");
     }
-    std::unique_ptr<BatchReader> reader =
-        std::make_unique<RealtimeOffsetBatchReader>(std::move(store_reader), visible_offsets);
+    std::unique_ptr<BatchReader> reader = std::make_unique<RealtimeOffsetBatchReader>(
+        std::move(store_reader), visible_offsets,
+        logical_schema_->GetFieldIndex(SpecialFields::RealtimeOffset().Name()) >= 0);
     if (!needs_conversion_) {
         return std::move(reader);
     }

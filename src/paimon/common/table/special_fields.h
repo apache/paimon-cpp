@@ -85,13 +85,15 @@ struct SpecialFields {
                depth;
     }
 
+    // `_REALTIME_OFFSET` is persisted as a regular TableSchema field in realtime deduplicate
+    // mode, so it is not a synthetic system field.
     static bool IsSystemField(const std::string& field_name) {
         if (StringUtils::StartsWith(field_name, KEY_FIELD_PREFIX)) {
             return true;
         }
         return field_name == SequenceNumber().Name() || field_name == ValueKind().Name() ||
                field_name == RowKind().Name() || field_name == RowId().Name() ||
-               field_name == IndexScore().Name() || field_name == RealtimeOffset().Name();
+               field_name == IndexScore().Name();
     }
 
     // TODO(xinyu.lxy): add a func to complete row-tracking fields

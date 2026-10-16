@@ -28,6 +28,7 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/realtime/arrow_realtime_store.h"
+#include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/macros.h"
 
 namespace paimon {
@@ -49,6 +50,7 @@ Result<std::shared_ptr<RealtimeStore>> ArrowRealtimeStoreFactory::Create(
         return Status::Invalid("invalid real-time store mode: ",
                                static_cast<int32_t>(request.mode));
     }
+    PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateOffsetField(imported_schema));
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(request.memory_pool);
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(request.options));
     const CompressOptions& spill_compression = options.GetSpillCompressOptions();

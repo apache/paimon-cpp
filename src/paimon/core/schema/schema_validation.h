@@ -51,6 +51,10 @@ class SchemaValidation {
 
     static Status ValidateTableSchema(const TableSchema& schema);
 
+    /// Validates real-time options after operation-specific options have been merged with the
+    /// table schema options.
+    static Status ValidateRealtime(const TableSchema& schema, const CoreOptions& options);
+
     /// Validates a schema a table is about to be created from, whichever catalog is creating it.
     ///
     /// It picks the rules by the schema's `type` option: a format table owns no bucket, manifest
@@ -124,7 +128,6 @@ class SchemaValidation {
     static Status ValidateForDeletionVectors(const CoreOptions& options);
     static Status ValidatePrimaryKeyBTreeIndexes(const TableSchema& schema,
                                                  const CoreOptions& options);
-
     static Status ValidateRowTracking(const TableSchema& table_schema, const CoreOptions& options);
 
     static Status ValidateBlobFields(const TableSchema& schema, const CoreOptions& options);

@@ -40,9 +40,12 @@
 #include "fmt/format.h"
 #include "paimon/arrow/abi.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/uuid.h"
+#include "paimon/core/realtime/arrow_deduplicate_realtime_store.h"
+#include "paimon/core/realtime/realtime_deduplicate_state.h"
 #include "paimon/macros.h"
 #include "paimon/realtime/realtime_store.h"
 #include "paimon/status.h"
@@ -172,6 +175,7 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     }
     if (iter != stores_.end()) {
         if (iter->second.mode != request.mode ||
+            iter->second.deduplicate_key_fields != request.deduplicate_key_fields ||
             !iter->second.write_schema->Equals(*requested_schema, /*check_metadata=*/true)) {
             return Status::Invalid(fmt::format(
                 "real-time store schema or mode mismatch for partition {}, bucket {}; recreate "
@@ -200,7 +204,8 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
                 initial_offset = memory_range->end;
             }
         }
-        return RealtimeStoreState{iter->second.store, initial_offset};
+        return RealtimeStoreState{iter->second.store, initial_offset,
+                                  iter->second.deduplicate_state};
     }
     if (!request.memory_pool) {
         return Status::Invalid("real-time store memory pool is null");
@@ -209,17 +214,35 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
         arrow::ExportSchema(*requested_schema, request.write_schema.get()));
     RealtimeStoreMode mode = request.mode;
     std::string temp_directory = request.temp_directory;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeStore> store,
+    std::vector<std::string> deduplicate_key_fields = request.deduplicate_key_fields;
+    std::shared_ptr<MemoryPool> memory_pool = request.memory_pool;
+    std::shared_ptr<RealtimeDeduplicateState> deduplicate_state;
+    if (mode == RealtimeStoreMode::DEDUPLICATE) {
+        deduplicate_state = std::make_shared<RealtimeDeduplicateState>();
+        // DEDUPLICATE semantics belong to the framework wrapper. The pluggable factory only
+        // supplies the append storage delegate and cannot bypass key-index or offset-DV handling.
+        request.mode = RealtimeStoreMode::APPEND_ONLY;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeStore> delegate,
                            factory_->Create(std::move(request)));
-    if (!store) {
+    if (!delegate) {
         return Status::Invalid("real-time store factory returned a null store");
     }
+    std::shared_ptr<RealtimeStore> store = delegate;
+    if (mode == RealtimeStoreMode::DEDUPLICATE) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ArrowDeduplicateRealtimeStore> deduplicate_store,
+                               ArrowDeduplicateRealtimeStore::Create(
+                                   requested_schema, deduplicate_key_fields, delegate, memory_pool,
+                                   GetArrowPool(memory_pool)));
+        store = std::move(deduplicate_store);
+    }
     stores_.emplace(partition_bucket,
-                    StoreEntry{store, requested_schema, mode, std::move(temp_directory)});
+                    StoreEntry{store, requested_schema, mode, std::move(temp_directory),
+                               std::move(deduplicate_key_fields), deduplicate_state});
     if (offset_iter != committed_offsets_.end()) {
         reclaimed_offsets_.emplace(partition_bucket, offset_iter->second);
     }
-    return RealtimeStoreState{std::move(store), initial_offset};
+    return RealtimeStoreState{std::move(store), initial_offset, std::move(deduplicate_state)};
 }
 
 Result<int64_t> RealtimeContextImpl::AdvanceMaterializedMaxSequenceNumber(
@@ -249,11 +272,17 @@ Result<RealtimeReadState> RealtimeContextImpl::AcquireReadState() {
     for (const auto& [partition_bucket, store] : stores_) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
                                store.store->AcquireReadView());
+        std::shared_ptr<const RoaringBitmap64> offset_deletions;
+        if (store.deduplicate_state) {
+            PAIMON_ASSIGN_OR_RAISE(offset_deletions,
+                                   ArrowDeduplicateRealtimeStore::OffsetDeletionsOf(read_view));
+        }
         if (!read_view) {
             return Status::Invalid("real-time store returned a null read view");
         }
-        result.views.push_back(
-            RealtimePartitionBucketView{partition_bucket, store.store, std::move(read_view)});
+        result.views.push_back(RealtimePartitionBucketView{partition_bucket, store.store,
+                                                           std::move(read_view), store.mode,
+                                                           std::move(offset_deletions)});
     }
     return result;
 }
@@ -333,8 +362,9 @@ Status RealtimeContextImpl::ReleaseReadView(const std::string& opaque_ticket) {
     return Status::OK();
 }
 
-Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
-                                                     const RealtimeOffsetMap& committed_offsets) {
+Status RealtimeContextImpl::AdvanceCommittedProgress(
+    int64_t snapshot_id, const RealtimeOffsetMap& committed_offsets,
+    const RealtimeDataFileMap& committed_data_files) {
     PAIMON_RETURN_NOT_OK(CheckUsable());
     if (snapshot_id < 0) {
         return Status::Invalid("real-time refresh snapshot id must not be negative");
@@ -373,32 +403,65 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
             }
         }
         committed_offsets_ = committed_offsets;
+        committed_data_files_ = committed_data_files;
         last_refreshed_snapshot_id_ = snapshot_id;
     }
 
-    std::vector<std::tuple<RealtimePartitionBucket, std::shared_ptr<RealtimeStore>, int64_t>>
-        notifications;
+    struct Notification {
+        RealtimePartitionBucket partition_bucket;
+        std::shared_ptr<RealtimeStore> store;
+        std::shared_ptr<RealtimeDeduplicateState> deduplicate_state;
+        int64_t committed_end_offset;
+        std::vector<std::shared_ptr<DataFileMeta>> active_data_files;
+    };
+    std::vector<Notification> notifications;
     {
         std::lock_guard<std::mutex> registry_lock(mutex_);
         for (const auto& [partition_bucket, committed_end_offset] : committed_offsets_) {
-            auto reclaimed_iter = reclaimed_offsets_.find(partition_bucket);
-            if (reclaimed_iter != reclaimed_offsets_.end() &&
-                reclaimed_iter->second >= committed_end_offset) {
+            auto store_iter = stores_.find(partition_bucket);
+            if (store_iter == stores_.end()) {
                 continue;
             }
-            auto store_iter = stores_.find(partition_bucket);
-            if (store_iter != stores_.end()) {
-                notifications.emplace_back(partition_bucket, store_iter->second.store,
-                                           committed_end_offset);
+            const std::shared_ptr<RealtimeDeduplicateState>& deduplicate_state =
+                store_iter->second.deduplicate_state;
+            if (deduplicate_state) {
+                auto installed_iter = installed_snapshot_ids_.find(partition_bucket);
+                if (installed_iter != installed_snapshot_ids_.end() &&
+                    installed_iter->second >= last_refreshed_snapshot_id_.value()) {
+                    continue;
+                }
+            } else {
+                auto reclaimed_iter = reclaimed_offsets_.find(partition_bucket);
+                if (reclaimed_iter != reclaimed_offsets_.end() &&
+                    reclaimed_iter->second >= committed_end_offset) {
+                    continue;
+                }
             }
+            auto files_iter = committed_data_files_.find(partition_bucket);
+            std::vector<std::shared_ptr<DataFileMeta>> active_data_files =
+                files_iter == committed_data_files_.end()
+                    ? std::vector<std::shared_ptr<DataFileMeta>>()
+                    : files_iter->second;
+            notifications.push_back(Notification{partition_bucket, store_iter->second.store,
+                                                 deduplicate_state, committed_end_offset,
+                                                 std::move(active_data_files)});
         }
     }
     // Reclaim independent stores on a best-effort basis, then report the first error.
     Status first_error = Status::OK();
-    for (const auto& [partition_bucket, store, committed_end_offset] : notifications) {
-        Status status = store->AdvanceCommittedOffset(committed_end_offset);
+    for (const Notification& notification : notifications) {
+        Status status =
+            notification.deduplicate_state
+                ? notification.deduplicate_state->InstallCommittedSnapshot(
+                      notification.committed_end_offset, notification.active_data_files,
+                      notification.store)
+                : notification.store->AdvanceCommittedOffset(notification.committed_end_offset);
         if (status.ok()) {
-            reclaimed_offsets_[partition_bucket] = committed_end_offset;
+            reclaimed_offsets_[notification.partition_bucket] = notification.committed_end_offset;
+            if (notification.deduplicate_state) {
+                installed_snapshot_ids_[notification.partition_bucket] =
+                    last_refreshed_snapshot_id_.value();
+            }
         } else if (first_error.ok()) {
             first_error = std::move(status);
         }
