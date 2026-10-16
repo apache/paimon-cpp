@@ -25,6 +25,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
@@ -32,47 +33,57 @@
 namespace paimon {
 
 Status FileUtils::ListVersionedFiles(const std::shared_ptr<FileSystem>& fs, const std::string& dir,
-                                     const std::string& prefix, std::vector<int64_t>* files) {
+                                     const std::string& prefix, std::vector<int64_t>* files,
+                                     const ScanCancellationToken* token) {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::vector<std::string> file_strs;
-    PAIMON_RETURN_NOT_OK(ListOriginalVersionedFiles(fs, dir, prefix, &file_strs));
+    PAIMON_RETURN_NOT_OK(ListOriginalVersionedFiles(fs, dir, prefix, &file_strs, token));
     for (const auto& file_str : file_strs) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         std::optional<int64_t> file_number = StringUtils::StringToValue<int64_t>(file_str);
         if (file_number == std::nullopt) {
             return Status::Invalid(fmt::format("fail to convert {} to number", file_str));
         }
         files->emplace_back(file_number.value());
     }
-    return Status::OK();
+    return CheckScanCancellation(token);
 }
 
 Status FileUtils::ListOriginalVersionedFiles(const std::shared_ptr<FileSystem>& fs,
                                              const std::string& dir, const std::string& prefix,
-                                             std::vector<std::string>* files) {
+                                             std::vector<std::string>* files,
+                                             const ScanCancellationToken* token) {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::vector<BasicFileStatus> file_status_list;
-    PAIMON_RETURN_NOT_OK(ListVersionedFileStatus(fs, dir, prefix, &file_status_list));
+    PAIMON_RETURN_NOT_OK(ListVersionedFileStatus(fs, dir, prefix, &file_status_list, token));
     for (auto& file_status : file_status_list) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         std::string file_name = PathUtil::GetName(file_status.GetPath());
         files->emplace_back(file_name.substr(prefix.size()));
     }
-    return Status::OK();
+    return CheckScanCancellation(token);
 }
 
 Status FileUtils::ListVersionedFileStatus(const std::shared_ptr<FileSystem>& fs,
                                           const std::string& dir, const std::string& prefix,
-                                          std::vector<BasicFileStatus>* file_status_list) {
+                                          std::vector<BasicFileStatus>* file_status_list,
+                                          const ScanCancellationToken* token) {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     // No Exists() probe in front of the listing. Every FileSystem lists a directory that is not
     // there as an empty result rather than an error, so the probe only decided whether to make a
     // call that answers the same question. On a remote store it costs a round trip of its own,
     // which is what a schema or snapshot lookup pays before it can read anything.
     std::vector<BasicFileStatus> file_statuses;
     PAIMON_RETURN_NOT_OK(fs->ListDir(dir, &file_statuses));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     for (auto& file_status : file_statuses) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         std::string file_name = PathUtil::GetName(file_status.GetPath());
         if (StringUtils::StartsWith(file_name, prefix)) {
             file_status_list->emplace_back(std::move(file_status));
         }
     }
-    return Status::OK();
+    return CheckScanCancellation(token);
 }
 
 }  // namespace paimon

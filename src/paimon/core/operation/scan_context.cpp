@@ -24,6 +24,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/scan_cancellation.h"
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
 
@@ -41,7 +42,8 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
                          const std::optional<std::string>& table_schema,
                          const std::map<std::string, std::string>& options,
                          const std::shared_ptr<Cache>& cache,
-                         const std::shared_ptr<FormatTable>& format_table)
+                         const std::shared_ptr<FormatTable>& format_table,
+                         const std::shared_ptr<ScanCancellationToken>& cancellation_token)
     : path_(path),
       is_streaming_mode_(is_streaming_mode),
       limit_(limit),
@@ -54,7 +56,8 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
       table_schema_(table_schema),
       options_(options),
       cache_(cache),
-      format_table_(format_table) {}
+      format_table_(format_table),
+      cancellation_token_(cancellation_token) {}
 
 ScanContext::~ScanContext() = default;
 
@@ -70,6 +73,7 @@ class ScanContextBuilder::Impl {
         predicates_.reset();
         global_index_result_.reset();
         realtime_context_.reset();
+        cancellation_token_.reset();
         memory_pool_ = GetDefaultPool();
         executor_.reset();
         specific_file_system_.reset();
@@ -93,6 +97,7 @@ class ScanContextBuilder::Impl {
     std::shared_ptr<Predicate> predicates_;
     std::shared_ptr<GlobalIndexResult> global_index_result_;
     std::shared_ptr<RealtimeContext> realtime_context_;
+    std::shared_ptr<ScanCancellationToken> cancellation_token_;
     std::shared_ptr<MemoryPool> memory_pool_ = GetDefaultPool();
     // Resolved in Finish(); a builder never owns an executor of its own.
     std::shared_ptr<Executor> executor_;
@@ -180,6 +185,12 @@ ScanContextBuilder& ScanContextBuilder::WithExecutor(const std::shared_ptr<Execu
     return *this;
 }
 
+ScanContextBuilder& ScanContextBuilder::WithCancellationToken(
+    const std::shared_ptr<ScanCancellationToken>& cancellation_token) {
+    impl_->cancellation_token_ = cancellation_token;
+    return *this;
+}
+
 ScanContextBuilder& ScanContextBuilder::WithFileSystem(
     const std::shared_ptr<FileSystem>& file_system) {
     impl_->specific_file_system_ = file_system;
@@ -233,11 +244,17 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot scan through a null catalog");
     }
+    if (impl_->cancellation_token_) {
+        PAIMON_RETURN_NOT_OK(impl_->cancellation_token_->CheckCancelled());
+    }
     if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
         // A catalog issuing per-table temporary credentials only hands them out through
         // GetTableFileSystem, so the scan uses the credentials of this table.
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
+    }
+    if (impl_->cancellation_token_) {
+        PAIMON_RETURN_NOT_OK(impl_->cancellation_token_->CheckCancelled());
     }
     std::shared_ptr<Executor> executor =
         impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
@@ -247,7 +264,7 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
         impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
-        impl_->format_table_);
+        impl_->format_table_, impl_->cancellation_token_);
     impl_->Reset();
     return ctx;
 }

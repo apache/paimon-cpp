@@ -32,18 +32,25 @@ class FullStartingScanner : public StartingScanner {
 
     Result<std::shared_ptr<ScanResult>> Scan(
         const std::shared_ptr<SnapshotReader>& snapshot_reader) override {
+        PAIMON_RETURN_NOT_OK(snapshot_reader->CheckCancelled());
         if (starting_snapshot_id_ == std::nullopt) {
             // try to get first snapshot
-            PAIMON_ASSIGN_OR_RAISE(starting_snapshot_id_, snapshot_manager_->LatestSnapshotId());
+            PAIMON_ASSIGN_OR_RAISE(
+                starting_snapshot_id_,
+                snapshot_manager_->LatestSnapshotId(snapshot_reader->GetCancellationToken()));
         }
+        PAIMON_RETURN_NOT_OK(snapshot_reader->CheckCancelled());
         if (starting_snapshot_id_ == std::nullopt) {
             return std::make_shared<StartingScanner::NoSnapshot>();
         }
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
-                               snapshot_manager_->LoadSnapshot(starting_snapshot_id_.value()));
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(
+                                                      starting_snapshot_id_.value(),
+                                                      snapshot_reader->GetCancellationToken()));
+        PAIMON_RETURN_NOT_OK(snapshot_reader->CheckCancelled());
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<Plan> plan,
             snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(snapshot)->Read());
+        PAIMON_RETURN_NOT_OK(snapshot_reader->CheckCancelled());
         return std::make_shared<StartingScanner::CurrentSnapshot>(plan);
     }
 };

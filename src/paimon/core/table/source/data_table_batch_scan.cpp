@@ -63,6 +63,7 @@ DataTableBatchScan::DataTableBatchScan(bool pk_table, const CoreOptions& core_op
 }
 
 Result<std::shared_ptr<Plan>> DataTableBatchScan::CreatePlan() {
+    PAIMON_RETURN_NOT_OK(snapshot_reader_->CheckCancelled());
     if (starting_scanner_ == nullptr) {
         PAIMON_ASSIGN_OR_RAISE(starting_scanner_, CreateStartingScanner(/*is_streaming=*/false));
     }
@@ -70,7 +71,9 @@ Result<std::shared_ptr<Plan>> DataTableBatchScan::CreatePlan() {
         has_next_ = false;
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<StartingScanner::ScanResult> scan_result,
                                starting_scanner_->Scan(snapshot_reader_));
-        return ApplyPushDownLimit(scan_result);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, ApplyPushDownLimit(scan_result));
+        PAIMON_RETURN_NOT_OK(snapshot_reader_->CheckCancelled());
+        return plan;
     }
     return Status::Invalid("end of scan");
 }
@@ -92,6 +95,7 @@ bool DataTableBatchScan::CanPushDownLimit() const {
 
 Result<std::shared_ptr<Plan>> DataTableBatchScan::ApplyPushDownLimit(
     const std::shared_ptr<StartingScanner::ScanResult>& scan_result) const {
+    PAIMON_RETURN_NOT_OK(snapshot_reader_->CheckCancelled());
     auto current_scan_result =
         std::dynamic_pointer_cast<StartingScanner::CurrentSnapshot>(scan_result);
     if (!current_scan_result) {
@@ -106,6 +110,7 @@ Result<std::shared_ptr<Plan>> DataTableBatchScan::ApplyPushDownLimit(
     limited_data_splits.reserve(splits.size());
     int64_t scanned_row_count = 0;
     for (const auto& split : splits) {
+        PAIMON_RETURN_NOT_OK(snapshot_reader_->CheckCancelled());
         auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
         if (!data_split) {
             return Status::Invalid("DataSplit cannot cast to DataSplitImpl");
@@ -114,8 +119,10 @@ Result<std::shared_ptr<Plan>> DataTableBatchScan::ApplyPushDownLimit(
         // cannot be counted from metadata and would have to be pruned blindly, so the push down
         // is abandoned. A data-evolution split merges by column over a known row id range and
         // still counts.
-        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> merged_row_count,
-                               data_split->MergedRowCount());
+        PAIMON_ASSIGN_OR_RAISE(
+            std::optional<int64_t> merged_row_count,
+            data_split->MergedRowCount(nullptr, snapshot_reader_->GetCancellationToken()));
+        PAIMON_RETURN_NOT_OK(snapshot_reader_->CheckCancelled());
         if (!merged_row_count.has_value()) {
             PAIMON_LOG_DEBUG(logger_,
                              "Limit push down abandoned: split %zu of %zu cannot be counted from "

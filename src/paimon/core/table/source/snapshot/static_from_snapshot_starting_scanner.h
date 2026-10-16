@@ -36,10 +36,14 @@ class StaticFromSnapshotStartingScanner : public StartingScanner {
 
     Result<std::shared_ptr<ScanResult>> Scan(
         const std::shared_ptr<SnapshotReader>& snapshot_reader) override {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest,
-                               snapshot_manager_->EarliestSnapshotId());
-        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest,
-                               snapshot_manager_->LatestSnapshotId());
+        PAIMON_RETURN_NOT_OK(snapshot_reader->CheckCancelled());
+        PAIMON_ASSIGN_OR_RAISE(
+            std::optional<int64_t> earliest,
+            snapshot_manager_->EarliestSnapshotId(snapshot_reader->GetCancellationToken()));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::optional<int64_t> latest,
+            snapshot_manager_->LatestSnapshotId(snapshot_reader->GetCancellationToken()));
+        PAIMON_RETURN_NOT_OK(snapshot_reader->CheckCancelled());
         if (earliest == std::nullopt || latest == std::nullopt) {
             return Status::Invalid("There is currently no snapshot.");
         }
@@ -50,11 +54,14 @@ class StaticFromSnapshotStartingScanner : public StartingScanner {
                             "available snapshotId range [{}, {}].",
                             starting_snapshot_id_.value(), earliest.value(), latest.value()));
         }
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
-                               snapshot_manager_->LoadSnapshot(starting_snapshot_id_.value()));
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(
+                                                      starting_snapshot_id_.value(),
+                                                      snapshot_reader->GetCancellationToken()));
+        PAIMON_RETURN_NOT_OK(snapshot_reader->CheckCancelled());
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<Plan> plan,
             snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(snapshot)->Read());
+        PAIMON_RETURN_NOT_OK(snapshot_reader->CheckCancelled());
         return std::make_shared<StartingScanner::CurrentSnapshot>(plan);
     }
 };

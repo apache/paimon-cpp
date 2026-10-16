@@ -37,12 +37,14 @@ class DataType;
 namespace paimon {
 class MemoryPool;
 class Metrics;
+class ScanCancellationToken;
 
 class PAIMON_EXPORT ManifestMetaReader : public BatchReader {
  public:
     ManifestMetaReader(std::unique_ptr<BatchReader>&& reader,
                        const std::shared_ptr<arrow::DataType>& target_type,
-                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+                       const ScanCancellationToken* token = nullptr);
 
     ~ManifestMetaReader() override {
         DoClose();
@@ -64,11 +66,18 @@ class PAIMON_EXPORT ManifestMetaReader : public BatchReader {
     // fill non exist field and correct int precision
     static Result<std::shared_ptr<arrow::Array>> AlignArrayWithSchema(
         const std::shared_ptr<arrow::Array>& src_array,
-        const std::shared_ptr<arrow::DataType>& target_type, arrow::MemoryPool* pool);
+        const std::shared_ptr<arrow::DataType>& target_type, arrow::MemoryPool* pool,
+        const ScanCancellationToken* token = nullptr);
+
+    static Result<std::shared_ptr<arrow::Array>> AlignArrayWithSchemaImpl(
+        const std::shared_ptr<arrow::Array>& src_array,
+        const std::shared_ptr<arrow::DataType>& target_type, arrow::MemoryPool* pool,
+        const ScanCancellationToken* token);
 
     std::unique_ptr<BatchReader> reader_;
     std::shared_ptr<arrow::DataType> target_type_;
     std::shared_ptr<arrow::MemoryPool> pool_;
+    const ScanCancellationToken* token_;
 };
 
 }  // namespace paimon

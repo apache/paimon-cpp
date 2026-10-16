@@ -24,6 +24,8 @@
 #include <utility>
 #include <vector>
 
+#include "paimon/result.h"
+
 namespace paimon {
 /// Contains bin packing implementations.
 class BinPacking {
@@ -35,11 +37,28 @@ class BinPacking {
     static std::vector<std::vector<T>> PackForOrdered(
         std::vector<T>&& items, const std::function<int64_t(const T&)>& weight_func,
         int64_t target_weight) {
+        // With no checkpoint, packing cannot return a Status error.
+        return PackForOrdered<T>(std::move(items), weight_func, target_weight, nullptr).value();
+    }
+
+    template <typename T>
+    static Result<std::vector<std::vector<T>>> PackForOrdered(
+        std::vector<T>&& items, const std::function<int64_t(const T&)>& weight_func,
+        int64_t target_weight, const std::function<Status()>& checkpoint) {
+        if (checkpoint) {
+            PAIMON_RETURN_NOT_OK(checkpoint());
+        }
         std::vector<std::vector<T>> packed;
         std::vector<T> bin_items;
         int64_t bin_weight = 0;
         for (auto& item : items) {
+            if (checkpoint) {
+                PAIMON_RETURN_NOT_OK(checkpoint());
+            }
             int64_t weight = weight_func(item);
+            if (checkpoint) {
+                PAIMON_RETURN_NOT_OK(checkpoint());
+            }
             // when get a much big item or total weight enough, we check the binItems size. If
             // greater than zero, we pack it
             if (bin_weight + weight > target_weight && bin_items.size() > 0) {
@@ -52,6 +71,9 @@ class BinPacking {
         }
         if (bin_items.size() > 0) {
             packed.push_back(std::move(bin_items));
+        }
+        if (checkpoint) {
+            PAIMON_RETURN_NOT_OK(checkpoint());
         }
         return packed;
     }

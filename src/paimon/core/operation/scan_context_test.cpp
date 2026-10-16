@@ -25,6 +25,7 @@
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/scan_cancellation.h"
 #include "paimon/status.h"
 #include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/mock/mock_file_system.h"
@@ -86,6 +87,44 @@ TEST(ScanContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetGlobalIndexResult());
     ASSERT_FALSE(ctx->GetSpecificFileSystem());
+    ASSERT_FALSE(ctx->GetCancellationToken());
+}
+
+TEST(ScanContextTest, TestCancellationTokenLifetimeAndBuilderReset) {
+    ScanContextBuilder builder("table_root_path");
+    auto token = std::make_shared<ScanCancellationToken>();
+    std::weak_ptr<ScanCancellationToken> retained = token;
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCancellationToken(token).Finish());
+    ASSERT_EQ(ctx->GetCancellationToken(), token);
+    token.reset();
+    ASSERT_FALSE(retained.expired());
+    ASSERT_OK(ctx->GetCancellationToken()->CheckCancelled());
+    ctx->GetCancellationToken()->Cancel();
+    ASSERT_TRUE(ctx->GetCancellationToken()->CheckCancelled().IsCancelled());
+    ASSERT_OK_AND_ASSIGN(auto next_ctx, builder.Finish());
+    ASSERT_FALSE(next_ctx->GetCancellationToken());
+    ctx.reset();
+    ASSERT_TRUE(retained.expired());
+}
+
+TEST(ScanContextTest, TestCancelledBuilderDoesNotRequestCredentials) {
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    auto token = std::make_shared<ScanCancellationToken>();
+    token->Cancel();
+    ScanContextBuilder builder("table_root_path");
+    auto result =
+        builder.WithCatalog(catalog, Identifier("db1", "t1")).WithCancellationToken(token).Finish();
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsCancelled());
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
+    ASSERT_TRUE(builder.Finish().status().IsCancelled());
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
+    ASSERT_OK_AND_ASSIGN(
+        auto next_ctx,
+        builder.WithCancellationToken(std::make_shared<ScanCancellationToken>()).Finish());
+    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
+    ASSERT_FALSE(next_ctx->GetCancellationToken()->IsCancelled());
 }
 
 TEST(ScanContextTest, TestSetContent) {

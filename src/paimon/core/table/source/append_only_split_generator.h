@@ -41,21 +41,36 @@ class AppendOnlySplitGenerator : public SplitGenerator {
 
     Result<std::vector<SplitGroup>> SplitForBatch(
         std::vector<std::shared_ptr<DataFileMeta>>&& input) const override {
+        return SplitForBatchWithCancellation(std::move(input), nullptr);
+    }
+
+    Result<std::vector<SplitGroup>> SplitForBatchWithCancellation(
+        std::vector<std::shared_ptr<DataFileMeta>>&& input,
+        const ScanCancellationToken* token) const override {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         std::vector<std::shared_ptr<DataFileMeta>> files = std::move(input);
         std::stable_sort(files.begin(), files.end(),
                          BucketedAppendCompactManager::FileComparator(bucket_mode_ ==
                                                                       BucketMode::BUCKET_UNAWARE));
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         auto weight_func = [open_file_cost = open_file_cost_](
                                const std::shared_ptr<DataFileMeta>& meta) -> int64_t {
             return std::max(meta->file_size, open_file_cost);
         };
-        auto packed = BinPacking::PackForOrdered<std::shared_ptr<DataFileMeta>>(
-            std::move(files), weight_func, target_split_size_);
+        std::function<Status()> checkpoint;
+        if (token) {
+            checkpoint = [token]() { return token->CheckCancelled(); };
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> packed,
+                               BinPacking::PackForOrdered<std::shared_ptr<DataFileMeta>>(
+                                   std::move(files), weight_func, target_split_size_, checkpoint));
         std::vector<SplitGroup> ret;
         ret.reserve(packed.size());
         for (auto& pack : packed) {
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
             ret.push_back(SplitGroup::RawConvertibleGroup(std::move(pack)));
         }
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         return ret;
     }
 

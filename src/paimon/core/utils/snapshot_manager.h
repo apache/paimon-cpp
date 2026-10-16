@@ -34,6 +34,7 @@
 namespace paimon {
 
 class FileSystem;
+class ScanCancellationToken;
 
 /// Manager for `Snapshot`, providing utility methods related to paths and snapshot hints.
 class SnapshotManager {
@@ -69,9 +70,11 @@ class SnapshotManager {
     const std::shared_ptr<FileSystem>& Fs() const;
     const std::string& RootPath() const;
     const std::string& Branch() const;
-    Result<std::optional<Snapshot>> LatestSnapshot() const;
+    Result<std::optional<Snapshot>> LatestSnapshot(
+        const ScanCancellationToken* token = nullptr) const;
     /// Returns the latest snapshot and source used to determine the history boundary.
-    Result<LatestSnapshotResult> LatestSnapshotWithSource() const;
+    Result<LatestSnapshotResult> LatestSnapshotWithSource(
+        const ScanCancellationToken* token = nullptr) const;
     std::string SnapshotDirectory() const;
     std::string SnapshotPath(int64_t snapshot_id) const;
     /// Finds the user's newest snapshot, reading older snapshots from the table directory.
@@ -86,11 +89,15 @@ class SnapshotManager {
         bool latest_from_catalog) const;
     Status CommitLatestHint(int64_t snapshot_id);
     Status CommitEarliestHint(int64_t snapshot_id);
-    Result<Snapshot> LoadSnapshot(int64_t snapshot_id) const;
-    Result<std::optional<int64_t>> EarliestSnapshotId() const;
-    Result<std::optional<int64_t>> LatestSnapshotId() const;
+    Result<Snapshot> LoadSnapshot(int64_t snapshot_id,
+                                  const ScanCancellationToken* token = nullptr) const;
+    Result<std::optional<int64_t>> EarliestSnapshotId(
+        const ScanCancellationToken* token = nullptr) const;
+    Result<std::optional<int64_t>> LatestSnapshotId(
+        const ScanCancellationToken* token = nullptr) const;
     /// Finds the latest snapshot published to the file system, without consulting the loader.
-    Result<std::optional<int64_t>> LatestSnapshotIdFromFileSystem() const;
+    Result<std::optional<int64_t>> LatestSnapshotIdFromFileSystem(
+        const ScanCancellationToken* token = nullptr) const;
     Result<bool> SnapshotExists(int64_t snapshot_id) const;
     Result<std::set<std::string>> TryGetNonSnapshotFiles(int64_t older_than_ms) const;
     Result<std::vector<Snapshot>> GetAllSnapshots() const;
@@ -103,20 +110,22 @@ class SnapshotManager {
 
     /// Rechecks EARLIEST a bounded number of times to confirm expiration.
     /// False leaves expiration unconfirmed, so the caller must report the missing snapshot.
-    bool ExpiredSinceBoundaryWasRead(int64_t id) const;
+    Result<bool> ExpiredSinceBoundaryWasRead(int64_t id) const;
 
     std::string BranchPath() const;
 
     Result<std::optional<int64_t>> FindEarliest(
         const std::string& dir, const std::string& prefix,
-        const std::function<std::string(int64_t)>& path_func) const;
-    Result<std::optional<int64_t>> FindLatest(
-        const std::string& dir, const std::string& prefix,
-        const std::function<std::string(int64_t)>& path_func) const;
+        const std::function<std::string(int64_t)>& path_func,
+        const ScanCancellationToken* token) const;
+    Result<std::optional<int64_t>> FindLatest(const std::string& dir, const std::string& prefix,
+                                              const std::function<std::string(int64_t)>& path_func,
+                                              const ScanCancellationToken* token) const;
     Result<std::optional<int64_t>> FindByListFiles(
         const std::function<int64_t(int64_t, int64_t)> reducer_func, const std::string& dir,
-        const std::string& prefix) const;
-    std::optional<int64_t> ReadHint(const std::string& file_name, const std::string& dir) const;
+        const std::string& prefix, const ScanCancellationToken* token) const;
+    Result<std::optional<int64_t>> ReadHint(const std::string& file_name, const std::string& dir,
+                                            const ScanCancellationToken* token = nullptr) const;
     Status CommitHint(int64_t snapshot_id, const std::string& file_name, const std::string& dir);
     Result<std::optional<Snapshot>> FindSnapshotBeforeTimestamp(
         int64_t timestamp_millis, const std::function<bool(int64_t, int64_t)>& compare) const;

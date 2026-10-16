@@ -30,6 +30,7 @@ namespace paimon {
 class FileSystem;
 class FormatTable;
 class SchemaManager;
+class ScanCancellationToken;
 class TableSchema;
 
 /// Recognises a format table behind a table path.
@@ -65,7 +66,8 @@ class FormatTableLoader {
         const std::shared_ptr<FileSystem>& file_system, const std::string& table_path,
         const std::string& branch, const std::map<std::string, std::string>& options,
         const std::optional<std::string>& specific_table_schema,
-        const SchemaManager* schema_manager, std::shared_ptr<TableSchema>* table_schema_out);
+        const SchemaManager* schema_manager, std::shared_ptr<TableSchema>* table_schema_out,
+        const ScanCancellationToken* token = nullptr);
 };
 
 }  // namespace paimon

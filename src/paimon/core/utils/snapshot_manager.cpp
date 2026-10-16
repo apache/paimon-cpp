@@ -26,6 +26,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/branch_manager.h"
@@ -77,7 +78,9 @@ Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshotOfUserAtOrBefore(
     // an incompletely published history.
     int64_t search_end = Snapshot::FIRST_SNAPSHOT_ID;
     if (latest_from_catalog) {
-        search_end = ReadHint(EARLIEST, SnapshotDirectory()).value_or(Snapshot::FIRST_SNAPSHOT_ID);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest,
+                               ReadHint(EARLIEST, SnapshotDirectory()));
+        search_end = earliest.value_or(Snapshot::FIRST_SNAPSHOT_ID);
     } else {
         PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest_id, EarliestSnapshotId());
         search_end = earliest_id.value_or(Snapshot::FIRST_SNAPSHOT_ID);
@@ -88,7 +91,8 @@ Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshotOfUserAtOrBefore(
         if (!snapshot.ok()) {
             if (snapshot.status().IsNotExist()) {
                 if (latest_from_catalog) {
-                    if (ExpiredSinceBoundaryWasRead(id)) {
+                    PAIMON_ASSIGN_OR_RAISE(bool expired, ExpiredSinceBoundaryWasRead(id));
+                    if (expired) {
                         break;
                     }
                     // Without proof of expiration, treating this gap as empty history could
@@ -111,10 +115,11 @@ Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshotOfUserAtOrBefore(
     return std::optional<Snapshot>();
 }
 
-bool SnapshotManager::ExpiredSinceBoundaryWasRead(int64_t id) const {
+Result<bool> SnapshotManager::ExpiredSinceBoundaryWasRead(int64_t id) const {
     // Expiration deletes files before advancing EARLIEST; allow the hint time to catch up.
     for (int32_t attempt = 0; attempt < READ_HINT_RETRY_NUM; ++attempt) {
-        std::optional<int64_t> earliest = ReadHint(EARLIEST, SnapshotDirectory());
+        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest,
+                               ReadHint(EARLIEST, SnapshotDirectory()));
         if (earliest && earliest.value() > id) {
             return true;
         }
@@ -123,41 +128,57 @@ bool SnapshotManager::ExpiredSinceBoundaryWasRead(int64_t id) const {
     return false;
 }
 
-Result<Snapshot> SnapshotManager::LoadSnapshot(int64_t snapshot_id) const {
-    return Snapshot::FromPath(fs_, SnapshotPath(snapshot_id));
+Result<Snapshot> SnapshotManager::LoadSnapshot(int64_t snapshot_id,
+                                               const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
+                           Snapshot::FromPath(fs_, SnapshotPath(snapshot_id), token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+    return snapshot;
 }
 
 void SnapshotManager::SetSnapshotLoader(SnapshotLoader loader) {
     snapshot_loader_ = std::move(loader);
 }
 
-Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshot() const {
-    PAIMON_ASSIGN_OR_RAISE(LatestSnapshotResult latest, LatestSnapshotWithSource());
+Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshot(
+    const ScanCancellationToken* token) const {
+    PAIMON_ASSIGN_OR_RAISE(LatestSnapshotResult latest, LatestSnapshotWithSource(token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return latest.snapshot;
 }
 
-Result<SnapshotManager::LatestSnapshotResult> SnapshotManager::LatestSnapshotWithSource() const {
+Result<SnapshotManager::LatestSnapshotResult> SnapshotManager::LatestSnapshotWithSource(
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (snapshot_loader_) {
         Result<std::optional<Snapshot>> loaded = snapshot_loader_();
         if (loaded.ok()) {
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
             return LatestSnapshotResult{loaded.value(), /*from_catalog=*/true};
         }
         if (!loaded.status().IsNotImplemented()) {
             return loaded.status();
         }
     }
-    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> snapshot_id, LatestSnapshotIdFromFileSystem());
+    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> snapshot_id,
+                           LatestSnapshotIdFromFileSystem(token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (snapshot_id == std::nullopt) {
         return LatestSnapshotResult{std::optional<Snapshot>(), /*from_catalog=*/false};
     }
-    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(snapshot_id.value()));
+    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(snapshot_id.value(), token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return LatestSnapshotResult{std::optional<Snapshot>(snapshot), /*from_catalog=*/false};
 }
 
-Result<std::optional<int64_t>> SnapshotManager::LatestSnapshotId() const {
+Result<std::optional<int64_t>> SnapshotManager::LatestSnapshotId(
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (snapshot_loader_) {
         Result<std::optional<Snapshot>> loaded = snapshot_loader_();
         if (loaded.ok()) {
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
             return loaded.value() ? std::optional<int64_t>(loaded.value().value().Id())
                                   : std::nullopt;
         }
@@ -165,19 +186,23 @@ Result<std::optional<int64_t>> SnapshotManager::LatestSnapshotId() const {
             return loaded.status();
         }
     }
-    return LatestSnapshotIdFromFileSystem();
+    return LatestSnapshotIdFromFileSystem(token);
 }
 
-Result<std::optional<int64_t>> SnapshotManager::LatestSnapshotIdFromFileSystem() const {
+Result<std::optional<int64_t>> SnapshotManager::LatestSnapshotIdFromFileSystem(
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return FindLatest(
         SnapshotDirectory(), std::string(SNAPSHOT_PREFIX),
-        [this](int64_t snapshot_id) -> std::string { return SnapshotPath(snapshot_id); });
+        [this](int64_t snapshot_id) -> std::string { return SnapshotPath(snapshot_id); }, token);
 }
 
-Result<std::optional<int64_t>> SnapshotManager::EarliestSnapshotId() const {
+Result<std::optional<int64_t>> SnapshotManager::EarliestSnapshotId(
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return FindEarliest(
         SnapshotDirectory(), std::string(SNAPSHOT_PREFIX),
-        [this](int64_t snapshot_id) -> std::string { return SnapshotPath(snapshot_id); });
+        [this](int64_t snapshot_id) -> std::string { return SnapshotPath(snapshot_id); }, token);
 }
 
 std::string SnapshotManager::BranchPath() const {
@@ -198,32 +223,41 @@ std::string SnapshotManager::SnapshotPath(int64_t snapshot_id) const {
 
 Result<std::optional<int64_t>> SnapshotManager::FindEarliest(
     const std::string& dir, const std::string& prefix,
-    const std::function<std::string(int64_t)>& path_func) const {
+    const std::function<std::string(int64_t)>& path_func,
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     PAIMON_ASSIGN_OR_RAISE(bool is_exist, fs_->Exists(dir));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (!is_exist) {
         return std::optional<int64_t>();
     }
-    std::optional<int64_t> snapshot_id = ReadHint(EARLIEST, dir);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> snapshot_id, ReadHint(EARLIEST, dir, token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (snapshot_id != std::nullopt) {
         std::string path = path_func(snapshot_id.value());
         PAIMON_ASSIGN_OR_RAISE(bool is_exist, fs_->Exists(path));
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         if (is_exist) {
             return snapshot_id;
         }
     }
     return FindByListFiles([](int64_t lhs, int64_t rhs) -> int64_t { return std::min(lhs, rhs); },
-                           dir, prefix);
+                           dir, prefix, token);
 }
 
 Result<std::optional<int64_t>> SnapshotManager::FindLatest(
     const std::string& dir, const std::string& prefix,
-    const std::function<std::string(int64_t)>& path_func) const {
-    std::optional<int64_t> snapshot_id = ReadHint(LATEST, dir);
+    const std::function<std::string(int64_t)>& path_func,
+    const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> snapshot_id, ReadHint(LATEST, dir, token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (snapshot_id != std::nullopt && snapshot_id.value() > 0) {
         int64_t next_snapshot = snapshot_id.value() + 1;
         // it is the latest only there is no next one
         std::string path = path_func(next_snapshot);
         PAIMON_ASSIGN_OR_RAISE(bool is_exist, fs_->Exists(path));
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         if (!is_exist) {
             return snapshot_id;
         }
@@ -231,21 +265,25 @@ Result<std::optional<int64_t>> SnapshotManager::FindLatest(
     // A valid hint needs no parent-directory probe. The listing fallback checks
     // directory existence itself, including tables without any snapshots yet.
     return FindByListFiles([](int64_t lhs, int64_t rhs) -> int64_t { return std::max(lhs, rhs); },
-                           dir, prefix);
+                           dir, prefix, token);
 }
 
 Result<std::optional<int64_t>> SnapshotManager::FindByListFiles(
     const std::function<int64_t(int64_t, int64_t)> reducer_func, const std::string& dir,
-    const std::string& prefix) const {
+    const std::string& prefix, const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::vector<int64_t> versions;
-    PAIMON_RETURN_NOT_OK(FileUtils::ListVersionedFiles(fs_, dir, prefix, &versions));
+    PAIMON_RETURN_NOT_OK(FileUtils::ListVersionedFiles(fs_, dir, prefix, &versions, token));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (versions.empty()) {
         return std::optional<int64_t>();
     }
     int64_t ret = versions[0];
     for (const auto& version : versions) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         ret = reducer_func(ret, version);
     }
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return std::optional<int64_t>(ret);
 }
 
@@ -266,21 +304,32 @@ Result<std::set<std::string>> SnapshotManager::TryGetNonSnapshotFiles(int64_t ol
     return non_snapshot_files;
 }
 
-// Noted that: try best to read hint to avoid unnecessary list dir operation, if failed, do not
-// return error
-std::optional<int64_t> SnapshotManager::ReadHint(const std::string& file_name,
-                                                 const std::string& dir) const {
+// Hint failures are best effort while the query remains live. If a failed read also cancels
+// this query, terminate with the original error rather than replacing it or starting a retry.
+Result<std::optional<int64_t>> SnapshotManager::ReadHint(const std::string& file_name,
+                                                         const std::string& dir,
+                                                         const ScanCancellationToken* token) const {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::string path = PathUtil::JoinPath(dir, file_name);
     int32_t retry_number = 0;
     while (retry_number++ < READ_HINT_RETRY_NUM) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         std::string content;
         Status s = fs_->ReadFile(path, &content);
         if (s.ok()) {
-            return StringUtils::StringToValue<int64_t>(content);
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+            auto hint = StringUtils::StringToValue<int64_t>(content);
+            PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+            return hint;
         }
+        if (token && (s.IsCancelled() || token->IsCancelled())) {
+            return s;
+        }
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         std::this_thread::sleep_for(std::chrono::milliseconds(READ_HINT_RETRY_INTERVAL));
     }
-    return std::nullopt;
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
+    return std::optional<int64_t>();
 }
 
 Status SnapshotManager::CommitLatestHint(int64_t snapshot_id) {

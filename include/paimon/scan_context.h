@@ -40,6 +40,7 @@ class Executor;
 class FormatTable;
 class MemoryPool;
 class Predicate;
+class ScanCancellationToken;
 
 /// `ScanContext` is some configuration for table scan operations.
 ///
@@ -58,7 +59,8 @@ class PAIMON_EXPORT ScanContext {
                 const std::optional<std::string>& table_schema,
                 const std::map<std::string, std::string>& options,
                 const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table);
+                const std::shared_ptr<FormatTable>& format_table,
+                const std::shared_ptr<ScanCancellationToken>& cancellation_token = nullptr);
 
     ~ScanContext();
 
@@ -87,6 +89,10 @@ class PAIMON_EXPORT ScanContext {
 
     std::shared_ptr<Executor> GetExecutor() const {
         return executor_;
+    }
+
+    std::shared_ptr<ScanCancellationToken> GetCancellationToken() const {
+        return cancellation_token_;
     }
     std::shared_ptr<GlobalIndexResult> GetGlobalIndexResult() const {
         return global_index_result_;
@@ -129,6 +135,7 @@ class PAIMON_EXPORT ScanContext {
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<FormatTable> format_table_;
+    std::shared_ptr<ScanCancellationToken> cancellation_token_;
 };
 
 /// Filter configuration for table scan operations
@@ -212,6 +219,14 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note if not set, memory_pool is default pool
     ScanContextBuilder& WithMemoryPool(const std::shared_ptr<MemoryPool>& memory_pool);
+
+    /// Enable cooperative cancellation for managed append-only batch scans with Avro metadata.
+    /// Supports latest and numeric snapshot startup; unsupported modes are explicitly refused.
+    /// Manifest planning runs synchronously and bypasses shared manifest caches.
+    /// Blocking I/O, one decoder call and CPU sorting are not interrupted; no latency or memory
+    /// bound is implied. Cancel may run concurrently, but CreatePlan itself remains single-caller.
+    ScanContextBuilder& WithCancellationToken(
+        const std::shared_ptr<ScanCancellationToken>& cancellation_token);
     /// Set custom executor for task execution.
     /// @param executor The executor to use.
     /// @return Reference to this builder for method chaining.

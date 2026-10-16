@@ -97,6 +97,14 @@ class SnapshotReader {
         return scan_->GetSnapshotManager();
     }
 
+    const ScanCancellationToken* GetCancellationToken() const {
+        return scan_->GetCancellationToken();
+    }
+
+    Status CheckCancelled() const {
+        return scan_->CheckCancelled();
+    }
+
     const std::optional<Snapshot>& GetSpecifiedSnapshot() const {
         return scan_->GetSpecifiedSnapshot();
     }

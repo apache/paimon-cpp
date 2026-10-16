@@ -36,6 +36,7 @@
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/linked_hash_map.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/core/bucket/bucket_select_converter.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/manifest/manifest_entry.h"
@@ -134,6 +135,19 @@ class FileStoreScan {
         return this;
     }
 
+    FileStoreScan* WithCancellationToken(const std::shared_ptr<ScanCancellationToken>& token) {
+        cancellation_token_ = token;
+        return this;
+    }
+
+    const ScanCancellationToken* GetCancellationToken() const {
+        return cancellation_token_.get();
+    }
+
+    Status CheckCancelled() const {
+        return CheckScanCancellation(cancellation_token_.get());
+    }
+
     virtual FileStoreScan* EnableValueFilter() {
         return this;
     }
@@ -206,12 +220,14 @@ class FileStoreScan {
 
         /// Result `ManifestEntry` files with specific file kind.
         // will move the manifest_entries_
-        std::vector<ManifestEntry> Files(const FileKind& kind);
+        Result<std::vector<ManifestEntry>> Files(const FileKind& kind,
+                                                 const ScanCancellationToken* token = nullptr);
 
         using GroupFiles =
             LinkedHashMap<BinaryRow, LinkedHashMap<int32_t, std::vector<ManifestEntry>>>;
         /// Return a map group by partition and bucket.
-        static GroupFiles GroupByPartFiles(std::vector<ManifestEntry>&& files);
+        static Result<GroupFiles> GroupByPartFiles(std::vector<ManifestEntry>&& files,
+                                                   const ScanCancellationToken* token = nullptr);
 
      private:
         std::optional<Snapshot> snapshot_;
@@ -229,7 +245,8 @@ class FileStoreScan {
     /// Entries are deduplicated by identifier. A Delete cancels the corresponding Add, and
     /// lingering Delete entries are omitted from the result.
     static Status MergeLiveEntries(const std::vector<ManifestEntry>& unmerged_entries,
-                                   std::vector<ManifestEntry>* live_entries);
+                                   std::vector<ManifestEntry>* live_entries,
+                                   const ScanCancellationToken* token = nullptr);
 
  protected:
     /// @note Keep this thread-safe.
@@ -337,5 +354,6 @@ class FileStoreScan {
     std::shared_ptr<Metrics> metrics_;
     std::string table_path_;
     bool drop_stats_ = false;
+    std::shared_ptr<ScanCancellationToken> cancellation_token_;
 };
 }  // namespace paimon

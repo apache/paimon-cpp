@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "paimon/common/utils/rapidjson_util.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/macros.h"
@@ -323,11 +324,14 @@ void Snapshot::FromJson(const rapidjson::Value& obj) noexcept(false) {
         RapidJsonUtil::DeserializeKeyValue<std::optional<int64_t>>(obj, FIELD_NEXT_ROW_ID);
 }
 
-Result<Snapshot> Snapshot::FromPath(const std::shared_ptr<FileSystem>& fs,
-                                    const std::string& path) {
+Result<Snapshot> Snapshot::FromPath(const std::shared_ptr<FileSystem>& fs, const std::string& path,
+                                    const ScanCancellationToken* token) {
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     std::string json_str;
     PAIMON_RETURN_NOT_OK(fs->ReadFile(path, &json_str));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, Snapshot::FromJsonString(json_str));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     return snapshot;
 }
 

@@ -25,6 +25,7 @@
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
@@ -38,9 +39,10 @@ Result<std::shared_ptr<FormatTable>> FormatTableLoader::TryLoad(
     const std::shared_ptr<FileSystem>& file_system, const std::string& table_path,
     const std::string& branch, const std::map<std::string, std::string>& options,
     const std::optional<std::string>& specific_table_schema, const SchemaManager* schema_manager,
-    std::shared_ptr<TableSchema>* table_schema_out) {
+    std::shared_ptr<TableSchema>* table_schema_out, const ScanCancellationToken* token) {
     assert(table_schema_out != nullptr);
     table_schema_out->reset();
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
 
     std::shared_ptr<TableSchema> table_schema;
     if (branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema) {
@@ -55,19 +57,26 @@ Result<std::shared_ptr<FormatTable>> FormatTableLoader::TryLoad(
         const SchemaManager& reader =
             schema_manager != nullptr ? *schema_manager : own_schema_manager;
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                               reader.Latest());
+                               reader.Latest(token));
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
         if (!latest_schema) {
             return std::shared_ptr<FormatTable>();
         }
         table_schema = *latest_schema;
     }
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     *table_schema_out = table_schema;
 
     // From the schema alone: see `FormatTable::Create()`.
     PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
                            TableTypeDefine::IsFormatTable(table_schema->Options()));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token));
     if (!is_format_table) {
         return std::shared_ptr<FormatTable>();
+    }
+    if (token) {
+        return Status::NotImplemented(
+            "cooperative scan cancellation does not support format tables");
     }
     // A format table has no branches, so it is refused rather than served from the table path
     // under another branch's name. See `SchemaValidation::ValidateFormatTableSchema()`.

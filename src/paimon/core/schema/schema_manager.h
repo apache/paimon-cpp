@@ -37,6 +37,7 @@ class Schema;
 
 namespace paimon {
 class FileSystem;
+class ScanCancellationToken;
 
 /// Schema Manager to manage schema versions.
 class SchemaManager {
@@ -48,8 +49,10 @@ class SchemaManager {
 
     /// Read schema for schema id. Find schema in cache first.
     /// Safe to call concurrently.
-    Result<std::shared_ptr<TableSchema>> ReadSchema(int64_t schema_id) const;
-    Result<std::optional<std::shared_ptr<TableSchema>>> Latest() const;
+    Result<std::shared_ptr<TableSchema>> ReadSchema(
+        int64_t schema_id, const ScanCancellationToken* token = nullptr) const;
+    Result<std::optional<std::shared_ptr<TableSchema>>> Latest(
+        const ScanCancellationToken* token = nullptr) const;
     Result<std::unique_ptr<TableSchema>> CreateTable(
         const std::shared_ptr<arrow::Schema>& schema,
         const std::vector<std::string>& partition_keys,

@@ -32,6 +32,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/common/utils/scan_cancellation.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
@@ -139,6 +140,7 @@ class TableScanImpl {
     static std::unique_ptr<FileStoreScan> WithTablePath(std::unique_ptr<FileStoreScan>&& scan,
                                                         const ScanContext* context) {
         scan->WithTablePath(context->GetPath());
+        scan->WithCancellationToken(context->GetCancellationToken());
         return std::move(scan);
     }
 
@@ -262,6 +264,14 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     if (context->GetExecutor() == nullptr) {
         return Status::Invalid("executor is null pointer");
     }
+    const auto token = context->GetCancellationToken();
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
+    if (token && (context->IsStreamingMode() || context->GetRealtimeContext() ||
+                  context->GetFormatTable() || context->GetGlobalIndexResult())) {
+        return Status::NotImplemented(
+            "cooperative scan cancellation supports managed append-only snapshot batch scans, "
+            "not streaming, realtime, format tables or supplied global-index results");
+    }
 
     std::shared_ptr<ScanContext> shared_context = std::move(context);
     // A table the caller already loaded says what it is, so nothing is read to find out.
@@ -275,9 +285,14 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(shared_context->GetOptions(),
                                                 shared_context->GetSpecificFileSystem(), {}));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(shared_context->GetPath()));
     if (system_table_path) {
+        if (token) {
+            return Status::NotImplemented(
+                "cooperative scan cancellation does not support system tables");
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), shared_context->GetPath(),
@@ -294,12 +309,16 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
                                    BranchManager::NormalizeBranch(tmp_options.GetBranch()),
                                    shared_context->GetOptions(),
                                    shared_context->GetSpecificTableSchema(),
-                                   /*schema_manager=*/nullptr, &latest_schema));
+                                   /*schema_manager=*/nullptr, &latest_schema, token.get()));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
     if (format_table != nullptr) {
         return NewFormatTableScan(format_table, shared_context);
     }
     // With the schema the dispatch already read, so the managed path does not read it again.
-    return NewDataTableScan(shared_context, latest_schema);
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
+                           NewDataTableScan(shared_context, latest_schema));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
+    return scan;
 }
 
 namespace {
@@ -349,6 +368,8 @@ Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& 
 Result<std::unique_ptr<TableScan>> NewDataTableScan(
     const std::shared_ptr<ScanContext>& context,
     const std::shared_ptr<TableSchema>& loaded_schema) {
+    const auto token = context->GetCancellationToken();
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions tmp_options,
         CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(), {}));
@@ -363,23 +384,54 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
     } else {
         SchemaManager schema_manager(tmp_options.GetFileSystem(), context->GetPath(), branch);
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_table_schema,
-                               schema_manager.Latest());
+                               schema_manager.Latest(token.get()));
         if (latest_table_schema == std::nullopt) {
             return Status::Invalid("not found latest schema");
         }
         table_schema = latest_table_schema.value();
     }
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
     PAIMON_ASSIGN_OR_RAISE(bool read_optimized,
                            OptionsUtils::GetValueFromMap<bool>(context->GetOptions(),
                                                                kReadOptimizedScanOption, false));
     // merge options
     auto options = table_schema->Options();
     for (const auto& [key, value] : context->GetOptions()) {
+        PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
         options[key] = value;
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(), {}));
     core_options.WithCache(context->GetCache());
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
+    if (token) {
+        if (!table_schema->PrimaryKeys().empty() || core_options.DataEvolutionEnabled() ||
+            core_options.DeletionVectorsEnabled()) {
+            return Status::NotImplemented(
+                "cooperative scan cancellation does not support primary keys, data evolution "
+                "or deletion vectors");
+        }
+        if (core_options.GetBucket() != -1 && core_options.GetBucket() < 1) {
+            return Status::NotImplemented(
+                "cooperative scan cancellation supports fixed and unaware buckets only");
+        }
+        if (core_options.GetManifestFormat()->Identifier() != "avro") {
+            return Status::NotImplemented(
+                "cooperative scan cancellation supports Avro manifest metadata only");
+        }
+        const auto startup = core_options.GetStartupMode();
+        const bool latest =
+            startup == StartupMode::Latest() || startup == StartupMode::LatestFull();
+        const bool numeric_snapshot = (startup == StartupMode::FromSnapshot() ||
+                                       startup == StartupMode::FromSnapshotFull()) &&
+                                      core_options.GetScanSnapshotId().has_value();
+        if (!latest && !numeric_snapshot) {
+            return Status::NotImplemented(
+                "cooperative scan cancellation supports latest or numeric snapshot startup only");
+        }
+        // Disable both manifest cache layers before their query-owned readers capture options.
+        core_options.WithCache(nullptr);
+    }
 
     PAIMON_RETURN_NOT_OK(
         ValidateRealtimeScan(*table_schema, core_options, *context, read_optimized));
@@ -420,12 +472,14 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
                            TableScanImpl::CreateFileStoreScan(
                                path_factory, arrow_schema, table_schema, core_options,
                                context->GetExecutor(), context->GetMemoryPool(), context.get()));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<SplitGenerator> split_generator,
         TableScanImpl::CreateSplitGenerator(table_schema, core_options, context.get()));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
                            TableScanImpl::CreateIndexFileHandler(core_options, path_factory,
                                                                  context->GetMemoryPool()));
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
     auto snapshot_reader = std::make_shared<SnapshotReader>(
         file_store_scan, path_factory, std::move(split_generator), std::move(index_file_handler));
     const bool pk_table = !table_schema->PrimaryKeys().empty();
@@ -439,6 +493,7 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
     auto batch_scan = std::make_unique<DataTableBatchScan>(
         /*pk_table=*/pk_table, core_options, snapshot_reader, read_optimized, context->GetLimit(),
         /*realtime_pk_scan=*/pk_table && context->GetRealtimeContext() != nullptr);
+    PAIMON_RETURN_NOT_OK(CheckScanCancellation(token.get()));
     if (context->GetRealtimeContext()) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context,
                                RealtimeContextImpl::Cast(context->GetRealtimeContext()));
