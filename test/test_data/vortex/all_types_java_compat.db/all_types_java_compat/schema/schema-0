@@ -1,0 +1,125 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "f_boolean",
+    "type" : "BOOLEAN"
+  }, {
+    "id" : 1,
+    "name" : "f_tinyint",
+    "type" : "TINYINT"
+  }, {
+    "id" : 2,
+    "name" : "f_smallint",
+    "type" : "SMALLINT"
+  }, {
+    "id" : 3,
+    "name" : "f_int",
+    "type" : "INT"
+  }, {
+    "id" : 4,
+    "name" : "f_bigint",
+    "type" : "BIGINT"
+  }, {
+    "id" : 5,
+    "name" : "f_float",
+    "type" : "FLOAT"
+  }, {
+    "id" : 6,
+    "name" : "f_double",
+    "type" : "DOUBLE"
+  }, {
+    "id" : 7,
+    "name" : "f_char",
+    "type" : "CHAR(8)"
+  }, {
+    "id" : 8,
+    "name" : "f_varchar",
+    "type" : "VARCHAR(20)"
+  }, {
+    "id" : 9,
+    "name" : "f_binary",
+    "type" : "BINARY(6)"
+  }, {
+    "id" : 10,
+    "name" : "f_varbinary",
+    "type" : "VARBINARY(20)"
+  }, {
+    "id" : 11,
+    "name" : "f_date",
+    "type" : "DATE"
+  }, {
+    "id" : 12,
+    "name" : "f_time",
+    "type" : "TIME(3)"
+  }, {
+    "id" : 13,
+    "name" : "f_ts_3",
+    "type" : "TIMESTAMP(3)"
+  }, {
+    "id" : 14,
+    "name" : "f_ts_6",
+    "type" : "TIMESTAMP(6)"
+  }, {
+    "id" : 15,
+    "name" : "f_ltz_3",
+    "type" : "TIMESTAMP(3) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 16,
+    "name" : "f_decimal_10_2",
+    "type" : "DECIMAL(10, 2)"
+  }, {
+    "id" : 17,
+    "name" : "f_decimal_38_18",
+    "type" : "DECIMAL(38, 18)"
+  }, {
+    "id" : 18,
+    "name" : "f_array_int",
+    "type" : {
+      "type" : "ARRAY",
+      "element" : "INT"
+    }
+  }, {
+    "id" : 19,
+    "name" : "f_array_array_int",
+    "type" : {
+      "type" : "ARRAY",
+      "element" : {
+        "type" : "ARRAY",
+        "element" : "INT"
+      }
+    }
+  }, {
+    "id" : 20,
+    "name" : "f_vector_float",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "FLOAT",
+      "length" : 3
+    }
+  }, {
+    "id" : 21,
+    "name" : "f_row",
+    "type" : {
+      "type" : "ROW",
+      "fields" : [ {
+        "id" : 22,
+        "name" : "a",
+        "type" : "INT"
+      }, {
+        "id" : 23,
+        "name" : "b",
+        "type" : "STRING"
+      } ]
+    }
+  } ],
+  "highestFieldId" : 23,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "file.format" : "vortex"
+  },
+  "timeMillis" : 1791515833203
+}

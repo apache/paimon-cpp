@@ -40,6 +40,7 @@
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -3722,6 +3723,152 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
         check_compatibility(table_path, predicate, expected->Slice(4, 2));
         check_compatibility(table_path, predicate_without_stats, expected);
     }
+}
+#endif
+
+#ifdef PAIMON_ENABLE_VORTEX
+TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibility) {
+    // Fixture written by Paimon Java 2.0.0 with file.format=vortex; see
+    // test/test_data/vortex/append_java_compat.db/append_java_compat/README.md. This verifies that
+    // paimon-cpp reads back a Vortex table produced by the Java implementation.
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        arrow::field("name", arrow::utf8()),
+    };
+    std::shared_ptr<arrow::DataType> data_type = arrow::struct_(fields);
+    std::shared_ptr<arrow::Array> expected_array =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
+[0, 1, "one"],
+[0, 2, null],
+[0, 3, "three"],
+[0, 4, "four"],
+[0, 5, "five"]
+])")
+            .ValueOrDie();
+    auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
+
+    const std::string table_name = "append_java_compat";
+    const std::string table_path = GetDataDir() + "/vortex/" + table_name + ".db/" + table_name;
+    ScanContextBuilder scan_context_builder(table_path);
+    ReadContextBuilder read_context_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         table_read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+    ASSERT_TRUE(expected->Equals(actual))
+        << "actual: " << (actual == nullptr ? "null" : actual->ToString())
+        << "\nexpected: " << expected->ToString();
+}
+
+// The Java fixture stores TIMESTAMP_LTZ in UTC while paimon reads it in the reader's own zone, so
+// the same file must yield the same instants under any timezone.
+TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibilityLtzAcrossTimezones) {
+    const std::string table_path =
+        GetDataDir() + "/vortex/all_types_java_compat.db/all_types_java_compat";
+    std::shared_ptr<arrow::Array> utc;
+    std::shared_ptr<arrow::Array> shanghai;
+    const std::string timezones[] = {"UTC", "Asia/Shanghai"};
+    for (const std::string& tz : timezones) {
+        TimezoneGuard timezone_guard(tz);
+        ScanContextBuilder scan_context_builder(table_path);
+        ReadContextBuilder read_context_builder(table_path);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                             scan_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                             TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                             read_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                             TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                             table_read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
+        ASSERT_EQ(actual->num_chunks(), 1);
+        const auto& row = checked_cast<const arrow::StructArray&>(*actual->chunk(0));
+        std::shared_ptr<arrow::Array> column = row.GetFieldByName("f_ltz_3");
+        ASSERT_NE(column, nullptr);
+        ASSERT_EQ(column->type()->ToString(), "timestamp[ms, tz=" + tz + "]");
+        if (tz == "UTC") {
+            utc = column;
+        } else {
+            shanghai = column;
+        }
+    }
+    arrow::Result<std::shared_ptr<arrow::Array>> viewed = shanghai->View(utc->type());
+    ASSERT_TRUE(viewed.ok()) << viewed.status().ToString();
+    ASSERT_TRUE((*viewed)->Equals(*utc))
+        << "shanghai: " << shanghai->ToString() << "\nutc: " << utc->ToString();
+}
+
+TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibilityAllTypes) {
+    // Fixture written by Paimon Java 2.0.0 with file.format=vortex; see
+    // test/test_data/vortex/all_types_java_compat.db/all_types_java_compat/README.md. Covers every
+    // field type paimon-cpp accepts for the Vortex format, including an all-null row.
+    TimezoneGuard timezone_guard("UTC");
+    std::string timezone = DateTimeUtils::GetLocalTimezoneName();
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("f_boolean", arrow::boolean()),
+        arrow::field("f_tinyint", arrow::int8()),
+        arrow::field("f_smallint", arrow::int16()),
+        arrow::field("f_int", arrow::int32()),
+        arrow::field("f_bigint", arrow::int64()),
+        arrow::field("f_float", arrow::float32()),
+        arrow::field("f_double", arrow::float64()),
+        arrow::field("f_char", arrow::utf8()),
+        arrow::field("f_varchar", arrow::utf8()),
+        arrow::field("f_binary", arrow::binary()),
+        arrow::field("f_varbinary", arrow::binary()),
+        arrow::field("f_date", arrow::date32()),
+        arrow::field("f_time", arrow::time32(arrow::TimeUnit::MILLI)),
+        arrow::field("f_ts_3", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        arrow::field("f_ts_6", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("f_ltz_3", arrow::timestamp(arrow::TimeUnit::MILLI, timezone)),
+        arrow::field("f_decimal_10_2", arrow::decimal128(10, 2)),
+        arrow::field("f_decimal_38_18", arrow::decimal128(38, 18)),
+        arrow::field("f_array_int", arrow::list(arrow::int32())),
+        arrow::field("f_array_array_int", arrow::list(arrow::list(arrow::int32()))),
+        arrow::field("f_vector_float", arrow::fixed_size_list(arrow::float32(), 3)),
+        arrow::field("f_row", arrow::struct_({arrow::field("a", arrow::int32()),
+                                              arrow::field("b", arrow::utf8())}))};
+    std::shared_ptr<arrow::DataType> data_type = arrow::struct_(fields);
+    std::shared_ptr<arrow::Array> expected_array =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
+[0, true, -5, -1000, 1, 10000000001, 1.25, 10.5, "char0001", "value-1", "\u0001\u0002\u0003\u0004\u0005\u0006", "\u0004\u0005", 20000, 3723123, "2023-11-14 22:13:21.123", "2023-11-14 22:13:21.123456", "2023-11-14 22:14:21.321", "1.25", "12345678901234567890.123456789012345678", [1, 2], [[1, 2], [3]], [1.0, 2.0, 3.0], {"a": 1, "b": "x"}],
+[0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+[0, false, -3, -998, 10, 10000000010, 3.25, 12.5, "char0010", "value-10", "\u000a\u000b\u000c\u000d\u000e\u000f", "\u0006\u0007", 20002, 3733123, "2023-11-14 22:13:31.123", "2023-11-14 22:13:31.123654", "2023-11-14 22:14:31.321", "10.25", "12345678901234567892.123456789012345678", [10, 11], [[10, 11], [12]], [4.0, 5.0, 6.0], {"a": 2, "b": "y"}]
+])")
+            .ValueOrDie();
+    auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
+
+    const std::string table_name = "all_types_java_compat";
+    const std::string table_path = GetDataDir() + "/vortex/" + table_name + ".db/" + table_name;
+    ScanContextBuilder scan_context_builder(table_path);
+    ReadContextBuilder read_context_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         table_read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+    ASSERT_TRUE(expected->Equals(actual))
+        << "actual: " << (actual == nullptr ? "null" : actual->ToString())
+        << "\nexpected: " << expected->ToString();
 }
 #endif
 

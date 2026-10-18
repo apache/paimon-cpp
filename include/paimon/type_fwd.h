@@ -38,7 +38,8 @@ class Result;
 
 class Status;
 
-class MemoryPool;
+// A real public type; the check misfires in TUs that also use arrow::MemoryPool.
+class MemoryPool;  // NOLINT(bugprone-forward-declaration-namespace)
 
 class FileFormat;
 

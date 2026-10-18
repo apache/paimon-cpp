@@ -67,6 +67,9 @@ jobs:
         uses: ./.github/actions/setup-ccache
         with:
           cache-key-prefix: ccache-gcc8-test
+      - name: Install flatc and libclang (Vortex)
+        shell: bash
+        run: ci/scripts/setup_flatc.sh
       - name: Build Paimon
         shell: bash
         env:

@@ -22,6 +22,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
@@ -37,7 +38,12 @@ Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& 
         return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
     }
 
-    SchemaManager schema_manager(file_system, table_path);
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
+    PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
+    if (StringUtils::EqualsIgnoreCase(branch, Identifier::kDefaultMainBranch)) {
+        branch = Identifier::kDefaultMainBranch;
+    }
+    SchemaManager schema_manager(file_system, table_path, branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                            schema_manager.Latest());
     if (!latest_schema) {

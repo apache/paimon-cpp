@@ -40,7 +40,7 @@ class PAIMON_EXPORT Table {
     ///
     /// @param file_system File system used to access the table directory and schema files.
     /// @param table_path Root path of the table in the file system.
-    /// @param identifier Logical table identifier used for naming and error messages.
+    /// @param identifier Logical table identifier selecting the schema branch and table name.
     /// @return A table initialized with the latest available schema.
     static Result<std::shared_ptr<Table>> Create(const std::shared_ptr<FileSystem>& file_system,
                                                  const std::string& table_path,

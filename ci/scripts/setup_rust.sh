@@ -15,8 +15,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Install the Rust toolchain used by the Lance, Mosaic, and full-text index FFI builds, plus
-# cbindgen required by Lance.
+# Install the Rust toolchain used by the Lance, Mosaic, Vortex and full-text index FFI builds,
+# plus cbindgen required by Lance.
 #
 # The dev container (see .devcontainer/) already has these preinstalled;
 # this script is for the GitHub Actions runners and is called before ci/scripts/build_paimon.sh.
@@ -75,6 +75,11 @@ if ! command -v protoc >/dev/null 2>&1 || \
     export PATH="${protoc_home}/bin:${PATH}"
     echo "${protoc_home}/bin" >> "${GITHUB_PATH:-/dev/null}" || true
 fi
+
+# Vortex's FFI build pins rust-version >= 1.95 and is invoked with RUSTUP_TOOLCHAIN=stable (see
+# cmake_modules/ThirdpartyToolchain.cmake). Install the stable channel alongside the pinned default
+# so Vortex builds with it while Lance, Mosaic and tantivy-fts keep using the default toolchain.
+rustup toolchain install stable --profile minimal
 
 # cbindgen is used by the crate's build.rs to emit the C header that the
 # C++ side includes. Corrosion will also run cbindgen at CMake configure
