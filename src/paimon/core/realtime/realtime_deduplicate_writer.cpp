@@ -31,9 +31,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/append/append_only_writer.h"
-#include "paimon/core/compact/compact_deletion_file.h"
 #include "paimon/core/core_options.h"
-#include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
 #include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -69,11 +67,10 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
     const std::shared_ptr<RealtimeSchemaLayout>& schema_layout, int64_t schema_id,
     const std::vector<std::string>& deduplicate_key_fields,
     const std::vector<std::shared_ptr<DataFileMeta>>& restored_data_files,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-    const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer, const CoreOptions& options,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory, const CoreOptions& options,
     const std::string& temp_directory, const std::shared_ptr<MemoryPool>& memory_pool) {
     if (!realtime_context || !file_writer || !schema_layout || !data_file_path_factory ||
-        !dv_maintainer || !memory_pool) {
+        !memory_pool) {
         return Status::Invalid("deduplicate real-time writer is missing a dependency");
     }
     PAIMON_ASSIGN_OR_RAISE(int32_t key_position,
@@ -108,14 +105,12 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
             schema_layout->CommitSchema(), schema_id,
             schema_layout->StoreWriteSchema()->field(key_position), restored_data_files,
             data_file_path_factory, options.GetFileSystem(), memory_pool, options));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<RealtimeOffsetFileIndexLookup> committed_lookup,
+    PAIMON_RETURN_NOT_OK(
         store_state.deduplicate_state->AttachFileIndexLookup(created_lookup, store));
-    (void)committed_lookup;
     return std::shared_ptr<RealtimeDeduplicateWriter>(new RealtimeDeduplicateWriter(
         store, file_writer, schema_layout, schema_layout->StoreWriteSchema()->field(key_position),
-        data_file_path_factory, options.GetFileSystem(), dv_maintainer, store_state.initial_offset,
-        memory_pool, store_state.deduplicate_state, options.ToMap()));
+        data_file_path_factory, options.GetFileSystem(), store_state.initial_offset, memory_pool,
+        options.ToMap()));
 }
 
 RealtimeDeduplicateWriter::RealtimeDeduplicateWriter(
@@ -124,10 +119,8 @@ RealtimeDeduplicateWriter::RealtimeDeduplicateWriter(
     std::shared_ptr<RealtimeSchemaLayout> schema_layout,
     std::shared_ptr<arrow::Field> deduplicate_key_field,
     std::shared_ptr<DataFilePathFactory> data_file_path_factory,
-    std::shared_ptr<FileSystem> file_system, std::shared_ptr<BucketedDvMaintainer> dv_maintainer,
-    int64_t next_offset, std::shared_ptr<MemoryPool> memory_pool,
-    std::shared_ptr<RealtimeDeduplicateState> deduplicate_state,
-    std::map<std::string, std::string> options)
+    std::shared_ptr<FileSystem> file_system, int64_t next_offset,
+    std::shared_ptr<MemoryPool> memory_pool, std::map<std::string, std::string> options)
     : arrow_pool_(GetArrowPool(memory_pool)),
       realtime_store_(std::move(realtime_store)),
       file_writer_(std::move(file_writer)),
@@ -135,9 +128,7 @@ RealtimeDeduplicateWriter::RealtimeDeduplicateWriter(
       deduplicate_key_field_(std::move(deduplicate_key_field)),
       data_file_path_factory_(std::move(data_file_path_factory)),
       file_system_(std::move(file_system)),
-      dv_maintainer_(std::move(dv_maintainer)),
       memory_pool_(std::move(memory_pool)),
-      deduplicate_state_(std::move(deduplicate_state)),
       options_(std::move(options)),
       next_offset_(next_offset) {}
 
@@ -214,26 +205,18 @@ Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compa
         std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
         segments.swap(sealed_segments_);
     }
-
+    if (segments.empty()) {
+        return CommitIncrement(DataIncrement({}, {}, {}, {}, {}),
+                               CompactIncrement({}, {}, {}, {}, {}), nullptr);
+    }
+    auto deleted_offsets = std::make_shared<RoaringBitmap64>();
     std::vector<std::shared_ptr<DataFileMeta>> new_files;
     std::vector<std::shared_ptr<IndexFileMeta>> new_index_files;
     std::vector<std::shared_ptr<IndexFileMeta>> deleted_index_files;
-    bool has_deletions = false;
     for (const std::shared_ptr<RealtimeSegmentHandle>& segment : segments) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const RoaringBitmap64> offset_deletions,
                                ArrowDeduplicateRealtimeStore::OffsetDeletionsOf(segment));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeOffsetFileIndexLookup> prepared_lookup,
-                               deduplicate_state_->AcquireFileLookup());
-        using FileDeletions = std::map<std::string, RoaringBitmap32>;
-        PAIMON_ASSIGN_OR_RAISE(FileDeletions file_deletions,
-                               prepared_lookup->LookupFilePositions(*offset_deletions));
-        for (const auto& [file_name, positions] : file_deletions) {
-            for (RoaringBitmap32::Iterator position = positions.Begin();
-                 position != positions.End(); ++position) {
-                PAIMON_RETURN_NOT_OK(dv_maintainer_->NotifyNewDeletion(file_name, *position));
-                has_deletions = true;
-            }
-        }
+        *deleted_offsets |= *offset_deletions;
 
         if (segment->GetRowCount() == 0) {
             continue;
@@ -272,23 +255,16 @@ Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compa
         new_files.push_back(data_file);
         AppendAll(increment.NewIndexFiles(), &new_index_files);
         AppendAll(increment.DeletedIndexFiles(), &deleted_index_files);
-        PAIMON_RETURN_NOT_OK(
-            deduplicate_state_->RegisterPreparedDataFile(data_file, segment->GetOffsetRange()));
         offset_index_guard.Release();
     }
 
-    std::shared_ptr<CompactDeletionFile> deletion_file;
-    if (has_deletions) {
-        PAIMON_ASSIGN_OR_RAISE(deletion_file, CompactDeletionFile::LazyGeneration(dv_maintainer_));
-    }
     DataIncrement data_increment(std::move(new_files), {}, {}, std::move(new_index_files),
                                  std::move(deleted_index_files));
     CompactIncrement compact_increment({}, {}, {}, {}, {});
-    CommitIncrement result(data_increment, compact_increment, deletion_file);
-    if (!segments.empty()) {
-        result.SetRealtimeOffsetRange(OffsetRange(segments.front()->GetOffsetRange().begin,
-                                                  segments.back()->GetOffsetRange().end));
-    }
+    CommitIncrement result(data_increment, compact_increment, nullptr);
+    result.SetRealtimeDeletedOffsets(std::move(deleted_offsets));
+    result.SetRealtimeOffsetRange(OffsetRange(segments.front()->GetOffsetRange().begin,
+                                              segments.back()->GetOffsetRange().end));
     return result;
 }
 

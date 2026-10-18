@@ -123,6 +123,8 @@ TEST(SchemaValidationTest, TestRealtime) {
     std::map<std::string, std::string> deletion_vector_options = valid_options;
     deletion_vector_options[Options::DELETION_VECTORS_ENABLED] = "true";
     ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, deletion_vector_options));
+    deletion_vector_options[Options::DELETION_VECTOR_BITMAP64] = "true";
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, deletion_vector_options));
 
     std::map<std::string, std::string> spill_options = valid_options;
     spill_options[Options::REALTIME_SPILL_ENABLED] = "true";
@@ -186,6 +188,13 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
     spill_options[Options::REALTIME_SPILL_ENABLED] = "true";
     ASSERT_NOK_WITH_MSG(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, spill_options),
                         "does not support 'realtime.spill-enabled=true'");
+
+    std::map<std::string, std::string> bitmap64_options = valid_options;
+    bitmap64_options[Options::DELETION_VECTOR_BITMAP64] = "true";
+    ASSERT_NOK_WITH_MSG(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, bitmap64_options),
+                        "does not support 'deletion-vectors.bitmap64=true'");
+    bitmap64_options[Options::DELETION_VECTOR_BITMAP64] = "false";
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, bitmap64_options));
 
     const std::shared_ptr<arrow::Schema> no_offset_schema =
         arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/false)});

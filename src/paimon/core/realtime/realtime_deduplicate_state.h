@@ -18,13 +18,11 @@
 
 #pragma once
 
-#include <map>
+#include <cstdint>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <vector>
 
-#include "paimon/realtime/offset_range.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -34,25 +32,14 @@ struct DataFileMeta;
 
 class RealtimeOffsetFileIndexLookup;
 
-/// Coordinates the two lookup views derived from the same committed snapshot.
-/// `RealtimeOffsetFileIndexLookup` is used by PrepareCommit to map deleted offsets to physical
-/// data-file row positions for deletion-vector generation. Its `KeyOffsetLookup` is installed in
-/// `ArrowDeduplicateRealtimeStore` so writes can find the previously committed offset for a key.
-/// Access is synchronized here so attaching and replacing the committed lookups cannot race.
-/// Prepared data files are retained with the shared context across writer handoff until their
-/// offset ranges are committed, so later prepares can generate deletion vectors for those files.
+/// Maintains the committed key lookup shared by successive writers of one partition-bucket.
+/// Refresh installs the new snapshot's key lookup together with committed offset advancement.
+/// Pending deletions stay as logical offsets in the store's immutable sealed checkpoints;
+/// RealtimeCommitProgress carries them to commit, which materializes snapshot-specific DVs.
 class RealtimeDeduplicateState {
  public:
-    Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> AttachFileIndexLookup(
-        const std::shared_ptr<RealtimeOffsetFileIndexLookup>& file_lookup,
-        const std::shared_ptr<RealtimeStore>& store);
-
-    /// Pins the committed and still-pending prepared files together for deletion-vector lookup.
-    Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> AcquireFileLookup() const;
-
-    /// Retains a completed prepared file for later writers sharing this context.
-    Status RegisterPreparedDataFile(const std::shared_ptr<DataFileMeta>& data_file,
-                                    const OffsetRange& offset_range);
+    Status AttachFileIndexLookup(const std::shared_ptr<RealtimeOffsetFileIndexLookup>& file_lookup,
+                                 const std::shared_ptr<RealtimeStore>& store);
 
     Status InstallCommittedSnapshot(
         int64_t committed_end_offset,
@@ -60,15 +47,8 @@ class RealtimeDeduplicateState {
         const std::shared_ptr<RealtimeStore>& store);
 
  private:
-    struct PreparedDataFile {
-        std::shared_ptr<DataFileMeta> data_file;
-        OffsetRange offset_range;
-    };
-
     mutable std::mutex mutex_;
     std::shared_ptr<RealtimeOffsetFileIndexLookup> committed_file_lookup_;
-    std::map<std::string, PreparedDataFile> prepared_data_files_;
-    int64_t committed_end_offset_ = 0;
 };
 
 }  // namespace paimon

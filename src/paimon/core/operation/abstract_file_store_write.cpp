@@ -101,6 +101,11 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
     if (PAIMON_UNLIKELY(batch == nullptr)) {
         return Status::Invalid("batch is null pointer");
     }
+    std::shared_lock<std::shared_mutex> write_lock(realtime_write_completion_mutex_,
+                                                   std::defer_lock);
+    if (IsRealtimeWrite()) {
+        write_lock.lock();
+    }
     PAIMON_RETURN_NOT_OK(CheckRealtimeWriteUsable());
     // in FileStoreWrite::Create() we have checked the table kind and bucket mode, here we only
     // check the bucket id in batch
@@ -180,7 +185,8 @@ Status AbstractFileStoreWrite::Seal() {
             return PoisonRealtimeWrite(status);
         }
     }
-    return Status::OK();
+    std::unique_lock<std::shared_mutex> completion_lock(realtime_write_completion_mutex_);
+    return CheckRealtimeWriteUsable();
 }
 
 Status AbstractFileStoreWrite::Compact(const std::map<std::string, std::string>& partition,
@@ -354,6 +360,10 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareCommi
         // Prepare may have drained an earlier bucket or partially written the failing bucket.
         return PoisonRealtimeWrite(result.status());
     }
+    // A write may have changed a sealed checkpoint before failing. Wait until every in-flight
+    // write has published success or poisoned the context before exposing any commit messages.
+    std::unique_lock<std::shared_mutex> completion_lock(realtime_write_completion_mutex_);
+    PAIMON_RETURN_NOT_OK(CheckRealtimeWriteUsable());
     return result;
 }
 
@@ -409,7 +419,7 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealt
                                                      partition_values.end());
         result.push_back(RealtimeCommitProgress{
             committable, RealtimePartitionBucket(std::move(partition), snapshot.bucket),
-            increment.GetRealtimeOffsetRange().value()});
+            increment.GetRealtimeOffsetRange().value(), increment.GetRealtimeDeletedOffsets()});
     }
     {
         std::lock_guard<std::mutex> lock(realtime_metrics_mutex_);

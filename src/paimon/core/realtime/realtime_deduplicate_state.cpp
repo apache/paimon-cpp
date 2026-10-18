@@ -18,18 +18,15 @@
 
 #include "paimon/core/realtime/realtime_deduplicate_state.h"
 
-#include <set>
 #include <utility>
 
-#include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/realtime/arrow_deduplicate_realtime_store.h"
 #include "paimon/core/realtime/realtime_offset_file_index_lookup.h"
 #include "paimon/macros.h"
 
 namespace paimon {
 
-Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>>
-RealtimeDeduplicateState::AttachFileIndexLookup(
+Status RealtimeDeduplicateState::AttachFileIndexLookup(
     const std::shared_ptr<RealtimeOffsetFileIndexLookup>& file_lookup,
     const std::shared_ptr<RealtimeStore>& store) {
     if (!file_lookup || !store) {
@@ -45,54 +42,11 @@ RealtimeDeduplicateState::AttachFileIndexLookup(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (committed_file_lookup_) {
-            return committed_file_lookup_;
+            return Status::OK();
         }
         PAIMON_RETURN_NOT_OK(deduplicate_store->AttachCommittedKeyOffsetLookup(key_lookup));
         committed_file_lookup_ = file_lookup;
     }
-    return file_lookup;
-}
-
-Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> RealtimeDeduplicateState::AcquireFileLookup()
-    const {
-    std::shared_ptr<RealtimeOffsetFileIndexLookup> committed_lookup;
-    std::vector<std::shared_ptr<DataFileMeta>> data_files;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!committed_file_lookup_) {
-            return Status::Invalid("deduplicate file lookup is not attached");
-        }
-        committed_lookup = committed_file_lookup_;
-        data_files.reserve(committed_lookup->DataFiles().size() + prepared_data_files_.size());
-        std::set<std::string> file_names;
-        for (const std::shared_ptr<DataFileMeta>& data_file : committed_lookup->DataFiles()) {
-            if (file_names.insert(data_file->file_name).second) {
-                data_files.push_back(data_file);
-            }
-        }
-        for (const auto& [file_name, prepared] : prepared_data_files_) {
-            if (file_names.insert(file_name).second) {
-                data_files.push_back(prepared.data_file);
-            }
-        }
-    }
-    return committed_lookup->WithDataFiles(data_files);
-}
-
-Status RealtimeDeduplicateState::RegisterPreparedDataFile(
-    const std::shared_ptr<DataFileMeta>& data_file, const OffsetRange& offset_range) {
-    if (!data_file || offset_range.begin < 0 || offset_range.begin >= offset_range.end) {
-        return Status::Invalid("invalid prepared data file or offset range");
-    }
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!committed_file_lookup_) {
-        return Status::Invalid("deduplicate file lookup is not attached");
-    }
-    if (offset_range.end <= committed_end_offset_) {
-        return Status::OK();
-    }
-    prepared_data_files_.insert_or_assign(data_file->file_name,
-                                          PreparedDataFile{data_file, offset_range});
     return Status::OK();
 }
 
@@ -125,14 +79,6 @@ Status RealtimeDeduplicateState::InstallCommittedSnapshot(
         PAIMON_RETURN_NOT_OK(deduplicate_store->AdvanceCommittedOffsetAndLookup(
             committed_end_offset, next_key_lookup));
         committed_file_lookup_ = std::move(next_file_lookup);
-        committed_end_offset_ = committed_end_offset;
-        for (auto iter = prepared_data_files_.begin(); iter != prepared_data_files_.end();) {
-            if (iter->second.offset_range.end <= committed_end_offset_) {
-                iter = prepared_data_files_.erase(iter);
-            } else {
-                ++iter;
-            }
-        }
     }
     return Status::OK();
 }

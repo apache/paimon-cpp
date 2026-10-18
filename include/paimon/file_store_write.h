@@ -115,7 +115,9 @@ class PAIMON_EXPORT FileStoreWrite {
     /// Each range is returned atomically with the commit message generated from the same sealed
     /// segments. Repeated calls return incremental progress. The upstream coordinator must retain
     /// every result until it is committed and include all earlier prepared-but-uncommitted
-    /// progress when a later checkpoint subsumes it.
+    /// progress when a later checkpoint subsumes it. In deduplicate mode the result also retains
+    /// an immutable deleted-offset bitmap; physical deletion vectors are generated at commit,
+    /// not at prepare. Preserve the complete progress, not just its CommitMessage.
     ///
     /// @param commit_identifier Identifier of this prepare-commit operation in streaming mode.
     /// @return Real-time commit messages with their partition-bucket offset ranges.

@@ -50,6 +50,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/metrics/commit_metrics.h"
@@ -83,6 +84,7 @@
 #include "paimon/scan_context.h"
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/testing/mock/mock_index_path_factory.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
@@ -214,6 +216,26 @@ class QueryTrackingRealtimeStore final : public DelegatingRealtimeStore {
  private:
     std::shared_ptr<std::atomic<bool>> saw_query_predicate_;
     std::shared_ptr<std::weak_ptr<RealtimeReadView>> query_view_;
+};
+
+// Publishes a competing snapshot after the attempt has already materialized its DVs.
+class InterleavingSnapshotFileSystem final : public LocalFileSystem {
+ public:
+    InterleavingSnapshotFileSystem(std::string snapshot_path, std::function<Status()> interleave)
+        : snapshot_path_(std::move(snapshot_path)), interleave_(std::move(interleave)) {}
+
+    Status AtomicStore(const std::string& path, const std::string& content) override {
+        if (path == snapshot_path_ && interleave_) {
+            std::function<Status()> interleave = std::move(interleave_);
+            PAIMON_RETURN_NOT_OK(interleave());
+            return Status::IOError("injected snapshot publication conflict");
+        }
+        return FileSystem::AtomicStore(path, content);
+    }
+
+ private:
+    std::string snapshot_path_;
+    std::function<Status()> interleave_;
 };
 
 class SnapshotConflictFileSystem final : public LocalFileSystem {
@@ -1319,11 +1341,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWritesDeletionVector) {
         std::dynamic_pointer_cast<CommitMessageImpl>(second_progress[0].commit_message);
     ASSERT_NE(nullptr, second_message);
     ASSERT_EQ(1, second_message->GetNewFilesIncrement().NewFiles().size());
-    const std::vector<std::shared_ptr<IndexFileMeta>>& deletion_vector_files =
-        second_message->GetCompactIncrement().NewIndexFiles();
-    ASSERT_EQ(1, deletion_vector_files.size());
-    ASSERT_EQ(DeletionVectorsIndexFile::DELETION_VECTORS_INDEX,
-              deletion_vector_files[0]->IndexType());
+    ASSERT_TRUE(second_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, second_progress[0].deleted_offsets);
+    ASSERT_FALSE(second_progress[0].deleted_offsets->IsEmpty());
 
     ASSERT_OK_AND_ASSIGN(int64_t second_snapshot_id,
                          Commit(second_progress, /*commit_identifier=*/1));
@@ -1341,6 +1361,157 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWritesDeletionVector) {
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
     ASSERT_EQ(expected_rows, disk_rows);
+}
+
+TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateCommitRetryMergesLatestDv) {
+    ConfigureRealtimeDeduplicateTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> initial_batch,
+        MakeBatch({Row{1, "old-one", "p0"}, Row{2, "two", "p0"}, Row{3, "three", "p0"}},
+                  /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(initial_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> initial_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, initial_progress.size());
+    ASSERT_NE(nullptr, initial_progress[0].deleted_offsets);
+    ASSERT_TRUE(initial_progress[0].deleted_offsets->IsEmpty());
+    ASSERT_OK_AND_ASSIGN(int64_t initial_snapshot,
+                         Commit(initial_progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(initial_snapshot));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> update_batch,
+                         MakeBatch({Row{1, "new-one", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(update_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_NE(nullptr, progress[0].deleted_offsets);
+    ASSERT_EQ("{0}", progress[0].deleted_offsets->ToString());
+    auto initial_message =
+        std::dynamic_pointer_cast<CommitMessageImpl>(initial_progress[0].commit_message);
+    auto update_message = std::dynamic_pointer_cast<CommitMessageImpl>(progress[0].commit_message);
+    ASSERT_NE(nullptr, initial_message);
+    ASSERT_NE(nullptr, update_message);
+    ASSERT_TRUE(update_message->GetCompactIncrement().IsEmpty());
+    std::vector<RealtimeCommitProgress> missing_deletions = progress;
+    missing_deletions[0].deleted_offsets.reset();
+    ASSERT_NOK_WITH_MSG(Commit(missing_deletions, /*commit_identifier=*/1),
+                        "requires a deleted-offset bitmap");
+    const std::vector<std::shared_ptr<DataFileMeta>> initial_files = NewFiles(initial_progress);
+    ASSERT_EQ(1, initial_files.size());
+
+    // A concurrent physical DV update deletes a different row from the same file and bucket.
+    auto index_paths =
+        std::make_shared<MockIndexPathFactory>(PathUtil::JoinPath(table_path_, "index"));
+    DeletionVectorsIndexFile dv_file(dir_->GetFileSystem(), index_paths, /*bitmap64=*/false, pool_);
+    RoaringBitmap32 deleted_positions;
+    deleted_positions.Add(1);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<IndexFileMeta> concurrent_dv,
+        dv_file.WriteSingleFile({{initial_files[0]->file_name,
+                                  std::make_shared<BitmapDeletionVector>(deleted_positions)}}));
+    auto concurrent_message = std::make_shared<CommitMessageImpl>(
+        initial_message->Partition(), /*bucket=*/0, /*total_buckets=*/1,
+        DataIncrement({}, {}, {}, {concurrent_dv}, {}), CompactIncrement({}, {}, {}, {}, {}));
+    CommitContextBuilder concurrent_builder(table_path_, "concurrent-dv-writer");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> concurrent_context,
+                         concurrent_builder.SetOptions(options_).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> concurrent_commit,
+                         FileStoreCommit::Create(std::move(concurrent_context)));
+    bool interleaved = false;
+    auto fs = std::make_shared<InterleavingSnapshotFileSystem>(
+        PathUtil::JoinPath(table_path_, "snapshot/snapshot-2"), [&]() -> Status {
+            interleaved = true;
+            return concurrent_commit->Commit({concurrent_message}, /*commit_identifier=*/0,
+                                             /*watermark=*/std::nullopt);
+        });
+    CommitContextBuilder builder(table_path_, commit_user_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         builder.SetOptions(options_).WithFileSystem(fs).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(
+        int64_t snapshot_id,
+        commit->CommitWithProgress(progress, /*commit_identifier=*/1, /*watermark=*/std::nullopt));
+    ASSERT_TRUE(interleaved);
+    ASSERT_EQ(3, snapshot_id);
+    ASSERT_OK_AND_ASSIGN(uint64_t attempts, commit->GetCommitMetrics()->GetCounter(
+                                                CommitMetrics::LAST_COMMIT_ATTEMPTS));
+    ASSERT_EQ(2, attempts);
+    ASSERT_EQ("{0}", progress[0].deleted_offsets->ToString());
+    const std::vector<Row> expected_rows = {{3, "three", "p0"}, {1, "new-one", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
+    ASSERT_EQ(expected_rows, disk_rows);
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_before_refresh);
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_after_refresh);
+    ASSERT_OK_AND_ASSIGN(
+        int64_t retried_snapshot,
+        commit->CommitWithProgress(progress, /*commit_identifier=*/1, /*watermark=*/std::nullopt));
+    ASSERT_EQ(snapshot_id, retried_snapshot);
+    ASSERT_OK(writer->Close());
+}
+
+// TODO(xinyu.lxy): Enable when realtime deduplicate compaction is supported.
+TEST_F(RealtimeWriteInteTest, DISABLED_TestRealtimeDeduplicateCommitRetryRemapsCompactedOffsets) {
+    ConfigureRealtimeDeduplicateTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    for (int64_t id = 1; id <= 2; ++id) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             MakeBatch({Row{id, "value", "p0"}}, /*partitioned=*/false));
+        ASSERT_OK(writer->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                             writer->PrepareCommitWithProgress(/*commit_identifier=*/id - 1));
+        ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(progress, /*commit_identifier=*/id - 1));
+        ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> delete_batch,
+                         MakeBatch({Row{2, "ignored", "p0"}}, /*partitioned=*/false, /*bucket=*/0,
+                                   {RecordBatch::RowKind::DELETE}));
+    ASSERT_OK(writer->Write(std::move(delete_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/2));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_NE(nullptr, progress[0].deleted_offsets);
+    ASSERT_EQ("{1}", progress[0].deleted_offsets->ToString());
+    bool interleaved = false;
+    auto fs = std::make_shared<InterleavingSnapshotFileSystem>(
+        PathUtil::JoinPath(table_path_, "snapshot/snapshot-3"), [&]() -> Status {
+            PAIMON_ASSIGN_OR_RAISE(Snapshot compacted,
+                                   CompactAndCommit({}, /*bucket=*/0, /*commit_identifier=*/1));
+            if (compacted.Id() != 3 ||
+                compacted.GetCommitKind() != Snapshot::CommitKind::Compact()) {
+                return Status::Invalid("expected competing compaction snapshot");
+            }
+            interleaved = true;
+            return Status::OK();
+        });
+    CommitContextBuilder builder(table_path_, commit_user_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         builder.SetOptions(options_).WithFileSystem(fs).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(
+        int64_t snapshot_id,
+        commit->CommitWithProgress(progress, /*commit_identifier=*/2, /*watermark=*/std::nullopt));
+    ASSERT_TRUE(interleaved);
+    ASSERT_EQ(4, snapshot_id);
+    ASSERT_OK_AND_ASSIGN(uint64_t attempts, commit->GetCommitMetrics()->GetCounter(
+                                                CommitMetrics::LAST_COMMIT_ATTEMPTS));
+    ASSERT_EQ(2, attempts);
+    ASSERT_EQ("{1}", progress[0].deleted_offsets->ToString());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
+    ASSERT_EQ((std::vector<Row>{{1, "value", "p0"}}), disk_rows);
+    ASSERT_OK(writer->Close());
 }
 
 TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWriterHandoffRestoresCommittedFiles) {
@@ -1379,11 +1550,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWriterHandoffRestoresCommit
     std::shared_ptr<CommitMessageImpl> update_message =
         std::dynamic_pointer_cast<CommitMessageImpl>(update_progress[0].commit_message);
     ASSERT_NE(nullptr, update_message);
-    const std::vector<std::shared_ptr<IndexFileMeta>>& deletion_vector_files =
-        update_message->GetCompactIncrement().NewIndexFiles();
-    ASSERT_EQ(1, deletion_vector_files.size());
-    ASSERT_EQ(DeletionVectorsIndexFile::DELETION_VECTORS_INDEX,
-              deletion_vector_files[0]->IndexType());
+    ASSERT_TRUE(update_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, update_progress[0].deleted_offsets);
+    ASSERT_FALSE(update_progress[0].deleted_offsets->IsEmpty());
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, rows_after_prepare);
     ASSERT_OK(second_writer->Close());
@@ -1437,11 +1606,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWriterHandoffRetainsPrepare
     ASSERT_NE(nullptr, update_message);
     ASSERT_EQ(1, update_message->GetNewFilesIncrement().NewFiles().size());
     ASSERT_EQ(2, update_message->GetNewFilesIncrement().NewFiles()[0]->row_count);
-    const std::vector<std::shared_ptr<IndexFileMeta>>& deletion_vector_files =
-        update_message->GetCompactIncrement().NewIndexFiles();
-    ASSERT_EQ(1, deletion_vector_files.size());
-    ASSERT_EQ(DeletionVectorsIndexFile::DELETION_VECTORS_INDEX,
-              deletion_vector_files[0]->IndexType());
+    ASSERT_TRUE(update_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, update_progress[0].deleted_offsets);
+    ASSERT_FALSE(update_progress[0].deleted_offsets->IsEmpty());
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, rows_after_prepare);
 
@@ -1455,6 +1622,104 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWriterHandoffRetainsPrepare
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_refresh, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, rows_after_refresh);
     ASSERT_OK(second_writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWriterHandoffRetainsDvAcrossRefresh) {
+    for (bool prepare_before_refresh : {false, true}) {
+        SCOPED_TRACE(prepare_before_refresh);
+        dir_ = UniqueTestDirectory::Create("local");
+        ASSERT_NE(nullptr, dir_);
+        table_path_ = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+        ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/0);
+        ConfigureRealtimeDeduplicateTable();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                             RealtimeContext::Create());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> first_writer,
+                             CreateRealtimeWriter(realtime_context));
+        const std::vector<Row> initial_rows = {
+            {1, "one", "p0"}, {2, "two", "p0"}, {3, "three", "p0"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> initial_batch,
+                             MakeBatch(initial_rows, /*partitioned=*/false));
+        ASSERT_OK(first_writer->Write(std::move(initial_batch)));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> initial_progress,
+                             first_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+        ASSERT_EQ(1, initial_progress.size());
+        auto initial_message =
+            std::dynamic_pointer_cast<CommitMessageImpl>(initial_progress[0].commit_message);
+        ASSERT_NE(nullptr, initial_message);
+        ASSERT_EQ(1, initial_message->GetNewFilesIncrement().NewFiles().size());
+        ASSERT_OK_AND_ASSIGN(int64_t initial_snapshot_id,
+                             Commit(initial_progress, /*commit_identifier=*/0));
+        ASSERT_OK(first_writer->RefreshCommittedSnapshot(initial_snapshot_id));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> first_delete,
+                             MakeBatch({initial_rows[0]}, /*partitioned=*/false, /*bucket=*/0,
+                                       {RecordBatch::RowKind::DELETE}));
+        ASSERT_OK(first_writer->Write(std::move(first_delete)));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> first_progress,
+                             first_writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+        ASSERT_OK(first_writer->Close());
+        first_writer.reset();
+
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> second_writer,
+                             CreateRealtimeWriter(realtime_context));
+        const Row fourth_row = {4, "four", "p0"};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> insert_batch,
+                             MakeBatch({fourth_row}, /*partitioned=*/false));
+        // Create the bucket writer before the first writer's deletion reaches the snapshot.
+        ASSERT_OK(second_writer->Write(std::move(insert_batch)));
+        std::vector<RealtimeCommitProgress> second_progress;
+        if (prepare_before_refresh) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_delete,
+                                 MakeBatch({initial_rows[1]}, /*partitioned=*/false, /*bucket=*/0,
+                                           {RecordBatch::RowKind::DELETE}));
+            ASSERT_OK(second_writer->Write(std::move(second_delete)));
+            ASSERT_OK_AND_ASSIGN(second_progress,
+                                 second_writer->PrepareCommitWithProgress(/*commit_identifier=*/2));
+        }
+        ASSERT_OK_AND_ASSIGN(int64_t first_snapshot_id,
+                             Commit(first_progress, /*commit_identifier=*/1));
+        ASSERT_OK(second_writer->RefreshCommittedSnapshot(first_snapshot_id));
+        const std::vector<Row> rows_after_refresh =
+            prepare_before_refresh ? std::vector<Row>{initial_rows[2], fourth_row}
+                                   : std::vector<Row>{initial_rows[1], initial_rows[2], fourth_row};
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> refreshed_rows, ReadRows(realtime_context));
+        ASSERT_EQ(rows_after_refresh, refreshed_rows);
+        if (!prepare_before_refresh) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_delete,
+                                 MakeBatch({initial_rows[1]}, /*partitioned=*/false, /*bucket=*/0,
+                                           {RecordBatch::RowKind::DELETE}));
+            ASSERT_OK(second_writer->Write(std::move(second_delete)));
+            ASSERT_OK_AND_ASSIGN(second_progress,
+                                 second_writer->PrepareCommitWithProgress(/*commit_identifier=*/2));
+        }
+        const std::vector<Row> expected_rows = {initial_rows[2], fourth_row};
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> prepared_rows, ReadRows(realtime_context));
+        ASSERT_EQ(expected_rows, prepared_rows);
+        ASSERT_OK(Commit(second_progress, /*commit_identifier=*/2));
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
+        ASSERT_EQ(expected_rows, disk_rows);
+
+        // Another prepare must preserve deletions from the message prepared before refresh,
+        // even though its commit has not yet been refreshed into this context.
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> third_delete,
+                             MakeBatch({initial_rows[2]}, /*partitioned=*/false, /*bucket=*/0,
+                                       {RecordBatch::RowKind::DELETE}));
+        ASSERT_OK(second_writer->Write(std::move(third_delete)));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> third_progress,
+                             second_writer->PrepareCommitWithProgress(/*commit_identifier=*/3));
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_commit, ReadRows(realtime_context));
+        ASSERT_EQ(std::vector<Row>{fourth_row}, rows_before_commit);
+        ASSERT_OK_AND_ASSIGN(int64_t final_snapshot_id,
+                             Commit(third_progress, /*commit_identifier=*/3));
+        ASSERT_OK_AND_ASSIGN(disk_rows, ReadRows());
+        ASSERT_EQ(std::vector<Row>{fourth_row}, disk_rows);
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_refresh, ReadRows(realtime_context));
+        ASSERT_EQ(std::vector<Row>{fourth_row}, rows_before_refresh);
+        ASSERT_OK(second_writer->RefreshCommittedSnapshot(final_snapshot_id));
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> final_rows, ReadRows(realtime_context));
+        ASSERT_EQ(std::vector<Row>{fourth_row}, final_rows);
+        ASSERT_OK(second_writer->Close());
+    }
 }
 
 TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWithinOneBatch) {
@@ -1524,7 +1789,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateAcrossSealedSegments) {
         std::dynamic_pointer_cast<CommitMessageImpl>(progress[0].commit_message);
     ASSERT_NE(nullptr, message);
     ASSERT_EQ(2, message->GetNewFilesIncrement().NewFiles().size());
-    ASSERT_EQ(1, message->GetCompactIncrement().NewIndexFiles().size());
+    ASSERT_TRUE(message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, progress[0].deleted_offsets);
+    ASSERT_FALSE(progress[0].deleted_offsets->IsEmpty());
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, rows_after_prepare);
@@ -1551,6 +1818,8 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateAcrossPreparedSegments) {
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_EQ(1, progress.size());
     ASSERT_EQ(OffsetRange(0, 2), progress[0].offset_range);
+    ASSERT_NE(nullptr, progress[0].deleted_offsets);
+    ASSERT_TRUE(progress[0].deleted_offsets->IsEmpty());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_batch,
                          MakeBatch({Row{1, "new-one", "p0"}, Row{3, "three", "p0"}},
@@ -1560,11 +1829,14 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateAcrossPreparedSegments) {
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, second_progress.size());
     ASSERT_EQ(OffsetRange(2, 4), second_progress[0].offset_range);
+    ASSERT_NE(nullptr, second_progress[0].deleted_offsets);
+    ASSERT_EQ("{0}", second_progress[0].deleted_offsets->ToString());
+    ASSERT_TRUE(progress[0].deleted_offsets->IsEmpty());
     std::shared_ptr<CommitMessageImpl> second_message =
         std::dynamic_pointer_cast<CommitMessageImpl>(second_progress[0].commit_message);
     ASSERT_NE(nullptr, second_message);
     ASSERT_EQ(1, second_message->GetNewFilesIncrement().NewFiles().size());
-    ASSERT_EQ(1, second_message->GetCompactIncrement().NewIndexFiles().size());
+    ASSERT_TRUE(second_message->GetCompactIncrement().NewIndexFiles().empty());
 
     progress.push_back(std::move(second_progress[0]));
     ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(progress, /*commit_identifier=*/1));
@@ -1611,7 +1883,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateDeletesCommittedKey) {
         std::dynamic_pointer_cast<CommitMessageImpl>(delete_progress[0].commit_message);
     ASSERT_NE(nullptr, delete_message);
     ASSERT_TRUE(delete_message->GetNewFilesIncrement().NewFiles().empty());
-    ASSERT_EQ(1, delete_message->GetCompactIncrement().NewIndexFiles().size());
+    ASSERT_TRUE(delete_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, delete_progress[0].deleted_offsets);
+    ASSERT_FALSE(delete_progress[0].deleted_offsets->IsEmpty());
 
     ASSERT_OK_AND_ASSIGN(int64_t delete_snapshot_id,
                          Commit(delete_progress, /*commit_identifier=*/1));
@@ -1692,7 +1966,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateUpdateBeforeAndAfter) {
         std::dynamic_pointer_cast<CommitMessageImpl>(update_progress[0].commit_message);
     ASSERT_NE(nullptr, update_message);
     ASSERT_EQ(1, update_message->GetNewFilesIncrement().NewFiles().size());
-    ASSERT_EQ(1, update_message->GetCompactIncrement().NewIndexFiles().size());
+    ASSERT_TRUE(update_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, update_progress[0].deleted_offsets);
+    ASSERT_FALSE(update_progress[0].deleted_offsets->IsEmpty());
 
     ASSERT_OK_AND_ASSIGN(int64_t update_snapshot_id,
                          Commit(update_progress, /*commit_identifier=*/1));
@@ -1767,9 +2043,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateAcrossMultipleFileIndexStor
         std::dynamic_pointer_cast<CommitMessageImpl>(update_progress[0].commit_message);
     ASSERT_NE(nullptr, update_message);
     ASSERT_EQ(1, update_message->GetNewFilesIncrement().NewFiles().size());
-    ASSERT_EQ(1, update_message->GetCompactIncrement().NewIndexFiles().size());
-    ASSERT_EQ(DeletionVectorsIndexFile::DELETION_VECTORS_INDEX,
-              update_message->GetCompactIncrement().NewIndexFiles()[0]->IndexType());
+    ASSERT_TRUE(update_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, update_progress[0].deleted_offsets);
+    ASSERT_FALSE(update_progress[0].deleted_offsets->IsEmpty());
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, rows_after_prepare);
 
@@ -1883,7 +2159,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateIsolatesPartitionsAndBucket
     std::shared_ptr<CommitMessageImpl> update_message =
         std::dynamic_pointer_cast<CommitMessageImpl>(update_progress[0].commit_message);
     ASSERT_NE(nullptr, update_message);
-    ASSERT_EQ(1, update_message->GetCompactIncrement().NewIndexFiles().size());
+    ASSERT_TRUE(update_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, update_progress[0].deleted_offsets);
+    ASSERT_FALSE(update_progress[0].deleted_offsets->IsEmpty());
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
     ASSERT_EQ(std::multiset<Row>(expected_rows.begin(), expected_rows.end()),
@@ -1965,9 +2243,9 @@ TEST_F(RealtimeWriteInteTest,
     std::shared_ptr<CommitMessageImpl> final_message =
         std::dynamic_pointer_cast<CommitMessageImpl>(final_progress[0].commit_message);
     ASSERT_NE(nullptr, final_message);
-    ASSERT_EQ(1, final_message->GetCompactIncrement().NewIndexFiles().size());
-    ASSERT_EQ(DeletionVectorsIndexFile::DELETION_VECTORS_INDEX,
-              final_message->GetCompactIncrement().NewIndexFiles()[0]->IndexType());
+    ASSERT_TRUE(final_message->GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_NE(nullptr, final_progress[0].deleted_offsets);
+    ASSERT_FALSE(final_progress[0].deleted_offsets->IsEmpty());
     ASSERT_OK(writer->Close());
 }
 

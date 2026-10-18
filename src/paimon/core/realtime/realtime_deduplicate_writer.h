@@ -35,15 +35,12 @@ namespace paimon {
 
 class AppendOnlyWriter;
 class ArrowDeduplicateRealtimeStore;
-class BucketedDvMaintainer;
 class CoreOptions;
 class DataFileKeyOffsetIndexWriter;
 class DataFilePathFactory;
 class FileSystem;
 class MemoryPool;
 class RealtimeContext;
-class RealtimeDeduplicateState;
-class RealtimeOffsetFileIndexLookup;
 class RealtimeSchemaLayout;
 class RealtimeSegmentHandle;
 struct DataFileMeta;
@@ -60,8 +57,8 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
         const std::vector<std::string>& deduplicate_key_fields,
         const std::vector<std::shared_ptr<DataFileMeta>>& restored_data_files,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer, const CoreOptions& options,
-        const std::string& temp_directory, const std::shared_ptr<MemoryPool>& memory_pool);
+        const CoreOptions& options, const std::string& temp_directory,
+        const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
     Status Seal() override;
@@ -81,10 +78,8 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
                               std::shared_ptr<RealtimeSchemaLayout> schema_layout,
                               std::shared_ptr<arrow::Field> deduplicate_key_field,
                               std::shared_ptr<DataFilePathFactory> data_file_path_factory,
-                              std::shared_ptr<FileSystem> file_system,
-                              std::shared_ptr<BucketedDvMaintainer> dv_maintainer,
-                              int64_t next_offset, std::shared_ptr<MemoryPool> memory_pool,
-                              std::shared_ptr<RealtimeDeduplicateState> deduplicate_state,
+                              std::shared_ptr<FileSystem> file_system, int64_t next_offset,
+                              std::shared_ptr<MemoryPool> memory_pool,
                               std::map<std::string, std::string> options);
 
     Status SealCurrentSegment();
@@ -98,9 +93,7 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
     std::shared_ptr<arrow::Field> deduplicate_key_field_;
     std::shared_ptr<DataFilePathFactory> data_file_path_factory_;
     std::shared_ptr<FileSystem> file_system_;
-    std::shared_ptr<BucketedDvMaintainer> dv_maintainer_;
     std::shared_ptr<MemoryPool> memory_pool_;
-    std::shared_ptr<RealtimeDeduplicateState> deduplicate_state_;
     std::map<std::string, std::string> options_;
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> sealed_segments_;
     int64_t next_offset_;
