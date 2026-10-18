@@ -48,8 +48,10 @@ struct MetadataRootState {
 
 template <typename Root>
 struct CountedMetadataRoot {
-    static void Wrap(Root* root, const std::shared_ptr<MetadataRootState>& state) {
-        auto* owner = new CountedMetadataRoot{root->release, root->private_data, state};
+    static void Wrap(Root* root, const std::shared_ptr<MetadataRootState>& state,
+                     ScanCancellationToken* cancel_on_release = nullptr) {
+        auto* owner =
+            new CountedMetadataRoot{root->release, root->private_data, state, cancel_on_release};
         root->private_data = owner;
         root->release = [](Root* root) {
             std::unique_ptr<CountedMetadataRoot> owner(
@@ -61,6 +63,9 @@ struct CountedMetadataRoot {
             } else {
                 ++owner->state->schemas;
             }
+            if (owner->cancel_on_release) {
+                owner->cancel_on_release->Cancel();
+            }
             owner->release(root);
         };
     }
@@ -68,6 +73,7 @@ struct CountedMetadataRoot {
     void (*release)(Root*);
     void* data;
     std::shared_ptr<MetadataRootState> state;
+    ScanCancellationToken* cancel_on_release;
 };
 
 class CancellationMetadataReader : public BatchReader {
@@ -96,7 +102,12 @@ class CancellationMetadataReader : public BatchReader {
         } else {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportType(*arrow::int32(), schema.get()));
         }
-        CountedMetadataRoot<ArrowSchema>::Wrap(schema.get(), state_);
+        if (incompatible_schema) {
+            ArrowSchemaRelease(schema.get());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportType(*arrow::int32(), schema.get()));
+        }
+        CountedMetadataRoot<ArrowSchema>::Wrap(schema.get(), state_,
+                                               cancel_on_schema_release ? token_ : nullptr);
         if (cancel_) {
             token_->Cancel();
         }
@@ -110,6 +121,8 @@ class CancellationMetadataReader : public BatchReader {
         ++state_->close;
     }
     Status failure;
+    bool incompatible_schema = false;
+    bool cancel_on_schema_release = false;
 
  private:
     std::shared_ptr<arrow::Array> data_;
@@ -158,7 +171,55 @@ class CancellingAlignmentPool : public MemoryPool {
     ScanCancellationToken* token_;
     std::unique_ptr<MemoryPool> delegate_ = GetMemoryPool();
 };
+
 }  // namespace
+
+TEST(ManifestMetaReaderTest, AcquiredRootsImportFailurePreservesPrimaryError) {
+    auto type = arrow::struct_({arrow::field("id", arrow::int32())});
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(type, "[[1], [2]]").ValueOrDie();
+    for (bool cancel : {false, true}) {
+        SCOPED_TRACE(cancel);
+        auto state = std::make_shared<MetadataRootState>();
+        ScanCancellationToken token;
+        auto input = std::make_unique<CancellationMetadataReader>(data, state, &token, false);
+        input->incompatible_schema = true;
+        input->cancel_on_schema_release = cancel;
+        {
+            ManifestMetaReader reader(std::move(input), type, GetArrowPool(GetDefaultPool()),
+                                      &token);
+            auto result = reader.NextBatch();
+            ASSERT_FALSE(result.ok());
+            ASSERT_TRUE(result.status().IsInvalid()) << result.status().ToString();
+            ASSERT_EQ(token.IsCancelled(), cancel);
+            ASSERT_EQ(state->arrays, 1);
+            ASSERT_EQ(state->schemas, 1);
+        }
+        ASSERT_EQ(state->next, 1);
+        ASSERT_EQ(state->close, 1);
+        ASSERT_EQ(state->destroyed, 1);
+    }
+}
+
+TEST(ManifestMetaReaderTest, EmptyExportLifetimeReleasesAcquiredRoots) {
+    auto type = arrow::struct_({arrow::field("id", arrow::int32())});
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(type, "[[1], [2]]").ValueOrDie();
+    auto source = std::make_shared<MetadataRootState>();
+    ScanCancellationToken token;
+    auto input = std::make_unique<CancellationMetadataReader>(data, source, &token, false);
+    {
+        // Identical fields need no pool allocation; the exported roots reach the real lifetime
+        // validation with an empty holder. This is not a supported-planner OOM simulation.
+        ManifestMetaReader reader(std::move(input), type, nullptr, &token);
+        auto result = reader.NextBatch();
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsInvalid()) << result.status().ToString();
+        ASSERT_NE(result.status().ToString().find("empty lifetime"), std::string::npos);
+        ASSERT_EQ(source->arrays, 1);
+        ASSERT_EQ(source->schemas, 1);
+    }
+    ASSERT_EQ(source->close, 1);
+    ASSERT_EQ(source->destroyed, 1);
+}
 
 TEST(ManifestMetaReaderTest, CancellationDuringAlignmentStopsBeforeTheNextField) {
     auto type = arrow::struct_({arrow::field("id", arrow::int32())});

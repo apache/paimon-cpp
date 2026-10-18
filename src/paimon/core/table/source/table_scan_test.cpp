@@ -43,6 +43,8 @@
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -53,11 +55,14 @@
 #include "paimon/executor.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/macros.h"
 #include "paimon/metrics.h"
+#include "paimon/realtime/realtime_context.h"
 #include "paimon/scan_cancellation.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/format/format_table.h"
 #include "paimon/table/source/plan.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/counting_cache_test_utils.h"
@@ -298,14 +303,15 @@ Status WriteCancellationPhaseTable(const std::string& path) {
                        arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())});
     auto partition_type = arrow::schema({arrow::field("f1", arrow::int32())});
     PAIMON_ASSIGN_OR_RAISE(
-        auto paths, FileStorePathFactory::Create(path, row_type, {"f1"}, "", "parquet", "data-",
-                                                 true, {}, std::nullopt, false, pool));
+        std::shared_ptr<FileStorePathFactory> paths,
+        FileStorePathFactory::Create(path, row_type, {"f1"}, "", "parquet", "data-", true, {},
+                                     std::nullopt, false, pool));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> format, FileFormatFactory::Get("avro", {}));
-    PAIMON_ASSIGN_OR_RAISE(auto options, CoreOptions::FromMap({}));
-    PAIMON_ASSIGN_OR_RAISE(
-        auto manifests, ManifestFile::Create(fs, format, "null", paths, 1024 * 1024, pool, options,
-                                             partition_type));
-    PAIMON_ASSIGN_OR_RAISE(auto lists,
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap({}));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ManifestFile> manifests,
+                           ManifestFile::Create(fs, format, "null", paths, 1024 * 1024, pool,
+                                                options, partition_type));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ManifestList> lists,
                            ManifestList::Create(fs, format, "null", paths, nullptr, pool));
     std::vector<ManifestEntry> base;
     std::vector<ManifestEntry> delta;
@@ -313,7 +319,7 @@ Status WriteCancellationPhaseTable(const std::string& path) {
          {std::make_pair(15, 0), std::make_pair(19, 16), std::make_pair(23, 20)}) {
         for (int32_t index = bounds.first; index >= bounds.second; --index) {
             PAIMON_ASSIGN_OR_RAISE(
-                auto file,
+                std::shared_ptr<DataFileMeta> file,
                 DataFileMeta::ForAppend("data-phase-" + std::to_string(index) + ".parquet", 8, 3,
                                         SimpleStats::EmptyStats(), index * 3, index * 3 + 2, 0,
                                         FileSource::Append(), std::nullopt, std::nullopt,
@@ -327,15 +333,17 @@ Status WriteCancellationPhaseTable(const std::string& path) {
             }
         }
     }
-    PAIMON_ASSIGN_OR_RAISE(auto base_files, manifests->Write(base));
-    PAIMON_ASSIGN_OR_RAISE(auto delta_files, manifests->Write(delta));
-    PAIMON_ASSIGN_OR_RAISE(auto base_list, lists->Write(base_files));
-    PAIMON_ASSIGN_OR_RAISE(auto delta_list, lists->Write(delta_files));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestFileMeta> base_files, manifests->Write(base));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestFileMeta> delta_files, manifests->Write(delta));
+    std::pair<std::string, int64_t> base_list;
+    std::pair<std::string, int64_t> delta_list;
+    PAIMON_ASSIGN_OR_RAISE(base_list, lists->Write(base_files));
+    PAIMON_ASSIGN_OR_RAISE(delta_list, lists->Write(delta_files));
     Snapshot snapshot(1, 0, base_list.first, base_list.second, delta_list.first, delta_list.second,
                       std::nullopt, std::nullopt, std::nullopt, "phase-test", 1,
                       Snapshot::CommitKind::Append(), 0, 60, 60, std::nullopt, std::nullopt,
                       std::nullopt, std::nullopt, std::nullopt);
-    PAIMON_ASSIGN_OR_RAISE(auto json, snapshot.ToJsonString());
+    PAIMON_ASSIGN_OR_RAISE(std::string json, snapshot.ToJsonString());
     PAIMON_RETURN_NOT_OK(fs->WriteFile(path + "/snapshot/snapshot-1", json, false));
     SnapshotManager snapshots(fs, path);
     PAIMON_RETURN_NOT_OK(snapshots.CommitEarliestHint(1));
@@ -758,6 +766,129 @@ TEST(TableScanTest, CancellationRefusesIndependentUnsupportedOptions) {
         ASSERT_EQ(fs->manifest_list_opens, 0);
         ASSERT_EQ(fs->manifest_file_opens, 0);
     }
+}
+
+TEST(TableScanTest, CancellationRefusesRealtimeContextBeforeIo) {
+    const auto path = GetDataDir() + "/parquet/append_09.db/append_09";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime, RealtimeContext::Create());
+    ScanContextBuilder baseline_builder(path);
+    baseline_builder.WithRealtimeContext(realtime).AddOption(Options::REALTIME_ENABLED, "true");
+    ASSERT_OK_AND_ASSIGN(auto baseline, FinishPlanningScan(baseline_builder));
+
+    auto token = std::make_shared<ScanCancellationToken>();
+    auto fs = std::make_shared<CancellingPlanningFileSystem>(token.get(), CancelMetadataAt::None);
+    ScanContextBuilder builder(path);
+    builder.WithRealtimeContext(realtime)
+        .AddOption(Options::REALTIME_ENABLED, "true")
+        .WithCancellationToken(token)
+        .WithFileSystem(fs);
+    auto result = FinishPlanningScan(builder);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+    ASSERT_EQ(fs->operations, 0);
+    ASSERT_FALSE(token->IsCancelled());
+}
+
+TEST(TableScanTest, CancellationRefusesSuppliedGlobalIndexBeforeIo) {
+    const auto path = GetDataDir() + "/parquet/append_09.db/append_09";
+    auto index = BitmapGlobalIndexResult::FromRanges({});
+    ScanContextBuilder baseline_builder(path);
+    baseline_builder.SetGlobalIndexResult(index);
+    ASSERT_OK_AND_ASSIGN(auto baseline, FinishPlanningScan(baseline_builder));
+
+    auto token = std::make_shared<ScanCancellationToken>();
+    auto fs = std::make_shared<CancellingPlanningFileSystem>(token.get(), CancelMetadataAt::None);
+    ScanContextBuilder builder(path);
+    builder.SetGlobalIndexResult(index).WithCancellationToken(token).WithFileSystem(fs);
+    auto result = FinishPlanningScan(builder);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+    ASSERT_EQ(fs->operations, 0);
+    ASSERT_FALSE(token->IsCancelled());
+}
+
+TEST(TableScanTest, CancellationRefusesSuppliedAndDiscoveredFormatTables) {
+    auto directory = UniqueTestDirectory::Create();
+    ASSERT_TRUE(directory);
+    auto token = std::make_shared<ScanCancellationToken>();
+    auto fs = std::make_shared<CancellingPlanningFileSystem>(token.get(), CancelMetadataAt::None);
+    SchemaManager schemas(fs, directory->Str());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> schema,
+        schemas.CreateTable(arrow::schema({arrow::field("id", arrow::int32())}), {}, {},
+                            {{Options::TYPE, "format-table"}, {Options::FILE_FORMAT, "parquet"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
+                         FormatTable::Create(fs, directory->Str(), Identifier("db", "format"), {}));
+    for (bool supplied : {false, true}) {
+        SCOPED_TRACE(supplied);
+        ScanContextBuilder builder =
+            supplied ? ScanContextBuilder(table) : ScanContextBuilder(directory->Str());
+        ScanContextBuilder baseline_builder =
+            supplied ? ScanContextBuilder(table) : ScanContextBuilder(directory->Str());
+        if (!supplied) {
+            builder.WithFileSystem(fs);
+            baseline_builder.WithFileSystem(fs);
+        }
+        ASSERT_OK_AND_ASSIGN(auto baseline, FinishPlanningScan(baseline_builder));
+        const int32_t before = fs->operations;
+        builder.WithCancellationToken(token);
+        auto result = FinishPlanningScan(builder);
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+        if (supplied) {
+            ASSERT_EQ(fs->operations, before);
+        }
+        ASSERT_EQ(fs->manifest_list_opens, 0);
+        ASSERT_EQ(fs->manifest_file_opens, 0);
+        ASSERT_FALSE(token->IsCancelled());
+    }
+}
+
+TEST(TableScanTest, CancellationRefusesSystemTableBeforeIo) {
+    const auto path = GetDataDir() + "/parquet/append_09.db/append_09$snapshots";
+    ScanContextBuilder baseline_builder(path);
+    ASSERT_OK_AND_ASSIGN(auto baseline, FinishPlanningScan(baseline_builder));
+    auto token = std::make_shared<ScanCancellationToken>();
+    auto fs = std::make_shared<CancellingPlanningFileSystem>(token.get(), CancelMetadataAt::None);
+    ScanContextBuilder builder(path);
+    builder.WithFileSystem(fs).WithCancellationToken(token);
+    auto result = FinishPlanningScan(builder);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+    ASSERT_NE(result.status().ToString().find("system tables"), std::string::npos);
+    ASSERT_EQ(fs->operations, 0);
+}
+
+TEST(TableScanTest, CancellationRefusesPrimaryKeysWithoutDeletionVectors) {
+    auto directory = UniqueTestDirectory::Create();
+    ASSERT_TRUE(directory);
+    const std::map<std::string, std::string> options = {
+        {Options::BUCKET, "1"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::DELETION_VECTORS_ENABLED, "false"},
+        {Options::DATA_EVOLUTION_ENABLED, "false"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                         TableSchema::Create(0, arrow::schema({arrow::field("id", arrow::int32())}),
+                                             {}, {"id"}, options));
+    ASSERT_OK_AND_ASSIGN(std::string json, schema->ToJsonString());
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_FALSE(core_options.DeletionVectorsEnabled());
+    ASSERT_FALSE(core_options.DataEvolutionEnabled());
+    ASSERT_FALSE(schema->PrimaryKeys().empty());
+    ScanContextBuilder baseline_builder(directory->Str());
+    baseline_builder.SetTableSchema(json);
+    ASSERT_OK_AND_ASSIGN(auto baseline, FinishPlanningScan(baseline_builder));
+    auto token = std::make_shared<ScanCancellationToken>();
+    auto fs = std::make_shared<CancellingPlanningFileSystem>(token.get(), CancelMetadataAt::None);
+    ScanContextBuilder builder(directory->Str());
+    builder.SetTableSchema(json).WithFileSystem(fs).WithCancellationToken(token);
+    auto result = FinishPlanningScan(builder);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+    ASSERT_NE(result.status().ToString().find("primary keys"), std::string::npos);
+    ASSERT_EQ(fs->manifest_list_opens, 0);
+    ASSERT_EQ(fs->manifest_file_opens, 0);
+    ASSERT_FALSE(token->IsCancelled());
 }
 
 TEST(TableScanTest, CancellationRefusesActualEmbeddedIndexEvaluation) {
