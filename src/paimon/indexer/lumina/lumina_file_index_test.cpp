@@ -28,6 +28,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/io/byte_array_output_stream.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/memory_pool.h"
@@ -103,7 +104,7 @@ TEST(LuminaFileIndexTest, RoundTripUsesFileLocalRowPositions) {
     ASSERT_TRUE(arrow::ExportSchema(*schema, &reader_schema).ok());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexReader> reader,
                          indexer.CreateReader(&reader_schema, /*start=*/6,
-                                              static_cast<int32_t>(artifact->size()), input, pool));
+                                              static_cast<int64_t>(artifact->size()), input, pool));
 
     std::shared_ptr<VectorSearch> search = std::make_shared<VectorSearch>(
         "embedding", /*limit=*/1, std::vector<float>{1.0f, 1.0f, 1.0f, 1.0f},
@@ -133,6 +134,66 @@ TEST(LuminaFileIndexTest, RoundTripUsesFileLocalRowPositions) {
                         "lumina index was not built with tag");
 }
 
+TEST(LuminaFileIndexTest, WriteToUsesRelativeOffsetsAndKeepsStreamOpen) {
+    const std::map<std::string, std::string> options = {
+        {"index.dimension", "4"},
+        {"index.type", "bruteforce"},
+        {"distance.metric", "l2"},
+        {"encoding.type", "rawf32"},
+    };
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    std::shared_ptr<arrow::StructArray> batch = CreateVectors();
+    std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("embedding", arrow::list(arrow::float32()))});
+    LuminaFileIndexer indexer(options);
+    ::ArrowSchema writer_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &writer_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexWriter> writer,
+                         indexer.CreateWriter(&writer_schema, pool));
+    ::ArrowArray c_batch;
+    ASSERT_TRUE(arrow::ExportArray(*batch, &c_batch).ok());
+    ASSERT_OK(writer->AddBatch(&c_batch));
+
+    // Write after a prefix so the payload starts at a nonzero stream position.
+    // Lumina must record its internal offsets relative to this payload start.
+    auto output =
+        std::make_shared<ByteArrayOutputStream>(std::make_unique<MemorySegmentOutputStream>(
+            MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool));
+    ASSERT_OK_AND_ASSIGN(int64_t prefix_length, output->Write("prefix", 6));
+    ASSERT_EQ(6, prefix_length);
+    ASSERT_OK_AND_ASSIGN(bool written, writer->WriteTo(output));
+    ASSERT_TRUE(written);
+    ASSERT_OK_AND_ASSIGN(int64_t end, output->GetPos());
+    int64_t length = end - prefix_length;
+    ASSERT_GT(length, 0);
+
+    // Appending a suffix verifies that WriteTo() leaves the caller's stream open.
+    // Check that the surrounding bytes remain intact when retrieving the container.
+    ASSERT_OK_AND_ASSIGN(int64_t suffix_length, output->Write("suffix", 6));
+    ASSERT_EQ(6, suffix_length);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> container, output->Finish(pool.get()));
+    ASSERT_EQ("prefix", std::string(container->data(), prefix_length));
+    ASSERT_EQ("suffix", std::string(container->data() + end, suffix_length));
+
+    // Reopen only the payload range, excluding the prefix and suffix.
+    // This checks that the reader can locate the index inside a larger stream.
+    auto input = std::make_shared<ByteArrayInputStream>(container->data(), container->size());
+    ::ArrowSchema reader_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &reader_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexReader> reader,
+                         indexer.CreateReader(&reader_schema, prefix_length, length, input, pool));
+
+    // Query the reopened index to exercise the offsets stored inside the payload.
+    // The exact matching vector must still resolve to file row 2.
+    auto search = std::make_shared<VectorSearch>(
+        "embedding", /*limit=*/1, std::vector<float>{1.0f, 1.0f, 1.0f, 1.0f},
+        /*pre_filter=*/nullptr, /*predicate=*/nullptr, VectorSearch::DistanceType::EUCLIDEAN,
+        std::map<std::string, std::string>{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
+                         reader->VisitVectorSearch(search));
+    ASSERT_EQ(RoaringBitmap32::From({2}), result->GetRowPositions());
+}
+
 TEST(LuminaFileIndexTest, AllNullVectorsProduceEmptyArtifact) {
     const std::map<std::string, std::string> options = {
         {"index.dimension", "4"},
@@ -145,16 +206,35 @@ TEST(LuminaFileIndexTest, AllNullVectorsProduceEmptyArtifact) {
     std::shared_ptr<arrow::Schema> schema =
         arrow::schema({arrow::field("embedding", arrow::list(arrow::float32()))});
     LuminaFileIndexer indexer(options);
-
-    ::ArrowSchema writer_schema;
-    ASSERT_TRUE(arrow::ExportSchema(*schema, &writer_schema).ok());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexWriter> writer,
-                         indexer.CreateWriter(&writer_schema, pool));
-    ::ArrowArray c_batch;
-    ASSERT_TRUE(arrow::ExportArray(*batch, &c_batch).ok());
-    ASSERT_OK(writer->AddBatch(&c_batch));
-    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> artifact, writer->SerializedBytes());
-    ASSERT_FALSE(artifact);
+    {
+        // WriteTo() reports no index and leaves the output empty.
+        ::ArrowSchema writer_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema, &writer_schema).ok());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexWriter> writer,
+                             indexer.CreateWriter(&writer_schema, pool));
+        ::ArrowArray c_batch;
+        ASSERT_TRUE(arrow::ExportArray(*batch, &c_batch).ok());
+        ASSERT_OK(writer->AddBatch(&c_batch));
+        auto output =
+            std::make_shared<ByteArrayOutputStream>(std::make_unique<MemorySegmentOutputStream>(
+                MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool));
+        ASSERT_OK_AND_ASSIGN(bool written, writer->WriteTo(output));
+        ASSERT_FALSE(written);
+        ASSERT_OK_AND_ASSIGN(int64_t position, output->GetPos());
+        ASSERT_EQ(0, position);
+    }
+    {
+        // SerializedBytes() reports no index by returning a null artifact.
+        ::ArrowSchema writer_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema, &writer_schema).ok());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexWriter> writer,
+                             indexer.CreateWriter(&writer_schema, pool));
+        ::ArrowArray c_batch;
+        ASSERT_TRUE(arrow::ExportArray(*batch, &c_batch).ok());
+        ASSERT_OK(writer->AddBatch(&c_batch));
+        ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> artifact, writer->SerializedBytes());
+        ASSERT_FALSE(artifact);
+    }
 }
 
 TEST(LuminaFileIndexTest, RoundTripWithTagPredicate) {

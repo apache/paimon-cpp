@@ -82,12 +82,9 @@ class DataFileIndexWriter {
     };
 
     DataFileIndexWriter(std::vector<IndexWriterEntry>&& writers, int64_t in_manifest_threshold,
-                        const std::shared_ptr<FileSystem>& file_system,
+                        int32_t format_version, const std::shared_ptr<FileSystem>& file_system,
                         const std::shared_ptr<DataFilePathFactory>& path_factory,
                         const std::shared_ptr<MemoryPool>& pool);
-
-    Result<std::shared_ptr<Bytes>> SerializeContainer();
-    Status WriteExternal(const std::string& path, const std::shared_ptr<Bytes>& bytes);
 
     /// Decodes the dictionary-encoded columns the parquet passthrough forwards, and nothing else.
     /// Built on first use, since most batches decode nothing.
@@ -98,6 +95,7 @@ class DataFileIndexWriter {
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::vector<IndexWriterEntry> writers_;
     int64_t in_manifest_threshold_;
+    int32_t format_version_;
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<DataFilePathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;

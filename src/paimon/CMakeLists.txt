@@ -71,7 +71,11 @@ set(PAIMON_COMMON_SRCS
     common/file_index/bitmap/bitmap_index_result.cpp
     common/file_index/file_indexer_factory.cpp
     common/file_index/file_index_format.cpp
+    common/file_index/file_index_format_utils.cpp
+    common/file_index/file_index_format_v1.cpp
+    common/file_index/file_index_format_v2.cpp
     common/file_index/file_index_reader.cpp
+    common/file_index/file_index_writer.cpp
     common/file_index/file_index_result.cpp
     common/file_index/scored_file_index_result.cpp
     common/format/column_stats.cpp
@@ -294,6 +298,7 @@ set(PAIMON_CORE_SRCS
     core/io/data_file_meta_write_cols_legacy_serializer.cpp
     core/io/data_file_path_factory.cpp
     core/io/data_file_index_writer.cpp
+    core/io/spillable_index_output_stream.cpp
     core/io/file_index_options.cpp
     core/io/append_data_file_writer_factory.cpp
     core/io/blob_data_file_writer_factory.cpp
@@ -597,6 +602,7 @@ if(PAIMON_BUILD_TESTS)
                     common/file_index/file_indexer_factory_test.cpp
                     common/file_index/file_index_result_test.cpp
                     common/file_index/file_index_reader_test.cpp
+                    common/file_index/file_index_writer_test.cpp
                     common/file_index/scored_file_index_result_test.cpp
                     common/file_index/file_index_format_test.cpp
                     common/file_index/empty/empty_file_index_reader_test.cpp
@@ -829,6 +835,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/data_file_meta_test.cpp
                     core/io/data_file_writer_base_test.cpp
                     core/io/data_file_index_writer_test.cpp
+                    core/io/spillable_index_output_stream_test.cpp
                     core/io/file_index_options_test.cpp
                     core/io/file_index_evaluator_test.cpp
                     core/io/single_file_writer_test.cpp

@@ -17,31 +17,60 @@
  */
 #include "paimon/file_index/file_index_format.h"
 
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <limits>
+#include <map>
 #include <utility>
 
+#include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index.h"
 #include "paimon/common/file_index/bloomfilter/bloom_filter_file_index.h"
 #include "paimon/common/file_index/bsi/bit_slice_index_bitmap_file_index.h"
 #include "paimon/common/file_index/empty/empty_file_index_reader.h"
+#include "paimon/common/file_index/file_index_format_utils.h"
+#include "paimon/common/file_index/rangebitmap/range_bitmap_file_index.h"
 #include "paimon/common/io/byte_array_output_stream.h"
+#include "paimon/common/io/data_output_stream.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
+#include "paimon/io/data_input_stream.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
+#include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 
 class FileIndexFormatTest : public ::testing::Test {
  public:
+    Status WriteIndexes(FileIndexFormat::Writer* writer,
+                        const FileIndexFormat::ColumnIndexes& indexes) const {
+        for (const auto& [column, entries] : indexes) {
+            for (const auto& [type, bytes] : entries) {
+                FileIndexFormat::Writer::PayloadWriter payload =
+                    [bytes](const std::shared_ptr<OutputStream>& output) -> Result<bool> {
+                    if (!bytes || bytes->size() == 0) {
+                        return false;
+                    }
+                    PAIMON_RETURN_NOT_OK(DataOutputStream(output).WriteBytes(bytes));
+                    return true;
+                };
+                PAIMON_RETURN_NOT_OK(writer->WriteIndex(column, type, payload));
+            }
+        }
+        return writer->Finish();
+    }
+
     void SetUp() override {
         pool_ = GetDefaultPool();
     }
@@ -72,7 +101,7 @@ TEST_F(FileIndexFormatTest, TestWriteAndReadEmptyIndexGoldenBytes) {
     auto output = std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
 
     ASSERT_OK_AND_ASSIGN(auto writer, FileIndexFormat::CreateWriter(output, pool_));
-    ASSERT_OK(writer->WriteColumnIndexes(indexes));
+    ASSERT_OK(WriteIndexes(writer.get(), indexes));
     ASSERT_OK(writer->Close());
     ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> actual, output->Finish(pool_.get()));
 
@@ -95,7 +124,7 @@ TEST_F(FileIndexFormatTest, TestEmptyVectorIndexCanBeSearched) {
         MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
     auto output = std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
     ASSERT_OK_AND_ASSIGN(auto writer, FileIndexFormat::CreateWriter(output, pool_));
-    ASSERT_OK(writer->WriteColumnIndexes(indexes));
+    ASSERT_OK(WriteIndexes(writer.get(), indexes));
     ASSERT_OK(writer->Close());
     ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> bytes, output->Finish(pool_.get()));
 
@@ -863,6 +892,304 @@ TEST_F(FileIndexFormatTest, TestBitmapIndexWithTimestamp) {
 
     check_nano("ts_nano");
     check_nano("ts_tz_nano");
+}
+
+namespace {
+
+std::shared_ptr<ByteArrayOutputStream> NewIndexOutput(const std::shared_ptr<MemoryPool>& pool) {
+    return std::make_shared<ByteArrayOutputStream>(std::make_unique<MemorySegmentOutputStream>(
+        MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool));
+}
+
+// Generated with FileIndexFormatV2.Writer from Java Paimon.
+// Contains an empty index, a two-byte unknown index, and a present zero-byte index.
+const std::vector<uint8_t> kJavaV2Golden = {
+    0,   5,   78,  78,  208, 26, 53, 174, 0,  0,  0,   2,   42,  43,  0,   0,   0,   1,
+    0,   2,   99,  49,  0,   0,  0,  2,   0,  5,  101, 109, 112, 116, 121, 255, 255, 255,
+    255, 255, 255, 255, 255, 0,  0,  0,   0,  0,  0,   0,   0,   0,   7,   117, 110, 107,
+    110, 111, 119, 110, 0,   0,  0,  0,   0,  0,  0,   12,  0,   0,   0,   0,   0,   0,
+    0,   2,   0,   0,   0,   60, 80, 65,  70, 73, 68,  88,  48,  50,
+};
+
+struct SparseIndexState {
+    std::map<int64_t, std::string> segments;
+    int64_t length = 0;
+    bool discard = false;
+};
+
+class SparseIndexOutput : public MockOutputStream {
+ public:
+    explicit SparseIndexOutput(const std::shared_ptr<SparseIndexState>& state) : state_(state) {}
+    Result<int64_t> Write(const char* buffer, int64_t size) override {
+        if (!state_->discard) {
+            state_->segments[state_->length] = std::string(buffer, size);
+        }
+        state_->length += size;
+        return size;
+    }
+    Result<int64_t> GetPos() const override {
+        return state_->length;
+    }
+
+ private:
+    std::shared_ptr<SparseIndexState> state_;
+};
+
+class SparseIndexInput : public MockInputStream {
+ public:
+    explicit SparseIndexInput(const std::shared_ptr<SparseIndexState>& state) : state_(state) {}
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        if (origin == FS_SEEK_CUR) {
+            offset += position_;
+        }
+        if (origin == FS_SEEK_END) {
+            offset += state_->length;
+        }
+        if (offset < 0 || offset > state_->length) {
+            return Status::Invalid("Invalid seek");
+        }
+        position_ = offset;
+        return Status::OK();
+    }
+    Result<int64_t> GetPos() const override {
+        return position_;
+    }
+    Result<int64_t> Length() const override {
+        return state_->length;
+    }
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        PAIMON_ASSIGN_OR_RAISE(int64_t read, Read(buffer, size, position_));
+        position_ += read;
+        return read;
+    }
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        if (offset < 0 || size < 0 || offset > state_->length) {
+            return Status::Invalid("Invalid read");
+        }
+        size = std::min(size, state_->length - offset);
+        std::memset(buffer, 0, size);
+        for (const auto& [start, bytes] : state_->segments) {
+            int64_t end = start + bytes.size();
+            int64_t from = std::max(start, offset);
+            int64_t to = std::min(end, offset + size);
+            if (from < to) {
+                std::memcpy(buffer + from - offset, bytes.data() + from - start, to - from);
+            }
+        }
+        return size;
+    }
+
+ private:
+    std::shared_ptr<SparseIndexState> state_;
+    int64_t position_ = 0;
+};
+}  // namespace
+
+TEST_F(FileIndexFormatTest, TestV2JavaGoldenBytes) {
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["c1"]["empty"] = nullptr;
+    indexes["c1"]["unknown"] = std::make_shared<Bytes>(std::string("*+"), pool_.get());
+    auto output = NewIndexOutput(pool_);
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         FileIndexFormat::CreateWriter(output, pool_, FileIndexFormat::V_2));
+    ASSERT_OK(WriteIndexes(writer.get(), indexes));
+    ASSERT_OK(writer->Close());
+    ASSERT_OK_AND_ASSIGN(auto bytes, output->Finish(pool_.get()));
+    ASSERT_EQ(kJavaV2Golden, std::vector<uint8_t>(bytes->data(), bytes->data() + bytes->size()));
+
+    // Read the Java golden bytes, including empty-index handling and
+    // skipping unknown backend types without opening their payloads.
+    auto input = std::make_shared<ByteArrayInputStream>(
+        reinterpret_cast<const char*>(kJavaV2Golden.data()), kJavaV2Golden.size());
+    ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input, pool_, /*options=*/{}));
+    auto schema = arrow::schema({arrow::field("c1", arrow::int32())});
+    ASSERT_OK_AND_ASSIGN(auto readers,
+                         reader->ReadColumnIndex("c1", CreateArrowSchema(schema).get()));
+    ASSERT_EQ(1, readers.size());
+    ASSERT_TRUE(dynamic_cast<EmptyFileIndexReader*>(readers[0].get()));
+}
+
+TEST_F(FileIndexFormatTest, TestV2InvalidContainers) {
+    auto check = [this](const std::vector<uint8_t>& bytes) {
+        auto input = std::make_shared<ByteArrayInputStream>(
+            bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        ASSERT_NOK(FileIndexFormat::CreateReader(input, pool_, /*options=*/{}));
+    };
+    for (size_t size : {size_t(0), size_t(11), size_t(24), kJavaV2Golden.size() - 1}) {
+        check(std::vector<uint8_t>(kJavaV2Golden.begin(), kJavaV2Golden.begin() + size));
+    }
+    for (const auto& [offset, value] : std::vector<std::pair<size_t, uint8_t>>{
+             {11, 3},
+             {kJavaV2Golden.size() - 1, 0},
+             {kJavaV2Golden.size() - 12, 0x7f},     // Impossible footer length.
+             {kJavaV2Golden.size() - 12, 0xff}}) {  // Negative footer length.
+        auto bytes = kJavaV2Golden;
+        bytes[offset] = value;
+        check(bytes);
+    }
+}
+
+TEST_F(FileIndexFormatTest, TestV2StreamingLargeContainer) {
+    auto state = std::make_shared<SparseIndexState>();
+    auto output = std::make_shared<SparseIndexOutput>(state);
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         FileIndexFormat::CreateWriter(output, pool_, FileIndexFormat::V_2));
+    // Stream a virtual >2 GiB payload in bounded chunks; the mock discards only this gap.
+    const int64_t gap_length = int64_t{1} << 31;
+    ASSERT_OK(writer->WriteIndex(
+        "gap", "unknown",
+        [state, gap_length](const std::shared_ptr<OutputStream>& stream) -> Result<bool> {
+            state->discard = true;
+            std::array<char, 65536> zeros{};
+            for (int64_t i = 0; i < gap_length; i += zeros.size()) {
+                PAIMON_ASSIGN_OR_RAISE(int64_t written, stream->Write(zeros.data(), zeros.size()));
+                if (written != static_cast<int64_t>(zeros.size())) {
+                    return Status::IOError("short write");
+                }
+            }
+            state->discard = false;
+            return true;
+        }));
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
+    std::vector<std::pair<std::string, std::shared_ptr<FileIndexer>>> indexers = {
+        {"bitmap", std::make_shared<BitmapFileIndex>(std::map<std::string, std::string>{})},
+        {"bsi",
+         std::make_shared<BitSliceIndexBitmapFileIndex>(std::map<std::string, std::string>{})},
+        {"bloom-filter",
+         std::make_shared<BloomFilterFileIndex>(std::map<std::string, std::string>{})},
+        {"range-bitmap",
+         std::make_shared<RangeBitmapFileIndex>(std::map<std::string, std::string>{})}};
+    arrow::Int32Builder builder;
+    ASSERT_TRUE(builder.AppendValues({1, 2, 1}).ok());
+    auto values_result = builder.Finish();
+    ASSERT_TRUE(values_result.ok());
+    std::shared_ptr<arrow::Array> values = values_result.ValueOrDie();
+    auto batch_result = arrow::StructArray::Make({values}, schema->fields());
+    ASSERT_TRUE(batch_result.ok());
+    auto batch = batch_result.ValueOrDie();
+    for (const auto& [type, indexer] : indexers) {
+        ASSERT_OK_AND_ASSIGN(auto index_writer,
+                             indexer->CreateWriter(CreateArrowSchema(schema).get(), pool_));
+        ArrowArray c_batch;
+        ASSERT_TRUE(arrow::ExportArray(*batch, &c_batch).ok());
+        ASSERT_OK(index_writer->AddBatch(&c_batch));
+        ASSERT_OK_AND_ASSIGN(auto payload, index_writer->SerializedBytes());
+        ASSERT_OK(writer->WriteIndex(
+            type, type, [&payload](const std::shared_ptr<OutputStream>& stream) -> Result<bool> {
+                PAIMON_ASSIGN_OR_RAISE(int64_t written,
+                                       stream->Write(payload->data(), payload->size()));
+                if (written != static_cast<int64_t>(payload->size())) {
+                    return Status::IOError("short write");
+                }
+                return true;
+            }));
+    }
+    ASSERT_OK(writer->Finish());
+    ASSERT_OK(writer->Close());
+    ASSERT_GT(state->length, gap_length);
+    auto input = std::make_shared<SparseIndexInput>(state);
+    ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input, pool_, /*options=*/{}));
+    for (const auto& [type, indexer] : indexers) {
+        ASSERT_OK_AND_ASSIGN(
+            auto readers,
+            reader->ReadColumnIndex(
+                type,
+                CreateArrowSchema(arrow::schema({arrow::field(type, arrow::int32())})).get()));
+        ASSERT_EQ(1, readers.size()) << type;
+        ASSERT_OK_AND_ASSIGN(auto matches, readers[0]->VisitEqual(Literal(1)));
+        if (type == "bloom-filter") {
+            ASSERT_OK_AND_ASSIGN(bool remains, matches->IsRemain());
+            ASSERT_TRUE(remains);
+        } else {
+            ASSERT_EQ("{0,2}", matches->ToString()) << type;
+        }
+    }
+}
+
+TEST_F(FileIndexFormatTest, TestPluginRangeLimits) {
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
+    auto state = std::make_shared<SparseIndexState>();
+    state->length = int64_t{1} << 32;
+    auto input = std::make_shared<SparseIndexInput>(state);
+    BitmapFileIndex bitmap({});
+    RangeBitmapFileIndex range({});
+    const int64_t oversized = int64_t{1} << 31;
+    for (FileIndexer* indexer : std::vector<FileIndexer*>{&bitmap, &range}) {
+        auto c_schema = CreateArrowSchema(schema);
+        ASSERT_NOK_WITH_MSG(indexer->CreateReader(c_schema.get(), 0, oversized, input, pool_),
+                            "INT32_MAX");
+        if (c_schema->release) {
+            c_schema->release(c_schema.get());
+        }
+    }
+}
+
+TEST_F(FileIndexFormatTest, TestV2EmptyContainer) {
+    auto output = NewIndexOutput(pool_);
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         FileIndexFormat::CreateWriter(output, pool_, FileIndexFormat::V_2));
+    ASSERT_OK_AND_ASSIGN(int64_t prefix_length, output->GetPos());
+    ASSERT_EQ(12, prefix_length);
+    ASSERT_OK(writer->Finish());
+    ASSERT_OK(writer->Close());
+    ASSERT_OK_AND_ASSIGN(auto bytes, output->Finish(pool_.get()));
+    ASSERT_EQ(28, bytes->size());
+    auto input = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+    ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input, pool_, /*options=*/{}));
+}
+
+TEST_F(FileIndexFormatTest, TestV1BuffersPayloadsUntilFinish) {
+    FileIndexFormat::ColumnIndexes indexes = {
+        {"f0", {{"bitmap", std::make_shared<Bytes>("payload", pool_.get())}, {"empty", nullptr}}}};
+    auto output = NewIndexOutput(pool_);
+    ASSERT_OK_AND_ASSIGN(auto writer, FileIndexFormat::CreateWriter(output, pool_));
+    for (const auto& [column, entries] : indexes) {
+        for (const auto& [type, bytes] : entries) {
+            FileIndexFormat::Writer::PayloadWriter payload;
+            if (bytes) {
+                payload =
+                    [bytes](const std::shared_ptr<OutputStream>& destination) -> Result<bool> {
+                    PAIMON_RETURN_NOT_OK(DataOutputStream(destination).WriteBytes(bytes));
+                    return true;
+                };
+            }
+            ASSERT_OK(writer->WriteIndex(column, type, payload));
+        }
+    }
+    ASSERT_OK_AND_ASSIGN(int64_t before_finish, output->GetPos());
+    ASSERT_EQ(0, before_finish);
+    ASSERT_OK(writer->Finish());
+    ASSERT_OK(writer->Close());
+    ASSERT_OK_AND_ASSIGN(auto actual, output->Finish(pool_.get()));
+    auto input = std::make_shared<ByteArrayInputStream>(actual->data(), actual->size());
+    DataInputStream in(input);
+    ASSERT_OK(in.Seek(12));
+    ASSERT_OK_AND_ASSIGN(int32_t head_length, in.ReadValue<int32_t>());
+    ASSERT_OK_AND_ASSIGN(FileIndexEntries entries,
+                         FileIndexFormatUtils::ReadFileIndexEntries(in, FileIndexFormat::V_1));
+    ASSERT_EQ(std::make_pair(int64_t{head_length}, int64_t{7}), entries.at("f0").at("bitmap"));
+    ASSERT_EQ(std::make_pair(int64_t{-1}, int64_t{0}), entries.at("f0").at("empty"));
+    ASSERT_EQ("payload", std::string(actual->data() + head_length, 7));
+}
+
+TEST_F(FileIndexFormatTest, TestAbsentPayloadMustNotWriteBytes) {
+    for (int32_t version : {FileIndexFormat::V_1, FileIndexFormat::V_2}) {
+        SCOPED_TRACE(version);
+        ASSERT_OK_AND_ASSIGN(auto writer,
+                             FileIndexFormat::CreateWriter(NewIndexOutput(pool_), pool_, version));
+        ASSERT_NOK_WITH_MSG(
+            writer->WriteIndex("f0", "bad",
+                               [](const std::shared_ptr<OutputStream>& output) -> Result<bool> {
+                                   PAIMON_ASSIGN_OR_RAISE(int64_t written, output->Write("x", 1));
+                                   if (written != 1) {
+                                       return Status::IOError("short write");
+                                   }
+                                   return false;
+                               }),
+            "Absent file index payload must not write bytes");
+        ASSERT_NOK(writer->Finish());
+        ASSERT_OK(writer->Close());
+    }
 }
 
 }  // namespace paimon::test

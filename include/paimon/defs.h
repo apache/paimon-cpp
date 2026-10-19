@@ -469,6 +469,9 @@ struct PAIMON_EXPORT Options {
     /// manifest. Default value is 500B.
     static const char FILE_INDEX_IN_MANIFEST_THRESHOLD[];
 
+    /// "file-index.format-version" - File index container write version, 1 or 2. Defaults to 1.
+    static const char FILE_INDEX_FORMAT_VERSION[];
+
     /// "data-file.external-paths" - The external paths where the data of this table will be
     /// written, multiple elements separated by commas.
     static const char DATA_FILE_EXTERNAL_PATHS[];

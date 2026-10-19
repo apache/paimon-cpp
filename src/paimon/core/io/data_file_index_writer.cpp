@@ -28,15 +28,15 @@
 #include "arrow/c/helpers.h"
 #include "arrow/compute/cast.h"
 #include "fmt/format.h"
-#include "paimon/common/io/byte_array_output_stream.h"
-#include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/io/spillable_index_output_stream.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/file_index_writer.h"
 #include "paimon/file_index/file_indexer.h"
@@ -92,17 +92,19 @@ Result<std::unique_ptr<DataFileIndexWriter>> DataFileIndexWriter::Create(
         writers.push_back(
             {definition.column_name, definition.index_type, field_index, field, std::move(writer)});
     }
-    return std::unique_ptr<DataFileIndexWriter>(new DataFileIndexWriter(
-        std::move(writers), options.InManifestThreshold(), file_system, path_factory, pool));
+    return std::unique_ptr<DataFileIndexWriter>(
+        new DataFileIndexWriter(std::move(writers), options.InManifestThreshold(),
+                                options.FormatVersion(), file_system, path_factory, pool));
 }
 
 DataFileIndexWriter::DataFileIndexWriter(std::vector<IndexWriterEntry>&& writers,
-                                         int64_t in_manifest_threshold,
+                                         int64_t in_manifest_threshold, int32_t format_version,
                                          const std::shared_ptr<FileSystem>& file_system,
                                          const std::shared_ptr<DataFilePathFactory>& path_factory,
                                          const std::shared_ptr<MemoryPool>& pool)
     : writers_(std::move(writers)),
       in_manifest_threshold_(in_manifest_threshold),
+      format_version_(format_version),
       file_system_(file_system),
       path_factory_(path_factory),
       pool_(pool) {}
@@ -149,62 +151,36 @@ Status DataFileIndexWriter::AddBatch(const std::shared_ptr<arrow::StructArray>& 
     return Status::OK();
 }
 
-Result<std::shared_ptr<Bytes>> DataFileIndexWriter::SerializeContainer() {
-    FileIndexFormat::ColumnIndexes column_indexes;
-    for (const IndexWriterEntry& entry : writers_) {
-        PAIMON_ASSIGN_OR_RAISE(column_indexes[entry.column_name][entry.index_type],
-                               entry.writer->SerializedBytes());
-    }
-
-    auto segment_output = std::make_unique<MemorySegmentOutputStream>(
-        MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
-    std::shared_ptr<ByteArrayOutputStream> output =
-        std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Writer> format_writer,
-                           FileIndexFormat::CreateWriter(output, pool_));
-    PAIMON_RETURN_NOT_OK(format_writer->WriteColumnIndexes(column_indexes));
-    PAIMON_RETURN_NOT_OK(format_writer->Close());
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, output->Finish(pool_.get()));
-    return bytes;
-}
-
 Result<FileIndexWriteResult> DataFileIndexWriter::Finish(const std::string& data_file_path) {
     if (finished_) {
         return Status::Invalid("Data file index writer has already finished");
     }
     finished_ = true;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, SerializeContainer());
-    if (static_cast<int64_t>(bytes->size()) <= in_manifest_threshold_) {
-        return FileIndexWriteResult{bytes, {}};
+    PAIMON_RETURN_NOT_OK(
+        ValidateValueInRange<int32_t>(in_manifest_threshold_, "file index inline threshold"));
+    std::string index_path = path_factory_->ToFileIndexPath(data_file_path);
+    auto output = std::make_shared<SpillableIndexOutputStream>(file_system_, index_path,
+                                                               in_manifest_threshold_, pool_);
+    ScopeGuard guard([&output]() { [[maybe_unused]] Status ignored = output->Abort(); });
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Writer> writer,
+                           FileIndexFormat::CreateWriter(output, pool_, format_version_));
+    for (const IndexWriterEntry& entry : writers_) {
+        FileIndexFormat::Writer::PayloadWriter payload =
+            [index_writer = entry.writer](const std::shared_ptr<OutputStream>& destination) {
+                return index_writer->WriteTo(destination);
+            };
+        PAIMON_RETURN_NOT_OK(writer->WriteIndex(entry.column_name, entry.index_type, payload));
     }
-
-    external_index_path_ = path_factory_->ToFileIndexPath(data_file_path);
-    PAIMON_RETURN_NOT_OK(WriteExternal(external_index_path_.value(), bytes));
-    return FileIndexWriteResult{nullptr, {PathUtil::GetName(external_index_path_.value())}};
-}
-
-Status DataFileIndexWriter::WriteExternal(const std::string& path,
-                                          const std::shared_ptr<Bytes>& bytes) {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output,
-                           file_system_->Create(path, /*overwrite=*/false));
-    ScopeGuard guard([this, &output]() {
-        if (output) {
-            [[maybe_unused]] Status _ = output->Close();
-        }
-        Abort();
-    });
-    PAIMON_ASSIGN_OR_RAISE(int64_t written,
-                           output->Write(bytes->data(), static_cast<int64_t>(bytes->size())));
-    if (written != static_cast<int64_t>(bytes->size())) {
-        return Status::IOError(fmt::format("Short write for file index {}: expected {}, wrote {}",
-                                           path, bytes->size(), written));
+    PAIMON_RETURN_NOT_OK(writer->Finish());
+    PAIMON_RETURN_NOT_OK(writer->Close());
+    if (output->Spilled()) {
+        external_index_path_ = index_path;
+        guard.Release();
+        return FileIndexWriteResult{nullptr, {PathUtil::GetName(index_path)}};
     }
-    PAIMON_RETURN_NOT_OK(output->Flush());
-    Status close_status = output->Close();
-    output.reset();
-    PAIMON_RETURN_NOT_OK(close_status);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> embedded, output->EmbeddedBytes());
     guard.Release();
-    return Status::OK();
+    return FileIndexWriteResult{embedded, {}};
 }
 
 void DataFileIndexWriter::Abort() {

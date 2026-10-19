@@ -91,7 +91,7 @@ MockSearchFileIndexer::MockSearchFileIndexer(SearchIndexType index_type)
     : index_type_(index_type) {}
 
 Result<std::shared_ptr<FileIndexReader>> MockSearchFileIndexer::CreateReader(
-    ::ArrowSchema* c_schema, int32_t start, int32_t length,
+    ::ArrowSchema* c_schema, int64_t start, int64_t length,
     const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>&) const {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(c_schema));
@@ -174,7 +174,20 @@ Result<std::shared_ptr<Bytes>> MockSearchFileIndex::Serialize(
     auto output = MakeOutput(pool);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Writer> writer,
                            FileIndexFormat::CreateWriter(output, pool));
-    PAIMON_RETURN_NOT_OK(writer->WriteColumnIndexes(indexes));
+    for (const auto& [column, entries] : indexes) {
+        for (const auto& [type, bytes] : entries) {
+            FileIndexFormat::Writer::PayloadWriter payload;
+            if (bytes && bytes->size() > 0) {
+                payload =
+                    [bytes](const std::shared_ptr<OutputStream>& destination) -> Result<bool> {
+                    PAIMON_RETURN_NOT_OK(DataOutputStream(destination).WriteBytes(bytes));
+                    return true;
+                };
+            }
+            PAIMON_RETURN_NOT_OK(writer->WriteIndex(column, type, payload));
+        }
+    }
+    PAIMON_RETURN_NOT_OK(writer->Finish());
     PAIMON_RETURN_NOT_OK(writer->Close());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, output->Finish(pool.get()));
     return bytes;

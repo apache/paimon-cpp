@@ -25,6 +25,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/options/memory_size.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/defs.h"
@@ -41,7 +42,8 @@ constexpr size_t kColumnsSuffixLength = sizeof(kColumnsSuffix) - 1;
 }  // namespace
 
 Result<FileIndexOptions> FileIndexOptions::FromCoreOptions(const CoreOptions& options) {
-    return Parse(options.ToMap(), options.FileIndexInManifestThreshold());
+    return Parse(options.ToMap(), options.FileIndexInManifestThreshold(),
+                 options.FileIndexFormatVersion());
 }
 
 Result<FileIndexOptions> FileIndexOptions::FromMap(
@@ -51,13 +53,22 @@ Result<FileIndexOptions> FileIndexOptions::FromMap(
     if (iter != raw_options.end()) {
         PAIMON_ASSIGN_OR_RAISE(in_manifest_threshold, MemorySize::ParseBytes(iter->second));
     }
-    return Parse(raw_options, in_manifest_threshold);
+    PAIMON_ASSIGN_OR_RAISE(
+        int32_t format_version,
+        OptionsUtils::GetValueFromMap<int32_t>(raw_options, Options::FILE_INDEX_FORMAT_VERSION,
+                                               CoreOptions().FileIndexFormatVersion()));
+    if (format_version != 1 && format_version != 2) {
+        return Status::Invalid("file-index.format-version must be 1 or 2");
+    }
+    return Parse(raw_options, in_manifest_threshold, format_version);
 }
 
 Result<FileIndexOptions> FileIndexOptions::Parse(
-    const std::map<std::string, std::string>& raw_options, int64_t in_manifest_threshold) {
+    const std::map<std::string, std::string>& raw_options, int64_t in_manifest_threshold,
+    int32_t format_version) {
     FileIndexOptions result;
     result.in_manifest_threshold_ = in_manifest_threshold;
+    result.format_version_ = format_version;
 
     std::set<std::pair<std::string, std::string>> declared;
     for (const auto& [key, value] : raw_options) {

@@ -39,6 +39,42 @@
 namespace paimon::lumina {
 namespace {
 
+/// Reports positions relative to the wrapped stream's position at creation.
+/// Flush forwards to the wrapped stream; Close leaves it open so the container can continue
+/// writing.
+class OffsetOutputStream : public OutputStream {
+ public:
+    static Result<std::unique_ptr<OffsetOutputStream>> Create(
+        const std::shared_ptr<OutputStream>& output) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t start, output->GetPos());
+        return std::unique_ptr<OffsetOutputStream>(new OffsetOutputStream(output, start));
+    }
+
+    Result<int64_t> Write(const char* buffer, int64_t size) override {
+        return output_->Write(buffer, size);
+    }
+    Result<int64_t> GetPos() const override {
+        PAIMON_ASSIGN_OR_RAISE(int64_t position, output_->GetPos());
+        return position - start_;
+    }
+    Result<std::string> GetUri() const override {
+        return output_->GetUri();
+    }
+    Status Flush() override {
+        return output_->Flush();
+    }
+    Status Close() override {
+        return Status::OK();
+    }
+
+ private:
+    OffsetOutputStream(const std::shared_ptr<OutputStream>& output, int64_t start)
+        : output_(output), start_(start) {}
+
+    std::shared_ptr<OutputStream> output_;
+    int64_t start_;
+};
+
 Result<std::shared_ptr<arrow::Schema>> ImportVectorSchema(::ArrowSchema* c_schema,
                                                           const std::string& owner) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
@@ -103,28 +139,39 @@ Status LuminaFileIndexWriter::AddBatch(::ArrowArray* batch) {
 }
 
 Result<PAIMON_UNIQUE_PTR<Bytes>> LuminaFileIndexWriter::SerializedBytes() const {
+    auto segment_output = std::make_unique<MemorySegmentOutputStream>(
+        MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_->GetPaimonPool());
+    auto output = std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
+    PAIMON_ASSIGN_OR_RAISE(bool written, WriteTo(output));
+    if (!written) {
+        return PAIMON_UNIQUE_PTR<Bytes>();
+    }
+    return output->Finish(pool_->GetPaimonPool().get());
+}
+
+Result<bool> LuminaFileIndexWriter::WriteTo(const std::shared_ptr<OutputStream>& output) const {
+    if (!output) {
+        return Status::Invalid("Lumina File Index output stream cannot be null");
+    }
     if (serialized_) {
         return Status::Invalid("Lumina File Index has already been serialized");
     }
     serialized_ = true;
     if (accumulator_.IndexedCount() == 0) {
-        return PAIMON_UNIQUE_PTR<Bytes>();
+        return false;
     }
-
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetOutputStream> offset_output,
+                           OffsetOutputStream::Create(output));
     std::unique_ptr<::lumina::extensions::experimental::CkptManager> checkpoint_manager;
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<LuminaIndexBuildContext> build_context,
         accumulator_.Build(builder_options_, index_info_.dimension, !tag_fields_.empty(),
                            std::move(checkpoint_manager), pool_.get()));
 
-    auto segment_output = std::make_unique<MemorySegmentOutputStream>(
-        MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_->GetPaimonPool());
-    std::shared_ptr<ByteArrayOutputStream> output =
-        std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
-    auto file_writer = std::make_unique<LuminaFileWriter>(output);
+    auto file_writer = std::make_unique<LuminaFileWriter>(offset_output);
     PAIMON_RETURN_NOT_OK_FROM_LUMINA(
         build_context->builder.Dump(std::move(file_writer), ::lumina::api::IOOptions()));
-    return output->Finish(pool_->GetPaimonPool().get());
+    return true;
 }
 
 LuminaFileIndexReader::LuminaFileIndexReader(std::unique_ptr<LuminaIndexSearcher>&& searcher)
@@ -181,7 +228,7 @@ Result<std::shared_ptr<FileIndexWriter>> LuminaFileIndexer::CreateWriter(
 }
 
 Result<std::shared_ptr<FileIndexReader>> LuminaFileIndexer::CreateReader(
-    ::ArrowSchema* c_schema, int32_t start, int32_t length,
+    ::ArrowSchema* c_schema, int64_t start, int64_t length,
     const std::shared_ptr<InputStream>& input_stream,
     const std::shared_ptr<MemoryPool>& pool) const {
     if (!input_stream || !pool) {

@@ -30,7 +30,9 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/common/file_index/empty/empty_file_index_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -38,9 +40,14 @@
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/file_index_options.h"
 #include "paimon/defs.h"
+#include "paimon/factories/factory.h"
 #include "paimon/file_index/file_index_format.h"
+#include "paimon/file_index/file_index_writer.h"
+#include "paimon/file_index/file_indexer.h"
+#include "paimon/file_index/file_indexer_factory.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
+#include "paimon/io/data_input_stream.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
@@ -49,6 +56,83 @@
 
 namespace paimon::test {
 namespace {
+
+// Deliberately implements only WriteTo(), so the V2 integration cannot fall back to a buffer.
+class StreamingTestIndexWriter : public FileIndexWriter {
+ public:
+    StreamingTestIndexWriter(bool fail, bool empty) : fail_(fail), empty_(empty) {}
+    Status AddBatch(::ArrowArray* batch) override {
+        batch->release(batch);
+        return Status::OK();
+    }
+    Result<bool> WriteTo(const std::shared_ptr<OutputStream>& output) const override {
+        if (empty_) {
+            return false;
+        }
+        for (const std::string& chunk : {"stream", "ed"}) {
+            PAIMON_ASSIGN_OR_RAISE(int64_t written, output->Write(chunk.data(), chunk.size()));
+            if (written != static_cast<int64_t>(chunk.size())) {
+                return Status::IOError("short streamed payload");
+            }
+            if (fail_) {
+                return Status::IOError("streamed payload failed");
+            }
+        }
+        return true;
+    }
+
+ private:
+    bool fail_;
+    bool empty_;
+};
+
+class StreamingTestIndexer : public FileIndexer {
+ public:
+    explicit StreamingTestIndexer(const std::map<std::string, std::string>& options)
+        : fail_(options.count("fail")), empty_(options.count("empty")) {}
+    Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
+        ::ArrowSchema* c_schema, const std::shared_ptr<MemoryPool>&) const override {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
+                                          arrow::ImportSchema(c_schema));
+        if (schema->num_fields() != 1) {
+            return Status::Invalid("expected one field");
+        }
+        return std::make_shared<StreamingTestIndexWriter>(fail_, empty_);
+    }
+    Result<std::shared_ptr<FileIndexReader>> CreateReader(
+        ::ArrowSchema* c_schema, int64_t start, int64_t length,
+        const std::shared_ptr<InputStream>& input,
+        const std::shared_ptr<MemoryPool>&) const override {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
+                                          arrow::ImportSchema(c_schema));
+        if (schema->num_fields() != 1 || length != 8) {
+            return Status::Invalid("invalid streamed payload metadata");
+        }
+        PAIMON_RETURN_NOT_OK(input->Seek(start, SeekOrigin::FS_SEEK_SET));
+        char bytes[8];
+        PAIMON_ASSIGN_OR_RAISE(int64_t read, input->Read(bytes, length));
+        if (read != length || std::string(bytes, sizeof(bytes)) != "streamed") {
+            return Status::Invalid("invalid streamed payload bytes");
+        }
+        return std::make_shared<FileIndexReader>();
+    }
+
+ private:
+    bool fail_;
+    bool empty_;
+};
+
+class StreamingTestIndexFactory : public FileIndexerFactory {
+ public:
+    const char* Identifier() const override {
+        return "test-streaming-index";
+    }
+    Result<std::unique_ptr<FileIndexer>> Create(
+        const std::map<std::string, std::string>& options) const override {
+        return std::make_unique<StreamingTestIndexer>(options);
+    }
+};
+REGISTER_PAIMON_FACTORY(StreamingTestIndexFactory);
 
 struct CloseFailingState {
     int32_t close_count = 0;
@@ -95,6 +179,10 @@ class CloseFailingFileSystem : public MockFileSystem {
 
 class DataFileIndexWriterTest : public ::testing::Test {
  public:
+    virtual int32_t FormatVersion() const {
+        return FileIndexFormat::V_1;
+    }
+
     void SetUp() override {
         pool_ = GetDefaultPool();
         file_system_ = std::make_shared<LocalFileSystem>();
@@ -108,11 +196,18 @@ class DataFileIndexWriterTest : public ::testing::Test {
 
     Result<std::unique_ptr<DataFileIndexWriter>> CreateWriter(
         const std::map<std::string, std::string>& index_options) const {
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                               CoreOptions::FromMap(index_options, file_system_));
+        PAIMON_ASSIGN_OR_RAISE(
+            CoreOptions core_options,
+            CoreOptions::FromMap(WithFormatVersion(index_options), file_system_));
         PAIMON_ASSIGN_OR_RAISE(FileIndexOptions parsed,
                                FileIndexOptions::FromCoreOptions(core_options));
         return DataFileIndexWriter::Create(schema_, parsed, file_system_, path_factory_, pool_);
+    }
+
+    std::map<std::string, std::string> WithFormatVersion(
+        std::map<std::string, std::string> options) const {
+        options[Options::FILE_INDEX_FORMAT_VERSION] = std::to_string(FormatVersion());
+        return options;
     }
 
     std::shared_ptr<arrow::StructArray> CreateBatch(const std::string& json) const {
@@ -143,7 +238,60 @@ class DataFileIndexWriterTest : public ::testing::Test {
     std::shared_ptr<arrow::Schema> schema_;
 };
 
-TEST_F(DataFileIndexWriterTest, TestMultipleIndexesOnSameColumnEmbeddedRoundTrip) {
+class VersionedDataFileIndexWriterTest : public DataFileIndexWriterTest,
+                                         public ::testing::WithParamInterface<int32_t> {
+ public:
+    int32_t FormatVersion() const override {
+        return GetParam();
+    }
+};
+
+class DataFileIndexWriterV2Test : public DataFileIndexWriterTest {
+ public:
+    int32_t FormatVersion() const override {
+        return FileIndexFormat::V_2;
+    }
+};
+
+TEST_P(VersionedDataFileIndexWriterTest, TestStreamingOnlyPlugin) {
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         CreateWriter({{"file-index.test-streaming-index.columns", "f0"}}));
+    ASSERT_OK(writer->AddBatch(CreateBatch(R"([{"f0": 1, "f1": 2}])")));
+    ASSERT_OK_AND_ASSIGN(FileIndexWriteResult result, writer->Finish("stream.orc"));
+    ASSERT_TRUE(result.embedded_index);
+    ASSERT_TRUE(result.extra_files.empty());
+    ASSERT_OK_AND_ASSIGN(auto reader, CreateReader(result.embedded_index));
+    ASSERT_OK_AND_ASSIGN(auto indexes, ReadColumn(reader.get(), "f0"));
+    ASSERT_EQ(1, indexes.size());
+}
+
+TEST_F(DataFileIndexWriterV2Test, TestStreamingFailureRemovesPartialFile) {
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         CreateWriter({{"file-index.test-streaming-index.columns", "f0"},
+                                       {"file-index.test-streaming-index.f0.fail", "true"},
+                                       {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"}}));
+    ASSERT_OK(writer->AddBatch(CreateBatch(R"([{"f0": 1, "f1": 2}])")));
+    const std::string data_path = fmt::format("{}/partial.orc", directory_->Str());
+    ASSERT_NOK_WITH_MSG(writer->Finish(data_path), "streamed payload failed");
+    ASSERT_OK_AND_ASSIGN(bool exists,
+                         file_system_->Exists(path_factory_->ToFileIndexPath(data_path)));
+    ASSERT_FALSE(exists);
+}
+
+TEST_P(VersionedDataFileIndexWriterTest, TestEmptyStreamingIndex) {
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         CreateWriter({{"file-index.test-streaming-index.columns", "f0"},
+                                       {"file-index.test-streaming-index.f0.empty", "true"}}));
+    ASSERT_OK(writer->AddBatch(CreateBatch(R"([{"f0": 1, "f1": 2}])")));
+    ASSERT_OK_AND_ASSIGN(FileIndexWriteResult result, writer->Finish("empty.orc"));
+    ASSERT_TRUE(result.embedded_index);
+    ASSERT_OK_AND_ASSIGN(auto reader, CreateReader(result.embedded_index));
+    ASSERT_OK_AND_ASSIGN(auto indexes, ReadColumn(reader.get(), "f0"));
+    ASSERT_EQ(1, indexes.size());
+    ASSERT_TRUE(dynamic_cast<EmptyFileIndexReader*>(indexes[0].get()));
+}
+
+TEST_P(VersionedDataFileIndexWriterTest, TestMultipleIndexesOnSameColumnEmbeddedRoundTrip) {
     ASSERT_OK_AND_ASSIGN(auto writer,
                          CreateWriter({{"file-index.bitmap.columns", "f0"},
                                        {"file-index.bsi.columns", "f0"},
@@ -158,6 +306,13 @@ TEST_F(DataFileIndexWriterTest, TestMultipleIndexesOnSameColumnEmbeddedRoundTrip
     ASSERT_OK_AND_ASSIGN(FileIndexWriteResult result, writer->Finish("unused.orc"));
     ASSERT_TRUE(result.embedded_index);
     ASSERT_TRUE(result.extra_files.empty());
+    auto input = std::make_shared<ByteArrayInputStream>(result.embedded_index->data(),
+                                                        result.embedded_index->size());
+    DataInputStream data_input(input);
+    ASSERT_OK_AND_ASSIGN(int64_t magic, data_input.ReadValue<int64_t>());
+    ASSERT_EQ(FileIndexFormat::MAGIC, magic);
+    ASSERT_OK_AND_ASSIGN(int32_t version, data_input.ReadValue<int32_t>());
+    ASSERT_EQ(FormatVersion(), version);
     ASSERT_OK_AND_ASSIGN(auto reader, CreateReader(result.embedded_index));
 
     ASSERT_OK_AND_ASSIGN(auto f0_readers, ReadColumn(reader.get(), "f0"));
@@ -175,7 +330,7 @@ TEST_F(DataFileIndexWriterTest, TestMultipleIndexesOnSameColumnEmbeddedRoundTrip
     ASSERT_EQ("{2,3}", greater_result->ToString());
 }
 
-TEST_F(DataFileIndexWriterTest, TestDictionaryEncodedIndexedColumnRoundTrip) {
+TEST_P(VersionedDataFileIndexWriterTest, TestDictionaryEncodedIndexedColumnRoundTrip) {
     // The parquet dictionary passthrough hands compaction batches over still encoded, and the
     // bitmap index only sees the right values if the indexed column is decoded first.
     schema_ =
@@ -227,7 +382,7 @@ TEST_F(DataFileIndexWriterTest, TestDictionaryEncodedIndexedColumnRoundTrip) {
     ASSERT_EQ("{4}", second_batch_result->ToString());
 }
 
-TEST_F(DataFileIndexWriterTest, TestExternalIndexAndAbortCleanup) {
+TEST_P(VersionedDataFileIndexWriterTest, TestExternalIndexAndAbortCleanup) {
     ASSERT_OK_AND_ASSIGN(auto writer,
                          CreateWriter({{"file-index.bitmap.columns", "f0"},
                                        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"}}));
@@ -255,7 +410,7 @@ TEST_F(DataFileIndexWriterTest, TestExternalIndexAndAbortCleanup) {
     ASSERT_FALSE(exists);
 }
 
-TEST_F(DataFileIndexWriterTest, TestBsiAndBloomFilterEmbeddedRoundTrip) {
+TEST_P(VersionedDataFileIndexWriterTest, TestBsiAndBloomFilterEmbeddedRoundTrip) {
     ASSERT_OK_AND_ASSIGN(auto writer,
                          CreateWriter({{"file-index.bsi.columns", "f0"},
                                        {"file-index.bloom-filter.columns", "f1"},
@@ -317,10 +472,12 @@ TEST_F(DataFileIndexWriterTest, TestFinishIsOneShot) {
                         "already finished");
 }
 
-TEST_F(DataFileIndexWriterTest, TestCloseFailureClosesExternalStreamOnce) {
+TEST_P(VersionedDataFileIndexWriterTest, TestCloseFailureClosesExternalStreamOnce) {
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
                          CoreOptions::FromMap({{"file-index.bitmap.columns", "f0"},
-                                               {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"}},
+                                               {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"},
+                                               {Options::FILE_INDEX_FORMAT_VERSION,
+                                                std::to_string(FormatVersion())}},
                                               file_system_));
     ASSERT_OK_AND_ASSIGN(FileIndexOptions options, FileIndexOptions::FromCoreOptions(core_options));
     auto state = std::make_shared<CloseFailingState>();
@@ -334,5 +491,46 @@ TEST_F(DataFileIndexWriterTest, TestCloseFailureClosesExternalStreamOnce) {
     ASSERT_EQ(1, state->close_count);
     ASSERT_EQ(1, state->delete_count);
 }
+
+TEST_F(DataFileIndexWriterV2Test, TestThresholdIncludesFooterAndTrailer) {
+    auto batch = CreateBatch(R"([{"f0": 1, "f1": 10}])");
+    ASSERT_OK_AND_ASSIGN(auto sizing_writer,
+                         CreateWriter({{"file-index.bitmap.columns", "f0"},
+                                       {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}}));
+    ASSERT_OK(sizing_writer->AddBatch(batch));
+    ASSERT_OK_AND_ASSIGN(auto sized, sizing_writer->Finish("unused.orc"));
+    ASSERT_TRUE(sized.embedded_index);
+    int64_t container_size = sized.embedded_index->size();
+    {
+        // Keep the index embedded when the threshold equals the complete container size.
+        ASSERT_OK_AND_ASSIGN(auto writer, CreateWriter({{"file-index.bitmap.columns", "f0"},
+                                                        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD,
+                                                         fmt::format("{}B", container_size)}}));
+        ASSERT_OK(writer->AddBatch(batch));
+        std::string path = path_factory_->NewPath();
+        ASSERT_OK_AND_ASSIGN(auto result, writer->Finish(path));
+        ASSERT_TRUE(result.embedded_index);
+        ASSERT_EQ(container_size, result.embedded_index->size());
+        ASSERT_TRUE(result.extra_files.empty());
+    }
+    {
+        // Spill to an external file when the threshold is one byte below the complete container
+        // size.
+        ASSERT_OK_AND_ASSIGN(auto writer, CreateWriter({{"file-index.bitmap.columns", "f0"},
+                                                        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD,
+                                                         fmt::format("{}B", container_size - 1)}}));
+        ASSERT_OK(writer->AddBatch(batch));
+        std::string path = path_factory_->NewPath();
+        ASSERT_OK_AND_ASSIGN(auto result, writer->Finish(path));
+        ASSERT_FALSE(result.embedded_index);
+        ASSERT_EQ(1, result.extra_files.size());
+        ASSERT_OK_AND_ASSIGN(auto file_status,
+                             file_system_->GetFileStatus(path_factory_->ToFileIndexPath(path)));
+        ASSERT_EQ(container_size, file_status.GetLen());
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(ContainerVersions, VersionedDataFileIndexWriterTest,
+                         ::testing::Values(1, 2));
 
 }  // namespace paimon::test
