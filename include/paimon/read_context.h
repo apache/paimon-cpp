@@ -52,26 +52,23 @@ struct VectorSearch;
 /// @see ReadContextBuilder
 class PAIMON_EXPORT ReadContext {
  public:
-    ReadContext(const std::string& path, const std::string& branch,
-                const std::vector<std::string>& read_field_names,
-                const std::vector<int32_t>& read_field_ids,
-                const std::shared_ptr<Predicate>& predicate,
-                const std::shared_ptr<VectorSearch>& vector_search,
-                const std::shared_ptr<FullTextSearch>& full_text_search,
-                bool enable_predicate_filter, bool enable_prefetch, bool enable_late_materializing,
-                uint32_t prefetch_batch_count, uint32_t prefetch_max_parallel_num,
-                bool enable_multi_thread_row_to_batch, uint32_t row_to_batch_thread_number,
-                const std::optional<std::string>& table_schema,
-                const std::shared_ptr<MemoryPool>& memory_pool,
-                const std::shared_ptr<Executor>& executor,
-                const std::shared_ptr<FileSystem>& specific_file_system,
-                const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-                const std::shared_ptr<RealtimeContext>& realtime_context,
-                const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
-                const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
-                const std::shared_ptr<Catalog>& catalog = nullptr,
-                const std::optional<Identifier>& identifier = std::nullopt);
+    ReadContext(
+        const std::string& path, const std::string& branch,
+        const std::vector<std::string>& read_field_names,
+        const std::vector<int32_t>& read_field_ids, const std::shared_ptr<Predicate>& predicate,
+        const std::shared_ptr<VectorSearch>& vector_search,
+        const std::shared_ptr<FullTextSearch>& full_text_search, bool enable_predicate_filter,
+        bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
+        uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
+        uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
+        const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
+        const std::shared_ptr<FileSystem>& specific_file_system,
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
+        const std::shared_ptr<RealtimeContext>& realtime_context,
+        const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
+        const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
+        const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
+        const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier);
 
     ~ReadContext();
 

@@ -59,8 +59,8 @@ class PAIMON_EXPORT ScanContext {
                 const std::map<std::string, std::string>& options,
                 const std::shared_ptr<Cache>& cache,
                 const std::shared_ptr<FormatTable>& format_table,
-                const std::shared_ptr<Catalog>& catalog = nullptr,
-                const std::optional<Identifier>& identifier = std::nullopt);
+                const std::shared_ptr<Catalog>& catalog,
+                const std::optional<Identifier>& identifier);
 
     ~ScanContext();
 
