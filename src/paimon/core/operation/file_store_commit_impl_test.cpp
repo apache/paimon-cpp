@@ -1105,7 +1105,7 @@ TEST_F(FileStoreCommitImplTest, TestCatalogCommitRetriesWhenRefused) {
         ASSERT_NE(failed.ToString().find(table_path_), std::string::npos) << failed.ToString();
         ASSERT_NE(failed.ToString().find("through catalog"), std::string::npos)
             << failed.ToString();
-        ASSERT_NE(failed.ToString().find("table='tbl'"), std::string::npos) << failed.ToString();
+        ASSERT_NE(failed.ToString().find("object='tbl'"), std::string::npos) << failed.ToString();
         ASSERT_NOK_WITH_MSG(failed, fmt::format("{} retries", max_retries));
 
         ASSERT_EQ(catalog->CommitCalls().size(), static_cast<size_t>(max_retries + 1));
@@ -1138,7 +1138,7 @@ TEST_F(FileStoreCommitImplTest, TestUnknownCatalogOutcomeKeepsTheManifests) {
     ASSERT_NOK_WITH_MSG(failed, "catalog unreachable");
     ASSERT_NE(failed.ToString().find(table_path_), std::string::npos) << failed.ToString();
     ASSERT_NE(failed.ToString().find("through catalog"), std::string::npos) << failed.ToString();
-    ASSERT_NE(failed.ToString().find("table='tbl'"), std::string::npos) << failed.ToString();
+    ASSERT_NE(failed.ToString().find("object='tbl'"), std::string::npos) << failed.ToString();
     ASSERT_NE(failed.ToString().find("snapshot uuid none"), std::string::npos) << failed.ToString();
 
     ASSERT_EQ(catalog->CommitCalls().size(), 1u);

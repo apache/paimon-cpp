@@ -95,8 +95,12 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override {
         ++get_table_calls_;
-        return std::make_shared<Table>(table_schema_, identifier.GetDatabaseName(),
-                                       identifier.GetTableName(), table_uuid_);
+        // Serves the per-table file system when one was set, matching `GetTableFileSystem`
+        // without recording the request, so a test can still tell the two apart. No location:
+        // this mock's `GetTableLocation` is the unsupported stub.
+        return std::make_shared<Table>(
+            table_file_system_ != nullptr ? table_file_system_ : file_system_,
+            /*root_path=*/"", table_schema_, identifier, table_uuid_);
     }
 
     void SetTableSchema(const std::shared_ptr<Schema>& table_schema) {

@@ -40,7 +40,7 @@ class BlobViewStructTest : public testing::Test {
 
 TEST_F(BlobViewStructTest, TestConstructorAndGetters) {
     ASSERT_EQ(view_struct_.GetIdentifier().GetDatabaseName(), "test_db");
-    ASSERT_EQ(view_struct_.GetIdentifier().GetTableName(), "test_table");
+    ASSERT_EQ(view_struct_.GetIdentifier().GetObjectName(), "test_table");
     ASSERT_EQ(view_struct_.FieldId(), 7);
     ASSERT_EQ(view_struct_.RowId(), 1024);
 }
@@ -53,7 +53,7 @@ TEST_F(BlobViewStructTest, TestSerializeDeserializeRoundTrip) {
     ASSERT_OK_AND_ASSIGN(auto restored,
                          BlobViewStruct::Deserialize(serialized->data(), serialized->size()));
     ASSERT_EQ(restored->GetIdentifier().GetDatabaseName(), "test_db");
-    ASSERT_EQ(restored->GetIdentifier().GetTableName(), "test_table");
+    ASSERT_EQ(restored->GetIdentifier().GetObjectName(), "test_table");
     ASSERT_EQ(restored->FieldId(), 7);
     ASSERT_EQ(restored->RowId(), 1024);
 }
@@ -78,7 +78,8 @@ TEST_F(BlobViewStructTest, TestToString) {
 }
 
 TEST_F(BlobViewStructTest, TestSerializeRejectsUnknownDatabase) {
-    BlobViewStruct view_struct(Identifier("test_table"), /*field_id=*/7, /*row_id=*/1024);
+    BlobViewStruct view_struct(Identifier(Identifier::kUnknownDatabase, "test_table"),
+                               /*field_id=*/7, /*row_id=*/1024);
     ASSERT_NOK_WITH_MSG(view_struct.Serialize(pool_),
                         "upstream table identifier must include database name");
 }

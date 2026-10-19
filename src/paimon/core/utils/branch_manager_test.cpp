@@ -90,7 +90,7 @@ TEST(BranchManagerTest, TestResolveBranch) {
 
     ASSERT_NOK_WITH_MSG(BranchManager::ResolveBranch(Identifier("db", "tbl$a$b$c"), no_options,
                                                      std::nullopt, "commit"),
-                        "Invalid table name");
+                        "Invalid object name");
 
     ASSERT_NOK_WITH_MSG(
         BranchManager::ResolveBranch(Identifier("db", "tbl$branch_data"),

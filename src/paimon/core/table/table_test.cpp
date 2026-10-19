@@ -20,17 +20,48 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
+#include "paimon/commit_context.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/snapshot.h"
+#include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
+#include "paimon/read_context.h"
+#include "paimon/scan_context.h"
 #include "paimon/schema/schema.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
+#include "paimon/testing/mock/mock_catalog.h"
+#include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/write_context.h"
 
 namespace paimon::test {
+
+namespace {
+
+// Creates a managed table directory and opens it as a `Table` under `identifier`. The
+// schema goes to `branch`'s directory, which a branch identifier reads it back from.
+Result<std::shared_ptr<Table>> CreateManagedTable(const std::shared_ptr<FileSystem>& file_system,
+                                                  const std::string& path,
+                                                  const Identifier& identifier,
+                                                  const std::string& branch = "main") {
+    SchemaManager schema_manager(file_system, path, branch);
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
+    PAIMON_ASSIGN_OR_RAISE([[maybe_unused]] std::unique_ptr<TableSchema> created,
+                           schema_manager.CreateTable(schema, /*partition_keys=*/{},
+                                                      /*primary_keys=*/{}, /*options=*/{}));
+    return Table::Create(file_system, path, identifier);
+}
+
+}  // namespace
 
 TEST(TableTest, TestCreateWithUnknownDatabase) {
     auto dir = UniqueTestDirectory::Create();
@@ -51,7 +82,8 @@ TEST(TableTest, TestCreateWithUnknownDatabase) {
                          schema_manager.CreateTable(schema, partition_keys, primary_keys, options));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
-                         Table::Create(dir->GetFileSystem(), dir->Str(), Identifier("tbl1")));
+                         Table::Create(dir->GetFileSystem(), dir->Str(),
+                                       Identifier(Identifier::kUnknownDatabase, "tbl1")));
 
     EXPECT_EQ(table->Name(), "tbl1");
     EXPECT_EQ(table->FullName(), "tbl1");
@@ -94,6 +126,154 @@ TEST(TableTest, TestCreateWithBranch) {
     ASSERT_TRUE(missing_branch.IsNotExist()) << missing_branch.ToString();
     ASSERT_NOK_WITH_MSG(Table::Create(fs, dir->Str(), Identifier("db1", "tbl1$branch_../outside")),
                         "branch");
+}
+
+TEST(TableTest, TestCreateHoldsTheFileSystem) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        CreateManagedTable(fs, dir->Str(), Identifier(Identifier::kUnknownDatabase, "tbl1")));
+
+    EXPECT_EQ(table->GetFileSystem(), fs);
+    EXPECT_EQ(table->GetRootPath(), dir->Str());
+}
+
+TEST(TableTest, TestManagersBoundToTheTable) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    const Identifier identifier("db", "tbl");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(fs, dir->Str(), identifier));
+
+    // The managers carry the table's own file system, root path and branch, which `main`
+    // names for an identifier that carries none.
+    std::shared_ptr<SnapshotManager> snapshot_manager = table->GetSnapshotManager();
+    ASSERT_TRUE(snapshot_manager != nullptr);
+    EXPECT_EQ(snapshot_manager->Fs(), fs);
+    EXPECT_EQ(snapshot_manager->RootPath(), dir->Str());
+    EXPECT_EQ(snapshot_manager->Branch(), "main");
+
+    // The schema manager the table keeps is the one `Table::Create` read the schema
+    // through, so reading the latest schema again goes through the warmed cache.
+    std::shared_ptr<SchemaManager> schema_manager = table->GetSchemaManager();
+    ASSERT_TRUE(schema_manager != nullptr);
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                         schema_manager->Latest());
+    ASSERT_TRUE(latest_schema.has_value());
+    EXPECT_EQ(latest_schema.value(), table->LatestSchema());
+
+    // A table of a branch keeps managers bound to that branch.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> branch_table,
+        CreateManagedTable(fs, dir->Str() + "/branch_tbl", Identifier("db", "tbl", "dev"),
+                           /*branch=*/"dev"));
+    ASSERT_TRUE(branch_table->GetSchemaManager() != nullptr);
+    ASSERT_TRUE(branch_table->GetSnapshotManager() != nullptr);
+    EXPECT_EQ(branch_table->GetSnapshotManager()->Branch(), "dev");
+}
+
+TEST(TableTest, TestMainBranchAliasBindsTheManagersToTheMainBranch) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    SchemaManager schema_manager(fs, dir->Str());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> schema,
+                         schema_manager.CreateTable(
+                             arrow::schema({arrow::field("c0", arrow::int32())}), {}, {}, {}));
+    // A snapshot published on the main branch, which a table opened through the alias
+    // reads back through the manager it keeps.
+    SnapshotManager snapshot_manager(fs, dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::string snapshot_json, BuildTestSnapshot(1).ToJsonString());
+    ASSERT_OK(fs->WriteFile(snapshot_manager.SnapshotPath(1), snapshot_json, /*overwrite=*/false));
+
+    for (const auto& main_identifier :
+         {Identifier("db", "tbl"), Identifier("db", "tbl$branch_main"),
+          Identifier("db", "tbl$branch_MAIN")}) {
+        SCOPED_TRACE(main_identifier.ToString());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             Table::Create(fs, dir->Str(), main_identifier));
+        ASSERT_OK_AND_ASSIGN(std::string branch, table->CurrentBranch());
+        EXPECT_EQ("main", branch);
+        // The managers are bound to the main branch the alias spells, whose snapshots and
+        // schemas live under the table root itself, so both are read back.
+        ASSERT_TRUE(table->GetSnapshotManager() != nullptr);
+        EXPECT_EQ("main", table->GetSnapshotManager()->Branch());
+        ASSERT_OK_AND_ASSIGN(std::optional<int64_t> latest_id,
+                             table->GetSnapshotManager()->LatestSnapshotId());
+        ASSERT_TRUE(latest_id.has_value());
+        EXPECT_EQ(1, latest_id.value());
+        ASSERT_TRUE(table->GetSchemaManager() != nullptr);
+        ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                             table->GetSchemaManager()->Latest());
+        ASSERT_TRUE(latest_schema.has_value());
+        EXPECT_EQ(latest_schema.value(), table->LatestSchema());
+    }
+
+    // A catalog that loaded the schema itself calls the constructor with no warmed schema
+    // manager, which builds its managers on its own; a rest catalog is shaped like this.
+    // The alias binds those to the main branch as well.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> plain,
+                         Table::Create(fs, dir->Str(), Identifier("db", "tbl")));
+    Table alias_table(fs, dir->Str(), plain->LatestSchema(), Identifier("db", "tbl$branch_MAIN"));
+    ASSERT_OK_AND_ASSIGN(std::string alias_branch, alias_table.CurrentBranch());
+    EXPECT_EQ("main", alias_branch);
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> alias_latest_id,
+                         alias_table.GetSnapshotManager()->LatestSnapshotId());
+    ASSERT_TRUE(alias_latest_id.has_value());
+    EXPECT_EQ(1, alias_latest_id.value());
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> alias_latest_schema,
+                         alias_table.GetSchemaManager()->Latest());
+    ASSERT_TRUE(alias_latest_schema.has_value());
+}
+
+TEST(TableTest, TestCurrentBranch) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+
+    // A table whose identifier names no branch is a table of the main branch.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> main_table,
+        CreateManagedTable(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl")));
+    ASSERT_OK_AND_ASSIGN(std::string branch, main_table->CurrentBranch());
+    EXPECT_EQ(branch, "main");
+
+    // The identifier a table was opened with names the branch it is for.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> branch_table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str() + "/branch_tbl",
+                                            Identifier("db", "tbl", "dev"), /*branch=*/"dev"));
+    ASSERT_OK_AND_ASSIGN(branch, branch_table->CurrentBranch());
+    EXPECT_EQ(branch, "dev");
+}
+
+TEST(TableTest, TestCatalogOpenedTableServesThePerTableFileSystem) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableSchema(table->LatestSchema());
+
+    // A catalog that hands out no per-table file system opens the table without one, and one
+    // that does opens it with the file system issued for that table.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> opened, catalog->GetTable(identifier));
+    EXPECT_EQ(opened->GetFileSystem(), nullptr);
+    // Without a file system the table keeps no managers either, which an operator has to
+    // build its own in place of.
+    EXPECT_EQ(opened->GetSchemaManager(), nullptr);
+    EXPECT_EQ(opened->GetSnapshotManager(), nullptr);
+
+    catalog->SetTableFileSystem(dir->GetFileSystem());
+    ASSERT_OK_AND_ASSIGN(opened, catalog->GetTable(identifier));
+    EXPECT_EQ(opened->GetFileSystem(), dir->GetFileSystem());
+    // This mock serves no table location, so the table it opens carries none.
+    EXPECT_EQ(opened->GetRootPath(), "");
 }
 
 TEST(TableTest, TestCreateRejectsATableTypeThatIsNotAManagedTable) {
@@ -148,8 +328,130 @@ TEST(TableTest, TestCreateFailedWithNonExistSchema) {
     ASSERT_OK(fs->Delete(schema_path, /*recursive=*/false));
     // check create table failed
     ASSERT_NOK_WITH_MSG(
-        Table::Create(fs, dir->Str(), Identifier("tbl1")),
-        "load table schema for Identifier{database='unknown', table='tbl1'} failed");
+        Table::Create(fs, dir->Str(), Identifier(Identifier::kUnknownDatabase, "tbl1")),
+        "load table schema for Identifier{database='unknown', object='tbl1'} failed");
+}
+
+TEST(TableTest, TestNewScanCreatesATableScan) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx,
+                         ScanContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
+                         table->NewScan(std::move(ctx)));
+}
+
+TEST(TableTest, TestNewReadCreatesATableRead) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> ctx,
+                         ReadContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
+                         table->NewRead(std::move(ctx)));
+}
+
+TEST(TableTest, TestNewWriteCreatesAFileStoreWrite) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+    // A catalog write reads the current schema from the catalog on the main branch.
+    catalog->SetTableSchema(table->LatestSchema());
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> ctx,
+        WriteContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreWrite> write,
+                         table->NewWrite(std::move(ctx)));
+}
+
+TEST(TableTest, TestNewCommitCreatesAFileStoreCommit) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+    // Like a write, a catalog commit reads the current schema from the catalog.
+    catalog->SetTableSchema(table->LatestSchema());
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<CommitContext> ctx,
+        CommitContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreCommit> commit,
+                         table->NewCommit(std::move(ctx)));
+}
+
+TEST(TableTest, TestNewScanReadWriteCommitRejectANullContext) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        CreateManagedTable(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl")));
+
+    // The operators report the null context themselves; the table stands in without swallowing
+    // the error, so behavior matches `TableScan::Create` and friends.
+    ASSERT_NOK_WITH_MSG(table->NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewRead(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewWrite(nullptr), "write context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewCommit(nullptr), "commit context is null pointer");
+}
+
+TEST(TableTest, TestCreateBuildsTheOperator) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+    // A catalog write and commit read the current schema from the catalog on the main branch.
+    catalog->SetTableSchema(table->LatestSchema());
+
+    // `TableScan::Create()` and friends build the operator straight from the context, which
+    // carries the catalog and identifier it resolves the table through.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx,
+                         ScanContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
+                         TableScan::Create(std::move(scan_ctx)));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_ctx,
+                         ReadContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
+                         TableRead::Create(std::move(read_ctx)));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> write_ctx,
+        WriteContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreWrite> write,
+                         FileStoreWrite::Create(std::move(write_ctx)));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<CommitContext> commit_ctx,
+        CommitContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(commit_ctx)));
 }
 
 }  // namespace paimon::test

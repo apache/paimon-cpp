@@ -75,6 +75,9 @@ class FileStoreCommit;
 class WriteContext;
 class CommitContext;
 
+class SchemaManager;
+class SnapshotManager;
+
 class CommitMessage;
 
 class Metrics;

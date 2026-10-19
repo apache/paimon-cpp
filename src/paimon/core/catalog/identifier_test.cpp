@@ -26,13 +26,7 @@ namespace paimon::test {
 TEST(IdentifierTest, ConstructorAndGetters) {
     Identifier id("test_db", "test_table");
     ASSERT_EQ(id.GetDatabaseName(), "test_db");
-    ASSERT_EQ(id.GetTableName(), "test_table");
-}
-
-TEST(IdentifierTest, SingleArgumentConstructorUsesUnknownDatabase) {
-    Identifier id("test_table");
-    ASSERT_EQ(id.GetDatabaseName(), Identifier::kUnknownDatabase);
-    ASSERT_EQ(id.GetTableName(), "test_table");
+    ASSERT_EQ(id.GetObjectName(), "test_table");
 }
 
 TEST(IdentifierTest, EqualityOperator) {
@@ -46,18 +40,18 @@ TEST(IdentifierTest, EqualityOperator) {
 
 TEST(IdentifierTest, ToString) {
     Identifier id("my_db", "my_table");
-    ASSERT_EQ(id.ToString(), "Identifier{database='my_db', table='my_table'}");
+    ASSERT_EQ(id.ToString(), "Identifier{database='my_db', object='my_table'}");
 }
 
 TEST(IdentifierTest, EmptyDatabaseRemainsEmpty) {
     Identifier id("", "my_table");
     ASSERT_EQ(id.GetDatabaseName(), "");
-    ASSERT_EQ(id.GetTableName(), "my_table");
+    ASSERT_EQ(id.GetObjectName(), "my_table");
 }
 
 TEST(IdentifierTest, ParseDataTable) {
     Identifier id("db", "tbl");
-    ASSERT_EQ(id.GetTableName(), "tbl");
+    ASSERT_EQ(id.GetObjectName(), "tbl");
     ASSERT_OK_AND_ASSIGN(std::string data_table_name, id.GetDataTableName());
     ASSERT_EQ(data_table_name, "tbl");
     ASSERT_OK_AND_ASSIGN(std::optional<std::string> branch_name, id.GetBranchName());
@@ -72,7 +66,7 @@ TEST(IdentifierTest, ParseDataTable) {
 
 TEST(IdentifierTest, ParseSystemTable) {
     Identifier id("db", "tbl$options");
-    ASSERT_EQ(id.GetTableName(), "tbl$options");
+    ASSERT_EQ(id.GetObjectName(), "tbl$options");
     ASSERT_OK_AND_ASSIGN(std::string data_table_name, id.GetDataTableName());
     ASSERT_EQ(data_table_name, "tbl");
     ASSERT_OK_AND_ASSIGN(std::optional<std::string> branch_name, id.GetBranchName());
@@ -101,7 +95,7 @@ TEST(IdentifierTest, ParseBranchTable) {
 
 TEST(IdentifierTest, BranchConstructor) {
     Identifier branch_id("db", "tbl", "dev");
-    ASSERT_EQ(branch_id.GetTableName(), "tbl$branch_dev");
+    ASSERT_EQ(branch_id.GetObjectName(), "tbl$branch_dev");
     ASSERT_OK_AND_ASSIGN(std::string data_table_name, branch_id.GetDataTableName());
     ASSERT_EQ(data_table_name, "tbl");
     ASSERT_OK_AND_ASSIGN(std::optional<std::string> branch_name, branch_id.GetBranchName());
@@ -112,6 +106,25 @@ TEST(IdentifierTest, BranchConstructor) {
     ASSERT_EQ(Identifier("db", "tbl", "MAIN"), Identifier("db", "tbl"));
     ASSERT_EQ(Identifier("db", "tbl", ""), Identifier("db", "tbl"));
     ASSERT_EQ(Identifier("db", "tbl", "   "), Identifier("db", "tbl"));
+}
+
+TEST(IdentifierTest, MainBranchAliasFoldsInGetBranchNameOrDefault) {
+    // `GetBranchName` keeps the spelling the object name was written with, while
+    // `GetBranchNameOrDefault` folds any spelling of the main branch to `main`: the value
+    // a manager is bound to, which names no directory of its own.
+    for (const std::string& alias : {"MAIN", "Main", "mAiN"}) {
+        Identifier id("db", "tbl$branch_" + alias);
+        ASSERT_OK_AND_ASSIGN(std::optional<std::string> branch_name, id.GetBranchName());
+        ASSERT_TRUE(branch_name);
+        EXPECT_EQ(alias, branch_name.value());
+        ASSERT_OK_AND_ASSIGN(std::string branch, id.GetBranchNameOrDefault());
+        EXPECT_EQ(Identifier::kDefaultMainBranch, branch);
+    }
+
+    // A branch of another name stays as written.
+    ASSERT_OK_AND_ASSIGN(std::string branch,
+                         Identifier("db", "tbl$branch_dev").GetBranchNameOrDefault());
+    EXPECT_EQ("dev", branch);
 }
 
 TEST(IdentifierTest, ParseBranchSystemTable) {
@@ -132,7 +145,7 @@ TEST(IdentifierTest, TestGetFullName) {
     {
         // test unknown database
         std::string table = "tbl$branch_dev$options";
-        Identifier id(table);
+        Identifier id(Identifier::kUnknownDatabase, table);
         ASSERT_EQ(table, id.GetFullName());
     }
     {
@@ -175,15 +188,15 @@ TEST(IdentifierTest, InvalidSystemTableName) {
                         "System table can only contain one '$' separator");
 
     Identifier too_many("db", "tbl$branch_dev$options$extra");
-    ASSERT_NOK_WITH_MSG(too_many.IsSystemTable(), "Invalid table name");
+    ASSERT_NOK_WITH_MSG(too_many.IsSystemTable(), "Invalid object name");
 }
 
 TEST(IdentifierTest, InvalidEmptySystemTableNameParts) {
-    ASSERT_NOK_WITH_MSG(Identifier("db", "$options").IsSystemTable(), "Invalid table name");
-    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$").IsSystemTable(), "Invalid table name");
-    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_").IsSystemTable(), "Invalid table name");
-    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_   ").IsSystemTable(), "Invalid table name");
-    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_dev$").IsSystemTable(), "Invalid table name");
+    ASSERT_NOK_WITH_MSG(Identifier("db", "$options").IsSystemTable(), "Invalid object name");
+    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$").IsSystemTable(), "Invalid object name");
+    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_").IsSystemTable(), "Invalid object name");
+    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_   ").IsSystemTable(), "Invalid object name");
+    ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$branch_dev$").IsSystemTable(), "Invalid object name");
     ASSERT_NOK_WITH_MSG(Identifier("db", "tbl$$options").IsSystemTable(),
                         "System table can only contain one '$' separator");
 }

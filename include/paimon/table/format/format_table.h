@@ -157,7 +157,7 @@ class PAIMON_EXPORT FormatTable {
 
     /// A name to identify this table.
     std::string Name() const {
-        return identifier_.GetTableName();
+        return identifier_.GetObjectName();
     }
 
     /// Full name of the table, database.tableName.
