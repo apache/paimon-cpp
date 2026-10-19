@@ -112,7 +112,7 @@ TEST(IdentifierTest, MainBranchAliasFoldsInGetBranchNameOrDefault) {
     // `GetBranchName` keeps the spelling the object name was written with, while
     // `GetBranchNameOrDefault` folds any spelling of the main branch to `main`: the value
     // a manager is bound to, which names no directory of its own.
-    for (const std::string& alias : {"MAIN", "Main", "mAiN"}) {
+    for (const std::string alias : {"MAIN", "Main", "mAiN"}) {
         Identifier id("db", "tbl$branch_" + alias);
         ASSERT_OK_AND_ASSIGN(std::optional<std::string> branch_name, id.GetBranchName());
         ASSERT_TRUE(branch_name);
