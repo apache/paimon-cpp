@@ -27,6 +27,8 @@
 #include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/commit_context.h"
+#include "paimon/common/utils/checked_cast.h"
+#include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/file_store_commit.h"
@@ -44,27 +46,34 @@ namespace paimon::test {
 
 namespace {
 
-// Creates a managed table directory and opens it as a `Table` under `identifier`. The
-// schema goes to `branch`'s directory, which a branch identifier reads it back from.
+// Creates a managed table directory and a `Table` over it, holding the schema written to
+// `branch`'s directory under `identifier`.
 Result<std::shared_ptr<Table>> CreateManagedTable(const std::shared_ptr<FileSystem>& file_system,
                                                   const std::string& path,
                                                   const Identifier& identifier,
                                                   const std::string& branch = "main") {
     SchemaManager schema_manager(file_system, path, branch);
     auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
-    PAIMON_ASSIGN_OR_RAISE([[maybe_unused]] std::unique_ptr<TableSchema> created,
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> created,
                            schema_manager.CreateTable(schema, /*partition_keys=*/{},
                                                       /*primary_keys=*/{}, /*options=*/{}));
-    return Table::Create(file_system, path, identifier);
+    return std::make_shared<Table>(
+        file_system, path,
+        checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))), identifier);
 }
 
 }  // namespace
 
-TEST(TableTest, TestCreateWithUnknownDatabase) {
+TEST(TableTest, TestGetTableWithUnknownDatabase) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    // The database the identifier names lands in its own directory below the warehouse, so the
+    // table the catalog reads back is the one that identifier selects.
+    const std::string table_dir = dir->Str() + "/unknown.db/tbl1";
+    ASSERT_OK(fs->Mkdirs(table_dir));
 
-    SchemaManager schema_manager(dir->GetFileSystem(), dir->Str());
+    SchemaManager schema_manager(fs, table_dir);
     auto schema =
         arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
                        arrow::field("name", arrow::utf8()), arrow::field("value", arrow::int64())});
@@ -78,9 +87,9 @@ TEST(TableTest, TestCreateWithUnknownDatabase) {
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> created_schema,
                          schema_manager.CreateTable(schema, partition_keys, primary_keys, options));
 
+    FileSystemCatalog catalog(fs, dir->Str(), /*catalog_options=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
-                         Table::Create(dir->GetFileSystem(), dir->Str(),
-                                       Identifier(Identifier::kUnknownDatabase, "tbl1")));
+                         catalog.GetTable(Identifier(Identifier::kUnknownDatabase, "tbl1")));
 
     EXPECT_EQ(table->Name(), "tbl1");
     EXPECT_EQ(table->FullName(), "tbl1");
@@ -95,34 +104,35 @@ TEST(TableTest, TestCreateWithUnknownDatabase) {
     EXPECT_EQ(data_schema->PrimaryKeys(), primary_keys);
 }
 
-TEST(TableTest, TestCreateWithBranch) {
+TEST(TableTest, TestGetTableWithBranch) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto fs = dir->GetFileSystem();
-    SchemaManager schema_manager(fs, dir->Str());
+    const std::string table_dir = dir->Str() + "/db1.db/tbl1";
+    ASSERT_OK(fs->Mkdirs(table_dir));
+    SchemaManager schema_manager(fs, table_dir);
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> main_schema,
                          schema_manager.CreateTable(
                              arrow::schema({arrow::field("main_c0", arrow::int32())}), {}, {}, {}));
-    SchemaManager branch_schema_manager(fs, dir->Str(), "b1");
+    SchemaManager branch_schema_manager(fs, table_dir, "b1");
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> branch_schema,
                          branch_schema_manager.CreateTable(
                              arrow::schema({arrow::field("b1_c0", arrow::int32())}), {}, {}, {}));
 
+    FileSystemCatalog catalog(fs, dir->Str(), /*catalog_options=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
-                         Table::Create(fs, dir->Str(), Identifier("db1", "tbl1$branch_b1")));
+                         catalog.GetTable(Identifier("db1", "tbl1$branch_b1")));
     ASSERT_EQ("tbl1$branch_b1", table->Name());
     ASSERT_EQ((std::vector<std::string>{"b1_c0"}), table->LatestSchema()->FieldNames());
     for (const auto& main_identifier :
          {Identifier("db1", "tbl1$branch_main"), Identifier("db1", "tbl1$branch_MAIN")}) {
-        ASSERT_OK_AND_ASSIGN(table, Table::Create(fs, dir->Str(), main_identifier));
+        ASSERT_OK_AND_ASSIGN(table, catalog.GetTable(main_identifier));
         ASSERT_EQ((std::vector<std::string>{"main_c0"}), table->LatestSchema()->FieldNames());
     }
 
-    Status missing_branch =
-        Table::Create(fs, dir->Str(), Identifier("db1", "tbl1$branch_missing")).status();
+    Status missing_branch = catalog.GetTable(Identifier("db1", "tbl1$branch_missing")).status();
     ASSERT_TRUE(missing_branch.IsNotExist()) << missing_branch.ToString();
-    ASSERT_NOK_WITH_MSG(Table::Create(fs, dir->Str(), Identifier("db1", "tbl1$branch_../outside")),
-                        "branch");
+    ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier("db1", "tbl1$branch_../outside")), "branch");
 }
 
 TEST(TableTest, TestCreateHoldsTheFileSystem) {
@@ -143,27 +153,21 @@ TEST(TableTest, TestMainBranchAliasResolvesToTheMainBranch) {
     ASSERT_TRUE(dir);
     auto fs = dir->GetFileSystem();
     SchemaManager schema_manager(fs, dir->Str());
-    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> schema,
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> created,
                          schema_manager.CreateTable(
                              arrow::schema({arrow::field("c0", arrow::int32())}), {}, {}, {}));
+    auto schema = checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created)));
 
     for (const auto& main_identifier :
          {Identifier("db", "tbl"), Identifier("db", "tbl$branch_main"),
           Identifier("db", "tbl$branch_MAIN")}) {
         SCOPED_TRACE(main_identifier.ToString());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
-                             Table::Create(fs, dir->Str(), main_identifier));
-        ASSERT_OK_AND_ASSIGN(std::string branch, table->CurrentBranch());
+        // A catalog that loaded the schema itself calls the constructor directly, which a
+        // rest catalog is shaped like. The alias resolves to the main branch as well.
+        Table table(fs, dir->Str(), schema, main_identifier);
+        ASSERT_OK_AND_ASSIGN(std::string branch, table.CurrentBranch());
         EXPECT_EQ("main", branch);
     }
-
-    // A catalog that loaded the schema itself calls the constructor directly, which a
-    // rest catalog is shaped like. The alias resolves to the main branch as well.
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> plain,
-                         Table::Create(fs, dir->Str(), Identifier("db", "tbl")));
-    Table alias_table(fs, dir->Str(), plain->LatestSchema(), Identifier("db", "tbl$branch_MAIN"));
-    ASSERT_OK_AND_ASSIGN(std::string alias_branch, alias_table.CurrentBranch());
-    EXPECT_EQ("main", alias_branch);
 }
 
 TEST(TableTest, TestCurrentBranch) {
@@ -207,40 +211,44 @@ TEST(TableTest, TestCatalogOpenedTableServesThePerTableFileSystem) {
     EXPECT_EQ(opened->GetRootPath(), "");
 }
 
-TEST(TableTest, TestCreateRejectsATableTypeThatIsNotAManagedTable) {
+TEST(TableTest, TestGetTableRejectsATableTypeThatIsNotAManagedTable) {
     // A `Table` describes a managed paimon table. Handing back another type as one would promise
     // snapshots and manifests it never had, so the failure belongs at the call that opens the
-    // table rather than at the first read. This is the one place every `Table` built from a table
-    // directory passes through, catalogs included.
+    // table rather than at the first read.
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
     auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
                                  arrow::field("dt", arrow::utf8())});
 
-    SchemaManager format_schema_manager(dir->GetFileSystem(), dir->Str() + "/format");
+    FileSystemCatalog catalog(fs, dir->Str(), /*catalog_options=*/{});
+    const std::string format_dir = dir->Str() + "/db.db/format";
+    ASSERT_OK(fs->Mkdirs(format_dir));
+    SchemaManager format_schema_manager(fs, format_dir);
     ASSERT_OK_AND_ASSIGN(
         [[maybe_unused]] std::unique_ptr<TableSchema> format_schema,
         format_schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"},
                                           /*primary_keys=*/{},
                                           {{"type", "format-table"}, {"file.format", "parquet"}}));
-    ASSERT_NOK_WITH_MSG(
-        Table::Create(dir->GetFileSystem(), dir->Str() + "/format", Identifier("db", "fmt")),
-        "Cannot open format table");
+    ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier("db", "format")), "Cannot open format table");
 
     // A managed table with no `type` option at all is what a `Table` is for, and still opens.
-    SchemaManager managed_schema_manager(dir->GetFileSystem(), dir->Str() + "/managed");
+    const std::string managed_dir = dir->Str() + "/db.db/managed";
+    ASSERT_OK(fs->Mkdirs(managed_dir));
+    SchemaManager managed_schema_manager(fs, managed_dir);
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> managed_schema,
                          managed_schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"},
                                                             /*primary_keys=*/{}, {}));
-    ASSERT_OK(
-        Table::Create(dir->GetFileSystem(), dir->Str() + "/managed", Identifier("db", "managed")));
+    ASSERT_OK(catalog.GetTable(Identifier("db", "managed")));
 }
 
-TEST(TableTest, TestCreateFailedWithNonExistSchema) {
+TEST(TableTest, TestGetTableFailedWithNonExistSchema) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto fs = dir->GetFileSystem();
-    SchemaManager schema_manager(fs, dir->Str());
+    const std::string table_dir = dir->Str() + "/unknown.db/tbl1";
+    ASSERT_OK(fs->Mkdirs(table_dir));
+    SchemaManager schema_manager(fs, table_dir);
     auto schema =
         arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
                        arrow::field("name", arrow::utf8()), arrow::field("value", arrow::int64())});
@@ -257,10 +265,10 @@ TEST(TableTest, TestCreateFailedWithNonExistSchema) {
     // remove schema
     std::string schema_path = schema_manager.ToSchemaPath(0);
     ASSERT_OK(fs->Delete(schema_path, /*recursive=*/false));
-    // check create table failed
-    ASSERT_NOK_WITH_MSG(
-        Table::Create(fs, dir->Str(), Identifier(Identifier::kUnknownDatabase, "tbl1")),
-        "load table schema for Identifier{database='unknown', object='tbl1'} failed");
+    // check get table failed
+    FileSystemCatalog catalog(fs, dir->Str(), /*catalog_options=*/{});
+    ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier(Identifier::kUnknownDatabase, "tbl1")),
+                        "not exist");
 }
 
 TEST(TableTest, TestNewScanCreatesATableScan) {

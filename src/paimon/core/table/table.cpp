@@ -37,7 +37,6 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
-#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/string_utils.h"
@@ -214,37 +213,6 @@ Table::Table(const std::shared_ptr<FileSystem>& file_system, const std::string& 
       schema_(schema),
       identifier_(identifier),
       uuid_(uuid) {}
-
-Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& file_system,
-                                             const std::string& table_path,
-                                             const Identifier& identifier) {
-    PAIMON_ASSIGN_OR_RAISE(bool exist, file_system->Exists(table_path));
-    if (!exist) {
-        return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
-    }
-
-    // The schema is read on the table's own branch: `root/branch/branch-<name>` below
-    // the table path, which `main` resolves to itself. `GetBranchNameOrDefault` folds
-    // any spelling of `main`, so the branch read here agrees with `CurrentBranch()`.
-    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
-    PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
-    SchemaManager schema_manager(file_system, table_path, branch);
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                           schema_manager.Latest());
-    if (!latest_schema) {
-        return Status::NotExist(
-            fmt::format("load table schema for {} failed", identifier.ToString()));
-    }
-
-    // Only a managed table is a `Table`; describing another type as one would hand back snapshots
-    // and manifests it never had. Checked here because this is the one place every `Table` built
-    // from a table directory passes through, catalogs included.
-    PAIMON_RETURN_NOT_OK(
-        CatalogUtils::CheckManagedTableType(identifier, *latest_schema, "Table::Create"));
-
-    auto schema = checked_pointer_cast<Schema>(*latest_schema);
-    return std::make_shared<Table>(file_system, table_path, schema, identifier, /*uuid=*/"");
-}
 
 Result<std::unique_ptr<TableScan>> Table::NewScan(std::unique_ptr<ScanContext> context) const {
     return TableScan::Create(std::move(context));

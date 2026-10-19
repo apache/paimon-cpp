@@ -39,16 +39,6 @@ class TableRead;
 /// A table provides basic abstraction for table type.
 class PAIMON_EXPORT Table {
  public:
-    /// Creates a table by loading the latest schema from the specified table path.
-    ///
-    /// @param file_system File system used to access the table directory and schema files.
-    /// @param table_path Root path of the table in the file system.
-    /// @param identifier Logical table identifier selecting the schema branch and table name.
-    /// @return A table initialized with the latest available schema.
-    static Result<std::shared_ptr<Table>> Create(const std::shared_ptr<FileSystem>& file_system,
-                                                 const std::string& table_path,
-                                                 const Identifier& identifier);
-
     /// @param file_system File system the table's data is accessed through.
     /// @param root_path Root path of the table in the file system.
     /// @param uuid Metastore UUID, or empty if unavailable.

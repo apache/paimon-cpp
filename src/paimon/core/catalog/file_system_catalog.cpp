@@ -345,9 +345,22 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
         PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
         return std::make_shared<Table>(fs_, table_path, schema, identifier);
     }
+    // The schema is read on the table's own branch: `root/branch/branch-<name>` below the
+    // table path, which `main` resolves to itself. `GetBranchNameOrDefault` folds any
+    // spelling of `main`, so the branch read here agrees with `CurrentBranch()`.
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                           TableSchemaExists(identifier));
+    if (!latest_schema) {
+        return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
+    }
+    // Only a managed table is a `Table`; describing another type as one would hand back
+    // snapshots and manifests it never had, so the failure belongs to the call that opens the
+    // table rather than at the first read.
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckManagedTableType(identifier, *latest_schema,
+                                                             "FileSystemCatalog::GetTable"));
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(identifier));
-    // `Table::Create` reads the same schema file and rejects a format table there.
-    return Table::Create(fs_, table_path, identifier);
+    return std::make_shared<Table>(fs_, table_path, checked_pointer_cast<Schema>(*latest_schema),
+                                   identifier);
 }
 
 Status FileSystemCatalog::DropDatabase(const std::string& name, bool ignore_if_not_exists,
