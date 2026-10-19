@@ -1307,7 +1307,6 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateRollingRestoresEveryOffsetS
     const std::vector<Row> first_expected = {{1, "old", "p0"}, {2, "old", "p0"}, {3, "old", "p0"},
                                              {4, "old", "p0"}, {5, "old", "p0"}, {6, "old", "p0"}};
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_prepare, ReadRows(realtime_context));
-    std::sort(rows_before_prepare.begin(), rows_before_prepare.end());
     ASSERT_EQ(first_expected, rows_before_prepare);
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
@@ -1325,15 +1324,12 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateRollingRestoresEveryOffsetS
                                 std::optional<std::string>(file->file_name + ".offset")));
     }
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
-    std::sort(rows_after_prepare.begin(), rows_after_prepare.end());
     ASSERT_EQ(first_expected, rows_after_prepare);
     ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(progress, /*commit_identifier=*/0));
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_refresh, ReadRows(realtime_context));
-    std::sort(rows_before_refresh.begin(), rows_before_refresh.end());
     ASSERT_EQ(first_expected, rows_before_refresh);
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_refresh, ReadRows(realtime_context));
-    std::sort(rows_after_refresh.begin(), rows_after_refresh.end());
     ASSERT_EQ(first_expected, rows_after_refresh);
     ASSERT_OK(writer->Close());
     writer.reset();
@@ -1343,17 +1339,14 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateRollingRestoresEveryOffsetS
     ASSERT_OK_AND_ASSIGN(realtime_context, RealtimeContext::Create());
     ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(realtime_context));
     ASSERT_OK_AND_ASSIGN(std::vector<Row> restored_rows, ReadRows(realtime_context));
-    std::sort(restored_rows.begin(), restored_rows.end());
     ASSERT_EQ(first_expected, restored_rows);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> update,
                          MakeBatch({Row{1, "new", "p0"}, Row{3, "new", "p0"}, Row{5, "new", "p0"}},
                                    /*partitioned=*/false));
     ASSERT_OK(writer->Write(std::move(update)));
-    std::vector<Row> expected = {{2, "old", "p0"}, {4, "old", "p0"}, {6, "old", "p0"},
-                                 {1, "new", "p0"}, {3, "new", "p0"}, {5, "new", "p0"}};
-    std::sort(expected.begin(), expected.end());
+    const std::vector<Row> expected = {{2, "old", "p0"}, {4, "old", "p0"}, {6, "old", "p0"},
+                                       {1, "new", "p0"}, {3, "new", "p0"}, {5, "new", "p0"}};
     ASSERT_OK_AND_ASSIGN(rows_before_prepare, ReadRows(realtime_context));
-    std::sort(rows_before_prepare.begin(), rows_before_prepare.end());
     ASSERT_EQ(expected, rows_before_prepare);
     ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, progress.size());
@@ -1364,19 +1357,15 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateRollingRestoresEveryOffsetS
         ASSERT_TRUE(progress[0].deleted_offsets->Contains(offset));
     }
     ASSERT_OK_AND_ASSIGN(rows_after_prepare, ReadRows(realtime_context));
-    std::sort(rows_after_prepare.begin(), rows_after_prepare.end());
     ASSERT_EQ(expected, rows_after_prepare);
     ASSERT_OK_AND_ASSIGN(snapshot_id, Commit(progress, /*commit_identifier=*/1));
     ASSERT_OK_AND_ASSIGN(rows_before_refresh, ReadRows(realtime_context));
-    std::sort(rows_before_refresh.begin(), rows_before_refresh.end());
     ASSERT_EQ(expected, rows_before_refresh);
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
     ASSERT_OK_AND_ASSIGN(rows_after_refresh, ReadRows(realtime_context));
-    std::sort(rows_after_refresh.begin(), rows_after_refresh.end());
     ASSERT_EQ(expected, rows_after_refresh);
     ASSERT_OK(writer->Close());
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, ReadRows());
-    std::sort(rows.begin(), rows.end());
     ASSERT_EQ(expected, rows);
 }
 
