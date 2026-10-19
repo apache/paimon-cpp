@@ -26,8 +26,8 @@
 set -eux
 
 RUSTUP_VERSION=${RUSTUP_VERSION:-1.29.0}
-# Keep in sync with PAIMON_RUST_TOOLCHAIN in cmake_modules/ThirdpartyToolchain.cmake.
-RUST_VERSION=${RUST_VERSION:-1.95.0}
+# 1.90.0 is the minimum required by paimon-full-text 0.1.0 (rust-version in its Cargo.toml).
+RUST_VERSION=${RUST_VERSION:-1.90.0}
 CBINDGEN_VERSION=${CBINDGEN_VERSION:-0.29.2}
 PROTOC_VERSION=27.4
 
@@ -75,6 +75,11 @@ if ! command -v protoc >/dev/null 2>&1 || \
     export PATH="${protoc_home}/bin:${PATH}"
     echo "${protoc_home}/bin" >> "${GITHUB_PATH:-/dev/null}" || true
 fi
+
+# Vortex's FFI build pins rust-version >= 1.95 and is invoked with RUSTUP_TOOLCHAIN=stable (see
+# cmake_modules/ThirdpartyToolchain.cmake). Install the stable channel alongside the pinned default
+# so Vortex builds with it while Lance, Mosaic and tantivy-fts keep using the default toolchain.
+rustup toolchain install stable --profile minimal
 
 # cbindgen is used by the crate's build.rs to emit the C header that the
 # C++ side includes. Corrosion will also run cbindgen at CMake configure
