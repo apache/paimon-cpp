@@ -144,7 +144,7 @@ class DenseHashTable {
         if (!output) {
             return Status::Invalid("dense hash table output stream is null");
         }
-        const int64_t length = static_cast<int64_t>(data_->size());
+        const auto length = static_cast<int64_t>(data_->size());
         PAIMON_ASSIGN_OR_RAISE(int64_t written, output->Write(data_->data(), length));
         if (written != length) {
             return Status::IOError("short write for dense hash table");
