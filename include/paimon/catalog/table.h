@@ -52,12 +52,9 @@ class PAIMON_EXPORT Table {
     /// @param file_system File system the table's data is accessed through.
     /// @param root_path Root path of the table in the file system.
     /// @param uuid Metastore UUID, or empty if unavailable.
-    /// @param schema_manager A schema manager the table keeps instead of building its own,
-    ///        holding the schema cache an opener already warmed; built when null.
     Table(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
           const std::shared_ptr<Schema>& schema, const Identifier& identifier,
-          const std::string& uuid = "",
-          const std::shared_ptr<SchemaManager>& schema_manager = nullptr);
+          const std::string& uuid = "");
 
     ~Table() = default;
 
@@ -72,23 +69,6 @@ class PAIMON_EXPORT Table {
     /// opener had no location for the table, which a mock in a test is one case of.
     const std::string& GetRootPath() const {
         return root_path_;
-    }
-
-    /// Returns the manager of the table's schema versions, bound to the table's file
-    /// system, root path and branch, so schema files read through one table are not
-    /// read again through another. It is null when the table was opened without a
-    /// file system or with an identifier whose branch cannot be parsed, which a mock
-    /// in a test is one case of.
-    std::shared_ptr<SchemaManager> GetSchemaManager() const {
-        return schema_manager_;
-    }
-
-    /// Returns the manager of the table's snapshots, bound like the schema manager.
-    /// It carries no snapshot loader: an operator that needs one attaches it to a
-    /// manager of its own, since a loader attached here would leak into every read
-    /// through this table.
-    std::shared_ptr<SnapshotManager> GetSnapshotManager() const {
-        return snapshot_manager_;
     }
 
     /// A name to identify this table.
@@ -157,8 +137,6 @@ class PAIMON_EXPORT Table {
     std::shared_ptr<Schema> schema_;
     Identifier identifier_;
     std::string uuid_;
-    std::shared_ptr<SchemaManager> schema_manager_;
-    std::shared_ptr<SnapshotManager> snapshot_manager_;
 };
 
 }  // namespace paimon

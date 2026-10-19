@@ -30,7 +30,6 @@
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
-#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
@@ -44,27 +43,12 @@ namespace paimon {
 
 Table::Table(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
              const std::shared_ptr<Schema>& schema, const Identifier& identifier,
-             const std::string& uuid, const std::shared_ptr<SchemaManager>& schema_manager)
+             const std::string& uuid)
     : file_system_(file_system),
       root_path_(root_path),
       schema_(schema),
       identifier_(identifier),
-      uuid_(uuid),
-      schema_manager_(schema_manager) {
-    // The managers are built on the table's own branch, which a malformed object name
-    // cannot name: such a table is handed out with none rather than fail here, since a
-    // constructor has no error to return. A null file system, which a mock in a test
-    // opens a table with, leaves none for the same reason.
-    Result<std::string> branch = identifier_.GetBranchNameOrDefault();
-    if (file_system_ == nullptr || !branch.ok()) {
-        schema_manager_ = nullptr;
-        return;
-    }
-    if (schema_manager_ == nullptr) {
-        schema_manager_ = std::make_shared<SchemaManager>(file_system_, root_path_, branch.value());
-    }
-    snapshot_manager_ = std::make_shared<SnapshotManager>(file_system_, root_path_, branch.value());
-}
+      uuid_(uuid) {}
 
 Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& file_system,
                                              const std::string& table_path,
@@ -74,16 +58,14 @@ Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& 
         return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
     }
 
-    // The schema is read through the manager the returned table keeps, so the file read
-    // here is the one read through the table as well. Built on the table's own branch:
-    // `root/branch/branch-<name>` below the table path, which `main` resolves to itself.
-    // `GetBranchNameOrDefault` folds any spelling of `main`, so the managers the
-    // constructor keeps and `CurrentBranch()` agree with this one.
+    // The schema is read on the table's own branch: `root/branch/branch-<name>` below
+    // the table path, which `main` resolves to itself. `GetBranchNameOrDefault` folds
+    // any spelling of `main`, so the branch read here agrees with `CurrentBranch()`.
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
-    auto schema_manager = std::make_shared<SchemaManager>(file_system, table_path, branch);
+    SchemaManager schema_manager(file_system, table_path, branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                           schema_manager->Latest());
+                           schema_manager.Latest());
     if (!latest_schema) {
         return Status::NotExist(
             fmt::format("load table schema for {} failed", identifier.ToString()));
@@ -96,8 +78,7 @@ Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& 
         CatalogUtils::CheckManagedTableType(identifier, *latest_schema, "Table::Create"));
 
     auto schema = checked_pointer_cast<Schema>(*latest_schema);
-    return std::make_shared<Table>(file_system, table_path, schema, identifier, /*uuid=*/"",
-                                   schema_manager);
+    return std::make_shared<Table>(file_system, table_path, schema, identifier, /*uuid=*/"");
 }
 
 Result<std::unique_ptr<TableScan>> Table::NewScan(std::unique_ptr<ScanContext> context) const {

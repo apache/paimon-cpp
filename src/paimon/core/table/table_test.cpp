@@ -29,8 +29,6 @@
 #include "paimon/commit_context.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
-#include "paimon/core/snapshot.h"
-#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/read_context.h"
@@ -39,7 +37,6 @@
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_catalog.h"
-#include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/write_context.h"
 
@@ -141,43 +138,7 @@ TEST(TableTest, TestCreateHoldsTheFileSystem) {
     EXPECT_EQ(table->GetRootPath(), dir->Str());
 }
 
-TEST(TableTest, TestManagersBoundToTheTable) {
-    auto dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(dir);
-    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
-    const Identifier identifier("db", "tbl");
-
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
-                         CreateManagedTable(fs, dir->Str(), identifier));
-
-    // The managers carry the table's own file system, root path and branch, which `main`
-    // names for an identifier that carries none.
-    std::shared_ptr<SnapshotManager> snapshot_manager = table->GetSnapshotManager();
-    ASSERT_TRUE(snapshot_manager != nullptr);
-    EXPECT_EQ(snapshot_manager->Fs(), fs);
-    EXPECT_EQ(snapshot_manager->RootPath(), dir->Str());
-    EXPECT_EQ(snapshot_manager->Branch(), "main");
-
-    // The schema manager the table keeps is the one `Table::Create` read the schema
-    // through, so reading the latest schema again goes through the warmed cache.
-    std::shared_ptr<SchemaManager> schema_manager = table->GetSchemaManager();
-    ASSERT_TRUE(schema_manager != nullptr);
-    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                         schema_manager->Latest());
-    ASSERT_TRUE(latest_schema.has_value());
-    EXPECT_EQ(latest_schema.value(), table->LatestSchema());
-
-    // A table of a branch keeps managers bound to that branch.
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Table> branch_table,
-        CreateManagedTable(fs, dir->Str() + "/branch_tbl", Identifier("db", "tbl", "dev"),
-                           /*branch=*/"dev"));
-    ASSERT_TRUE(branch_table->GetSchemaManager() != nullptr);
-    ASSERT_TRUE(branch_table->GetSnapshotManager() != nullptr);
-    EXPECT_EQ(branch_table->GetSnapshotManager()->Branch(), "dev");
-}
-
-TEST(TableTest, TestMainBranchAliasBindsTheManagersToTheMainBranch) {
+TEST(TableTest, TestMainBranchAliasResolvesToTheMainBranch) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto fs = dir->GetFileSystem();
@@ -185,11 +146,6 @@ TEST(TableTest, TestMainBranchAliasBindsTheManagersToTheMainBranch) {
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> schema,
                          schema_manager.CreateTable(
                              arrow::schema({arrow::field("c0", arrow::int32())}), {}, {}, {}));
-    // A snapshot published on the main branch, which a table opened through the alias
-    // reads back through the manager it keeps.
-    SnapshotManager snapshot_manager(fs, dir->Str());
-    ASSERT_OK_AND_ASSIGN(std::string snapshot_json, BuildTestSnapshot(1).ToJsonString());
-    ASSERT_OK(fs->WriteFile(snapshot_manager.SnapshotPath(1), snapshot_json, /*overwrite=*/false));
 
     for (const auto& main_identifier :
          {Identifier("db", "tbl"), Identifier("db", "tbl$branch_main"),
@@ -199,36 +155,15 @@ TEST(TableTest, TestMainBranchAliasBindsTheManagersToTheMainBranch) {
                              Table::Create(fs, dir->Str(), main_identifier));
         ASSERT_OK_AND_ASSIGN(std::string branch, table->CurrentBranch());
         EXPECT_EQ("main", branch);
-        // The managers are bound to the main branch the alias spells, whose snapshots and
-        // schemas live under the table root itself, so both are read back.
-        ASSERT_TRUE(table->GetSnapshotManager() != nullptr);
-        EXPECT_EQ("main", table->GetSnapshotManager()->Branch());
-        ASSERT_OK_AND_ASSIGN(std::optional<int64_t> latest_id,
-                             table->GetSnapshotManager()->LatestSnapshotId());
-        ASSERT_TRUE(latest_id.has_value());
-        EXPECT_EQ(1, latest_id.value());
-        ASSERT_TRUE(table->GetSchemaManager() != nullptr);
-        ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                             table->GetSchemaManager()->Latest());
-        ASSERT_TRUE(latest_schema.has_value());
-        EXPECT_EQ(latest_schema.value(), table->LatestSchema());
     }
 
-    // A catalog that loaded the schema itself calls the constructor with no warmed schema
-    // manager, which builds its managers on its own; a rest catalog is shaped like this.
-    // The alias binds those to the main branch as well.
+    // A catalog that loaded the schema itself calls the constructor directly, which a
+    // rest catalog is shaped like. The alias resolves to the main branch as well.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> plain,
                          Table::Create(fs, dir->Str(), Identifier("db", "tbl")));
     Table alias_table(fs, dir->Str(), plain->LatestSchema(), Identifier("db", "tbl$branch_MAIN"));
     ASSERT_OK_AND_ASSIGN(std::string alias_branch, alias_table.CurrentBranch());
     EXPECT_EQ("main", alias_branch);
-    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> alias_latest_id,
-                         alias_table.GetSnapshotManager()->LatestSnapshotId());
-    ASSERT_TRUE(alias_latest_id.has_value());
-    EXPECT_EQ(1, alias_latest_id.value());
-    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> alias_latest_schema,
-                         alias_table.GetSchemaManager()->Latest());
-    ASSERT_TRUE(alias_latest_schema.has_value());
 }
 
 TEST(TableTest, TestCurrentBranch) {
@@ -264,10 +199,6 @@ TEST(TableTest, TestCatalogOpenedTableServesThePerTableFileSystem) {
     // that does opens it with the file system issued for that table.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> opened, catalog->GetTable(identifier));
     EXPECT_EQ(opened->GetFileSystem(), nullptr);
-    // Without a file system the table keeps no managers either, which an operator has to
-    // build its own in place of.
-    EXPECT_EQ(opened->GetSchemaManager(), nullptr);
-    EXPECT_EQ(opened->GetSnapshotManager(), nullptr);
 
     catalog->SetTableFileSystem(dir->GetFileSystem());
     ASSERT_OK_AND_ASSIGN(opened, catalog->GetTable(identifier));

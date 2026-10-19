@@ -33,7 +33,8 @@
 namespace paimon::test {
 TEST(ScanContextTest, TestWithCatalogResolvesTableFileSystem) {
     // WithCatalog is a shorthand for WithFileSystem(catalog->GetTableFileSystem(identifier)); it
-    // resolves the per-table file system when Finish() builds the context and sets nothing else.
+    // resolves the per-table file system when Finish() builds the context, which also keeps the
+    // catalog and identifier for the operators to resolve the table through.
     auto table_fs = std::make_shared<MockFileSystem>();
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetTableFileSystem(table_fs);
@@ -41,12 +42,16 @@ TEST(ScanContextTest, TestWithCatalogResolvesTableFileSystem) {
     ScanContextBuilder builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
     ASSERT_EQ(ctx->GetSpecificFileSystem(), table_fs);
+    ASSERT_EQ(ctx->GetCatalog(), catalog);
+    ASSERT_EQ(ctx->GetIdentifier(), std::optional<Identifier>(Identifier("db1", "t1")));
     ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
     ASSERT_EQ(catalog->TableFileSystemRequests().front(), Identifier("db1", "t1"));
 
     // Finish() resets the builder, so the next context scans without the catalog.
     ASSERT_OK_AND_ASSIGN(auto next_ctx, builder.Finish());
     ASSERT_FALSE(next_ctx->GetSpecificFileSystem());
+    ASSERT_FALSE(next_ctx->GetCatalog());
+    ASSERT_FALSE(next_ctx->GetIdentifier());
     ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
 }
 

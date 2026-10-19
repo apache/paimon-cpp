@@ -69,7 +69,9 @@ class PAIMON_EXPORT ReadContext {
                 const std::shared_ptr<RealtimeContext>& realtime_context,
                 const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
                 const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level);
+                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
+                const std::shared_ptr<Catalog>& catalog = nullptr,
+                const std::optional<Identifier>& identifier = std::nullopt);
 
     ~ReadContext();
 
@@ -174,6 +176,16 @@ class PAIMON_EXPORT ReadContext {
         return warmup_level_;
     }
 
+    /// Returns the catalog supplying table metadata, or null if unset.
+    const std::shared_ptr<Catalog>& GetCatalog() const {
+        return catalog_;
+    }
+
+    /// Returns the table identifier supplied with the catalog.
+    const std::optional<Identifier>& GetIdentifier() const {
+        return identifier_;
+    }
+
     /// Whether a read schema (C ArrowSchema) for nested column pruning was provided.
     bool HasReadSchema() const {
         return read_schema_ != nullptr && read_schema_->release != nullptr;
@@ -217,6 +229,8 @@ class PAIMON_EXPORT ReadContext {
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<FormatTable> format_table_;
     WarmupLevel warmup_level_;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
     // Owns schema resources and releases ArrowSchema::release in destructor.
     std::unique_ptr<ArrowSchema> read_schema_;
 };

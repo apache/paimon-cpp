@@ -58,7 +58,9 @@ class PAIMON_EXPORT ScanContext {
                 const std::optional<std::string>& table_schema,
                 const std::map<std::string, std::string>& options,
                 const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table);
+                const std::shared_ptr<FormatTable>& format_table,
+                const std::shared_ptr<Catalog>& catalog = nullptr,
+                const std::optional<Identifier>& identifier = std::nullopt);
 
     ~ScanContext();
 
@@ -115,6 +117,16 @@ class PAIMON_EXPORT ScanContext {
         return format_table_;
     }
 
+    /// Returns the catalog supplying table metadata, or null if unset.
+    const std::shared_ptr<Catalog>& GetCatalog() const {
+        return catalog_;
+    }
+
+    /// Returns the table identifier supplied with the catalog.
+    const std::optional<Identifier>& GetIdentifier() const {
+        return identifier_;
+    }
+
  private:
     std::string path_;
     bool is_streaming_mode_;
@@ -129,6 +141,8 @@ class PAIMON_EXPORT ScanContext {
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<FormatTable> format_table_;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
 };
 
 /// Filter configuration for table scan operations
