@@ -67,7 +67,7 @@ Result<std::shared_ptr<DataFileMeta>> DataFileWriter::GetResult() {
     return DataFileMeta::ForAppend(
         PathUtil::GetName(path_), output_bytes_, RecordCount(), stats,
         seq_num_counter_->GetValue() - RecordCount(), seq_num_counter_->GetValue() - 1, schema_id_,
-        file_index.extra_files, file_index.embedded_index, file_source_,
+        GetExtraFiles(), file_index.embedded_index, file_source_,
         /*value_stats_cols=*/std::nullopt, final_path, /*first_row_id=*/std::nullopt, write_cols_);
 }
 

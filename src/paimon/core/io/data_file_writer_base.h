@@ -20,9 +20,11 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
@@ -30,6 +32,7 @@
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/data_file_index_writer.h"
+#include "paimon/core/io/data_file_key_offset_index_writer.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/single_file_writer.h"
 #include "paimon/format/format_stats_extractor.h"
@@ -42,8 +45,8 @@ namespace paimon {
 
 struct KeyValueBatch;
 
-/// Common lifecycle for data file writers which may finalize schema metadata and publish a
-/// file-level index. Concrete writers remain responsible for their record-specific state and
+/// Common lifecycle for data file writers which may finalize schema metadata and publish
+/// file-level indexes. Concrete writers remain responsible for their record-specific state and
 /// DataFileMeta construction.
 template <typename Record>
 class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataFileMeta>> {
@@ -68,6 +71,9 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
     }
 
     void Abort() override {
+        if (offset_index_writer_) {
+            offset_index_writer_->Abort();
+        }
         if (file_index_writer_) {
             // The external index uses a path different from the data file path deleted by Base.
             file_index_writer_->Abort();
@@ -80,7 +86,16 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
         if (file_index_writer_ && file_index_writer_->ExternalIndexPath()) {
             executor.Add(this->fs_, file_index_writer_->ExternalIndexPath().value());
         }
+        if (offset_index_writer_ && !offset_index_writer_->OutputPath().empty()) {
+            executor.Add(this->fs_, offset_index_writer_->OutputPath());
+        }
         return executor;
+    }
+
+    void SetOffsetIndexWriter(std::unique_ptr<DataFileKeyOffsetIndexWriter>&& offset_index_writer,
+                              const std::shared_ptr<arrow::Schema>& logical_schema) {
+        offset_index_writer_ = std::move(offset_index_writer);
+        logical_type_ = arrow::struct_(logical_schema->fields());
     }
 
  protected:
@@ -88,7 +103,7 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
                        std::function<Status(Record, ::ArrowArray*)> converter)
         : Base(compression, std::move(converter)) {}
 
-    /// Extracts the pre-conversion Arrow batch from record for file index construction, then
+    /// Extracts the pre-conversion Arrow batch for file and offset index construction, then
     /// passes record to the underlying data file writer, which may convert it to a physical schema.
     Status WriteRecordWithFileIndex(Record record) {
         PAIMON_RETURN_NOT_OK(this->CheckNotClosed());
@@ -98,6 +113,14 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
 
     const FileIndexWriteResult& GetFileIndexWriteResult() const {
         return file_index_result_;
+    }
+
+    std::vector<std::optional<std::string>> GetExtraFiles() const {
+        std::vector<std::optional<std::string>> extra_files = file_index_result_.extra_files;
+        if (offset_index_file_) {
+            extra_files.push_back(offset_index_file_);
+        }
+        return extra_files;
     }
 
     /// Extracts the column statistics of the closed file from the format writer when it provides
@@ -128,6 +151,10 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
         if (file_index_writer_) {
             PAIMON_ASSIGN_OR_RAISE(file_index_result_, file_index_writer_->Finish(this->path_));
         }
+        if (offset_index_writer_) {
+            PAIMON_ASSIGN_OR_RAISE(offset_index_file_,
+                                   offset_index_writer_->Finish(this->path_, this->RecordCount()));
+        }
         return Status::OK();
     }
 
@@ -143,7 +170,7 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
     }
 
     Status AddFileIndexBatch(::ArrowArray* batch) {
-        if (!file_index_writer_) {
+        if (!file_index_writer_ && !offset_index_writer_) {
             return Status::OK();
         }
         // A compaction rewrite forwards the dictionary encoding of its input files, which the
@@ -162,13 +189,20 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
                                           arrow::ImportArray(batch, batch_type.value()));
         std::shared_ptr<arrow::StructArray> logical_batch =
             checked_pointer_cast<arrow::StructArray>(logical_array);
-        PAIMON_RETURN_NOT_OK(file_index_writer_->AddBatch(logical_batch));
+        if (file_index_writer_) {
+            PAIMON_RETURN_NOT_OK(file_index_writer_->AddBatch(logical_batch));
+        }
+        if (offset_index_writer_) {
+            PAIMON_RETURN_NOT_OK(offset_index_writer_->AddBatch(logical_batch));
+        }
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*logical_batch, batch));
         return Status::OK();
     }
 
     MetadataFinalizer metadata_finalizer_;
     std::unique_ptr<DataFileIndexWriter> file_index_writer_;
+    std::unique_ptr<DataFileKeyOffsetIndexWriter> offset_index_writer_;
+    std::optional<std::string> offset_index_file_;
     std::shared_ptr<arrow::DataType> logical_type_;
     FileIndexWriteResult file_index_result_;
 };

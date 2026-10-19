@@ -21,10 +21,13 @@
 
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "arrow/type.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_index_writer.h"
+#include "paimon/core/io/data_file_key_offset_index_writer.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/file_index_options.h"
 #include "paimon/format/file_format.h"
@@ -71,6 +74,26 @@ Result<std::unique_ptr<DataFileIndexWriter>> DataFileWriterFactory::CreateFileIn
     }
     return DataFileIndexWriter::Create(logical_schema, file_index_options, options_.GetFileSystem(),
                                        path_factory, pool_);
+}
+
+Result<std::unique_ptr<DataFileKeyOffsetIndexWriter>>
+DataFileWriterFactory::CreateOffsetIndexWriter(
+    const std::shared_ptr<arrow::Schema>& logical_schema) const {
+    const std::vector<std::string>& key_fields = options_.GetRealtimeDeduplicateKeyFields();
+    if (key_fields.empty()) {
+        return std::unique_ptr<DataFileKeyOffsetIndexWriter>();
+    }
+    if (!logical_schema || key_fields.size() != 1) {
+        return Status::Invalid("offset index requires exactly one deduplicate key field");
+    }
+    std::shared_ptr<arrow::Field> key_field = logical_schema->GetFieldByName(key_fields.front());
+    std::shared_ptr<arrow::Field> offset_field =
+        logical_schema->GetFieldByName(SpecialFields::RealtimeOffset().Name());
+    if (!key_field || !offset_field || offset_field->type()->id() != arrow::Type::INT64) {
+        return Status::Invalid(
+            "offset index requires the deduplicate key and int64 realtime offset");
+    }
+    return DataFileKeyOffsetIndexWriter::Create(key_field, options_.GetFileSystem(), pool_);
 }
 
 }  // namespace paimon

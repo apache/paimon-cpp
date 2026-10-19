@@ -295,6 +295,8 @@ set(PAIMON_CORE_SRCS
     core/io/data_file_meta_write_cols_legacy_serializer.cpp
     core/io/data_file_path_factory.cpp
     core/io/data_file_index_writer.cpp
+    core/io/data_file_key_offset_index_writer.cpp
+    core/io/key_offset_index_utils.cpp
     core/io/file_index_options.cpp
     core/io/append_data_file_writer_factory.cpp
     core/io/blob_data_file_writer_factory.cpp
@@ -705,6 +707,9 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/arrow/mem_utils_test.cpp
                     common/utils/arrow/status_utils_test.cpp
                     common/utils/concurrent_hash_map_test.cpp
+                    common/utils/hash_map_test.cpp
+                    common/utils/dense_hash_table_test.cpp
+                    common/utils/dense_hash_table_file_reader_test.cpp
                     common/utils/projected_row_test.cpp
                     common/utils/projected_array_test.cpp
                     common/utils/bit_set_test.cpp
@@ -850,6 +855,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/data_file_meta_test.cpp
                     core/io/data_file_writer_base_test.cpp
                     core/io/data_file_index_writer_test.cpp
+                    core/io/key_offset_index_utils_test.cpp
                     core/io/file_index_options_test.cpp
                     core/io/file_index_evaluator_test.cpp
                     core/io/single_file_writer_test.cpp

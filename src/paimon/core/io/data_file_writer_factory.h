@@ -33,6 +33,7 @@ namespace paimon {
 
 class FileFormat;
 class DataFileIndexWriter;
+class DataFileKeyOffsetIndexWriter;
 class DataFilePathFactory;
 class FormatStatsExtractor;
 class MemoryPool;
@@ -57,6 +58,9 @@ class DataFileWriterFactory {
     Result<std::unique_ptr<DataFileIndexWriter>> CreateFileIndexWriter(
         const std::shared_ptr<arrow::Schema>& logical_schema,
         const std::shared_ptr<DataFilePathFactory>& path_factory) const;
+
+    Result<std::unique_ptr<DataFileKeyOffsetIndexWriter>> CreateOffsetIndexWriter(
+        const std::shared_ptr<arrow::Schema>& logical_schema) const;
 
     CoreOptions options_;
     int64_t schema_id_;

@@ -30,6 +30,7 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/io/data_file_key_offset_index_writer.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/realtime/arrow_deduplicate_realtime_store.h"
@@ -97,15 +98,19 @@ TEST(RealtimeDeduplicateStateTest, TestAttachAndInstallSnapshot) {
                                 /*write_cols=*/std::nullopt));
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<DataFileKeyOffsetIndexWriter> sidecar_writer,
-        DataFileKeyOffsetIndexWriter::Create(schema->field(1), path_factory,
-                                             directory->GetFileSystem(), pool, options.ToMap()));
+        DataFileKeyOffsetIndexWriter::Create(schema->field(1), directory->GetFileSystem(), pool));
     const std::shared_ptr<arrow::StructArray> keys = checked_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({schema->field(1)}), R"([[1]])")
             .ValueOrDie());
     const std::shared_ptr<arrow::Int64Array> offsets = checked_pointer_cast<arrow::Int64Array>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[0]").ValueOrDie());
-    ASSERT_OK(sidecar_writer->AddBatch(keys, offsets));
-    ASSERT_OK_AND_ASSIGN(std::string sidecar, sidecar_writer->Finish(first_file));
+    const std::shared_ptr<arrow::StructArray> index_batch =
+        arrow::StructArray::Make({keys->field(0), offsets}, {schema->field(1), schema->field(0)})
+            .ValueOrDie();
+    ASSERT_OK(sidecar_writer->AddBatch(index_batch));
+    ASSERT_OK_AND_ASSIGN(
+        std::string sidecar,
+        sidecar_writer->Finish(path_factory->ToPath(first_file), first_file->row_count));
     first_file = first_file->CopyWithExtraFiles({sidecar});
 
     ASSERT_NOK_WITH_MSG(state.InstallCommittedSnapshot(-1, {}, store),
@@ -120,6 +125,8 @@ TEST(RealtimeDeduplicateStateTest, TestAttachAndInstallSnapshot) {
     ASSERT_OK(state.InstallCommittedSnapshot(/*committed_end_offset=*/1, {first_file}, store));
     const std::shared_ptr<RealtimeOffsetFileIndexLookup> installed = state.committed_file_lookup_;
     ASSERT_NE(initial_lookup, installed);
+    ASSERT_EQ(initial_lookup->cache_manager_, installed->cache_manager_);
+    ASSERT_EQ(options.GetCachePageSize(), installed->cache_page_size_);
     ASSERT_EQ(std::vector<std::shared_ptr<DataFileMeta>>{first_file}, installed->DataFiles());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> new_keys,
                          store->AcquireKeyOffsetLookup());
@@ -131,6 +138,7 @@ TEST(RealtimeDeduplicateStateTest, TestAttachAndInstallSnapshot) {
     // A new snapshot may replace its active file set without advancing the durable offset.
     ASSERT_OK(state.InstallCommittedSnapshot(/*committed_end_offset=*/1, {}, store));
     ASSERT_TRUE(state.committed_file_lookup_->DataFiles().empty());
+    ASSERT_EQ(installed->cache_manager_, state.committed_file_lookup_->cache_manager_);
     ASSERT_EQ(std::vector<std::shared_ptr<DataFileMeta>>{first_file}, installed->DataFiles());
     ASSERT_OK_AND_ASSIGN(RoaringBitmap64 pinned_offsets, new_keys->LookupOffsets(keys));
     ASSERT_EQ("{0}", pinned_offsets.ToString());

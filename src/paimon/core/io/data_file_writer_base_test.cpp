@@ -19,10 +19,13 @@
 #include "paimon/core/io/data_file_writer_base.h"
 
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
@@ -30,6 +33,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/long_counter.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/append_data_file_writer_factory.h"
@@ -37,8 +41,10 @@
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/file_index_options.h"
 #include "paimon/core/io/key_value_data_file_writer_factory.h"
+#include "paimon/core/io/rolling_file_writer.h"
 #include "paimon/core/key_value.h"
 #include "paimon/core/manifest/file_source.h"
+#include "paimon/core/realtime/realtime_key_offset_index.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/stats/simple_stats_converter.h"
 #include "paimon/defs.h"
@@ -63,6 +69,20 @@ class OpenCountingFileSystem : public LocalFileSystem {
     }
 
     mutable int32_t open_count = 0;
+};
+
+class FailingOffsetFileSystem : public LocalFileSystem {
+ public:
+    Result<std::unique_ptr<OutputStream>> Create(const std::string& path,
+                                                 bool overwrite) const override {
+        if (path.size() >= 7 && path.compare(path.size() - 7, 7, ".offset") == 0 &&
+            ++offset_files == 2) {
+            return Status::IOError("injected offset index create failure");
+        }
+        return LocalFileSystem::Create(path, overwrite);
+    }
+
+    mutable int32_t offset_files = 0;
 };
 
 }  // namespace
@@ -123,6 +143,117 @@ TEST(DataFileWriterBaseTest, WriteAfterCloseDoesNotConsumeIndexBatch) {
     ASSERT_NOK_WITH_MSG(writer.Write(&second_batch), "Writer has already closed");
     ASSERT_NE(nullptr, second_batch.release);
     ArrowArrayRelease(&second_batch);
+}
+
+TEST(DataFileWriterBaseTest, OffsetIndexesFollowRollingWithAndWithoutFileIndexes) {
+    for (const std::string index_storage : {"none", "embedded", "external"}) {
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        const std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+        const std::shared_ptr<arrow::Schema> schema =
+            arrow::schema({arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64()),
+                           arrow::field("id", arrow::utf8())});
+        std::map<std::string, std::string> raw_options = {
+            {Options::FILE_FORMAT, "parquet"}, {Options::REALTIME_DEDUPLICATE_KEY_FIELDS, "id"}};
+        if (index_storage != "none") {
+            raw_options["file-index.bitmap.columns"] = "id";
+            raw_options[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] =
+                index_storage == "embedded" ? "1MB" : "0";
+        }
+        ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
+        auto path_factory = std::make_shared<DataFilePathFactory>();
+        ASSERT_OK(path_factory->Init(dir->Str(), "parquet", "data-", nullptr));
+        auto factory = std::make_shared<AppendDataFileWriterFactory>(
+            options, /*schema_id=*/0, schema, /*write_cols=*/std::nullopt,
+            std::make_shared<LongCounter>(0), FileSource::Append(), path_factory, pool);
+        RollingFileWriter<::ArrowArray*, std::shared_ptr<DataFileMeta>> writer(
+            std::numeric_limits<int64_t>::max(), /*target_file_row_num=*/2, factory);
+        for (const std::string json :
+             {R"([[100, "a"], [102, "b"]])", R"([[200, "c"], [203, "d"]])"}) {
+            const std::shared_ptr<arrow::Array> array =
+                arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema->fields()), json)
+                    .ValueOrDie();
+            ::ArrowArray batch;
+            ASSERT_TRUE(arrow::ExportArray(*array, &batch).ok());
+            ASSERT_OK(writer.Write(&batch));
+        }
+        ASSERT_OK(writer.Close());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<DataFileMeta>> files, writer.GetResult());
+        ASSERT_EQ(2, files.size());
+        auto cache_manager = std::make_shared<CacheManager>(1024, 0.0);
+        const std::shared_ptr<arrow::StructArray> keys = checked_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({schema->field(1)}),
+                                                      R"([["a"], ["b"], ["c"], ["d"]])")
+                .ValueOrDie());
+        const std::vector<std::vector<int64_t>> expected_offsets = {{100, 102}, {200, 203}};
+        for (size_t index = 0; index < files.size(); ++index) {
+            const std::shared_ptr<DataFileMeta>& file = files[index];
+            ASSERT_EQ(2, file->row_count);
+            ASSERT_EQ(index_storage == "external" ? 2 : 1, file->extra_files.size());
+            ASSERT_EQ(index_storage == "embedded", file->embedded_index != nullptr);
+            ASSERT_EQ(file->file_name + ".offset", file->extra_files.back().value());
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
+                DataFileKeyOffsetIndexReader::Create(32, cache_manager, schema->field(1), file,
+                                                     path_factory, options.GetFileSystem(), pool));
+            ASSERT_OK_AND_ASSIGN(RoaringBitmap64 offsets, reader->LookupOffsets(keys));
+            ASSERT_EQ(2, offsets.Cardinality());
+            for (int64_t offset : expected_offsets[index]) {
+                ASSERT_TRUE(offsets.Contains(offset));
+            }
+            for (const std::string& path : path_factory->CollectFiles(file)) {
+                ASSERT_OK_AND_ASSIGN(bool exists, options.GetFileSystem()->Exists(path));
+                ASSERT_TRUE(exists);
+            }
+        }
+        // A rolling writer must retain sidecar paths in the closed writers' abort executors.
+        writer.Abort();
+        for (const std::shared_ptr<DataFileMeta>& file : files) {
+            for (const std::string& path : path_factory->CollectFiles(file)) {
+                ASSERT_OK_AND_ASSIGN(bool exists, options.GetFileSystem()->Exists(path));
+                ASSERT_FALSE(exists);
+            }
+        }
+    }
+}
+
+TEST(DataFileWriterBaseTest, OffsetIndexFailureCleansCurrentAndPreviouslyRolledFiles) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = std::make_shared<FailingOffsetFileSystem>();
+    const std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64()),
+                       arrow::field("id", arrow::int64())});
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "parquet"},
+                                               {Options::REALTIME_DEDUPLICATE_KEY_FIELDS, "id"},
+                                               {"file-index.bitmap.columns", "id"},
+                                               {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "0"}},
+                                              fs));
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "parquet", "data-", nullptr));
+    auto factory = std::make_shared<AppendDataFileWriterFactory>(
+        options, /*schema_id=*/0, schema, /*write_cols=*/std::nullopt,
+        std::make_shared<LongCounter>(0), FileSource::Append(), path_factory, GetDefaultPool());
+    RollingFileWriter<::ArrowArray*, std::shared_ptr<DataFileMeta>> writer(
+        std::numeric_limits<int64_t>::max(), /*target_file_row_num=*/1, factory);
+    for (int32_t index = 0; index < 2; ++index) {
+        const std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema->fields()),
+                                                      R"([[7, 1]])")
+                .ValueOrDie();
+        ::ArrowArray batch;
+        ASSERT_TRUE(arrow::ExportArray(*array, &batch).ok());
+        if (index == 0) {
+            ASSERT_OK(writer.Write(&batch));
+        } else {
+            ASSERT_NOK_WITH_MSG(writer.Write(&batch), "injected offset index create failure");
+        }
+    }
+    ASSERT_EQ(2, fs->offset_files);
+    std::vector<BasicFileStatus> files;
+    ASSERT_OK(fs->ListDir(dir->Str(), &files));
+    ASSERT_TRUE(files.empty());
 }
 
 class DataFileWriterStatsTest : public ::testing::TestWithParam<std::string> {

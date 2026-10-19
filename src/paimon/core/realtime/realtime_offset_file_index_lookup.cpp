@@ -24,6 +24,7 @@
 
 #include "arrow/api.h"
 #include "fmt/format.h"
+#include "paimon/common/io/cache/cache_manager.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -55,10 +56,15 @@ Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> RealtimeOffsetFileIndexLo
             return Status::Invalid("invalid data file for realtime offset lookup");
         }
     }
-    return std::shared_ptr<RealtimeOffsetFileIndexLookup>(
-        new RealtimeOffsetFileIndexLookup(data_schema, data_schema_id, deduplicate_key_field,
-                                          std::vector<std::shared_ptr<DataFileMeta>>(data_files),
-                                          path_factory, file_system, memory_pool, options.ToMap()));
+    if (options.GetCachePageSize() <= 0 || options.GetLookupCacheMaxMemory() < 0) {
+        return Status::Invalid("invalid realtime key-offset cache options");
+    }
+    auto cache_manager = std::make_shared<CacheManager>(options.GetLookupCacheMaxMemory(),
+                                                        options.GetLookupCacheHighPrioPoolRatio());
+    return std::shared_ptr<RealtimeOffsetFileIndexLookup>(new RealtimeOffsetFileIndexLookup(
+        data_schema, data_schema_id, deduplicate_key_field,
+        std::vector<std::shared_ptr<DataFileMeta>>(data_files), path_factory, file_system,
+        options.ToMap(), options.GetCachePageSize(), std::move(cache_manager), memory_pool));
 }
 
 RealtimeOffsetFileIndexLookup::RealtimeOffsetFileIndexLookup(
@@ -66,7 +72,8 @@ RealtimeOffsetFileIndexLookup::RealtimeOffsetFileIndexLookup(
     std::shared_ptr<arrow::Field> deduplicate_key_field,
     std::vector<std::shared_ptr<DataFileMeta>> data_files,
     std::shared_ptr<DataFilePathFactory> path_factory, std::shared_ptr<FileSystem> file_system,
-    std::shared_ptr<MemoryPool> memory_pool, std::map<std::string, std::string> options)
+    std::map<std::string, std::string> options, uint32_t cache_page_size,
+    std::shared_ptr<CacheManager> cache_manager, std::shared_ptr<MemoryPool> memory_pool)
     : data_schema_(std::move(data_schema)),
       data_schema_id_(data_schema_id),
       deduplicate_key_field_(std::move(deduplicate_key_field)),
@@ -74,7 +81,9 @@ RealtimeOffsetFileIndexLookup::RealtimeOffsetFileIndexLookup(
       path_factory_(std::move(path_factory)),
       file_system_(std::move(file_system)),
       memory_pool_(std::move(memory_pool)),
-      options_(std::move(options)) {}
+      options_(std::move(options)),
+      cache_page_size_(cache_page_size),
+      cache_manager_(std::move(cache_manager)) {}
 
 Result<std::map<std::string, RoaringBitmap32>> RealtimeOffsetFileIndexLookup::LookupFilePositions(
     const RoaringBitmap64& offsets) const {
@@ -158,10 +167,10 @@ RealtimeOffsetFileIndexLookup::CreateKeyOffsetLookup() const {
     std::vector<std::shared_ptr<const KeyOffsetLookup>> readers;
     readers.reserve(data_files_.size());
     for (const std::shared_ptr<DataFileMeta>& file : data_files_) {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
-            DataFileKeyOffsetIndexReader::Create(deduplicate_key_field_, file, path_factory_,
-                                                 file_system_, memory_pool_, options_));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
+                               DataFileKeyOffsetIndexReader::Create(
+                                   cache_page_size_, cache_manager_, deduplicate_key_field_, file,
+                                   path_factory_, file_system_, memory_pool_));
         readers.push_back(std::move(reader));
     }
     return std::shared_ptr<const KeyOffsetLookup>(new CompositeKeyOffsetLookup(std::move(readers)));
@@ -174,10 +183,10 @@ Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> RealtimeOffsetFileIndexLo
             return Status::Invalid("invalid data file for realtime offset lookup");
         }
     }
-    return std::shared_ptr<RealtimeOffsetFileIndexLookup>(
-        new RealtimeOffsetFileIndexLookup(data_schema_, data_schema_id_, deduplicate_key_field_,
-                                          std::vector<std::shared_ptr<DataFileMeta>>(data_files),
-                                          path_factory_, file_system_, memory_pool_, options_));
+    return std::shared_ptr<RealtimeOffsetFileIndexLookup>(new RealtimeOffsetFileIndexLookup(
+        data_schema_, data_schema_id_, deduplicate_key_field_,
+        std::vector<std::shared_ptr<DataFileMeta>>(data_files), path_factory_, file_system_,
+        options_, cache_page_size_, cache_manager_, memory_pool_));
 }
 
 }  // namespace paimon

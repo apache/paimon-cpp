@@ -19,63 +19,22 @@
 
 #include "paimon/core/realtime/realtime_key_offset_index.h"
 
+#include <algorithm>
 #include <optional>
 #include <utility>
 
 #include "arrow/api.h"
 #include "paimon/common/global_index/key_serializer.h"
-#include "paimon/common/io/data_output_stream.h"
-#include "paimon/common/predicate/literal_converter.h"
+#include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/io/key_offset_index_utils.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/io/data_input_stream.h"
 #include "paimon/macros.h"
-#include "paimon/memory/bytes.h"
 
 namespace paimon {
-namespace {
-
-constexpr int64_t kOffsetIndexMagic = 0x5041494D4F464653LL;
-constexpr int32_t kOffsetIndexVersion = 1;
-
-Result<std::vector<std::string>> EncodeKeyBatch(
-    const std::shared_ptr<arrow::StructArray>& keys, const std::shared_ptr<arrow::Field>& key_field,
-    const std::shared_ptr<KeySerializer>& key_serializer) {
-    if (!keys || keys->num_fields() != 1 || !keys->field(0)->type()->Equals(key_field->type())) {
-        return Status::Invalid(
-            "deduplicate key lookup must contain exactly the configured key field");
-    }
-    if (keys->null_count() != 0 || keys->field(0)->null_count() != 0) {
-        return Status::Invalid("deduplicate key must not contain null");
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> literals,
-                           LiteralConverter::ConvertLiteralsFromArray(*keys->field(0),
-                                                                      /*own_data=*/true));
-    std::vector<std::string> encoded;
-    encoded.reserve(literals.size());
-    for (const Literal& literal : literals) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, key_serializer->Serialize(literal));
-        std::string key;
-        if (bytes->size() > 0) {
-            key.append(bytes->data(), bytes->size());
-        }
-        encoded.push_back(std::move(key));
-    }
-    return encoded;
-}
-
-Status WriteRaw(const std::shared_ptr<OutputStream>& output, const char* data, int64_t size) {
-    PAIMON_ASSIGN_OR_RAISE(int64_t written, output->Write(data, size));
-    if (written != size) {
-        return Status::IOError("short write for realtime .offset index");
-    }
-    return Status::OK();
-}
-
-}  // namespace
-
 Result<std::shared_ptr<MutableKeyOffsetIndex>> MutableKeyOffsetIndex::Create(
     const std::shared_ptr<arrow::Field>& key_field,
     const std::shared_ptr<MemoryPool>& memory_pool) {
@@ -84,20 +43,42 @@ Result<std::shared_ptr<MutableKeyOffsetIndex>> MutableKeyOffsetIndex::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeySerializer> serializer,
                            KeySerializer::Create(key_field->type(), memory_pool));
-    return std::shared_ptr<MutableKeyOffsetIndex>(
-        new MutableKeyOffsetIndex(key_field, std::move(serializer), std::make_shared<OffsetMap>()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetMap> offsets,
+                           OffsetMap::Create(/*initial_capacity=*/1024, memory_pool));
+    return std::shared_ptr<MutableKeyOffsetIndex>(new MutableKeyOffsetIndex(
+        key_field, std::move(serializer), std::move(offsets), memory_pool));
 }
 
 MutableKeyOffsetIndex::MutableKeyOffsetIndex(std::shared_ptr<arrow::Field> key_field,
                                              std::shared_ptr<KeySerializer> key_serializer,
-                                             std::shared_ptr<OffsetMap> offsets)
+                                             std::shared_ptr<OffsetMap> offsets,
+                                             std::shared_ptr<MemoryPool> memory_pool)
     : key_field_(std::move(key_field)),
       key_serializer_(std::move(key_serializer)),
-      offsets_(std::move(offsets)) {}
+      offsets_(std::move(offsets)),
+      memory_pool_(std::move(memory_pool)) {}
 
-Result<std::vector<std::string>> MutableKeyOffsetIndex::EncodeKeys(
+Result<std::vector<uint64_t>> MutableKeyOffsetIndex::HashKeys(
     const std::shared_ptr<arrow::StructArray>& keys) const {
-    return EncodeKeyBatch(keys, key_field_, key_serializer_);
+    return KeyOffsetIndexUtils::HashKeys(keys, key_field_, key_serializer_);
+}
+
+Status MutableKeyOffsetIndex::EnsureMutable() {
+    if (offsets_.unique()) {
+        return Status::OK();
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<OffsetMap> copy,
+        OffsetMap::Create(std::max<uint64_t>(1, offsets_->Size()), memory_pool_));
+    Status status = Status::OK();
+    offsets_->ForEach([&](uint64_t hash, int64_t offset) {
+        if (status.ok() && offset >= 0) {
+            status = copy->FindAndInsert(hash, offset);
+        }
+    });
+    PAIMON_RETURN_NOT_OK(status);
+    offsets_ = std::move(copy);
+    return Status::OK();
 }
 
 Status MutableKeyOffsetIndex::Add(const std::shared_ptr<arrow::StructArray>& keys,
@@ -105,40 +86,38 @@ Status MutableKeyOffsetIndex::Add(const std::shared_ptr<arrow::StructArray>& key
     if (!offsets || offsets->null_count() != 0 || !keys || keys->length() != offsets->length()) {
         return Status::Invalid("key-offset index input columns are not aligned");
     }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> encoded, EncodeKeys(keys));
-    // Copy on write to keep previously pinned snapshots immutable.
-    if (!offsets_.unique()) {
-        offsets_ = std::make_shared<OffsetMap>(*offsets_);
-    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<uint64_t> hashes, HashKeys(keys));
     for (int64_t row = 0; row < offsets->length(); ++row) {
-        const int64_t offset = offsets->Value(row);
-        if (offset < 0) {
+        if (offsets->Value(row) < 0) {
             return Status::Invalid("realtime offset must not be negative");
         }
-        (*offsets_)[encoded[row]] = offset;
+    }
+    PAIMON_RETURN_NOT_OK(EnsureMutable());
+    for (int64_t row = 0; row < offsets->length(); ++row) {
+        PAIMON_RETURN_NOT_OK(offsets_->FindAndInsert(hashes[row], offsets->Value(row)));
     }
     return Status::OK();
 }
 
 Status MutableKeyOffsetIndex::Erase(const std::shared_ptr<arrow::StructArray>& keys) {
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> encoded, EncodeKeys(keys));
-    if (!offsets_.unique()) {
-        offsets_ = std::make_shared<OffsetMap>(*offsets_);
-    }
-    for (const std::string& key : encoded) {
-        offsets_->erase(key);
+    PAIMON_ASSIGN_OR_RAISE(std::vector<uint64_t> hashes, HashKeys(keys));
+    PAIMON_RETURN_NOT_OK(EnsureMutable());
+    for (uint64_t hash : hashes) {
+        if (offsets_->Find(hash)) {
+            PAIMON_RETURN_NOT_OK(offsets_->FindAndInsert(hash, /*value=*/-1));
+        }
     }
     return Status::OK();
 }
 
 Result<RoaringBitmap64> MutableKeyOffsetIndex::LookupOffsets(
     const std::shared_ptr<arrow::StructArray>& keys) const {
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> encoded, EncodeKeys(keys));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<uint64_t> hashes, HashKeys(keys));
     RoaringBitmap64 result;
-    for (const std::string& key : encoded) {
-        auto iter = offsets_->find(key);
-        if (iter != offsets_->end()) {
-            result.Add(iter->second);
+    for (uint64_t hash : hashes) {
+        const std::optional<int64_t> offset = offsets_->Find(hash);
+        if (offset && offset.value() >= 0) {
+            result.Add(offset.value());
         }
     }
     return result;
@@ -146,7 +125,7 @@ Result<RoaringBitmap64> MutableKeyOffsetIndex::LookupOffsets(
 
 std::shared_ptr<const KeyOffsetLookup> MutableKeyOffsetIndex::Snapshot() const {
     return std::shared_ptr<const KeyOffsetLookup>(
-        new MutableKeyOffsetIndex(key_field_, key_serializer_, offsets_));
+        new MutableKeyOffsetIndex(key_field_, key_serializer_, offsets_, memory_pool_));
 }
 
 Result<RoaringBitmap64> CompositeKeyOffsetLookup::LookupOffsets(
@@ -162,93 +141,19 @@ Result<RoaringBitmap64> CompositeKeyOffsetLookup::LookupOffsets(
     return result;
 }
 
-Result<std::unique_ptr<DataFileKeyOffsetIndexWriter>> DataFileKeyOffsetIndexWriter::Create(
-    const std::shared_ptr<arrow::Field>& key_field,
-    const std::shared_ptr<DataFilePathFactory>& path_factory,
-    const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& memory_pool,
-    const std::map<std::string, std::string>& options) {
-    (void)options;
-    if (!key_field || !path_factory || !file_system || !memory_pool) {
-        return Status::Invalid("key-offset writer is missing a required dependency");
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeySerializer> serializer,
-                           KeySerializer::Create(key_field->type(), memory_pool));
-    return std::unique_ptr<DataFileKeyOffsetIndexWriter>(new DataFileKeyOffsetIndexWriter(
-        key_field, path_factory, file_system, std::move(serializer)));
-}
-
-DataFileKeyOffsetIndexWriter::DataFileKeyOffsetIndexWriter(
-    std::shared_ptr<arrow::Field> key_field, std::shared_ptr<DataFilePathFactory> path_factory,
-    std::shared_ptr<FileSystem> file_system, std::shared_ptr<KeySerializer> key_serializer)
-    : key_field_(std::move(key_field)),
-      path_factory_(std::move(path_factory)),
-      file_system_(std::move(file_system)),
-      key_serializer_(std::move(key_serializer)) {}
-
-Status DataFileKeyOffsetIndexWriter::AddBatch(const std::shared_ptr<arrow::StructArray>& keys,
-                                              const std::shared_ptr<arrow::Int64Array>& offsets) {
-    if (!keys || !offsets || keys->length() != offsets->length() || offsets->null_count() != 0) {
-        return Status::Invalid("key-offset writer input columns are not aligned");
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> encoded,
-                           EncodeKeyBatch(keys, key_field_, key_serializer_));
-    for (int64_t row = 0; row < offsets->length(); ++row) {
-        const int64_t offset = offsets->Value(row);
-        if (offset < 0) {
-            return Status::Invalid("realtime offset must not be negative");
-        }
-        if (!offsets_.emplace(encoded[row], offset).second) {
-            return Status::Invalid(
-                "deduplicate data file contains more than one offset for a deduplicate key");
-        }
-    }
-    return Status::OK();
-}
-
-Result<std::string> DataFileKeyOffsetIndexWriter::Finish(
-    const std::shared_ptr<DataFileMeta>& data_file) {
-    if (!data_file || offsets_.empty()) {
-        return Status::Invalid("cannot finish an empty key-offset index");
-    }
-    const std::string file_name = data_file->file_name + DataFileKeyOffsetIndexReader::kFileSuffix;
-    output_path_ = path_factory_->ToAlignedPath(file_name, data_file);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output,
-                           file_system_->Create(output_path_, /*overwrite=*/false));
-    DataOutputStream data_output(output);
-    PAIMON_RETURN_NOT_OK(data_output.WriteValue<int64_t>(kOffsetIndexMagic));
-    PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(kOffsetIndexVersion));
-    PAIMON_RETURN_NOT_OK(data_output.WriteValue<int64_t>(offsets_.size()));
-    for (const auto& [key, offset] : offsets_) {
-        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(static_cast<int32_t>(key.size())));
-        if (!key.empty()) {
-            PAIMON_RETURN_NOT_OK(WriteRaw(output, key.data(), key.size()));
-        }
-        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int64_t>(offset));
-    }
-    PAIMON_RETURN_NOT_OK(output->Flush());
-    PAIMON_RETURN_NOT_OK(output->Close());
-    return file_name;
-}
-
-void DataFileKeyOffsetIndexWriter::Abort() {
-    if (!output_path_.empty()) {
-        [[maybe_unused]] Status status = file_system_->Delete(output_path_);
-        output_path_.clear();
-    }
-}
-
 Result<std::shared_ptr<DataFileKeyOffsetIndexReader>> DataFileKeyOffsetIndexReader::Create(
+    uint32_t page_size, const std::shared_ptr<CacheManager>& cache_manager,
     const std::shared_ptr<arrow::Field>& key_field, const std::shared_ptr<DataFileMeta>& data_file,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
-    const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& memory_pool,
-    const std::map<std::string, std::string>& options) {
-    (void)options;
-    if (!key_field || !data_file || !path_factory || !file_system || !memory_pool) {
+    const std::shared_ptr<FileSystem>& file_system,
+    const std::shared_ptr<MemoryPool>& memory_pool) {
+    if (!key_field || !data_file || !path_factory || !file_system || !memory_pool ||
+        !cache_manager) {
         return Status::Invalid("key-offset reader is missing a required dependency");
     }
     std::optional<std::string> file_name;
     for (const std::optional<std::string>& extra : data_file->extra_files) {
-        if (extra && StringUtils::EndsWith(extra.value(), kFileSuffix)) {
+        if (extra && StringUtils::EndsWith(extra.value(), KeyOffsetIndexUtils::kFileSuffix)) {
             if (file_name) {
                 return Status::Invalid("data file contains multiple .offset sidecars");
             }
@@ -263,39 +168,23 @@ Result<std::shared_ptr<DataFileKeyOffsetIndexReader>> DataFileKeyOffsetIndexRead
     const std::string file_path = path_factory->ToAlignedPath(file_name.value(), data_file);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input, file_system->Open(file_path));
     DataInputStream data_input(input);
-    PAIMON_ASSIGN_OR_RAISE(int64_t magic, data_input.ReadValue<int64_t>());
     PAIMON_ASSIGN_OR_RAISE(int32_t version, data_input.ReadValue<int32_t>());
-    if (magic != kOffsetIndexMagic || version != kOffsetIndexVersion) {
-        return Status::Invalid("unsupported realtime .offset index format: ", file_name.value());
+    if (version != KeyOffsetIndexUtils::kCurrentVersion) {
+        return Status::Invalid("unsupported realtime .offset index version: ", version);
     }
-    PAIMON_ASSIGN_OR_RAISE(int64_t entry_count, data_input.ReadValue<int64_t>());
-    if (entry_count < 0) {
-        return Status::Invalid("negative entry count in realtime .offset index");
+    PAIMON_ASSIGN_OR_RAISE(int64_t length, input->Length());
+    constexpr int64_t kVersionSize = sizeof(int32_t);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<OffsetInputStream> hash_table_input,
+        OffsetInputStream::Create(input, length - kVersionSize, kVersionSize, length));
+    using Reader = DenseHashTableFileReader<uint64_t, int64_t>;
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<Reader> offsets,
+        Reader::Create(page_size, cache_manager, file_path, hash_table_input, memory_pool));
+    if (data_file->row_count < 0 ||
+        offsets->Size() != static_cast<uint64_t>(data_file->row_count)) {
+        return Status::Invalid("realtime .offset index entry count does not match data file");
     }
-    auto offsets = std::make_shared<std::map<std::string, int64_t>>();
-    for (int64_t entry = 0; entry < entry_count; ++entry) {
-        PAIMON_ASSIGN_OR_RAISE(int32_t key_size, data_input.ReadValue<int32_t>());
-        if (key_size < 0) {
-            return Status::Invalid("invalid key size in realtime .offset index");
-        }
-        std::string key(key_size, '\0');
-        if (key_size > 0) {
-            PAIMON_RETURN_NOT_OK(data_input.Read(key.data(), key_size));
-        }
-        PAIMON_ASSIGN_OR_RAISE(int64_t offset, data_input.ReadValue<int64_t>());
-        if (offset < 0) {
-            return Status::Invalid("negative offset in realtime .offset index");
-        }
-        if (!offsets->emplace(std::move(key), offset).second) {
-            return Status::Invalid("duplicate key in realtime .offset index");
-        }
-    }
-    PAIMON_ASSIGN_OR_RAISE(int64_t position, data_input.GetPos());
-    PAIMON_ASSIGN_OR_RAISE(int64_t length, data_input.Length());
-    if (position != length) {
-        return Status::Invalid("trailing bytes in realtime .offset index");
-    }
-    PAIMON_RETURN_NOT_OK(input->Close());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeySerializer> serializer,
                            KeySerializer::Create(key_field->type(), memory_pool));
     return std::shared_ptr<DataFileKeyOffsetIndexReader>(
@@ -304,13 +193,16 @@ Result<std::shared_ptr<DataFileKeyOffsetIndexReader>> DataFileKeyOffsetIndexRead
 
 Result<RoaringBitmap64> DataFileKeyOffsetIndexReader::LookupOffsets(
     const std::shared_ptr<arrow::StructArray>& keys) const {
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> encoded,
-                           EncodeKeyBatch(keys, key_field_, key_serializer_));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<uint64_t> hashes,
+                           KeyOffsetIndexUtils::HashKeys(keys, key_field_, key_serializer_));
     RoaringBitmap64 result;
-    for (const std::string& key : encoded) {
-        auto iter = offsets_->find(key);
-        if (iter != offsets_->end()) {
-            result.Add(iter->second);
+    for (uint64_t hash : hashes) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> offset, offsets_->Find(hash));
+        if (offset) {
+            if (offset.value() < 0) {
+                return Status::Invalid("negative offset in realtime .offset index");
+            }
+            result.Add(offset.value());
         }
     }
     return result;
