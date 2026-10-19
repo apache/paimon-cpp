@@ -70,4 +70,38 @@ TEST_F(BinaryRowSerializerTest, SerializeAndDeserialize) {
     EXPECT_EQ(deserialized_row.GetDouble(2), 3.14);
 }
 
+TEST_F(BinaryRowSerializerTest, SkipPreservesNextRow) {
+    BinaryRowSerializer serializer(1, pool_);
+    MemorySegmentOutputStream out(128, pool_);
+    for (int32_t value : {10, 20}) {
+        BinaryRow row(1);
+        BinaryRowWriter writer(&row, 0, pool_.get());
+        writer.WriteInt(0, value);
+        writer.Complete();
+        ASSERT_OK(serializer.Serialize(row, &out));
+    }
+    auto stream =
+        std::make_shared<ByteArrayInputStream>(out.Segments().front().Data(), out.CurrentSize());
+    DataInputStream in(stream);
+    ASSERT_OK(BinaryRowSerializer::Skip(&in));
+    ASSERT_OK_AND_ASSIGN(auto row, serializer.Deserialize(&in));
+    ASSERT_EQ(row.GetInt(0), 20);
+    ASSERT_OK_AND_ASSIGN(int64_t pos, in.GetPos());
+    ASSERT_EQ(pos, out.CurrentSize());
+    ASSERT_NOK(BinaryRowSerializer::Skip(&in));
+}
+
+TEST_F(BinaryRowSerializerTest, SkipRejectsInvalidLength) {
+    for (int32_t length : {-1, 5}) {
+        SCOPED_TRACE(length);
+        MemorySegmentOutputStream out(64, pool_);
+        out.WriteValue<int32_t>(length);
+        out.WriteValue<int32_t>(0);
+        auto stream = std::make_shared<ByteArrayInputStream>(out.Segments().front().Data(),
+                                                             out.CurrentSize());
+        DataInputStream in(stream);
+        ASSERT_NOK_WITH_MSG(BinaryRowSerializer::Skip(&in), "invalid binary row length");
+    }
+}
+
 }  // namespace paimon::test

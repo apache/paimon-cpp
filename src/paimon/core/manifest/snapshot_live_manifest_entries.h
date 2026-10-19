@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -31,6 +32,7 @@
 
 namespace paimon {
 class Bytes;
+class InternalRow;
 class MemoryPool;
 class MemorySegment;
 
@@ -40,14 +42,13 @@ class MemorySegment;
 /// cache; callers are responsible for storing the serialized bytes in the cache layer.
 class SnapshotLiveManifestEntries {
  public:
-    struct Entry {
-        int64_t snapshot_id;
-        std::shared_ptr<const std::vector<ManifestEntry>> entries;
+    struct Selection {
+        std::vector<ManifestEntry> entries;
+        uint64_t candidate_entries = 0;
     };
 
     explicit SnapshotLiveManifestEntries(int32_t max_snapshots);
 
-    std::optional<Entry> LatestBeforeOrEqual(int64_t snapshot_id) const;
     void Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries);
     size_t Size() const;
 
@@ -55,6 +56,16 @@ class SnapshotLiveManifestEntries {
     static Result<SnapshotLiveManifestEntries> Deserialize(const MemorySegment& segment,
                                                            int32_t max_snapshots,
                                                            const std::shared_ptr<MemoryPool>& pool);
+
+    /// Select an exact retained snapshot, applying a row filter before constructing file metadata.
+    /// The reader validates the entry version before invoking the filter, as in
+    /// ManifestFile::ReadSelectedEntries. The serialized cache value is unchanged. A Selection is
+    /// deliberately not a cache value: query-filtered entries must never replace the complete
+    /// bucket's cached entries.
+    static Result<std::optional<Selection>> ReadSnapshot(
+        const MemorySegment& segment, int64_t snapshot_id, int32_t max_snapshots,
+        const std::function<Result<bool>(const InternalRow&)>& row_filter,
+        const std::shared_ptr<MemoryPool>& pool);
 
  private:
     void EvictIfNeeded();

@@ -23,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -180,6 +181,9 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         writers_;
     std::mutex writers_mutex_;
     std::mutex realtime_seal_prepare_mutex_;
+    // Seal/prepare may flush concurrently with writes, but cannot return before an in-flight
+    // write has published its outcome, including invalidating the context on failure.
+    std::shared_mutex realtime_write_completion_mutex_;
     std::mutex realtime_metrics_mutex_;
     bool ignore_previous_files_ = false;
     bool is_streaming_mode_ = false;

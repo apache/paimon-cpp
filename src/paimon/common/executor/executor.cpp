@@ -113,13 +113,14 @@ void DefaultExecutor::Add(std::function<void()> func) {
         if (state_->stop) {
             return;
         }
-        state_->tasks.emplace(std::move(func));
         if (workers_.empty()) {
             workers_.reserve(thread_count_);
             for (uint32_t i = 0; i < thread_count_; ++i) {
                 workers_.emplace_back(&DefaultExecutor::WorkerThread, state_);
             }
         }
+        // Startup may throw; do not accept the callback until it succeeds.
+        state_->tasks.emplace(std::move(func));
     }
     state_->condition.notify_one();
 }

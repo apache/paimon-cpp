@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "paimon/core/compact/compact_deletion_file.h"
 #include "paimon/core/io/compact_increment.h"
@@ -28,6 +29,8 @@
 #include "paimon/realtime/offset_range.h"
 
 namespace paimon {
+
+class RoaringBitmap64;
 
 // Changes to commit.
 class CommitIncrement {
@@ -66,11 +69,20 @@ class CommitIncrement {
         realtime_offset_range_ = offset_range;
     }
 
+    const std::shared_ptr<const RoaringBitmap64>& GetRealtimeDeletedOffsets() const {
+        return realtime_deleted_offsets_;
+    }
+
+    void SetRealtimeDeletedOffsets(std::shared_ptr<const RoaringBitmap64> deleted_offsets) {
+        realtime_deleted_offsets_ = std::move(deleted_offsets);
+    }
+
  private:
     DataIncrement data_increment_;
     CompactIncrement compact_increment_;
     std::shared_ptr<CompactDeletionFile> compact_deletion_file_;
     std::optional<OffsetRange> realtime_offset_range_;
+    std::shared_ptr<const RoaringBitmap64> realtime_deleted_offsets_;
 };
 
 }  // namespace paimon

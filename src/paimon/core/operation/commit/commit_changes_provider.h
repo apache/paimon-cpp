@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "paimon/core/manifest/index_manifest_entry.h"
@@ -44,6 +45,8 @@ struct CommitChanges {
     std::vector<ManifestEntry> delta_files;
     std::vector<ManifestEntry> changelog_files;
     std::vector<IndexManifestEntry> index_entries;
+    // Unpublished files owned by this attempt; retain on uncertain publication outcomes.
+    std::vector<std::string> temporary_files;
 };
 
 class CommitChangesProvider {

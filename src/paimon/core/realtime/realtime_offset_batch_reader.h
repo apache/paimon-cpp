@@ -28,7 +28,7 @@ namespace paimon {
 class RealtimeOffsetBatchReader final : public BatchReader {
  public:
     RealtimeOffsetBatchReader(std::unique_ptr<BatchReader>&& reader,
-                              const OffsetRange& visible_offsets);
+                              const OffsetRange& visible_offsets, bool keep_offset);
 
     Result<ReadBatch> NextBatch() override;
 
@@ -41,6 +41,7 @@ class RealtimeOffsetBatchReader final : public BatchReader {
  private:
     std::unique_ptr<BatchReader> reader_;
     OffsetRange visible_offsets_;
+    bool keep_offset_;
 };
 
 }  // namespace paimon

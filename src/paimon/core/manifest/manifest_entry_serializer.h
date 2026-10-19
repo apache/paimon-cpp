@@ -56,6 +56,11 @@ class ManifestEntrySerializer : public VersionedObjectSerializer<ManifestEntry> 
     /// Get the bucket from a versioned manifest entry row without fully deserializing it.
     static int32_t GetBucket(const InternalRow& row);
 
+    /// Borrow the partition without copying or constructing file metadata.
+    /// The caller must validate the entry version before accessing this field.
+    /// The row backing memory must remain valid while the returned view is used.
+    static Result<BinaryRow> GetPartitionView(const InternalRow& row);
+
     Result<ManifestEntry> ConvertFrom(int32_t version, const InternalRow& row) const override;
 
     Result<BinaryRow> ToRow(const ManifestEntry& record) const override;

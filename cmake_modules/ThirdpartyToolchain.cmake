@@ -1499,6 +1499,11 @@ macro(build_vortex)
     # neither of which can go through paimon's filesystem. `callback_io.rs` adds an entry point
     # backed by host callbacks; it is maintained in this repository and injected into the Vortex
     # source tree, and the patch only declares the module.
+    # Keep in sync with RUST_VERSION in ci/scripts/setup_rust.sh; it overrides the
+    # rust-toolchain.toml shipped inside the Vortex archive.
+    set(PAIMON_RUST_TOOLCHAIN
+        "1.95.0"
+        CACHE STRING "Rust toolchain used by the Vortex FFI build.")
     set(VORTEX_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/vortex.diff")
     set(VORTEX_CALLBACK_IO_SRC
         "${CMAKE_SOURCE_DIR}/crates/vortex_callback_io/callback_io.rs")
@@ -1533,8 +1538,8 @@ macro(build_vortex)
                                       "${VORTEX_CALLBACK_IO_SRC}"
                                       "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
                         COMMAND ${CMAKE_COMMAND} -E env "FLATC=${VORTEX_FLATC}"
-                                "RUSTUP_TOOLCHAIN=stable" "CC=${CMAKE_C_COMPILER}"
-                                "CXX=${CMAKE_CXX_COMPILER}"
+                                "RUSTUP_TOOLCHAIN=${PAIMON_RUST_TOOLCHAIN}"
+                                "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}"
                                 "CARGO_TARGET_DIR=${VORTEX_CARGO_TARGET_DIR}"
                                 "RUSTFLAGS=-Crelocation-model=pic"
                                 ${PAIMON_CARGO_EXECUTABLE} rustc --locked --package

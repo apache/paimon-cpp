@@ -24,6 +24,7 @@
 #include "paimon/commit_message.h"
 #include "paimon/realtime/offset_range.h"
 #include "paimon/realtime/realtime_context.h"
+#include "paimon/utils/roaring_bitmap64.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
@@ -41,6 +42,10 @@ struct PAIMON_EXPORT RealtimeCommitProgress {
     RealtimePartitionBucket partition_bucket;
     /// Left-closed, right-open offset range represented by the commit message.
     OffsetRange offset_range;
+    /// Immutable logical deletions for deduplicate mode; null for other modes. Commit resolves
+    /// these offsets against the latest snapshot and rebuilds physical DVs on every retry.
+    /// This bitmap is not embedded in CommitMessage serialization.
+    std::shared_ptr<const RoaringBitmap64> deleted_offsets = nullptr;
 };
 
 }  // namespace paimon

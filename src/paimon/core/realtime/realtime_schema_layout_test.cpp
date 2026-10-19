@@ -57,4 +57,36 @@ TEST(RealtimeSchemaLayoutTest, TestSchemaLayouts) {
     ASSERT_TRUE(primary_key_layout->CommitSchema()->Equals(*primary_key_layout->QuerySchema()));
 }
 
+TEST(RealtimeSchemaLayoutTest, TestDeduplicateSchemaKeepsOffsetFieldInUserOrder) {
+    std::shared_ptr<arrow::Schema> user_schema = arrow::schema({
+        arrow::field("key", arrow::int64(), false),
+        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
+        arrow::field("value", arrow::utf8()),
+    });
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> layout,
+                         RealtimeSchemaLayout::Create(RealtimeStoreMode::DEDUPLICATE, user_schema));
+
+    ASSERT_EQ(user_schema, layout->UserSchema());
+    ASSERT_EQ(user_schema, layout->InputSchema());
+    ASSERT_EQ(user_schema, layout->StoreWriteSchema());
+    ASSERT_EQ(user_schema, layout->StoreCommitSchema());
+    ASSERT_EQ(user_schema, layout->CommitSchema());
+    ASSERT_EQ((std::vector<std::string>{"_VALUE_KIND", "key", "_REALTIME_OFFSET", "value"}),
+              layout->QuerySchema()->field_names());
+}
+
+TEST(RealtimeSchemaLayoutTest, TestDeduplicateSchemaRequiresPersistedOffset) {
+    ASSERT_NOK_WITH_MSG(
+        RealtimeSchemaLayout::Create(RealtimeStoreMode::DEDUPLICATE,
+                                     arrow::schema({arrow::field("key", arrow::int64())})),
+        "requires non-null int64 _REALTIME_OFFSET");
+    ASSERT_NOK_WITH_MSG(
+        RealtimeSchemaLayout::Create(
+            RealtimeStoreMode::DEDUPLICATE,
+            arrow::schema({arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64(),
+                                        /*nullable=*/true),
+                           arrow::field("key", arrow::int64())})),
+        "requires non-null int64 _REALTIME_OFFSET");
+}
+
 }  // namespace paimon::test

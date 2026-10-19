@@ -26,10 +26,11 @@
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
+#include "paimon/visibility.h"
 namespace paimon {
 
 /// Provides core methods to serialize, deserialize, and compare global index keys.
-class KeySerializer {
+class PAIMON_EXPORT KeySerializer {
  public:
     ~KeySerializer() = default;
 

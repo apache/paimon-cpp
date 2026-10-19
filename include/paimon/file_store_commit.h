@@ -98,6 +98,10 @@ class PAIMON_EXPORT FileStoreCommit {
     /// Concurrent rollback or partition deletion must be fenced by the upstream coordinator.
     /// Configure catalog writers with `WriteContextBuilder::WithCatalog()` too.
     ///
+    /// In deduplicate mode each commit attempt resolves logical deleted offsets against the
+    /// latest snapshot and merges them with its deletion vectors. Keep the complete progress
+    /// when retrying; serializing only CommitMessage discards logical deletions.
+    ///
     /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
     /// commit.
     /// @param commit_identifier Identifier of the streaming commit operation.

@@ -31,7 +31,8 @@ namespace paimon {
 class RealtimeSchemaLayout {
  public:
     /// Creates all real-time boundary schemas for the requested store mode.
-    /// User fields retain their original order after any internal field prefix.
+    /// User fields retain their original order after any internal field prefix. DEDUPLICATE mode
+    /// requires `_REALTIME_OFFSET` to already exist in this schema as non-null int64.
     static Result<std::unique_ptr<RealtimeSchemaLayout>> Create(
         RealtimeStoreMode mode, const std::shared_ptr<arrow::Schema>& user_schema);
 
@@ -40,36 +41,42 @@ class RealtimeSchemaLayout {
 
     /// Append-only fields: [user fields].
     /// Primary-key fields: [user fields].
+    /// Deduplicate fields: [user fields, including _REALTIME_OFFSET].
     const std::shared_ptr<arrow::Schema>& UserSchema() const {
         return user_schema_;
     }
 
     /// Append-only fields: [_REALTIME_OFFSET, user fields].
     /// Primary-key fields: [_REALTIME_OFFSET, user fields].
+    /// Deduplicate fields: [user fields, including _REALTIME_OFFSET].
     const std::shared_ptr<arrow::Schema>& InputSchema() const {
         return input_schema_;
     }
 
     /// Append-only fields: [_REALTIME_OFFSET, user fields].
     /// Primary-key fields: [_SEQUENCE_NUMBER, _VALUE_KIND, _REALTIME_OFFSET, user fields].
+    /// Deduplicate fields: [user fields, including _REALTIME_OFFSET].
     const std::shared_ptr<arrow::Schema>& StoreWriteSchema() const {
         return store_write_schema_;
     }
 
     /// Append-only fields: [_REALTIME_OFFSET, user fields].
     /// Primary-key fields: [_SEQUENCE_NUMBER, _VALUE_KIND, _REALTIME_OFFSET, user fields].
+    /// Deduplicate fields: [user fields, including _REALTIME_OFFSET].
     const std::shared_ptr<arrow::Schema>& StoreCommitSchema() const {
         return store_commit_schema_;
     }
 
     /// Append-only fields: [user fields].
     /// Primary-key fields: [_SEQUENCE_NUMBER, _VALUE_KIND, user fields].
+    /// Deduplicate fields: [user fields, including _REALTIME_OFFSET].
     const std::shared_ptr<arrow::Schema>& CommitSchema() const {
         return commit_schema_;
     }
 
     /// Append-only fields: [_VALUE_KIND, user fields].
     /// Primary-key fields: [_SEQUENCE_NUMBER, _VALUE_KIND, user fields].
+    /// Deduplicate fields: [_VALUE_KIND, user fields, including _REALTIME_OFFSET].
     const std::shared_ptr<arrow::Schema>& QuerySchema() const {
         return query_schema_;
     }

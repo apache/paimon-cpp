@@ -461,12 +461,6 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
                    RecordBatch::RowKind::UPDATE_AFTER});
     ASSERT_OK(writer->Write(std::move(batch)));
     ASSERT_NOK(writer->Write(MakeBatch(schema, R"([[3, "missing-offset"]])")));
-    ASSERT_NOK_WITH_MSG(
-        writer->Write(
-            MakeBatch(realtime_schema, R"([[31, 3, "duplicate-a"], [31, 4, "duplicate-b"]])")),
-        "offsets must be strictly increasing");
-    ASSERT_NOK_WITH_MSG(writer->Write(MakeBatch(realtime_schema, R"([[30, 3, "backwards"]])")),
-                        "offset moved backwards or was duplicated");
     ASSERT_NOK(writer->Write(MakeBatch(realtime_schema, R"([[null, 3, "null-offset"]])")));
     std::shared_ptr<Metrics> building_metrics = writer->GetMetrics();
     ASSERT_OK_AND_ASSIGN(double building_rows,
@@ -501,6 +495,35 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
     ASSERT_EQ(2, row_count);
     ASSERT_EQ(0, TestHelper::CountChannelFiles(dir->GetFileSystem(), dir->Str()));
     ASSERT_OK(writer->Close());
+
+    // Each bucket-writer failure invalidates its context, so isolate the invalid batches.
+    const std::vector<std::pair<std::string, std::string>> invalid_batches = {
+        {R"([[31, 3, "duplicate-a"], [31, 4, "duplicate-b"]])",
+         "offsets must be strictly increasing"},
+        {R"([[30, 3, "backwards"]])", "offset moved backwards or was duplicated"}};
+    for (const auto& [json, expected_error] : invalid_batches) {
+        SCOPED_TRACE(expected_error);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> invalid_context,
+                             RealtimeContext::Create());
+        WriteContextBuilder invalid_builder(table_path, "invalid");
+        invalid_builder.SetOptions(options)
+            .WithStreamingMode(true)
+            .WithRealtimeContext(invalid_context)
+            .WithTempDirectory(dir->Str());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> invalid_write_context,
+                             invalid_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> invalid_writer,
+                             FileStoreWrite::Create(std::move(invalid_write_context)));
+        ASSERT_OK(invalid_writer->Write(MakeBatch(realtime_schema, R"([[30, 1, "existing"]])")));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> prepared,
+                             invalid_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+        ASSERT_EQ(1, prepared.size());
+        ASSERT_NOK_WITH_MSG(invalid_writer->Write(MakeBatch(realtime_schema, json)),
+                            expected_error);
+        ASSERT_NOK_WITH_MSG(ReadRealtimePrimaryKeyStoreRows(invalid_context),
+                            "real-time context cannot be reused");
+        ASSERT_OK(invalid_writer->Close());
+    }
 }
 
 TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
@@ -559,8 +582,8 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
     ASSERT_NOK_WITH_MSG(rejecting_writer->Write(MakeBatch(realtime_schema, R"([[0, 2, "two"]])")),
                         "Out of memory");
     ASSERT_GT(rejecting_pool->allocation_count, rejecting_allocations_before_write);
-    ASSERT_OK_AND_ASSIGN(auto rejected_rows, ReadRealtimePrimaryKeyStoreRows(rejecting_context));
-    ASSERT_TRUE(rejected_rows.empty());
+    ASSERT_NOK_WITH_MSG(ReadRealtimePrimaryKeyStoreRows(rejecting_context),
+                        "real-time context cannot be reused");
     ASSERT_OK(rejecting_writer->Close());
 }
 
@@ -621,11 +644,6 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
     ASSERT_OK_AND_ASSIGN(auto store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
     ASSERT_EQ((decltype(store_rows){{0, 1, "legal", max - 1, max - 1}}), store_rows);
 
-    ASSERT_NOK_WITH_MSG(
-        writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 2, "overflow"]])", max))),
-        "real-time offset range exceeds INT64_MAX");
-    ASSERT_OK_AND_ASSIGN(store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
-    ASSERT_EQ((decltype(store_rows){{0, 1, "legal", max - 1, max - 1}}), store_rows);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context_impl,
                          RealtimeContextImpl::Cast(realtime_context));
     ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context_impl->AcquireReadState());
@@ -635,6 +653,12 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> boundary_progress,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, boundary_progress.size());
+    ASSERT_EQ(OffsetRange(max - 1, max), boundary_progress[0].offset_range);
+    ASSERT_NOK_WITH_MSG(
+        writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 2, "overflow"]])", max))),
+        "real-time offset range exceeds INT64_MAX");
+    ASSERT_NOK_WITH_MSG(ReadRealtimePrimaryKeyStoreRows(realtime_context),
+                        "real-time context cannot be reused");
     ASSERT_OK(writer->Close());
     ASSERT_GE(snapshot_id, 1);
 }

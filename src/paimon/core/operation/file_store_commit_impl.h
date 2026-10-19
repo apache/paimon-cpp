@@ -70,6 +70,8 @@ class SchemaManager;
 class TableSchema;
 class BinaryRowPartitionComputer;
 class CommitChangesProvider;
+struct CommitChanges;
+class RoaringBitmap64;
 class CommitMessage;
 class Executor;
 class FileSystem;
@@ -203,6 +205,11 @@ class FileStoreCommitImpl : public FileStoreCommit {
 
     void ReportCommit(const ManifestEntryChanges& changes, int64_t commit_duration,
                       int32_t generated_snapshot, int32_t attempt);
+
+    Result<std::shared_ptr<CommitChanges>> MaterializeRealtimeDeletions(
+        const ManifestEntryChanges& changes,
+        const std::map<RealtimePartitionBucket, RoaringBitmap64>& deleted_offsets,
+        const std::optional<Snapshot>& latest_snapshot) const;
 
     Result<TryCommitResult> TryCommit(
         const std::vector<ManifestEntry>& delta_files,

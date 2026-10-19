@@ -433,6 +433,8 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
         core_options.WithCache(nullptr);
     }
 
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*table_schema, core_options));
+
     PAIMON_RETURN_NOT_OK(
         ValidateRealtimeScan(*table_schema, core_options, *context, read_optimized));
     // validate options

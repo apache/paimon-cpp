@@ -46,6 +46,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/catalog/snapshot_commit.h"
+#include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/io/compact_increment.h"
@@ -73,6 +74,7 @@
 #include "paimon/core/operation/metrics/commit_metrics.h"
 #include "paimon/core/operation/metrics/commit_stats.h"
 #include "paimon/core/partition/partition_statistics.h"
+#include "paimon/core/realtime/realtime_offset_file_index_lookup.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -95,6 +97,23 @@ namespace {
 
 constexpr const char* kCommitStrictModeLastSafeSnapshot = "commit.strict-mode.last-safe-snapshot";
 constexpr const char* kSequenceSnapshotOrdering = "sequence.snapshot-ordering";
+
+class RealtimeCommitChangesProvider final : public CommitChangesProvider {
+ public:
+    using Materializer =
+        std::function<Result<std::shared_ptr<CommitChanges>>(const std::optional<Snapshot>&)>;
+
+    explicit RealtimeCommitChangesProvider(Materializer materializer)
+        : materializer_(std::move(materializer)) {}
+
+    Result<std::shared_ptr<CommitChanges>> Provide(
+        const std::optional<Snapshot>& latest_snapshot) const override {
+        return materializer_(latest_snapshot);
+    }
+
+ private:
+    Materializer materializer_;
+};
 
 }  // namespace
 
@@ -879,7 +898,9 @@ Status FileStoreCommitImpl::Commit(
         ReportCommit(changes, duration.Get(), generated_snapshot, attempt);
     });
 
-    if (!ignore_empty_commit_ || changes.HasAppendChanges()) {
+    // A real-time commit may carry only durable offset progress, for example when an insert and
+    // delete cancel before either row is persisted. Such a commit still needs a snapshot.
+    if (!ignore_empty_commit_ || changes.HasAppendChanges() || !realtime_ranges.empty()) {
         Snapshot::CommitKind commit_kind = Snapshot::CommitKind::Append();
         if (append_commit_check_conflict_) {
             check_append_files = true;
@@ -951,9 +972,15 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
     std::vector<std::shared_ptr<CommitMessage>> commit_messages;
     commit_messages.reserve(ordered_commits.size());
     std::map<RealtimePartitionBucket, OffsetRange> realtime_ranges;
+    std::map<RealtimePartitionBucket, RoaringBitmap64> deleted_offsets;
     for (const RealtimeCommitProgress& realtime_commit : ordered_commits) {
         if (!realtime_commit.commit_message) {
             return Status::Invalid("real-time commit message is null");
+        }
+        if (!options_.GetRealtimeDeduplicateKeyFields().empty() &&
+            !realtime_commit.deleted_offsets) {
+            return Status::Invalid(
+                "realtime deduplicate progress requires a deleted-offset bitmap");
         }
         auto commit_message =
             std::dynamic_pointer_cast<CommitMessageImpl>(realtime_commit.commit_message);
@@ -979,6 +1006,9 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
                 OffsetRange(previous_range.begin, realtime_commit.offset_range.end);
         }
         commit_messages.push_back(realtime_commit.commit_message);
+        if (realtime_commit.deleted_offsets) {
+            deleted_offsets[realtime_commit.partition_bucket] |= *realtime_commit.deleted_offsets;
+        }
     }
 
     std::shared_ptr<ManifestCommittable> committable =
@@ -993,12 +1023,161 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
 
     PAIMON_RETURN_NOT_OK(CheckFilesExistence({committable}));
     last_committed_snapshot_id_ = -1;
-    PAIMON_RETURN_NOT_OK(Commit(committable, /*check_append_files=*/false,
-                                /*retry_on_conflict=*/true, realtime_ranges));
+    if (options_.GetRealtimeDeduplicateKeyFields().empty()) {
+        if (!deleted_offsets.empty()) {
+            return Status::Invalid("logical realtime deletions require deduplicate mode");
+        }
+        PAIMON_RETURN_NOT_OK(Commit(committable, /*check_append_files=*/false,
+                                    /*retry_on_conflict=*/true, realtime_ranges));
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(ManifestEntryChanges changes, CollectChanges(commit_messages));
+        if (changes.HasCompactChanges()) {
+            return Status::Invalid(
+                "realtime deduplicate progress must not contain physical compaction changes");
+        }
+        auto provider = std::make_shared<RealtimeCommitChangesProvider>(
+            [this, changes, deleted_offsets](const std::optional<Snapshot>& snapshot) {
+                return MaterializeRealtimeDeletions(changes, deleted_offsets, snapshot);
+            });
+        const bool has_deletions =
+            std::any_of(deleted_offsets.begin(), deleted_offsets.end(),
+                        [](const auto& entry) { return !entry.second.IsEmpty(); });
+        const bool overwrite =
+            has_deletions || conflict_detection_.ShouldBeOverwriteCommit(
+                                 changes.append_table_files, changes.append_index_files);
+        const bool detect_conflicts = overwrite || append_commit_check_conflict_ ||
+                                      conflict_detection_.HasRowIdCheckFromSnapshot() ||
+                                      changes.HasGlobalIndexFileAdditions();
+        Duration duration;
+        // Data files, offset progress and freshly materialized DVs must publish atomically.
+        PAIMON_ASSIGN_OR_RAISE(
+            TryCommitResult result,
+            TryCommit(
+                provider, identifier, watermark, committable->Properties(), realtime_ranges,
+                overwrite ? Snapshot::CommitKind::Overwrite() : Snapshot::CommitKind::Append(),
+                /*reset_all_realtime_progress=*/false,
+                /*removed_realtime_partitions=*/{}, detect_conflicts,
+                /*retry_on_conflict=*/true));
+        ReportCommit(changes, duration.Get(), result.already_committed ? 0 : 1, result.attempts);
+    }
     if (last_committed_snapshot_id_ < Snapshot::FIRST_SNAPSHOT_ID) {
         return Status::Invalid("real-time commit did not produce a snapshot");
     }
     return last_committed_snapshot_id_;
+}
+
+Result<std::shared_ptr<CommitChanges>> FileStoreCommitImpl::MaterializeRealtimeDeletions(
+    const ManifestEntryChanges& changes,
+    const std::map<RealtimePartitionBucket, RoaringBitmap64>& deleted_offsets,
+    const std::optional<Snapshot>& latest_snapshot) const {
+    auto result = std::make_shared<CommitChanges>(
+        changes.append_table_files, changes.append_changelog, changes.append_index_files);
+    // Nothing generated here can be referenced by a snapshot until Provide succeeds.
+    ScopeGuard cleanup([&]() {
+        for (const std::string& path : result->temporary_files) {
+            [[maybe_unused]] Status status = fs_->Delete(path, /*recursive=*/false);
+        }
+    });
+    std::vector<std::map<std::string, std::string>> partitions;
+    for (const auto& [partition_bucket, offsets] : deleted_offsets) {
+        if (!offsets.IsEmpty()) {
+            partitions.push_back(partition_bucket.partition);
+        }
+    }
+    if (partitions.empty()) {
+        cleanup.Release();
+        return result;
+    }
+    std::vector<ManifestEntry> committed_files;
+    std::vector<IndexManifestEntry> committed_indexes;
+    if (latest_snapshot) {
+        PAIMON_ASSIGN_OR_RAISE(committed_files, commit_scanner_->ReadAllEntriesFromPartitions(
+                                                    latest_snapshot.value(), partitions));
+        PAIMON_ASSIGN_OR_RAISE(committed_indexes,
+                               commit_scanner_->ReadAllIndexEntriesFromPartitions(
+                                   latest_snapshot.value(), partitions));
+    }
+    for (const auto& [partition_bucket, offsets] : deleted_offsets) {
+        if (offsets.IsEmpty()) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(BinaryRow partition,
+                               path_factory_->ToBinaryRow(partition_bucket.partition));
+        const int32_t bucket = partition_bucket.bucket;
+        std::map<std::string, std::shared_ptr<DataFileMeta>> active_files;
+        for (const ManifestEntry& entry : committed_files) {
+            if (entry.Partition() == partition && entry.Bucket() == bucket) {
+                active_files[entry.File()->file_name] = entry.File();
+            }
+        }
+        // All earlier prepared-but-uncommitted progress is supplied with this commit. Include
+        // its new files as well, so handoff and multiple prepares need no writer-local directory.
+        for (const ManifestEntry& entry : result->delta_files) {
+            if (!(entry.Partition() == partition) || entry.Bucket() != bucket) {
+                continue;
+            }
+            if (entry.Kind() == FileKind::Add()) {
+                active_files[entry.File()->file_name] = entry.File();
+            } else {
+                active_files.erase(entry.File()->file_name);
+            }
+        }
+        std::vector<std::shared_ptr<DataFileMeta>> data_files;
+        for (const auto& [_, file] : active_files) {
+            data_files.push_back(file);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_path_factory,
+                               path_factory_->CreateDataFilePathFactory(partition, bucket));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<RealtimeOffsetFileIndexLookup> lookup,
+            RealtimeOffsetFileIndexLookup::Create(
+                schema_, table_schema_->Id(),
+                schema_->GetFieldByName(options_.GetRealtimeDeduplicateKeyFields().front()),
+                data_files, data_path_factory, fs_, memory_pool_, options_));
+        using FilePositions = std::map<std::string, RoaringBitmap32>;
+        PAIMON_ASSIGN_OR_RAISE(FilePositions positions, lookup->LookupFilePositions(offsets));
+        if (positions.empty()) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexPathFactory> index_path_factory,
+                               path_factory_->CreateIndexFileFactory(partition, bucket));
+        auto dv_file = std::make_shared<DeletionVectorsIndexFile>(fs_, index_path_factory,
+                                                                  /*bitmap64=*/false, memory_pool_);
+        std::vector<std::shared_ptr<IndexFileMeta>> baseline_files;
+        for (const IndexManifestEntry& entry : committed_indexes) {
+            if (entry.partition == partition && entry.bucket == bucket &&
+                entry.index_file->IndexType() == DeletionVectorsIndexFile::DELETION_VECTORS_INDEX) {
+                baseline_files.push_back(entry.index_file);
+            }
+        }
+        using DeletionVectors = std::map<std::string, std::shared_ptr<DeletionVector>>;
+        PAIMON_ASSIGN_OR_RAISE(DeletionVectors baseline,
+                               dv_file->ReadAllDeletionVectors(baseline_files));
+        // Compaction can retire old files and move their rows. Never carry old physical row
+        // positions across snapshots: resolve logical offsets in the current active files above.
+        for (auto iter = baseline.begin(); iter != baseline.end();) {
+            if (active_files.count(iter->first) == 0) {
+                iter = baseline.erase(iter);
+            } else {
+                ++iter;
+            }
+        }
+        BucketedDvMaintainer maintainer(dv_file, baseline);
+        for (const auto& [file_name, bitmap] : positions) {
+            for (RoaringBitmap32::Iterator position = bitmap.Begin(); position != bitmap.End();
+                 ++position) {
+                PAIMON_RETURN_NOT_OK(maintainer.NotifyNewDeletion(file_name, *position));
+            }
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<IndexFileMeta>> index,
+                               maintainer.WriteDeletionVectorsIndex());
+        if (index) {
+            result->temporary_files.push_back(dv_file->Path(index.value()));
+            result->index_entries.emplace_back(FileKind::Add(), partition, bucket, index.value());
+        }
+    }
+    cleanup.Release();
+    return result;
 }
 
 Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
@@ -1040,6 +1219,11 @@ Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
         }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CommitChanges> commit_changes,
                                changes_provider->Provide(latest_snapshot));
+        ScopeGuard unpublished_cleanup([&]() {
+            for (const std::string& path : commit_changes->temporary_files) {
+                [[maybe_unused]] Status status = fs_->Delete(path, /*recursive=*/false);
+            }
+        });
         using SnapshotProperties = std::map<std::string, std::string>;
         PAIMON_ASSIGN_OR_RAISE(
             SnapshotProperties snapshot_properties,
@@ -1047,6 +1231,9 @@ Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
                                             reset_all_realtime_progress,
                                             removed_realtime_partitions, *partition_computer_, fs_,
                                             root_path_, snapshot_manager_->Branch()));
+        // From publication onward an error may have an uncertain outcome. Keep generated DVs
+        // unless the publisher explicitly reports that this attempt lost the snapshot race.
+        unpublished_cleanup.Release();
         PAIMON_ASSIGN_OR_RAISE(
             bool commit_success,
             TryCommitOnce(commit_changes->delta_files, commit_changes->changelog_files,
@@ -1054,6 +1241,10 @@ Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
                           commit_kind, latest_snapshot, detect_conflicts));
         if (commit_success) {
             break;
+        }
+        for (const std::string& temporary_file : commit_changes->temporary_files) {
+            [[maybe_unused]] Status cleanup_status =
+                fs_->Delete(temporary_file, /*recursive=*/false);
         }
         if (!realtime_ranges.empty()) {
             auto offsets_iter = snapshot_properties.find(RealtimeCommitProperties::kOffsetsKey);

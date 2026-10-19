@@ -46,6 +46,7 @@
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/operation/key_value_file_store_scan.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/format/format_table_file_store_commit.h"
 #include "paimon/core/table/format/format_table_loader.h"
@@ -274,6 +275,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(opts, specific_fs));
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*schema, options));
     assert(options.GetFileSystem());
     assert(options.GetFileFormat());
     PAIMON_RETURN_NOT_OK(FileStoreCommitImpl::ValidateCommitOptions(options));

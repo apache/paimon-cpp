@@ -21,7 +21,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -56,7 +55,6 @@
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
-#include "paimon/macros.h"
 #include "paimon/metrics.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/scan_cancellation.h"
@@ -376,12 +374,6 @@ class CancelBeforePublicationLogger : public Logger {
     ScanCancellationToken* token_;
 };
 
-// External debugger qualification uses these test-only symbols; production has no injection hook.
-PAIMON_NOINLINE void PlanningCancellationProbe(ScanCancellationToken* token) {
-    (void)token;
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-}
-
 class PlanningCountingCache : public CountingRoutingCache {
  public:
     PlanningCountingCache()
@@ -399,18 +391,29 @@ class PlanningCountingCache : public CountingRoutingCache {
 
 class CancellingStatsFunction : public LeafFunction {
  public:
-    CancellingStatsFunction(ScanCancellationToken* token, bool fail) : token_(token), fail_(fail) {}
+    CancellingStatsFunction(ScanCancellationToken* token, bool fail, bool cancel_on_row = false)
+        : token_(token), fail_(fail), cancel_on_row_(cancel_on_row) {}
 
     Result<std::vector<char>> Test(const arrow::Array& array, const std::vector<Literal>& literals,
                                    arrow::MemoryPool* pool) const override {
         return delegate_.Test(array, literals, pool);
     }
     Result<bool> Test(const Literal& value, const std::vector<Literal>& literals) const override {
+        if (cancel_on_row_) {
+            ++visits;
+            token_->Cancel();
+            if (fail_) {
+                return Status::IOError("original partition row predicate failure");
+            }
+        }
         return delegate_.Test(value, literals);
     }
     Result<bool> Test(int64_t rows, const Literal& min, const Literal& max,
                       const std::optional<int64_t>& nulls,
                       const std::vector<Literal>& literals) const override {
+        if (cancel_on_row_) {
+            return delegate_.Test(rows, min, max, nulls, literals);
+        }
         ++visits;
         token_->Cancel();
         if (fail_) {
@@ -432,12 +435,13 @@ class CancellingStatsFunction : public LeafFunction {
  private:
     ScanCancellationToken* token_;
     bool fail_;
+    bool cancel_on_row_;
     const LeafFunction& delegate_ = GreaterOrEqual::Instance();
 };
 
 }  // namespace
 
-TEST(TableScanTest, CancellationPhaseProbe) {
+TEST(TableScanTest, LiveCancellationTokenPreservesLimitPlan) {
     auto directory = UniqueTestDirectory::Create();
     ASSERT_TRUE(directory);
     const auto path = directory->Str() + "/table";
@@ -448,20 +452,11 @@ TEST(TableScanTest, CancellationPhaseProbe) {
     ConfigureCancellationPhaseScan(&builder);
     builder.WithCancellationToken(token).WithExecutor(executor).SetLimit(7);
     ASSERT_OK_AND_ASSIGN(auto scan, FinishPlanningScan(builder));
-    PlanningCancellationProbe(token.get());
-    auto result = scan->CreatePlan();
-    if (std::getenv("PAIMON_NATIVE_CANCELLATION_PROBE")) {
-        ASSERT_TRUE(token->IsCancelled()) << "external cancellation trigger did not fire";
-        ASSERT_FALSE(result.ok());
-        ASSERT_TRUE(result.status().IsCancelled()) << result.status().ToString();
-        ASSERT_TRUE(scan->CreatePlan().status().IsCancelled());
-    } else {
-        ASSERT_OK_AND_ASSIGN(auto plan, std::move(result));
-        ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(1));
-        ASSERT_EQ(plan->Splits().size(), 2);
-        ASSERT_OK_AND_ASSIGN(auto rows, PlanningRowCount(plan));
-        ASSERT_EQ(rows, 12);
-    }
+    ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+    ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(1));
+    ASSERT_EQ(plan->Splits().size(), 2);
+    ASSERT_OK_AND_ASSIGN(auto rows, PlanningRowCount(plan));
+    ASSERT_EQ(rows, 12);
     ASSERT_EQ(executor->submissions, 0);
     ASSERT_EQ(executor->shutdowns, 0);
 }
@@ -626,6 +621,42 @@ TEST(TableScanTest, CancellationInsideManifestFilterStopsTheRealPlan) {
         ASSERT_EQ(fs->after_cancel, 0);
         ASSERT_EQ(executor->submissions, 0);
         ASSERT_EQ(executor->shutdowns, 0);
+    }
+}
+
+TEST(TableScanTest, CancellationInsideSelectedPartitionRowStopsTheRealPlan) {
+    const auto path = GetDataDir() + "/parquet/append_09.db/append_09";
+    for (bool lazy : {false, true}) {
+        for (bool native_failure : {false, true}) {
+            SCOPED_TRACE(lazy);
+            SCOPED_TRACE(native_failure);
+            auto token = std::make_shared<ScanCancellationToken>();
+            auto fs =
+                std::make_shared<CancellingPlanningFileSystem>(token.get(), CancelMetadataAt::None);
+            auto executor = std::make_shared<RecordingPlanningExecutor>();
+            CancellingStatsFunction function(token.get(), native_failure, /*cancel_on_row=*/true);
+            auto predicate = std::make_shared<LeafPredicateImpl>(function, 1, "f1", FieldType::INT,
+                                                                 std::vector<Literal>{Literal(0)});
+            ScanContextBuilder builder(path);
+            builder.WithCancellationToken(token)
+                .WithFileSystem(fs)
+                .WithExecutor(executor)
+                .SetPredicate(predicate)
+                .AddOption(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
+                           lazy ? "true" : "false");
+            ASSERT_OK_AND_ASSIGN(auto scan, FinishPlanningScan(builder));
+            auto result = scan->CreatePlan();
+            ASSERT_FALSE(result.ok());
+            ASSERT_EQ(result.status().IsIOError(), native_failure) << result.status().ToString();
+            ASSERT_EQ(result.status().IsCancelled(), !native_failure) << result.status().ToString();
+            ASSERT_EQ(function.visits, 1);
+            ASSERT_GT(fs->manifest_file_opens, 0);
+            ASSERT_EQ(fs->after_cancel, 0);
+            ASSERT_EQ(fs->streams->live, 0);
+            ASSERT_EQ(fs->streams->unclosed, 0);
+            ASSERT_EQ(executor->submissions, 0);
+            ASSERT_EQ(executor->shutdowns, 0);
+        }
     }
 }
 
@@ -1030,8 +1061,11 @@ TEST(TableScanTest, CancellationFromAnotherThreadWhileManifestIoIsPaused) {
     auto token = std::make_shared<ScanCancellationToken>();
     auto fs = std::make_shared<CancellingPlanningFileSystem>(token.get(), CancelMetadataAt::None);
     auto executor = std::make_shared<RecordingPlanningExecutor>();
+    std::atomic<int32_t> pause_calls{0};
     fs->pause_manifest_open = [&]() {
-        entered.set_value();
+        if (pause_calls.fetch_add(1) == 0) {
+            entered.set_value();
+        }
         resume_io.wait();
     };
     ScanContextBuilder builder(path);
@@ -1048,6 +1082,7 @@ TEST(TableScanTest, CancellationFromAnotherThreadWhileManifestIoIsPaused) {
     resume.set_value();
     unblock_before_join.Release();
     auto result = planning.get();
+    ASSERT_EQ(pause_calls.load(), 1) << "planning opened another manifest after cancellation";
     ASSERT_FALSE(result.ok());
     ASSERT_TRUE(result.status().IsCancelled()) << result.status().ToString();
     ASSERT_EQ(fs->streams->reads, reads_before_cancel);

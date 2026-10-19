@@ -191,6 +191,13 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
     if (dv_factory) {
         PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
     }
+    // Existing files can still contain DV64 after the table option is changed to false.
+    if (context_->GetRealtimeContext() && !options_.GetRealtimeDeduplicateKeyFields().empty() &&
+        dynamic_cast<Bitmap64DeletionVector*>(deletion_vector.get()) != nullptr) {
+        return Status::Invalid(
+            "real-time deduplicate mode does not support bitmap64 deletion "
+            "vectors in existing data files");
+    }
     std::shared_ptr<FileIndexResult> file_index_result;
     if (options_.FileIndexReadEnabled() &&
         dynamic_cast<Bitmap64DeletionVector*>(deletion_vector.get()) == nullptr) {

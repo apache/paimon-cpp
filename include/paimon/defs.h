@@ -224,7 +224,8 @@ struct PAIMON_EXPORT Options {
     static const char SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[];
 
     /// "scan.manifest-entry.lazy-decode.enabled" - Whether to deserialize only manifest entries
-    /// for the target bucket when rebuilding the cache. Default value is true.
+    /// selected by bucket, partition, and row-range pruning before constructing file metadata.
+    /// Applies to supported manifest read paths with or without caching. Default value is true.
     static const char SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[];
 
     /// "prefetch.io-metrics.enabled" - Whether to collect per-I/O metrics for prefetch reads.
@@ -643,6 +644,10 @@ struct PAIMON_EXPORT Options {
     /// "realtime.store.stats-mode" - Statistics collected by the default real-time store.
     /// Supported values are "none" and "full". Default value is "none".
     static const char REALTIME_STORE_STATS_MODE[];
+
+    /// "realtime.deduplicate-key-fields" - Comma-separated user-defined deduplicate key fields
+    /// used for last-write-wins deduplication on an append table. No default value.
+    static const char REALTIME_DEDUPLICATE_KEY_FIELDS[];
 
     /// "scan.timestamp" - Optional timestamp string used in case of "from-timestamp" scan mode,
     /// as an alternative to "scan.timestamp-millis".

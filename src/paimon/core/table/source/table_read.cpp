@@ -35,6 +35,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/format/format_table_loader.h"
 #include "paimon/core/table/format/format_table_read.h"
@@ -105,6 +106,7 @@ Result<std::unique_ptr<TableRead>> CreateTableRead(
     if (internal_context->GetRealtimeContext() && !core_options.RealtimeEnabled()) {
         return Status::Invalid("real-time read requires realtime.enabled=true");
     }
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*table_schema, core_options));
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                            core_options.CreateExternalPaths());

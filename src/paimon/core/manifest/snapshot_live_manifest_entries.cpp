@@ -61,16 +61,6 @@ std::shared_ptr<Bytes> ToBytes(const MemorySegmentOutputStream& out,
 SnapshotLiveManifestEntries::SnapshotLiveManifestEntries(int32_t max_snapshots)
     : max_snapshots_(max_snapshots) {}
 
-std::optional<SnapshotLiveManifestEntries::Entry> SnapshotLiveManifestEntries::LatestBeforeOrEqual(
-    int64_t snapshot_id) const {
-    auto iter = entries_by_snapshot_.upper_bound(snapshot_id);
-    if (iter == entries_by_snapshot_.begin()) {
-        return std::optional<Entry>();
-    }
-    --iter;
-    return Entry{iter->first, iter->second};
-}
-
 void SnapshotLiveManifestEntries::Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries) {
     if (NormalizeMaxSnapshots(max_snapshots_) == 0) {
         return;
@@ -134,6 +124,69 @@ void SnapshotLiveManifestEntries::EvictIfNeeded() {
     while (entries_by_snapshot_.size() > max_snapshots) {
         entries_by_snapshot_.erase(entries_by_snapshot_.begin());
     }
+}
+
+Result<std::optional<SnapshotLiveManifestEntries::Selection>>
+SnapshotLiveManifestEntries::ReadSnapshot(
+    const MemorySegment& segment, int64_t snapshot_id, int32_t max_snapshots,
+    const std::function<Result<bool>(const InternalRow&)>& row_filter,
+    const std::shared_ptr<MemoryPool>& pool) {
+    std::optional<Selection> selected;
+    if (segment.Data() == nullptr || segment.Size() == 0 || max_snapshots <= 0) {
+        return selected;
+    }
+    auto bytes = segment.GetOrCreateHeapMemory(pool.get());
+    auto stream = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+    DataInputStream in(stream);
+    PAIMON_ASSIGN_OR_RAISE(int32_t magic, in.ReadValue<int32_t>());
+    if (magic != kMagic) {
+        return Status::Invalid("invalid snapshot live manifest entries magic");
+    }
+    PAIMON_ASSIGN_OR_RAISE(int32_t snapshot_count, in.ReadValue<int32_t>());
+    if (snapshot_count < 0) {
+        return Status::Invalid("snapshot live manifest entries snapshot count is negative");
+    }
+    ManifestEntrySerializer serializer(pool);
+    BinaryRowSerializer row_serializer(serializer.NumFields(), pool);
+    std::optional<int64_t> previous_id;
+    for (int32_t i = 0; i < snapshot_count; ++i) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t id, in.ReadValue<int64_t>());
+        // Serialize emits snapshots in ascending order. Validate this before using the position
+        // to honor a retention limit smaller than the one used when the cache was populated.
+        if (previous_id && id <= previous_id.value()) {
+            return Status::Invalid("snapshot live manifest entries are not ordered");
+        }
+        previous_id = id;
+        const bool keep = id == snapshot_id && i >= snapshot_count - max_snapshots;
+        PAIMON_ASSIGN_OR_RAISE(int32_t entry_count, in.ReadValue<int32_t>());
+        if (entry_count < 0) {
+            return Status::Invalid("snapshot live manifest entries entry count is negative");
+        }
+        if (keep) {
+            selected.emplace();
+            selected->candidate_entries = entry_count;
+            if (!row_filter) {
+                selected->entries.reserve(entry_count);
+            }
+        }
+        for (int32_t j = 0; j < entry_count; ++j) {
+            if (!keep) {
+                PAIMON_RETURN_NOT_OK(BinaryRowSerializer::Skip(&in));
+                continue;
+            }
+            PAIMON_ASSIGN_OR_RAISE(BinaryRow row, row_serializer.Deserialize(&in));
+            if (row_filter) {
+                PAIMON_RETURN_NOT_OK(ManifestEntrySerializer::ValidateVersion(row.GetInt(0)));
+                PAIMON_ASSIGN_OR_RAISE(bool matches, row_filter(row));
+                if (!matches) {
+                    continue;
+                }
+            }
+            PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer.FromRow(row));
+            selected->entries.emplace_back(std::move(entry));
+        }
+    }
+    return selected;
 }
 
 }  // namespace paimon

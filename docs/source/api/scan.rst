@@ -48,7 +48,7 @@ is exact. NaN literals and decimals that cannot be represented exactly disable
 inferred bucket pruning.
 
 Cooperative batch planning cancellation
-======================================
+=======================================
 
 Attach a query-owned ``std::shared_ptr<paimon::ScanCancellationToken>`` using
 ``ScanContextBuilder::WithCancellationToken``. Another thread may call ``Cancel()``
@@ -66,7 +66,9 @@ format. Batch startup may be latest, latest-full, from-snapshot, or
 from-snapshot-full; the latter two require a numeric snapshot ID. Primary-key,
 data-evolution, deletion-vector, streaming, real-time, system-table, format-table,
 timestamp/tag-startup, supplied global-index results, and active embedded-index
-evaluation paths are refused rather than silently ignoring cancellation.
+evaluation paths are refused rather than silently ignoring cancellation. Active
+embedded indexes are detected while reading matching manifest entries; disabling
+file-index reading avoids that evaluation path.
 
 Manifest work runs synchronously on the caller, without submitting to or shutting
 down its executor. Both shared manifest caches are bypassed for this query; existing
@@ -76,6 +78,7 @@ calls, one decoder operation, or CPU sorting. It provides neither a latency boun
 nor a planning-memory quota, and does not cancel subsequent data-file reading.
 Rebuild the library and paired native consumers together: the added context state
 and optional constructor argument preserve source usage, not binary ABI.
+Arrow import/export error paths also release acquired roots for calls without a token.
 
 Interface
 =========

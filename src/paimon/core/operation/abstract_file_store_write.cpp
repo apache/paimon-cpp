@@ -101,6 +101,11 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
     if (PAIMON_UNLIKELY(batch == nullptr)) {
         return Status::Invalid("batch is null pointer");
     }
+    std::shared_lock<std::shared_mutex> write_lock(realtime_write_completion_mutex_,
+                                                   std::defer_lock);
+    if (IsRealtimeWrite()) {
+        write_lock.lock();
+    }
     PAIMON_RETURN_NOT_OK(CheckRealtimeWriteUsable());
     // in FileStoreWrite::Create() we have checked the table kind and bucket mode, here we only
     // check the bucket id in batch
@@ -146,8 +151,16 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BatchWriter> writer,
                            GetWriter(partition, batch->GetBucket()));
     assert(writer);
-    PAIMON_RETURN_NOT_OK(writer->Write(std::move(batch)));
-    return writer_memory_manager_->OnWriteCompleted(writer.get());
+    Status status = writer->Write(std::move(batch));
+    if (status.ok()) {
+        status = writer_memory_manager_->OnWriteCompleted(writer.get());
+    }
+    if (!status.ok() && IsRealtimeWrite()) {
+        // Bucket writes and memory flushing can fail after changing buffered data or indexes.
+        // Fence the shared context so no retry or prepare can publish that partial state.
+        return PoisonRealtimeWrite(status);
+    }
+    return status;
 }
 
 Status AbstractFileStoreWrite::Seal() {
@@ -172,7 +185,8 @@ Status AbstractFileStoreWrite::Seal() {
             return PoisonRealtimeWrite(status);
         }
     }
-    return Status::OK();
+    std::unique_lock<std::shared_mutex> completion_lock(realtime_write_completion_mutex_);
+    return CheckRealtimeWriteUsable();
 }
 
 Status AbstractFileStoreWrite::Compact(const std::map<std::string, std::string>& partition,
@@ -346,6 +360,10 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareCommi
         // Prepare may have drained an earlier bucket or partially written the failing bucket.
         return PoisonRealtimeWrite(result.status());
     }
+    // A write may have changed a sealed checkpoint before failing. Wait until every in-flight
+    // write has published success or poisoned the context before exposing any commit messages.
+    std::unique_lock<std::shared_mutex> completion_lock(realtime_write_completion_mutex_);
+    PAIMON_RETURN_NOT_OK(CheckRealtimeWriteUsable());
     return result;
 }
 
@@ -372,18 +390,28 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealt
         PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment,
                                snapshot.writer->PrepareCommit(/*wait_compaction=*/false));
         writer_memory_manager_->RefreshWriterMemory(snapshot.writer.get());
+        std::shared_ptr<CompactDeletionFile> compact_deletion_file =
+            increment.GetCompactDeletionFile();
+        CompactIncrement& compact_increment = increment.GetCompactIncrement();
+        if (compact_deletion_file) {
+            PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<IndexFileMeta>> dv_index_file_meta,
+                                   compact_deletion_file->GetOrCompute());
+            if (dv_index_file_meta) {
+                compact_increment.AddNewIndexFiles({dv_index_file_meta.value()});
+            }
+        }
         auto committable = std::make_shared<CommitMessageImpl>(
             snapshot.partition, snapshot.bucket, snapshot.total_buckets,
-            increment.GetNewFilesIncrement(), increment.GetCompactIncrement());
+            increment.GetNewFilesIncrement(), compact_increment);
         if (!increment.GetRealtimeOffsetRange()) {
             if (!committable->IsEmpty()) {
                 return Status::Invalid("real-time commit message does not have an offset range");
             }
             continue;
         }
-        if (committable->IsEmpty()) {
-            return Status::Invalid("sealed real-time segment produced an empty commit message");
-        }
+        // A real-time range may contain only changes that cancel in memory, for example an insert
+        // followed by a delete before either row is persisted. Keep the empty message so commit
+        // can durably advance the offset without manufacturing a data or deletion-vector file.
         std::vector<std::pair<std::string, std::string>> partition_values;
         PAIMON_ASSIGN_OR_RAISE(partition_values, file_store_path_factory_->GeneratePartitionVector(
                                                      snapshot.partition));
@@ -391,7 +419,7 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealt
                                                      partition_values.end());
         result.push_back(RealtimeCommitProgress{
             committable, RealtimePartitionBucket(std::move(partition), snapshot.bucket),
-            increment.GetRealtimeOffsetRange().value()});
+            increment.GetRealtimeOffsetRange().value(), increment.GetRealtimeDeletedOffsets()});
     }
     {
         std::lock_guard<std::mutex> lock(realtime_metrics_mutex_);
@@ -466,8 +494,8 @@ std::shared_ptr<Metrics> AbstractFileStoreWrite::GetMetrics() const {
 Status AbstractFileStoreWrite::CheckRealtimeWriteUsable() const {
     if (IsRealtimeWrite() && realtime_write_poisoned_.load()) {
         return Status::Invalid(
-            "real-time writer cannot be reused after Seal or PrepareCommitWithProgress failed, "
-            "or after it closed with unprepared data; recreate RealtimeContext and "
+            "real-time writer cannot be reused after Write, Seal or PrepareCommitWithProgress "
+            "failed, or after it closed with unprepared data; recreate RealtimeContext and "
             "FileStoreWrite, then let upstream recover input from the durable recovery offset "
             "persisted in the snapshot");
     }

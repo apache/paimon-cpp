@@ -24,6 +24,8 @@
 #include "arrow/api.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/core/realtime/realtime_utils.h"
+#include "paimon/macros.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -51,17 +53,33 @@ Result<std::unique_ptr<RealtimeSchemaLayout>> RealtimeSchemaLayout::Create(
     if (!user_schema) {
         return Status::Invalid("real-time schema layout requires a user schema");
     }
-    if (mode != RealtimeStoreMode::APPEND_ONLY && mode != RealtimeStoreMode::PRIMARY_KEY) {
+    if (mode != RealtimeStoreMode::APPEND_ONLY && mode != RealtimeStoreMode::PRIMARY_KEY &&
+        mode != RealtimeStoreMode::DEDUPLICATE) {
         return Status::Invalid("unknown real-time store mode");
     }
-    return std::unique_ptr<RealtimeSchemaLayout>(new RealtimeSchemaLayout(mode, user_schema));
+    std::unique_ptr<RealtimeSchemaLayout> layout(new RealtimeSchemaLayout(mode, user_schema));
+    PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateOffsetField(layout->StoreWriteSchema()));
+    return layout;
 }
 
 RealtimeSchemaLayout::RealtimeSchemaLayout(RealtimeStoreMode mode,
                                            const std::shared_ptr<arrow::Schema>& user_schema)
-    : user_schema_(user_schema), input_schema_(Prepend({RealtimeOffsetField()}, user_schema_)) {
+    : user_schema_(user_schema),
+      input_schema_(mode == RealtimeStoreMode::DEDUPLICATE
+                        ? user_schema_
+                        : Prepend({RealtimeOffsetField()}, user_schema_)) {
     if (mode == RealtimeStoreMode::APPEND_ONLY) {
         store_write_schema_ = input_schema_;
+        store_commit_schema_ = store_write_schema_;
+        commit_schema_ = user_schema_;
+        query_schema_ = Prepend({ValueKindField()}, user_schema_);
+        return;
+    }
+
+    if (mode == RealtimeStoreMode::DEDUPLICATE) {
+        // The offset is a real table column in this mode. Reuse the TableSchema field (including
+        // its field id and position) instead of synthesizing an internal prefix.
+        store_write_schema_ = user_schema_;
         store_commit_schema_ = store_write_schema_;
         commit_schema_ = user_schema_;
         query_schema_ = Prepend({ValueKindField()}, user_schema_);
