@@ -149,8 +149,10 @@ class PAIMON_EXPORT Catalog {
     ///
     /// The table's `type` option decides what is handed back: a `format-table` comes back as
     /// the `FormatTable` it is - a directory of data files, with no snapshot and no manifest -
-    /// and every other implemented type as the managed table it is. Both go through this one
-    /// `Table` interface: `NewScan()`, `NewRead()`, `NewWrite()` and `NewCommit()` serve either.
+    /// and every other implemented type as the managed table it is. A `T$system` identifier
+    /// names a read-only view instead, which comes back as the `SystemTable` it is. All go
+    /// through this one `Table` interface: `NewScan()` and `NewRead()` serve any of them,
+    /// `NewWrite()` and `NewCommit()` the writable ones.
     ///
     /// @param identifier Identifier of the table to get.
     /// @return A result containing the table, or an error status.

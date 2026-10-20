@@ -294,40 +294,16 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
         context.catalog_options = catalog_options_;
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                GlobalSystemTableLoader::Load(identifier.GetObjectName(), context));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema,
-                               system_table->ArrowSchema());
-        return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
+        return system_table->LatestSchema();
     }
     // The system table suffix is dropped when the data table identifier is rebuilt below, so the
     // identifier is validated as a whole here.
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (is_system_table) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
-                               identifier.GetSystemTableName());
-        if (!system_table_name || !SystemTableLoader::IsSupported(system_table_name.value())) {
-            return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
-        }
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
-        PAIMON_ASSIGN_OR_RAISE(
-            Identifier data_identifier,
-            CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                               TableSchemaExists(data_identifier));
-        if (!latest_schema) {
-            return Status::NotExist(fmt::format("{} not exist", data_identifier.ToString()));
-        }
-        std::map<std::string, std::string> dynamic_options;
-        if (branch) {
-            dynamic_options[Options::BRANCH] = branch.value();
-        }
-        PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
-                                                       latest_schema.value(), dynamic_options));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema,
-                               system_table->ArrowSchema());
-        return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
+                               LoadSystemTable(identifier));
+        return system_table->LatestSchema();
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                            TableSchemaExists(identifier));
@@ -340,13 +316,9 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
 Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& identifier) const {
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (is_system_table) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, LoadTableSchema(identifier));
-        // A system table reads the files of the data table it belongs to, so its root path
-        // is that table's.
-        PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
-        Identifier data_identifier(identifier.GetDatabaseName(), data_table_name);
-        PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
-        return std::make_shared<FileStoreTable>(fs_, table_path, schema, identifier);
+        // A system table reads the files of the data table it belongs to, through the file
+        // system of that table's catalog, and the schema it exposes is its own read-only one.
+        return LoadSystemTable(identifier);
     }
     // The schema is read on the table's own branch: `root/branch/branch-<name>` below the
     // table path, which `main` resolves to itself. `GetBranchNameOrDefault` folds any
@@ -377,6 +349,33 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
                                                              "FileSystemCatalog::GetTable"));
     return std::make_shared<FileStoreTable>(
         fs_, table_path, checked_pointer_cast<Schema>(*latest_schema), identifier);
+}
+
+Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(
+    const Identifier& identifier) const {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
+                           identifier.GetSystemTableName());
+    if (!system_table_name || !SystemTableLoader::IsSupported(system_table_name.value())) {
+        return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+    PAIMON_ASSIGN_OR_RAISE(
+        Identifier data_identifier,
+        CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                           TableSchemaExists(data_identifier));
+    if (!latest_schema) {
+        return Status::NotExist(fmt::format("{} not exist", data_identifier.ToString()));
+    }
+    std::map<std::string, std::string> dynamic_options;
+    if (branch) {
+        dynamic_options[Options::BRANCH] = branch.value();
+    }
+    // A system table reads the files of the data table it belongs to, so its root path is
+    // that table's.
+    PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
+    return SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
+                                   latest_schema.value(), dynamic_options);
 }
 
 Status FileSystemCatalog::DropDatabase(const std::string& name, bool ignore_if_not_exists,

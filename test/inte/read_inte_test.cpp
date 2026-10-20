@@ -4190,18 +4190,18 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadGlobalSystemTable(
 
     ScanContextBuilder scan_context_builder(sys_path);
     scan_context_builder.SetOptions(options);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScanContext> scan_context,
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                            scan_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                           system_table->NewScan(scan_context));
+                           system_table->NewScan(std::move(scan_context)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
     ReadContextBuilder read_context_builder(sys_path);
     read_context_builder.SetOptions(options);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           system_table->NewRead(read_context));
+                           system_table->NewRead(std::move(read_context)));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,

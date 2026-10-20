@@ -123,6 +123,14 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
 
     ~FormatTable();
 
+    std::string Name() const override {
+        return identifier_.GetObjectName();
+    }
+
+    std::string FullName() const override {
+        return identifier_.GetFullName();
+    }
+
     /// Directory the data files live in.
     const std::string& Location() const {
         return GetRootPath();

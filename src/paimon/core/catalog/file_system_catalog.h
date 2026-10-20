@@ -37,6 +37,7 @@ class TableSchema;
 class FileSystem;
 class Identifier;
 class Logger;
+class SystemTable;
 
 class FileSystemCatalog : public Catalog {
  public:
@@ -84,6 +85,10 @@ class FileSystemCatalog : public Catalog {
     static Result<bool> IsSystemTable(const Identifier& identifier);
     Result<std::optional<std::shared_ptr<TableSchema>>> TableSchemaExists(
         const Identifier& identifier) const;
+
+    /// Loads the system table a `T$system` identifier names, on the branch the identifier
+    /// carries. The base table it belongs to must exist and carry a schema.
+    Result<std::shared_ptr<SystemTable>> LoadSystemTable(const Identifier& identifier) const;
 
     Status CreateDatabaseImpl(const std::string& db_name,
                               const std::map<std::string, std::string>& options);

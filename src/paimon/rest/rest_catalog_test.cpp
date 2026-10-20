@@ -49,6 +49,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
@@ -1061,9 +1062,13 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
         requests_before = state_->get_table_requests;
     }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(system_identifier));
-    ASSERT_EQ("t1$options", table->Name());
+    // A system table comes back as the read-only `SystemTable` it is, answering for itself
+    // with the kind it serves rather than the identifier it was opened by.
+    std::shared_ptr<SystemTable> system_table = std::dynamic_pointer_cast<SystemTable>(table);
+    ASSERT_NE(nullptr, system_table);
+    ASSERT_EQ("options", system_table->Name());
     ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->LatestSchema()->FieldNames());
-    ASSERT_EQ("db1.t1$options", table->Uuid());
+    ASSERT_EQ("options", table->Uuid());
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_EQ(requests_before + 1, state_->get_table_requests);

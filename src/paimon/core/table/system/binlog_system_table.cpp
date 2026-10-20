@@ -98,7 +98,8 @@ Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ArrowSchema() const {
 }
 
 Result<std::unique_ptr<TableRead>> BinlogSystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
     return NewChangelogRead(context, CreateBinlogBatchConverter());
 }
 

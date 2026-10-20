@@ -391,49 +391,58 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         context.catalog_options = api_->GetMergedOptions();
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                GlobalSystemTableLoader::Load(identifier.GetObjectName(), context));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema,
-                               system_table->ArrowSchema());
-        return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
+        return system_table->LatestSchema();
     }
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
     branch = NormalizeBranch(std::move(branch));
     PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
     if (is_system_table) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
-                               identifier.GetSystemTableName());
-        if (!system_table_name || !SystemTableLoader::IsSupported(system_table_name.value())) {
-            return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
-        }
-        std::string data_table_path;
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> latest_schema,
-                               LoadDataTableSchema(load_identifier, branch, &data_table_path,
-                                                   /*table_id=*/nullptr));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                               LoadSystemTable(identifier, load_identifier, branch));
         if (table_path != nullptr) {
-            *table_path = data_table_path;
+            *table_path = system_table->GetRootPath();
         }
-        std::map<std::string, std::string> dynamic_options;
-        if (branch) {
-            dynamic_options[Options::BRANCH] = branch.value();
-        }
-        // The file system is only used to build the system table, whose schema does not
-        // read any file, so the catalog wide one is enough here. The credentials of the
-        // table are applied when its rows are read, through the file system of the read or
-        // scan context.
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<SystemTable> system_table,
-            SystemTableLoader::Load(system_table_name.value(), fs_, data_table_path, latest_schema,
-                                    dynamic_options));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema,
-                               system_table->ArrowSchema());
-        return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
+        return system_table->LatestSchema();
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
                            LoadDataTableSchema(load_identifier, branch, table_path, table_id));
     return checked_pointer_cast<Schema>(schema);
 }
 
+Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
+    const Identifier& identifier, const Identifier& load_identifier,
+    const std::optional<std::string>& branch) const {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
+                           identifier.GetSystemTableName());
+    if (!system_table_name || !SystemTableLoader::IsSupported(system_table_name.value())) {
+        return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
+    }
+    std::string data_table_path;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> latest_schema,
+                           LoadDataTableSchema(load_identifier, branch, &data_table_path,
+                                               /*table_id=*/nullptr));
+    std::map<std::string, std::string> dynamic_options;
+    if (branch) {
+        dynamic_options[Options::BRANCH] = branch.value();
+    }
+    // The file system is only used to build the system table, whose schema does not
+    // read any file, so the catalog wide one is enough here. The credentials of the
+    // table are applied when its rows are read, through the file system of the read or
+    // scan context.
+    return SystemTableLoader::Load(system_table_name.value(), fs_, data_table_path, latest_schema,
+                                   dynamic_options);
+}
+
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
+    // A `T$system` identifier opens the read-only view it names, which reads the data table it
+    // belongs to and answers for itself through the same `Table` interface.
+    PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
+    if (is_system_table) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+        PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+        return LoadSystemTable(identifier, load_identifier, NormalizeBranch(std::move(branch)));
+    }
     // Read UUID, path and schema together to avoid mixing table generations after recreation.
     std::string uuid;
     std::string table_path;

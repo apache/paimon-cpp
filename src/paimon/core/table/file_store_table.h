@@ -51,6 +51,14 @@ class FileStoreTable : public Table {
                    const std::string& uuid = "")
         : Table(file_system, root_path, schema, identifier, uuid) {}
 
+    std::string Name() const override {
+        return identifier_.GetObjectName();
+    }
+
+    std::string FullName() const override {
+        return identifier_.GetFullName();
+    }
+
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
 
     Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
