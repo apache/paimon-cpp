@@ -51,11 +51,11 @@ class DataFileKeyOffsetIndexWriter {
     }
 
  private:
-    DataFileKeyOffsetIndexWriter(std::shared_ptr<arrow::Field> key_field,
-                                 std::shared_ptr<FileSystem> file_system,
-                                 std::shared_ptr<KeySerializer> key_serializer,
+    DataFileKeyOffsetIndexWriter(const std::shared_ptr<arrow::Field>& key_field,
+                                 const std::shared_ptr<FileSystem>& file_system,
+                                 const std::shared_ptr<KeySerializer>& key_serializer,
                                  std::unique_ptr<HashMap<uint64_t, int64_t>> offsets,
-                                 std::shared_ptr<MemoryPool> memory_pool);
+                                 const std::shared_ptr<MemoryPool>& memory_pool);
 
     std::shared_ptr<arrow::Field> key_field_;
     std::shared_ptr<FileSystem> file_system_;

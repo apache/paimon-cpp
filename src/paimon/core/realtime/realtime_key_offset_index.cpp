@@ -29,7 +29,7 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
-#include "paimon/core/io/key_offset_index_utils.h"
+#include "paimon/core/realtime/key_offset_index_utils.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/io/data_input_stream.h"
 #include "paimon/macros.h"

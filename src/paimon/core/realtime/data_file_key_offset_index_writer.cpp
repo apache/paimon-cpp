@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/core/io/data_file_key_offset_index_writer.h"
+#include "paimon/core/realtime/data_file_key_offset_index_writer.h"
 
 #include <utility>
 
@@ -33,7 +33,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/casting/casting_utils.h"
-#include "paimon/core/io/key_offset_index_utils.h"
+#include "paimon/core/realtime/key_offset_index_utils.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/macros.h"
 
@@ -50,18 +50,19 @@ Result<std::unique_ptr<DataFileKeyOffsetIndexWriter>> DataFileKeyOffsetIndexWrit
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OffsetMap> offsets,
                            OffsetMap::Create(/*initial_capacity=*/1024, memory_pool));
     return std::unique_ptr<DataFileKeyOffsetIndexWriter>(new DataFileKeyOffsetIndexWriter(
-        key_field, file_system, std::move(serializer), std::move(offsets), memory_pool));
+        key_field, file_system, serializer, std::move(offsets), memory_pool));
 }
 
 DataFileKeyOffsetIndexWriter::DataFileKeyOffsetIndexWriter(
-    std::shared_ptr<arrow::Field> key_field, std::shared_ptr<FileSystem> file_system,
-    std::shared_ptr<KeySerializer> key_serializer,
-    std::unique_ptr<HashMap<uint64_t, int64_t>> offsets, std::shared_ptr<MemoryPool> memory_pool)
-    : key_field_(std::move(key_field)),
-      file_system_(std::move(file_system)),
-      key_serializer_(std::move(key_serializer)),
+    const std::shared_ptr<arrow::Field>& key_field, const std::shared_ptr<FileSystem>& file_system,
+    const std::shared_ptr<KeySerializer>& key_serializer,
+    std::unique_ptr<HashMap<uint64_t, int64_t>> offsets,
+    const std::shared_ptr<MemoryPool>& memory_pool)
+    : key_field_(key_field),
+      file_system_(file_system),
+      key_serializer_(key_serializer),
       offsets_(std::move(offsets)),
-      memory_pool_(std::move(memory_pool)) {}
+      memory_pool_(memory_pool) {}
 
 Status DataFileKeyOffsetIndexWriter::AddBatch(
     const std::shared_ptr<arrow::StructArray>& logical_batch) {

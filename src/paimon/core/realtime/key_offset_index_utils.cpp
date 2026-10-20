@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/core/io/key_offset_index_utils.h"
+#include "paimon/core/realtime/key_offset_index_utils.h"
 
 #include "arrow/api.h"
 #include "paimon/common/global_index/key_serializer.h"

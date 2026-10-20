@@ -295,8 +295,6 @@ set(PAIMON_CORE_SRCS
     core/io/data_file_meta_write_cols_legacy_serializer.cpp
     core/io/data_file_path_factory.cpp
     core/io/data_file_index_writer.cpp
-    core/io/data_file_key_offset_index_writer.cpp
-    core/io/key_offset_index_utils.cpp
     core/io/file_index_options.cpp
     core/io/append_data_file_writer_factory.cpp
     core/io/blob_data_file_writer_factory.cpp
@@ -407,6 +405,8 @@ set(PAIMON_CORE_SRCS
     core/realtime/arrow_realtime_store.cpp
     core/realtime/arrow_deduplicate_realtime_store.cpp
     core/realtime/arrow_realtime_store_factory.cpp
+    core/realtime/data_file_key_offset_index_writer.cpp
+    core/realtime/key_offset_index_utils.cpp
     core/realtime/realtime_key_offset_index.cpp
     core/realtime/realtime_offset_file_index_lookup.cpp
     core/realtime/realtime_deduplicate_state.cpp
@@ -855,7 +855,6 @@ if(PAIMON_BUILD_TESTS)
                     core/io/data_file_meta_test.cpp
                     core/io/data_file_writer_base_test.cpp
                     core/io/data_file_index_writer_test.cpp
-                    core/io/key_offset_index_utils_test.cpp
                     core/io/file_index_options_test.cpp
                     core/io/file_index_evaluator_test.cpp
                     core/io/single_file_writer_test.cpp
@@ -879,6 +878,7 @@ if(PAIMON_BUILD_TESTS)
                     core/memory/writer_memory_manager_test.cpp
                     core/realtime/arrow_deduplicate_realtime_store_test.cpp
                     core/realtime/arrow_realtime_store_test.cpp
+                    core/realtime/key_offset_index_utils_test.cpp
                     core/realtime/primary_key_realtime_store_test.cpp
                     core/realtime/realtime_deduplicate_state_test.cpp
                     core/realtime/realtime_key_offset_index_test.cpp
