@@ -1037,8 +1037,7 @@ TEST_F(FileIndexFormatTest, TestV2StreamingLargeContainer) {
     // Stream a virtual >2 GiB payload in bounded chunks; the mock discards only this gap.
     const int64_t gap_length = int64_t{1} << 31;
     ASSERT_OK(writer->WriteIndex(
-        "gap", "unknown",
-        [state, gap_length](const std::shared_ptr<OutputStream>& stream) -> Result<bool> {
+        "gap", "unknown", [state](const std::shared_ptr<OutputStream>& stream) -> Result<bool> {
             state->discard = true;
             std::array<char, 65536> zeros{};
             for (int64_t i = 0; i < gap_length; i += zeros.size()) {
