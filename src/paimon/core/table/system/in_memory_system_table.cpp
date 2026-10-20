@@ -31,6 +31,7 @@
 #include "paimon/core/table/system/system_table_scan.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/read_context.h"
+#include "paimon/scan_context.h"
 #include "paimon/status.h"
 #include "paimon/table/source/table_read.h"
 
@@ -104,16 +105,18 @@ class InMemorySystemTableRead : public TableRead {
 
 }  // namespace
 
-InMemorySystemTable::InMemorySystemTable(std::string table_path)
-    : table_path_(std::move(table_path)) {}
+InMemorySystemTable::InMemorySystemTable(const std::shared_ptr<FileSystem>& fs,
+                                         std::string table_path)
+    : SystemTable(fs, table_path), table_path_(std::move(table_path)) {}
 
 Result<std::unique_ptr<TableScan>> InMemorySystemTable::NewScan(
-    const std::shared_ptr<ScanContext>& /*context*/) const {
+    std::unique_ptr<ScanContext> /*context*/) const {
     return std::make_unique<SystemTableScan>(table_path_);
 }
 
 Result<std::unique_ptr<TableRead>> InMemorySystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
     return std::make_unique<InMemorySystemTableRead>(
         checked_pointer_cast<const InMemorySystemTable>(shared_from_this()),
         context->GetMemoryPool());

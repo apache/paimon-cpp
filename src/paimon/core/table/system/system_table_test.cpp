@@ -249,7 +249,7 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
 
     AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
     BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
         ReadContextBuilder builder("/tmp/table");

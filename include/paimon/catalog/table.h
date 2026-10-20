@@ -66,15 +66,13 @@ class PAIMON_EXPORT Table {
         return root_path_;
     }
 
-    /// A name to identify this table.
-    std::string Name() const {
-        return identifier_.GetObjectName();
-    }
+    /// A name to identify this table, which each kind of table answers for itself: a managed or
+    /// format table is named by its identifier, a system table by its own kind.
+    virtual std::string Name() const = 0;
 
-    /// Full name of the table, default is database.tableName.
-    std::string FullName() const {
-        return identifier_.GetFullName();
-    }
+    /// Full name of the table, which each kind of table answers for itself. A managed or format
+    /// table answers database.tableName, a system table the same name as `Name()`.
+    virtual std::string FullName() const = 0;
 
     /// Returns the branch the table was opened for, which its identifier carries; `main`
     /// when it names none or a spelling of it, which its managers are bound to. A

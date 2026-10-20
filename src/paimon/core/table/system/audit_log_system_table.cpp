@@ -358,7 +358,8 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
 AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::shared_ptr<TableSchema> table_schema,
                                          std::map<std::string, std::string> options)
-    : fs_(std::move(fs)),
+    : SystemTable(fs, table_path),
+      fs_(std::move(fs)),
       table_path_(std::move(table_path)),
       table_schema_(std::move(table_schema)),
       options_(std::move(options)) {}
@@ -383,7 +384,8 @@ Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ArrowSchema() const 
 }
 
 Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
-    const std::shared_ptr<ScanContext>& context) const {
+    std::unique_ptr<ScanContext> ctx) const {
+    const std::shared_ptr<ScanContext> context = std::move(ctx);
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
         return Status::NotImplemented("audit_log system table predicate pushdown is not supported");
     }
@@ -411,7 +413,8 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
 }
 
 Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
     return NewChangelogRead(context, std::make_shared<AuditLogBatchConverter>());
 }
 

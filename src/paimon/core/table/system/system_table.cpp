@@ -28,6 +28,7 @@
 
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -37,8 +38,12 @@
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/metadata_system_tables.h"
 #include "paimon/core/table/system/read_optimized_system_table.h"
+#include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
 #include "paimon/status.h"
+#include "paimon/write_context.h"
 
 namespace paimon {
 namespace {
@@ -70,11 +75,11 @@ std::string LoadBranch(const std::map<std::string, std::string>& options) {
 const std::vector<SystemTableRegistryEntry>& SystemTableRegistry() {
     static const std::vector<SystemTableRegistryEntry> registry = {
         {OptionsSystemTable::kName,
-         [](const std::shared_ptr<FileSystem>& /*fs*/, const std::string& table_path,
+         [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
             const std::map<std::string, std::string>& /*dynamic_options*/)
              -> Result<std::shared_ptr<SystemTable>> {
-             return std::make_shared<OptionsSystemTable>(table_path, table_schema);
+             return std::make_shared<OptionsSystemTable>(fs, table_path, table_schema);
          }},
         {AuditLogSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
@@ -93,12 +98,12 @@ const std::vector<SystemTableRegistryEntry>& SystemTableRegistry() {
                  fs, table_path, table_schema, MergeOptions(table_schema, dynamic_options));
          }},
         {ReadOptimizedSystemTable::kName,
-         [](const std::shared_ptr<FileSystem>& /*fs*/, const std::string& table_path,
+         [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
             const std::map<std::string, std::string>& dynamic_options)
              -> Result<std::shared_ptr<SystemTable>> {
              return std::make_shared<ReadOptimizedSystemTable>(
-                 table_path, table_schema, MergeOptions(table_schema, dynamic_options));
+                 fs, table_path, table_schema, MergeOptions(table_schema, dynamic_options));
          }},
         {SnapshotsSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
@@ -176,6 +181,27 @@ std::optional<SystemTableFactory> FindSystemTableFactory(const std::string& syst
 
 }  // namespace
 
+SystemTable::SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path)
+    : Table(fs, table_path, /*schema=*/nullptr,
+            Identifier(Identifier::kUnknownDatabase, "system_table"), /*uuid=*/"") {}
+
+Status SystemTable::AdoptOwnSchema() {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema, ArrowSchema());
+    schema_ = std::make_shared<SystemTableSchema>(std::move(arrow_schema));
+    return Status::OK();
+}
+
+Result<std::unique_ptr<FileStoreWrite>> SystemTable::NewWrite(
+    std::unique_ptr<WriteContext> /*context*/) const {
+    return Status::NotImplemented(Name(), " system table is read-only: writing is not supported");
+}
+
+Result<std::unique_ptr<FileStoreCommit>> SystemTable::NewCommit(
+    std::unique_ptr<CommitContext> /*context*/) const {
+    return Status::NotImplemented(Name(),
+                                  " system table is read-only: committing for it is not supported");
+}
+
 bool SystemTableLoader::IsSupported(const std::string& system_table_name) {
     return FindSystemTableFactory(system_table_name).has_value();
 }
@@ -186,7 +212,12 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
     const std::map<std::string, std::string>& dynamic_options) {
     std::optional<SystemTableFactory> factory = FindSystemTableFactory(system_table_name);
     if (factory) {
-        return factory.value()(fs, table_path, table_schema, dynamic_options);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                               factory.value()(fs, table_path, table_schema, dynamic_options));
+        // The table is handed out through the `Table` interface, which serves the schema the
+        // base holds, so its own read-only schema is adopted before it leaves the loader.
+        PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
+        return system_table;
     }
     return Status::NotImplemented("unsupported system table: ", system_table_name);
 }

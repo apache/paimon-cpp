@@ -25,6 +25,8 @@
 #include <string>
 
 #include "arrow/api.h"
+#include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/type_fwd.h"
@@ -33,9 +35,8 @@ namespace paimon {
 class FileSystem;
 class ReadContext;
 class ScanContext;
-class TableScan;
-class TableRead;
 class TableSchema;
+class SystemTableSchema;
 
 /// Parsed information for a table-scoped system table path.
 struct SystemTablePath {
@@ -49,19 +50,42 @@ struct SystemTablePath {
     bool is_global = false;
 };
 
-/// Base interface for table-scoped system tables such as `T$options` and `T$snapshots`.
+/// Base class for table-scoped system tables such as `T$options` and `T$snapshots`.
 ///
-/// Implementations expose a read-only schema and create their own scan/read objects.
-class SystemTable : public std::enable_shared_from_this<SystemTable> {
+/// A system table is the read-only view a `T$system` identifier names: it exposes a schema of
+/// its own and serves scans and reads from the data table it belongs to, through the same
+/// `Table` interface as every other kind of table. `Name()` - which each kind of system table
+/// answers for itself - is its full name as well: the identifier it is opened by belongs to the
+/// data table underneath and would name that one.
+class SystemTable : public Table, public std::enable_shared_from_this<SystemTable> {
  public:
-    virtual ~SystemTable() = default;
+    std::string FullName() const override {
+        return Name();
+    }
 
-    virtual std::string Name() const = 0;
+    /// The read-only schema this system table exposes, which is not the data table's schema.
     virtual Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const = 0;
-    virtual Result<std::unique_ptr<TableScan>> NewScan(
-        const std::shared_ptr<ScanContext>& context) const = 0;
-    virtual Result<std::unique_ptr<TableRead>> NewRead(
-        const std::shared_ptr<ReadContext>& context) const = 0;
+
+    /// A system table is read-only: writing it or committing for it is refused rather than
+    /// routed to the data table underneath.
+    Result<std::unique_ptr<FileStoreWrite>> NewWrite(
+        std::unique_ptr<WriteContext> context) const override;
+
+    Result<std::unique_ptr<FileStoreCommit>> NewCommit(
+        std::unique_ptr<CommitContext> context) const override;
+
+ protected:
+    /// @param fs File system the data table underneath is read through.
+    /// @param table_path Root path of the data table this system table belongs to.
+    SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path);
+
+    /// Loaders call this once the object exists, because `ArrowSchema()` is virtual and cannot
+    /// run from a constructor: it fills the schema the base hands out with this table's own
+    /// read-only `SystemTableSchema`.
+    Status AdoptOwnSchema();
+
+    friend class SystemTableLoader;
+    friend class GlobalSystemTableLoader;
 };
 
 /// Loads system table implementations from parsed table identifiers or table paths.
