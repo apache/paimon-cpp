@@ -35,10 +35,12 @@ class Schema;
 /// its root path describes. A format table - a directory of plain data files - is a `FormatTable`,
 /// the other kind of `Table`.
 ///
-/// The operators create through the context-only entry points every table serves, so a context
-/// built without a table reaches the same operators: `TableScan::Create()`, `TableRead::Create()`,
-/// `FileStoreWrite::Create()` and `FileStoreCommit::Create()`, which read the table's schema to
-/// dispatch on its type.
+/// Its `NewScan`/`NewRead`/`NewWrite`/`NewCommit` build the operators here, from the context plus
+/// the schema the table was constructed with, so they serve the table as it was loaded. The
+/// context-only entry points - `TableScan::Create()`, `TableRead::Create()`,
+/// `FileStoreWrite::Create()` and `FileStoreCommit::Create()` - load the table the context names
+/// and hand the context to that table's `NewXxx`, which is how a context built without a table
+/// reaches the same operators.
 class FileStoreTable : public Table {
  public:
     /// The constructor a catalog builds a managed table through, so a `shared_ptr` can hold one;

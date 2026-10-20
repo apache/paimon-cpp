@@ -291,6 +291,29 @@ TEST(TableTest, TestNewScanCreatesATableScan) {
                          table->NewScan(std::move(ctx)));
 }
 
+TEST(TableTest, TestNewScanServesTheSchemaTheTableWasLoadedWith) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(fs, dir->Str(), identifier));
+
+    // With the schema file gone the table still serves a scan: it carries the schema it was
+    // loaded with, which is what a scan is built from.
+    SchemaManager schema_manager(fs, dir->Str());
+    ASSERT_OK(fs->Delete(schema_manager.ToSchemaPath(0), /*recursive=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> held_ctx,
+                         ScanContextBuilder(dir->Str()).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
+                         table->NewScan(std::move(held_ctx)));
+
+    // A context without a table still reads the schema from the directory, which no longer has
+    // one.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, ScanContextBuilder(dir->Str()).Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)), "not found latest schema");
+}
+
 TEST(TableTest, TestNewReadCreatesATableRead) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);

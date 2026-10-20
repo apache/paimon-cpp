@@ -36,7 +36,8 @@ class ScanContext;
 /// A scanner interface for reading table's meta and create a plan.
 class PAIMON_EXPORT TableScan {
  public:
-    /// Create an instance of `TableScan`.
+    /// Create an instance of `TableScan`: the table the context names is loaded first, then the
+    /// context is handed to that table's `NewScan`.
     ///
     /// @param context A unique pointer to the `ScanContext` used for scan operations.
     /// @return A Result containing a unique pointer to the `TableScan` instance.
