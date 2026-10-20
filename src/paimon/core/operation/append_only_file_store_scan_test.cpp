@@ -1112,7 +1112,11 @@ TEST(AppendOnlyFileStoreScanTest, PartitionPruningAcrossCacheModes) {
                 scan->partition_filter_ = counting;
                 ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
                 ASSERT_EQ(counting->row_calls_.load(), 2);
-                ASSERT_GT(counting->stats_calls_.load(), 0);
+                if (mode == 2 && scans > 0) {
+                    ASSERT_EQ(counting->stats_calls_.load(), 0);
+                } else {
+                    ASSERT_GT(counting->stats_calls_.load(), 0);
+                }
                 ASSERT_EQ(plan->Files().size(), partition == 99 ? 0 : 1);
                 if (partition != 99) {
                     ASSERT_EQ(plan->Files()[0].Partition().GetInt(0), partition);
@@ -1190,7 +1194,7 @@ TEST(AppendOnlyFileStoreScanTest, PartitionPruningSkipsExcludedMetadataInCreateP
         if (mode == 2) {
             // Seed the complete snapshot directly: rebuilding must decode every partition.
             SnapshotLiveManifestEntries entries(8);
-            entries.Put(1, {kept, excluded});
+            entries.Put(1, {kept, excluded}, /*total_data_files=*/2);
             ASSERT_OK(scan->StoreSnapshotLiveManifestEntries(0, entries));
         }
         for (int32_t attempt = 0; attempt < 2; ++attempt) {

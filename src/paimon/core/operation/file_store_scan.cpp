@@ -152,10 +152,11 @@ FileStoreScan::RawPlan::GroupFiles FileStoreScan::RawPlan::GroupByPartFiles(
 }
 
 Result<std::vector<PartitionEntry>> FileStoreScan::ReadPartitionEntries() const {
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, ReadSnapshot());
-    int64_t all_data_files = 0;
+    std::optional<Snapshot> snapshot;
     std::vector<ManifestFileMeta> all_manifest_file_metas;
     std::vector<ManifestFileMeta> filtered_manifest_file_metas;
+    PAIMON_RETURN_NOT_OK(
+        ReadManifests(&snapshot, &all_manifest_file_metas, &filtered_manifest_file_metas));
     std::vector<ManifestEntry> manifest_entries;
     PAIMON_RETURN_NOT_OK(ReadFileEntries(filtered_manifest_file_metas, &manifest_entries,
                                          /*apply_scan_filter=*/true));
