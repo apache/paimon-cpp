@@ -1015,7 +1015,8 @@ TEST_F(FileIndexFormatTest, TestV2InvalidContainers) {
             bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data()), bytes.size());
         ASSERT_NOK(FileIndexFormat::CreateReader(input, pool_, /*options=*/{}));
     };
-    for (size_t size : {size_t(0), size_t(11), size_t(24), kJavaV2Golden.size() - 1}) {
+    for (size_t size : {static_cast<size_t>(0), static_cast<size_t>(11), static_cast<size_t>(24),
+                        kJavaV2Golden.size() - 1}) {
         check(std::vector<uint8_t>(kJavaV2Golden.begin(), kJavaV2Golden.begin() + size));
     }
     for (const auto& [offset, value] : std::vector<std::pair<size_t, uint8_t>>{
