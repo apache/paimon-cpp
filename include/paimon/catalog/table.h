@@ -99,29 +99,29 @@ class PAIMON_EXPORT Table {
     }
 
     /// Creates a scan of this table from a finished scan context, the table-first entry point
-    /// that `TableScan::Create()` also builds through. The scan is derived from the context.
+    /// that `TableScan::Create()` loads the table the context names and hands the context to.
     /// @param context The finished scan context.
     /// @return The scan, or the error building it reports.
     virtual Result<std::unique_ptr<TableScan>> NewScan(
         std::unique_ptr<ScanContext> context) const = 0;
 
     /// Creates a read of this table from a finished read context, the table-first entry point
-    /// that `TableRead::Create()` also builds through. The read is derived from the context.
+    /// that `TableRead::Create()` loads the table the context names and hands the context to.
     /// @param context The finished read context.
     /// @return The read, or the error building it reports.
     virtual Result<std::unique_ptr<TableRead>> NewRead(
         std::unique_ptr<ReadContext> context) const = 0;
 
     /// Creates a write of this table from a finished write context, the table-first entry point
-    /// that `FileStoreWrite::Create()` also builds through. The write is derived from the context.
+    /// that `FileStoreWrite::Create()` loads the table the context names and hands the context to.
     /// @param context The finished write context.
     /// @return The write, or the error building it reports.
     virtual Result<std::unique_ptr<FileStoreWrite>> NewWrite(
         std::unique_ptr<WriteContext> context) const = 0;
 
     /// Creates a commit of this table from a finished commit context, the table-first entry point
-    /// that `FileStoreCommit::Create()` also builds through. The commit is derived from the
-    /// context.
+    /// that `FileStoreCommit::Create()` loads the table the context names and hands the context
+    /// to.
     /// @param context The finished commit context.
     /// @return The commit, or the error building it reports.
     virtual Result<std::unique_ptr<FileStoreCommit>> NewCommit(
