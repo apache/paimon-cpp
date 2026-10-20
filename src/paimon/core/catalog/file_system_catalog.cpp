@@ -34,7 +34,9 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/options/table_type.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/table/system/system_table_schema.h"
@@ -44,6 +46,7 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/logging.h"
 #include "paimon/result.h"
+#include "paimon/table/format/format_table.h"
 
 namespace arrow {
 class Schema;
@@ -343,7 +346,7 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
         PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
         Identifier data_identifier(identifier.GetDatabaseName(), data_table_name);
         PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
-        return std::make_shared<Table>(fs_, table_path, schema, identifier);
+        return std::make_shared<FileStoreTable>(fs_, table_path, schema, identifier);
     }
     // The schema is read on the table's own branch: `root/branch/branch-<name>` below the
     // table path, which `main` resolves to itself. `GetBranchNameOrDefault` folds any
@@ -353,14 +356,27 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
     if (!latest_schema) {
         return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
     }
+    PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(identifier));
+    // The schema's `type` says what the table is. A format table is the same directory read as
+    // plain data, so the schema read above is all it takes to serve one: no manifest is looked
+    // for, and the checks a format table adds run in `FormatTable::Create`.
+    std::shared_ptr<DataSchema> data_schema = checked_pointer_cast<DataSchema>(*latest_schema);
+    PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
+                           TableTypeDefine::IsFormatTable(data_schema->Options()));
+    if (is_format_table) {
+        // This catalog keeps a table's own metadata under the table path, so a `schema` or
+        // `branch` directory there is metadata rather than table content.
+        return FormatTable::Create(fs_, table_path, identifier, data_schema,
+                                   /*location_carries_paimon_metadata=*/true,
+                                   /*dynamic_options=*/{});
+    }
     // Only a managed table is a `Table`; describing another type as one would hand back
     // snapshots and manifests it never had, so the failure belongs to the call that opens the
     // table rather than at the first read.
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckManagedTableType(identifier, *latest_schema,
                                                              "FileSystemCatalog::GetTable"));
-    PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(identifier));
-    return std::make_shared<Table>(fs_, table_path, checked_pointer_cast<Schema>(*latest_schema),
-                                   identifier);
+    return std::make_shared<FileStoreTable>(
+        fs_, table_path, checked_pointer_cast<Schema>(*latest_schema), identifier);
 }
 
 Status FileSystemCatalog::DropDatabase(const std::string& name, bool ignore_if_not_exists,
@@ -577,12 +593,6 @@ Result<std::optional<SnapshotInfo>> FileSystemCatalog::GetLatestSnapshot(
         return std::optional<SnapshotInfo>();
     }
     return std::optional<SnapshotInfo>(snapshot->ToSnapshotInfo());
-}
-
-Result<std::shared_ptr<FormatTable>> FileSystemCatalog::LoadFormatTable(
-    const Identifier& identifier) const {
-    return CatalogUtils::LoadFormatTableInTwoRequests(*this, identifier,
-                                                      /*location_carries_paimon_metadata=*/true);
 }
 
 }  // namespace paimon

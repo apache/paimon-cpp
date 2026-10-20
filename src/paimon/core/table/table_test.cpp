@@ -31,11 +31,13 @@
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/read_context.h"
 #include "paimon/scan_context.h"
 #include "paimon/schema/schema.h"
+#include "paimon/table/format/format_table.h"
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_catalog.h"
@@ -57,7 +59,7 @@ Result<std::shared_ptr<Table>> CreateManagedTable(const std::shared_ptr<FileSyst
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> created,
                            schema_manager.CreateTable(schema, /*partition_keys=*/{},
                                                       /*primary_keys=*/{}, /*options=*/{}));
-    return std::make_shared<Table>(
+    return std::make_shared<FileStoreTable>(
         file_system, path,
         checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))), identifier);
 }
@@ -164,7 +166,7 @@ TEST(TableTest, TestMainBranchAliasResolvesToTheMainBranch) {
         SCOPED_TRACE(main_identifier.ToString());
         // A catalog that loaded the schema itself calls the constructor directly, which a
         // rest catalog is shaped like. The alias resolves to the main branch as well.
-        Table table(fs, dir->Str(), schema, main_identifier);
+        FileStoreTable table(fs, dir->Str(), schema, main_identifier);
         ASSERT_OK_AND_ASSIGN(std::string branch, table.CurrentBranch());
         EXPECT_EQ("main", branch);
     }
@@ -211,10 +213,9 @@ TEST(TableTest, TestCatalogOpenedTableServesThePerTableFileSystem) {
     EXPECT_EQ(opened->GetRootPath(), "");
 }
 
-TEST(TableTest, TestGetTableRejectsATableTypeThatIsNotAManagedTable) {
-    // A `Table` describes a managed paimon table. Handing back another type as one would promise
-    // snapshots and manifests it never had, so the failure belongs at the call that opens the
-    // table rather than at the first read.
+TEST(TableTest, TestGetTableServesEachKindOfTableAsWhatItIs) {
+    // The table's `type` option says what it is, so the one call that opens a table hands each
+    // kind back as what it is, through the `Table` interface the two kinds share.
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto fs = dir->GetFileSystem();
@@ -230,7 +231,10 @@ TEST(TableTest, TestGetTableRejectsATableTypeThatIsNotAManagedTable) {
         format_schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"},
                                           /*primary_keys=*/{},
                                           {{"type", "format-table"}, {"file.format", "parquet"}}));
-    ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier("db", "format")), "Cannot open format table");
+    // A format table comes back as the `FormatTable` it is.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> opened,
+                         catalog.GetTable(Identifier("db", "format")));
+    ASSERT_NE(nullptr, std::dynamic_pointer_cast<FormatTable>(opened));
 
     // A managed table with no `type` option at all is what a `Table` is for, and still opens.
     const std::string managed_dir = dir->Str() + "/db.db/managed";

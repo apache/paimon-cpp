@@ -32,8 +32,10 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/table/system/system_table_schema.h"
@@ -431,36 +433,35 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
     return checked_pointer_cast<Schema>(schema);
 }
 
-Result<std::shared_ptr<FormatTable>> RestCatalog::LoadFormatTable(
-    const Identifier& identifier) const {
-    // A system table is already refused by `Catalog::GetFormatTable()`, which every caller goes
-    // through, so this only has to load.
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
-    branch = NormalizeBranch(std::move(branch));
-    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
-    std::string location;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<TableSchema> schema,
-        LoadDataTableSchema(load_identifier, branch, &location, /*table_id=*/nullptr));
-    // A rest catalog holds the schema itself, so everything below the location is data.
-    return FormatTable::Create(fs_, location, identifier, checked_pointer_cast<DataSchema>(schema),
-                               /*location_carries_paimon_metadata=*/false,
-                               /*dynamic_options=*/{});
-}
-
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
     // Read UUID, path and schema together to avoid mixing table generations after recreation.
     std::string uuid;
     std::string table_path;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
                            LoadTableSchema(identifier, &uuid, &table_path));
+    // The schema the same response carried says what the table is: a format table is handed
+    // back as the `FormatTable` it is, built from the location of the same response, rather
+    // than refused as the managed table it is not.
+    std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
+    if (data_schema != nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
+                               TableTypeDefine::IsFormatTable(data_schema->Options()));
+        if (is_format_table) {
+            // A rest catalog holds the schema itself, so everything below the location is data.
+            // The catalog-wide file system, as a format table reads no metadata of its own.
+            return FormatTable::Create(fs_, table_path, identifier, data_schema,
+                                       /*location_carries_paimon_metadata=*/false,
+                                       /*dynamic_options=*/{});
+        }
+    }
     PAIMON_RETURN_NOT_OK(
         CatalogUtils::CheckManagedTableType(identifier, schema, "Catalog::GetTable"));
     // The table holds the file system its own data is served by, which a server issuing data
     // tokens binds to this table.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
-    return std::make_shared<Table>(table_file_system, table_path, schema, identifier, uuid);
+    return std::make_shared<FileStoreTable>(table_file_system, table_path, schema, identifier,
+                                            uuid);
 }
 
 std::string RestCatalog::GetRootPath() const {

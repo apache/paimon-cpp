@@ -246,7 +246,7 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// `SetTableSchema()`, `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()` and a
     /// branch are refused here rather than ignored.
     ///
-    /// @param table The format table to read, as `Catalog::GetFormatTable()` hands it back.
+    /// @param table The format table to read, as `Catalog::GetTable()` hands it back.
     explicit ReadContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~ReadContextBuilder();

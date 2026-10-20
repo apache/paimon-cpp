@@ -40,8 +40,9 @@ format table is an insert.
 
 Reading and writing
 -------------------
-A format table is not served through :cpp:func:`Catalog::GetTable`, which describes a managed
-table; use :cpp:func:`Catalog::GetFormatTable` instead.
+A format table is served through the same :cpp:func:`Catalog::GetTable` as every other table:
+its ``type`` option says what it is, and the call hands back the ``FormatTable`` it describes,
+through the ``Table`` interface the two kinds of table share.
 
 Reading and writing go through the entry points every other table uses: ``TableScan::Create``,
 ``TableRead::Create``, ``FileStoreWrite::Create`` and ``FileStoreCommit::Create``, each from its
@@ -58,8 +59,11 @@ a constructor taking one - which is what Java does through ``FormatTable.newRead
 
 .. code-block:: cpp
 
-   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::FormatTable> table,
-                          catalog->GetFormatTable(paimon::Identifier("db", "tbl")));
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> loaded,
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
+   // The table's `type` option is `format-table`, so this is a `FormatTable`.
+   std::shared_ptr<paimon::FormatTable> table =
+       std::dynamic_pointer_cast<paimon::FormatTable>(loaded);
    paimon::ScanContextBuilder scan_builder(table);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                           scan_builder.Finish());
@@ -70,6 +74,12 @@ The table already carries its schema and the file system it was loaded through, 
 from one refuses ``SetTableSchema()``, ``WithFileSystem()``,
 ``WithFileSystemSchemeToIdentifierMap()``, ``WithCatalog()`` and a branch. Options
 given at the call still win over the ones the schema stored, as they do everywhere else.
+
+``FormatTable`` is a derived class of ``Table``, so the table serves the same calls itself: a
+caller holding one through a ``std::shared_ptr<paimon::Table>`` calls ``NewScan()``,
+``NewRead()``, ``NewWrite()`` or ``NewCommit()`` on it, and the operators come back for the table
+it is, whether or not the context carries one. This is the C++ side of what Java serves through
+one ``Table.newReadBuilder()`` for both kinds of table.
 
 A batch comes back in the table's column order, or the projection's when the read names one,
 behind the ``_VALUE_KIND`` field every ``BatchReader`` carries. Which columns a *file* is asked for
@@ -89,12 +99,10 @@ outside the projection is never read, which is how Java scopes the same checks.
 named here only to describe what happens. A caller never needs them: a plan comes back as
 ``Plan``, a split as ``Split``, and a commit message as ``CommitMessage``.
 
-A catalog that can load a format table itself overrides ``Catalog::LoadFormatTable()``, the
-protected hook :cpp:func:`Catalog::GetFormatTable` calls. The file system catalog uses it to say
-its metadata lives under the table location, and the REST catalog to take the location and the
-schema from one response instead of two that could disagree. A catalog that does not override it
-still serves format tables, by reading the location and the schema through the virtuals every
-catalog has.
+Each catalog serves a format table from its own ``GetTable``. The file system catalog reads the
+schema under the table location, so it says the location carries the table's own metadata and a
+scan leaves the ``schema`` and ``branch`` directories below it alone; the REST catalog takes the
+location and the schema from one response, so the two cannot disagree.
 
 ``TableScan::ListPartitions()`` lists the partitions a scan can see. A format table answers it by
 listing directories; every other table type returns ``NotImplemented`` for now.

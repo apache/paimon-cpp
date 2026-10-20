@@ -629,7 +629,7 @@ TEST(FileSystemCatalogTest, TestCreateTableWithBlob) {
     ArrowSchemaRelease(&schema);
 }
 
-TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
+TEST(FileSystemCatalogTest, TestGetTableServesAFormatTable) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
     options[Options::FILE_FORMAT] = "orc";
@@ -650,11 +650,11 @@ TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
                                   /*ignore_if_exists=*/false));
     ArrowSchemaRelease(&schema);
 
-    // A format table has no snapshots and no manifests, so handing it back as a Table would
-    // describe it as something it is not.
-    ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier("db1", "fmt")), "Cannot open format table");
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> format_table,
-                         catalog.GetFormatTable(Identifier("db1", "fmt")));
+    // The table's `type` says what it is, so the one call that opens a table hands a format
+    // table back as the `FormatTable` it is, through the `Table` interface the two share.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(Identifier("db1", "fmt")));
+    std::shared_ptr<FormatTable> format_table = std::dynamic_pointer_cast<FormatTable>(table);
+    ASSERT_NE(nullptr, format_table);
     ASSERT_EQ(format_table->GetFormat(), FormatTable::Format::PARQUET);
     ASSERT_EQ(format_table->FullName(), "db1.fmt");
 
@@ -662,15 +662,6 @@ TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
     // `branch` directories there are its metadata and a scan leaves them alone. A catalog that
     // keeps schemas elsewhere says no, and then every directory below the location is data.
     ASSERT_TRUE(format_table->LocationCarriesPaimonMetadata());
-
-    // A system table is refused by `Catalog::GetFormatTable()` itself, so every catalog answers
-    // alike. The database is checked before the table name is parsed, so a malformed name under
-    // "sys" is refused as a system table rather than surfacing a parse error.
-    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("db1", "fmt$snapshots")),
-                        "for system table");
-    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("sys", "all_table_options")),
-                        "for system table");
-    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("sys", "a$b$c$d")), "for system table");
 }
 
 TEST(FileSystemCatalogTest, TestInvalidCreateTable) {

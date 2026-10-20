@@ -34,6 +34,7 @@
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
 #include "paimon/cache/cache.h"
+#include "paimon/catalog/table.h"
 #include "paimon/commit_context.h"
 #include "paimon/commit_message.h"
 #include "paimon/common/table/special_fields.h"
@@ -58,6 +59,7 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/record_batch.h"
 #include "paimon/scan_context.h"
@@ -2841,6 +2843,159 @@ TEST(FormatTableTest, TestTheGenericEntryPointsTakeALoadedFormatTable) {
     }
     reader->Close();
     ASSERT_EQ(rows, 3);
+}
+
+TEST(FormatTableTest, TestATableServesAFormatTableThroughItsOwnEntryPoints) {
+    // `NewScan()` and its kin take the table they were called on as the one to serve, the way Java
+    // Paimon's `Table` serves both kinds through one `newReadBuilder()`, so a caller holding a
+    // format table as the `Table` a catalog hands out reaches it through them as well. The
+    // contexts name a path only and carry no format table, so it is the table itself that
+    // answers.
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<Table> table;
+    ASSERT_OK_AND_ASSIGN(table, CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
+
+    WriteContextBuilder write_builder(dir->Str(), "test-user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
+                         table->NewWrite(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch({1, 2}, {"alice", "bob"}, "20240101", {{"dt", "20240101"}}));
+    ASSERT_OK(write->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         write->PrepareCommit());
+
+    CommitContextBuilder commit_builder(dir->Str(), "test-user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         table->NewCommit(std::move(commit_context)));
+    ASSERT_OK(commit->Commit(messages));
+    ASSERT_OK(write->Close());
+
+    ScanContextBuilder scan_builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_EQ(plan->Splits().size(), 1u);
+
+    ReadContextBuilder read_builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, table->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
+    std::vector<std::string> rows;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch read_batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(read_batch)) {
+            break;
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> record_batch,
+                             ImportBatch(read_batch));
+        // `_VALUE_KIND` first, then the table's own columns, exactly as the generic entry points
+        // give them.
+        auto ids = checked_pointer_cast<arrow::Int32Array>(record_batch->column(1));
+        auto names = checked_pointer_cast<arrow::StringArray>(record_batch->column(2));
+        auto dts = checked_pointer_cast<arrow::StringArray>(record_batch->column(3));
+        for (int64_t i = 0; i < record_batch->num_rows(); i++) {
+            rows.push_back(std::to_string(ids->Value(i)) + "|" + names->GetString(i) + "|" +
+                           dts->GetString(i));
+        }
+    }
+    reader->Close();
+    ASSERT_EQ(rows, (std::vector<std::string>{"1|alice|20240101", "2|bob|20240101"}));
+}
+
+TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour) {
+    // A refusal is a promise about what was not done, so the table's own entry points must make
+    // the same promises the generic ones do. Each context is handed to both, and the answer has
+    // to come out the same whichever way in the caller takes.
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> format_table,
+                         CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
+    std::shared_ptr<Table> table = format_table;
+
+    // A context that never was is refused first of all, and by name, exactly as the generic
+    // entry points refuse one.
+    ASSERT_NOK_WITH_MSG(TableScan::Create(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(TableRead::Create(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewRead(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(nullptr), "write context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewWrite(nullptr), "write context is null pointer");
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(nullptr), "commit context is null pointer");
+    ASSERT_NOK_WITH_MSG(table->NewCommit(nullptr), "commit context is null pointer");
+
+    // A streaming scan follows snapshots, which a format table keeps none of.
+    auto streaming_scan_context = [&dir]() -> Result<std::unique_ptr<ScanContext>> {
+        ScanContextBuilder builder(dir->Str());
+        builder.WithStreamingMode(true);
+        return builder.Finish();
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> streaming_context, streaming_scan_context());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(streaming_context)),
+                        "nothing for a streaming scan to follow");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> streaming_context_again,
+                         streaming_scan_context());
+    ASSERT_NOK_WITH_MSG(table->NewScan(std::move(streaming_context_again)),
+                        "nothing for a streaming scan to follow");
+
+    // Vector search needs an index a format table never builds.
+    auto vector_read_context = [&dir]() -> Result<std::unique_ptr<ReadContext>> {
+        ReadContextBuilder builder(dir->Str());
+        builder.SetVectorSearch(std::make_shared<VectorSearch>(
+            /*field_name=*/"name", /*limit=*/1, std::vector<float>{0.0f}, /*pre_filter=*/nullptr,
+            /*predicate=*/nullptr, /*distance_type=*/std::nullopt,
+            /*options=*/std::map<std::string, std::string>{}));
+        return builder.Finish();
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context, vector_read_context());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(vector_context)),
+                        "not supported for format tables");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context_again, vector_read_context());
+    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(vector_context_again)),
+                        "not supported for format tables");
+
+    // A catalog takes the snapshot a native table commits, and a format table has none to give.
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableSchema(format_table->LatestSchema());
+
+    auto catalog_write_context = [&dir, &catalog]() -> Result<std::unique_ptr<WriteContext>> {
+        WriteContextBuilder builder(dir->Str(), "test-user");
+        return builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish();
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> catalog_write, catalog_write_context());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(catalog_write)),
+                        "use WriteContextBuilder(FormatTable)");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> catalog_write_again,
+                         catalog_write_context());
+    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(catalog_write_again)),
+                        "use WriteContextBuilder(FormatTable)");
+
+    auto catalog_commit_context = [&dir, &catalog]() -> Result<std::unique_ptr<CommitContext>> {
+        CommitContextBuilder builder(dir->Str(), "test-user");
+        return builder.WithCatalog(catalog, Identifier("db", "fmt")).Finish();
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> catalog_commit, catalog_commit_context());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(catalog_commit)),
+                        "keeps no snapshot for a catalog to take");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> catalog_commit_again,
+                         catalog_commit_context());
+    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(catalog_commit_again)),
+                        "keeps no snapshot for a catalog to take");
+
+    // A write id prefixes a postpone-bucket writer's files; a format table has no buckets.
+    auto write_id_context = [&dir]() -> Result<std::unique_ptr<WriteContext>> {
+        WriteContextBuilder builder(dir->Str(), "test-user");
+        builder.WithWriteId(3);
+        return builder.Finish();
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_id, write_id_context());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_id)),
+                        "a write id would name nothing");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_id_again, write_id_context());
+    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write_id_again)),
+                        "a write id would name nothing");
 }
 
 TEST(FormatTableTest, TestAContextBuiltFromAFormatTableRefusesASecondAnswer) {

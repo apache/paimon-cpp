@@ -30,14 +30,17 @@
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -66,6 +69,7 @@
 #include "paimon/core/operation/key_value_file_store_scan.h"
 #include "paimon/core/operation/key_value_file_store_write.h"
 #include "paimon/core/options/merge_engine.h"
+#include "paimon/core/options/table_type.h"
 #include "paimon/core/postpone/postpone_bucket_file_store_write.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_schema_layout.h"
@@ -73,11 +77,7 @@
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
-#include "paimon/core/table/format/format_table_file_store_commit.h"
-#include "paimon/core/table/format/format_table_file_store_write.h"
-#include "paimon/core/table/format/format_table_loader.h"
-#include "paimon/core/table/format/format_table_read.h"
-#include "paimon/core/table/format/format_table_scan.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/source/abstract_table_scan.h"
 #include "paimon/core/table/source/append_only_split_generator.h"
 #include "paimon/core/table/source/append_only_table_read.h"
@@ -131,6 +131,45 @@ class MergeFunctionWrapper;
 
 namespace {
 
+/// Recognises a format table behind `table_path`, or returns null when it is not one.
+///
+/// The scan, read, write and commit entry points below all take a path and have to answer the
+/// same question before they can dispatch, so one place answers it and they cannot disagree.
+/// Null is also the answer when no schema was found under the path at all: what to say about a
+/// table that is not there is the managed path's to decide, and it says it in more detail.
+///
+/// The table type is read from the schema, never from `options`: `type` is structural, and one
+/// call's options must not decide what kind of table this is. `branch` names the branch the
+/// schema was read from: anything but the main branch is refused once the schema turns out to be
+/// a format table's, which has no branches to read.
+Result<std::shared_ptr<FormatTable>> TryLoadFormatTable(
+    const std::shared_ptr<FileSystem>& file_system, const std::string& table_path,
+    const std::string& branch, const std::map<std::string, std::string>& options,
+    const std::shared_ptr<TableSchema>& table_schema) {
+    if (table_schema == nullptr) {
+        return std::shared_ptr<FormatTable>();
+    }
+    // From the schema alone: see `FormatTable::Create()`.
+    PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
+                           TableTypeDefine::IsFormatTable(table_schema->Options()));
+    if (!is_format_table) {
+        return std::shared_ptr<FormatTable>();
+    }
+    // A format table has no branches, so it is refused rather than served from the table path
+    // under another branch's name. See `SchemaValidation::ValidateFormatTableSchema()`.
+    if (BranchManager::NormalizeBranch(branch) != BranchManager::DEFAULT_MAIN_BRANCH) {
+        return Status::Invalid(
+            fmt::format("a format table has no branches, so {} cannot be read on branch '{}'",
+                        table_path, branch));
+    }
+    // A context names a path, never a catalog identifier, so the table is known by the directory
+    // it sits in.
+    Identifier identifier(Identifier::kUnknownDatabase, PathUtil::GetName(table_path));
+    return FormatTable::Create(file_system, table_path, identifier,
+                               checked_pointer_cast<DataSchema>(table_schema),
+                               /*location_carries_paimon_metadata=*/true, options);
+}
+
 Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& realtime_context,
                                         const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                         const CoreOptions& options) {
@@ -147,39 +186,6 @@ Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& 
             latest_snapshot->Id(), realtime_committed_offsets, /*committed_data_files=*/{}));
     }
     return Status::OK();
-}
-
-/// Maps a `WriteContext` onto `FormatTableFileStoreWrite`, refusing by name what a format table
-/// cannot honour rather than silently dropping it.
-Result<std::unique_ptr<FileStoreWrite>> NewFormatTableWrite(
-    const std::shared_ptr<FormatTable>& table, const WriteContext& ctx) {
-    if (ctx.GetCatalog() != nullptr) {
-        return Status::Invalid(
-            "WithCatalog() requires a native table; use WriteContextBuilder(FormatTable) for a "
-            "format table");
-    }
-    if (ctx.IsStreamingMode()) {
-        return Status::NotImplemented(
-            "a format table has no snapshots, so there is nothing a streaming write could "
-            "commit against");
-    }
-    if (ctx.GetRealtimeContext() != nullptr) {
-        return Status::NotImplemented("a format table has no real-time store to write into");
-    }
-    if (!ctx.GetWriteSchema().empty()) {
-        return Status::NotImplemented(
-            "a format table write takes the table's own columns; a write schema naming a "
-            "subset of them is not supported yet");
-    }
-    // A write id prefixes a postpone-bucket writer's files so that one compaction reader can
-    // put them back in order. A format table has no buckets, so it would identify nothing.
-    if (ctx.GetWriteId().has_value()) {
-        return Status::NotImplemented(
-            "a format table has no buckets, so a write id would name nothing");
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableFileStoreWrite> format_write,
-                           FormatTableFileStoreWrite::Create(table, ctx.GetMemoryPool()));
-    return std::unique_ptr<FileStoreWrite>(std::move(format_write));
 }
 
 Result<bool> HasHistoricalPrimaryKeyBTreeDefinition(
@@ -215,20 +221,22 @@ Table::Table(const std::shared_ptr<FileSystem>& file_system, const std::string& 
       identifier_(identifier),
       uuid_(uuid) {}
 
-Result<std::unique_ptr<TableScan>> Table::NewScan(std::unique_ptr<ScanContext> context) const {
+Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
+    std::unique_ptr<ScanContext> context) const {
     return TableScan::Create(std::move(context));
 }
 
-Result<std::unique_ptr<TableRead>> Table::NewRead(std::unique_ptr<ReadContext> context) const {
+Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
+    std::unique_ptr<ReadContext> context) const {
     return TableRead::Create(std::move(context));
 }
 
-Result<std::unique_ptr<FileStoreWrite>> Table::NewWrite(
+Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
     std::unique_ptr<WriteContext> context) const {
     return FileStoreWrite::Create(std::move(context));
 }
 
-Result<std::unique_ptr<FileStoreCommit>> Table::NewCommit(
+Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     std::unique_ptr<CommitContext> context) const {
     return FileStoreCommit::Create(std::move(context));
 }
@@ -246,9 +254,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 
     // A table the caller already loaded says what it is, so nothing is read to find out.
     if (ctx->GetFormatTable() != nullptr) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
-                               FormatTable::Copy(ctx->GetFormatTable(), ctx->GetOptions()));
-        return NewFormatTableWrite(given_table, *ctx);
+        return ctx->GetFormatTable()->NewWrite(std::move(ctx));
     }
 
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx->GetCatalog()));
@@ -293,16 +299,28 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     auto schema_manager =
         std::make_shared<SchemaManager>(tmp_options.GetFileSystem(), ctx->GetRootPath(), branch);
     std::shared_ptr<TableSchema> latest_schema;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FormatTable> format_table,
-        FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), ctx->GetRootPath(), branch,
-                                   ctx->GetOptions(), catalog_table_schema, schema_manager.get(),
-                                   &latest_schema));
-    if (format_table != nullptr) {
-        return NewFormatTableWrite(format_table, *ctx);
+    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && catalog_table_schema) {
+        // Handing the schema over only saves reading it. A context always names a table path and
+        // this library writes the metadata under it, so `schema` and `branch` stay metadata.
+        PAIMON_ASSIGN_OR_RAISE(latest_schema,
+                               TableSchema::CreateFromJson(catalog_table_schema.value()));
+    } else {
+        // Through the manager built above, so the read warms the cache the managed path below
+        // goes on to use.
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               schema_manager->Latest());
+        if (latest) {
+            latest_schema = *latest;
+        }
     }
-    // The schema the dispatch above already read through `schema_manager`, rather than a second
-    // read of the same file.
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
+                           TryLoadFormatTable(tmp_options.GetFileSystem(), ctx->GetRootPath(),
+                                              branch, ctx->GetOptions(), latest_schema));
+    if (format_table != nullptr) {
+        return format_table->NewWrite(std::move(ctx));
+    }
+    // The schema the branch read above through `schema_manager`, rather than a second read of
+    // the same file.
     if (latest_schema == nullptr) {
         return Status::Invalid(fmt::format("not found latest schema in branch {}", branch));
     }
@@ -679,53 +697,6 @@ class TableScanImpl {
 Result<std::unique_ptr<TableScan>> NewDataTableScan(
     const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& loaded_schema);
 
-/// Maps a `ScanContext` onto `FormatTableScan`, which takes one partition filter and a limit and
-/// nothing else.
-///
-/// A format table has no buckets, so a bucket filter has nothing to act on. A predicate is
-/// refused too, which is narrower than Java: `FormatReadBuilder.newScan()` hands the partition
-/// half of one to the scan to prune directories with, which this does not do yet.
-Result<std::unique_ptr<TableScan>> NewFormatTableScan(const std::shared_ptr<FormatTable>& table,
-                                                      const std::shared_ptr<ScanContext>& context) {
-    // Anything a `ScanContext` carries that a format table cannot honour is refused rather than
-    // silently dropped.
-    if (context->IsStreamingMode()) {
-        return Status::NotImplemented(
-            "a format table has no snapshots, so there is nothing for a streaming scan to follow");
-    }
-    if (context->GetRealtimeContext() != nullptr) {
-        return Status::NotImplemented(
-            "a format table has no real-time store to union with what is on disk");
-    }
-    if (context->GetGlobalIndexResult() != nullptr) {
-        return Status::NotImplemented("a format table carries no global index");
-    }
-    std::map<std::string, std::string> partition_filter;
-    std::shared_ptr<ScanFilter> filters = context->GetScanFilters();
-    if (filters != nullptr) {
-        if (filters->GetPredicate() != nullptr) {
-            return Status::NotImplemented(
-                "a format table scan does not take a predicate: its files carry no statistics to "
-                "skip by, and pruning by the partition columns a predicate names is not "
-                "implemented yet; give the partition values as a partition filter instead");
-        }
-        if (filters->GetBucketFilter()) {
-            return Status::NotImplemented("a format table has no buckets to filter by");
-        }
-        const std::vector<std::map<std::string, std::string>>& partition_filters =
-            filters->GetPartitionFilters();
-        if (partition_filters.size() > 1) {
-            return Status::NotImplemented("a format table scan takes at most one partition filter");
-        }
-        if (partition_filters.size() == 1) {
-            partition_filter = partition_filters.front();
-        }
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableScan> scan,
-                           FormatTableScan::Create(table, partition_filter, context->GetLimit()));
-    return std::unique_ptr<TableScan>(std::move(scan));
-}
-
 }  // namespace
 
 Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context) {
@@ -739,43 +710,49 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
         return Status::Invalid("executor is null pointer");
     }
 
-    std::shared_ptr<ScanContext> shared_context = std::move(context);
     // A table the caller already loaded says what it is, so nothing is read to find out.
-    if (shared_context->GetFormatTable() != nullptr) {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FormatTable> format_table,
-            FormatTable::Copy(shared_context->GetFormatTable(), shared_context->GetOptions()));
-        return NewFormatTableScan(format_table, shared_context);
+    if (context->GetFormatTable() != nullptr) {
+        return context->GetFormatTable()->NewScan(std::move(context));
     }
     // load schema
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
-                           CoreOptions::FromMap(shared_context->GetOptions(),
-                                                shared_context->GetSpecificFileSystem(), {}));
+    PAIMON_ASSIGN_OR_RAISE(
+        CoreOptions tmp_options,
+        CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(), {}));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
-                           SystemTableLoader::TryParsePath(shared_context->GetPath()));
+                           SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
-            SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), shared_context->GetPath(),
-                                            shared_context->GetOptions()));
-        return system_table->NewScan(shared_context);
+            SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), context->GetPath(),
+                                            context->GetOptions()));
+        return system_table->NewScan(std::move(context));
     }
     // A format table is planned by listing directories, so it never reaches the manifest path
     // below. One `TableScan` interface serves both, as Java Paimon serves both through one
     // `ReadBuilder`.
+    const std::string branch = BranchManager::NormalizeBranch(tmp_options.GetBranch());
     std::shared_ptr<TableSchema> latest_schema;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FormatTable> format_table,
-        FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), shared_context->GetPath(),
-                                   BranchManager::NormalizeBranch(tmp_options.GetBranch()),
-                                   shared_context->GetOptions(),
-                                   shared_context->GetSpecificTableSchema(),
-                                   /*schema_manager=*/nullptr, &latest_schema));
-    if (format_table != nullptr) {
-        return NewFormatTableScan(format_table, shared_context);
+    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && context->GetSpecificTableSchema()) {
+        // Handing the schema over only saves reading it. A context always names a table path and
+        // this library writes the metadata under it, so `schema` and `branch` stay metadata.
+        PAIMON_ASSIGN_OR_RAISE(
+            latest_schema, TableSchema::CreateFromJson(context->GetSpecificTableSchema().value()));
+    } else {
+        SchemaManager schema_manager(tmp_options.GetFileSystem(), context->GetPath(), branch);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               schema_manager.Latest());
+        if (latest) {
+            latest_schema = *latest;
+        }
     }
-    // With the schema the dispatch already read, so the managed path does not read it again.
-    return NewDataTableScan(shared_context, latest_schema);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
+                           TryLoadFormatTable(tmp_options.GetFileSystem(), context->GetPath(),
+                                              branch, context->GetOptions(), latest_schema));
+    if (format_table != nullptr) {
+        return format_table->NewScan(std::move(context));
+    }
+    // With the schema already read above, so the managed path does not read it again.
+    return NewDataTableScan(std::move(context), latest_schema);
 }
 
 namespace {
@@ -822,29 +799,16 @@ Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& 
     return Status::OK();
 }
 
+/// @param loaded_schema The schema `TableScan::Create()` already read while dispatching on the
+///        table type, or null when neither the caller's json nor the branch's own directory had
+///        one.
 Result<std::unique_ptr<TableScan>> NewDataTableScan(
     const std::shared_ptr<ScanContext>& context,
     const std::shared_ptr<TableSchema>& loaded_schema) {
-    PAIMON_ASSIGN_OR_RAISE(
-        CoreOptions tmp_options,
-        CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(), {}));
-    std::string branch = BranchManager::NormalizeBranch(tmp_options.GetBranch());
-    std::shared_ptr<TableSchema> table_schema;
-    const auto& specific_table_schema = context->GetSpecificTableSchema();
-    if (loaded_schema != nullptr) {
-        table_schema = loaded_schema;
-    } else if (branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema) {
-        PAIMON_ASSIGN_OR_RAISE(table_schema,
-                               TableSchema::CreateFromJson(specific_table_schema.value()));
-    } else {
-        SchemaManager schema_manager(tmp_options.GetFileSystem(), context->GetPath(), branch);
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_table_schema,
-                               schema_manager.Latest());
-        if (latest_table_schema == std::nullopt) {
-            return Status::Invalid("not found latest schema");
-        }
-        table_schema = latest_table_schema.value();
+    if (loaded_schema == nullptr) {
+        return Status::Invalid("not found latest schema");
     }
+    const std::shared_ptr<TableSchema>& table_schema = loaded_schema;
     PAIMON_ASSIGN_OR_RAISE(bool read_optimized,
                            OptionsUtils::GetValueFromMap<bool>(context->GetOptions(),
                                                                kReadOptimizedScanOption, false));
@@ -1054,84 +1018,69 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(
                                                std::move(fallback_table_read), arrow_pool);
 }
 
-/// Maps a `ReadContext` onto `FormatTableRead`, which reads everything it needs out of the context
-/// itself: the columns, the predicate, the pool and executor, and what a file is opened with. It
-/// refuses by name what a format table cannot honour.
-Result<std::unique_ptr<TableRead>> NewFormatTableRead(const std::shared_ptr<FormatTable>& table,
-                                                      const std::shared_ptr<ReadContext>& context) {
-    if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
-        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
-                           FormatTableRead::Create(table, context));
-    return std::unique_ptr<TableRead>(std::move(read));
-}
-
 }  // namespace
 
 Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext> ctx) {
-    std::shared_ptr<ReadContext> context = std::move(ctx);
-    if (context == nullptr) {
+    if (ctx == nullptr) {
         return Status::Invalid("read context is null pointer");
     }
-    if (context->GetMemoryPool() == nullptr) {
+    if (ctx->GetMemoryPool() == nullptr) {
         return Status::Invalid("memory pool is null pointer");
     }
-    if (context->GetExecutor() == nullptr) {
+    if (ctx->GetExecutor() == nullptr) {
         return Status::Invalid("executor is null pointer");
     }
     // A table the caller already loaded says what it is, so nothing is read to find out.
-    if (context->GetFormatTable() != nullptr) {
-        if (context->HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for format tables");
-        }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
-                               FormatTable::Copy(context->GetFormatTable(), context->GetOptions()));
-        return NewFormatTableRead(format_table, context);
+    if (ctx->GetFormatTable() != nullptr) {
+        return ctx->GetFormatTable()->NewRead(std::move(ctx));
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        CoreOptions tmp_core_options,
-        CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(),
-                             context->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_core_options,
+                           CoreOptions::FromMap(ctx->GetOptions(), ctx->GetSpecificFileSystem(),
+                                                ctx->GetFileSystemSchemeToIdentifierMap()));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
-                           SystemTableLoader::TryParsePath(context->GetPath()));
+                           SystemTableLoader::TryParsePath(ctx->GetPath()));
     if (system_table_path) {
-        if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+        if (PredicateUtils::ContainsFullTextMatch(ctx->GetPredicate())) {
             return Status::NotImplemented(
                 "FullTextMatch predicate execution is not implemented yet");
         }
-        if (context->HasVectorOrFullTextSearch()) {
+        if (ctx->HasVectorOrFullTextSearch()) {
             return Status::NotImplemented(
                 "VectorSearch or FullTextSearch is not supported for system tables");
         }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<SystemTable> system_table,
-            SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                            context->GetOptions()));
-        return system_table->NewRead(context);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                               SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(),
+                                                               ctx->GetPath(), ctx->GetOptions()));
+        return system_table->NewRead(std::move(ctx));
     }
 
     // A format table has no manifest and a file another engine wrote carries no field ids, so
     // which files there are and how a row is put back together is its own. How a file is opened
     // is not: both paths go through `DataFileReaderFactory`.
+    const std::string branch = ctx->GetBranch();
     std::shared_ptr<TableSchema> latest_schema;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FormatTable> format_table,
-        FormatTableLoader::TryLoad(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                   context->GetBranch(), context->GetOptions(),
-                                   context->GetSpecificTableSchema(),
-                                   /*schema_manager=*/nullptr, &latest_schema));
-    if (format_table != nullptr) {
-        if (context->HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for format tables");
+    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && ctx->GetSpecificTableSchema()) {
+        // Handing the schema over only saves reading it. A context always names a table path and
+        // this library writes the metadata under it, so `schema` and `branch` stay metadata.
+        PAIMON_ASSIGN_OR_RAISE(latest_schema,
+                               TableSchema::CreateFromJson(ctx->GetSpecificTableSchema().value()));
+    } else {
+        SchemaManager schema_manager(tmp_core_options.GetFileSystem(), ctx->GetPath(), branch);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               schema_manager.Latest());
+        if (latest) {
+            latest_schema = *latest;
         }
-        return NewFormatTableRead(format_table, context);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
+                           TryLoadFormatTable(tmp_core_options.GetFileSystem(), ctx->GetPath(),
+                                              branch, ctx->GetOptions(), latest_schema));
+    if (format_table != nullptr) {
+        return format_table->NewRead(std::move(ctx));
     }
 
-    // With the schema the dispatch already read, so the managed path does not read it again.
-    return NewDataTableRead(context, latest_schema);
+    // With the schema already read above, so the managed path does not read it again.
+    return NewDataTableRead(std::move(ctx), latest_schema);
 }
 
 namespace {
@@ -1216,37 +1165,6 @@ Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
         std::make_shared<RenamingSnapshotCommit>(options.GetFileSystem(), snapshot_manager));
 }
 
-/// Creates a format-table commit, rejecting non-default options that require snapshots.
-Result<std::unique_ptr<FileStoreCommit>> NewFormatTableCommit(
-    const std::shared_ptr<FormatTable>& table, const CommitContext& ctx) {
-    if (!ctx.IgnoreEmptyCommit()) {
-        return Status::NotImplemented(
-            "a format table cannot record an empty commit: keeping one means writing a "
-            "snapshot that adds no files, and there are no snapshots here");
-    }
-    if (ctx.UseRESTCatalogCommit()) {
-        return Status::NotImplemented(
-            "a format table commits by renaming files into place, not by sending a snapshot "
-            "to a rest catalog");
-    }
-    if (ctx.GetTableId()) {
-        return Status::NotImplemented(
-            "a format table sends no commit table request, so there is nowhere to put a table id");
-    }
-    if (ctx.GetCatalog() != nullptr) {
-        return Status::NotImplemented(
-            "a format table keeps no snapshot for a catalog to take, so it commits by renaming "
-            "files into place rather than through the catalog it was loaded from");
-    }
-    if (ctx.AppendCommitCheckConflict()) {
-        return Status::NotImplemented(
-            "a format table has no manifests to check a concurrent commit against");
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableFileStoreCommit> format_commit,
-                           FormatTableFileStoreCommit::Create(table));
-    return std::unique_ptr<FileStoreCommit>(std::move(format_commit));
-}
-
 }  // namespace
 
 Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
@@ -1263,9 +1181,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
 
     // A table the caller already loaded says what it is, so nothing is read to find out.
     if (ctx->GetFormatTable() != nullptr) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
-                               FormatTable::Copy(ctx->GetFormatTable(), ctx->GetOptions()));
-        return NewFormatTableCommit(given_table, *ctx);
+        return ctx->GetFormatTable()->NewCommit(std::move(ctx));
     }
 
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx->GetCatalog()));
@@ -1330,12 +1246,25 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     auto schema_manager =
         std::make_shared<SchemaManager>(tmp_options.GetFileSystem(), root_path, branch);
     std::shared_ptr<TableSchema> latest_schema;
+    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && catalog_table_schema) {
+        // Handing the schema over only saves reading it. A context always names a table path and
+        // this library writes the metadata under it, so `schema` and `branch` stay metadata.
+        PAIMON_ASSIGN_OR_RAISE(latest_schema,
+                               TableSchema::CreateFromJson(catalog_table_schema.value()));
+    } else {
+        // Through the manager built above, so the read warms the cache the managed path below
+        // goes on to use.
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               schema_manager->Latest());
+        if (latest) {
+            latest_schema = *latest;
+        }
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
-                           FormatTableLoader::TryLoad(
-                               tmp_options.GetFileSystem(), root_path, branch, ctx->GetOptions(),
-                               catalog_table_schema, schema_manager.get(), &latest_schema));
+                           TryLoadFormatTable(tmp_options.GetFileSystem(), root_path, branch,
+                                              ctx->GetOptions(), latest_schema));
     if (format_table != nullptr) {
-        return NewFormatTableCommit(format_table, *ctx);
+        return format_table->NewCommit(std::move(ctx));
     }
     if (latest_schema == nullptr) {
         return Status::Invalid(fmt::format("not found latest schema in branch {}", branch));

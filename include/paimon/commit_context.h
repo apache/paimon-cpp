@@ -151,7 +151,7 @@ class PAIMON_EXPORT CommitContextBuilder {
     ///
     /// There is no commit user: a format table keeps no snapshot to record one in.
     ///
-    /// @param table The format table to commit to, as `Catalog::GetFormatTable()` hands it back.
+    /// @param table The format table to commit to, as `Catalog::GetTable()` hands it back.
     explicit CommitContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~CommitContextBuilder();
