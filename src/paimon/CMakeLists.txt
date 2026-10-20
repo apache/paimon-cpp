@@ -452,7 +452,6 @@ set(PAIMON_CORE_SRCS
     core/table/format/format_table_commit.cpp
     core/table/format/format_table_file_store_commit.cpp
     core/table/format/format_table_file_store_write.cpp
-    core/table/format/format_table_loader.cpp
     core/table/format/format_table_read.cpp
     core/table/format/format_table_scan.cpp
     core/table/format/format_table_write.cpp

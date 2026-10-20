@@ -183,7 +183,7 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// table a REST catalog serves. The table carries what such a location does not say, so
     /// `SetTableSchema()` and `WithFileSystem()` are refused here rather than ignored.
     ///
-    /// @param table The format table to scan, as `Catalog::GetFormatTable()` hands it back.
+    /// @param table The format table to scan, as `Catalog::GetTable()` hands it back.
     explicit ScanContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~ScanContextBuilder();

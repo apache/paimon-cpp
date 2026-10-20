@@ -178,7 +178,7 @@ class PAIMON_EXPORT WriteContextBuilder {
     ///
     /// There is no commit user: a format table keeps no snapshot to record one in.
     ///
-    /// @param table The format table to write to, as `Catalog::GetFormatTable()` hands it back.
+    /// @param table The format table to write to, as `Catalog::GetTable()` hands it back.
     explicit WriteContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~WriteContextBuilder();

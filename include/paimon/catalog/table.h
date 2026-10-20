@@ -33,20 +33,25 @@
 
 namespace paimon {
 
-class TableScan;
+class CommitContext;
+class FileStoreCommit;
+class FileStoreWrite;
+class ReadContext;
+class ScanContext;
 class TableRead;
+class TableScan;
+class WriteContext;
 
 /// A table provides basic abstraction for table type.
+///
+/// The state a table of every kind carries - file system, root path, schema and identifier - lives
+/// here, and each kind of table fills the operations in: the operators below create this table's
+/// scan, read, write or commit, from a context the caller finishes through its builder. What the
+/// context asks for that this table cannot honour is refused by name by the implementation rather
+/// than silently dropped.
 class PAIMON_EXPORT Table {
  public:
-    /// @param file_system File system the table's data is accessed through.
-    /// @param root_path Root path of the table in the file system.
-    /// @param uuid Metastore UUID, or empty if unavailable.
-    Table(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-          const std::shared_ptr<Schema>& schema, const Identifier& identifier,
-          const std::string& uuid = "");
-
-    ~Table() = default;
+    virtual ~Table() = default;
 
     /// Returns the file system the table was opened with, which serves the table's
     /// files. A catalog that hands out per-table file systems opens a table with the
@@ -99,33 +104,45 @@ class PAIMON_EXPORT Table {
     /// that `TableScan::Create()` also builds through. The scan is derived from the context.
     /// @param context The finished scan context.
     /// @return The scan, or the error building it reports.
-    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const;
+    virtual Result<std::unique_ptr<TableScan>> NewScan(
+        std::unique_ptr<ScanContext> context) const = 0;
 
     /// Creates a read of this table from a finished read context, the table-first entry point
     /// that `TableRead::Create()` also builds through. The read is derived from the context.
     /// @param context The finished read context.
     /// @return The read, or the error building it reports.
-    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const;
+    virtual Result<std::unique_ptr<TableRead>> NewRead(
+        std::unique_ptr<ReadContext> context) const = 0;
 
     /// Creates a write of this table from a finished write context, the table-first entry point
     /// that `FileStoreWrite::Create()` also builds through. The write is derived from the context.
     /// @param context The finished write context.
     /// @return The write, or the error building it reports.
-    Result<std::unique_ptr<FileStoreWrite>> NewWrite(std::unique_ptr<WriteContext> context) const;
+    virtual Result<std::unique_ptr<FileStoreWrite>> NewWrite(
+        std::unique_ptr<WriteContext> context) const = 0;
 
     /// Creates a commit of this table from a finished commit context, the table-first entry point
     /// that `FileStoreCommit::Create()` also builds through. The commit is derived from the
     /// context.
     /// @param context The finished commit context.
     /// @return The commit, or the error building it reports.
-    Result<std::unique_ptr<FileStoreCommit>> NewCommit(
-        std::unique_ptr<CommitContext> context) const;
+    virtual Result<std::unique_ptr<FileStoreCommit>> NewCommit(
+        std::unique_ptr<CommitContext> context) const = 0;
 
- private:
+ protected:
+    /// @param file_system File system the table's data is accessed through.
+    /// @param root_path Root path of the table in the file system.
+    /// @param uuid Metastore UUID, or empty if unavailable.
+    Table(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+          const std::shared_ptr<Schema>& schema, const Identifier& identifier,
+          const std::string& uuid = "");
+
     std::shared_ptr<FileSystem> file_system_;
     std::string root_path_;
     std::shared_ptr<Schema> schema_;
     Identifier identifier_;
+
+ private:
     std::string uuid_;
 };
 

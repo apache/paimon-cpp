@@ -34,6 +34,7 @@
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/result.h"
 #include "paimon/schema/schema.h"
 #include "paimon/status.h"
@@ -98,7 +99,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
         // Serves the per-table file system when one was set, matching `GetTableFileSystem`
         // without recording the request, so a test can still tell the two apart. No location:
         // this mock's `GetTableLocation` is the unsupported stub.
-        return std::make_shared<Table>(
+        return std::make_shared<FileStoreTable>(
             table_file_system_ != nullptr ? table_file_system_ : file_system_,
             /*root_path=*/"", table_schema_, identifier, table_uuid_);
     }
