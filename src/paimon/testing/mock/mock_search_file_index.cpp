@@ -178,8 +178,8 @@ Result<std::shared_ptr<Bytes>> MockSearchFileIndex::Serialize(
         for (const auto& [type, bytes] : entries) {
             FileIndexFormat::Writer::PayloadWriter payload;
             if (bytes && bytes->size() > 0) {
-                payload =
-                    [bytes](const std::shared_ptr<OutputStream>& destination) -> Result<bool> {
+                payload = [bytes = bytes](
+                              const std::shared_ptr<OutputStream>& destination) -> Result<bool> {
                     PAIMON_RETURN_NOT_OK(DataOutputStream(destination).WriteBytes(bytes));
                     return true;
                 };

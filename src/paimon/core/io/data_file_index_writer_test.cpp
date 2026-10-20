@@ -69,7 +69,7 @@ class StreamingTestIndexWriter : public FileIndexWriter {
         if (empty_) {
             return false;
         }
-        for (const std::string& chunk : {"stream", "ed"}) {
+        for (const std::string chunk : {"stream", "ed"}) {
             PAIMON_ASSIGN_OR_RAISE(int64_t written, output->Write(chunk.data(), chunk.size()));
             if (written != static_cast<int64_t>(chunk.size())) {
                 return Status::IOError("short streamed payload");

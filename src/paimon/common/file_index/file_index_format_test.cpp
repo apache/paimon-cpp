@@ -58,7 +58,7 @@ class FileIndexFormatTest : public ::testing::Test {
         for (const auto& [column, entries] : indexes) {
             for (const auto& [type, bytes] : entries) {
                 FileIndexFormat::Writer::PayloadWriter payload =
-                    [bytes](const std::shared_ptr<OutputStream>& output) -> Result<bool> {
+                    [bytes = bytes](const std::shared_ptr<OutputStream>& output) -> Result<bool> {
                     if (!bytes || bytes->size() == 0) {
                         return false;
                     }
@@ -1147,8 +1147,8 @@ TEST_F(FileIndexFormatTest, TestV1BuffersPayloadsUntilFinish) {
         for (const auto& [type, bytes] : entries) {
             FileIndexFormat::Writer::PayloadWriter payload;
             if (bytes) {
-                payload =
-                    [bytes](const std::shared_ptr<OutputStream>& destination) -> Result<bool> {
+                payload = [bytes = bytes](
+                              const std::shared_ptr<OutputStream>& destination) -> Result<bool> {
                     PAIMON_RETURN_NOT_OK(DataOutputStream(destination).WriteBytes(bytes));
                     return true;
                 };

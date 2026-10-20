@@ -148,14 +148,14 @@ TEST(FileIndexOptionsTest, TestRewriteFieldNamesRejectsUndeclaredColumnOptions) 
 TEST(FileIndexOptionsTest, TestFormatVersion) {
     ASSERT_OK_AND_ASSIGN(auto defaults, ParseOptions({}));
     ASSERT_EQ(1, defaults.FormatVersion());
-    for (const std::string& version : {"1", "2"}) {
+    for (const std::string version : {"1", "2"}) {
         ASSERT_OK_AND_ASSIGN(auto options, ParseOptions({{"file-index.format-version", version}}));
         ASSERT_EQ(std::stoi(version), options.FormatVersion());
         ASSERT_OK_AND_ASSIGN(FileIndexOptions from_map,
                              FileIndexOptions::FromMap({{"file-index.format-version", version}}));
         ASSERT_EQ(std::stoi(version), from_map.FormatVersion());
     }
-    for (const std::string& version : {"0", "3", "-1", "bad"}) {
+    for (const std::string version : {"0", "3", "-1", "bad"}) {
         ASSERT_NOK(ParseOptions({{"file-index.format-version", version}}));
         ASSERT_NOK(FileIndexOptions::FromMap({{"file-index.format-version", version}}));
     }
