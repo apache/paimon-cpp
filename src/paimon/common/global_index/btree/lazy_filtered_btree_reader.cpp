@@ -19,6 +19,7 @@
 
 #include "paimon/common/global_index/btree/lazy_filtered_btree_reader.h"
 
+#include <cassert>
 #include <utility>
 
 #include "fmt/format.h"
@@ -214,9 +215,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitGreater
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::FullResult() const {
-    if (total_row_count_ <= 0) {
-        return BitmapGlobalIndexResult::FromRanges({});
-    }
+    assert(total_row_count_ > 0);
     if (row_id_filter_) {
         RoaringBitmap64 filter = row_id_filter_.value();
         return std::make_shared<BitmapGlobalIndexResult>(

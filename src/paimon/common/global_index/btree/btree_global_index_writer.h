@@ -102,8 +102,8 @@ class BTreeGlobalIndexWriter : public GlobalIndexWriter {
     std::optional<Literal> first_key_;
     std::optional<Literal> last_key_;
 
-    // Null bitmap tracking
     int64_t row_count_ = 0;
+    // Null bitmap tracking
     RoaringBitmap64 null_bitmap_;
     std::vector<int64_t> current_row_ids_;
 };
