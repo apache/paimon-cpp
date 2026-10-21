@@ -21,12 +21,28 @@
 #include <utility>
 
 #include "paimon/common/predicate/compound_predicate_impl.h"
+#include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/predicate_builder.h"
 
 namespace paimon {
+
+bool PredicateUtils::ContainsFullTextMatch(const std::shared_ptr<Predicate>& predicate) {
+    if (std::dynamic_pointer_cast<FullTextMatchPredicate>(predicate)) {
+        return true;
+    }
+    if (auto compound = std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
+        for (const auto& child : compound->Children()) {
+            if (ContainsFullTextMatch(child)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 Result<bool> PredicateUtils::ContainAnyField(const std::shared_ptr<Predicate>& predicate,
                                              const std::set<std::string>& field_names) {
     if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate)) {
@@ -135,6 +151,13 @@ PredicateUtils::ReconstructPredicateWithPickedFields(
         }
         return std::optional<std::shared_ptr<Predicate>>(
             compound_predicate->NewCompoundPredicate(mapped_children));
+    } else if (auto full_text = std::dynamic_pointer_cast<FullTextMatchPredicate>(predicate)) {
+        auto iter = picked_field_name_to_idx.find(full_text->FieldName());
+        if (iter == picked_field_name_to_idx.end()) {
+            return std::optional<std::shared_ptr<Predicate>>();
+        }
+        return std::optional<std::shared_ptr<Predicate>>(
+            full_text->NewLeafPredicate(/*new_field_index=*/iter->second));
     } else if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicateImpl>(predicate)) {
         auto iter = picked_field_name_to_idx.find(leaf_predicate->FieldName());
         if (iter == picked_field_name_to_idx.end()) {

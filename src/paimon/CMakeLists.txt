@@ -118,6 +118,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/contains.cpp
     common/predicate/ends_with.cpp
     common/predicate/equal.cpp
+    common/predicate/full_text_match_predicate.cpp
     common/predicate/greater_or_equal.cpp
     common/predicate/greater_than.cpp
     common/predicate/in.cpp
@@ -669,6 +670,7 @@ if(PAIMON_BUILD_TESTS)
                     common/metrics/histogram_windowing_test.cpp
                     common/options/memory_size_test.cpp
                     common/options/time_duration_test.cpp
+                    common/predicate/full_text_match_predicate_test.cpp
                     common/predicate/full_text_search_test.cpp
                     common/predicate/literal_converter_test.cpp
                     common/predicate/literal_test.cpp

@@ -387,6 +387,24 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->vector_search_ && impl_->full_text_search_) {
         return Status::Invalid("VectorSearch and FullTextSearch cannot be configured together");
     }
+    if (impl_->vector_search_) {
+        const auto& search = impl_->vector_search_;
+        if (search->limit <= 0) {
+            return Status::Invalid("VectorSearch TopK limit must be positive");
+        }
+        if (search->field_name.empty() || search->query.empty()) {
+            return Status::Invalid("VectorSearch field name and query must not be empty");
+        }
+    }
+    if (impl_->full_text_search_) {
+        const auto& search = impl_->full_text_search_;
+        if (search->limit <= 0) {
+            return Status::Invalid("FullTextSearch TopK limit must be positive");
+        }
+        if (search->field_name.empty() || search->query.empty()) {
+            return Status::Invalid("FullTextSearch field name and query must not be empty");
+        }
+    }
     if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
         return Status::Invalid("cannot read with null format table");
     }

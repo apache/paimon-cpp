@@ -61,6 +61,9 @@ class PAIMON_EXPORT PredicateUtils {
     static Status GetAllNames(const std::shared_ptr<Predicate>& predicate,
                               std::set<std::string>* field_names);
 
+    /// Whether the predicate contains a full-text matching condition.
+    static bool ContainsFullTextMatch(const std::shared_ptr<Predicate>& predicate);
+
     template <typename T>
     static Result<T> VisitPredicate(const std::shared_ptr<LeafPredicate>& predicate,
                                     const std::shared_ptr<FunctionVisitor<T>>& visitor) {

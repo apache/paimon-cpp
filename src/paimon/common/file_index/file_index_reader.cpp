@@ -111,4 +111,9 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
     return Status::NotImplemented("This file index does not support full text search");
 }
+
+Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitFullTextMatch(
+    const std::shared_ptr<FullTextMatch>& full_text_match) {
+    return Status::NotImplemented("This file index does not support complete full-text matching");
+}
 }  // namespace paimon

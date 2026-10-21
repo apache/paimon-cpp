@@ -31,6 +31,7 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
+struct FullTextMatch;
 /// Evaluates filter predicates against a file-level index to determine file eligibility.
 ///
 /// `FileIndexReader` implements the `FunctionVisitor` interface specialized to produce
@@ -79,6 +80,10 @@ class PAIMON_EXPORT FileIndexReader : public FunctionVisitor<std::shared_ptr<Fil
     /// Execute full-text search and return matching file-local physical row positions.
     virtual Result<std::shared_ptr<FileIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search);
+
+    /// Return every matching file-local physical row position, without TopK truncation.
+    virtual Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
+        const std::shared_ptr<FullTextMatch>& full_text_match);
 };
 
 }  // namespace paimon

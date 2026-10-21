@@ -29,7 +29,9 @@
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
@@ -430,6 +432,41 @@ TEST(ReadContextTest, TestRejectConflictingFileIndexSearch) {
     ReadContextBuilder conflicting("table_root_path");
     conflicting.SetVectorSearch(vector_search).SetFullTextSearch(full_text_search);
     ASSERT_NOK_WITH_MSG(conflicting.Finish(), "cannot be configured together");
+}
+
+TEST(ReadContextTest, TestFullTextPredicateAndRootTopKConfiguration) {
+    auto match = std::make_shared<FullTextMatch>("body", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> text,
+                         PredicateBuilder::FullTextMatch(0, match));
+    auto scalar = PredicateBuilder::LessThan(1, "price", FieldType::INT, Literal(10));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> filter, PredicateBuilder::Or({text, scalar}));
+    auto vector =
+        std::make_shared<VectorSearch>("embedding", 3, std::vector<float>{1.0f}, nullptr, nullptr,
+                                       std::nullopt, std::map<std::string, std::string>{});
+    ReadContextBuilder builder("table_root_path");
+    builder.SetReadFieldNames({"body", "price"}).SetPredicate(filter).SetVectorSearch(vector);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+    ASSERT_EQ(context->GetPredicate(), filter);
+    ASSERT_EQ(context->GetVectorSearch(), vector);
+
+    auto ranked_text = std::make_shared<FullTextSearch>("title", match->query, 2);
+    builder.SetPredicate(filter).SetFullTextSearch(ranked_text);
+    ASSERT_OK_AND_ASSIGN(context, builder.Finish());
+    ASSERT_EQ(context->GetPredicate(), filter);
+    ASSERT_EQ(context->GetFullTextSearch(), ranked_text);
+}
+
+TEST(ReadContextTest, TestRootTopKValidation) {
+    auto vector =
+        std::make_shared<VectorSearch>("embedding", 0, std::vector<float>{1.0f}, nullptr, nullptr,
+                                       std::nullopt, std::map<std::string, std::string>{});
+    ReadContextBuilder vector_builder("table_root_path");
+    vector_builder.SetVectorSearch(vector);
+    ASSERT_NOK_WITH_MSG(vector_builder.Finish(), "VectorSearch TopK limit must be positive");
+    auto text = std::make_shared<FullTextSearch>("body", R"({"match":{"query":"apple"}})", -1);
+    ReadContextBuilder text_builder("table_root_path");
+    text_builder.SetFullTextSearch(text);
+    ASSERT_NOK_WITH_MSG(text_builder.Finish(), "FullTextSearch TopK limit must be positive");
 }
 
 }  // namespace paimon::test

@@ -25,6 +25,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/predicate/compound_predicate_impl.h"
+#include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
@@ -354,7 +355,25 @@ FieldMappingBuilder::ReconstructPredicateWithDataFields(
     const std::shared_ptr<Predicate>& predicate,
     const std::map<std::string, DataField>& field_name_to_read_fields,
     const std::map<int32_t, std::pair<int32_t, DataField>>& field_id_to_data_fields) {
-    if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicateImpl>(predicate)) {
+    if (auto full_text = std::dynamic_pointer_cast<FullTextMatchPredicate>(predicate)) {
+        auto read_field = field_name_to_read_fields.find(full_text->FieldName());
+        if (read_field == field_name_to_read_fields.end()) {
+            return Status::Invalid(
+                fmt::format("FullTextMatch field '{}' is not projected", full_text->FieldName()));
+        }
+        auto data_field = field_id_to_data_fields.find(read_field->second.Id());
+        if (data_field == field_id_to_data_fields.end()) {
+            return Status::Invalid(fmt::format(
+                "FullTextMatch field '{}' does not exist in file schema", full_text->FieldName()));
+        }
+        const auto& [field_index, field] = data_field->second;
+        if (field.Type()->id() != arrow::Type::STRING) {
+            return Status::Invalid(
+                fmt::format("FullTextMatch field '{}' must have STRING type", field.Name()));
+        }
+        return std::optional<std::shared_ptr<Predicate>>(
+            full_text->NewLeafPredicate(field.Name())->NewLeafPredicate(field_index));
+    } else if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicateImpl>(predicate)) {
         return ReconstructLeafPredicate(leaf_predicate, field_name_to_read_fields,
                                         field_id_to_data_fields);
     } else if (auto compound_predicate =

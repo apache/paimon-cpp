@@ -25,6 +25,7 @@
 #include "paimon/common/predicate/contains.h"
 #include "paimon/common/predicate/ends_with.h"
 #include "paimon/common/predicate/equal.h"
+#include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/predicate/greater_or_equal.h"
 #include "paimon/common/predicate/greater_than.h"
 #include "paimon/common/predicate/in.h"
@@ -38,11 +39,26 @@
 #include "paimon/common/predicate/not_in.h"
 #include "paimon/common/predicate/or.h"
 #include "paimon/common/predicate/starts_with.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/status.h"
 
 namespace paimon {
 enum class FieldType;
+
+Result<std::shared_ptr<Predicate>> PredicateBuilder::FullTextMatch(
+    int32_t field_index, const std::shared_ptr<paimon::FullTextMatch>& match) {
+    if (!match) {
+        return Status::Invalid("FullTextMatch request must not be null");
+    }
+    if (match->field_name.empty()) {
+        return Status::Invalid("FullTextMatch field name must not be empty");
+    }
+    if (match->query.empty()) {
+        return Status::Invalid("FullTextMatch query must not be empty");
+    }
+    return std::make_shared<FullTextMatchPredicate>(field_index, match);
+}
 
 // TODO(xinyu.lxy): predicate field_index use index in read schema now, but java paimon use index
 // in file schema

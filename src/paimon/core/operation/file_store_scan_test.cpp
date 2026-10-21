@@ -29,10 +29,12 @@
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/manifest/manifest_entry_serializer.h"
 #include "paimon/core/manifest/snapshot_live_manifest_entries.h"
+#include "paimon/core/operation/append_only_file_store_scan.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_segment.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -138,6 +140,28 @@ TEST_F(FileStoreScanTest, TestCreatePartitionPredicateWithInvalidPartitionFilter
     ASSERT_NOK_WITH_MSG(FileStoreScan::CreatePartitionPredicate(
                             partition_keys, partition_default_name, schema_, {partition_filters}),
                         "field invalid does not exist in partition keys");
+}
+
+TEST_F(FileStoreScanTest, TestFullTextMatchDoesNotEnterPartitionOrStatsFilters) {
+    auto match = std::make_shared<FullTextMatch>("f0", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(auto full_text, PredicateBuilder::FullTextMatch(/*field_index=*/0, match));
+    auto scalar = PredicateBuilder::Equal(/*field_index=*/1, "f1", FieldType::INT, Literal(1));
+    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::Or({scalar, full_text}));
+    auto filters = std::make_shared<ScanFilter>(
+        predicate, std::vector<std::map<std::string, std::string>>{}, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    for (const std::vector<std::string>& partition_keys :
+         {std::vector<std::string>{}, std::vector<std::string>{"f0"}}) {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema_, partition_keys, /*primary_keys=*/{}, {}));
+        auto result = AppendOnlyFileStoreScan::Create(
+            /*snapshot_manager=*/nullptr, /*schema_manager=*/nullptr, /*manifest_list=*/nullptr,
+            /*manifest_file=*/nullptr, table_schema, schema_, filters, options,
+            CreateDefaultExecutor(), GetDefaultPool());
+        ASSERT_NOK_WITH_MSG(result, "FullTextMatch predicate execution is not implemented yet");
+        ASSERT_TRUE(result.status().IsNotImplemented());
+    }
 }
 
 TEST_F(FileStoreScanTest, TestFilterManifestByRowRanges) {

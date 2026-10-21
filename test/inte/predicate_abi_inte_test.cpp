@@ -47,6 +47,8 @@
 #include "gtest/gtest.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/compound_predicate.h"
+#include "paimon/predicate/full_text_match.h"
+#include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate.h"
@@ -72,6 +74,19 @@ TEST(PredicateAbiInteTest, LeafPredicateCastsAcrossModule) {
 
     // A leaf predicate must not be mistaken for a compound predicate.
     EXPECT_EQ(std::dynamic_pointer_cast<CompoundPredicate>(predicate), nullptr);
+}
+
+TEST(PredicateAbiInteTest, FullTextMatchCastsToLeafAcrossModule) {
+    auto match = std::make_shared<FullTextMatch>("body", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::FullTextMatch(0, match));
+    auto leaf = std::dynamic_pointer_cast<LeafPredicate>(predicate);
+    ASSERT_TRUE(leaf);
+    ASSERT_EQ(leaf->FieldIndex(), 0);
+    ASSERT_EQ(leaf->FieldName(), "body");
+    ASSERT_EQ(leaf->GetFieldType(), FieldType::STRING);
+    ASSERT_TRUE(leaf->Literals().empty());
+    ASSERT_EQ(leaf->GetFunction().GetType(), Function::Type::FULL_TEXT_MATCH);
 }
 
 // A compound predicate built in libpaimon.so must survive dynamic_pointer_cast

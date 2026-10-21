@@ -108,6 +108,7 @@ class PAIMON_EXPORT ReadContext {
         return full_text_search_;
     }
 
+    /// Whether a root TopK request is configured; full-text predicates are not TopK requests.
     bool HasVectorOrFullTextSearch() const {
         return vector_search_ != nullptr || full_text_search_ != nullptr;
     }
@@ -346,24 +347,34 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// It can significantly improve performance by reducing the amount of data
     /// that needs to be read and processed.
     ///
+    /// All referenced fields, including full-text match fields, must be projected in the read
+    /// schema. Full-text matches can be combined with scalar predicates using
+    /// PredicateBuilder::And/Or. Full-text predicate execution is not implemented yet; reading such
+    /// a predicate returns NotImplemented.
+    ///
     /// @param predicate Shared pointer to the predicate for data filtering.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetPredicate(const std::shared_ptr<Predicate>& predicate);
 
-    /// Set the vector search request used when reading data.
-    ///
-    /// TODO(jinli.zjw): Support combining vector search with predicates and full-text search. Merge
-    /// per-file candidates to compute read-level top-k results.
-    ///
+    /// Configure the root vector TopK request, logically applied after the predicate filter.
+    /// The search field need not be projected. SetVectorSearch is mutually exclusive with
+    /// SetFullTextSearch and must have a positive limit.
+    /// Scores are required internally for TopK. Project `_<field>_INDEX_SCORE` to include them
+    /// in the result. Per-field score output is not implemented yet; reading such a projection
+    /// returns NotImplemented.
+    /// TODO(lisizhuo.lsz): Execute combined read predicates and merge TopK across files.
     /// @param vector_search Vector search request, or nullptr to clear it.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetVectorSearch(const std::shared_ptr<VectorSearch>& vector_search);
 
-    /// Set the full-text search request used when reading data.
-    ///
-    /// TODO(jinli.zjw): Support combining full-text search with predicates and vector search. Apply
-    /// the search limit to merged per-file results at read level.
-    ///
+    /// Configure the root full-text TopK request, logically applied after the predicate filter.
+    /// The search field need not be projected. Use PredicateBuilder::FullTextMatch for a
+    /// full-text filter without TopK truncation. SetFullTextSearch is mutually exclusive with
+    /// SetVectorSearch and must have a positive limit.
+    /// Scores are required internally for TopK. Project `_<field>_INDEX_SCORE` to include them
+    /// in the result. Per-field score output is not implemented yet; reading such a projection
+    /// returns NotImplemented.
+    /// TODO(lisizhuo.lsz): Execute combined read predicates and merge TopK across files.
     /// @param full_text_search Full-text search request, or nullptr to clear it.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetFullTextSearch(const std::shared_ptr<FullTextSearch>& full_text_search);

@@ -22,6 +22,7 @@
 #include "gtest/gtest.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/result.h"
 #include "paimon/testing/utils/testharness.h"
@@ -31,6 +32,48 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon::test {
+TEST(PredicateValidatorTest, TestFullTextMatchRequiresProjectedStringField) {
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int32()), arrow::field("text", arrow::utf8())});
+    auto match = std::make_shared<FullTextMatch>("text", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> text,
+                         PredicateBuilder::FullTextMatch(1, match));
+    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, text, true));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> wrong_index,
+                         PredicateBuilder::FullTextMatch(0, match));
+    ASSERT_NOK_WITH_MSG(
+        PredicateValidator::ValidatePredicateWithSchema(*schema, wrong_index, true),
+        "field text has field idx 1 in input schema, mismatch field idx 0 in predicate");
+    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, wrong_index, false));
+    auto missing = arrow::schema({arrow::field("id", arrow::int32())});
+    ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*missing, text, true),
+                        "field text does not exist in schema");
+    auto numeric =
+        arrow::schema({arrow::field("id", arrow::int32()), arrow::field("text", arrow::int32())});
+    ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*numeric, text, true),
+                        "schema type int32 mismatches predicate field type STRING");
+}
+
+TEST(PredicateValidatorTest, TestFullTextMatchAllowsOrAndRepeatedFields) {
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int32()), arrow::field("text", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> apple,
+        PredicateBuilder::FullTextMatch(
+            1, std::make_shared<FullTextMatch>("text", R"({"match":{"query":"apple"}})")));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> orange,
+        PredicateBuilder::FullTextMatch(
+            1, std::make_shared<FullTextMatch>("text", R"({"match":{"query":"orange"}})")));
+    auto scalar = PredicateBuilder::Equal(0, "id", FieldType::INT, Literal(7));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> conjunction,
+                         PredicateBuilder::And({apple, orange}));
+    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, conjunction, true));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
+                         PredicateBuilder::Or({conjunction, scalar}));
+    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, disjunction, true));
+}
+
 TEST(PredicateValidatorTest, TestValidateLiterals) {
     std::string str("apple");
     std::shared_ptr<arrow::Schema> schema = arrow::schema(arrow::FieldVector({

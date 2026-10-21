@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "gtest/gtest.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/vector_search.h"
@@ -75,5 +76,8 @@ TEST(FileIndexReaderTest, TestDefaultIndexReader) {
         std::make_shared<FullTextSearch>("body", R"({"match":{"query":"word"}})", /*limit=*/1);
     ASSERT_NOK_WITH_MSG(reader.VisitFullTextSearch(full_text_search),
                         "does not support full text search");
+    auto full_text_match = std::make_shared<FullTextMatch>("body", R"({"match":{"query":"word"}})");
+    ASSERT_NOK_WITH_MSG(reader.VisitFullTextMatch(full_text_match),
+                        "does not support complete full-text matching");
 }
 }  // namespace paimon::test

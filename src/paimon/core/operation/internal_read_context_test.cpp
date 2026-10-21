@@ -27,6 +27,7 @@
 
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
@@ -34,7 +35,9 @@
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -276,6 +279,332 @@ TEST(InternalReadContext, TestFileFullTextSearchScoreIsNotSupported) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, table_schema->Options()),
                         "does not support score output");
+}
+
+TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
+    struct TestCase {
+        int32_t field_index;
+        std::string field_name;
+        std::vector<std::string> projection;
+        std::string expected_error;
+    };
+    const std::vector<TestCase> cases = {
+        {0, "f0", {"f0"}, ""},
+        {0, "f0", {"f1"}, "field f0 does not exist in schema"},
+        {1,
+         "f0",
+         {"f0"},
+         "field f0 has field idx 0 in input schema, mismatch field idx 1 in predicate"},
+        {0, "f1", {"f1"}, "schema type int32 mismatches predicate field type STRING"}};
+    for (const auto& test_case : cases) {
+        auto match =
+            std::make_shared<FullTextMatch>(test_case.field_name, R"({"match":{"query":"apple"}})");
+        ASSERT_OK_AND_ASSIGN(auto predicate,
+                             PredicateBuilder::FullTextMatch(test_case.field_index, match));
+        ReadContextBuilder builder(path);
+        builder.SetReadFieldNames(test_case.projection).SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+        if (test_case.expected_error.empty()) {
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<InternalReadContext> internal,
+                InternalReadContext::Create(context, table_schema, table_schema->Options()));
+            ASSERT_TRUE(internal->GetIndexScoreBindings().empty());
+            ASSERT_FALSE(internal->NeedsScores(
+                {InternalReadContext::IndexScoreSource::Type::FULL_TEXT_MATCH, match->field_name}));
+            ASSERT_NOK_WITH_MSG(
+                InternalReadContext::CreateWithSchema(internal, internal->GetReadSchema()),
+                "CreateWithSchema does not support");
+        } else {
+            ASSERT_NOK_WITH_MSG(
+                InternalReadContext::Create(context, table_schema, table_schema->Options()),
+                test_case.expected_error);
+        }
+    }
+}
+
+TEST(InternalReadContext, TestPerFieldTopKScoreBindings) {
+    using SourceType = InternalReadContext::IndexScoreSource::Type;
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
+    for (bool vector_search : {false, true}) {
+        for (bool project_score : {false, true}) {
+            ReadContextBuilder builder(path);
+            std::vector<std::string> projection = {"f1"};
+            if (project_score) {
+                projection.push_back(vector_search ? "_f3_INDEX_SCORE" : "_f0_INDEX_SCORE");
+            }
+            builder.SetReadFieldNames(projection);
+            const InternalReadContext::IndexScoreSource source = {
+                vector_search ? SourceType::VECTOR_SEARCH : SourceType::FULL_TEXT_SEARCH,
+                vector_search ? "f3" : "f0"};
+            if (vector_search) {
+                auto search = std::make_shared<VectorSearch>(
+                    "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr, std::nullopt,
+                    std::map<std::string, std::string>{});
+                builder.SetVectorSearch(search);
+            } else {
+                auto search = std::make_shared<FullTextSearch>(
+                    "f0", R"({"match":{"query":"apple"}})", /*limit=*/1);
+                builder.SetFullTextSearch(search);
+            }
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<InternalReadContext> internal,
+                InternalReadContext::Create(context, table_schema, table_schema->Options()));
+            ASSERT_EQ(internal->GetReadSchema()->field_names(), projection);
+            ASSERT_TRUE(internal->NeedsScores(source));
+            ASSERT_FALSE(internal->NeedsScores(
+                {vector_search ? SourceType::FULL_TEXT_SEARCH : SourceType::VECTOR_SEARCH,
+                 source.field_name}));
+            ASSERT_FALSE(internal->NeedsScores({SourceType::FULL_TEXT_MATCH, source.field_name}));
+            ASSERT_FALSE(internal->NeedsScores({source.type, "missing"}));
+            const auto& bindings = internal->GetIndexScoreBindings();
+            if (project_score) {
+                const std::map<int32_t, InternalReadContext::IndexScoreSource> expected = {
+                    {1, source}};
+                ASSERT_EQ(bindings, expected);
+                ASSERT_EQ(internal->GetReadSchema()->field(1)->type()->id(), arrow::Type::FLOAT);
+            } else {
+                ASSERT_TRUE(bindings.empty());
+            }
+            ASSERT_NOK_WITH_MSG(
+                InternalReadContext::CreateWithSchema(internal, internal->GetReadSchema()),
+                "CreateWithSchema does not support");
+        }
+    }
+}
+
+class InternalReadContextScoreTest : public testing::Test {
+ protected:
+    void SetUp() override {
+        ASSERT_OK_AND_ASSIGN(table_schema_,
+                             TableSchema::Create(0,
+                                                 arrow::schema({arrow::field("F1", arrow::utf8()),
+                                                                arrow::field("F2", arrow::utf8())}),
+                                                 {}, {}, {}));
+    }
+
+    Result<std::unique_ptr<InternalReadContext>> Create(ReadContextBuilder* builder) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> context, builder->Finish());
+        return InternalReadContext::Create(context, table_schema_, table_schema_->Options());
+    }
+
+    std::shared_ptr<TableSchema> table_schema_;
+};
+
+TEST_F(InternalReadContextScoreTest, BindsFullTextScoresByProjection) {
+    using SourceType = InternalReadContext::IndexScoreSource::Type;
+    auto first = std::make_shared<FullTextMatch>("F1", R"({"match":{"query":"apple"}})");
+    auto second = std::make_shared<FullTextMatch>("F2", first->query);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> first_predicate,
+                         PredicateBuilder::FullTextMatch(0, first));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> second_predicate,
+                         PredicateBuilder::FullTextMatch(1, second));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({first_predicate, second_predicate}));
+    struct TestCase {
+        int32_t score_count;
+        bool explicit_schema;
+        bool reverse_scores;
+    };
+    const std::vector<TestCase> cases = {{0, false, false}, {1, false, false}, {2, false, false},
+                                         {2, false, true},  {2, true, false},  {2, true, true}};
+    for (const auto& test_case : cases) {
+        const int32_t score_count = test_case.score_count;
+        ReadContextBuilder builder("/tmp/unused-table-path");
+        std::vector<std::string> projection = {"F1", "F2"};
+        if (score_count >= 1) {
+            projection.push_back(test_case.reverse_scores ? "_F1_INDEX_SCORE" : "_F2_INDEX_SCORE");
+        }
+        if (score_count == 2) {
+            projection.push_back(test_case.reverse_scores ? "_F2_INDEX_SCORE" : "_F1_INDEX_SCORE");
+        }
+        builder.SetPredicate(predicate);
+        if (test_case.explicit_schema) {
+            arrow::FieldVector fields = {arrow::field("F1", arrow::utf8()),
+                                         arrow::field("F2", arrow::utf8())};
+            for (int32_t i = 0; i < score_count; ++i) {
+                fields.push_back(arrow::field(projection[i + 2], arrow::float32()));
+            }
+            auto c_schema = std::make_unique<ArrowSchema>();
+            ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(fields), c_schema.get()).ok());
+            builder.SetReadSchema(std::move(c_schema));
+        } else if (score_count > 0) {
+            builder.SetReadFieldNames(projection);
+        }
+        ASSERT_OK_AND_ASSIGN(auto internal, Create(&builder));
+        ASSERT_EQ(internal->GetReadSchema()->field_names(), projection);
+        ASSERT_EQ(internal->NeedsScores({SourceType::FULL_TEXT_MATCH, first->field_name}),
+                  score_count == 2);
+        ASSERT_EQ(internal->NeedsScores({SourceType::FULL_TEXT_MATCH, second->field_name}),
+                  score_count >= 1);
+        auto copied_match = std::make_shared<FullTextMatch>(*second);
+        ASSERT_EQ(internal->NeedsScores({SourceType::FULL_TEXT_MATCH, copied_match->field_name}),
+                  score_count >= 1);
+        ASSERT_FALSE(internal->NeedsScores({SourceType::FULL_TEXT_SEARCH, second->field_name}));
+        ASSERT_FALSE(internal->NeedsScores({SourceType::FULL_TEXT_MATCH, "missing"}));
+        const auto& bindings = internal->GetIndexScoreBindings();
+        ASSERT_EQ(bindings.size(), score_count);
+        ASSERT_OK_AND_ASSIGN(std::vector<DataField> fields,
+                             DataField::ConvertArrowSchemaToDataFields(internal->GetReadSchema()));
+        for (int32_t i = 0; i < score_count; ++i) {
+            const int32_t output_idx = i + 2;
+            auto iter = bindings.find(output_idx);
+            ASSERT_NE(iter, bindings.end());
+            ASSERT_EQ(iter->second.type, SourceType::FULL_TEXT_MATCH);
+            ASSERT_EQ(iter->second.field_name,
+                      projection[output_idx] == "_F1_INDEX_SCORE" ? "F1" : "F2");
+            ASSERT_EQ(fields[output_idx].Type()->id(), arrow::Type::FLOAT);
+            ASSERT_LT(fields[output_idx].Id(), 0);
+            ASSERT_NE(fields[output_idx].Id(), SpecialFieldIds::INDEX_SCORE);
+            for (int32_t previous = 0; previous < output_idx; ++previous) {
+                ASSERT_NE(fields[output_idx].Id(), fields[previous].Id());
+            }
+        }
+    }
+}
+
+TEST_F(InternalReadContextScoreTest, BindsRootAndPredicateScores) {
+    using SourceType = InternalReadContext::IndexScoreSource::Type;
+    const InternalReadContext::IndexScoreSource search_source = {SourceType::FULL_TEXT_SEARCH,
+                                                                 "F2"};
+    const InternalReadContext::IndexScoreSource match_source = {SourceType::FULL_TEXT_MATCH, "F1"};
+    auto match = std::make_shared<FullTextMatch>("F1", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::FullTextMatch(0, match));
+    auto search = std::make_shared<FullTextSearch>("F2", match->query, /*limit=*/10);
+    ReadContextBuilder builder("/tmp/unused-table-path");
+    builder.SetPredicate(predicate).SetFullTextSearch(search).SetReadFieldNames(
+        {"F1", "_F2_INDEX_SCORE", "_F1_INDEX_SCORE"});
+    ASSERT_OK_AND_ASSIGN(auto internal, Create(&builder));
+    ASSERT_EQ(internal->GetReadSchema()->GetFieldIndex("F2"), -1);
+    const auto& bindings = internal->GetIndexScoreBindings();
+    const std::map<int32_t, InternalReadContext::IndexScoreSource> expected = {{1, search_source},
+                                                                               {2, match_source}};
+    ASSERT_EQ(bindings, expected);
+    ASSERT_TRUE(internal->NeedsScores(search_source));
+    ASSERT_TRUE(internal->NeedsScores(match_source));
+
+    builder.SetPredicate(predicate).SetFullTextSearch(search).SetReadFieldNames(
+        {"F1", "_F2_INDEX_SCORE", "F2", "_F1_INDEX_SCORE"});
+    ASSERT_OK_AND_ASSIGN(internal, Create(&builder));
+    const std::map<int32_t, InternalReadContext::IndexScoreSource> non_contiguous = {
+        {1, search_source}, {3, match_source}};
+    ASSERT_EQ(internal->GetIndexScoreBindings(), non_contiguous);
+
+    auto scalar = PredicateBuilder::IsNotNull(0, "F1", FieldType::STRING);
+    ASSERT_OK_AND_ASSIGN(predicate, PredicateBuilder::Or({predicate, scalar}));
+    builder.SetPredicate(predicate).SetFullTextSearch(search).SetReadFieldNames(
+        {"F1", "_F2_INDEX_SCORE"});
+    ASSERT_OK_AND_ASSIGN(internal, Create(&builder));
+    ASSERT_TRUE(internal->NeedsScores(search_source));
+    ASSERT_FALSE(internal->NeedsScores(match_source));
+    ASSERT_EQ(internal->GetIndexScoreBindings().size(), 1);
+}
+
+TEST_F(InternalReadContextScoreTest, RejectsAmbiguousOrConditionalScoreProjection) {
+    using SourceType = InternalReadContext::IndexScoreSource::Type;
+    auto match = std::make_shared<FullTextMatch>("F1", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> text,
+                         PredicateBuilder::FullTextMatch(0, match));
+    auto scalar = PredicateBuilder::IsNotNull(0, "F1", FieldType::STRING);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> duplicate, PredicateBuilder::And({text, text}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> conditional,
+                         PredicateBuilder::Or({text, scalar}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> scalar_or,
+                         PredicateBuilder::Or({scalar, scalar}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> valid,
+                         PredicateBuilder::And({text, scalar_or}));
+    struct TestCase {
+        std::shared_ptr<Predicate> predicate;
+        bool root_search;
+        std::string error;
+    };
+    const std::vector<TestCase> cases = {
+        {duplicate, false, "Score-producing search field 'F1' occurs more than once"},
+        {text, true, "Score-producing search field 'F1' occurs more than once"},
+        {conditional, false, "Score-producing FullTextMatch cannot appear under OR"},
+        {valid, false, ""}};
+    for (const auto& test_case : cases) {
+        for (bool project_score : {false, true}) {
+            ReadContextBuilder builder("/tmp/unused-table-path");
+            builder.SetPredicate(test_case.predicate)
+                .SetReadFieldNames(project_score ? std::vector<std::string>{"F1", "_F1_INDEX_SCORE"}
+                                                 : std::vector<std::string>{"F1"});
+            if (test_case.root_search) {
+                builder.SetFullTextSearch(
+                    std::make_shared<FullTextSearch>("F1", match->query, /*limit=*/1));
+            }
+            if (project_score && !test_case.error.empty()) {
+                ASSERT_NOK_WITH_MSG(Create(&builder), test_case.error);
+            } else {
+                ASSERT_OK_AND_ASSIGN(auto internal, Create(&builder));
+                ASSERT_EQ(internal->GetIndexScoreBindings().empty(), !project_score);
+                ASSERT_EQ(internal->NeedsScores({SourceType::FULL_TEXT_SEARCH, "F1"}),
+                          test_case.root_search);
+                ASSERT_EQ(internal->NeedsScores({SourceType::FULL_TEXT_MATCH, "F1"}),
+                          project_score);
+            }
+        }
+    }
+}
+
+TEST_F(InternalReadContextScoreTest, RejectsMissingScoreSource) {
+    for (const auto& name : {"_F1_INDEX_SCORE", "_missing_INDEX_SCORE"}) {
+        ReadContextBuilder builder("/tmp/unused-table-path");
+        builder.SetReadFieldNames({name});
+        ASSERT_NOK_WITH_MSG(Create(&builder),
+                            fmt::format("Index score field '{}' has no search source", name));
+    }
+}
+
+TEST_F(InternalReadContextScoreTest, ResolvesScoresOnlyFromEffectiveProjection) {
+    const InternalReadContext::IndexScoreSource search_source = {
+        InternalReadContext::IndexScoreSource::Type::FULL_TEXT_SEARCH, "F2"};
+    auto search = std::make_shared<FullTextSearch>("F2", R"({"match":{"query":"apple"}})", 1);
+    for (bool explicit_schema : {false, true}) {
+        ReadContextBuilder builder("/tmp/unused-table-path");
+        builder.SetFullTextSearch(search)
+            .SetReadFieldNames({"_missing_INDEX_SCORE"})
+            .SetReadFieldIds({0});
+        if (explicit_schema) {
+            auto c_schema = std::make_unique<ArrowSchema>();
+            ASSERT_TRUE(arrow::ExportSchema(
+                            *arrow::schema({arrow::field("_F2_INDEX_SCORE", arrow::float32())}),
+                            c_schema.get())
+                            .ok());
+            builder.SetReadSchema(std::move(c_schema));
+        }
+        ASSERT_OK_AND_ASSIGN(auto internal, Create(&builder));
+        ASSERT_EQ(internal->GetReadSchema()->field_names(),
+                  explicit_schema ? std::vector<std::string>{"_F2_INDEX_SCORE"}
+                                  : std::vector<std::string>{"F1"});
+        ASSERT_TRUE(internal->NeedsScores(search_source));
+        const auto& bindings = internal->GetIndexScoreBindings();
+        ASSERT_EQ(bindings.size(), explicit_schema ? 1 : 0);
+        if (explicit_schema) {
+            const std::map<int32_t, InternalReadContext::IndexScoreSource> expected = {
+                {0, search_source}};
+            ASSERT_EQ(bindings, expected);
+        }
+    }
+}
+
+TEST_F(InternalReadContextScoreTest, SchemaReplacementUsesProvidedSchema) {
+    ReadContextBuilder builder("/tmp/unused-table-path");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> internal, Create(&builder));
+    for (const auto& schema :
+         {arrow::schema({arrow::field("F1", arrow::utf8())}),
+          arrow::schema({arrow::field("_F1_INDEX_SCORE", arrow::float32())})}) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> replaced,
+                             InternalReadContext::CreateWithSchema(internal, schema));
+        ASSERT_TRUE(replaced->GetReadSchema()->Equals(schema));
+        ASSERT_TRUE(replaced->GetIndexScoreBindings().empty());
+    }
 }
 
 TEST(InternalReadContext, TestReadWithValueKindField) {
