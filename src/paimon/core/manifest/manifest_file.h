@@ -27,6 +27,7 @@
 
 #include "arrow/api.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/manifest/indexed_manifest_entries.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/stats/simple_stats_collector.h"
 #include "paimon/core/utils/objects_file.h"
@@ -65,6 +66,11 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     /// @note This method is atomic.
     Result<std::vector<ManifestFileMeta>> Write(const std::vector<ManifestEntry>& entries);
 
+    Status Read(const std::string& file_name,
+                const std::function<Result<bool>(const ManifestEntry&)>& filter,
+                std::optional<int64_t> file_size,
+                std::vector<ManifestEntry>* entries) const override;
+
     /// Read entries for a bucket. An inferred total bucket count also retains entries with
     /// different or unknown bucket counts for per-entry bucket filtering.
     /// Bucket pruning assumes stable bucket-key hashing across schema versions.
@@ -79,6 +85,7 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
                              std::vector<ManifestEntry>* entries) const;
 
     /// Select entries by row ranges and a row filter before constructing file metadata.
+    /// Group filters prune partitions and buckets before visiting rows in a cached file.
     /// A null row_ranges or row_filter disables that selection. Unknown ranges are retained.
     /// Add and Delete entries use the same selection. The entry filter runs after decoding.
     /// The reader validates the entry version before inspecting row ranges or invoking the filter.
@@ -87,9 +94,16 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
         const RowRangeIndex* row_ranges,
         const std::function<Result<bool>(const InternalRow&)>& row_filter,
         const std::function<Result<bool>(const ManifestEntry&)>& entry_filter,
-        std::vector<ManifestEntry>* entries) const;
+        std::vector<ManifestEntry>* entries,
+        const IndexedManifestEntries::Filter& filter = {}) const;
 
  private:
+    Status ReadRows(
+        const std::string& file_name, std::optional<int64_t> file_size,
+        const IndexedManifestEntries::Filter& filter,
+        const std::function<Status(const InternalRow&)>& consumer,
+        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
+
     Status PrepareBucketRead(int32_t bucket, const std::optional<int32_t>& expected_total_buckets,
                              std::unique_ptr<FileBatchReader>* reader) const;
 

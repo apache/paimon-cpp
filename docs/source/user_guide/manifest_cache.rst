@@ -21,24 +21,26 @@ Manifest Cache
 Overview
 --------
 
-Paimon C++ caches decoded, schema-aligned manifest batches as Arrow IPC streams
-in ``ObjectsFile<T>``. The cache uses the public ``Cache`` abstraction and is
-enabled through ``ScanContextBuilder::WithCache()``. It covers data manifests,
-manifest lists, and index manifests because they all read through ``ObjectsFile<T>``.
+Paimon C++ caches complete, schema-aligned data manifests as indexed binary rows
+in ``ManifestFile``. Rows are grouped by partition, bucket, and total bucket count,
+with ordinals preserving the original ADD/DELETE order. Manifest lists and index
+manifests continue to use Arrow IPC streams in ``ObjectsFile<T>``. All three use
+the public ``Cache`` abstraction, enabled through ``ScanContextBuilder::WithCache()``.
 
-For repeated ``get``, ``scan``, or batch ``get/scan -f`` requests in the same
-process, the same snapshot often reads the same manifest files repeatedly. On a
-cache hit, the read path skips remote filesystem ``open/read`` and Avro/ORC
-source-format decoding. It still reads the IPC stream, deserializes objects,
-and applies scan filters. Bucket and row-range reads can select entries before
-constructing their file metadata. Ordinary, bucket, and row-range reads share
-the same complete, query-independent cache entry.
+The immutable manifest file path identifies each cache value. Different snapshots
+and scan filters can therefore share the same file. A hit skips filesystem reads
+and source-format decoding. Partition and bucket selection skips entire groups
+before constructing ``ManifestEntry`` or ``DataFileMeta`` objects; row-range
+selection can further prune the selected rows. Ordinary, bucket, and row-range
+reads share one complete, query-independent cache entry.
 
-A cold cache load decodes the complete manifest and serializes its aligned
-batches into IPC. The loading reader consumes the original batches without an
-IPC round trip. Cold bucket reads may therefore decode more entries than
-uncached selective reads. Without a cache, reads retain the existing
-source-format reader path.
+A cold load reads the complete manifest and builds its index. The loading reader
+consumes the original Arrow batches without a cache serialization round trip.
+Cold bucket reads may therefore read more metadata than uncached selective reads.
+Without a cache, reads retain the existing source-format reader path. Cache
+serialization or admission failures do not prevent reading the source. Obsolete
+or malformed data-manifest cache envelopes are rebuilt; predicate errors propagate
+without retry. This private cache format does not change persisted manifest files.
 
 Configuration
 -------------
@@ -97,12 +99,13 @@ Cache Implementation Responsibilities
 
 Embedding applications can implement hit/miss and eviction statistics in their
 ``Cache`` implementation. Coordination of concurrent loads for the same key
-also belongs to that implementation; ``ObjectsFile<T>`` does not deduplicate
+also belongs to that implementation; the manifest readers do not deduplicate
 concurrent cache misses.
 
 Cache implementations should use ``CacheValue::GetMemoryUsage()`` for admission
-and eviction accounting. For manifest IPC, this reports the retained Arrow
-buffer capacity, including unused space from growth. ``GetSegment().Size()``
-continues to describe the valid IPC byte length. The built-in ``LruCache`` uses
-the memory usage value; existing cache values without an explicit allocation
-size continue to charge their segment length.
+and eviction accounting. Indexed data manifests charge the serialized bytes and
+the retained ``Bytes`` object. Manifest-list and index-manifest IPC values charge
+the retained Arrow buffer capacity, including unused space from growth.
+``GetSegment().Size()`` describes the serialized payload length. The built-in
+``LruCache`` uses the memory usage value; existing cache values without an explicit
+allocation size continue to charge their segment length.

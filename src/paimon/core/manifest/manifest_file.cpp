@@ -26,6 +26,7 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "paimon/common/data/columnar/columnar_row.h"
+#include "paimon/common/data/serializer/binary_serializer_utils.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/reader/late_materializing_file_batch_reader.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -72,7 +73,7 @@ ManifestFile::ManifestFile(const std::shared_ptr<FileSystem>& file_system,
     : ObjectsFile<ManifestEntry>(file_system, reader_builder, writer_builder,
                                  file_format_identifier,
                                  std::make_unique<ManifestEntrySerializer>(pool), compression,
-                                 path_factory, options.GetCache(), pool),
+                                 path_factory, /*cache=*/nullptr, pool),
       target_file_size_(target_file_size),
       options_(options),
       partition_type_(partition_type) {}
@@ -101,32 +102,137 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
         manifest_file_factory, target_file_size, pool, options, partition_type));
 }
 
+Status ManifestFile::ReadRows(
+    const std::string& file_name, std::optional<int64_t> file_size,
+    const IndexedManifestEntries::Filter& filter,
+    const std::function<Status(const InternalRow&)>& consumer,
+    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const {
+    auto consume_batch = [&](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+        ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
+        for (int64_t i = 0; i < batch->length(); ++i) {
+            row.SetRowId(i);
+            PAIMON_RETURN_NOT_OK(ManifestEntrySerializer::ValidateVersion(row.GetInt(0)));
+            const bool historical =
+                filter.total_buckets &&
+                (row.IsNullAt(3) || row.IsNullAt(4) || row.GetInt(4) != *filter.total_buckets);
+            if (filter.bucket && !historical && row.GetInt(3) != *filter.bucket) {
+                continue;
+            }
+            if (filter.partition) {
+                PAIMON_ASSIGN_OR_RAISE(BinaryRow partition,
+                                       ManifestEntrySerializer::GetPartitionView(row));
+                PAIMON_ASSIGN_OR_RAISE(bool keep, filter.partition(partition));
+                if (!keep) {
+                    continue;
+                }
+            }
+            PAIMON_RETURN_NOT_OK(consumer(row));
+        }
+        return Status::OK();
+    };
+    const auto& cache = options_.GetCache();
+    if (!cache) {
+        return ReadUncachedArrowBatches(file_name, file_size, consume_batch, prepare_reader);
+    }
+    // Preserve whole-file invalidation keys. The versioned value rejects old IPC entries.
+    // Manifest lists and index manifests still use ObjectsFile's IPC cache; data manifests only
+    // publish the complete indexed file, independent of snapshots and query filters.
+    auto key = CacheKey::ForKind(path_factory_->ToPath(file_name), /*position=*/0,
+                                 /*length=*/-1, CacheKind::MANIFEST);
+    std::optional<Status> read_status;
+    std::vector<std::shared_ptr<arrow::StructArray>> batches;
+    auto load = [&](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+        IndexedManifestEntries index(pool_);
+        Status serialization_status;
+        read_status = ReadUncachedArrowBatches(
+            file_name, file_size,
+            [&](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+                batches.push_back(batch);
+                if (!serialization_status.ok()) {
+                    return Status::OK();
+                }
+                auto encode = [&]() -> Status {
+                    auto row = std::make_shared<ColumnarRow>(batch->fields(), pool_, 0);
+                    for (int64_t i = 0; i < batch->length(); ++i) {
+                        row->SetRowId(i);
+                        // The canonical manifest schema stores creation_time in milliseconds.
+                        // Avoid narrowing a non-canonical physical timestamp in the cache.
+                        if (!row->IsNullAt(ManifestEntry::kFileFieldIndex + 1)) {
+                            auto file = row->GetRow(ManifestEntry::kFileFieldIndex + 1,
+                                                    DataFileMeta::DataType()->num_fields());
+                            if (!file->IsNullAt(12) &&
+                                file->GetTimestamp(12, 3).GetNanoOfMillisecond() != 0) {
+                                return Status::Invalid(
+                                    "manifest cache requires millisecond creation_time");
+                            }
+                        }
+                        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BinaryRow> binary,
+                                               BinarySerializerUtils::WriteBinaryRow(
+                                                   row, serializer_->GetDataType(), pool_.get()));
+                        PAIMON_RETURN_NOT_OK(index.Add(*binary));
+                    }
+                    return Status::OK();
+                };
+                serialization_status = encode();
+                return Status::OK();
+            },
+            /*prepare_reader=*/nullptr);
+        PAIMON_RETURN_NOT_OK(*read_status);
+        PAIMON_RETURN_NOT_OK(serialization_status);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, index.Serialize(pool_));
+        return std::make_shared<CacheValue>(MemorySegment::Wrap(bytes), CacheCallback(),
+                                            bytes->size() + sizeof(Bytes));
+    };
+    auto cached = cache->Get(key, load);
+    if (!read_status && cached.ok() && cached.value()) {
+        bool consumer_or_version_error = false;
+        auto selected = IndexedManifestEntries::Read(cached.value()->GetSegment(), filter, consumer,
+                                                     &consumer_or_version_error);
+        if (selected.ok() || consumer_or_version_error) {
+            return selected.status();
+        }
+        // A malformed or obsolete private cache value is a miss. Predicate errors above are
+        // returned directly and must never be retried against the source.
+        cache->Invalidate(key);
+        auto rebuilt = load(key);
+        if (rebuilt.ok()) {
+            auto status = cache->Put(key, rebuilt.value());
+            (void)status;
+        }
+    }
+    if (read_status) {
+        PAIMON_RETURN_NOT_OK(*read_status);
+        for (const auto& batch : batches) {
+            PAIMON_RETURN_NOT_OK(consume_batch(batch));
+        }
+        return Status::OK();
+    }
+    return ReadUncachedArrowBatches(file_name, file_size, consume_batch, prepare_reader);
+}
+
+Status ManifestFile::Read(const std::string& file_name,
+                          const std::function<Result<bool>(const ManifestEntry&)>& filter,
+                          std::optional<int64_t> file_size,
+                          std::vector<ManifestEntry>* entries) const {
+    return ReadSelectedEntries(file_name, file_size, nullptr, nullptr, filter, entries);
+}
+
 Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
                                        const std::optional<int32_t>& expected_total_buckets,
                                        std::optional<int64_t> file_size,
                                        std::vector<ManifestEntry>* entries) const {
-    // Readers without precise bitmap selection still filter aligned Arrow columns
-    // before constructing ManifestEntry and DataFileMeta objects.
-    return ReadArrowBatches(
-        file_name, file_size,
-        [this, bucket, expected_total_buckets,
-         entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
-            ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
-            for (int64_t i = 0; i < batch->length(); ++i) {
-                row.SetRowId(i);
-                PAIMON_RETURN_NOT_OK(
-                    ManifestEntrySerializer::ValidateVersion(row.GetInt(kVersionFieldIndex)));
-                // Different or unknown bucket counts must reach per-entry bucket filtering.
-                const bool historical_layout =
-                    expected_total_buckets &&
-                    (row.IsNullAt(kBucketFieldIndex) || row.IsNullAt(kTotalBucketsFieldIndex) ||
-                     row.GetInt(kTotalBucketsFieldIndex) != expected_total_buckets.value());
-                if (!historical_layout && ManifestEntrySerializer::GetBucket(row) != bucket) {
-                    continue;
-                }
-                PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
-                entries->push_back(std::move(entry));
+    IndexedManifestEntries::Filter filter;
+    filter.bucket = bucket;
+    filter.total_buckets = expected_total_buckets;
+    return ReadRows(
+        file_name, file_size, filter,
+        [&](const InternalRow& row) -> Status {
+            if (row.IsNullAt(ManifestEntry::kFileFieldIndex + 1)) {
+                return Status::Invalid(
+                    "ManifestEntry convert from row failed, with null DataFileMeta");
             }
+            PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
+            entries->push_back(std::move(entry));
             return Status::OK();
         },
         [this, bucket, expected_total_buckets](std::unique_ptr<FileBatchReader>* reader) {
@@ -138,71 +244,46 @@ Status ManifestFile::ReadSelectedEntries(
     const std::string& file_name, std::optional<int64_t> file_size, const RowRangeIndex* row_ranges,
     const std::function<Result<bool>(const InternalRow&)>& row_filter,
     const std::function<Result<bool>(const ManifestEntry&)>& entry_filter,
-    std::vector<ManifestEntry>* entries) const {
-    if (!row_ranges && !row_filter) {
-        return Read(file_name, entry_filter, file_size, entries);
-    }
-    return ReadArrowBatches(
-        file_name, file_size,
-        [this, row_ranges, &row_filter, &entry_filter,
-         entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
-            // ManifestMetaReader has aligned both the entry and its nested file schema.
-            // Only row-range scans need to probe the file columns before entry decoding.
-            std::shared_ptr<arrow::StructArray> files;
-            std::shared_ptr<arrow::Int64Array> counts;
-            std::shared_ptr<arrow::Int64Array> first_ids;
+    std::vector<ManifestEntry>* entries, const IndexedManifestEntries::Filter& filter) const {
+    return ReadRows(
+        file_name, file_size, filter,
+        [&](const InternalRow& row) -> Status {
             if (row_ranges) {
-                const auto& file_column = batch->field(ManifestEntry::kFileFieldIndex + 1);
-                if (file_column->type_id() != arrow::Type::STRUCT) {
-                    return Status::Invalid("Manifest entry file metadata must be a struct");
+                if (row.IsNullAt(ManifestEntry::kFileFieldIndex + 1)) {
+                    return Status::Invalid(
+                        "ManifestEntry convert from row failed, with null DataFileMeta");
                 }
-                files = checked_pointer_cast<arrow::StructArray>(file_column);
-                const auto& count_column = files->field(DataFileMeta::kRowCountFieldIndex);
-                const auto& first_column = files->field(DataFileMeta::kFirstRowIdFieldIndex);
-                if (count_column->type_id() != arrow::Type::INT64 ||
-                    first_column->type_id() != arrow::Type::INT64) {
-                    return Status::Invalid("Manifest entry row range must contain int64 fields");
+                auto file = row.GetRow(ManifestEntry::kFileFieldIndex + 1,
+                                       DataFileMeta::DataType()->num_fields());
+                if (!file->IsNullAt(DataFileMeta::kFirstRowIdFieldIndex) &&
+                    !file->IsNullAt(DataFileMeta::kRowCountFieldIndex)) {
+                    const int64_t first = file->GetLong(DataFileMeta::kFirstRowIdFieldIndex);
+                    const int64_t count = file->GetLong(DataFileMeta::kRowCountFieldIndex);
+                    if (first >= 0 && count > 0 &&
+                        first <= std::numeric_limits<int64_t>::max() - (count - 1) &&
+                        !row_ranges->Intersects(first, first + (count - 1))) {
+                        return Status::OK();
+                    }
                 }
-                counts = checked_pointer_cast<arrow::Int64Array>(count_column);
-                first_ids = checked_pointer_cast<arrow::Int64Array>(first_column);
             }
-            ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
-            for (int64_t i = 0; i < batch->length(); ++i) {
-                row.SetRowId(i);
-                PAIMON_RETURN_NOT_OK(
-                    ManifestEntrySerializer::ValidateVersion(row.GetInt(kVersionFieldIndex)));
-                if (row_ranges) {
-                    if (files->IsNull(i)) {
-                        return Status::Invalid(
-                            "ManifestEntry convert from row failed, with null DataFileMeta");
-                    }
-                    if (!first_ids->IsNull(i) && !counts->IsNull(i)) {
-                        const int64_t first = first_ids->Value(i);
-                        const int64_t count = counts->Value(i);
-                        // Missing or invalid ranges cannot prove an entry is irrelevant. In
-                        // particular, do not overflow when computing the inclusive upper bound.
-                        if (first >= 0 && count > 0 &&
-                            first <= std::numeric_limits<int64_t>::max() - (count - 1) &&
-                            !row_ranges->Intersects(first, first + (count - 1))) {
-                            continue;
-                        }
-                    }
+            if (row_filter) {
+                PAIMON_ASSIGN_OR_RAISE(bool keep, row_filter(row));
+                if (!keep) {
+                    return Status::OK();
                 }
-                if (row_filter) {
-                    PAIMON_ASSIGN_OR_RAISE(bool keep, row_filter(row));
-                    if (!keep) {
-                        continue;
-                    }
-                }
-                PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
-                if (entry_filter) {
-                    PAIMON_ASSIGN_OR_RAISE(bool keep, entry_filter(entry));
-                    if (!keep) {
-                        continue;
-                    }
-                }
-                entries->push_back(std::move(entry));
             }
+            if (row.IsNullAt(ManifestEntry::kFileFieldIndex + 1)) {
+                return Status::Invalid(
+                    "ManifestEntry convert from row failed, with null DataFileMeta");
+            }
+            PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
+            if (entry_filter) {
+                PAIMON_ASSIGN_OR_RAISE(bool keep, entry_filter(entry));
+                if (!keep) {
+                    return Status::OK();
+                }
+            }
+            entries->push_back(std::move(entry));
             return Status::OK();
         },
         /*prepare_reader=*/nullptr);

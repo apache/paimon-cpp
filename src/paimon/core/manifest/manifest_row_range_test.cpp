@@ -166,7 +166,7 @@ TEST_F(RowRangeManifestFileTest, PartitionFilterComposesWithRowRanges) {
     }
 }
 
-TEST_F(RowRangeManifestFileTest, ArrowCacheReuseEvictionAndConcurrentReaders) {
+TEST_F(RowRangeManifestFileTest, IndexedCacheReuseEvictionAndConcurrentReaders) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     const auto cache_kind = CacheKind::MANIFEST;
@@ -513,20 +513,20 @@ TEST_F(RowRangeManifestFileTest, CachedBufferRetainsAllocatorUntilEviction) {
             EXPECT_FALSE(weak_pool.expired());
             return true;
         };
-        // Eviction during the first batch must not invalidate later IPC batches.
+        // Eviction during a callback must not invalidate subsequent indexed rows.
         ASSERT_OK(reader->Read(written.first, filter, written.second, &entries));
     }
     ASSERT_TRUE(weak_pool.expired());
     ASSERT_EQ(expected, entries);
 }
 
-TEST_F(RowRangeManifestFileTest, CacheChargesRetainedArrowCapacity) {
+TEST_F(RowRangeManifestFileTest, CacheChargesRetainedIndexedBytes) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto fs = dir->GetFileSystem();
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> writer,
                          CreateManifest(dir->Str(), fs, false));
-    // Exercise growth beyond the initial IPC buffer allocation.
+    // Exercise serialization across multiple builder segments.
     ASSERT_OK_AND_ASSIGN(ManifestEntry entry, Entry(std::string(5000, 'a') + ".parquet", 100, 10));
     using WrittenFile = std::pair<std::string, int64_t>;
     ASSERT_OK_AND_ASSIGN(WrittenFile written, writer->WriteWithoutRolling({entry}));
@@ -539,7 +539,7 @@ TEST_F(RowRangeManifestFileTest, CacheChargesRetainedArrowCapacity) {
         ASSERT_OK(reader->Read(written.first, nullptr, written.second, &entries));
         ASSERT_EQ(std::vector<ManifestEntry>{entry}, entries);
     }
-    // Only the cached IPC allocation remains in this reader's pool.
+    // Only the serialized cache allocation remains in this reader's pool.
     ASSERT_EQ(1, cache->Size());
     ASSERT_EQ(pool->CurrentUsage(), cache->GetCurrentWeight());
     auto key = CacheKey::ForKind(
@@ -553,13 +553,13 @@ TEST_F(RowRangeManifestFileTest, CacheChargesRetainedArrowCapacity) {
                    }));
     ASSERT_TRUE(cached);
     const int64_t logical_size = cached->GetSegment().Size();
-    ASSERT_GT(cached->GetMemoryUsage(), logical_size);
+    ASSERT_EQ(cached->GetMemoryUsage(), logical_size + sizeof(Bytes));
     ASSERT_EQ(pool->CurrentUsage(), cached->GetMemoryUsage());
     cached.reset();
     cache->InvalidateAll();
     ASSERT_EQ(0, pool->CurrentUsage());
 
-    // Admission must reject the allocation even though the valid IPC bytes would fit.
+    // The retained Bytes object is charged as well, even if the payload alone would fit.
     auto small_cache = std::make_shared<LruCache>(logical_size);
     {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ManifestFile> reader,
@@ -769,11 +769,74 @@ TEST_F(RowRangeManifestFileTest, SchemaEvolutionAndVersionValidation) {
                 }
             }
             if (attempt == 0) {
-                // The second read must preserve schema evolution and validation from IPC alone.
+                // The second read must preserve schema evolution and validation from cached rows.
                 manifest->DeleteQuietly(name);
             }
         }
     }
+}
+
+TEST_F(RowRangeManifestFileTest, IndexedFileCachePrunesPartitionsAndRebuildsInvalidValues) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto cache = std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 1024 * 1024);
+    ASSERT_OK_AND_ASSIGN(auto manifest,
+                         CreateManifest(dir->Str(), dir->GetFileSystem(), true, cache));
+    ASSERT_OK_AND_ASSIGN(auto base, Entry("a.parquet", 100, 10));
+    auto pool = GetDefaultPool();
+    ManifestEntry a(FileKind::Add(), BinaryRowGenerator::GenerateRow({20}, pool.get()), 0, 2,
+                    base.File());
+    ManifestEntry b(FileKind::Add(), BinaryRowGenerator::GenerateRow({10}, pool.get()), 1, 2,
+                    base.File());
+    ManifestEntry c(FileKind::Delete(), a.Partition(), 0, 2, base.File());
+    const std::vector<ManifestEntry> source{a, b, c};
+    ASSERT_OK_AND_ASSIGN(auto written, manifest->WriteWithoutRolling(source));
+    auto key = CacheKey::ForKind(
+        PathUtil::JoinPath(FileStorePathFactory::ManifestPath(dir->Str()), written.first), 0, -1,
+        CacheKind::MANIFEST);
+    std::shared_ptr<Bytes> bad =
+        Bytes::AllocateBytes(std::string("old IPC or damaged cache"), pool.get());
+    ASSERT_OK(
+        cache->Put(key, std::make_shared<CacheValue>(MemorySegment::Wrap(bad), CacheCallback())));
+    std::vector<ManifestEntry> actual;
+    ASSERT_OK(manifest->Read(written.first, nullptr, written.second, &actual));
+    ASSERT_EQ(source, actual);
+    // A new reader and a different selection share the complete file, without source access.
+    manifest->DeleteQuietly(written.first);
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         CreateManifest(dir->Str(), dir->GetFileSystem(), true, cache));
+    int32_t calls = 0;
+    IndexedManifestEntries::Filter filter;
+    filter.partition = [&](const BinaryRow& partition) -> Result<bool> {
+        ++calls;
+        return partition.GetInt(0) == 20;
+    };
+    actual.clear();
+    ASSERT_OK(reader->ReadSelectedEntries(written.first, written.second, nullptr, nullptr, nullptr,
+                                          &actual, filter));
+    ASSERT_EQ(2, calls);
+    ASSERT_EQ(std::vector<ManifestEntry>({a, c}), actual);
+    actual.clear();
+    filter.bucket = 1;
+    filter.partition = nullptr;
+    ASSERT_OK(reader->ReadSelectedEntries(written.first, written.second, nullptr, nullptr, nullptr,
+                                          &actual, filter));
+    ASSERT_EQ(std::vector<ManifestEntry>({b}), actual);
+    calls = 0;
+    actual.clear();
+    filter.bucket = std::nullopt;
+    filter.partition = [&](const BinaryRow&) -> Result<bool> {
+        ++calls;
+        return Status::IOError("partition failed");
+    };
+    ASSERT_NOK_WITH_MSG(reader->ReadSelectedEntries(written.first, written.second, nullptr, nullptr,
+                                                    nullptr, &actual, filter),
+                        "partition failed");
+    ASSERT_EQ(1, calls);
+    ASSERT_TRUE(actual.empty());
+    ASSERT_OK(reader->Read(written.first, nullptr, written.second, &actual));
+    ASSERT_EQ(source, actual);
+    ASSERT_EQ(1, cache->Size());
 }
 
 }  // namespace paimon::test

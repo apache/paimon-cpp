@@ -41,30 +41,31 @@ Selective manifest decoding
 
 With ``Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED`` enabled (the default),
 scans evaluate partition filters before constructing ``ManifestEntry`` and
-``DataFileMeta`` objects or decoding file statistics. The same row filter runs
-on ordinary manifest reads, cached manifest Arrow batches, and exact snapshot
-cache hits. This avoids full metadata decoding for excluded partitions even
-when no cache is configured. Row-range reads apply both range and partition
-selection before decoding; ADD and DELETE entries receive the same selection.
+``DataFileMeta`` objects or decoding file statistics. Uncached reads inspect each
+row's partition, while data-manifest and exact snapshot cache hits test partitions
+in the shared indexed container before visiting their rows. This avoids full
+metadata decoding for excluded partitions even when no cache is configured.
+Row-range reads apply both range and partition selection before decoding; ADD and
+DELETE entries receive the same selection.
 Level and data predicates still run through the normal scan filters.
 
 The snapshot cache keeps the complete merged entries for each bucket and
 snapshot in serialized form. A hit selects the exact retained snapshot.
-Rows belonging to other snapshots are skipped by their serialized lengths,
-without allocating or copying their payloads. When there is no partition filter,
-all entries of the selected snapshot are decoded. Disabling lazy decoding also
+Other snapshots are skipped as length-delimited blocks, without allocating or
+copying their payloads. When there is no partition filter, all entries of the
+selected snapshot are decoded. Disabling lazy decoding also
 restores full entry decoding before partition filtering.
 
 For example, if a bucket contains 604 entries across 84 partitions and a query
-needs six entries from one partition, the scan inspects 604 partition fields
-but fully decodes only six entries. This reduces metadata allocation and
-statistics decoding without introducing another cache or changing the
-serialized cache format.
+needs six entries from one partition, an indexed cache hit tests 84 partitions
+and fully decodes only the six matching entries. File and snapshot-live caches
+reuse this indexed representation: file values retain raw ADD/DELETE entries,
+while snapshot values retain merged live entries and also avoid repeating the
+snapshot merge. Their cache kinds and keys remain separate.
 
-The filtered result is request-local. Manifest Arrow caches retain complete
-batches, and snapshot cache misses rebuild the complete bucket before storing
-it. A later scan with another partition filter or snapshot cannot reuse an
-incomplete result.
+The filtered result is request-local. Data-manifest caches retain complete files,
+and snapshot cache misses rebuild the complete bucket before storing it. A later
+scan with another partition filter or snapshot cannot reuse an incomplete result.
 The existing snapshot retention limit also applies to selective reads.
 
 Configuration

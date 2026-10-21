@@ -345,18 +345,15 @@ TEST_F(FileStoreScanTest, SkipDecodingFilteredManifestEntries) {
 
 TEST_F(FileStoreScanTest, RejectUnsupportedSnapshotEntryVersionBeforeFiltering) {
     auto pool = GetDefaultPool();
-    // Only the version is present: the reader must reject it before the filter accesses fields.
-    BinaryRow row = BinaryRowGenerator::GenerateRow({3}, pool.get());
-    BinaryRowSerializer serializer(1, pool);
-    MemorySegmentOutputStream out(64, pool);
-    out.WriteValue<int32_t>(0x534d4543);
-    out.WriteValue<int32_t>(1);
-    out.WriteValue<int64_t>(1);
-    out.WriteValue<int32_t>(1);
-    ASSERT_OK(serializer.Serialize(row, &out));
+    SnapshotLiveManifestEntries snapshots(1);
+    snapshots.Put(1, {});
+    ASSERT_OK_AND_ASSIGN(auto bytes, snapshots.Serialize(pool));
+    // The indexed block's version is checked before any partition or row filter is called.
+    auto segment = MemorySegment::Wrap(bytes);
+    segment.PutValue<int32_t>(24, EndianSwapValue<int32_t>(3));
     bool filter_called = false;
     ASSERT_NOK_WITH_MSG(SnapshotLiveManifestEntries::ReadSnapshot(
-                            out.Segments().front(), 1, 1,
+                            segment, 1, 1,
                             [&filter_called](const InternalRow&) -> Result<bool> {
                                 filter_called = true;
                                 return false;
@@ -382,12 +379,12 @@ TEST_F(FileStoreScanTest, RejectInvalidSnapshotSelectionHeader) {
     auto segment = header(0, 1, 0);
     ASSERT_NOK_WITH_MSG(SnapshotLiveManifestEntries::ReadSnapshot(segment, 1, 3, nullptr, pool),
                         "invalid snapshot live manifest entries magic");
-    segment = header(0x534d4543, -1, 0);
+    segment = header(0x534d4501, -1, 0);
     ASSERT_NOK_WITH_MSG(SnapshotLiveManifestEntries::ReadSnapshot(segment, 1, 3, nullptr, pool),
                         "snapshot count is negative");
-    segment = header(0x534d4543, 1, -1);
+    segment = header(0x534d4501, 1, -1);
     ASSERT_NOK_WITH_MSG(SnapshotLiveManifestEntries::ReadSnapshot(segment, 1, 3, nullptr, pool),
-                        "entry count is negative");
+                        "block length");
     auto truncated = MemorySegment::WrapView(segment.Data(), 7);
     ASSERT_NOK(SnapshotLiveManifestEntries::ReadSnapshot(truncated, 1, 3, nullptr, pool));
 }

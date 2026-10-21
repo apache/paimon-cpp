@@ -500,7 +500,7 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
                              manifest_file->WriteWithoutRolling({excluded, selected}));
         std::vector<ManifestEntry> warm;
         ASSERT_OK(manifest_file->Read(written.first, nullptr, /*file_size=*/std::nullopt, &warm));
-        // Warm decoded batches, if available, belong to a separate pool from reader allocations.
+        // Cached rows, if available, belong to a separate pool from reader allocations.
         for (bool inferred : {false, true}) {
             std::shared_ptr<MemoryPool> read_pool = GetMemoryPool();
             ASSERT_OK_AND_ASSIGN(
@@ -516,7 +516,12 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
                 ASSERT_OK(
                     reader->Read(written.first, nullptr, /*file_size=*/std::nullopt, &entries));
                 ASSERT_EQ(warm, entries);
-                ASSERT_GE(read_pool->MaxMemoryUsage(), payload_size);
+                if (cache_mode == 1) {
+                    // Indexed cache hits borrow rows without rebuilding the large Arrow batch.
+                    ASSERT_LT(read_pool->MaxMemoryUsage(), payload_size / 2);
+                } else {
+                    ASSERT_GE(read_pool->MaxMemoryUsage(), payload_size);
+                }
             }
         }
         ASSERT_EQ(cache_mode == 1 ? 1 : 3, file_system->open_count);

@@ -38,6 +38,7 @@ class MemorySegment;
 
 /// Live manifest entries retained for one bucket across multiple snapshots.
 ///
+/// Snapshot retention wraps the same indexed rows used by the manifest-file cache.
 /// This value object owns merged live manifest entries by snapshot id. It does not own or access a
 /// cache; callers are responsible for storing the serialized bytes in the cache layer.
 class SnapshotLiveManifestEntries {
@@ -57,7 +58,8 @@ class SnapshotLiveManifestEntries {
                                                            int32_t max_snapshots,
                                                            const std::shared_ptr<MemoryPool>& pool);
 
-    /// Select an exact retained snapshot, applying a row filter before constructing file metadata.
+    /// Select an exact retained snapshot, applying partition and row filters before constructing
+    /// file metadata. A partition filter runs once per partition in the indexed snapshot.
     /// The reader validates the entry version before invoking the filter, as in
     /// ManifestFile::ReadSelectedEntries. The serialized cache value is unchanged. A Selection is
     /// deliberately not a cache value: query-filtered entries must never replace the complete
@@ -65,7 +67,8 @@ class SnapshotLiveManifestEntries {
     static Result<std::optional<Selection>> ReadSnapshot(
         const MemorySegment& segment, int64_t snapshot_id, int32_t max_snapshots,
         const std::function<Result<bool>(const InternalRow&)>& row_filter,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<MemoryPool>& pool,
+        const std::function<Result<bool>(const BinaryRow&)>& partition_filter = nullptr);
 
  private:
     void EvictIfNeeded();

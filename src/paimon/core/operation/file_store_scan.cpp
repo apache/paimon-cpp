@@ -395,7 +395,7 @@ Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
     const int32_t max_snapshots = core_options_.GetScanManifestEntryCacheMaxSnapshots();
     SnapshotLiveManifestEntries cached_entries(max_snapshots);
     bool predicate_failed = false;
-    auto row_filter = CreateManifestEntryRowFilter(&predicate_failed);
+    auto partition_filter = CreateManifestPartitionFilter(&predicate_failed);
     bool partition_filtered = false;
     uint64_t candidate_entries = 0;
     *cache_hit = false;
@@ -407,13 +407,14 @@ Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
     if (value.ok() && value.value()) {
         Result<std::optional<SnapshotLiveManifestEntries::Selection>> selected =
             SnapshotLiveManifestEntries::ReadSnapshot(value.value()->GetSegment(), snapshot.Id(),
-                                                      max_snapshots, row_filter, pool_);
+                                                      max_snapshots, nullptr, pool_,
+                                                      partition_filter);
         if (predicate_failed) {
             return selected.status();
         }
         if (selected.ok() && selected.value()) {
             *cache_hit = true;
-            partition_filtered = static_cast<bool>(row_filter);
+            partition_filtered = static_cast<bool>(partition_filter);
             candidate_entries = selected.value()->candidate_entries;
             *manifest_entries = std::move(selected.value()->entries);
         } else if (selected.ok()) {
@@ -483,7 +484,8 @@ Status FileStoreScan::StoreSnapshotLiveManifestEntries(
         return Status::OK();
     }
     auto cache_value =
-        std::make_shared<CacheValue>(MemorySegment::Wrap(bytes_result.value()), CacheCallback());
+        std::make_shared<CacheValue>(MemorySegment::Wrap(bytes_result.value()), CacheCallback(),
+                                     bytes_result.value()->size() + sizeof(Bytes));
     Status status = core_options_.GetCache()->Put(CreateSnapshotLiveManifestEntriesCacheKey(bucket),
                                                   cache_value);
     return status.ok() ? status : Status::OK();
@@ -633,24 +635,31 @@ Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
         core_options_.ScanManifestEntryLazyDecodeEnabled()) {
         row_ranges = &row_range_index_.value();
     }
-    auto row_filter = CreateManifestEntryRowFilter(/*predicate_failed=*/nullptr);
+    IndexedManifestEntries::Filter filter;
+    filter.partition = CreateManifestPartitionFilter(/*predicate_failed=*/nullptr);
+    if (core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+        filter.bucket = bucket_filter_;
+        if (!filter.bucket && bucket_selector_) {
+            filter.bucket = bucket_selector_->Bucket(core_options_.GetBucket());
+            filter.total_buckets = core_options_.GetBucket();
+        }
+    }
     return manifest_file_->ReadSelectedEntries(
-        manifest.FileName(), manifest.FileSize(), row_ranges, row_filter,
-        [this, partition_filtered =
-                   static_cast<bool>(row_filter)](const ManifestEntry& entry) -> Result<bool> {
+        manifest.FileName(), manifest.FileSize(), row_ranges, nullptr,
+        [this, partition_filtered = static_cast<bool>(filter.partition)](
+            const ManifestEntry& entry) -> Result<bool> {
             return partition_filtered ? FilterNonPartitionManifestEntry(entry)
                                       : FilterManifestEntry(entry);
         },
-        entries);
+        entries, filter);
 }
 
-std::function<Result<bool>(const InternalRow&)> FileStoreScan::CreateManifestEntryRowFilter(
+std::function<Result<bool>(const BinaryRow&)> FileStoreScan::CreateManifestPartitionFilter(
     bool* predicate_failed) const {
     if (!partition_filter_ || !core_options_.ScanManifestEntryLazyDecodeEnabled()) {
         return nullptr;
     }
-    return [this, predicate_failed](const InternalRow& row) -> Result<bool> {
-        PAIMON_ASSIGN_OR_RAISE(BinaryRow partition, ManifestEntrySerializer::GetPartitionView(row));
+    return [this, predicate_failed](const BinaryRow& partition) -> Result<bool> {
         Result<bool> result = partition_filter_->Test(partition_schema_, partition);
         if (!result.ok() && predicate_failed) {
             *predicate_failed = true;

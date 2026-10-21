@@ -311,7 +311,7 @@ class FileStoreScan {
 
     /// If provided, predicate_failed must initially be false and outlive the synchronous callback.
     /// Only predicate evaluation errors set it; partition decoding errors leave it unchanged.
-    std::function<Result<bool>(const InternalRow&)> CreateManifestEntryRowFilter(
+    std::function<Result<bool>(const BinaryRow&)> CreateManifestPartitionFilter(
         bool* predicate_failed) const;
 
     Result<bool> FilterManifestEntry(const ManifestEntry& entry) const;
