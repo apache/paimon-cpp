@@ -62,7 +62,9 @@ Result<std::shared_ptr<GlobalIndexWriter>> LuceneGlobalIndex::CreateWriter(
 
 Result<std::shared_ptr<GlobalIndexReader>> LuceneGlobalIndex::CreateReader(
     ::ArrowSchema* c_arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-    const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool) const {
+    const std::vector<GlobalIndexIOMeta>& files, int64_t /*total_row_count*/,
+    const std::optional<std::vector<Range>>& /*row_ranges*/,
+    const std::shared_ptr<MemoryPool>& pool) const {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
                                       arrow::ImportSchema(c_arrow_schema));
     if (files.size() != 1) {

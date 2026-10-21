@@ -21,11 +21,13 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "paimon/executor.h"
 #include "paimon/global_index/global_index_reader.h"
+#include "paimon/utils/range.h"
 
 namespace paimon {
 /// A GlobalIndexReader that combines results from multiple readers by performing a union
@@ -35,7 +37,14 @@ namespace paimon {
 /// collected in submission order. Otherwise, sub-readers are evaluated sequentially.
 class UnionGlobalIndexReader : public GlobalIndexReader {
  public:
+    /// Constructs a UnionGlobalIndexReader.
+    /// @param row_ranges    The global row ids covered by each reader, in the order of `readers`.
+    /// @param search_ranges The global row ids each reader ranks in a full-text search, within its
+    ///                      row range, in the order of `readers`; std::nullopt if it ranks none.
+    ///                      If both are empty, each reader ranks all of its rows.
     UnionGlobalIndexReader(std::vector<std::shared_ptr<GlobalIndexReader>>&& readers,
+                           std::vector<Range>&& row_ranges,
+                           std::vector<std::optional<Range>>&& search_ranges,
                            const std::shared_ptr<Executor>& executor);
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override;
@@ -58,6 +67,11 @@ class UnionGlobalIndexReader : public GlobalIndexReader {
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;
 
+    /// Merges the scored results of all readers and keeps the `full_text_search->limit` rows with
+    /// the highest scores among them, breaking ties by ascending row id. A row id returned by more
+    /// than one reader keeps the score from the first of those readers. Returns nullptr if no
+    /// reader returns a result, e.g. if the readers do not support full-text search; a reader that
+    /// ranks none of the rows to search is not visited and counts as returning an empty result.
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override;
 
@@ -81,13 +95,26 @@ class UnionGlobalIndexReader : public GlobalIndexReader {
     /// Executes the given action on all readers and merges the scored results with Union.
     Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionScored(ScoredReaderAction action);
 
+    /// Returns the full-text search to run on the reader at `index`, or nullptr if the reader
+    /// ranks none of the rows to search.
+    std::shared_ptr<FullTextSearch> FullTextSearchForReader(
+        size_t index, const std::shared_ptr<FullTextSearch>& full_text_search) const;
+
     /// Executes the given action on all readers (parallel or sequential) and collects results.
     template <typename R>
     std::vector<R> ExecuteAllReaders(
         const std::function<R(const std::shared_ptr<GlobalIndexReader>&)>& action);
 
+    /// Executes the given action on each reader and its index (parallel or sequential) and
+    /// collects results in reader order.
+    template <typename R>
+    std::vector<R> ExecuteAllReadersWithIndex(
+        const std::function<R(size_t, const std::shared_ptr<GlobalIndexReader>&)>& action);
+
     std::vector<std::shared_ptr<GlobalIndexReader>> readers_;
     std::shared_ptr<Executor> executor_;
+    std::vector<Range> row_ranges_;
+    std::vector<std::optional<Range>> search_ranges_;
 };
 
 }  // namespace paimon

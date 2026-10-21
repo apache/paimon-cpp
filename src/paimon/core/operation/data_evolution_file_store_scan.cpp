@@ -18,14 +18,16 @@
 
 #include "paimon/core/operation/data_evolution_file_store_scan.h"
 
+#include <algorithm>
+#include <limits>
 #include <map>
 #include <string>
 
-#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/reader/data_evolution_array.h"
 #include "paimon/common/reader/data_evolution_row.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/range_helper.h"
+#include "paimon/core/utils/data_evolution_utils.h"
 namespace paimon {
 Result<bool> DataEvolutionFileStoreScan::FilterEntryByRowRanges(
     const ManifestEntry& entry, const std::optional<RowRangeIndex>& row_range_index) {
@@ -114,19 +116,30 @@ Result<std::pair<int64_t, SimpleStatsEvolution::EvolutionStats>>
 DataEvolutionFileStoreScan::EvolutionStats(
     const std::vector<ManifestEntry>& old_entries, const std::shared_ptr<TableSchema>& table_schema,
     const std::function<Result<std::shared_ptr<TableSchema>>(int64_t)>& schema_fetcher) {
-    // exclude blob files, useless for predicate eval
+    if (old_entries.empty()) {
+        return Status::Invalid(
+            "DataEvolutionFileStoreScan EvolutionStats: entries cannot be empty");
+    }
+    // Independently rolled dedicated files cover only part of the logical group's row range.
+    int64_t group_start = std::numeric_limits<int64_t>::max();
+    int64_t group_end = 0;
     std::vector<ManifestEntry> entries;
     entries.reserve(old_entries.size());
     for (const auto& entry : old_entries) {
-        if (!BlobUtils::IsBlobFile(entry.File()->file_name)) {
+        const auto& file = entry.File();
+        PAIMON_ASSIGN_OR_RAISE(int64_t first_row_id, file->NonNullFirstRowId());
+        if (first_row_id < 0 || file->row_count <= 0 ||
+            first_row_id > std::numeric_limits<int64_t>::max() - file->row_count) {
+            return Status::Invalid("Invalid row id range in data-evolution statistics group");
+        }
+        group_start = std::min(group_start, first_row_id);
+        group_end = std::max(group_end, first_row_id + file->row_count);
+        // BLOB and VECTOR files do not contribute column statistics.
+        if (DataEvolutionUtils::IsNormalFile(file->file_name)) {
             entries.push_back(entry);
         }
     }
-    if (entries.empty()) {
-        return Status::Invalid(
-            "DataEvolutionFileStoreScan EvolutionStats: after exclude blob files, entries cannot "
-            "be empty");
-    }
+    const int64_t group_row_count = group_end - group_start;
     std::stable_sort(entries.begin(), entries.end(),
                      [](const ManifestEntry& e1, const ManifestEntry& e2) {
                          return e1.File()->max_sequence_number > e2.File()->max_sequence_number;
@@ -166,9 +179,10 @@ DataEvolutionFileStoreScan::EvolutionStats(
                     // -2 indicates that the table fields will be matched to the current file.
                     row_offsets[table_field_idx] = -2;
                     auto stats_iter = stats_field_map.find(write_field.Name());
-                    // if the fields are of the same type and contain statistics, then update
-                    // row_offsets, otherwise evolved stats of current field is null
-                    if (table_field.Type()->Equals(write_field.Type()) &&
+                    // Only full-range providers can supply statistics for the entire group.
+                    if (file_meta->first_row_id == group_start &&
+                        file_meta->row_count == group_row_count &&
+                        table_field.Type()->Equals(write_field.Type()) &&
                         stats_iter != stats_field_map.end()) {
                         row_offsets[table_field_idx] = entry_idx;
                         field_offsets[table_field_idx] = stats_iter->second;
@@ -190,14 +204,20 @@ DataEvolutionFileStoreScan::EvolutionStats(
         max_rows.push_back(stats.MaxValues());
         null_counts.push_back(stats.NullCounts());
     }
+    if (entries.empty()) {
+        // Dedicated-only incremental groups have unknown statistics for every column.
+        const auto& empty_stats = SimpleStats::EmptyStats();
+        min_rows.push_back(empty_stats.MinValues());
+        max_rows.push_back(empty_stats.MaxValues());
+        null_counts.push_back(empty_stats.NullCounts());
+    }
 
     auto final_min = std::make_shared<DataEvolutionRow>(min_rows, row_offsets, field_offsets);
     auto final_max = std::make_shared<DataEvolutionRow>(max_rows, row_offsets, field_offsets);
     auto final_null_counts =
         std::make_shared<DataEvolutionArray>(null_counts, row_offsets, field_offsets);
-    return std::make_pair(
-        entries[0].File()->row_count,
-        SimpleStatsEvolution::EvolutionStats(final_min, final_max, final_null_counts));
+    return std::make_pair(group_row_count, SimpleStatsEvolution::EvolutionStats(
+                                               final_min, final_max, final_null_counts));
 }
 
 }  // namespace paimon

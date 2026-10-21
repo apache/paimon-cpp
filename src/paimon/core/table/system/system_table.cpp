@@ -204,7 +204,8 @@ Result<std::optional<SystemTablePath>> SystemTableLoader::TryParsePath(const std
         return std::optional<SystemTablePath>(std::move(system_table_path));
     }
 
-    Identifier identifier(table_name);
+    // The database is unknown on a plain table path; only the object name is looked at below.
+    Identifier identifier(Identifier::kUnknownDatabase, table_name);
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (!is_system_table) {
         return std::optional<SystemTablePath>();

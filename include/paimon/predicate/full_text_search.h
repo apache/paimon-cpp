@@ -17,6 +17,7 @@
  */
 
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -49,9 +50,23 @@ struct PAIMON_EXPORT FullTextSearch {
         }
         const RoaringBitmap64& global_row_ids = include_row_ids.value();
         RoaringBitmap64 local_row_ids;
-        for (auto iter = global_row_ids.EqualOrLarger(from), end = global_row_ids.End();
-             iter != end && *iter <= to; ++iter) {
-            local_row_ids.Add(*iter - from);
+        auto iter = global_row_ids.EqualOrLarger(from);
+        auto end = global_row_ids.End();
+        if (iter != end && *iter <= to) {
+            // Shift one run of consecutive row ids as a range, so that converting a range of rows
+            // to rank does not visit each row.
+            int64_t first = *global_row_ids.Begin();
+            int64_t last = first + (global_row_ids.Cardinality() - 1);
+            if (last == RoaringBitmap64::MAX_VALUE ||
+                global_row_ids.EqualOrLarger(last + 1) == end) {
+                int64_t local_to = std::min(last, to) - from;
+                local_row_ids.AddRange(*iter - from, local_to);
+                local_row_ids.Add(local_to);
+            } else {
+                for (; iter != end && *iter <= to; ++iter) {
+                    local_row_ids.Add(*iter - from);
+                }
+            }
         }
         return std::make_shared<FullTextSearch>(field_name, query, limit, std::move(local_row_ids));
     }
@@ -83,7 +98,8 @@ struct PAIMON_EXPORT FullTextSearch {
     /// and rejects `boost` queries and a `fuzziness` other than 0. An invalid query is reported as
     /// an error `Status`.
     std::string query;
-    /// Maximum number of highest-scoring rows requested from each index shard; must be positive.
+    /// Maximum number of highest-scoring rows to return; must be positive. Each index shard is
+    /// asked for this many rows before the shard results are merged.
     int32_t limit;
     /// The row ids to search within, aligned with Java `includeRowIds`. The row id domain is
     /// determined by the reader: global row ids for GlobalIndexReader and physical file-local row

@@ -122,8 +122,10 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
                 const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
 
     /// Loads the schema and catalog table ID from the same response.
+    /// Fills `table_path` with the table location when supplied.
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier,
-                                                    std::string* table_id) const;
+                                                    std::string* table_id,
+                                                    std::string* table_path) const;
 
     /// Loads the schema with table path, audit and branch options.
     /// Fills `table_path` and `table_id` when supplied.

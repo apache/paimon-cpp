@@ -34,8 +34,11 @@ class OffsetGlobalIndexReader : public GlobalIndexReader {
     /// Constructs an OffsetGlobalIndexReader.
     /// @param wrapped The inner reader to delegate queries to. Its results are expected to
     ///                contain local row ids.
-    /// @param offset  The offset to add to each row id in the results.
-    OffsetGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped, int64_t offset);
+    /// @param offset  The first global row id covered by the wrapped reader, added to each row id
+    ///                in the results.
+    /// @param to      The last global row id (inclusive) covered by the wrapped reader.
+    OffsetGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped, int64_t offset,
+                            int64_t to);
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override;
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNull() override;
@@ -78,6 +81,7 @@ class OffsetGlobalIndexReader : public GlobalIndexReader {
  private:
     std::shared_ptr<GlobalIndexReader> wrapped_;
     int64_t offset_;
+    int64_t to_;
 };
 
 }  // namespace paimon

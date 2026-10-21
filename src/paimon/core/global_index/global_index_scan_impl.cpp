@@ -18,6 +18,9 @@
  */
 #include "paimon/core/global_index/global_index_scan_impl.h"
 
+#include <algorithm>
+#include <limits>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -184,10 +187,34 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
             continue;
         }
         std::vector<std::shared_ptr<GlobalIndexReader>> union_readers;
+        std::vector<Range> row_ranges;
+        std::vector<std::optional<Range>> search_ranges;
         union_readers.reserve(range_to_metas.size());
+        row_ranges.reserve(range_to_metas.size());
+        search_ranges.reserve(range_to_metas.size());
+        // Assign each full-text row to one reader before requesting per-reader top-k: a row is
+        // ranked by the first range in (from, to) order that covers it, which leaves each range
+        // only its rows after the largest `to` of earlier ones.
+        int64_t covered_to = std::numeric_limits<int64_t>::min();
         for (const auto& [range, metas] : range_to_metas) {
+            std::optional<Range> search_range;
+            if (covered_to < range.to) {
+                search_range = Range(std::max(range.from, covered_to + 1), range.to);
+            }
+            covered_to = std::max(covered_to, range.to);
             if (row_range_index && !row_range_index->Intersects(range.from, range.to)) {
                 continue;
+            }
+            std::optional<std::vector<Range>> local_row_ranges;
+            if (row_range_index) {
+                std::vector<Range> intersected_ranges =
+                    row_range_index->IntersectedRanges(range.from, range.to);
+                local_row_ranges.emplace();
+                local_row_ranges->reserve(intersected_ranges.size());
+                for (const Range& intersected_range : intersected_ranges) {
+                    local_row_ranges->emplace_back(intersected_range.from - range.from,
+                                                   intersected_range.to - range.from);
+                }
             }
             auto arrow_field = DataField::ConvertDataFieldToArrowField(field);
             auto arrow_schema = arrow::schema({arrow_field});
@@ -198,15 +225,18 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
             ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<GlobalIndexReader> index_reader,
-                indexer->CreateReader(&c_arrow_schema, index_file_manager_, index_io_metas, pool_));
-            union_readers.push_back(
-                std::make_shared<OffsetGlobalIndexReader>(std::move(index_reader), range.from));
+                indexer->CreateReader(&c_arrow_schema, index_file_manager_, index_io_metas,
+                                      range.Count(), local_row_ranges, pool_));
+            union_readers.push_back(std::make_shared<OffsetGlobalIndexReader>(
+                std::move(index_reader), range.from, range.to));
+            row_ranges.push_back(range);
+            search_ranges.push_back(search_range);
         }
         if (union_readers.empty()) {
             continue;
         }
-        readers.push_back(
-            std::make_shared<UnionGlobalIndexReader>(std::move(union_readers), executor_));
+        readers.push_back(std::make_shared<UnionGlobalIndexReader>(
+            std::move(union_readers), std::move(row_ranges), std::move(search_ranges), executor_));
     }
     return readers;
 }
@@ -225,7 +255,7 @@ GlobalIndexIOMeta GlobalIndexScanImpl::ToGlobalIndexIOMeta(
     const std::shared_ptr<IndexFileMeta>& index_meta) const {
     assert(index_meta->GetGlobalIndexMeta());
     const auto& global_index_meta = index_meta->GetGlobalIndexMeta().value();
-    return {index_file_manager_->ToPath(index_meta), index_meta->FileSize(),
+    return {index_file_manager_->ToPath(index_meta), index_meta->FileSize(), index_meta->RowCount(),
             global_index_meta.index_meta};
 }
 

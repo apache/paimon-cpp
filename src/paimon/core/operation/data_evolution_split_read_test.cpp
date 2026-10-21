@@ -18,6 +18,7 @@
 
 #include "paimon/core/operation/data_evolution_split_read.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -26,6 +27,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/vector_store_utils.h"
 #include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -100,6 +102,40 @@ class DataEvolutionSplitReadTest : public ::testing::Test {
                                        /*value_stats_cols=*/std::nullopt,
                                        /*external_path=*/std::nullopt, first_row_id, write_cols)
             .value();
+    }
+
+    static Result<std::vector<int32_t>> EmbeddingFieldIds(
+        const std::shared_ptr<DataFileMeta>& file) {
+        if (!VectorStoreUtils::IsVectorStoreFile(file->file_name)) {
+            return Status::Invalid("Only VECTOR files need their field ids resolved");
+        }
+        return std::vector<int32_t>{1};
+    }
+
+    void CheckVectorReadProviders(
+        const std::vector<DataEvolutionSplitRead::VectorReadRange>& ranges, int64_t first_row_id,
+        const std::vector<std::vector<std::shared_ptr<DataFileMeta>>>& expected) const {
+        int64_t next_row_id = first_row_id;
+        for (const auto& range : ranges) {
+            ASSERT_EQ(range.range.from, next_row_id);
+            ASSERT_GE(range.range.to, range.range.from);
+            for (int64_t row_id = range.range.from; row_id <= range.range.to; ++row_id) {
+                SCOPED_TRACE(row_id);
+                const int64_t index = row_id - first_row_id;
+                ASSERT_LT(index, expected.size());
+                ASSERT_EQ(range.files.size(), expected[index].size());
+                for (const auto& file : expected[index]) {
+                    ASSERT_NE(std::find(range.files.begin(), range.files.end(), file),
+                              range.files.end());
+                }
+                for (size_t i = 1; i < range.files.size(); ++i) {
+                    ASSERT_GE(range.files[i - 1]->max_sequence_number,
+                              range.files[i]->max_sequence_number);
+                }
+            }
+            next_row_id = range.range.to + 1;
+        }
+        ASSERT_EQ(next_row_id, first_row_id + expected.size());
     }
 
  private:
@@ -653,6 +689,188 @@ TEST_F(DataEvolutionSplitReadTest, TestDifferentRowIdRange) {
         CreateNormalFile("file1.parquet", 1l, 50, 20)};
     ASSERT_NOK_WITH_MSG(DataEvolutionSplitRead::MergeRangesAndSort(std::move(files)),
                         "Data files should be all row id ranges same.");
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestDifferentNormalRowIdRangeWithVectorFiles) {
+    std::vector<std::shared_ptr<DataFileMeta>> files = {
+        CreateNormalFile("file0.parquet", /*first_row_id=*/100, /*row_count=*/100,
+                         /*max_sequence_number=*/10),
+        CreateNormalFile("file1.parquet", /*first_row_id=*/100, /*row_count=*/50,
+                         /*max_sequence_number=*/20),
+        CreateDataFileMeta("file2.vector.vortex", /*first_row_id=*/100, /*row_count=*/40,
+                           /*max_seq=*/10),
+        CreateDataFileMeta("file3.vector.vortex", /*first_row_id=*/140, /*row_count=*/60,
+                           /*max_seq=*/10)};
+    ASSERT_NOK_WITH_MSG(DataEvolutionSplitRead::MergeRangesAndSort(std::move(files)),
+                        "Data files should be all row id ranges same.");
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestSplitWithMultipleVectorFilesPerGroup) {
+    auto main0 = CreateNormalFile("main0.parquet", /*first_row_id=*/100, /*row_count=*/100,
+                                  /*max_sequence_number=*/10);
+    auto vector0 = CreateDataFileMeta("vector0.vector.vortex", /*first_row_id=*/100,
+                                      /*row_count=*/40, /*max_seq=*/10);
+    auto vector1 = CreateDataFileMeta("vector1.vector.vortex", /*first_row_id=*/140,
+                                      /*row_count=*/60, /*max_seq=*/10);
+    auto main1 = CreateNormalFile("main1.parquet", /*first_row_id=*/200, /*row_count=*/100,
+                                  /*max_sequence_number=*/20);
+    auto vector2 = CreateDataFileMeta("vector2.vector.vortex", /*first_row_id=*/200,
+                                      /*row_count=*/80, /*max_seq=*/20);
+    auto vector3 = CreateDataFileMeta("vector3.vector.vortex", /*first_row_id=*/280,
+                                      /*row_count=*/20, /*max_seq=*/20);
+    std::vector<std::shared_ptr<DataFileMeta>> files = {vector1, main1, vector3,
+                                                        vector0, main0, vector2};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> split_metas,
+                         DataEvolutionSplitRead::MergeRangesAndSort(std::move(files)));
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected_metas = {
+        {main0, vector0, vector1}, {main1, vector2, vector3}};
+    ASSERT_EQ(expected_metas, split_metas);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanIndependentlyRolledVectorReadRanges) {
+    auto main = CreateNormalFile("main.parquet", 100, 10, 0);
+    auto vector0 = CreateDataFileMeta("vector0.vector.vortex", 100, 3, 1);
+    auto vector1 = CreateDataFileMeta("vector1.vector.vortex", 103, 4, 1);
+    auto vector2 = CreateDataFileMeta("vector2.vector.vortex", 107, 3, 1);
+    ASSERT_OK_AND_ASSIGN(std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+                         DataEvolutionSplitRead::PlanVectorReadRanges(
+                             {vector2, main, vector0, vector1}, {0, 1}, EmbeddingFieldIds));
+    ASSERT_EQ(ranges.size(), 3);
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected(10, {main, vector1});
+    for (int32_t i : {0, 1, 2}) {
+        expected[i] = {main, vector0};
+    }
+    for (int32_t i : {7, 8, 9}) {
+        expected[i] = {main, vector2};
+    }
+    CheckVectorReadProviders(ranges, 100, expected);
+    // Planning must retain whole-file metadata so file-local row offsets and DVs remain valid.
+    ASSERT_EQ(main->first_row_id, 100);
+    ASSERT_EQ(main->row_count, 10);
+    ASSERT_EQ(vector1->first_row_id, 103);
+    ASSERT_EQ(vector1->row_count, 4);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesPreservesOldPrefixAndSuffix) {
+    auto main = CreateNormalFile("main.parquet", 0, 10, 0);
+    auto old_vector = CreateDataFileMeta("old.vector.vortex", 0, 10, 1);
+    auto new_vector = CreateDataFileMeta("new.vector.vortex", 3, 3, 2);
+    ASSERT_OK_AND_ASSIGN(std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+                         DataEvolutionSplitRead::PlanVectorReadRanges(
+                             {main, old_vector, new_vector}, {1}, EmbeddingFieldIds));
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected(10, {main, old_vector});
+    for (int32_t i : {3, 4, 5}) {
+        expected[i] = {main, new_vector};
+    }
+    CheckVectorReadProviders(ranges, 0, expected);
+    ASSERT_EQ(old_vector->first_row_id, 0);
+    ASSERT_EQ(old_vector->row_count, 10);
+    ASSERT_EQ(new_vector->first_row_id, 3);
+    ASSERT_EQ(new_vector->row_count, 3);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesWithInterleavedSequences) {
+    auto main = CreateNormalFile("main.parquet", 0, 10, 0);
+    auto vector0 = CreateDataFileMeta("vector0.vector.vortex", 0, 5, 4);
+    auto vector1 = CreateDataFileMeta("vector1.vector.vortex", 2, 6, 3);
+    auto vector2 = CreateDataFileMeta("vector2.vector.vortex", 5, 5, 2);
+    ASSERT_OK_AND_ASSIGN(std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+                         DataEvolutionSplitRead::PlanVectorReadRanges(
+                             {vector2, vector1, main, vector0}, {1}, EmbeddingFieldIds));
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected(10, {main, vector0});
+    for (int32_t i : {5, 6, 7}) {
+        expected[i] = {main, vector1};
+    }
+    for (int32_t i : {8, 9}) {
+        expected[i] = {main, vector2};
+    }
+    CheckVectorReadProviders(ranges, 0, expected);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesKeepsProvidersForOtherFields) {
+    auto main = CreateNormalFile("main.parquet", 0, 10, 0);
+    auto old_vector = CreateDataFileMeta("old.vector.vortex", 0, 10, 1);
+    auto new_vector = CreateDataFileMeta("new.vector.vortex", 3, 3, 2);
+    auto file_to_field_ids =
+        [&old_vector](const std::shared_ptr<DataFileMeta>& file) -> Result<std::vector<int32_t>> {
+        return file == old_vector ? std::vector<int32_t>{1, 2} : std::vector<int32_t>{1};
+    };
+    ASSERT_OK_AND_ASSIGN(std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+                         DataEvolutionSplitRead::PlanVectorReadRanges(
+                             {main, old_vector, new_vector}, {1, 2}, file_to_field_ids));
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected(10, {main, old_vector});
+    for (int32_t i : {3, 4, 5}) {
+        expected[i] = {main, old_vector, new_vector};
+    }
+    CheckVectorReadProviders(ranges, 0, expected);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesKeepsNormalFilesForGaps) {
+    auto main = CreateNormalFile("main.parquet", 0, 10, 0);
+    auto vector = CreateDataFileMeta("middle.vector.vortex", 3, 3, 1);
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+        DataEvolutionSplitRead::PlanVectorReadRanges({main, vector}, {1}, EmbeddingFieldIds));
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected(10, {main});
+    for (int32_t i : {3, 4, 5}) {
+        expected[i] = {main, vector};
+    }
+    CheckVectorReadProviders(ranges, 0, expected);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesForScalarProjection) {
+    auto main = CreateNormalFile("main.parquet", 0, 10, 0);
+    auto vector0 = CreateDataFileMeta("vector0.vector.vortex", 0, 3, 1);
+    auto vector1 = CreateDataFileMeta("vector1.vector.vortex", 3, 7, 1);
+    ASSERT_OK_AND_ASSIGN(std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+                         DataEvolutionSplitRead::PlanVectorReadRanges({vector1, main, vector0}, {0},
+                                                                      EmbeddingFieldIds));
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected(10, {main});
+    CheckVectorReadProviders(ranges, 0, expected);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorOnlyReadRangesKeepsRowCountProviders) {
+    auto other_field = CreateDataFileMeta("other.vector.vortex", 0, 10, 1);
+    auto projected_field = CreateDataFileMeta("projected.vector.vortex", 3, 3, 2);
+    auto file_to_field_ids =
+        [&other_field](const std::shared_ptr<DataFileMeta>& file) -> Result<std::vector<int32_t>> {
+        return file == other_field ? std::vector<int32_t>{2} : std::vector<int32_t>{1};
+    };
+    ASSERT_OK_AND_ASSIGN(std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+                         DataEvolutionSplitRead::PlanVectorReadRanges(
+                             {other_field, projected_field}, {1}, file_to_field_ids));
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected(10, {other_field});
+    for (int32_t i : {3, 4, 5}) {
+        expected[i] = {projected_field};
+    }
+    CheckVectorReadProviders(ranges, 0, expected);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesUsesFieldIdsAfterRename) {
+    auto main = CreateNormalFile("main.parquet", 0, 10, 0);
+    auto old_vector = CreateDataFileMeta("old.vector.vortex", 0, 10, 1);
+    old_vector->write_cols = std::vector<std::string>{"embedding_before_rename"};
+    old_vector->schema_id = 0;
+    auto new_vector = CreateDataFileMeta("new.vector.vortex", 3, 3, 2);
+    new_vector->write_cols = std::vector<std::string>{"embedding_after_rename"};
+    new_vector->schema_id = 1;
+    auto file_to_field_ids =
+        [](const std::shared_ptr<DataFileMeta>& file) -> Result<std::vector<int32_t>> {
+        const std::map<int64_t, std::string> schema_names = {{0, "embedding_before_rename"},
+                                                             {1, "embedding_after_rename"}};
+        if (file->write_cols != std::vector<std::string>{schema_names.at(file->schema_id)}) {
+            return Status::Invalid("VECTOR write column does not match its original schema");
+        }
+        return std::vector<int32_t>{1};
+    };
+    ASSERT_OK_AND_ASSIGN(std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+                         DataEvolutionSplitRead::PlanVectorReadRanges(
+                             {main, old_vector, new_vector}, {1}, file_to_field_ids));
+    std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected(10, {main, old_vector});
+    for (int32_t i : {3, 4, 5}) {
+        expected[i] = {main, new_vector};
+    }
+    CheckVectorReadProviders(ranges, 0, expected);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestSplitWithSameFirstRowId) {

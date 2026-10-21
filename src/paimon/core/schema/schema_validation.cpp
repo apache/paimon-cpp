@@ -120,10 +120,11 @@ Status ValidateSharedShreddingFileFormat(const std::string& option_key,
 
 Status ValidateVectorFileFormat(const std::string& option_key, const std::string& file_format) {
     if (!StringUtils::EqualsIgnoreCase(file_format, "parquet") &&
-        !StringUtils::EqualsIgnoreCase(file_format, "lance")) {
-        return Status::Invalid(
-            fmt::format("VECTOR currently only supports parquet/lance data files, but {} is {}.",
-                        option_key, file_format));
+        !StringUtils::EqualsIgnoreCase(file_format, "lance") &&
+        !StringUtils::EqualsIgnoreCase(file_format, "vortex")) {
+        return Status::Invalid(fmt::format(
+            "VECTOR currently only supports parquet/lance/vortex data files, but {} is {}.",
+            option_key, file_format));
     }
     return Status::OK();
 }
@@ -397,6 +398,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateVortexDataFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateVectorStore(schema, options));
     return Status::OK();
 }
 
@@ -1258,6 +1260,57 @@ Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
                                                                 changelog_compression.value()));
     }
 
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateVectorStore(const TableSchema& schema,
+                                             const CoreOptions& options) {
+    const std::shared_ptr<FileFormat> vector_format = options.GetVectorFileFormat();
+    if (!vector_format) {
+        return Status::OK();
+    }
+    PAIMON_RETURN_NOT_OK(
+        ValidateVectorFileFormat(Options::VECTOR_FILE_FORMAT, vector_format->Identifier()));
+    if (!schema.PrimaryKeys().empty()) {
+        return Status::NotImplemented("Dedicated VECTOR storage only supports append-only tables");
+    }
+    if (!options.RowTrackingEnabled() || !options.DataEvolutionEnabled()) {
+        return Status::Invalid(
+            "Dedicated VECTOR storage requires row-tracking.enabled and data-evolution.enabled");
+    }
+    if (options.GetBucket() != -1) {
+        return Status::Invalid("Dedicated VECTOR storage requires bucket=-1");
+    }
+    if (options.GetFileFormat()->Identifier() != "parquet" ||
+        options.GetWriteFileFormat(/*level=*/0)->Identifier() != "parquet") {
+        return Status::NotImplemented(
+            "Dedicated VECTOR storage currently requires parquet main files");
+    }
+    int32_t vector_count = 0;
+    int32_t normal_count = 0;
+    for (const DataField& field : schema.Fields()) {
+        if (ContainsBlobField(field.ArrowField())) {
+            return Status::NotImplemented(
+                "Dedicated VECTOR storage does not yet support BLOB columns");
+        }
+        if (VectorUtils::ContainsVectorField(field.ArrowField())) {
+            if (field.Type()->id() != arrow::Type::FIXED_SIZE_LIST) {
+                return Status::NotImplemented(
+                    "Dedicated VECTOR storage only supports a top-level VECTOR column");
+            }
+            ++vector_count;
+        } else if (std::find(schema.PartitionKeys().begin(), schema.PartitionKeys().end(),
+                             field.Name()) == schema.PartitionKeys().end()) {
+            ++normal_count;
+        }
+    }
+    if (vector_count != 1) {
+        return Status::NotImplemented(
+            "Dedicated VECTOR storage requires exactly one top-level VECTOR column");
+    }
+    if (normal_count == 0) {
+        return Status::Invalid("Dedicated VECTOR storage requires a normal non-partition column");
+    }
     return Status::OK();
 }
 

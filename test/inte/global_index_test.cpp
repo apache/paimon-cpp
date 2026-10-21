@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <limits>
 
@@ -74,6 +75,7 @@ class CountingGlobalIndexFileManager : public GlobalIndexFileManager {
 
 }  // namespace
 
+using ScoredRows = std::vector<std::pair<int64_t, float>>;
 // string: FileFormat, bool: UseSpecificFileSystem
 using ParamType = std::tuple<std::string, bool>;
 /// This is a sdk end-to-end test for global index.
@@ -183,6 +185,102 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
                 std::make_shared<IndexedSplitImpl>(split, std::vector<Range>({range})), options,
                 /*task_id=*/std::nullopt, pool_, fs_));
         return Commit(table_path, {index_commit_msg});
+    }
+
+    static Result<ScoredRows> SearchFullText(
+        const std::shared_ptr<GlobalIndexReader>& reader, const std::string& query, int32_t limit,
+        const std::optional<RoaringBitmap64>& include_row_ids) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredGlobalIndexResult> result,
+                               reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
+                                   "f0", query, limit, include_row_ids)));
+        if (!result) {
+            return Status::Invalid("full-text search returned no result");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScoredGlobalIndexResult::ScoredIterator> iter,
+                               result->CreateScoredIterator());
+        ScoredRows rows;
+        while (iter->HasNext()) {
+            rows.push_back(iter->NextWithScore());
+        }
+        return rows;
+    }
+
+    static void CheckFullTextTopK(const std::shared_ptr<GlobalIndexReader>& reader,
+                                  const std::string& query,
+                                  const std::optional<RoaringBitmap64>& include_row_ids,
+                                  const std::vector<int64_t>& expected_row_ids) {
+        ASSERT_OK_AND_ASSIGN(ScoredRows all_rows,
+                             SearchFullText(reader, query, /*limit=*/100, include_row_ids));
+        std::vector<int64_t> row_ids;
+        for (const auto& [row_id, score] : all_rows) {
+            row_ids.push_back(row_id);
+        }
+        ASSERT_EQ(row_ids, expected_row_ids);
+        ScoredRows ranked_rows = all_rows;
+        std::sort(
+            ranked_rows.begin(), ranked_rows.end(),
+            [](const std::pair<int64_t, float>& left, const std::pair<int64_t, float>& right) {
+                return left.second != right.second ? left.second > right.second
+                                                   : left.first < right.first;
+            });
+        for (size_t limit = 1; limit < ranked_rows.size(); ++limit) {
+            ScoredRows expected_rows(ranked_rows.begin(), ranked_rows.begin() + limit);
+            std::sort(expected_rows.begin(), expected_rows.end());
+            ASSERT_OK_AND_ASSIGN(
+                ScoredRows rows,
+                SearchFullText(reader, query, static_cast<int32_t>(limit), include_row_ids));
+            ASSERT_EQ(rows, expected_rows) << "limit=" << limit;
+        }
+    }
+
+    void CheckSearchOverlappingIndexRanges(const std::string& index_type,
+                                           const std::map<std::string, std::string>& index_options,
+                                           const std::string& query) {
+        arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
+                                     arrow::field("f1", arrow::int32())};
+        auto schema = arrow::schema(fields);
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
+                                                      {Options::FILE_SYSTEM, "local"},
+                                                      {Options::ROW_TRACKING_ENABLED, "true"},
+                                                      {Options::DATA_EVOLUTION_ENABLED, "true"}};
+        CreateTable(/*partition_keys=*/{}, schema, options);
+        std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+        auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+["This is an test document.", 0],
+["This is an new document document document.", 1],
+["Document document document document test.", 2],
+["Document document document document document.", 3]
+    ])")
+                             .ValueOrDie();
+        ASSERT_OK_AND_ASSIGN(auto commit_msgs,
+                             WriteArray(table_path, schema->field_names(), src_array));
+        ASSERT_OK(Commit(table_path, commit_msgs));
+        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", index_type, index_options,
+                             Range(0, 2)));
+        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", index_type, index_options,
+                             Range(1, 1)));
+        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", index_type, index_options,
+                             Range(1, 3)));
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                             GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                     /*partitions=*/std::nullopt, /*options=*/{},
+                                                     fs_, /*executor=*/nullptr, pool_));
+        ASSERT_OK_AND_ASSIGN(
+            auto readers, global_index_scan->CreateReaders("f0", /*row_range_index=*/std::nullopt));
+        ASSERT_EQ(readers.size(), 1u);
+        CheckFullTextTopK(readers[0], query, std::nullopt, {0, 1, 2, 3});
+        ASSERT_OK_AND_ASSIGN(ScoredRows top_rows,
+                             SearchFullText(readers[0], query, /*limit=*/1, std::nullopt));
+        ASSERT_EQ(top_rows.size(), 1u);
+        ASSERT_EQ(top_rows[0].first, 3);
+        CheckFullTextTopK(readers[0], query, RoaringBitmap64::From({1, 2, 3}), {1, 2, 3});
+
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(3, 3)}));
+        ASSERT_OK_AND_ASSIGN(readers, global_index_scan->CreateReaders("f0", row_range_index));
+        ASSERT_EQ(readers.size(), 1u);
+        CheckFullTextTopK(readers[0], query, std::nullopt, {3});
     }
 
     Result<std::shared_ptr<Plan>> ScanGlobalIndexAndData(
@@ -2803,6 +2901,28 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadLuceneIndexWithPartition) {
         ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(2, 3)}));
         scan_and_check_result({{"f1", "20"}}, row_range_index, filter, "row ids: {2}");
     }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<GlobalIndexScan> global_index_scan,
+            GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                    /*partitions=*/std::nullopt, lucene_options, fs_,
+                                    /*executor=*/nullptr, pool_));
+        ASSERT_OK_AND_ASSIGN(
+            auto readers, global_index_scan->CreateReaders("f0", /*row_range_index=*/std::nullopt));
+        ASSERT_EQ(readers.size(), 1u);
+        std::string query = R"({"match":{"query":"document","operator":"And"}})";
+        CheckFullTextTopK(readers[0], query, std::nullopt, {0, 1, 2});
+        CheckFullTextTopK(readers[0], query, RoaringBitmap64::From({1, 2, 3}), {1, 2});
+    }
+}
+
+TEST_P(GlobalIndexTest, TestLuceneSearchOverlappingIndexRanges) {
+    auto tmp_dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(tmp_dir);
+    CheckSearchOverlappingIndexRanges("lucene-fts",
+                                      {{"lucene-fts.write.omit-term-freq-and-position", "false"},
+                                       {"lucene-fts.write.tmp.directory", tmp_dir->Str()}},
+                                      R"({"match":{"query":"document","operator":"And"}})");
 }
 #endif
 
@@ -2932,6 +3052,24 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadFullTextIndexWithPartition) {
         ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(2, 3)}));
         scan_and_check_result({{"f1", "20"}}, row_range_index, std::nullopt, "{2}");
     }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<GlobalIndexScan> global_index_scan,
+            GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                    /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                    /*executor=*/nullptr, pool_));
+        ASSERT_OK_AND_ASSIGN(
+            auto readers, global_index_scan->CreateReaders("f0", /*row_range_index=*/std::nullopt));
+        ASSERT_EQ(readers.size(), 1u);
+        std::string query = R"({"match":{"query":"document"}})";
+        CheckFullTextTopK(readers[0], query, std::nullopt, {0, 1, 2});
+        CheckFullTextTopK(readers[0], query, RoaringBitmap64::From({1, 2, 3}), {1, 2});
+    }
+}
+
+TEST_P(GlobalIndexTest, TestFullTextSearchOverlappingIndexRanges) {
+    CheckSearchOverlappingIndexRanges("full-text", {{"full-text.tokenizer", "default"}},
+                                      R"({"match":{"query":"document"}})");
 }
 #endif
 
@@ -3319,22 +3457,30 @@ TEST_P(GlobalIndexTest, TestBTreeWriteCommitScanReadIndexWithPartition) {
         ASSERT_EQ(result2->ToString(), "{}");
     }
 
-    // Scan with row_range_index filtering: only range [5,7] (partition f1=20)
+    // Scan with row_range_index filtering: only global row 6 in range [5,7]. This verifies
+    // that the global range is translated to the file-local range [1,1] before creating the
+    // BTree reader.
     {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
                              GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
                                                      /*partitions=*/std::nullopt, /*options=*/{},
                                                      fs_, /*executor=*/nullptr, pool_));
-        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(5, 7)}));
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(6, 6)}));
         ASSERT_OK_AND_ASSIGN(auto index_readers,
                              global_index_scan->CreateReaders("f0", row_range_index));
         ASSERT_EQ(index_readers.size(), 1u);
 
-        // "Tony" in range [5,7]: local id {2} in range [5,7] -> global {7}
+        // "Lucy" is local row 1 in the index range [5,7] -> global row 6.
         ASSERT_OK_AND_ASSIGN(auto result,
+                             index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Lucy", 4)));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->ToString(), "{6}");
+
+        // "Tony" is in the selected index file but outside the requested row range.
+        ASSERT_OK_AND_ASSIGN(result,
                              index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Tony", 4)));
         ASSERT_TRUE(result);
-        ASSERT_EQ(result->ToString(), "{7}");
+        ASSERT_EQ(result->ToString(), "{}");
     }
 
     // Full pipeline with evaluator: Scan(predicate) -> read data

@@ -27,12 +27,20 @@
 
 #include "arrow/api.h"
 #include "arrow/ipc/json_simple.h"
+#include "paimon/common/global_index/key_serializer.h"
+#include "paimon/common/io/cache/cache_manager.h"
+#include "paimon/common/io/cache/lru_cache.h"
+#include "paimon/common/io/data_output_stream.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/realtime/data_file_key_offset_index_writer.h"
+#include "paimon/core/realtime/key_offset_index_utils.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
+#include "xxhash.h"  // NOLINT(build/include_subdir)
 
 namespace paimon::test {
 namespace {
@@ -46,6 +54,16 @@ std::shared_ptr<arrow::StructArray> MakeKeys(const std::shared_ptr<arrow::Field>
 std::shared_ptr<arrow::Int64Array> MakeOffsets(const std::string& json) {
     return checked_pointer_cast<arrow::Int64Array>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), json).ValueOrDie());
+}
+
+std::shared_ptr<arrow::StructArray> MakeIndexBatch(const std::shared_ptr<arrow::Field>& key_field,
+                                                   const std::string& json) {
+    return checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(
+                {key_field, arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64())}),
+            json)
+            .ValueOrDie());
 }
 
 std::shared_ptr<DataFileMeta> MakeDataFile(
@@ -87,6 +105,14 @@ TEST(RealtimeKeyOffsetIndexTest, TestMutableIndexSnapshotIsCopyOnWrite) {
     ASSERT_OK_AND_ASSIGN(RoaringBitmap64 pinned,
                          snapshot->LookupOffsets(MakeKeys(key_field, R"([[1], [2], [3]])")));
     AssertOffsets(pinned, {10, 20});
+
+    const std::shared_ptr<const KeyOffsetLookup> deleted_snapshot = index->Snapshot();
+    ASSERT_OK(index->Add(MakeKeys(key_field, R"([[2]])"), MakeOffsets("[40]")));
+    ASSERT_OK(index->Erase(MakeKeys(key_field, R"([[99]])")));
+    ASSERT_OK_AND_ASSIGN(current, index->LookupOffsets(MakeKeys(key_field, R"([[1], [2]])")));
+    AssertOffsets(current, {30, 40});
+    ASSERT_OK_AND_ASSIGN(pinned, deleted_snapshot->LookupOffsets(MakeKeys(key_field, R"([[2]])")));
+    ASSERT_TRUE(pinned.IsEmpty());
 }
 
 TEST(RealtimeKeyOffsetIndexTest, TestMutableIndexValidatesInput) {
@@ -127,6 +153,7 @@ TEST(RealtimeKeyOffsetIndexTest, TestCompositeLookupUnionsChildren) {
 }
 
 TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripAndAbort) {
+    auto cache_manager = std::make_shared<CacheManager>(128, /*high_priority_pool_ratio=*/0.0);
     std::unique_ptr<UniqueTestDirectory> directory = UniqueTestDirectory::Create();
     ASSERT_NE(nullptr, directory);
     const std::shared_ptr<arrow::Field> key_field = arrow::field("id", arrow::int64());
@@ -134,24 +161,36 @@ TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripAndAbort) {
     ASSERT_OK(path_factory->Init(directory->Str(), /*format_identifier=*/"parquet",
                                  /*data_file_prefix=*/"data-",
                                  /*external_path_provider=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
-        DataFileKeyOffsetIndexWriter::Create(key_field, path_factory, directory->GetFileSystem(),
-                                             GetDefaultPool(), /*options=*/{}));
-    ASSERT_OK(writer->AddBatch(MakeKeys(key_field, R"([[1], [2]])"), MakeOffsets("[7, 9]")));
-    ASSERT_NOK_WITH_MSG(writer->AddBatch(MakeKeys(key_field, R"([[2]])"), MakeOffsets("[11]")),
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
+                         DataFileKeyOffsetIndexWriter::Create(key_field, directory->GetFileSystem(),
+                                                              GetDefaultPool()));
+    ASSERT_OK(writer->AddBatch(MakeIndexBatch(key_field, R"([[1, 7], [2, 9]])")));
+    ASSERT_NOK_WITH_MSG(writer->AddBatch(MakeIndexBatch(key_field, R"([[2, 11]])")),
                         "more than one offset for a deduplicate key");
 
     std::shared_ptr<DataFileMeta> data_file = MakeDataFile("data-0.parquet", /*row_count=*/2);
-    ASSERT_OK_AND_ASSIGN(std::string sidecar, writer->Finish(data_file));
+    ASSERT_OK_AND_ASSIGN(std::string sidecar,
+                         writer->Finish(path_factory->ToPath(data_file), data_file->row_count));
     ASSERT_EQ("data-0.parquet.offset", sidecar);
     data_file->extra_files.emplace_back(sidecar);
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
-        DataFileKeyOffsetIndexReader::Create(key_field, data_file, path_factory,
-                                             directory->GetFileSystem(), GetDefaultPool(), {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
+                         DataFileKeyOffsetIndexReader::Create(
+                             /*page_size=*/32, cache_manager, key_field, data_file, path_factory,
+                             directory->GetFileSystem(), GetDefaultPool()));
+    const std::shared_ptr<LruCache> cache =
+        checked_pointer_cast<LruCache>(cache_manager->IndexCache());
+    ASSERT_EQ(0, cache->GetCurrentWeight());
     ASSERT_OK_AND_ASSIGN(RoaringBitmap64 result,
                          reader->LookupOffsets(MakeKeys(key_field, R"([[2], [3], [1]])")));
+    AssertOffsets(result, {7, 9});
+    ASSERT_GT(cache->GetCurrentWeight(), 0);
+    ASSERT_LE(cache->GetCurrentWeight(), 128);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileKeyOffsetIndexReader> reopened,
+                         DataFileKeyOffsetIndexReader::Create(
+                             /*page_size=*/32, cache_manager, key_field, data_file, path_factory,
+                             directory->GetFileSystem(), GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(result, reopened->LookupOffsets(MakeKeys(key_field, R"([[1], [2]])")));
     AssertOffsets(result, {7, 9});
 
     const std::string sidecar_path = path_factory->ToAlignedPath(sidecar, data_file);
@@ -160,11 +199,10 @@ TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripAndAbort) {
     writer->Abort();
     ASSERT_OK_AND_ASSIGN(exists, directory->GetFileSystem()->Exists(sidecar_path));
     ASSERT_FALSE(exists);
-    ASSERT_OK_AND_ASSIGN(result, reader->LookupOffsets(MakeKeys(key_field, R"([[1], [2]])")));
-    AssertOffsets(result, {7, 9});
 }
 
 TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripWithEmptyStringKey) {
+    auto cache_manager = std::make_shared<CacheManager>(128, /*high_priority_pool_ratio=*/0.0);
     std::unique_ptr<UniqueTestDirectory> directory = UniqueTestDirectory::Create();
     ASSERT_NE(nullptr, directory);
     const std::shared_ptr<arrow::Field> key_field = arrow::field("id", arrow::utf8());
@@ -172,19 +210,19 @@ TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripWithEmptyStringKey) {
     ASSERT_OK(path_factory->Init(directory->Str(), /*format_identifier=*/"parquet",
                                  /*data_file_prefix=*/"data-",
                                  /*external_path_provider=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
-        DataFileKeyOffsetIndexWriter::Create(key_field, path_factory, directory->GetFileSystem(),
-                                             GetDefaultPool(), /*options=*/{}));
-    ASSERT_OK(writer->AddBatch(MakeKeys(key_field, R"([[""], ["alpha"]])"), MakeOffsets("[7, 9]")));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
+                         DataFileKeyOffsetIndexWriter::Create(key_field, directory->GetFileSystem(),
+                                                              GetDefaultPool()));
+    ASSERT_OK(writer->AddBatch(MakeIndexBatch(key_field, R"([["", 7], ["alpha", 9]])")));
 
     std::shared_ptr<DataFileMeta> data_file = MakeDataFile("data-0.parquet", /*row_count=*/2);
-    ASSERT_OK_AND_ASSIGN(std::string sidecar, writer->Finish(data_file));
+    ASSERT_OK_AND_ASSIGN(std::string sidecar,
+                         writer->Finish(path_factory->ToPath(data_file), data_file->row_count));
     data_file->extra_files.emplace_back(sidecar);
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
-        DataFileKeyOffsetIndexReader::Create(key_field, data_file, path_factory,
-                                             directory->GetFileSystem(), GetDefaultPool(), {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
+                         DataFileKeyOffsetIndexReader::Create(
+                             /*page_size=*/32, cache_manager, key_field, data_file, path_factory,
+                             directory->GetFileSystem(), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(RoaringBitmap64 empty_key_offset,
                          reader->LookupOffsets(MakeKeys(key_field, R"([[""]])")));
     AssertOffsets(empty_key_offset, {7});
@@ -196,7 +234,47 @@ TEST(RealtimeKeyOffsetIndexTest, TestSidecarRoundTripWithEmptyStringKey) {
     ASSERT_TRUE(missing_key_offset.IsEmpty());
 }
 
+TEST(RealtimeKeyOffsetIndexTest, TestSidecarAcceptsDictionaryEncodedLogicalBatch) {
+    auto directory = UniqueTestDirectory::Create();
+    ASSERT_TRUE(directory);
+    const std::shared_ptr<arrow::Field> key_field = arrow::field("id", arrow::utf8());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
+                         DataFileKeyOffsetIndexWriter::Create(key_field, directory->GetFileSystem(),
+                                                              GetDefaultPool()));
+    const std::shared_ptr<arrow::Array> indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[1, 0]").ValueOrDie();
+    const std::shared_ptr<arrow::Array> dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", "b"])").ValueOrDie();
+    const std::shared_ptr<arrow::Array> encoded =
+        arrow::DictionaryArray::FromArrays(arrow::dictionary(arrow::int32(), arrow::utf8()),
+                                           indices, dictionary)
+            .ValueOrDie();
+    const std::shared_ptr<arrow::StructArray> logical_batch =
+        arrow::StructArray::Make(
+            {encoded, MakeOffsets("[100, 200]")},
+            std::vector<std::string>{"id", SpecialFields::RealtimeOffset().Name()})
+            .ValueOrDie();
+    ASSERT_OK(writer->AddBatch(logical_batch));
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(directory->Str(), "parquet", "data-", nullptr));
+    std::shared_ptr<DataFileMeta> data_file = MakeDataFile("dictionary.parquet", 2);
+    ASSERT_OK_AND_ASSIGN(std::string sidecar,
+                         writer->Finish(path_factory->ToPath(data_file), data_file->row_count));
+    data_file = data_file->CopyWithExtraFiles({sidecar});
+    auto cache_manager = std::make_shared<CacheManager>(128, 0.0);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
+        DataFileKeyOffsetIndexReader::Create(32, cache_manager, key_field, data_file, path_factory,
+                                             directory->GetFileSystem(), GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 offsets,
+                         reader->LookupOffsets(MakeKeys(key_field, R"([["a"]])")));
+    AssertOffsets(offsets, {200});
+    ASSERT_OK_AND_ASSIGN(offsets, reader->LookupOffsets(MakeKeys(key_field, R"([["b"]])")));
+    AssertOffsets(offsets, {100});
+}
+
 TEST(RealtimeKeyOffsetIndexTest, TestSidecarValidation) {
+    auto cache_manager = std::make_shared<CacheManager>(128, /*high_priority_pool_ratio=*/0.0);
     std::unique_ptr<UniqueTestDirectory> directory = UniqueTestDirectory::Create();
     ASSERT_NE(nullptr, directory);
     const std::shared_ptr<arrow::Field> key_field = arrow::field("id", arrow::int64());
@@ -205,26 +283,71 @@ TEST(RealtimeKeyOffsetIndexTest, TestSidecarValidation) {
                                  /*data_file_prefix=*/"data-",
                                  /*external_path_provider=*/nullptr));
 
-    ASSERT_NOK_WITH_MSG(DataFileKeyOffsetIndexWriter::Create(
-                            key_field, nullptr, directory->GetFileSystem(), GetDefaultPool(), {}),
+    ASSERT_NOK_WITH_MSG(DataFileKeyOffsetIndexWriter::Create(key_field, nullptr, GetDefaultPool()),
                         "missing a required dependency");
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
-        DataFileKeyOffsetIndexWriter::Create(key_field, path_factory, directory->GetFileSystem(),
-                                             GetDefaultPool(), /*options=*/{}));
-    ASSERT_NOK_WITH_MSG(writer->Finish(MakeDataFile("empty.parquet", /*row_count=*/0)),
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
+                         DataFileKeyOffsetIndexWriter::Create(key_field, directory->GetFileSystem(),
+                                                              GetDefaultPool()));
+    ASSERT_NOK_WITH_MSG(writer->Finish(path_factory->ToPath("empty.parquet"), /*row_count=*/0),
                         "cannot finish an empty key-offset index");
 
     ASSERT_NOK_WITH_MSG(DataFileKeyOffsetIndexReader::Create(
-                            key_field, MakeDataFile("missing.parquet", /*row_count=*/1),
-                            path_factory, directory->GetFileSystem(), GetDefaultPool(), {}),
+                            /*page_size=*/32, cache_manager, key_field,
+                            MakeDataFile("missing.parquet", /*row_count=*/1), path_factory,
+                            directory->GetFileSystem(), GetDefaultPool()),
                         "does not contain the required .offset sidecar");
     ASSERT_NOK_WITH_MSG(
         DataFileKeyOffsetIndexReader::Create(
-            key_field,
+            /*page_size=*/32, cache_manager, key_field,
             MakeDataFile("duplicate.parquet", /*row_count=*/1, {"first.offset", "second.offset"}),
-            path_factory, directory->GetFileSystem(), GetDefaultPool(), {}),
+            path_factory, directory->GetFileSystem(), GetDefaultPool()),
         "contains multiple .offset sidecars");
+
+    ASSERT_OK(writer->AddBatch(MakeIndexBatch(key_field, R"([[1, 0]])")));
+    std::shared_ptr<DataFileMeta> data_file = MakeDataFile("one.parquet", /*row_count=*/1);
+    ASSERT_OK_AND_ASSIGN(std::string sidecar,
+                         writer->Finish(path_factory->ToPath(data_file), data_file->row_count));
+    data_file = MakeDataFile("one.parquet", /*row_count=*/2, {sidecar});
+    ASSERT_NOK_WITH_MSG(
+        DataFileKeyOffsetIndexReader::Create(32, cache_manager, key_field, data_file, path_factory,
+                                             directory->GetFileSystem(), GetDefaultPool()),
+        "entry count does not match data file");
+}
+
+TEST(RealtimeKeyOffsetIndexTest, TestSidecarRejectsNegativeOffsetOnLookup) {
+    std::unique_ptr<UniqueTestDirectory> directory = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, directory);
+    const std::shared_ptr<arrow::Field> key_field = arrow::field("id", arrow::int64());
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(directory->Str(), /*format_identifier=*/"parquet",
+                                 /*data_file_prefix=*/"data-", /*external_path_provider=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> serializer,
+                         KeySerializer::Create(key_field->type(), GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> serialized,
+                         serializer->Serialize(Literal(int64_t{1})));
+    using HashTable = DenseHashTable<uint64_t, int64_t>;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<HashTable> hash_table,
+                         HashTable::Create(1, /*occupancy_pct=*/80, GetDefaultPool()));
+    ASSERT_OK(hash_table->Insert(XXH64(serialized->data(), serialized->size(), /*seed=*/0), -1));
+    const std::shared_ptr<DataFileMeta> data_file =
+        MakeDataFile("negative.parquet", /*row_count=*/1, {"negative.parquet.offset"});
+    const std::string path = path_factory->ToAlignedPath("negative.parquet.offset", data_file);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                         directory->GetFileSystem()->Create(path, /*overwrite=*/false));
+    DataOutputStream data_output(output);
+    ASSERT_OK(data_output.WriteValue<int32_t>(KeyOffsetIndexUtils::kCurrentVersion));
+    ASSERT_OK(hash_table->WriteTo(output.get()));
+    ASSERT_OK(output->Flush());
+    ASSERT_OK(output->Close());
+
+    auto cache_manager = std::make_shared<CacheManager>(128, /*high_priority_pool_ratio=*/0.0);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<DataFileKeyOffsetIndexReader> reader,
+        DataFileKeyOffsetIndexReader::Create(32, cache_manager, key_field, data_file, path_factory,
+                                             directory->GetFileSystem(), GetDefaultPool()));
+    // Opening checks the header only. Invalid values are rejected when their buckets are read.
+    ASSERT_NOK_WITH_MSG(reader->LookupOffsets(MakeKeys(key_field, R"([[1]])")),
+                        "negative offset in realtime .offset index");
 }
 
 }  // namespace paimon::test

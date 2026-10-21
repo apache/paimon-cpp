@@ -93,10 +93,9 @@ TEST_P(SstFileIOTest, TestSimple) {
                          fs_->Create(index_path, /*overwrite=*/false));
 
     // write data
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bf, BloomFilter::Create(30, 0.01));
-    auto seg_for_bf = MemorySegment::AllocateHeapMemory(bf->ByteLength(), pool_.get());
-    ASSERT_OK(bf->SetMemorySegment(seg_for_bf));
-    auto writer = std::make_shared<SstFileWriter>(out, bf, 50, factory, pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter::Builder> bloom_filter_builder,
+                         BloomFilter::FixedBuilder(30, 0.01, pool_.get()));
+    auto writer = std::make_shared<SstFileWriter>(out, bloom_filter_builder, 50, factory, pool_);
     std::set<int32_t> value_hash;
     // k1-k5
     for (size_t i = 1; i <= 5; i++) {
@@ -234,10 +233,10 @@ TEST_F(SstFileIOTest, TestIOException) {
         CHECK_HOOK_STATUS(out_result.status(), i);
         std::shared_ptr<OutputStream> out = std::move(out_result).value();
 
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bf, BloomFilter::Create(30, 0.01));
-        MemorySegment seg_for_bf = MemorySegment::AllocateHeapMemory(bf->ByteLength(), pool_.get());
-        ASSERT_OK(bf->SetMemorySegment(seg_for_bf));
-        auto writer = std::make_shared<SstFileWriter>(out, bf, 50, factory, pool_);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter::Builder> bloom_filter_builder,
+                             BloomFilter::FixedBuilder(30, 0.01, pool_.get()));
+        auto writer =
+            std::make_shared<SstFileWriter>(out, bloom_filter_builder, 50, factory, pool_);
 
         bool write_failed = false;
         for (size_t j = 1; j <= 5; j++) {

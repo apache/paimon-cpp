@@ -24,8 +24,8 @@
 namespace paimon {
 
 OffsetGlobalIndexReader::OffsetGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped,
-                                                 int64_t offset)
-    : wrapped_(std::move(wrapped)), offset_(offset) {}
+                                                 int64_t offset, int64_t to)
+    : wrapped_(std::move(wrapped)), offset_(offset), to_(to) {}
 
 Result<std::shared_ptr<GlobalIndexResult>> OffsetGlobalIndexReader::VisitIsNotNull() {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result, wrapped_->VisitIsNotNull());
@@ -137,11 +137,10 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> OffsetGlobalIndexReader::VisitV
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> OffsetGlobalIndexReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
-    // Convert global include row ids to local row ids. The shard end is unknown here, so row ids
-    // past the shard are kept; they match no local row.
+    // Convert global include row ids to local row ids, dropping those outside [offset_, to_].
     std::shared_ptr<FullTextSearch> local_search = full_text_search;
     if (full_text_search && full_text_search->include_row_ids) {
-        local_search = full_text_search->OffsetRange(offset_, RoaringBitmap64::MAX_VALUE);
+        local_search = full_text_search->OffsetRange(offset_, to_);
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredGlobalIndexResult> result,
                            wrapped_->VisitFullTextSearch(local_search));

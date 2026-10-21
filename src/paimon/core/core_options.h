@@ -80,6 +80,7 @@ class PAIMON_EXPORT CoreOptions {
 
     int32_t GetBucket() const;
     std::shared_ptr<FileFormat> GetFileFormat() const;
+    std::shared_ptr<FileFormat> GetVectorFileFormat() const;
     std::shared_ptr<FileFormat> GetWriteFileFormat(int32_t level) const;
     std::shared_ptr<FileSystem> GetFileSystem() const;
     const std::string& GetFileCompression() const;
@@ -89,6 +90,7 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetTargetFileSize(bool has_primary_key) const;
     int64_t GetTargetFileRowNum() const;
     int64_t GetBlobTargetFileSize() const;
+    int64_t GetVectorTargetFileSize() const;
     bool BlobSplitByFileSize() const;
     int64_t GetCompactionFileSize(bool has_primary_key) const;
     std::string GetPartitionDefaultName() const;

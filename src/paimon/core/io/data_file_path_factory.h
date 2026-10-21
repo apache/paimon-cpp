@@ -65,6 +65,10 @@ class DataFilePathFactory : public PathFactory {
         return NewPathFromName(NewFileName(data_file_prefix_, ".blob"));
     }
 
+    std::string NewVectorPath(const std::string& format_identifier) const {
+        return NewPathFromName(NewFileName(data_file_prefix_, ".vector." + format_identifier));
+    }
+
     std::string NewPathFromName(const std::string& file_name) const {
         if (external_path_provider_ != nullptr) {
             return external_path_provider_->GetNextExternalDataPath(file_name);

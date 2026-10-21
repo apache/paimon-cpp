@@ -67,6 +67,7 @@ Result<std::unique_ptr<BTreeGlobalIndexer>> BTreeGlobalIndexer::Create(
 }
 
 Result<std::optional<std::vector<std::string>>> BTreeGlobalIndexer::GetExtraFieldNames() const {
+    // TODO(xinyu.lxy): Support multi-field composite BTree indexes consistently with Java.
     return std::optional<std::vector<std::string>>(std::nullopt);
 }
 
@@ -100,17 +101,23 @@ Result<std::shared_ptr<GlobalIndexWriter>> BTreeGlobalIndexer::CreateWriter(
         int32_t compress_level,
         OptionsUtils::GetValueFromMap<int32_t>(options_, BtreeDefs::kBtreeIndexCompressionLevel,
                                                BtreeDefs::kDefaultBtreeIndexCompressionLevel));
+    PAIMON_ASSIGN_OR_RAISE(
+        bool bloom_filter_enabled,
+        OptionsUtils::GetValueFromMap<bool>(options_, BtreeDefs::kBtreeIndexBloomFilterEnabled,
+                                            BtreeDefs::kDefaultBtreeIndexBloomFilterEnabled));
     CompressOptions compress_options{compress_str, compress_level};
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::BlockCompressionFactory> compression_factory,
                            BlockCompressionFactory::Create(compress_options));
     return BTreeGlobalIndexWriter::Create(field_name, struct_type, file_writer,
                                           static_cast<int32_t>(block_size), compression_factory,
-                                          pool);
+                                          bloom_filter_enabled, pool);
 }
 
 Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
     ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-    const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool) const {
+    const std::vector<GlobalIndexIOMeta>& files, int64_t total_row_count,
+    const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<MemoryPool>& pool) const {
     // Get field type from arrow schema
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(arrow_schema));
@@ -140,7 +147,8 @@ Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<LazyFilteredBTreeReader> reader,
         LazyFilteredBTreeReader::Create(read_buffer_size, files, key_type, file_reader,
-                                        cache_manager_, fallback_scan_max_size_, pool, executor));
+                                        cache_manager_, fallback_scan_max_size_, total_row_count,
+                                        row_ranges, pool, executor));
     return std::shared_ptr<GlobalIndexReader>(std::move(reader));
 }
 

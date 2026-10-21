@@ -5871,6 +5871,82 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingAllNullMapColumn) {
 }
 
 #ifdef PAIMON_ENABLE_VORTEX
+TEST(VortexVectorWriteInteTest, TestAppendVectorReadWrite) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("id", arrow::int32()), arrow::field("embedding", vector_type),
+        arrow::field("payload", arrow::struct_({arrow::field("embedding", vector_type)}))};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "vortex"}, {Options::BUCKET, "-1"}, {Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{}, options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+            [1, [1, 2, 3], [[4, 5, 6]]],
+            [2, null, [null]],
+            [3, [7, 8, 9], null]
+        ])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> commit_messages,
+                         helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                                /*expected_commit_messages=*/std::nullopt));
+    ASSERT_FALSE(commit_messages.empty());
+
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(arrow::struct_(result_fields), splits, R"([
+            [0, 1, [1, 2, 3], [[4, 5, 6]]],
+            [0, 2, null, [null]],
+            [0, 3, [7, 8, 9], null]
+        ])"));
+    ASSERT_TRUE(success);
+}
+
+TEST(VortexVectorWriteInteTest, TestPrimaryKeyVectorUpdate) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
+                                 arrow::field("embedding", vector_type)};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "vortex"}, {Options::BUCKET, "1"}, {Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+    const std::vector<std::string> batches = {R"([["a", [1, 2, 3]], ["b", [4, 5, 6]]])",
+                                              R"([["a", [7, 8, 9]], ["b", null]])"};
+    int64_t commit_identifier = 0;
+    for (const std::string& data_json : batches) {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<RecordBatch> batch,
+            TestHelper::MakeRecordBatch(arrow::struct_(fields), data_json, /*partition_map=*/{},
+                                        /*bucket=*/0, {}));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> commit_messages,
+                             helper->WriteAndCommit(std::move(batch), commit_identifier++,
+                                                    /*expected_commit_messages=*/std::nullopt));
+        ASSERT_FALSE(commit_messages.empty());
+    }
+
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(arrow::struct_(result_fields), splits,
+                                                    R"([[0, "a", [7, 8, 9]], [0, "b", null]])"));
+    ASSERT_TRUE(success);
+}
+
 // Regression: primary-key finalization requires one stats entry per write-schema field
 // (KeyValueDataFileWriter), which the Vortex extractor satisfies with unknown entries.
 TEST(VortexPrimaryKeyWriteInteTest, TestPKWriteFinalize) {

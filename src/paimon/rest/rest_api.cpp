@@ -273,11 +273,11 @@ Result<std::vector<std::string>> RestApi::ListTables(const std::string& database
 
 Result<GetTableResponse> RestApi::GetTable(const Identifier& identifier) const {
     return GetEntity<GetTableResponse>(
-        resource_paths_.Table(identifier.GetDatabaseName(), identifier.GetTableName()), {});
+        resource_paths_.Table(identifier.GetDatabaseName(), identifier.GetObjectName()), {});
 }
 
 Status RestApi::CreateTable(const Identifier& identifier, const std::string& schema_json) const {
-    CreateTableRequest request(identifier.GetDatabaseName(), identifier.GetTableName(),
+    CreateTableRequest request(identifier.GetDatabaseName(), identifier.GetObjectName(),
                                schema_json);
     PAIMON_ASSIGN_OR_RAISE(std::string body, request.ToJsonString());
     return Execute("POST", resource_paths_.Tables(identifier.GetDatabaseName()), {}, body).status();
@@ -285,26 +285,26 @@ Status RestApi::CreateTable(const Identifier& identifier, const std::string& sch
 
 Status RestApi::DropTable(const Identifier& identifier) const {
     return Execute("DELETE",
-                   resource_paths_.Table(identifier.GetDatabaseName(), identifier.GetTableName()),
+                   resource_paths_.Table(identifier.GetDatabaseName(), identifier.GetObjectName()),
                    {}, "")
         .status();
 }
 
 Status RestApi::RenameTable(const Identifier& from_table, const Identifier& to_table) const {
-    RenameTableRequest request(from_table.GetDatabaseName(), from_table.GetTableName(),
-                               to_table.GetDatabaseName(), to_table.GetTableName());
+    RenameTableRequest request(from_table.GetDatabaseName(), from_table.GetObjectName(),
+                               to_table.GetDatabaseName(), to_table.GetObjectName());
     PAIMON_ASSIGN_OR_RAISE(std::string body, request.ToJsonString());
     return Execute("POST", resource_paths_.RenameTable(), {}, body).status();
 }
 
 Result<std::vector<Snapshot>> RestApi::ListSnapshots(const Identifier& identifier) const {
     return ListAllPages<ListSnapshotsResponse>(
-        resource_paths_.Snapshots(identifier.GetDatabaseName(), identifier.GetTableName()));
+        resource_paths_.Snapshots(identifier.GetDatabaseName(), identifier.GetObjectName()));
 }
 
 Result<std::optional<Snapshot>> RestApi::LoadSnapshot(const Identifier& identifier) const {
     std::string path =
-        resource_paths_.TableSnapshot(identifier.GetDatabaseName(), identifier.GetTableName());
+        resource_paths_.TableSnapshot(identifier.GetDatabaseName(), identifier.GetObjectName());
     Result<GetTableSnapshotResponse> response =
         GetEntity<GetTableSnapshotResponse>(path, /*query_params=*/{});
     if (response.ok()) {
@@ -329,7 +329,7 @@ Result<bool> RestApi::CommitSnapshot(const Identifier& identifier,
     CommitTableRequest request(table_uuid, base_snapshot_uuid, snapshot, statistics);
     PAIMON_ASSIGN_OR_RAISE(std::string body, request.ToJsonString());
     std::string path =
-        resource_paths_.CommitTable(identifier.GetDatabaseName(), identifier.GetTableName());
+        resource_paths_.CommitTable(identifier.GetDatabaseName(), identifier.GetObjectName());
     // Replaying an accepted commit can report a conflict and trigger manifest deletion.
     // Send once and let FilterAndCommit() recover an unknown outcome.
     PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
@@ -341,7 +341,7 @@ Result<bool> RestApi::CommitSnapshot(const Identifier& identifier,
 
 Result<GetTableTokenResponse> RestApi::LoadTableToken(const Identifier& identifier) const {
     return GetEntity<GetTableTokenResponse>(
-        resource_paths_.TableToken(identifier.GetDatabaseName(), identifier.GetTableName()), {});
+        resource_paths_.TableToken(identifier.GetDatabaseName(), identifier.GetObjectName()), {});
 }
 
 }  // namespace paimon

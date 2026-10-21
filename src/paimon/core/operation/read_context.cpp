@@ -70,12 +70,10 @@ std::string IdentifierToFlatJson(const Identifier& identifier) {
     auto& allocator = document.GetAllocator();
     document.AddMember(rapidjson::StringRef("database"),
                        rapidjson::Value(identifier.GetDatabaseName(), allocator), allocator);
-    // C++ `GetTableName()` returns the stored object name - branch and system-table suffix
-    // included - which is the Java `getObjectName()` this field mirrors, not Java's stripped
-    // `getTableName()` (that one is `GetDataTableName()` here). So a branch read reports the
-    // branch.
+    // `GetObjectName()` keeps any branch and system-table suffix, matching the Java
+    // `getObjectName()` this field mirrors. So a branch read reports the branch.
     document.AddMember(rapidjson::StringRef("object"),
-                       rapidjson::Value(identifier.GetTableName(), allocator), allocator);
+                       rapidjson::Value(identifier.GetObjectName(), allocator), allocator);
     // Compact, not the pretty form `RapidJsonUtil::ToJson` writes: the value goes into a header.
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -99,7 +97,8 @@ ReadContext::ReadContext(
     const std::shared_ptr<RealtimeContext>& realtime_context,
     const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
     const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-    const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level)
+    const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
+    const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier)
     : path_(path),
       branch_(branch),
       read_field_names_(read_field_names),
@@ -125,7 +124,9 @@ ReadContext::ReadContext(
       cache_config_(cache_config),
       cache_(cache),
       format_table_(format_table),
-      warmup_level_(warmup_level) {}
+      warmup_level_(warmup_level),
+      catalog_(catalog),
+      identifier_(identifier) {}
 
 ReadContext::~ReadContext() {
     if (read_schema_ && read_schema_->release) {
@@ -480,7 +481,8 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         impl_->row_to_batch_thread_number_, impl_->table_schema_, impl_->memory_pool_,
         impl_->executor_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
         impl_->realtime_context_, impl_->options_, impl_->read_ahead_cache_enabled_,
-        impl_->cache_config_, impl_->cache_, impl_->format_table_, impl_->warmup_level_);
+        impl_->cache_config_, impl_->cache_, impl_->format_table_, impl_->warmup_level_,
+        impl_->catalog_, impl_->identifier_);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
         ctx->SetReadSchema(std::move(impl_->read_schema_));
     }

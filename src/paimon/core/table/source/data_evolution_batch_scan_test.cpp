@@ -103,6 +103,24 @@ TEST(DataEvolutionBatchScanTest, TestWrapToIndexedSplitsExcludesRowIdsInFileRang
     ASSERT_EQ(indexed_split->Scores(), std::vector<float>({0.5f, 0.9f}));
 }
 
+TEST(DataEvolutionBatchScanTest, TestWrapToIndexedSplitsClipsNegativePredicateComplement) {
+    // A negative index predicate may produce a complement over the complete row-id domain.
+    // The final data scan must still intersect that result with each selected data file.
+    std::shared_ptr<Plan> data_plan = NewDataPlan({NewAppendFile("file-1", 10l, 10l)});
+    ASSERT_OK_AND_ASSIGN(
+        RowRangeIndex row_range_index,
+        RowRangeIndex::Create({Range(0, 14), Range(16, 30)}));  // complement of row 15
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         DataEvolutionBatchScan::WrapToIndexedSplits(data_plan, row_range_index,
+                                                                     /*id_to_score=*/{}));
+
+    ASSERT_EQ(plan->Splits().size(), 1);
+    auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(plan->Splits()[0]);
+    ASSERT_NE(indexed_split, nullptr);
+    ASSERT_EQ(indexed_split->RowRanges(), std::vector<Range>({Range(10, 14), Range(16, 19)}));
+}
+
 TEST(DataEvolutionBatchScanTest, TestWrapToIndexedSplitsWithoutIntersection) {
     std::shared_ptr<Plan> data_plan = NewDataPlan({NewAppendFile("file-1", 100l, 10l)});
     ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(0, 50)}));

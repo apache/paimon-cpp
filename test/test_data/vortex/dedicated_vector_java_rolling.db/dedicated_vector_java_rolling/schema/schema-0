@@ -1,0 +1,37 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "id",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "embedding",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "FLOAT",
+      "length" : 3
+    }
+  }, {
+    "id" : 2,
+    "name" : "tag",
+    "type" : "STRING"
+  } ],
+  "highestFieldId" : 2,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "read.batch-size" : "127",
+    "row-tracking.enabled" : "true",
+    "vector.file.format" : "vortex",
+    "target-file-size" : "128 mb",
+    "data-evolution.enabled" : "true",
+    "write-only" : "true",
+    "vector.target-file-size" : "1 kb",
+    "file.format" : "parquet",
+    "write.batch-size" : "100"
+  },
+  "timeMillis" : 1792376046708
+}

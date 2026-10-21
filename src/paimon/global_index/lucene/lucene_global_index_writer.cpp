@@ -239,6 +239,7 @@ Result<std::vector<GlobalIndexIOMeta>> LuceneGlobalIndexWriter::Finish() {
     PAIMON_RETURN_NOT_OK(RapidJsonUtil::ToJsonString(options_, &options_json));
     auto meta_bytes = std::make_shared<Bytes>(options_json, pool_.get());
     GlobalIndexIOMeta meta(file_writer_->ToPath(index_file_name), file_size,
+                           /*row_count=*/row_id_,
                            /*metadata=*/meta_bytes);
     return std::vector<GlobalIndexIOMeta>({meta});
 }

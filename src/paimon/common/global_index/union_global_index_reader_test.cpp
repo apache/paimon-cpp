@@ -19,18 +19,22 @@
 
 #include "paimon/common/global_index/union_global_index_reader.h"
 
+#include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/global_index/offset_global_index_reader.h"
 #include "paimon/common/global_index/sorted_file_global_index_reader.h"
 #include "paimon/executor.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/testing/mock/mock_global_index_reader.h"
 #include "paimon/testing/utils/testharness.h"
@@ -43,7 +47,8 @@ class FakeSortedFileGlobalIndexReader : public SortedFileGlobalIndexReader {
         std::map<std::string, std::shared_ptr<GlobalIndexReader>>&& readers,
         std::shared_ptr<Executor> executor)
         : SortedFileGlobalIndexReader(/*file_selector=*/nullptr,
-                                      /*fallback_scan_max_size=*/0, std::move(executor)),
+                                      /*fallback_scan_max_size=*/0,
+                                      /*total_row_count=*/0, std::move(executor)),
           readers_(std::move(readers)) {}
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitSelectedFilesForTest(
@@ -145,6 +150,10 @@ class UnionGlobalIndexReaderTest : public ::testing::Test {
             << ", expected=" << RoaringBitmap64::From(expected_row_ids).ToString();
         ASSERT_EQ(typed_result->GetScores(), expected_scores);
     }
+
+    static std::shared_ptr<FullTextSearch> MakeFullTextSearch(int32_t limit) {
+        return std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"apple"}})", limit);
+    }
 };
 
 TEST_F(UnionGlobalIndexReaderTest, TestSingleReaderUnion) {
@@ -153,7 +162,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestSingleReaderUnion) {
     auto executor = std::make_shared<DeferAfterFirstExecutor>();
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader};
-    UnionGlobalIndexReader union_reader(std::move(readers), executor);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, executor);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
     CheckResult(result, {1, 2, 3});
@@ -170,7 +180,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionSequential) {
     reader3->SetDefaultResult({5});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
     // {1,2} OR {3,4} OR {5} -> {1,2,3,4,5}
@@ -187,7 +198,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionOverlappingIds) {
     reader2->SetDefaultResult({2, 3, 4});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
     // {1,2,3} OR {2,3,4} -> {1,2,3,4}
@@ -204,7 +216,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionWithExecutor) {
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
     std::shared_ptr<Executor> executor = CreateDefaultExecutor();
-    UnionGlobalIndexReader union_reader(std::move(readers), executor);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, executor);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
     CheckResult(result, {10, 20, 30});
@@ -215,7 +228,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionWithExecutor) {
 
 TEST_F(UnionGlobalIndexReaderTest, TestEmptyReaderList) {
     std::vector<std::shared_ptr<GlobalIndexReader>> readers;
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     // No readers means no results to merge -> nullptr
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
@@ -229,7 +243,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestAllReadersReturnNullptr) {
     reader2->SetReturnNullptr();
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
     // All readers return nullptr -> merged result is nullptr
@@ -245,7 +260,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptr) {
     reader3->SetReturnNullptr();
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
     // A missing result from any reader makes the whole union unsupported.
@@ -259,7 +275,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestPartialReadersReturnNullptrWithExecutor) 
     reader2->SetReturnNullptr();
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), CreateDefaultExecutor());
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, CreateDefaultExecutor());
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
     ASSERT_FALSE(result);
@@ -276,8 +293,10 @@ TEST_F(UnionGlobalIndexReaderTest, TestSortedFileSelectedFilesSkipNullptr) {
         {"unsupported", unsupported_reader}, {"supported", supported_reader}};
     FakeSortedFileGlobalIndexReader sorted_reader(std::move(readers), CreateDefaultExecutor());
     std::vector<GlobalIndexIOMeta> files = {
-        GlobalIndexIOMeta("unsupported", /*file_size=*/1, /*metadata=*/nullptr),
-        GlobalIndexIOMeta("supported", /*file_size=*/1, /*metadata=*/nullptr)};
+        GlobalIndexIOMeta("unsupported", /*file_size=*/1, /*row_count=*/0,
+                          /*metadata=*/nullptr),
+        GlobalIndexIOMeta("supported", /*file_size=*/1, /*row_count=*/0,
+                          /*metadata=*/nullptr)};
 
     ASSERT_OK_AND_ASSIGN(auto result, sorted_reader.VisitSelectedFilesForTest(files));
     CheckResult(result, {1, 2});
@@ -292,7 +311,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestErrorPropagationSequential) {
     reader2->SetReturnError("Unknown error for reader2");
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_NOK_WITH_MSG(union_reader.VisitIsNotNull(), "Unknown error for reader2");
 }
@@ -305,7 +325,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestErrorPropagationWithExecutor) {
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
     std::shared_ptr<Executor> executor = CreateDefaultExecutor();
-    UnionGlobalIndexReader union_reader(std::move(readers), executor);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, executor);
 
     ASSERT_NOK_WITH_MSG(union_reader.VisitIsNotNull(), "Unknown error for reader2");
 }
@@ -318,7 +339,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestDeferredTaskOwnsActionAfterEarlierFutureT
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {throwing_reader, deferred_reader};
     auto executor = std::make_shared<DeferAfterFirstExecutor>();
-    UnionGlobalIndexReader union_reader(std::move(readers), executor);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, executor);
     ASSERT_THROW(
         { [[maybe_unused]] auto result = union_reader.VisitIsNotNull(); }, std::runtime_error);
     ASSERT_EQ(deferred_reader->InvocationCount(), 0);
@@ -334,7 +356,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitEqualUnion) {
     reader2->SetDefaultResult({2});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     Literal literal_42(42);
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitEqual(literal_42));
@@ -348,7 +371,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitNotEqualUnion) {
     reader2->SetDefaultResult({2});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     Literal literal_42(42);
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitNotEqual(literal_42));
@@ -362,7 +386,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitRangeQueriesUnion) {
     reader2->SetDefaultResult({2});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     Literal literal_5(5);
     ASSERT_OK_AND_ASSIGN(auto lt, union_reader.VisitLessThan(literal_5));
@@ -382,7 +407,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitInUnion) {
     reader2->SetDefaultResult({2, 4});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     std::vector<Literal> literals = {Literal(10), Literal(20)};
     ASSERT_OK_AND_ASSIGN(auto in_result, union_reader.VisitIn(literals));
@@ -399,7 +425,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitStringQueriesUnion) {
     reader2->SetDefaultResult({2});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     Literal literal_str(FieldType::STRING, "abc", 3);
     ASSERT_OK_AND_ASSIGN(auto starts, union_reader.VisitStartsWith(literal_str));
@@ -419,7 +446,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitIsNullUnion) {
     reader2->SetDefaultResult({300});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNull());
     CheckResult(result, {100, 200, 300});
@@ -433,10 +461,200 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchUnion) {
     reader3->SetScoredResult({2, 6}, {0.8f, 0.6f});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
-    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(nullptr));
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(MakeFullTextSearch(10)));
     CheckScoredResult(result, {1, 2, 5, 6}, {0.9f, 0.8f, 0.5f, 0.6f});
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchKeepsTopKAcrossReaders) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({100, 110, 120}, {0.9f, 0.5f, 0.1f});
+    reader2->SetScoredResult({0, 10, 20}, {0.5f, 0.8f, 0.3f});
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, executor);
+
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(MakeFullTextSearch(3)));
+    CheckScoredResult(result, {0, 10, 100}, {0.5f, 0.8f, 0.9f});
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchDuplicateRowIdKeepsFirstScore) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({1, 2}, {0.6f, 0.3f});
+    reader2->SetScoredResult({2, 3}, {0.9f, 0.5f});
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, executor);
+
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(MakeFullTextSearch(10)));
+    CheckScoredResult(result, {1, 2, 3}, {0.6f, 0.3f, 0.5f});
+    ASSERT_OK_AND_ASSIGN(result, union_reader.VisitFullTextSearch(MakeFullTextSearch(2)));
+    CheckScoredResult(result, {1, 3}, {0.6f, 0.5f});
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchOrdersSpecialScores) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({1, 2, 3}, {-0.0f, std::numeric_limits<float>::quiet_NaN(), 1.0f});
+    reader2->SetScoredResult({4, 5}, {0.0f, std::numeric_limits<float>::infinity()});
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
+
+    std::vector<std::pair<int32_t, std::vector<int64_t>>> limit_and_row_ids = {
+        {1, {2}}, {2, {2, 5}}, {3, {2, 3, 5}}, {4, {2, 3, 4, 5}}};
+    for (const auto& [limit, expected_row_ids] : limit_and_row_ids) {
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             union_reader.VisitFullTextSearch(MakeFullTextSearch(limit)));
+        auto typed_result = std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(result);
+        ASSERT_TRUE(typed_result);
+        ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* bitmap, typed_result->GetBitmap());
+        ASSERT_EQ(*bitmap, RoaringBitmap64::From(expected_row_ids)) << "limit=" << limit;
+    }
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchAllNullptr) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
+
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(MakeFullTextSearch(10)));
+    ASSERT_FALSE(result);
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchErrors) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({1}, {0.9f});
+    reader2->SetReturnError("full-text search failure");
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
+
+    ASSERT_NOK_WITH_MSG(union_reader.VisitFullTextSearch(nullptr), "null FullTextSearch pointer");
+    ASSERT_NOK_WITH_MSG(union_reader.VisitFullTextSearch(MakeFullTextSearch(0)),
+                        "full-text search requires a positive limit");
+    ASSERT_NOK_WITH_MSG(union_reader.VisitFullTextSearch(MakeFullTextSearch(-1)),
+                        "full-text search requires a positive limit");
+    ASSERT_EQ(reader1->InvocationCount(), 0);
+    ASSERT_EQ(reader2->InvocationCount(), 0);
+    ASSERT_NOK_WITH_MSG(union_reader.VisitFullTextSearch(MakeFullTextSearch(10)),
+                        "full-text search failure");
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchWithinSearchRanges) {
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    auto reader3 = std::make_shared<MockGlobalIndexReader>();
+    reader1->SetScoredResult({0, 1, 2}, {0.2f, 0.5f, 0.9f});
+    reader2->SetScoredResult({1}, {1.0f});
+    reader3->SetScoredResult({3}, {0.7f});
+
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    UnionGlobalIndexReader union_reader(std::move(readers),
+                                        /*row_ranges=*/{Range(0, 2), Range(1, 1), Range(1, 3)},
+                                        /*search_ranges=*/{Range(0, 2), std::nullopt, Range(3, 3)},
+                                        executor);
+
+    auto search = MakeFullTextSearch(2);
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(search));
+    CheckScoredResult(result, {2, 3}, {0.9f, 0.7f});
+    ASSERT_EQ(reader1->CapturedFullTextSearch(), search);
+    ASSERT_EQ(reader2->InvocationCount(), 0);
+    ASSERT_EQ(reader3->CapturedFullTextSearch()->include_row_ids, RoaringBitmap64::From({3l}));
+
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    search->include_row_ids = RoaringBitmap64::From({1, 2, 3, 5, kMax});
+    ASSERT_OK(union_reader.VisitFullTextSearch(search));
+    ASSERT_EQ(reader1->CapturedFullTextSearch(), search);
+    ASSERT_EQ(reader2->InvocationCount(), 0);
+    ASSERT_EQ(reader3->CapturedFullTextSearch()->include_row_ids, RoaringBitmap64::From({3l}));
+    ASSERT_EQ(search->include_row_ids, RoaringBitmap64::From({1, 2, 3, 5, kMax}));
+
+    search->include_row_ids = RoaringBitmap64::From({5});
+    ASSERT_OK_AND_ASSIGN(result, union_reader.VisitFullTextSearch(search));
+    CheckScoredResult(result, {}, {});
+    ASSERT_EQ(reader1->InvocationCount(), 2);
+    ASSERT_EQ(reader2->InvocationCount(), 0);
+    ASSERT_EQ(reader3->InvocationCount(), 2);
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchSparseIncludeInLargeRanges) {
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    auto reader1 = std::make_shared<MockGlobalIndexReader>();
+    auto reader2 = std::make_shared<MockGlobalIndexReader>();
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
+    UnionGlobalIndexReader union_reader(
+        std::move(readers), /*row_ranges=*/{Range(0, kMax / 2), Range(10, kMax)},
+        /*search_ranges=*/{Range(0, kMax / 2), Range(kMax / 2 + 1, kMax)}, /*executor=*/nullptr);
+
+    auto search = MakeFullTextSearch(10);
+    search->include_row_ids = RoaringBitmap64();
+    ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitFullTextSearch(search));
+    CheckScoredResult(result, {}, {});
+    ASSERT_EQ(reader1->InvocationCount(), 0);
+    ASSERT_EQ(reader2->InvocationCount(), 0);
+
+    search->include_row_ids = RoaringBitmap64::From({20, kMax / 2 + 1, kMax});
+    ASSERT_OK(union_reader.VisitFullTextSearch(search));
+    ASSERT_EQ(reader1->CapturedFullTextSearch(), search);
+    ASSERT_EQ(reader2->CapturedFullTextSearch()->include_row_ids,
+              RoaringBitmap64::From({kMax / 2 + 1, kMax}));
+
+    search->include_row_ids = RoaringBitmap64::From({20l});
+    ASSERT_OK(union_reader.VisitFullTextSearch(search));
+    ASSERT_EQ(reader1->InvocationCount(), 2);
+    ASSERT_EQ(reader2->InvocationCount(), 1);
+}
+
+TEST_F(UnionGlobalIndexReaderTest, TestVisitFullTextSearchOverlappingRangesThroughOffsetReaders) {
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    const int64_t to = int64_t{1} << 32;
+    std::vector<std::shared_ptr<MockGlobalIndexReader>> wrapped_readers;
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers;
+    std::vector<Range> row_ranges = {Range(0, 99), Range(50, to), Range(kMax - 9, kMax - 3),
+                                     Range(kMax - 5, kMax)};
+    std::vector<std::optional<Range>> search_ranges = {
+        Range(0, 99), Range(100, to), Range(kMax - 9, kMax - 3), Range(kMax - 2, kMax)};
+    for (const Range& row_range : row_ranges) {
+        wrapped_readers.push_back(std::make_shared<MockGlobalIndexReader>());
+        readers.push_back(std::make_shared<OffsetGlobalIndexReader>(wrapped_readers.back(),
+                                                                    row_range.from, row_range.to));
+    }
+    UnionGlobalIndexReader union_reader(std::move(readers), std::move(row_ranges),
+                                        std::move(search_ranges), /*executor=*/nullptr);
+
+    auto search = MakeFullTextSearch(1);
+    ASSERT_OK(union_reader.VisitFullTextSearch(search));
+    ASSERT_EQ(wrapped_readers[0]->CapturedFullTextSearch(), search);
+    RoaringBitmap64 local_row_ids;
+    local_row_ids.AddRange(50, to - 49);
+    ASSERT_EQ(wrapped_readers[1]->CapturedFullTextSearch()->include_row_ids, local_row_ids);
+    ASSERT_EQ(wrapped_readers[2]->CapturedFullTextSearch(), search);
+    ASSERT_EQ(wrapped_readers[3]->CapturedFullTextSearch()->include_row_ids,
+              RoaringBitmap64::From({3l, 4l, 5l}));
+
+    RoaringBitmap64 include_row_ids;
+    include_row_ids.AddRange(0, to + 1);
+    search->include_row_ids = include_row_ids;
+    ASSERT_OK(union_reader.VisitFullTextSearch(search));
+    ASSERT_EQ(wrapped_readers[1]->CapturedFullTextSearch()->include_row_ids, local_row_ids);
+    ASSERT_EQ(wrapped_readers[2]->InvocationCount(), 1);
+    ASSERT_EQ(wrapped_readers[3]->InvocationCount(), 1);
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchAllNullptr) {
@@ -447,7 +665,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchAllNullptr) {
     reader2->SetDefaultResult({2});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitVectorSearch(nullptr));
     ASSERT_FALSE(result);
@@ -458,7 +677,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchSingleReader) {
     reader->SetScoredResult({1, 3, 5}, {0.9f, 0.7f, 0.5f});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitVectorSearch(nullptr));
     CheckScoredResult(result, {1, 3, 5}, {0.9f, 0.7f, 0.5f});
@@ -471,7 +691,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchMultipleReadersUnion) {
     reader2->SetScoredResult({2, 4}, {0.8f, 0.6f});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitVectorSearch(nullptr));
     // {1,3} OR {2,4} -> {1,2,3,4}, scores merged in row id order
@@ -488,7 +709,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchPartialNullptr) {
     reader3->SetScoredResult({5, 6}, {0.5f, 0.4f});
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2, reader3};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitVectorSearch(nullptr));
     // reader2 nullptr is skipped, {1,2} OR {5,6} -> {1,2,5,6}
@@ -502,7 +724,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestVisitVectorSearchErrorPropagation) {
     reader2->SetReturnError("vector search failure");
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_NOK_WITH_MSG(union_reader.VisitVectorSearch(nullptr), "vector search failure");
 }
@@ -512,7 +735,8 @@ TEST_F(UnionGlobalIndexReaderTest, TestIsThreadSafeReturnsTrueWhenAllReadersAreS
     auto reader2 = std::make_shared<MockGlobalIndexReader>();
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_TRUE(union_reader.IsThreadSafe());
 }
@@ -523,14 +747,16 @@ TEST_F(UnionGlobalIndexReaderTest, TestIsThreadSafeReturnsFalseWhenAnyReaderIsNo
     reader2->SetThreadSafe(false);
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader1, reader2};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_FALSE(union_reader.IsThreadSafe());
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestGetIndexTypeReturnsUnion) {
     std::vector<std::shared_ptr<GlobalIndexReader>> readers;
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), /*row_ranges=*/{},
+                                        /*search_ranges=*/{}, nullptr);
 
     ASSERT_EQ(union_reader.GetIndexType(), "union");
 }

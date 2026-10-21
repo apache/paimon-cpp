@@ -32,7 +32,7 @@
 
 namespace paimon::test {
 
-TEST(BloomFilterTest, TestOneSegmentBuilder) {
+TEST(BloomFilterTest, TestBloomFilterWithOneSegment) {
     int32_t items = 100;
     auto pool = GetDefaultPool();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bloom_filter,
@@ -81,6 +81,54 @@ TEST(BloomFilterTest, TestInvalidExpectedEntriesAndFpp) {
                         "fpp must be greater than 0 and less than 1");
     ASSERT_NOK_WITH_MSG(BloomFilter::Create(/*expected_entries=*/100, /*fpp=*/1.1),
                         "fpp must be greater than 0 and less than 1");
+}
+
+TEST(BloomFilterTest, TestFixedBuilder) {
+    auto pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BloomFilter::Builder> builder,
+        BloomFilter::FixedBuilder(/*expected_entries=*/3, /*fpp=*/0.05, pool.get()));
+    ASSERT_OK(builder->AddHash(11));
+    ASSERT_OK(builder->AddHash(22));
+    ASSERT_OK(builder->AddHash(33));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bloom_filter, builder->Build());
+    ASSERT_EQ(bloom_filter->ExpectedEntries(), 3);
+    ASSERT_TRUE(bloom_filter->TestHash(11));
+    ASSERT_TRUE(bloom_filter->TestHash(22));
+    ASSERT_TRUE(bloom_filter->TestHash(33));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> same_bloom_filter, builder->Build());
+    ASSERT_EQ(same_bloom_filter, bloom_filter);
+}
+
+TEST(BloomFilterTest, TestDynamicBuilder) {
+    auto pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter::Builder> builder,
+                         BloomFilter::DynamicBuilder(/*fpp=*/0.05, pool));
+    ASSERT_OK(builder->AddHash(11));
+    ASSERT_OK(builder->AddHash(22));
+    ASSERT_OK(builder->AddHash(33));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bloom_filter, builder->Build());
+    ASSERT_EQ(bloom_filter->ExpectedEntries(), 3);
+    ASSERT_TRUE(bloom_filter->TestHash(11));
+    ASSERT_TRUE(bloom_filter->TestHash(22));
+    ASSERT_TRUE(bloom_filter->TestHash(33));
+
+    // Match Java DynamicBloomFilterBuilder: additions after Build are ignored and Build is
+    // idempotent.
+    ASSERT_OK(builder->AddHash(44));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> same_bloom_filter, builder->Build());
+    ASSERT_EQ(same_bloom_filter, bloom_filter);
+}
+
+TEST(BloomFilterTest, TestEmptyDynamicBuilder) {
+    auto pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter::Builder> builder,
+                         BloomFilter::DynamicBuilder(/*fpp=*/0.05, pool));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bloom_filter, builder->Build());
+    ASSERT_EQ(bloom_filter, nullptr);
 }
 
 TEST(BloomFilterTest, TestBloomNumBits) {

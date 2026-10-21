@@ -60,4 +60,28 @@ TEST(FullTextSearchTest, TestOffsetRangeWithIncludeRowIds) {
               RoaringBitmap64::From({3l, 7l}));
 }
 
+TEST(FullTextSearchTest, TestOffsetRangeWithIncludeRowIdRun) {
+    auto row_ids_of = [](int64_t from, int64_t to) {
+        RoaringBitmap64 row_ids;
+        row_ids.AddRange(from, to);
+        row_ids.Add(to);
+        return row_ids;
+    };
+    FullTextSearch search("f0", R"({"match":{"query":"paimon"}})", /*limit=*/5,
+                          row_ids_of(100, 199));
+    ASSERT_EQ(search.OffsetRange(150, 299)->include_row_ids, row_ids_of(0, 49));
+    ASSERT_EQ(search.OffsetRange(0, 149)->include_row_ids, row_ids_of(100, 149));
+    ASSERT_EQ(search.OffsetRange(120, 130)->include_row_ids, row_ids_of(0, 10));
+    ASSERT_EQ(search.OffsetRange(200, 299)->include_row_ids, RoaringBitmap64());
+    ASSERT_EQ(search.include_row_ids, row_ids_of(100, 199));
+
+    constexpr int64_t kMax = RoaringBitmap64::MAX_VALUE;
+    FullTextSearch last_search("f0", R"({"match":{"query":"paimon"}})", /*limit=*/5,
+                               row_ids_of(kMax - 9, kMax));
+    ASSERT_EQ(last_search.OffsetRange(kMax - 5, kMax)->include_row_ids, row_ids_of(0, 5));
+    FullTextSearch max_search("f0", R"({"match":{"query":"paimon"}})", /*limit=*/5,
+                              RoaringBitmap64::From({kMax}));
+    ASSERT_EQ(max_search.OffsetRange(kMax - 5, kMax)->include_row_ids, RoaringBitmap64::From({5l}));
+}
+
 }  // namespace paimon::test

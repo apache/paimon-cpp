@@ -30,18 +30,17 @@
 namespace paimon {
 class Predicate;
 
-ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
-                         std::optional<int32_t> limit,
-                         const std::shared_ptr<ScanFilter>& scan_filter,
-                         const std::shared_ptr<GlobalIndexResult>& global_index_result,
-                         const std::shared_ptr<RealtimeContext>& realtime_context,
-                         const std::shared_ptr<MemoryPool>& memory_pool,
-                         const std::shared_ptr<Executor>& executor,
-                         const std::shared_ptr<FileSystem>& specific_file_system,
-                         const std::optional<std::string>& table_schema,
-                         const std::map<std::string, std::string>& options,
-                         const std::shared_ptr<Cache>& cache,
-                         const std::shared_ptr<FormatTable>& format_table)
+ScanContext::ScanContext(
+    const std::string& path, bool is_streaming_mode, std::optional<int32_t> limit,
+    const std::shared_ptr<ScanFilter>& scan_filter,
+    const std::shared_ptr<GlobalIndexResult>& global_index_result,
+    const std::shared_ptr<RealtimeContext>& realtime_context,
+    const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
+    const std::shared_ptr<FileSystem>& specific_file_system,
+    const std::optional<std::string>& table_schema,
+    const std::map<std::string, std::string>& options, const std::shared_ptr<Cache>& cache,
+    const std::shared_ptr<FormatTable>& format_table, const std::shared_ptr<Catalog>& catalog,
+    const std::optional<Identifier>& identifier)
     : path_(path),
       is_streaming_mode_(is_streaming_mode),
       limit_(limit),
@@ -54,7 +53,9 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
       table_schema_(table_schema),
       options_(options),
       cache_(cache),
-      format_table_(format_table) {}
+      format_table_(format_table),
+      catalog_(catalog),
+      identifier_(identifier) {}
 
 ScanContext::~ScanContext() = default;
 
@@ -247,7 +248,7 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
         impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
-        impl_->format_table_);
+        impl_->format_table_, impl_->catalog_, impl_->identifier_);
     impl_->Reset();
     return ctx;
 }

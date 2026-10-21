@@ -80,7 +80,8 @@ TEST_F(BlobViewTest, TestJavaSerializationCompatibility) {
 }
 
 TEST_F(BlobViewTest, TestToViewRejectsInvalidArguments) {
-    BlobView unknown_database{Identifier("source"), /*field_id=*/7, /*row_id=*/5};
+    BlobView unknown_database{Identifier(Identifier::kUnknownDatabase, "source"),
+                              /*field_id=*/7, /*row_id=*/5};
     ASSERT_NOK_WITH_MSG(BlobView::ToView(unknown_database, pool_),
                         "upstream table identifier must include database name");
     ASSERT_NOK_WITH_MSG(BlobView::ToView(blob_view_, /*pool=*/nullptr), "memory pool is nullptr");

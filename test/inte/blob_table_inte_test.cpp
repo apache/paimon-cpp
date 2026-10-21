@@ -57,6 +57,7 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/table/source/plan_impl.h"
 #include "paimon/core/utils/file_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/data/blob.h"
@@ -1894,12 +1895,32 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateMultipleLayers) {
     const std::vector<std::string> expected_rows = {
         R"([[1, "a", "update1_0"]])", R"([[2, "b", "blob_1"]])", R"([[3, "c", "blob_2"]])",
         R"([[4, "d", "update2_3"]])"};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> unpruned_plan, ScanTable(table_path));
+    ASSERT_EQ(unpruned_plan->Splits().size(), 1);
+    auto unpruned_split = std::dynamic_pointer_cast<DataSplitImpl>(unpruned_plan->Splits()[0]);
+    ASSERT_NE(unpruned_split, nullptr);
+    ASSERT_EQ(unpruned_split->DataFiles().size(), 4);
     for (int32_t i = 0; i < static_cast<int32_t>(expected_rows.size()); i++) {
+        SCOPED_TRACE(i);
         auto expected_single = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), expected_rows[i])
                 .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_single,
                               /*predicate=*/nullptr, /*row_ranges=*/{Range(i, i)}));
+
+        // Range planning can narrow a read after scanning, leaving unselected BLOB files
+        // in the split. Their sequence layers must still align with the selected rows.
+        auto indexed_split =
+            std::make_shared<IndexedSplitImpl>(unpruned_split, std::vector<Range>{Range(i, i)});
+        auto indexed_plan = std::make_shared<PlanImpl>(
+            unpruned_plan->SnapshotId(), std::vector<std::shared_ptr<Split>>{indexed_split});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadTable(table_path, schema->field_names(), indexed_plan));
+        ASSERT_NE(result, nullptr);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> expected_with_row_kind,
+                             PrependRowKindColumn(expected_single));
+        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected_with_row_kind)))
+            << result->ToString();
     }
 }
 

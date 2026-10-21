@@ -53,6 +53,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(manifest_format->Identifier(), "avro");
     ASSERT_EQ(core_options.GetFileFormat()->Identifier(), "parquet");
     ASSERT_EQ(nullptr, core_options.GetChangelogFileFormat());
+    ASSERT_EQ(nullptr, core_options.GetVectorFileFormat());
     ASSERT_EQ(core_options.GetWriteFileFormat(0)->Identifier(), "parquet");
     ASSERT_EQ(core_options.GetWriteFileFormat(3)->Identifier(), "parquet");
     ASSERT_TRUE(core_options.GetFileSystem());
@@ -62,6 +63,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(128 * 1024 * 1024L, core_options.GetTargetFileSize(/*has_primary_key=*/true));
     ASSERT_EQ(std::numeric_limits<int64_t>::max(), core_options.GetTargetFileRowNum());
     ASSERT_EQ(256 * 1024 * 1024L, core_options.GetBlobTargetFileSize());
+    ASSERT_EQ(256 * 1024 * 1024L, core_options.GetVectorTargetFileSize());
     ASSERT_TRUE(core_options.BlobSplitByFileSize());
     ASSERT_EQ(187904815, core_options.GetCompactionFileSize(/*has_primary_key=*/false));
     ASSERT_EQ(93952404, core_options.GetCompactionFileSize(/*has_primary_key=*/true));
@@ -214,12 +216,14 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::FILE_SYSTEM, "Local"},
         {Options::FILE_FORMAT, "ORC"},
         {Options::CHANGELOG_FILE_FORMAT, "avro"},
+        {Options::VECTOR_FILE_FORMAT, "parquet"},
         {"manifest.format", "ORC"},
         {Options::BUCKET, "3"},
         {Options::PAGE_SIZE, "128 kb"},
         {Options::TARGET_FILE_SIZE, "512MB"},
         {Options::TARGET_FILE_ROW_NUM, "123"},
         {Options::BLOB_TARGET_FILE_SIZE, "1G"},
+        {Options::VECTOR_TARGET_FILE_SIZE, "2MB"},
         {Options::PARTITION_DEFAULT_NAME, "foo"},
         {Options::MANIFEST_TARGET_FILE_SIZE, "16MB"},
         {Options::MANIFEST_FULL_COMPACTION_FILE_SIZE, "32MB"},
@@ -354,6 +358,8 @@ TEST(CoreOptionsTest, TestFromMap) {
 
     ASSERT_EQ(core_options.GetFileFormat()->Identifier(), "orc");
     ASSERT_EQ(core_options.GetChangelogFileFormat()->Identifier(), "avro");
+    ASSERT_NE(nullptr, core_options.GetVectorFileFormat());
+    ASSERT_EQ(core_options.GetVectorFileFormat()->Identifier(), "parquet");
     ASSERT_EQ(core_options.GetWriteFileFormat(0)->Identifier(), "avro");
     ASSERT_EQ(core_options.GetWriteFileFormat(1)->Identifier(), "orc");
     ASSERT_EQ(core_options.GetWriteFileFormat(3)->Identifier(), "parquet");
@@ -367,6 +373,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(512 * 1024 * 1024L, core_options.GetTargetFileSize(/*has_primary_key=*/false));
     ASSERT_EQ(123, core_options.GetTargetFileRowNum());
     ASSERT_EQ(1024 * 1024 * 1024L, core_options.GetBlobTargetFileSize());
+    ASSERT_EQ(2 * 1024 * 1024L, core_options.GetVectorTargetFileSize());
     ASSERT_EQ("foo", core_options.GetPartitionDefaultName());
     ASSERT_EQ(16 * 1024 * 1024L, core_options.GetManifestTargetFileSize());
     ASSERT_EQ(32 * 1024 * 1024L, core_options.GetManifestFullCompactionThresholdSize());

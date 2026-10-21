@@ -220,7 +220,7 @@ Result<GlobalIndexIOMeta> FullTextGlobalIndexWriter::WriteIndex(
     std::string options_json;
     PAIMON_RETURN_NOT_OK(RapidJsonUtil::ToJsonString(options_, &options_json));
     auto metadata = std::make_shared<Bytes>(options_json, pool_.get());
-    return GlobalIndexIOMeta(file_writer_->ToPath(file_name), file_size, metadata);
+    return GlobalIndexIOMeta(file_writer_->ToPath(file_name), file_size, row_count_, metadata);
 }
 
 }  // namespace paimon::full_text

@@ -215,6 +215,18 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
     static Result<std::vector<Range>> ExcludeDeletedRowIds(const std::vector<Range>& ranges,
                                                            const GroupDeletionVector& group_dv);
 
+    struct VectorReadRange {
+        Range range;
+        std::vector<std::shared_ptr<DataFileMeta>> files;
+    };
+
+    /// Split at VECTOR file boundaries so each field has one latest provider per range.
+    static Result<std::vector<VectorReadRange>> PlanVectorReadRanges(
+        const std::vector<std::shared_ptr<DataFileMeta>>& files,
+        const std::vector<int32_t>& read_field_ids,
+        const std::function<Result<std::vector<int32_t>>(const std::shared_ptr<DataFileMeta>&)>&
+            file_to_field_ids);
+
     static Result<std::vector<std::shared_ptr<DataEvolutionSplitRead::FieldBunch>>>
     SplitFieldBunches(const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
                       const std::function<Result<int32_t>(const std::shared_ptr<DataFileMeta>&)>&
@@ -248,7 +260,16 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         const std::optional<std::vector<Range>>& row_ranges) const;
 
  private:
-    Result<std::unique_ptr<DataEvolutionFileReader>> CreateUnionReader(
+    Result<std::unique_ptr<BatchReader>> CreateUnionReader(
+        const BinaryRow& partition,
+        const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const DeletionVector::Factory& group_dv_factory,
+        const std::optional<GroupDeletionVector>& group_dv,
+        const std::shared_ptr<arrow::Schema>& read_schema) const;
+
+    Result<std::unique_ptr<BatchReader>> CreateFieldUnionReader(
         const BinaryRow& partition,
         const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
         const std::optional<std::vector<Range>>& row_ranges,

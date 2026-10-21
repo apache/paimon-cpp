@@ -252,7 +252,12 @@ class FullTextGlobalIndexTest : public ::testing::Test {
         auto schema = arrow::schema({arrow::field("f0", field_type)});
         auto c_schema = std::make_unique<::ArrowSchema>();
         EXPECT_TRUE(arrow::ExportSchema(*schema, c_schema.get()).ok());
-        return global_index.CreateReader(c_schema.get(), CreateFileManager(), metas, pool_);
+        int64_t total_row_count = 0;
+        for (const GlobalIndexIOMeta& meta : metas) {
+            total_row_count += meta.row_count;
+        }
+        return global_index.CreateReader(c_schema.get(), CreateFileManager(), metas,
+                                         total_row_count, /*row_ranges=*/std::nullopt, pool_);
     }
 
     static std::shared_ptr<FullTextSearch> MakeSearch(
@@ -375,6 +380,7 @@ TEST_F(FullTextGlobalIndexTest, TestWriteAndSearch) {
     ASSERT_OK_AND_ASSIGN(std::vector<GlobalIndexIOMeta> metas, writer->Finish());
     ASSERT_EQ(metas.size(), 1u);
     const GlobalIndexIOMeta& meta = metas[0];
+    ASSERT_EQ(meta.row_count, array->length());
 
     std::string file_name = PathUtil::GetName(meta.file_path);
     ASSERT_TRUE(StringUtils::StartsWith(file_name, "full-text-global-index-")) << file_name;
@@ -415,6 +421,7 @@ TEST_F(FullTextGlobalIndexTest, TestWriterWithOnlyNullRows) {
     ASSERT_OK_AND_ASSIGN(std::vector<GlobalIndexIOMeta> metas,
                          WriteIndex(/*options=*/{}, MakeArray(R"([[null], [null]])")));
     ASSERT_EQ(metas.size(), 1u);
+    ASSERT_EQ(metas[0].row_count, 2);
     ASSERT_EQ(std::string(metas[0].metadata->data(), metas[0].metadata->size()), "{}");
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader, CreateReader(metas));
@@ -568,7 +575,7 @@ TEST_F(FullTextGlobalIndexTest, TestNestedBooleanAndBoost) {
 }
 
 TEST_F(FullTextGlobalIndexTest, TestInvalidRead) {
-    GlobalIndexIOMeta meta("full-text-global-index-1.index", 1, nullptr);
+    GlobalIndexIOMeta meta("full-text-global-index-1.index", 1, /*row_count=*/1, nullptr);
     ASSERT_NOK_WITH_MSG(CreateReader({}), "exactly one index file");
     ASSERT_NOK_WITH_MSG(CreateReader({meta, meta}), "exactly one index file");
     ASSERT_NOK_WITH_MSG(CreateReader({meta}, arrow::int32()), "only supports string fields");
@@ -603,7 +610,8 @@ TEST_F(FullTextGlobalIndexTest, TestInvalidRead) {
 TEST_F(FullTextGlobalIndexTest, TestInvalidIndexFile) {
     std::string file_path = PathUtil::JoinPath(index_dir_->Str(), "invalid.index");
     ASSERT_OK(fs_->WriteFile(file_path, "this is not a full-text index", /*overwrite=*/false));
-    std::vector<GlobalIndexIOMeta> metas = {GlobalIndexIOMeta(file_path, 29, nullptr)};
+    std::vector<GlobalIndexIOMeta> metas = {
+        GlobalIndexIOMeta(file_path, 29, /*row_count=*/1, nullptr)};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader, CreateReader(metas));
     ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(MakeSearch(MatchQuery("paimon"))), "bad magic");
 
@@ -611,7 +619,8 @@ TEST_F(FullTextGlobalIndexTest, TestInvalidIndexFile) {
     ASSERT_OK(fs_->ReadFile(FixturePath("default"), &archive));
     std::string truncated_path = PathUtil::JoinPath(index_dir_->Str(), "truncated.index");
     ASSERT_OK(fs_->WriteFile(truncated_path, archive.substr(0, 32), /*overwrite=*/false));
-    ASSERT_OK_AND_ASSIGN(reader, CreateReader({GlobalIndexIOMeta(truncated_path, 32, nullptr)}));
+    ASSERT_OK_AND_ASSIGN(
+        reader, CreateReader({GlobalIndexIOMeta(truncated_path, 32, /*row_count=*/5, nullptr)}));
     Status status = reader->VisitFullTextSearch(MakeSearch(MatchQuery("paimon"))).status();
     ASSERT_TRUE(status.IsIOError()) << status.ToString();
     ASSERT_NOK_WITH_MSG(status, "failed to open full-text index " + truncated_path);
@@ -623,9 +632,9 @@ TEST_F(FullTextGlobalIndexTest, TestInvalidIndexFile) {
     std::string other_version_path = PathUtil::JoinPath(index_dir_->Str(), "other_version.index");
     ASSERT_OK(fs_->WriteFile(other_version_path, other_version_archive, /*overwrite=*/false));
     ASSERT_OK_AND_ASSIGN(
-        reader,
-        CreateReader({GlobalIndexIOMeta(
-            other_version_path, static_cast<int64_t>(other_version_archive.size()), nullptr)}));
+        reader, CreateReader({GlobalIndexIOMeta(other_version_path,
+                                                static_cast<int64_t>(other_version_archive.size()),
+                                                /*row_count=*/5, nullptr)}));
     ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(MakeSearch(MatchQuery("paimon"))),
                         "unsupported Tantivy index version tantivy v0.25.0");
 }
@@ -735,11 +744,13 @@ TEST_F(FullTextGlobalIndexTest, TestCrossReadFixtures) {
     for (const auto& fixture : GoldenFixtures()) {
         std::string fixture_path = FixturePath(fixture.name);
         ASSERT_OK_AND_ASSIGN(FileStatus file_status, fs_->GetFileStatus(fixture_path));
-        CheckGoldenSearches(fixture, GlobalIndexIOMeta(fixture_path, file_status.GetLen(),
-                                                       /*metadata=*/nullptr));
+        std::shared_ptr<arrow::Array> fixture_array = MakeArray(fixture.rows);
+        CheckGoldenSearches(
+            fixture, GlobalIndexIOMeta(fixture_path, file_status.GetLen(), fixture_array->length(),
+                                       /*metadata=*/nullptr));
 
         ASSERT_OK_AND_ASSIGN(std::vector<GlobalIndexIOMeta> metas,
-                             WriteIndex(fixture.options, MakeArray(fixture.rows)));
+                             WriteIndex(fixture.options, fixture_array));
         ASSERT_EQ(metas.size(), 1u) << fixture.name;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<rapidjson::Document> written_header,
                              ReadHeader(metas[0].file_path));
