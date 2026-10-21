@@ -35,6 +35,7 @@
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
 #include "paimon/core/manifest/manifest_entry.h"
+#include "paimon/core/operation/commit/realtime_deduplicate_compaction_changes_provider.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/data/timestamp.h"
@@ -126,6 +127,48 @@ TEST_F(ManifestEntryChangesTest, TestCollectAndSummary) {
     ASSERT_NE(std::string::npos, summary.find("2 append table files"));
     ASSERT_NE(std::string::npos, summary.find("1 append Changelogs"));
     ASSERT_NE(std::string::npos, summary.find("2 compact index files"));
+}
+
+TEST_F(ManifestEntryChangesTest, TestRealtimeCompactionNormalizesMultipleRewrites) {
+    const BinaryRow partition = CreateIntRow(10);
+    const auto original = CreateDataFileMeta("original");
+    const auto intermediate = CreateDataFileMeta("intermediate");
+    intermediate->extra_files = {"intermediate.index", "intermediate.offset"};
+    const auto final = CreateDataFileMeta("final");
+    // CollectChanges groups DELETE before ADD, not in rewrite execution order.
+    const std::vector<ManifestEntry> entries = {
+        {FileKind::Delete(), partition, 0, 2, original},
+        {FileKind::Delete(), partition, 0, 2, intermediate->CopyWithoutStats()},
+        {FileKind::Add(), partition, 0, 2, intermediate},
+        {FileKind::Add(), partition, 0, 2, final},
+        // The same filename in another bucket must not be cancelled.
+        {FileKind::Delete(), partition, 1, 2, intermediate},
+    };
+    ASSERT_OK_AND_ASSIGN(RealtimeCompactionPlan plan, RealtimeCompactionPlan::Create(entries));
+    ASSERT_EQ(3, plan.delta_files.size());
+    ASSERT_EQ("original", plan.delta_files[0].FileName());
+    ASSERT_EQ("final", plan.delta_files[1].FileName());
+    ASSERT_EQ(1, plan.delta_files[2].Bucket());
+    ASSERT_EQ(1, plan.intermediate_files.size());
+    ASSERT_EQ(intermediate->extra_files, plan.intermediate_files[0].File()->extra_files);
+}
+
+TEST_F(ManifestEntryChangesTest, TestRealtimeCompactionRejectsInvalidRewrites) {
+    const BinaryRow partition = CreateIntRow(10);
+    const auto file = CreateDataFileMeta("file");
+    const ManifestEntry input(FileKind::Delete(), partition, 0, 1, file);
+    const ManifestEntry output(FileKind::Add(), partition, 0, 1, file);
+    ASSERT_NOK_WITH_MSG(RealtimeCompactionPlan::Create({input, input}), "duplicate");
+    ASSERT_NOK_WITH_MSG(RealtimeCompactionPlan::Create({output, output}), "duplicate");
+    const auto inconsistent = CreateDataFileMeta("file");
+    inconsistent->row_count++;
+    ASSERT_NOK_WITH_MSG(RealtimeCompactionPlan::Create(
+                            {input, ManifestEntry(FileKind::Add(), partition, 0, 1, inconsistent)}),
+                        "inconsistent intermediate");
+    // All rows filtered by D0: a valid compaction can have no output files.
+    ASSERT_OK_AND_ASSIGN(RealtimeCompactionPlan plan, RealtimeCompactionPlan::Create({input}));
+    ASSERT_EQ(1, plan.delta_files.size());
+    ASSERT_TRUE(plan.intermediate_files.empty());
 }
 
 TEST_F(ManifestEntryChangesTest, TestDropStatsOnlyForDeleteEntries) {

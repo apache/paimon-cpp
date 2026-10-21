@@ -98,6 +98,11 @@ AbstractFileStoreWrite::AbstractFileStoreWrite(
 }
 
 Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
+    if (!options_.GetRealtimeDeduplicateKeyFields().empty() && !IsRealtimeWrite()) {
+        return Status::Invalid(
+            "real-time deduplicate write requires a real-time context; "
+            "this writer only supports compaction");
+    }
     if (PAIMON_UNLIKELY(batch == nullptr)) {
         return Status::Invalid("batch is null pointer");
     }

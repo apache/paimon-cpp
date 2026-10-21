@@ -378,7 +378,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                                                                       snapshot_manager, options));
             }
         } else if (realtime_deduplicate) {
-            return Status::Invalid("real-time deduplicate write requires a real-time context");
+            if (!ctx->GetWriteSchema().empty() || ignore_previous_files || options.WriteOnly()) {
+                return Status::Invalid(
+                    "deduplicate compaction requires the full schema, restored files and "
+                    "write-only=false");
+            }
         }
         std::shared_ptr<arrow::Schema> write_schema = arrow_schema;
         const auto& write_field_names = ctx->GetWriteSchema();
