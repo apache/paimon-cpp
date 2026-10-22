@@ -74,7 +74,7 @@ std::string IdentifierToFlatJson(const Identifier& identifier) {
 
 }  // namespace
 
-std::shared_ptr<CatalogContext> InternalReadContext::CreateDependencyReadContext() const {
+std::shared_ptr<CatalogContext> InternalReadContext::CreateDependencyCatalogContext() const {
     const auto& catalog = read_context_->GetCatalog();
     if (!catalog) {
         // Preserve path-only filesystem reads using <warehouse>/<database>.db/<table>.

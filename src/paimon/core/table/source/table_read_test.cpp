@@ -294,7 +294,7 @@ TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {
         auto* append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
         ASSERT_NE(append_only_table_read, nullptr);
         const auto& internal_context = append_only_table_read->context_;
-        auto dependency_context = internal_context->CreateDependencyReadContext();
+        auto dependency_context = internal_context->CreateDependencyCatalogContext();
 
         auto expected_options = table_options;
         expected_options[read_via_option] = explicit_header ? "read-view" : "table-view";

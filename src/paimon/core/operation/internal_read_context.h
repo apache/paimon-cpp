@@ -82,7 +82,7 @@ class InternalReadContext {
         return read_context_->GetPath();
     }
 
-    std::shared_ptr<CatalogContext> CreateDependencyReadContext() const;
+    std::shared_ptr<CatalogContext> CreateDependencyCatalogContext() const;
 
     const std::vector<std::string>& GetPartitionKeys() const {
         return table_schema_->PartitionKeys();

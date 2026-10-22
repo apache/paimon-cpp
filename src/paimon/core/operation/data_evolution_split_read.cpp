@@ -290,8 +290,8 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewRes
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor, CreateDefaultExecutor(thread_num));
     PAIMON_ASSIGN_OR_RAISE(
         BlobViewResolver resolver,
-        BlobViewLookup::CreateResolver(blob_view_structs, context_->CreateDependencyReadContext(),
-                                       pool_, executor));
+        BlobViewLookup::CreateResolver(
+            blob_view_structs, context_->CreateDependencyCatalogContext(), pool_, executor));
     return std::make_unique<BlobViewResolvingBatchReader>(std::move(inner_reader),
                                                           std::move(read_blob_view_fields),
                                                           std::move(resolver), arrow_pool_);
