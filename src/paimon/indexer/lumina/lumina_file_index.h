@@ -66,7 +66,7 @@ class LuminaFileIndexWriter final : public FileIndexWriter {
     Status AddBatch(::ArrowArray* batch) override;
 
     Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const override;
-    Result<bool> WriteTo(const std::shared_ptr<OutputStream>& output) const override;
+    Result<bool> WriteTo(OutputStream* output) const override;
 
  private:
     std::string field_name_;

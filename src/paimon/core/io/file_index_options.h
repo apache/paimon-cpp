@@ -71,9 +71,6 @@ class FileIndexOptions {
  private:
     FileIndexOptions() = default;
 
-    static Result<FileIndexOptions> Parse(const std::map<std::string, std::string>& raw_options,
-                                          int64_t in_manifest_threshold, int32_t format_version);
-
     std::vector<FileIndexDefinition> definitions_;
     int64_t in_manifest_threshold_ = 0;
     int32_t format_version_ = 1;

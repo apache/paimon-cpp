@@ -62,7 +62,7 @@ Status FileIndexFormatV2::Writer::WriteIndex(const std::string& column, const st
     int64_t length = 0;
     if (payload) {
         PAIMON_ASSIGN_OR_RAISE(start, output_->GetPos());
-        PAIMON_ASSIGN_OR_RAISE(bool written, payload(output_));
+        PAIMON_ASSIGN_OR_RAISE(bool written, payload(output_.get()));
         PAIMON_ASSIGN_OR_RAISE(int64_t end, output_->GetPos());
         length = end - start;
         if (!written) {
@@ -82,7 +82,7 @@ Status FileIndexFormatV2::Writer::Finish() {
         return Status::Invalid("File index writer is not writable");
     }
     failed_ = true;
-    // Validate the directory size before emitting it; the Java trailer uses int32.
+    // Validate the footer size before emitting it; the Java trailer uses int32.
     int64_t footer_length = 4;
     for (const auto& [column, entries] : entries_) {
         footer_length += 2 + static_cast<int64_t>(column.size()) + 4;
@@ -120,7 +120,7 @@ Status FileIndexFormatV2::Writer::Close() {
     return close_status;
 }
 
-Result<FileIndexEntries> FileIndexFormatV2::ReadIndexEntries(
+Result<FileIndexFormatUtils::FileIndexEntries> FileIndexFormatV2::ReadIndexEntries(
     const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool,
     int64_t file_length) {
     if (file_length < kV2PrefixLength + 4 + kV2TrailerLength) {
@@ -137,10 +137,10 @@ Result<FileIndexEntries> FileIndexFormatV2::ReadIndexEntries(
         return Status::Invalid("Invalid file index footer length");
     }
     int64_t footer_start = file_length - kV2TrailerLength - footer_length;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> directory,
-                           FileIndexFormatUtils::CreateFileIndexDirectory(
-                               input, pool, footer_start, footer_length, file_length));
-    DataInputStream in(directory);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> metadata_input,
+                           FileIndexFormatUtils::CreateMetadataInputStream(
+                               input, footer_start, footer_length, file_length, pool));
+    DataInputStream in(metadata_input);
     return FileIndexFormatUtils::ReadFileIndexEntries(in, FileIndexFormat::V_2);
 }
 }  // namespace paimon

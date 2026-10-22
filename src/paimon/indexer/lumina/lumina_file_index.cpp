@@ -44,8 +44,7 @@ namespace {
 /// writing.
 class OffsetOutputStream : public OutputStream {
  public:
-    static Result<std::unique_ptr<OffsetOutputStream>> Create(
-        const std::shared_ptr<OutputStream>& output) {
+    static Result<std::unique_ptr<OffsetOutputStream>> Create(OutputStream* output) {
         PAIMON_ASSIGN_OR_RAISE(int64_t start, output->GetPos());
         return std::unique_ptr<OffsetOutputStream>(new OffsetOutputStream(output, start));
     }
@@ -68,10 +67,9 @@ class OffsetOutputStream : public OutputStream {
     }
 
  private:
-    OffsetOutputStream(const std::shared_ptr<OutputStream>& output, int64_t start)
-        : output_(output), start_(start) {}
+    OffsetOutputStream(OutputStream* output, int64_t start) : output_(output), start_(start) {}
 
-    std::shared_ptr<OutputStream> output_;
+    OutputStream* output_;
     int64_t start_;
 };
 
@@ -142,14 +140,14 @@ Result<PAIMON_UNIQUE_PTR<Bytes>> LuminaFileIndexWriter::SerializedBytes() const 
     auto segment_output = std::make_unique<MemorySegmentOutputStream>(
         MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_->GetPaimonPool());
     auto output = std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
-    PAIMON_ASSIGN_OR_RAISE(bool written, WriteTo(output));
+    PAIMON_ASSIGN_OR_RAISE(bool written, WriteTo(output.get()));
     if (!written) {
         return PAIMON_UNIQUE_PTR<Bytes>();
     }
     return output->Finish(pool_->GetPaimonPool().get());
 }
 
-Result<bool> LuminaFileIndexWriter::WriteTo(const std::shared_ptr<OutputStream>& output) const {
+Result<bool> LuminaFileIndexWriter::WriteTo(OutputStream* output) const {
     if (!output) {
         return Status::Invalid("Lumina File Index output stream cannot be null");
     }

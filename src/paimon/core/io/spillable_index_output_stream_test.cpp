@@ -83,8 +83,7 @@ TEST_F(SpillableIndexOutputStreamTest, SpillsAndPreservesBufferedPrefix) {
         ASSERT_TRUE(stream->Spilled());
         ASSERT_OK_AND_ASSIGN(int64_t position, stream->GetPos());
         ASSERT_EQ(prefix.size() + 6, position);
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes, stream->EmbeddedBytes());
-        ASSERT_FALSE(bytes);
+        ASSERT_NOK_WITH_MSG(stream->EmbeddedBytes(), "spilled to an external file");
         ASSERT_OK(stream->Flush());
         ASSERT_OK(stream->Close());
         std::string content;

@@ -159,6 +159,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ("main", core_options.GetBranch());
     ASSERT_TRUE(core_options.FileIndexReadEnabled());
     ASSERT_EQ(500, core_options.FileIndexInManifestThreshold());
+    ASSERT_EQ(1, core_options.FileIndexFormatVersion());
     ASSERT_EQ(std::nullopt, core_options.GetDataFileExternalPaths());
     ASSERT_EQ(ExternalPathStrategy::NONE, core_options.GetExternalPathStrategy());
     ASSERT_TRUE(core_options.EnableAdaptivePrefetchStrategy());
@@ -283,6 +284,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::BRANCH, "rt"},
         {Options::FILE_INDEX_READ_ENABLED, "false"},
         {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "2KB"},
+        {Options::FILE_INDEX_FORMAT_VERSION, "2"},
         {Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///tmp/index"},
         {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "round-robin"},
         {Options::FILE_COMPRESSION, "snappy"},
@@ -445,6 +447,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(core_options.GetBranch(), "rt");
     ASSERT_FALSE(core_options.FileIndexReadEnabled());
     ASSERT_EQ(2 * 1024, core_options.FileIndexInManifestThreshold());
+    ASSERT_EQ(2, core_options.FileIndexFormatVersion());
     ASSERT_EQ(core_options.GetDataFileExternalPaths(),
               std::optional<std::string>("FILE:///tmp/index"));
     ASSERT_EQ(core_options.GetExternalPathStrategy(), ExternalPathStrategy::ROUND_ROBIN);
@@ -523,6 +526,13 @@ TEST(CoreOptionsTest, TestFromMap) {
 }
 
 TEST(CoreOptionsTest, TestInvalidCase) {
+    ASSERT_NOK_WITH_MSG(
+        CoreOptions::FromMap({{Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "2147483648B"}}),
+        "file index inline threshold");
+    for (const std::string version : {"0", "3", "-1", "invalid"}) {
+        ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{"file-index.format.version", version}}),
+                            "file-index.format.version must be 1 or 2");
+    }
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::TARGET_FILE_ROW_NUM, "0"}}),
                         "target-file-row-num should be at least 1");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BUCKET, "3.5"}}),

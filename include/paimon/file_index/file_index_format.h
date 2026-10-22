@@ -66,12 +66,12 @@ class PAIMON_EXPORT FileIndexFormat {
     /// Creates a `Writer` for file index container.
     ///
     /// @param output_stream Destination stream for serialized index data.
+    /// @param version Container format version (V1 or V2).
     /// @param pool Memory pool for writer-side allocations.
-    /// @param version Container format version; defaults to V1.
     /// @return A unique pointer to a `Writer` on success.
     static Result<std::unique_ptr<Writer>> CreateWriter(
-        const std::shared_ptr<OutputStream>& output_stream, const std::shared_ptr<MemoryPool>& pool,
-        int32_t version = V_1);
+        const std::shared_ptr<OutputStream>& output_stream, int32_t version,
+        const std::shared_ptr<MemoryPool>& pool);
 
  public:
     static const int64_t MAGIC;
@@ -85,7 +85,7 @@ class PAIMON_EXPORT FileIndexFormat::Writer {
  public:
     /// Writes one payload without closing the stream. Returns false for an absent index
     /// (without writing bytes), or true after writing a non-empty payload.
-    using PayloadWriter = std::function<Result<bool>(const std::shared_ptr<OutputStream>&)>;
+    using PayloadWriter = std::function<Result<bool>(OutputStream*)>;
     virtual ~Writer() = default;
 
     /// Flushes and closes the output stream supplied to `CreateWriter()`.

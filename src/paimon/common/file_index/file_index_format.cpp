@@ -60,7 +60,7 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
         }
         PAIMON_ASSIGN_OR_RAISE(int64_t file_length, input_stream->Length());
         PAIMON_ASSIGN_OR_RAISE(
-            FileIndexEntries header,
+            FileIndexFormatUtils::FileIndexEntries header,
             version == FileIndexFormat::V_1
                 ? FileIndexFormatV1::ReadIndexEntries(input_stream, pool, file_length)
                 : FileIndexFormatV2::ReadIndexEntries(input_stream, pool, file_length));
@@ -96,8 +96,8 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
 
  private:
     FileIndexFormatReaderImpl(const std::shared_ptr<InputStream>& input_stream,
-                              FileIndexEntries&& header, const std::shared_ptr<MemoryPool>& pool,
-                              FileIndexOptions&& options)
+                              FileIndexFormatUtils::FileIndexEntries&& header,
+                              const std::shared_ptr<MemoryPool>& pool, FileIndexOptions&& options)
         : input_stream_(input_stream),
           pool_(pool),
           header_(std::move(header)),
@@ -131,8 +131,7 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
     std::shared_ptr<InputStream> input_stream_;
     std::shared_ptr<MemoryPool> pool_;
     // get header and cache it.
-    // [column_name : [index_type : {offset, length}]]
-    FileIndexEntries header_;
+    FileIndexFormatUtils::FileIndexEntries header_;
     FileIndexOptions options_;
 };
 
@@ -148,8 +147,8 @@ Result<std::unique_ptr<FileIndexFormat::Reader>> FileIndexFormat::CreateReader(
 }
 
 Result<std::unique_ptr<FileIndexFormat::Writer>> FileIndexFormat::CreateWriter(
-    const std::shared_ptr<OutputStream>& output_stream, const std::shared_ptr<MemoryPool>& pool,
-    int32_t version) {
+    const std::shared_ptr<OutputStream>& output_stream, int32_t version,
+    const std::shared_ptr<MemoryPool>& pool) {
     if (!output_stream) {
         return Status::Invalid("File index output stream cannot be null");
     }

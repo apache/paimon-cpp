@@ -161,7 +161,7 @@ TEST(LuminaFileIndexTest, WriteToUsesRelativeOffsetsAndKeepsStreamOpen) {
             MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool));
     ASSERT_OK_AND_ASSIGN(int64_t prefix_length, output->Write("prefix", 6));
     ASSERT_EQ(6, prefix_length);
-    ASSERT_OK_AND_ASSIGN(bool written, writer->WriteTo(output));
+    ASSERT_OK_AND_ASSIGN(bool written, writer->WriteTo(output.get()));
     ASSERT_TRUE(written);
     ASSERT_OK_AND_ASSIGN(int64_t end, output->GetPos());
     int64_t length = end - prefix_length;
@@ -218,7 +218,7 @@ TEST(LuminaFileIndexTest, AllNullVectorsProduceEmptyArtifact) {
         auto output =
             std::make_shared<ByteArrayOutputStream>(std::make_unique<MemorySegmentOutputStream>(
                 MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool));
-        ASSERT_OK_AND_ASSIGN(bool written, writer->WriteTo(output));
+        ASSERT_OK_AND_ASSIGN(bool written, writer->WriteTo(output.get()));
         ASSERT_FALSE(written);
         ASSERT_OK_AND_ASSIGN(int64_t position, output->GetPos());
         ASSERT_EQ(0, position);

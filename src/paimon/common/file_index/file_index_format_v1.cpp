@@ -59,7 +59,7 @@ Status FileIndexFormatV1::Writer::WriteIndex(const std::string& column, const st
             std::make_shared<ByteArrayOutputStream>(std::make_unique<MemorySegmentOutputStream>(
                 MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_));
         failed_ = true;
-        PAIMON_ASSIGN_OR_RAISE(bool written, payload(output));
+        PAIMON_ASSIGN_OR_RAISE(bool written, payload(output.get()));
         PAIMON_ASSIGN_OR_RAISE(int64_t length, output->GetPos());
         if (!written && length != 0) {
             return Status::Invalid("Absent file index payload must not write bytes");
@@ -180,17 +180,17 @@ Status FileIndexFormatV1::Writer::WriteHead(const FileIndexFormat::ColumnIndexes
     return data_output.WriteValue<int32_t>(kRedundantLength);
 }
 
-Result<FileIndexEntries> FileIndexFormatV1::ReadIndexEntries(
+Result<FileIndexFormatUtils::FileIndexEntries> FileIndexFormatV1::ReadIndexEntries(
     const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool,
     int64_t file_length) {
     DataInputStream data_input(input);
     PAIMON_ASSIGN_OR_RAISE(int32_t head_length, data_input.ReadValue<int32_t>());
-    constexpr int64_t kDirectoryStart = 16;
-    int64_t directory_length = head_length - kDirectoryStart;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> directory,
-                           FileIndexFormatUtils::CreateFileIndexDirectory(
-                               input, pool, kDirectoryStart, directory_length, file_length));
-    DataInputStream in(directory);
+    constexpr int64_t kMetadataStart = 16;
+    int64_t metadata_length = head_length - kMetadataStart;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> metadata_input,
+                           FileIndexFormatUtils::CreateMetadataInputStream(
+                               input, kMetadataStart, metadata_length, file_length, pool));
+    DataInputStream in(metadata_input);
     return FileIndexFormatUtils::ReadFileIndexEntries(in, FileIndexFormat::V_1);
 }
 }  // namespace paimon

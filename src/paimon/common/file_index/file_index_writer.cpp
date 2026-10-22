@@ -26,7 +26,7 @@ Result<PAIMON_UNIQUE_PTR<Bytes>> FileIndexWriter::SerializedBytes() const {
     return Status::NotImplemented("This file index writer requires streaming output");
 }
 
-Result<bool> FileIndexWriter::WriteTo(const std::shared_ptr<OutputStream>& output) const {
+Result<bool> FileIndexWriter::WriteTo(OutputStream* output) const {
     if (!output) {
         return Status::Invalid("File index output stream cannot be null");
     }

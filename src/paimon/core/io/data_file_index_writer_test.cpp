@@ -65,7 +65,7 @@ class StreamingTestIndexWriter : public FileIndexWriter {
         batch->release(batch);
         return Status::OK();
     }
-    Result<bool> WriteTo(const std::shared_ptr<OutputStream>& output) const override {
+    Result<bool> WriteTo(OutputStream* output) const override {
         if (empty_) {
             return false;
         }

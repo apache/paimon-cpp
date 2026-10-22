@@ -29,6 +29,7 @@
 #include "paimon/common/fs/resolving_file_system.h"
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/options/time_duration.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
@@ -873,11 +874,13 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(
             parser.Parse<int32_t>(Options::FILE_INDEX_FORMAT_VERSION, &file_index_format_version));
         if (file_index_format_version != 1 && file_index_format_version != 2) {
-            return Status::Invalid("file-index.format-version must be 1 or 2");
+            return Status::Invalid("file-index.format.version must be 1 or 2");
         }
         // Parse file-index.in-manifest-threshold - max inline file index size, default 500B
         PAIMON_RETURN_NOT_OK(parser.ParseMemorySize(Options::FILE_INDEX_IN_MANIFEST_THRESHOLD,
                                                     &file_index_in_manifest_threshold));
+        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(file_index_in_manifest_threshold,
+                                                           "file index inline threshold"));
         // Parse file-index.read.enabled - whether to enable reading file index, default true
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::FILE_INDEX_READ_ENABLED, &file_index_read_enabled));

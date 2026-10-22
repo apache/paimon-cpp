@@ -19,7 +19,6 @@
 #pragma once
 
 #include <cstdint>
-#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -84,10 +83,10 @@ class FileIndexFormatV2 {
 
     class Writer;
 
-    /// Reads the directory after the magic/version prefix has been consumed.
-    static Result<FileIndexEntries> ReadIndexEntries(const std::shared_ptr<InputStream>& input,
-                                                     const std::shared_ptr<MemoryPool>& pool,
-                                                     int64_t file_length);
+    /// Reads index metadata from the footer after the magic/version prefix has been consumed.
+    static Result<FileIndexFormatUtils::FileIndexEntries> ReadIndexEntries(
+        const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool,
+        int64_t file_length);
 };
 
 class FileIndexFormatV2::Writer : public FileIndexFormat::Writer {
@@ -102,7 +101,7 @@ class FileIndexFormatV2::Writer : public FileIndexFormat::Writer {
     explicit Writer(const std::shared_ptr<OutputStream>& output);
 
     std::shared_ptr<OutputStream> output_;
-    std::map<std::string, std::map<std::string, std::pair<int64_t, int64_t>>> entries_;
+    FileIndexFormatUtils::FileIndexEntries entries_;
     bool failed_ = false;
     bool finished_ = false;
     bool closed_ = false;

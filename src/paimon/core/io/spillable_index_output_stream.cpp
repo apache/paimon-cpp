@@ -81,7 +81,7 @@ Status SpillableIndexOutputStream::Close() {
 
 Result<std::shared_ptr<Bytes>> SpillableIndexOutputStream::EmbeddedBytes() {
     if (external_) {
-        return std::shared_ptr<Bytes>();
+        return Status::Invalid("File index has spilled to an external file");
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, memory_->Finish(pool_.get()));
     return bytes;

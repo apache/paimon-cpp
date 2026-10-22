@@ -31,7 +31,6 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/math.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/casting/casting_utils.h"
@@ -156,17 +155,15 @@ Result<FileIndexWriteResult> DataFileIndexWriter::Finish(const std::string& data
         return Status::Invalid("Data file index writer has already finished");
     }
     finished_ = true;
-    PAIMON_RETURN_NOT_OK(
-        ValidateValueInRange<int32_t>(in_manifest_threshold_, "file index inline threshold"));
     std::string index_path = path_factory_->ToFileIndexPath(data_file_path);
     auto output = std::make_shared<SpillableIndexOutputStream>(file_system_, index_path,
                                                                in_manifest_threshold_, pool_);
     ScopeGuard guard([&output]() { [[maybe_unused]] Status ignored = output->Abort(); });
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Writer> writer,
-                           FileIndexFormat::CreateWriter(output, pool_, format_version_));
+                           FileIndexFormat::CreateWriter(output, format_version_, pool_));
     for (const IndexWriterEntry& entry : writers_) {
         FileIndexFormat::Writer::PayloadWriter payload =
-            [index_writer = entry.writer](const std::shared_ptr<OutputStream>& destination) {
+            [index_writer = entry.writer](OutputStream* destination) {
                 return index_writer->WriteTo(destination);
             };
         PAIMON_RETURN_NOT_OK(writer->WriteIndex(entry.column_name, entry.index_type, payload));

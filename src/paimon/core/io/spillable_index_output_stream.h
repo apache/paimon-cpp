@@ -52,7 +52,7 @@ class SpillableIndexOutputStream : public OutputStream {
     /// Closes the stream and deletes any unpublished external index, even if Close() fails.
     Status Abort();
 
-    /// Returns the buffered index, or null if it has spilled to an external file.
+    /// Returns the buffered index, or an error if it has spilled to an external file.
     Result<std::shared_ptr<Bytes>> EmbeddedBytes();
 
  private:

@@ -173,13 +173,12 @@ Result<std::shared_ptr<Bytes>> MockSearchFileIndex::Serialize(
     const FileIndexFormat::ColumnIndexes& indexes, const std::shared_ptr<MemoryPool>& pool) {
     auto output = MakeOutput(pool);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Writer> writer,
-                           FileIndexFormat::CreateWriter(output, pool));
+                           FileIndexFormat::CreateWriter(output, FileIndexFormat::V_1, pool));
     for (const auto& [column, entries] : indexes) {
         for (const auto& [type, bytes] : entries) {
             FileIndexFormat::Writer::PayloadWriter payload;
             if (bytes && bytes->size() > 0) {
-                payload = [bytes = bytes](
-                              const std::shared_ptr<OutputStream>& destination) -> Result<bool> {
+                payload = [bytes = bytes](OutputStream* destination) -> Result<bool> {
                     PAIMON_RETURN_NOT_OK(DataOutputStream(destination).WriteBytes(bytes));
                     return true;
                 };

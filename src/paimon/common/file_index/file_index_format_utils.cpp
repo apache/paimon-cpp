@@ -24,17 +24,17 @@
 #include "paimon/io/data_input_stream.h"
 
 namespace paimon {
-Result<std::shared_ptr<InputStream>> FileIndexFormatUtils::CreateFileIndexDirectory(
-    const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool,
-    int64_t start, int64_t length, int64_t file_length) {
+Result<std::shared_ptr<InputStream>> FileIndexFormatUtils::CreateMetadataInputStream(
+    const std::shared_ptr<InputStream>& input, int64_t start, int64_t length, int64_t file_length,
+    const std::shared_ptr<MemoryPool>& pool) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetInputStream> bounded,
                            OffsetInputStream::Create(input, length, start, file_length));
     return std::make_shared<BufferedInputStream>(bounded, BufferedInputStream::DEFAULT_BUFFER_SIZE,
                                                  pool.get());
 }
 
-Result<FileIndexEntries> FileIndexFormatUtils::ReadFileIndexEntries(const DataInputStream& in,
-                                                                    int32_t version) {
+Result<FileIndexFormatUtils::FileIndexEntries> FileIndexFormatUtils::ReadFileIndexEntries(
+    const DataInputStream& in, int32_t version) {
     PAIMON_ASSIGN_OR_RAISE(int32_t column_size, in.ReadValue<int32_t>());
     FileIndexEntries header;
     for (int32_t i = 0; i < column_size; ++i) {

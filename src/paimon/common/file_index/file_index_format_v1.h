@@ -88,10 +88,10 @@ class FileIndexFormatV1 {
 
     class Writer;
 
-    /// Reads the directory after the magic/version prefix has been consumed.
-    static Result<FileIndexEntries> ReadIndexEntries(const std::shared_ptr<InputStream>& input,
-                                                     const std::shared_ptr<MemoryPool>& pool,
-                                                     int64_t file_length);
+    /// Reads index metadata from the header after the magic/version prefix has been consumed.
+    static Result<FileIndexFormatUtils::FileIndexEntries> ReadIndexEntries(
+        const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool,
+        int64_t file_length);
 };
 
 class FileIndexFormatV1::Writer : public FileIndexFormat::Writer {

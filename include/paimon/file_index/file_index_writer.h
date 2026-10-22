@@ -58,12 +58,13 @@ class PAIMON_EXPORT FileIndexWriter {
     virtual Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const;
 
     /// Writes one index payload to the caller-owned stream without closing it.
+    /// The stream is borrowed for this call and must not be retained by the writer.
     /// The default implementation writes SerializedBytes(); streaming writers can override this
     /// method to avoid materializing the complete payload. Write failures must be propagated.
     /// @return true if a non-empty index payload was produced, false if there is no index, or an
     /// error. Returning false must not write any bytes. The default implementation treats null or
     /// zero-length SerializedBytes() results as no index.
-    virtual Result<bool> WriteTo(const std::shared_ptr<OutputStream>& output) const;
+    virtual Result<bool> WriteTo(OutputStream* output) const;
 };
 
 }  // namespace paimon

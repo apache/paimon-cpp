@@ -36,10 +36,6 @@ class RecordingIndexOutput : public MockOutputStream {
         data.append(buffer, size);
         return size;
     }
-    Status Flush() override {
-        ++flush_count;
-        return Status::OK();
-    }
     Status Close() override {
         ++close_count;
         return Status::OK();
@@ -47,7 +43,6 @@ class RecordingIndexOutput : public MockOutputStream {
 
     std::string data;
     bool short_write = false;
-    int32_t flush_count = 0;
     int32_t close_count = 0;
 };
 
@@ -74,10 +69,9 @@ class LegacyIndexWriter : public FileIndexWriter {
 TEST(FileIndexWriterTest, TestLegacyDefaultWriteTo) {
     LegacyIndexWriter writer;
     auto output = std::make_shared<RecordingIndexOutput>();
-    ASSERT_OK_AND_ASSIGN(bool written, writer.WriteTo(output));
+    ASSERT_OK_AND_ASSIGN(bool written, writer.WriteTo(output.get()));
     ASSERT_TRUE(written);
     ASSERT_EQ("legacy payload", output->data);
-    ASSERT_EQ(0, output->flush_count);
     ASSERT_EQ(0, output->close_count);
     ASSERT_NOK_WITH_MSG(writer.WriteTo(nullptr), "cannot be null");
 }
@@ -86,19 +80,19 @@ TEST(FileIndexWriterTest, TestLegacyWriteToRejectsShortWrite) {
     LegacyIndexWriter writer;
     auto output = std::make_shared<RecordingIndexOutput>();
     output->short_write = true;
-    ASSERT_NOK_WITH_MSG(writer.WriteTo(output), "Short write");
+    ASSERT_NOK_WITH_MSG(writer.WriteTo(output.get()), "Short write");
 }
 
 TEST(FileIndexWriterTest, TestNullAndZeroLengthPayloadsProduceNoIndex) {
     LegacyIndexWriter writer;
     auto output = std::make_shared<RecordingIndexOutput>();
     writer.absent = true;
-    ASSERT_OK_AND_ASSIGN(bool written, writer.WriteTo(output));
+    ASSERT_OK_AND_ASSIGN(bool written, writer.WriteTo(output.get()));
     ASSERT_FALSE(written);
     ASSERT_TRUE(output->data.empty());
     writer.absent = false;
     writer.zero_length = true;
-    ASSERT_OK_AND_ASSIGN(written, writer.WriteTo(output));
+    ASSERT_OK_AND_ASSIGN(written, writer.WriteTo(output.get()));
     ASSERT_FALSE(written);
     ASSERT_TRUE(output->data.empty());
 }
