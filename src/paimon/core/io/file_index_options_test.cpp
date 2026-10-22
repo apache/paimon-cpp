@@ -88,7 +88,7 @@ TEST(FileIndexOptionsTest, TestRewriteFieldNamesPreservesOptions) {
         {"file-index.bitmap.columns", "title"},
         {Options::FILE_INDEX_READ_ENABLED, "true"},
         {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1KB"},
-        {Options::FILE_FORMAT, "missing-format"}};
+        {Options::FILE_FORMAT, "parquet"}};
     const auto original = options;
     ASSERT_OK_AND_ASSIGN(auto rewritten, FileIndexOptions::RewriteFieldNames(
                                              options, {{"vec", "embedding"}, {"title", "text"}}));
@@ -100,7 +100,7 @@ TEST(FileIndexOptionsTest, TestRewriteFieldNamesPreservesOptions) {
     ASSERT_EQ(0, rewritten.count("file-index.lumina.vec.index.dimension"));
     ASSERT_EQ(0, rewritten.count("file-index.lumina.added.index.dimension"));
     ASSERT_EQ("true", rewritten.at(Options::FILE_INDEX_READ_ENABLED));
-    ASSERT_EQ("missing-format", rewritten.at(Options::FILE_FORMAT));
+    ASSERT_EQ("parquet", rewritten.at(Options::FILE_FORMAT));
     ASSERT_OK_AND_ASSIGN(FileIndexOptions parsed, FileIndexOptions::FromMap(rewritten));
     ASSERT_EQ(1024, parsed.InManifestThreshold());
     ASSERT_EQ(2, parsed.Definitions().size());

@@ -529,10 +529,12 @@ TEST(CoreOptionsTest, TestInvalidCase) {
     ASSERT_NOK_WITH_MSG(
         CoreOptions::FromMap({{Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "2147483648B"}}),
         "file index inline threshold");
-    for (const std::string version : {"0", "3", "-1", "invalid"}) {
+    for (const std::string version : {"0", "3", "-1"}) {
         ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{"file-index.format.version", version}}),
                             "file-index.format.version must be 1 or 2");
     }
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{"file-index.format.version", "invalid"}}),
+                        "Invalid Config [file-index.format.version: invalid]");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::TARGET_FILE_ROW_NUM, "0"}}),
                         "target-file-row-num should be at least 1");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BUCKET, "3.5"}}),
