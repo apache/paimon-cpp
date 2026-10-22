@@ -275,10 +275,15 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options) {
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                           CoreOptions::FromMap(options, context->GetSpecificFileSystem(),
-                                                context->GetFileSystemSchemeToIdentifierMap()));
+    const std::map<std::string, std::string>& options,
+    const std::shared_ptr<FileSystem>& file_system, const std::string* path) {
+    // The file system a table reads through, or null for the read context's own, which callers
+    // without a table hand over.
+    PAIMON_ASSIGN_OR_RAISE(
+        CoreOptions core_options,
+        CoreOptions::FromMap(
+            options, file_system != nullptr ? file_system : context->GetSpecificFileSystem(),
+            context->GetFileSystemSchemeToIdentifierMap()));
     core_options.WithCache(context->GetCache());
     if (context->HasVectorOrFullTextSearch()) {
         if (!core_options.FileIndexReadEnabled()) {
@@ -390,10 +395,11 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
         return Status::Invalid("memory pool is null");
     }
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(context->GetMemoryPool());
-    auto internal_context = std::unique_ptr<InternalReadContext>(
-        new InternalReadContext(context, table_schema, read_schema, core_options, arrow_pool));
+    auto internal_context = std::unique_ptr<InternalReadContext>(new InternalReadContext(
+        context, table_schema, read_schema, core_options, arrow_pool,
+        path != nullptr ? std::optional<std::string>(*path) : std::nullopt));
     PAIMON_RETURN_NOT_OK(internal_context->BindIndexScores());
-    return internal_context;
+    return internal_context
 }
 
 Status InternalReadContext::BindIndexScores() {
@@ -471,12 +477,14 @@ InternalReadContext::InternalReadContext(const std::shared_ptr<ReadContext>& rea
                                          const std::shared_ptr<TableSchema>& table_schema,
                                          const std::shared_ptr<arrow::Schema>& read_schema,
                                          const CoreOptions& options,
-                                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+                                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+                                         std::optional<std::string> path)
     : read_context_(read_context),
       table_schema_(table_schema),
       read_schema_(read_schema),
       arrow_pool_(arrow_pool),
-      options_(options) {}
+      options_(options),
+      path_(std::move(path)) {}
 
 Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSchema(
     const std::shared_ptr<InternalReadContext>& original,
@@ -490,7 +498,7 @@ Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSche
     // The new read_schema is the minimal column set for COUNT(*).
     return std::shared_ptr<InternalReadContext>(
         new InternalReadContext(original->read_context_, original->table_schema_, new_read_schema,
-                                original->options_, original->arrow_pool_));
+                                original->options_, original->arrow_pool_, original->path_));
 }
 
 }  // namespace paimon

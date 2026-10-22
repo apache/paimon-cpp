@@ -192,24 +192,26 @@ Result<std::shared_ptr<FormatTable>> FormatTable::Create(
         core_options.FormatTablePartitionOnlyValueInPath(), location_carries_paimon_metadata));
 }
 
-Result<std::shared_ptr<FormatTable>> FormatTable::Copy(
-    const std::shared_ptr<FormatTable>& table,
-    const std::map<std::string, std::string>& dynamic_options) {
-    if (table == nullptr) {
-        return Status::Invalid("format table requires a table to copy");
-    }
+Result<std::shared_ptr<FormatTable>> FormatTable::CopySelf(
+    const std::map<std::string, std::string>& dynamic_options) const {
     if (dynamic_options.empty()) {
-        return table;
+        return SharedSelf();
     }
     // The options this table already carries go back in as dynamic ones, so an option an earlier
     // call set is not lost to the schema's own value underneath it.
-    std::map<std::string, std::string> options = table->options_;
+    std::map<std::string, std::string> options = options_;
     for (const auto& [key, value] : dynamic_options) {
         options[key] = value;
     }
-    return Create(table->file_system_, table->root_path_, table->identifier_,
-                  std::static_pointer_cast<DataSchema>(table->schema_),
-                  table->location_carries_paimon_metadata_, options);
+    return Create(file_system_, root_path_, identifier_,
+                  std::static_pointer_cast<DataSchema>(schema_), location_carries_paimon_metadata_,
+                  options);
+}
+
+Result<std::shared_ptr<Table>> FormatTable::Copy(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> copied, CopySelf(dynamic_options));
+    return std::shared_ptr<Table>(std::move(copied));
 }
 
 const std::vector<std::string>& FormatTable::PartitionKeys() const {
@@ -233,7 +235,7 @@ Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
         return Status::Invalid("executor is null pointer");
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
-                           FormatTable::Copy(SharedSelf(), shared_context->GetOptions()));
+                           CopySelf(shared_context->GetOptions()));
     // Anything a `ScanContext` carries that a format table cannot honour is refused rather than
     // silently dropped.
     if (shared_context->IsStreamingMode()) {
@@ -294,7 +296,7 @@ Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
         return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
-                           FormatTable::Copy(SharedSelf(), read_context->GetOptions()));
+                           CopySelf(read_context->GetOptions()));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
                            FormatTableRead::Create(table, read_context));
     return std::unique_ptr<TableRead>(std::move(read));
@@ -311,8 +313,7 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
     if (context->GetExecutor() == nullptr) {
         return Status::Invalid("executor is null pointer");
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
-                           FormatTable::Copy(SharedSelf(), context->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, CopySelf(context->GetOptions()));
     if (context->GetCatalog() != nullptr) {
         return Status::Invalid(
             "WithCatalog() requires a native table; use WriteContextBuilder(FormatTable) for a "
@@ -354,7 +355,7 @@ Result<std::unique_ptr<FileStoreCommit>> FormatTable::NewCommit(
         return Status::Invalid("executor is null pointer");
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
-                           FormatTable::Copy(SharedSelf(), context->GetOptions()));
+                           CopySelf(context->GetOptions()));
     if (!context->IgnoreEmptyCommit()) {
         return Status::NotImplemented(
             "a format table cannot record an empty commit: keeping one means writing a "

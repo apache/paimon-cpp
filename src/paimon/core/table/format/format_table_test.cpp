@@ -3071,7 +3071,7 @@ TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedAtEveryEntryPoint) 
     ASSERT_OK(WriteAndCommit(table, std::move(batch)));
 
     const std::map<std::string, std::string> branch = {{Options::BRANCH, "dev"}};
-    ASSERT_NOK_WITH_MSG(FormatTable::Copy(table, branch), "has no branches");
+    ASSERT_NOK_WITH_MSG(table->Copy(branch), "has no branches");
     ASSERT_NOK_WITH_MSG(
         FormatTable::Create(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl"), branch),
         "has no branches");
@@ -3108,8 +3108,30 @@ TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedAtEveryEntryPoint) 
     // The branch that names no branch at all is the main one, and is left alone: refusing it
     // would refuse the default every context carries.
     for (const char* main_branch : {"main", ""}) {
-        ASSERT_OK(FormatTable::Copy(table, {{Options::BRANCH, main_branch}})) << main_branch;
+        ASSERT_OK(table->Copy({{Options::BRANCH, main_branch}})) << main_branch;
     }
+}
+
+TEST(FormatTableTest, TestATableCopiesItselfWithTheOptionsGivenAtTheCall) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
+                         CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
+
+    // The copy overlays what the call gives on the options the schema stored, the precedence
+    // `Copy()` promises: a probe option lands, `type` - structural - does not.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
+                         table->Copy({{Options::TYPE, "table"}, {"probe", "on-top"}}));
+    std::shared_ptr<FormatTable> copied_table = std::static_pointer_cast<FormatTable>(copied);
+    EXPECT_EQ(copied_table->Options().at("probe"), "on-top");
+    EXPECT_EQ(copied_table->Options().at(Options::TYPE), "format-table");
+    EXPECT_EQ(copied_table->FullName(), table->FullName());
+    EXPECT_EQ(copied_table->Location(), table->Location());
+    EXPECT_EQ(copied_table->GetFileSystem(), table->GetFileSystem());
+
+    // The refusal `Copy(table, ...)` reports is the one the table itself reports: the copy goes
+    // through the same entry point, not a shortcut around its checks.
+    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BRANCH, "dev"}}), "has no branches");
 }
 
 TEST(FormatTableTest, TestAFormatTableSchemaOnABranchIsRefusedRatherThanServedFromTheTableRoot) {

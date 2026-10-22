@@ -55,13 +55,15 @@ class PAIMON_EXPORT Table {
 
     /// Returns the file system the table was opened with, which serves the table's
     /// files. A catalog that hands out per-table file systems opens a table with the
-    /// one for that table; it is null when the opener had none.
+    /// one for that table; it is null when the opener had none. The `NewXxx`
+    /// operations read the table through it.
     std::shared_ptr<FileSystem> GetFileSystem() const {
         return file_system_;
     }
 
     /// Returns the root path of the table in its file system. It is empty when the
     /// opener had no location for the table, which a mock in a test is one case of.
+    /// The `NewXxx` operations serve the table from it.
     const std::string& GetRootPath() const {
         return root_path_;
     }
@@ -73,13 +75,6 @@ class PAIMON_EXPORT Table {
     /// Full name of the table, which each kind of table answers for itself. A managed or format
     /// table answers database.tableName, a system table the same name as `Name()`.
     virtual std::string FullName() const = 0;
-
-    /// Returns the branch the table was opened for, which its identifier carries; `main`
-    /// when it names none or a spelling of it, which its managers are bound to. A
-    /// malformed object name that hides the branch is reported.
-    Result<std::string> CurrentBranch() const {
-        return identifier_.GetBranchNameOrDefault();
-    }
 
     /// Returns the metastore UUID, falling back to `FullName()`.
     /// @note Use `CatalogUuid()` for commit requests to avoid sending a table name as an ID.
@@ -97,6 +92,17 @@ class PAIMON_EXPORT Table {
     std::shared_ptr<Schema> LatestSchema() const {
         return schema_;
     }
+
+    /// Copies this table with `dynamic_options` on top of the options it carries, which is
+    /// the precedence every context builder promises for a table it was handed rather than loaded
+    /// itself: an option given at the call wins over the one the schema stored.
+    ///
+    /// `type` is not overridable: it is structural and is read from the schema alone.
+    ///
+    /// @param dynamic_options Options given at the call.
+    /// @return A result containing the copied table, or the error copying it reports.
+    virtual Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const = 0;
 
     /// Creates a scan of this table from a finished scan context, the table-first entry point
     /// that `TableScan::Create()` loads the table the context names and hands the context to.
