@@ -116,7 +116,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
         // Serves the per-table file system when one was set, matching `GetTableFileSystem`
         // without recording the request, so a test can still tell the two apart. No location:
         // this mock's `GetTableLocation` is the unsupported stub.
-        return std::make_shared<FileStoreTable>(
+        return FileStoreTable::Create(
             table_file_system_ != nullptr ? table_file_system_ : file_system_,
             /*root_path=*/"", table_schema_, identifier, table_uuid_);
     }

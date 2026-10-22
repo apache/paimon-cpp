@@ -9,17 +9,16 @@
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
-#include "paimon/catalog/table.h"
+#include "paimon/core/table/file_store_table.h"
 
-#include <cassert>
-#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -27,18 +26,14 @@
 #include <utility>
 #include <vector>
 
-#include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
-#include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
-#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
@@ -51,57 +46,36 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/disk/io_manager.h"
 #include "paimon/core/index/index_file_handler.h"
-#include "paimon/core/index/pk/bucketed_primary_key_index_maintainer.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
-#include "paimon/core/manifest/index_manifest_entry.h"
 #include "paimon/core/manifest/index_manifest_file.h"
-#include "paimon/core/mergetree/compact/lookup_merge_function.h"
-#include "paimon/core/mergetree/compact/merge_function.h"
-#include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
-#include "paimon/core/operation/append_only_file_store_scan.h"
-#include "paimon/core/operation/append_only_file_store_write.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
-#include "paimon/core/operation/data_evolution_file_store_scan.h"
 #include "paimon/core/operation/expire_snapshots.h"
 #include "paimon/core/operation/file_store_commit_impl.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/operation/internal_read_context.h"
-#include "paimon/core/operation/key_value_file_store_scan.h"
-#include "paimon/core/operation/key_value_file_store_write.h"
-#include "paimon/core/options/merge_engine.h"
 #include "paimon/core/options/table_type.h"
-#include "paimon/core/postpone/postpone_bucket_file_store_write.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
-#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
-#include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/snapshot.h"
+#include "paimon/core/table/append_only_file_store_table.h"
 #include "paimon/core/table/file_store.h"
-#include "paimon/core/table/file_store_table.h"
-#include "paimon/core/table/source/abstract_table_scan.h"
-#include "paimon/core/table/source/append_only_split_generator.h"
-#include "paimon/core/table/source/append_only_table_read.h"
+#include "paimon/core/table/primary_key_file_store_table.h"
 #include "paimon/core/table/source/data_evolution_batch_scan.h"
-#include "paimon/core/table/source/data_evolution_split_generator.h"
 #include "paimon/core/table/source/data_table_batch_scan.h"
 #include "paimon/core/table/source/data_table_stream_scan.h"
 #include "paimon/core/table/source/fallback_table_read.h"
-#include "paimon/core/table/source/key_value_table_read.h"
-#include "paimon/core/table/source/merge_tree_split_generator.h"
 #include "paimon/core/table/source/primary_key_index_batch_scan.h"
 #include "paimon/core/table/source/read_optimized_scan_options.h"
 #include "paimon/core/table/source/realtime_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
-#include "paimon/core/table/source/split_generator.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
-#include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
-#include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/format/file_format.h"
@@ -123,12 +97,9 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon {
-class DataSplit;
+
 class Executor;
-struct KeyValue;
 class MemoryPool;
-template <typename T>
-class MergeFunctionWrapper;
 
 namespace {
 
@@ -171,46 +142,6 @@ Result<std::shared_ptr<FormatTable>> TryLoadFormatTable(
                                /*location_carries_paimon_metadata=*/true, options);
 }
 
-Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& realtime_context,
-                                        const std::shared_ptr<SnapshotManager>& snapshot_manager,
-                                        const CoreOptions& options) {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                           RealtimeContextImpl::Cast(realtime_context));
-    PAIMON_RETURN_NOT_OK(realtime_context_impl->CheckUsable());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
-                           snapshot_manager->LatestSnapshot());
-    if (latest_snapshot) {
-        PAIMON_ASSIGN_OR_RAISE(
-            RealtimeOffsetMap realtime_committed_offsets,
-            RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
-        PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
-            latest_snapshot->Id(), realtime_committed_offsets, /*committed_data_files=*/{}));
-    }
-    return Status::OK();
-}
-
-Result<bool> HasHistoricalPrimaryKeyBTreeDefinition(
-    const std::shared_ptr<SchemaManager>& schema_manager, int64_t current_schema_id) {
-    if (current_schema_id <= TableSchema::FIRST_SCHEMA_ID) {
-        return false;
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> schema_ids, schema_manager->ListAllIds());
-    for (int64_t schema_id : schema_ids) {
-        if (schema_id >= current_schema_id) {
-            continue;
-        }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> historical_schema,
-                               schema_manager->ReadSchema(schema_id));
-        const auto& historical_options = historical_schema->Options();
-        auto option = historical_options.find(Options::PK_BTREE_INDEX_COLUMNS);
-        if (option != historical_options.end() &&
-            !StringUtils::IsNullOrWhitespaceOnly(option->second)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 /// The tail every `TableOf` ends with: the schema one of them read says what the path names. A
 /// format table is handed back as the `FormatTable` it is, everything else as the
 /// `FileStoreTable` a managed table is, carrying the schema for its `NewXxx` to build from. A
@@ -231,8 +162,8 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     // it sits in - the same convention `TryLoadFormatTable` follows above.
     Identifier table_identifier =
         identifier.value_or(Identifier(Identifier::kUnknownDatabase, PathUtil::GetName(path)));
-    return std::make_shared<FileStoreTable>(file_system, path, latest_schema, table_identifier,
-                                            uuid, branch, schema_manager);
+    return FileStoreTable::Create(file_system, path, latest_schema, table_identifier, uuid, branch,
+                                  schema_manager);
 }
 
 /// The managed table a context names behind a path: the schema is read through a manager of the
@@ -431,8 +362,8 @@ Result<std::shared_ptr<Table>> TableOf(const CommitContext& ctx) {
                            MakeBranchCatalogIdentifier(ctx.GetIdentifier(), branch));
     // Catalog-managed schemas may be absent from the table directory, but only on the main branch:
     // a branch publishes its own under `branch/branch-<name>`, which is where the load below and a
-    // read of the branch both read it, so a catalog answering for no branch schema does not fail
-    // a commit to one.
+    // read of the branch both read it, so a catalog answering for no branch schema does not fail a
+    // commit to one.
     PAIMON_ASSIGN_OR_RAISE(
         std::optional<std::string> catalog_table_schema,
         CatalogMainBranchSchemaJson(ctx.GetCatalog(), catalog_identifier, branch, "commit"));
@@ -528,6 +459,25 @@ FileStoreTable::FileStoreTable(const std::shared_ptr<FileSystem>& file_system,
                                          std::static_pointer_cast<TableSchema>(schema), branch,
                                          schema_manager, snapshot_manager)) {}
 
+Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
+    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+    const std::shared_ptr<Schema>& schema, const Identifier& identifier, const std::string& uuid,
+    const std::string& branch, const std::shared_ptr<SchemaManager>& schema_manager,
+    const std::shared_ptr<SnapshotManager>& snapshot_manager) {
+    // The kind the schema's primary keys name, which no schema change can add or drop, so the
+    // kind the table is built as is the kind every schema its root path ever held describes. A
+    // caller without a schema gets the append-only kind, whose operators then report that no
+    // schema was found.
+    std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema);
+    if (table_schema != nullptr && !table_schema->PrimaryKeys().empty()) {
+        return std::make_shared<PrimaryKeyFileStoreTable>(file_system, root_path, schema,
+                                                          identifier, uuid, branch, schema_manager,
+                                                          snapshot_manager);
+    }
+    return std::make_shared<AppendOnlyFileStoreTable>(
+        file_system, root_path, schema, identifier, uuid, branch, schema_manager, snapshot_manager);
+}
+
 Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     const std::map<std::string, std::string>& dynamic_options) const {
     std::shared_ptr<TableSchema> loaded_schema = std::static_pointer_cast<TableSchema>(schema_);
@@ -542,10 +492,10 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
                            loaded_schema->MergeOptions(overridable));
     // The managers are handed over, not rebuilt: the copy serves the same root path and branch,
     // so its operators read the schema cache this table already warmed.
-    return std::shared_ptr<Table>(std::make_shared<FileStoreTable>(
-        file_system_, root_path_, std::shared_ptr<TableSchema>(std::move(merged_schema)),
-        identifier_, CatalogUuid().value_or(""), CurrentBranch(), GetSchemaManager(),
-        GetSnapshotManager()));
+    return FileStoreTable::Create(file_system_, root_path_,
+                                  std::shared_ptr<TableSchema>(std::move(merged_schema)),
+                                  identifier_, CatalogUuid().value_or(""), CurrentBranch(),
+                                  GetSchemaManager(), GetSnapshotManager());
 }
 
 Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string& branch) const {
@@ -553,9 +503,9 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
     if (target_branch == CurrentBranch()) {
         // The table already serves this branch: a copy of it - schema and managers shared - is
         // the same table to the caller.
-        return std::shared_ptr<Table>(std::make_shared<FileStoreTable>(
-            file_system_, root_path_, schema_, identifier_, CatalogUuid().value_or(""),
-            CurrentBranch(), GetSchemaManager(), GetSnapshotManager()));
+        return FileStoreTable::Create(file_system_, root_path_, schema_, identifier_,
+                                      CatalogUuid().value_or(""), CurrentBranch(),
+                                      GetSchemaManager(), GetSnapshotManager());
     }
     // The schema of the branch switched to, read from its own directory, which a branch without
     // one does not have.
@@ -573,9 +523,33 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> branch_schema,
                            (*latest)->MergeOptions(overridable));
-    return std::shared_ptr<Table>(std::make_shared<FileStoreTable>(
+    return FileStoreTable::Create(
         file_system_, root_path_, std::shared_ptr<TableSchema>(std::move(branch_schema)),
-        identifier_, CatalogUuid().value_or(""), target_branch, schema_manager));
+        identifier_, CatalogUuid().value_or(""), target_branch, schema_manager);
+}
+
+Status FileStoreTable::RestoreRealtimeCommittedProgress(
+    const std::shared_ptr<RealtimeContext>& realtime_context,
+    const std::shared_ptr<SnapshotManager>& snapshot_manager, const CoreOptions& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context));
+    PAIMON_RETURN_NOT_OK(realtime_context_impl->CheckUsable());
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
+                           snapshot_manager->LatestSnapshot());
+    if (latest_snapshot) {
+        PAIMON_ASSIGN_OR_RAISE(
+            RealtimeOffsetMap realtime_committed_offsets,
+            RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
+        PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
+            latest_snapshot->Id(), realtime_committed_offsets, /*committed_data_files=*/{}));
+    }
+    return Status::OK();
+}
+
+std::unique_ptr<FileStoreScan> FileStoreTable::WithTablePath(std::unique_ptr<FileStoreScan>&& scan,
+                                                             const std::string& root_path) {
+    scan->WithTablePath(root_path);
+    return std::move(scan);
 }
 
 Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
@@ -640,209 +614,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
                                RealtimeContextImpl::Cast(ctx->GetRealtimeContext()));
         PAIMON_RETURN_NOT_OK(realtime_context_impl->CheckUsable());
     }
-    if (schema->PrimaryKeys().empty()) {
-        // append table
-        const bool realtime_deduplicate = !options.GetRealtimeDeduplicateKeyFields().empty();
-        bool need_dv_maintainer_factory = options.DeletionVectorsEnabled();
-        if (options.GetBucket() == -1) {
-            need_dv_maintainer_factory = false;
-            ignore_previous_files = true;
-        } else if (options.GetBucket() <= 0) {
-            return Status::Invalid(
-                fmt::format("not support bucket {} in append table", options.GetBucket()));
-        }
-        if (ctx->GetRealtimeContext()) {
-            if (!ctx->GetWriteSchema().empty()) {
-                return Status::Invalid("real-time append write does not support a custom schema");
-            }
-            if (!realtime_deduplicate) {
-                PAIMON_RETURN_NOT_OK(RestoreRealtimeCommittedProgress(ctx->GetRealtimeContext(),
-                                                                      snapshot_manager, options));
-            }
-        } else if (realtime_deduplicate) {
-            return Status::Invalid("real-time deduplicate write requires a real-time context");
-        }
-        std::shared_ptr<arrow::Schema> write_schema = arrow_schema;
-        const auto& write_field_names = ctx->GetWriteSchema();
-        if (!write_field_names.empty()) {
-            arrow::FieldVector write_fields;
-            write_fields.reserve(write_field_names.size());
-            for (const auto& field_name : write_field_names) {
-                auto field = arrow_schema->GetFieldByName(field_name);
-                if (!field) {
-                    // TODO(xinyu.lxy): support _ROW_ID and _SEQUENCE_NUMBER
-                    return Status::Invalid(
-                        fmt::format("write field {} does not exist in table schema", field_name));
-                }
-                write_fields.push_back(field);
-            }
-            write_schema = arrow::schema(write_fields);
-        }
-
-        std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
-        if (ctx->GetRealtimeContext()) {
-            const RealtimeStoreMode mode = realtime_deduplicate ? RealtimeStoreMode::DEDUPLICATE
-                                                                : RealtimeStoreMode::APPEND_ONLY;
-            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeSchemaLayout> layout,
-                                   RealtimeSchemaLayout::Create(mode, write_schema));
-            realtime_schema_layout = std::move(layout);
-        }
-
-        std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
-        if (need_dv_maintainer_factory) {
-            PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<IndexManifestFile> index_manifest_file,
-                IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                          options.GetManifestCompression(), file_store_path_factory,
-                                          options.GetBucket(), ctx->GetMemoryPool(), options));
-            auto index_file_handler = std::make_shared<IndexFileHandler>(
-                options.GetFileSystem(), std::move(index_manifest_file),
-                std::make_shared<IndexFilePathFactories>(file_store_path_factory),
-                options.DeletionVectorsBitmap64(), ctx->GetMemoryPool());
-            dv_maintainer_factory =
-                std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
-        }
-
-        auto file_store_write = std::make_unique<AppendOnlyFileStoreWrite>(
-            file_store_path_factory, snapshot_manager, GetSchemaManager(), ctx->GetCommitUser(),
-            root_path_, schema, arrow_schema, write_schema, realtime_schema_layout,
-            partition_schema, dv_maintainer_factory, io_manager, options, ignore_previous_files,
-            ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->GetRealtimeContext(),
-            ctx->GetExecutor(), ctx->GetMemoryPool());
-        if (ctx->GetRealtimeContext() && realtime_deduplicate) {
-            PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
-                                   snapshot_manager->LatestSnapshot());
-            if (latest_snapshot) {
-                PAIMON_RETURN_NOT_OK(
-                    file_store_write->RefreshCommittedSnapshot(latest_snapshot->Id()));
-            }
-        }
-        return std::unique_ptr<FileStoreWrite>(std::move(file_store_write));
-    } else {
-        // pk table
-        if (ctx->GetRealtimeContext()) {
-            PAIMON_RETURN_NOT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *schema));
-            if (ignore_previous_files) {
-                return Status::NotImplemented(
-                    "PK realtime requires restore from the latest snapshot");
-            }
-            if (!ctx->GetWriteSchema().empty()) {
-                return Status::NotImplemented("PK realtime does not support a custom write schema");
-            }
-            PAIMON_RETURN_NOT_OK(RestoreRealtimeCommittedProgress(ctx->GetRealtimeContext(),
-                                                                  snapshot_manager, options));
-        }
-        if (options.GetBucket() == BucketModeDefine::POSTPONE_BUCKET) {
-            return PostponeBucketFileStoreWrite::Create(
-                snapshot_manager, GetSchemaManager(), ctx->GetCommitUser(), root_path_, schema,
-                arrow_schema, partition_schema, io_manager, options, ctx->IsStreamingMode(),
-                ctx->IgnoreNumBucketCheck(), ctx->GetWriteId(),
-                ctx->GetFileSystemSchemeToIdentifierMap(), ctx->GetExecutor(), ctx->GetMemoryPool(),
-                file_system_);
-        }
-        if (options.GetBucket() <= 0) {
-            return Status::Invalid(
-                fmt::format("not support bucket {} in key value table", options.GetBucket()));
-        }
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> trimmed_primary_keys,
-                               schema->TrimmedPrimaryKeys());
-        PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> trimmed_primary_key_fields,
-                               schema->GetFields(trimmed_primary_keys));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FieldsComparator> key_comparator,
-            FieldsComparator::Create(trimmed_primary_key_fields,
-                                     options.SequenceFieldSortOrderIsAscending()));
-        auto primary_keys = schema->PrimaryKeys();
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<MergeFunction> merge_function,
-                               PrimaryKeyTableUtils::CreateMergeFunction(
-                                   arrow_schema, primary_keys, options, ctx->GetMemoryPool()));
-        if (options.NeedLookup() && options.GetMergeEngine() != MergeEngine::FIRST_ROW) {
-            // don't wrap first row, it is already OK
-            merge_function = std::make_unique<LookupMergeFunction>(std::move(merge_function));
-        }
-        std::shared_ptr<MergeFunctionWrapper<KeyValue>> merge_function_wrapper =
-            std::make_shared<ReducerMergeFunctionWrapper>(std::move(merge_function));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FieldsComparator> sequence_fields_comparator,
-            PrimaryKeyTableUtils::CreateSequenceFieldsComparator(schema->Fields(), options));
-
-        std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
-        PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexDefinitions primary_key_index_definitions,
-                               PrimaryKeyIndexDefinitions::Create(*schema));
-        bool has_btree_index = false;
-        for (const PrimaryKeyIndexDefinition& definition :
-             primary_key_index_definitions.Definitions()) {
-            if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE) {
-                has_btree_index = true;
-                break;
-            }
-        }
-        std::optional<Snapshot> latest_snapshot;
-        bool has_existing_index_manifest = false;
-        if (!has_btree_index) {
-            PAIMON_ASSIGN_OR_RAISE(
-                bool has_historical_btree_index,
-                HasHistoricalPrimaryKeyBTreeDefinition(GetSchemaManager(), schema->Id()));
-            if (has_historical_btree_index) {
-                PAIMON_ASSIGN_OR_RAISE(latest_snapshot, snapshot_manager->LatestSnapshot());
-                has_existing_index_manifest =
-                    latest_snapshot.has_value() && latest_snapshot->IndexManifest().has_value();
-            }
-        }
-        std::shared_ptr<IndexFileHandler> index_file_handler;
-        if (options.DeletionVectorsEnabled() || has_btree_index || has_existing_index_manifest) {
-            PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<IndexManifestFile> index_manifest_file,
-                IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                          options.GetManifestCompression(), file_store_path_factory,
-                                          options.GetBucket(), ctx->GetMemoryPool(), options));
-            index_file_handler = std::make_shared<IndexFileHandler>(
-                options.GetFileSystem(), std::move(index_manifest_file),
-                std::make_shared<IndexFilePathFactories>(file_store_path_factory),
-                options.DeletionVectorsBitmap64(), ctx->GetMemoryPool());
-        }
-        bool has_restored_btree_index = false;
-        if (!has_btree_index && has_existing_index_manifest) {
-            PAIMON_ASSIGN_OR_RAISE(
-                std::vector<IndexManifestEntry> restored_btree_entries,
-                index_file_handler->Scan(
-                    latest_snapshot.value(), [](const IndexManifestEntry& entry) -> bool {
-                        return entry.index_file->IndexType() == BtreeDefs::kIdentifier &&
-                               IndexFileHandler::IsPrimaryKeySourceIndex(*entry.index_file);
-                    }));
-            has_restored_btree_index = !restored_btree_entries.empty();
-        }
-        if (options.DeletionVectorsEnabled()) {
-            dv_maintainer_factory =
-                std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
-        }
-        std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>
-            primary_key_index_maintainer_factory;
-        if (has_btree_index || has_restored_btree_index) {
-            primary_key_index_maintainer_factory =
-                std::make_shared<BucketedPrimaryKeyIndexMaintainer::Factory>(
-                    root_path_, CurrentBranch(), schema,
-                    primary_key_index_definitions.Definitions(), file_store_path_factory,
-                    index_file_handler, options, io_manager, ctx->EnableMultiThreadSpill(),
-                    ctx->GetExecutor(), ctx->GetMemoryPool());
-        }
-
-        std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
-        if (ctx->GetRealtimeContext()) {
-            PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<RealtimeSchemaLayout> layout,
-                RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, arrow_schema));
-            realtime_schema_layout = std::move(layout);
-        }
-
-        return std::make_unique<KeyValueFileStoreWrite>(
-            file_store_path_factory, snapshot_manager, GetSchemaManager(), ctx->GetCommitUser(),
-            root_path_, schema, arrow_schema, realtime_schema_layout, partition_schema,
-            dv_maintainer_factory, primary_key_index_maintainer_factory, io_manager, key_comparator,
-            sequence_fields_comparator, merge_function_wrapper, options, ignore_previous_files,
-            ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(),
-            ctx->GetRealtimeContext(), ctx->GetExecutor(), ctx->GetMemoryPool());
-    }
+    return CreateWrite(*ctx, schema, arrow_schema, partition_schema, options,
+                       file_store_path_factory, snapshot_manager, io_manager,
+                       ignore_previous_files);
 }
 
 Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<WriteContext> ctx) {
@@ -853,110 +627,6 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 }
 
 namespace {
-
-class TableScanImpl {
- public:
-    /// @param snapshot_manager The snapshot manager the scan reads through - the table's own.
-    /// @param schema_manager The schema manager the scan reads through, likewise.
-    static Result<std::unique_ptr<FileStoreScan>> CreateFileStoreScan(
-        const std::shared_ptr<FileStorePathFactory>& path_factory,
-        const std::shared_ptr<arrow::Schema>& arrow_schema,
-        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
-        const std::shared_ptr<SnapshotManager>& snapshot_manager,
-        const std::shared_ptr<SchemaManager>& schema_manager,
-        const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
-        const ScanContext* context, const std::string& root_path) {
-        auto fs = core_options.GetFileSystem();
-        auto manifest_file_format = core_options.GetManifestFormat();
-        // TODO(liancheng.lsz): support fallback branch in scan
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<ManifestList> manifest_list,
-            ManifestList::Create(fs, manifest_file_format, core_options.GetManifestCompression(),
-                                 path_factory, core_options.GetCache(), memory_pool));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<arrow::Schema> partition_schema,
-            FieldMapping::GetPartitionSchema(arrow_schema, table_schema->PartitionKeys()));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<ManifestFile> manifest_file,
-            ManifestFile::Create(fs, manifest_file_format, core_options.GetManifestCompression(),
-                                 path_factory, core_options.GetManifestTargetFileSize(),
-                                 memory_pool, core_options, partition_schema));
-        std::unique_ptr<FileStoreScan> scan;
-        if (table_schema->PrimaryKeys().empty()) {
-            if (core_options.DataEvolutionEnabled()) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    scan, DataEvolutionFileStoreScan::Create(
-                              snapshot_manager, schema_manager, manifest_list, manifest_file,
-                              table_schema, arrow_schema, context->GetScanFilters(), core_options,
-                              executor, memory_pool));
-            } else {
-                PAIMON_ASSIGN_OR_RAISE(
-                    scan, AppendOnlyFileStoreScan::Create(
-                              snapshot_manager, schema_manager, manifest_list, manifest_file,
-                              table_schema, arrow_schema, context->GetScanFilters(), core_options,
-                              executor, memory_pool));
-            }
-        } else {
-            PAIMON_ASSIGN_OR_RAISE(
-                scan, KeyValueFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,
-                                                    manifest_file, table_schema, arrow_schema,
-                                                    context->GetScanFilters(), core_options,
-                                                    executor, memory_pool));
-        }
-        return WithTablePath(std::move(scan), root_path);
-    }
-
-    static std::unique_ptr<FileStoreScan> WithTablePath(std::unique_ptr<FileStoreScan>&& scan,
-                                                        const std::string& root_path) {
-        scan->WithTablePath(root_path);
-        return std::move(scan);
-    }
-
-    static Result<std::unique_ptr<SplitGenerator>> CreateSplitGenerator(
-        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
-        const ScanContext* context) {
-        auto source_split_target_size = core_options.GetSourceSplitTargetSize();
-        auto source_split_open_file_cost = core_options.GetSourceSplitOpenFileCost();
-        if (table_schema->PrimaryKeys().empty()) {
-            if (core_options.DataEvolutionEnabled()) {
-                return std::make_unique<DataEvolutionSplitGenerator>(
-                    source_split_target_size, source_split_open_file_cost,
-                    core_options.BlobSplitByFileSize());
-            }
-            BucketMode bucket_mode = (core_options.GetBucket() == -1 ? BucketMode::BUCKET_UNAWARE
-                                                                     : BucketMode::HASH_FIXED);
-            return std::make_unique<AppendOnlySplitGenerator>(
-                source_split_target_size, source_split_open_file_cost, bucket_mode);
-        } else {
-            // TODO(liancheng.lsz): support evolution
-            PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> trimmed_primary_keys,
-                                   table_schema->TrimmedPrimaryKeys());
-            PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> trimmed_pk_fields,
-                                   table_schema->GetFields(trimmed_primary_keys));
-            PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<FieldsComparator> key_comparator,
-                FieldsComparator::Create(trimmed_pk_fields, /*is_ascending_order=*/true));
-            return std::make_unique<MergeTreeSplitGenerator>(
-                source_split_target_size, source_split_open_file_cost,
-                core_options.DeletionVectorsEnabled(), core_options.GetMergeEngine(),
-                key_comparator);
-        }
-    }
-
-    static Result<std::unique_ptr<IndexFileHandler>> CreateIndexFileHandler(
-        const CoreOptions& core_options, const std::shared_ptr<FileStorePathFactory>& path_factory,
-        const std::shared_ptr<MemoryPool>& memory_pool) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
-                               IndexManifestFile::Create(
-                                   core_options.GetFileSystem(), core_options.GetManifestFormat(),
-                                   core_options.GetManifestCompression(), path_factory,
-                                   core_options.GetBucket(), memory_pool, core_options));
-        return std::make_unique<IndexFileHandler>(
-            core_options.GetFileSystem(), std::move(index_manifest_file),
-            std::make_shared<IndexFilePathFactories>(path_factory),
-            core_options.DeletionVectorsBitmap64(), memory_pool);
-    }
-};
 
 Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& core_options,
                             const ScanContext& context, bool read_optimized) {
@@ -1065,18 +735,26 @@ Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
                                                   core_options.GetFileFormat()->Identifier(),
                                                   context->GetMemoryPool()));
 
-    // The managers the table carries, whose schema cache the dispatch already warmed.
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan> file_store_scan,
-                           TableScanImpl::CreateFileStoreScan(
-                               path_factory, arrow_schema, table_schema, core_options,
-                               GetSnapshotManager(), GetSchemaManager(), context->GetExecutor(),
-                               context->GetMemoryPool(), context.get(), root_path_));
     PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<SplitGenerator> split_generator,
-        TableScanImpl::CreateSplitGenerator(table_schema, core_options, context.get()));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
-                           TableScanImpl::CreateIndexFileHandler(core_options, path_factory,
-                                                                 context->GetMemoryPool()));
+        std::shared_ptr<ManifestList> manifest_list,
+        store_->NewManifestList(core_options, path_factory, context->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<arrow::Schema> partition_schema,
+        FieldMapping::GetPartitionSchema(arrow_schema, table_schema->PartitionKeys()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestFile> manifest_file,
+                           store_->NewManifestFile(core_options, path_factory, partition_schema,
+                                                   context->GetMemoryPool()));
+
+    // The managers the table carries, whose schema cache the dispatch already warmed.
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStoreScan> file_store_scan,
+        NewFileStoreScan(manifest_list, manifest_file, arrow_schema, table_schema, core_options,
+                         context->GetExecutor(), context->GetMemoryPool(), context.get()));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<SplitGenerator> split_generator,
+                           NewSplitGenerator(table_schema, core_options));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<IndexFileHandler> index_file_handler,
+        store_->NewIndexFileHandler(core_options, path_factory, context->GetMemoryPool()));
     auto snapshot_reader = std::make_shared<SnapshotReader>(
         file_store_scan, path_factory, std::move(split_generator), std::move(index_file_handler));
     const bool pk_table = !table_schema->PrimaryKeys().empty();
@@ -1172,9 +850,12 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
     return InternalReadContext::Create(context, table_schema, options, file_system, &root_path);
 }
 
-Result<std::unique_ptr<TableRead>> CreateTableRead(
+}  // namespace
+
+Result<std::unique_ptr<TableRead>> FileStoreTable::CreateTableRead(
     const std::shared_ptr<InternalReadContext>& internal_context,
-    const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor) {
+    const std::shared_ptr<MemoryPool>& memory_pool,
+    const std::shared_ptr<Executor>& executor) const {
     if (PredicateUtils::ContainsFullTextMatch(internal_context->GetPredicate())) {
         return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
@@ -1190,18 +871,10 @@ Result<std::unique_ptr<TableRead>> CreateTableRead(
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStore::MakePathFactory(internal_context->GetPath(), arrow_schema,
-                                   table_schema->PartitionKeys(), core_options,
-                                   core_options.GetFileFormat()->Identifier(), memory_pool));
-
-    if (internal_context->GetPrimaryKeys().empty()) {
-        return std::make_unique<AppendOnlyTableRead>(path_factory, internal_context, memory_pool,
-                                                     executor);
-    }
-    return KeyValueTableRead::Create(path_factory, internal_context, memory_pool, executor);
+        store_->NewPathFactory(arrow_schema, core_options,
+                               core_options.GetFileFormat()->Identifier(), memory_pool));
+    return NewTableRead(path_factory, internal_context, memory_pool, executor);
 }
-
-}  // namespace
 
 Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     std::unique_ptr<ReadContext> context) const {
@@ -1258,46 +931,6 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
 }
 
 namespace {
-
-CommitScanner::ScanSupplier CreateAppendScanSupplier(
-    const std::shared_ptr<SnapshotManager>& snapshot_manager,
-    const std::shared_ptr<SchemaManager>& schema_manager,
-    const std::shared_ptr<ManifestList>& manifest_list,
-    const std::shared_ptr<ManifestFile>& manifest_file,
-    const std::shared_ptr<TableSchema>& table_schema,
-    const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
-    return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
-            arrow_schema, options, executor, pool](const std::shared_ptr<ScanFilter>& scan_filter)
-               -> Result<std::unique_ptr<FileStoreScan>> {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<AppendOnlyFileStoreScan> scan,
-            AppendOnlyFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,
-                                            manifest_file, table_schema, arrow_schema, scan_filter,
-                                            options, executor, pool));
-        return std::unique_ptr<FileStoreScan>(std::move(scan));
-    };
-}
-
-CommitScanner::ScanSupplier CreatePkScanSupplier(
-    const std::shared_ptr<SnapshotManager>& snapshot_manager,
-    const std::shared_ptr<SchemaManager>& schema_manager,
-    const std::shared_ptr<ManifestList>& manifest_list,
-    const std::shared_ptr<ManifestFile>& manifest_file,
-    const std::shared_ptr<TableSchema>& table_schema,
-    const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
-    return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
-            arrow_schema, options, executor, pool](const std::shared_ptr<ScanFilter>& scan_filter)
-               -> Result<std::unique_ptr<FileStoreScan>> {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<KeyValueFileStoreScan> scan,
-            KeyValueFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,
-                                          manifest_file, table_schema, arrow_schema, scan_filter,
-                                          options, executor, pool));
-        return std::unique_ptr<FileStoreScan>(std::move(scan));
-    };
-}
 
 bool IsCatalogCommit(const CommitContext& ctx) {
     return AsVersionManaged(ctx.GetCatalog()) != nullptr;
@@ -1404,11 +1037,9 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
         return Status::NotImplemented(
             "commit operation does not support object store file system for now");
     }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
-                           BinaryRowPartitionComputer::Create(schema->PartitionKeys(), arrow_schema,
-                                                              options.GetPartitionDefaultName(),
-                                                              options.LegacyPartitionNameEnabled(),
-                                                              ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
+        store_->NewPartitionComputer(arrow_schema, options, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         store_->NewPathFactory(arrow_schema, options, options.GetFileFormat()->Identifier(),
@@ -1417,41 +1048,26 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<SnapshotManager> snapshot_manager,
         store_->NewSnapshotManager(options, ctx->GetCatalog(), catalog_identifier));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<ManifestList> manifest_list,
-        ManifestList::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                             options.GetManifestCompression(), path_factory, options.GetCache(),
-                             ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
+                           store_->NewManifestList(options, path_factory, ctx->GetMemoryPool()));
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestFile> manifest_file,
-        ManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                             options.GetManifestCompression(), path_factory,
-                             options.GetManifestTargetFileSize(), ctx->GetMemoryPool(), options,
-                             partition_schema));
+        store_->NewManifestFile(options, path_factory, partition_schema, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<IndexManifestFile> index_manifest_file,
-        IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                  options.GetManifestCompression(), path_factory,
-                                  options.GetBucket(), ctx->GetMemoryPool(), options));
+        store_->NewIndexManifestFile(options, path_factory, ctx->GetMemoryPool()));
 
     auto expire_snapshots = std::make_shared<ExpireSnapshots>(
         snapshot_manager, path_factory, manifest_list, manifest_file, index_manifest_file,
         options.GetFileSystem(), options.GetExpireConfig(), options.RealtimeEnabled(),
         ctx->GetExecutor());
 
-    CommitScanner::ScanSupplier scan_supplier;
-    if (schema->PrimaryKeys().empty()) {
-        scan_supplier = CreateAppendScanSupplier(snapshot_manager, GetSchemaManager(),
-                                                 manifest_list, manifest_file, schema, arrow_schema,
-                                                 options, ctx->GetExecutor(), ctx->GetMemoryPool());
-    } else {
-        scan_supplier = CreatePkScanSupplier(snapshot_manager, GetSchemaManager(), manifest_list,
-                                             manifest_file, schema, arrow_schema, options,
-                                             ctx->GetExecutor(), ctx->GetMemoryPool());
-    }
+    CommitScanner::ScanSupplier scan_supplier =
+        NewCommitScanSupplier(snapshot_manager, manifest_list, manifest_file, schema, arrow_schema,
+                              options, ctx->GetExecutor(), ctx->GetMemoryPool());
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotCommit> snapshot_commit,
                            NewSnapshotCommit(*ctx, catalog_identifier, options, snapshot_manager));

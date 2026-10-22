@@ -22,11 +22,9 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "paimon/catalog/identifier.h"
 #include "paimon/core/schema/schema_manager.h"
-#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/result.h"
@@ -38,8 +36,13 @@ class Schema;
 
 namespace paimon {
 
+class BinaryRowPartitionComputer;
 class Catalog;
 class CoreOptions;
+class IndexFileHandler;
+class IndexManifestFile;
+class ManifestFile;
+class ManifestList;
 class TableSchema;
 
 /// The storage a managed table is served through: the file system, root path, schema and branch
@@ -86,9 +89,11 @@ class FileStore {
     }
 
     /// The path factory an operator builds its metadata paths through: over this store's root
-    /// path and the partition keys of its schema. The file format identifier is the caller's to
-    /// name: a write names the format its level-0 files are written in, which the options may
-    /// set per level, while a scan, a read and a commit name the table's format.
+    /// path and the partition keys of its schema - which no schema change can alter, so a read
+    /// serving a fallback branch's schema still names the same partitions. The file format
+    /// identifier is the caller's to name: a write names the format its level-0 files are
+    /// written in, which the options may set per level, while a scan, a read and a commit name
+    /// the table's format.
     Result<std::shared_ptr<FileStorePathFactory>> NewPathFactory(
         const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
         const std::string& file_format_identifier,
@@ -105,13 +110,40 @@ class FileStore {
         const CoreOptions& options, const std::shared_ptr<Catalog>& catalog,
         const std::optional<Identifier>& catalog_identifier) const;
 
-    /// The assembly the factory methods above share: a path factory over a root path and
-    /// partition keys named by the caller rather than the store's own, which the read path
-    /// needs - the schema it serves may be a fallback branch's, not the table's.
-    static Result<std::shared_ptr<FileStorePathFactory>> MakePathFactory(
-        const std::string& root_path, const std::shared_ptr<arrow::Schema>& arrow_schema,
-        const std::vector<std::string>& partition_keys, const CoreOptions& options,
-        const std::string& file_format_identifier, const std::shared_ptr<MemoryPool>& memory_pool);
+    /// The manifest list a scan or a commit reads the table's manifest entries through, over
+    /// the caller's path factory: an operator's manifests sit in the paths its path factory
+    /// names.
+    Result<std::shared_ptr<ManifestList>> NewManifestList(
+        const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
+        const std::shared_ptr<MemoryPool>& memory_pool) const;
+
+    /// The manifest file a scan or a commit reads a single manifest's entries through, over
+    /// the caller's path factory and the partition schema its entries are pruned by.
+    Result<std::shared_ptr<ManifestFile>> NewManifestFile(
+        const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
+        const std::shared_ptr<arrow::Schema>& partition_schema,
+        const std::shared_ptr<MemoryPool>& memory_pool) const;
+
+    /// The index manifest file a write, a scan or a commit reads the table's index manifest
+    /// through, over the caller's path factory.
+    Result<std::unique_ptr<IndexManifestFile>> NewIndexManifestFile(
+        const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
+        const std::shared_ptr<MemoryPool>& memory_pool) const;
+
+    /// The index file handler a write's deletion vectors and indexes are maintained through, or
+    /// a scan reads them through: the index manifest file above and the path factories over the
+    /// caller's path factory, in one handler.
+    Result<std::unique_ptr<IndexFileHandler>> NewIndexFileHandler(
+        const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
+        const std::shared_ptr<MemoryPool>& memory_pool) const;
+
+    /// The partition computer a commit names the partitions it writes with, over the partition
+    /// keys of this store's schema - which no schema change can alter, so a commit serving a
+    /// schema read after the table was loaded still names the same partitions - and the
+    /// caller's arrow schema and options.
+    Result<std::unique_ptr<BinaryRowPartitionComputer>> NewPartitionComputer(
+        const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
+        const std::shared_ptr<MemoryPool>& memory_pool) const;
 
  private:
     std::shared_ptr<FileSystem> file_system_;
