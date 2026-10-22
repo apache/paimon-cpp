@@ -62,8 +62,8 @@ TEST(SpecialFieldsTest, TestPerFieldIndexScoreNames) {
         ASSERT_TRUE(SpecialFields::IsSystemField(name));
     }
     ASSERT_EQ(SpecialFields::IndexScoreFieldName("F1"), "_F1_INDEX_SCORE");
-    for (const auto& name : {"_INDEX_SCORE", "__INDEX_SCORE", "F1_INDEX_SCORE",
-                                   "_F1_index_score", "_F1_INDEX_SCORE_extra"}) {
+    for (const auto& name : {"_INDEX_SCORE", "__INDEX_SCORE", "F1_INDEX_SCORE", "_F1_index_score",
+                             "_F1_INDEX_SCORE_extra"}) {
         ASSERT_FALSE(SpecialFields::ParseIndexScoreFieldName(name));
     }
 }
