@@ -114,7 +114,7 @@ constexpr char kRangeBitmapData[] = R"([
     [10, 600, 6.6, 66.66, 19732, "row7"]
 ])";
 
-class ReadInteWithIndexTest
+class WriteAndReadInteWithIndexTest
     : public testing::Test,
       public ::testing::WithParamInterface<std::tuple<std::string, bool, IndexDataSource>> {
  public:
@@ -1097,7 +1097,7 @@ class ReadInteWithIndexTest
     std::unique_ptr<UniqueTestDirectory> dir_;
 };
 
-std::vector<std::string> GetFileFormatsForReadInteWithIndexTest() {
+std::vector<std::string> GetFileFormatsForWriteAndReadInteWithIndexTest() {
     std::vector<std::string> values = {"parquet"};
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
@@ -1106,12 +1106,12 @@ std::vector<std::string> GetFileFormatsForReadInteWithIndexTest() {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    FileFormatAndPrefetchAndDataSource, ReadInteWithIndexTest,
-    ::testing::Combine(::testing::ValuesIn(GetFileFormatsForReadInteWithIndexTest()),
+    FileFormatAndPrefetchAndDataSource, WriteAndReadInteWithIndexTest,
+    ::testing::Combine(::testing::ValuesIn(GetFileFormatsForWriteAndReadInteWithIndexTest()),
                        ::testing::Bool(),
                        ::testing::Values(IndexDataSource::CppV1, IndexDataSource::CppV2,
                                          IndexDataSource::Java)),
-    [](const ::testing::TestParamInfo<ReadInteWithIndexTest::ParamType>& info) {
+    [](const ::testing::TestParamInfo<WriteAndReadInteWithIndexTest::ParamType>& info) {
         IndexDataSource source = std::get<2>(info.param);
         std::string source_name = source == IndexDataSource::Java
                                       ? "Java"
@@ -1120,7 +1120,7 @@ INSTANTIATE_TEST_SUITE_P(
                source_name;
     });
 
-TEST_P(ReadInteWithIndexTest, TestSimple) {
+TEST_P(WriteAndReadInteWithIndexTest, TestSimple) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1201,7 +1201,7 @@ TEST_P(ReadInteWithIndexTest, TestSimple) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
+TEST_P(WriteAndReadInteWithIndexTest, TestReadWithLimits) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1288,7 +1288,7 @@ TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestEmbeddingBitmapIndex) {
+TEST_P(WriteAndReadInteWithIndexTest, TestEmbeddingBitmapIndex) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1363,7 +1363,7 @@ TEST_P(ReadInteWithIndexTest, TestEmbeddingBitmapIndex) {
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestBitmapWithV1) {
+TEST_P(WriteAndReadInteWithIndexTest, TestBitmapWithV1) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1437,7 +1437,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapWithV1) {
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndex) {
+TEST_P(WriteAndReadInteWithIndexTest, TestNoEmbeddingBitmapIndex) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1483,7 +1483,7 @@ TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndex) {
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
+TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1559,7 +1559,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
     ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
 }
 
-TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndexWithExternalPath) {
+TEST_P(WriteAndReadInteWithIndexTest, TestNoEmbeddingBitmapIndexWithExternalPath) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1616,7 +1616,7 @@ TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndexWithExternalPath) {
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithDv) {
+TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithDv) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("key", arrow::int32())),
                                           DataField(1, arrow::field("f0", arrow::utf8())),
@@ -1722,7 +1722,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithDv) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithAlterTable) {
+TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(1, arrow::field("f1", arrow::int64())),
                                           DataField(0, arrow::field("f4", arrow::utf8())),
@@ -2118,7 +2118,7 @@ TEST_P(ReadInteWithIndexTest, TestWithAlterTable) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithBsiIndex) {
+TEST_P(WriteAndReadInteWithIndexTest, TestWithBsiIndex) {
     std::vector<DataField> read_fields = {
         SpecialFields::ValueKind(),
         DataField(0, arrow::field("f0", arrow::utf8())),
@@ -2185,7 +2185,7 @@ TEST_P(ReadInteWithIndexTest, TestWithBsiIndex) {
     CheckResultForBsi(path, arrow_data_type, {split});
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithBloomFilterIndex) {
+TEST_P(WriteAndReadInteWithIndexTest, TestWithBloomFilterIndex) {
     std::vector<DataField> read_fields = {
         SpecialFields::ValueKind(),
         DataField(0, arrow::field("f0", arrow::utf8())),
@@ -2397,7 +2397,7 @@ TEST_P(ReadInteWithIndexTest, TestWithBloomFilterIndex) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
+TEST_P(WriteAndReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -2523,7 +2523,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithBitmapAndBsiAndBloomFilterIndex) {
+TEST_P(WriteAndReadInteWithIndexTest, TestWithBitmapAndBsiAndBloomFilterIndex) {
     std::vector<DataField> read_fields = {
         SpecialFields::ValueKind(),
         DataField(0, arrow::field("f0", arrow::utf8())),
@@ -2614,7 +2614,7 @@ TEST_P(ReadInteWithIndexTest, TestWithBitmapAndBsiAndBloomFilterIndex) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithIndexWithoutRegistered) {
+TEST_P(WriteAndReadInteWithIndexTest, TestWithIndexWithoutRegistered) {
     std::vector<DataField> read_fields = {
         SpecialFields::ValueKind(),
         DataField(0, arrow::field("f0", arrow::utf8())),
@@ -2764,7 +2764,7 @@ TEST_P(ReadInteWithIndexTest, TestWithIndexWithoutRegistered) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndex) {
+TEST_P(WriteAndReadInteWithIndexTest, TestRangeBitmapIndex) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::int32())),
                                           DataField(1, arrow::field("f1", arrow::int64())),
@@ -2815,7 +2815,7 @@ TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndex) {
     CheckResultForRangeBitmap(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndexMultiChunk) {
+TEST_P(WriteAndReadInteWithIndexTest, TestRangeBitmapIndexMultiChunk) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::int32())),
                                           DataField(1, arrow::field("f1", arrow::int64())),
@@ -2873,7 +2873,7 @@ TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndexMultiChunk) {
     CheckResultForRangeBitmap(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithIOException) {
+TEST_P(WriteAndReadInteWithIndexTest, TestWithIOException) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
