@@ -29,6 +29,8 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog_options.h"
+#include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -40,6 +42,8 @@
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
+#include "paimon/testing/mock/mock_catalog.h"
+#include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -78,25 +82,186 @@ TEST(InternalReadContext, TestReadWithSpecifiedSchema) {
     ASSERT_TRUE(internal_context->GetReadSchema()->Equals(expected_schema));
 }
 
-TEST(InternalReadContext, TestHeaderOptionSurvivesIntoCoreOptions) {
-    // The `header.` option a read through a REST catalog reports its starting table with has to
-    // still be among the options a dependency table is read through: `DataEvolutionSplitRead`
-    // builds that catalog context out of `CoreOptions::ToMap()`, so an option dropped on the way
-    // here would quietly drop the `X-Paimon-Read-Via` delegation header along with it.
+TEST(InternalReadContext, TestDependencyReadMergesTableCatalogAndReadOptions) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    ReadContextBuilder context_builder(path);
-    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
-
-    // The merge `TableRead::Create` performs: the table's own options first, then the ones the read
-    // context carries over them, which is where a header option arrives from.
-    const std::string read_via = "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%22%7D";
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    const std::map<std::string, std::string> catalog_options = {
+        {CatalogOptions::METASTORE, "rest"},
+        {CatalogOptions::URI, "http://catalog"},
+        {CatalogOptions::TOKEN, "catalog-token"},
+        {CatalogOptions::DATA_TOKEN_ENABLED, "true"}};
+    catalog->SetOptions(catalog_options);
+    const std::map<std::string, std::string> read_options = {
+        {CatalogOptions::METASTORE, "filesystem"},
+        {CatalogOptions::URI, "http://read"},
+        {CatalogOptions::TOKEN, "read-token"},
+        {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}};
+    ReadContextBuilder builder(path);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ReadContext> read_context,
+        builder.WithCatalog(catalog, Identifier("db1", "t1")).SetOptions(read_options).Finish());
     std::map<std::string, std::string> options = table_schema->Options();
-    options["header.X-Paimon-Read-Via"] = read_via;
+    options[Options::READ_BATCH_SIZE] = "64";
+    options[CatalogOptions::DATA_TOKEN_ENABLED] = "false";
+    options["header.X-Paimon-Read-Via"] = "table-view";
+    for (const auto& [key, value] : read_options) {
+        options[key] = value;
+    }
+    ASSERT_OK_AND_ASSIGN(auto internal_context,
+                         InternalReadContext::Create(read_context, table_schema, options));
+
+    auto dependency_context = internal_context->CreateDependencyReadContext();
+    auto expected_options = options;
+    expected_options[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_EQ(dependency_context->root_path, catalog->GetRootPath());
+    ASSERT_EQ(dependency_context->options, expected_options);
+    ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"), "table-view");
+    ASSERT_EQ(read_context->GetOptions(), read_options);
+    ASSERT_EQ(catalog->GetOptions(), catalog_options);
+    ASSERT_EQ(internal_context->GetCoreOptions().ToMap(), options);
+}
+
+TEST(InternalReadContext, TestDependencyReadKeepsTheOutermostView) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    struct HeaderCase {
+        const char* catalog_header;
+        const char* read_header;
+        const char* expected_header;
+    };
+    const std::vector<HeaderCase> cases = {{nullptr, nullptr, "table-view"},
+                                           {"catalog-view", nullptr, "catalog-view"},
+                                           {"catalog-view", "explicit-view", "explicit-view"}};
+    for (const auto& test_case : cases) {
+        std::map<std::string, std::string> catalog_options = {{CatalogOptions::METASTORE, "rest"}};
+        if (test_case.catalog_header) {
+            catalog_options["header.X-Paimon-Read-Via"] = test_case.catalog_header;
+        }
+        catalog->SetOptions(catalog_options);
+        std::map<std::string, std::string> read_options;
+        if (test_case.read_header) {
+            read_options["header.X-Paimon-Read-Via"] = test_case.read_header;
+        }
+        ReadContextBuilder builder(path);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context,
+                             builder.WithCatalog(catalog, Identifier("db1", "nested-view"))
+                                 .SetOptions(read_options)
+                                 .Finish());
+        auto options = table_schema->Options();
+        options["header.X-Paimon-Read-Via"] =
+            test_case.read_header ? test_case.read_header : "table-view";
+        ASSERT_OK_AND_ASSIGN(auto internal_context,
+                             InternalReadContext::Create(read_context, table_schema, options));
+        auto dependency_context = internal_context->CreateDependencyReadContext();
+        ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"),
+                  test_case.expected_header);
+        ASSERT_EQ(read_context->GetOptions(), read_options);
+        ASSERT_EQ(catalog->GetOptions(), catalog_options);
+        ASSERT_EQ(internal_context->GetCoreOptions().ToMap(), options);
+    }
+}
+
+TEST(InternalReadContext, TestDependencyReadHeaderUsesFinalMetastore) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    struct MetastoreCase {
+        const char* name;
+        const char* table_metastore;
+        const char* catalog_metastore;
+        const char* read_metastore;
+        const char* expected_metastore;
+        bool generates_header;
+    };
+    const std::vector<MetastoreCase> cases = {
+        {"read disables REST", nullptr, "rest", "filesystem", "filesystem", false},
+        {"read enables REST", nullptr, "filesystem", "rest", "rest", true},
+        {"read enables uppercase REST", nullptr, "hive", "REST", "REST", true},
+        {"table enables REST", "rest", nullptr, nullptr, "rest", true},
+        {"catalog overrides table REST", "rest", "filesystem", nullptr, "filesystem", false},
+        {"missing metastore", nullptr, nullptr, nullptr, nullptr, false}};
+    const std::string expected_header =
+        "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%22%7D";
+    for (const auto& test_case : cases) {
+        auto catalog = std::make_shared<MockVersionManagedCatalog>();
+        catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+        std::map<std::string, std::string> catalog_options;
+        if (test_case.catalog_metastore) {
+            catalog_options[CatalogOptions::METASTORE] = test_case.catalog_metastore;
+        }
+        catalog->SetOptions(catalog_options);
+        auto options = table_schema->Options();
+        if (test_case.table_metastore) {
+            options[CatalogOptions::METASTORE] = test_case.table_metastore;
+        }
+        std::map<std::string, std::string> read_options;
+        if (test_case.read_metastore) {
+            read_options[CatalogOptions::METASTORE] = test_case.read_metastore;
+            options[CatalogOptions::METASTORE] = test_case.read_metastore;
+        }
+        ReadContextBuilder builder(path);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context,
+                             builder.WithCatalog(catalog, Identifier("db1", "t1"))
+                                 .SetOptions(read_options)
+                                 .Finish());
+        ASSERT_OK_AND_ASSIGN(auto internal_context,
+                             InternalReadContext::Create(read_context, table_schema, options));
+        auto dependency_context = internal_context->CreateDependencyReadContext();
+        if (test_case.expected_metastore) {
+            ASSERT_EQ(dependency_context->options.at(CatalogOptions::METASTORE),
+                      test_case.expected_metastore);
+        } else {
+            ASSERT_EQ(dependency_context->options.count(CatalogOptions::METASTORE), 0u);
+        }
+        if (test_case.generates_header) {
+            ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"), expected_header);
+        } else {
+            ASSERT_EQ(dependency_context->options.count("header.X-Paimon-Read-Via"), 0u);
+        }
+        ASSERT_EQ(read_context->GetOptions(), read_options);
+        ASSERT_EQ(catalog->GetOptions(), catalog_options);
+        ASSERT_EQ(internal_context->GetCoreOptions().ToMap(), options);
+    }
+}
+
+TEST(InternalReadContext, TestDependencyReadHeaderNeedsAnIdentifier) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    ReadContextBuilder builder(path);
+    ASSERT_OK_AND_ASSIGN(auto read_context,
+                         builder.AddOption(CatalogOptions::METASTORE, "REST").Finish());
+    ASSERT_FALSE(read_context->GetIdentifier());
+    auto options = table_schema->Options();
+    options[CatalogOptions::METASTORE] = "REST";
     ASSERT_OK_AND_ASSIGN(auto internal_context, InternalReadContext::Create(std::move(read_context),
                                                                             table_schema, options));
-    ASSERT_EQ(internal_context->GetCoreOptions().ToMap().at("header.X-Paimon-Read-Via"), read_via);
+    auto dependency_context = internal_context->CreateDependencyReadContext();
+    ASSERT_EQ(dependency_context->options.count("header.X-Paimon-Read-Via"), 0u);
+}
+
+TEST(InternalReadContext, TestDependencyReadHeaderReportsTheBranchOfTheStartingTable) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+    catalog->SetOptions({{CatalogOptions::METASTORE, "REST"}});
+    ReadContextBuilder builder(path);
+    ASSERT_OK_AND_ASSIGN(auto read_context,
+                         builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).Finish());
+    ASSERT_OK_AND_ASSIGN(auto internal_context,
+                         InternalReadContext::Create(std::move(read_context), table_schema,
+                                                     table_schema->Options()));
+    auto dependency_context = internal_context->CreateDependencyReadContext();
+    ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"),
+              "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%24branch_dev%22%7D");
 }
 
 TEST(InternalReadContext, TestFileSystemSchemeMapReachesTheDependencyRead) {
@@ -116,6 +281,8 @@ TEST(InternalReadContext, TestFileSystemSchemeMapReachesTheDependencyRead) {
                          InternalReadContext::Create(std::move(read_context), table_schema,
                                                      table_schema->Options()));
     ASSERT_EQ(internal_context->GetFileSystemSchemeToIdentifierMap(), scheme_map);
+    ASSERT_EQ(internal_context->CreateDependencyReadContext()->fs_scheme_to_identifier_map,
+              scheme_map);
 }
 
 TEST(InternalReadContext, TestReadWithSpecifiedFieldId) {

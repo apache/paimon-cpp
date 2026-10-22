@@ -26,8 +26,10 @@
 #include <utility>
 #include <vector>
 
+#include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/table.h"
+#include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/abstract_split_read.h"
@@ -267,6 +269,39 @@ TEST(TableReadTest, TestMergeOptions) {
         {"bucket", "10"},           {"bucket-key", "f3"},
         {"manifest.format", "orc"}, {"file.format", "orc"}};
     ASSERT_EQ(expected_options, core_options.ToMap());
+}
+
+TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {
+    const std::string read_via_option = "header.X-Paimon-Read-Via";
+    const std::map<std::string, std::string> table_options = {
+        {Options::FILE_FORMAT, "orc"}, {Options::BUCKET, "-1"}, {read_via_option, "table-view"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> table_schema,
+        TableSchema::Create(0, arrow::schema({arrow::field("id", arrow::int32())}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, table_options));
+    ASSERT_OK_AND_ASSIGN(std::string schema_json, table_schema->ToJsonString());
+
+    for (bool explicit_header : {false, true}) {
+        ReadContextBuilder builder("warehouse/db.db/table");
+        builder.SetTableSchema(schema_json);
+        if (explicit_header) {
+            builder.AddOption(read_via_option, "read-view");
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, builder.Finish());
+        // Exercise the actual table/read merge before creating the dependency context.
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                             TableRead::Create(std::move(read_context)));
+        auto* append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
+        ASSERT_NE(append_only_table_read, nullptr);
+        const auto& internal_context = append_only_table_read->context_;
+        auto dependency_context = internal_context->CreateDependencyReadContext();
+
+        auto expected_options = table_options;
+        expected_options[read_via_option] = explicit_header ? "read-view" : "table-view";
+        ASSERT_EQ(dependency_context->root_path, "warehouse");
+        ASSERT_EQ(dependency_context->options, expected_options);
+        ASSERT_EQ(internal_context->GetTableSchema()->Options(), table_options);
+    }
 }
 
 }  // namespace paimon::test

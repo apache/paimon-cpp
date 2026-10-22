@@ -25,63 +25,17 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "paimon/catalog/catalog.h"
-#include "paimon/catalog_options.h"
 #include "paimon/common/utils/path_util.h"
-#include "paimon/common/utils/string_utils.h"
-#include "paimon/common/utils/url_utils.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/vector_search.h"
-#include "paimon/rest/rest_api.h"
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
-#include "rapidjson/document.h"
-#include "rapidjson/stringbuffer.h"
-#include "rapidjson/writer.h"
 
 namespace paimon {
 class Predicate;
-
-namespace {
-
-/// True when the catalog-level options - the ones the catalog was created with, not the read's own
-/// table options - select the REST protocol, the only kind turning a `header.`-prefixed option into
-/// a request header. `Catalog::Create` dispatches on this same `metastore` key, so a catalog that
-/// speaks REST is exactly one whose `GetOptions()` names it. The Java counterpart answers this from
-/// the catalog loader / `catalogContext.options()` it was built with.
-bool IsRestMetastore(const std::map<std::string, std::string>& catalog_options) {
-    auto metastore = catalog_options.find(CatalogOptions::METASTORE);
-    if (metastore == catalog_options.end()) {
-        return false;
-    }
-    // Matched leniently in lower case, the way `Catalog::Create` matches it.
-    const std::string name = StringUtils::ToLowerCase(metastore->second);
-    return name == "rest";
-}
-
-/// `{"database":"db1","object":"t1"}`, the flat JSON the metastore parses a header value back into.
-/// The field names are the Java `Identifier.FIELD_DATABASE_NAME` and `FIELD_OBJECT_NAME`, and the
-/// object name keeps any branch and system-table suffix, as the `getObjectName()` the Java
-/// serializer reads does, so a read of a branch reports that branch.
-std::string IdentifierToFlatJson(const Identifier& identifier) {
-    rapidjson::Document document(rapidjson::kObjectType);
-    auto& allocator = document.GetAllocator();
-    document.AddMember(rapidjson::StringRef("database"),
-                       rapidjson::Value(identifier.GetDatabaseName(), allocator), allocator);
-    // `GetObjectName()` keeps any branch and system-table suffix, matching the Java
-    // `getObjectName()` this field mirrors. So a branch read reports the branch.
-    document.AddMember(rapidjson::StringRef("object"),
-                       rapidjson::Value(identifier.GetObjectName(), allocator), allocator);
-    // Compact, not the pretty form `RapidJsonUtil::ToJson` writes: the value goes into a header.
-    rapidjson::StringBuffer buffer;
-    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-    document.Accept(writer);
-    return buffer.GetString();
-}
-
-}  // namespace
 
 ReadContext::ReadContext(
     const std::string& path, const std::string& branch,
@@ -474,23 +428,6 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         return Status::Invalid("row to batch thread number should be greater than 0");
     }
 
-    const std::string read_via_option =
-        std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
-    if (impl_->catalog_ != nullptr && impl_->identifier_ &&
-        IsRestMetastore(impl_->catalog_->GetOptions())) {
-        // A blob-view dependency read (BlobViewLookup) rebuilds its own catalog from a
-        // CatalogContext whose options come from these read options, so they carry none of the
-        // catalog-level connection settings. Hand over the ones RestApi::Create needs to come back
-        // as the same REST catalog - metastore, uri and the auth options - instead of letting it
-        // silently degrade to a filesystem catalog; a key the caller already set wins.
-        for (const auto& [key, value] : impl_->catalog_->GetOptions()) {
-            impl_->options_.emplace(key, value);
-        }
-        // Reports the outermost starting table; an existing value, set by an outer read, is kept.
-        impl_->options_.emplace(
-            read_via_option,
-            UrlUtils::EncodeString(IdentifierToFlatJson(impl_->identifier_.value())));
-    }
     auto ctx = std::make_unique<ReadContext>(
         impl_->path_, branch, impl_->read_field_names_, impl_->read_field_ids_, impl_->predicate_,
         impl_->vector_search_, impl_->full_text_search_, impl_->enable_predicate_filter_,

@@ -390,7 +390,6 @@ struct CoreOptions::Impl {
     std::optional<std::string> field_default_func;
     std::optional<std::string> scan_fallback_branch;
     std::optional<std::string> data_file_external_paths;
-    std::optional<std::string> blob_view_upstream_warehouse;
     std::optional<std::string> changelog_file_compression;
     std::optional<std::string> global_index_external_path;
     std::optional<std::string> scan_tag_name;
@@ -582,9 +581,6 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.ParseList<std::string>(Options::BLOB_VIEW_FIELD,
                                                            Options::FIELDS_SEPARATOR,
                                                            &blob_view_fields, /*need_trim=*/true));
-        // Parse blob-view-upstream-warehouse - warehouse path for configured blob view fields
-        PAIMON_RETURN_NOT_OK(
-            parser.Parse(Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, &blob_view_upstream_warehouse));
         // Parse blob-view.resolve.enabled - whether to resolve blob view fields at read time
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::BLOB_VIEW_RESOLVE_ENABLED, &blob_view_resolve_enabled));
@@ -1964,10 +1960,6 @@ const std::vector<std::string>& CoreOptions::GetBlobDescriptorFields() const {
 
 const std::vector<std::string>& CoreOptions::GetBlobViewFields() const {
     return impl_->blob_view_fields;
-}
-
-std::optional<std::string> CoreOptions::GetBlobViewUpstreamWarehouse() const {
-    return impl_->blob_view_upstream_warehouse;
 }
 
 bool CoreOptions::BlobViewResolveEnabled() const {

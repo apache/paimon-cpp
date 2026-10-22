@@ -27,6 +27,9 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/catalog/catalog.h"
+#include "paimon/catalog_options.h"
+#include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/predicate/full_text_match_predicate.h"
@@ -36,6 +39,9 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
+#include "paimon/common/utils/url_utils.h"
 #include "paimon/core/options/map_storage_layout.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
 #include "paimon/core/utils/nested_projection_utils.h"
@@ -43,9 +49,66 @@
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/predicate/vector_search.h"
+#include "paimon/rest/rest_api.h"
 #include "paimon/status.h"
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 namespace paimon {
+namespace {
+
+std::string IdentifierToFlatJson(const Identifier& identifier) {
+    rapidjson::Document document(rapidjson::kObjectType);
+    auto& allocator = document.GetAllocator();
+    document.AddMember(rapidjson::StringRef("database"),
+                       rapidjson::Value(identifier.GetDatabaseName(), allocator), allocator);
+    // Keep branch and system-table suffixes in the reported object name.
+    document.AddMember(rapidjson::StringRef("object"),
+                       rapidjson::Value(identifier.GetObjectName(), allocator), allocator);
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    document.Accept(writer);
+    return buffer.GetString();
+}
+
+}  // namespace
+
+std::shared_ptr<CatalogContext> InternalReadContext::CreateDependencyReadContext() const {
+    const auto& catalog = read_context_->GetCatalog();
+    if (!catalog) {
+        // Preserve path-only filesystem reads using <warehouse>/<database>.db/<table>.
+        return std::make_shared<CatalogContext>(
+            PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(GetPath())), options_.ToMap(),
+            GetFileSystemSchemeToIdentifierMap());
+    }
+
+    // Preserve the dependency catalog's effective settings: table options, then catalog
+    // options, then explicit read overrides. The upstream reader loads its own table options;
+    // ReadContextBuilder must not copy these catalog settings back into that read.
+    auto dependency_options = options_.ToMap();
+    const auto& catalog_options = catalog->GetOptions();
+    for (const auto& [key, value] : catalog_options) {
+        dependency_options[key] = value;
+    }
+    const auto& read_options = read_context_->GetOptions();
+    for (const auto& [key, value] : read_options) {
+        dependency_options[key] = value;
+    }
+    const std::string read_via_option =
+        std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
+    auto metastore = dependency_options.find(CatalogOptions::METASTORE);
+    if (metastore != dependency_options.end() &&
+        StringUtils::ToLowerCase(metastore->second) == "rest" && read_context_->GetIdentifier() &&
+        dependency_options.count(read_via_option) == 0) {
+        // Only fill in a missing header when the merged options select a REST dependency catalog.
+        dependency_options[read_via_option] =
+            UrlUtils::EncodeString(IdentifierToFlatJson(*read_context_->GetIdentifier()));
+    }
+    // A REST warehouse identifies the catalog, independent of the table's storage location.
+    return std::make_shared<CatalogContext>(catalog->GetRootPath(), dependency_options,
+                                            GetFileSystemSchemeToIdentifierMap());
+}
 
 Result<std::shared_ptr<arrow::Field>> InternalReadContext::AlignReadFieldWithTableFieldIds(
     const std::shared_ptr<arrow::Field>& read_field,

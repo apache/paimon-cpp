@@ -35,6 +35,7 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon {
+struct CatalogContext;
 class Executor;
 class MemoryPool;
 class Predicate;
@@ -80,6 +81,9 @@ class InternalReadContext {
     const std::string& GetPath() const {
         return read_context_->GetPath();
     }
+
+    std::shared_ptr<CatalogContext> CreateDependencyReadContext() const;
+
     const std::vector<std::string>& GetPartitionKeys() const {
         return table_schema_->PartitionKeys();
     }
