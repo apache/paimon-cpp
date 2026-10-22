@@ -29,6 +29,15 @@
 
 namespace paimon {
 
+Result<std::shared_ptr<FullTextMatch>> PredicateUtils::GetFullTextMatch(
+    const std::shared_ptr<LeafPredicate>& predicate) {
+    auto full_text = std::dynamic_pointer_cast<FullTextMatchPredicate>(predicate);
+    if (!full_text) {
+        return Status::Invalid("FULL_TEXT_MATCH requires a FullTextMatchPredicate");
+    }
+    return full_text->GetFullTextMatch();
+}
+
 bool PredicateUtils::ContainsFullTextMatch(const std::shared_ptr<Predicate>& predicate) {
     if (std::dynamic_pointer_cast<FullTextMatchPredicate>(predicate)) {
         return true;

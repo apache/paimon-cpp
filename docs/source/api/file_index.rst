@@ -56,9 +56,8 @@ semantics are to filter by the complete predicate before ranking; the TopK searc
 field does not need to be projected. A full-text match inside a predicate never
 has a TopK limit.
 
-Score output is requested only through an explicit ``_<field>_INDEX_SCORE``
-projection. ``FullTextMatch``, ``SetVectorSearch`` and ``SetFullTextSearch`` have
-no separate score switch. For example, request the score of a full-text
+Score output is requested through an explicit ``_<field>_INDEX_SCORE``
+projection. For example, request the score of a full-text
 predicate by projecting ``_body_INDEX_SCORE``:
 
 .. code-block:: cpp
@@ -76,10 +75,6 @@ including case. Select them with ``SetReadFieldNames`` or ``SetReadSchema``;
 they have no persistent field IDs for ``SetReadFieldIds``. Reading all table
 fields does not implicitly add score fields.
 
-Root TopK searches always need scores internally to rank and merge results
-across files, regardless of the projection. A full-text predicate without TopK
-needs scores only when its score field is projected.
-
 Each projected score must have exactly one search condition as its source.
 The source may be a root TopK request or a full-text predicate. A full-text
 predicate whose score is projected cannot have an OR ancestor, and its field
@@ -89,26 +84,6 @@ projecting the score of ``match``, ``match AND (p OR q)`` is valid, while
 ``match OR p`` is rejected. Without that score projection, both OR branches and
 repeated full-text search fields are allowed. These checks use the effective
 read projection, after resolving the read schema.
-
-Internally, the read context binds each score output position to a search type
-and the original table field name. The binding identifies a logical source,
-not a request object's identity. Execution must preserve this source when
-copying requests for per-file field mapping or candidate filtering.
-``NeedsScores`` derives execution requirements from the root TopK request and
-these bindings; it does not add another user configuration.
-
-This first stage implements predicate construction, validation, field mapping,
-and read-context configuration. Executing a full-text predicate, including using
-it for scan pruning, returns ``NotImplemented``. Valid per-field score
-projections also return ``NotImplemented`` when reading. Existing scalar and root
-search execution retain their current capabilities and limitations.
-
-The next stage will implement exact mixed-predicate execution, per-file index
-reader reuse, and selectivity-based AND ordering with candidate propagation.
-Missing full-text or vector indexes must fail; scalar conditions may fall back
-to exact data scanning. TopK must execute after the complete filter, with scores
-and per-file results combined by the read layer. These execution changes are
-not part of the predicate interface stage.
 
 Interface
 =========

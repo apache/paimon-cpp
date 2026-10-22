@@ -24,6 +24,8 @@
 #include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -79,5 +81,37 @@ TEST(FileIndexReaderTest, TestDefaultIndexReader) {
     auto full_text_match = std::make_shared<FullTextMatch>("body", R"({"match":{"query":"word"}})");
     ASSERT_NOK_WITH_MSG(reader.VisitFullTextMatch(full_text_match),
                         "does not support complete full-text matching");
+}
+
+TEST(FileIndexReaderTest, TestFullTextMatchVisitorDispatch) {
+    class FullTextReader : public FileIndexReader {
+     public:
+        Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
+            const std::shared_ptr<FullTextMatch>& full_text_match) override {
+            received_match_ = full_text_match;
+            return FileIndexResult::Skip();
+        }
+
+        std::shared_ptr<FullTextMatch> received_match_;
+    };
+
+    auto match = std::make_shared<FullTextMatch>("body", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::FullTextMatch(0, match));
+    auto leaf = std::dynamic_pointer_cast<LeafPredicate>(predicate);
+    ASSERT_TRUE(leaf);
+
+    auto default_reader = std::make_shared<FileIndexReader>();
+    auto result =
+        PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(leaf, default_reader);
+    ASSERT_NOK_WITH_MSG(result, "This file index does not support complete full-text matching");
+    ASSERT_TRUE(result.status().IsNotImplemented());
+
+    auto reader = std::make_shared<FullTextReader>();
+    ASSERT_OK_AND_ASSIGN(
+        auto matches,
+        PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(leaf, reader));
+    ASSERT_EQ(reader->received_match_, match);
+    ASSERT_OK_AND_ASSIGN(bool is_remain, matches->IsRemain());
+    ASSERT_FALSE(is_remain);
 }
 }  // namespace paimon::test

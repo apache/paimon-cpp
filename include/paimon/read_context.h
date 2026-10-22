@@ -348,7 +348,10 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// that needs to be read and processed.
     ///
     /// All referenced fields, including full-text match fields, must be projected in the read
-    /// schema. Full-text matches can be combined with scalar predicates using
+    /// schema.
+    /// TODO(lisizhuo.lsz): The behavior here will be aligned with Java Paimon in a follow-up
+    /// change: fields referenced in predicates will no longer be required to appear in the
+    /// projection. Full-text matches can be combined with scalar predicates using
     /// PredicateBuilder::And/Or. Full-text predicate execution is not implemented yet; reading such
     /// a predicate returns NotImplemented.
     ///

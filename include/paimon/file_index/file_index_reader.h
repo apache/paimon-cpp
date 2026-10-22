@@ -82,8 +82,8 @@ class PAIMON_EXPORT FileIndexReader : public FunctionVisitor<std::shared_ptr<Fil
         const std::shared_ptr<FullTextSearch>& full_text_search);
 
     /// Return every matching file-local physical row position, without TopK truncation.
-    virtual Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
-        const std::shared_ptr<FullTextMatch>& full_text_match);
+    Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
+        const std::shared_ptr<FullTextMatch>& full_text_match) override;
 };
 
 }  // namespace paimon

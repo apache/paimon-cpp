@@ -56,14 +56,14 @@ TEST(SpecialFieldsTest, TestIndexScore) {
 }
 
 TEST(SpecialFieldsTest, TestPerFieldIndexScoreNames) {
-    for (const std::string& field_name : {"F1", "body_text", "_title", "文档"}) {
+    for (const auto& field_name : {"F1", "body_text", "_title", "文档"}) {
         const auto name = SpecialFields::IndexScoreFieldName(field_name);
         ASSERT_EQ(SpecialFields::ParseIndexScoreFieldName(name), field_name);
         ASSERT_TRUE(SpecialFields::IsSystemField(name));
     }
     ASSERT_EQ(SpecialFields::IndexScoreFieldName("F1"), "_F1_INDEX_SCORE");
-    for (const std::string& name : {"_INDEX_SCORE", "__INDEX_SCORE", "F1_INDEX_SCORE",
-                                    "_F1_index_score", "_F1_INDEX_SCORE_extra"}) {
+    for (const auto& name : {"_INDEX_SCORE", "__INDEX_SCORE", "F1_INDEX_SCORE",
+                                   "_F1_index_score", "_F1_INDEX_SCORE_extra"}) {
         ASSERT_FALSE(SpecialFields::ParseIndexScoreFieldName(name));
     }
 }

@@ -345,9 +345,8 @@ Result<std::optional<std::shared_ptr<Predicate>>> FieldMappingBuilder::Reconstru
 
     const auto& [data_field_idx, data_field] = data_field_iter->second;
     return std::optional<std::shared_ptr<Predicate>>(std::make_shared<LeafPredicateImpl>(
-        leaf_predicate->GetLeafFunction(), /*data field idx*/ data_field_idx,
-        /*data field name*/ data_field.Name(),
-        /*data field type*/ data_type, new_literals));
+        leaf_predicate->GetLeafFunction(), /*data_field_idx=*/data_field_idx,
+        /*data_field_name=*/data_field.Name(), /*data_field_type=*/data_type, new_literals));
 }
 
 Result<std::optional<std::shared_ptr<Predicate>>>
