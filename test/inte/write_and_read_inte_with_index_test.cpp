@@ -1250,8 +1250,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestReadWithLimits) {
         PredicateBuilder::NotEqual(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
                                    Literal(FieldType::STRING, "Alice", 5));
     ReadContextBuilder context_builder(path);
-    context_builder.AddOption(Options::FILE_FORMAT, "orc")
-        .AddOption("test.enable-adaptive-prefetch-strategy", "false")
+    context_builder.AddOption("test.enable-adaptive-prefetch-strategy", "false")
         .AddOption(Options::READ_BATCH_SIZE, "1")
         .AddOption("orc.read.enable-metrics", "true")
         .SetPredicate(predicate);

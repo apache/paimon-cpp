@@ -250,25 +250,41 @@ TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
 
 TEST(TableReadTest, TestMergeOptions) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    ReadContextBuilder context_builder(path);
-    context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-    context_builder.AddOption("read.batch-size", "2");
-    context_builder.AddOption("orc.read.enable-lazy-decoding", "true");
-    context_builder.AddOption("bucket", "10");
-    context_builder.AddOption("bucket-key", "f3");
-    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-    auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
-    ASSERT_TRUE(append_only_table_read);
-    auto* typed_split_read =
-        dynamic_cast<AbstractSplitRead*>(append_only_table_read->split_reads_[0].get());
-    ASSERT_TRUE(typed_split_read);
-    const auto& core_options = typed_split_read->options_;
-    std::map<std::string, std::string> expected_options = {
-        {"read.batch-size", "2"},   {"orc.read.enable-lazy-decoding", "true"},
-        {"bucket", "10"},           {"bucket-key", "f3"},
-        {"manifest.format", "orc"}, {"file.format", "orc"}};
-    ASSERT_EQ(expected_options, core_options.ToMap());
+    {
+        // The options the table was loaded with stand as they are, and a runtime setting the
+        // context adds on top - the table was loaded with neither of these keys - is served as
+        // given.
+        ReadContextBuilder context_builder(path);
+        context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
+        context_builder.AddOption("read.batch-size", "2");
+        context_builder.AddOption("orc.read.enable-lazy-decoding", "true");
+        ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
+        ASSERT_TRUE(append_only_table_read);
+        auto* typed_split_read =
+            dynamic_cast<AbstractSplitRead*>(append_only_table_read->split_reads_[0].get());
+        ASSERT_TRUE(typed_split_read);
+        const auto& core_options = typed_split_read->options_;
+        std::map<std::string, std::string> expected_options = {
+            {"read.batch-size", "2"},
+            {"orc.read.enable-lazy-decoding", "true"},
+            {"bucket", "2"},
+            {"bucket-key", "f2"},
+            {"manifest.format", "orc"},
+            {"file.format", "orc"}};
+        ASSERT_EQ(expected_options, core_options.ToMap());
+    }
+    {
+        // An option that contradicts the table is refused: the read serves the options the table
+        // was loaded with, and a caller that means to change them copies the table.
+        ReadContextBuilder context_builder(path);
+        context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
+        context_builder.AddOption("bucket", "10");
+        ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+                            "option 'bucket' is '10' in the context but '2' on the table");
+    }
 }
 
 TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {

@@ -445,6 +445,7 @@ set(PAIMON_CORE_SRCS
     core/stats/simple_stats_evolution.cpp
     core/table/table.cpp
     core/table/bucket_mode.cpp
+    core/table/file_store.cpp
     core/table/format/format_file_listing.cpp
     core/table/format/format_file_naming.cpp
     core/table/format/format_path_validation.cpp

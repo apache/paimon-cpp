@@ -194,6 +194,35 @@ TableSchema::TableSchema(int32_t version, int64_t id, const std::vector<DataFiel
       comment_(comment),
       time_millis_(time_millis) {}
 
+Result<std::unique_ptr<TableSchema>> TableSchema::MergeOptions(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    std::map<std::string, std::string> options = options_;
+    for (const auto& [key, value] : dynamic_options) {
+        options[key] = value;
+    }
+    auto merged = std::unique_ptr<TableSchema>(
+        new TableSchema(version_, id_, fields_, highest_field_id_, partition_keys_, primary_keys_,
+                        options, comment_, time_millis_));
+    // The derived members follow the merged options: a copy the options restyle must serve the
+    // bucket keys and the bucket count it carries, not the ones the base schema carried.
+    PAIMON_RETURN_NOT_OK(merged->DeriveBucketInfo());
+    return merged;
+}
+
+Status TableSchema::DeriveBucketInfo() {
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> keys, TrimmedPrimaryKeys());
+
+    // Try to validate bucket keys
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> bucket_keys, OriginalBucketKeys());
+    if (bucket_keys.empty()) {
+        bucket_keys = keys;
+    }
+    bucket_keys_ = bucket_keys;
+    PAIMON_ASSIGN_OR_RAISE(num_bucket_,
+                           OptionsUtils::GetValueFromMap<int32_t>(Options(), Options::BUCKET, -1));
+    return Status::OK();
+}
+
 bool TableSchema::operator==(const TableSchema& other) const {
     return version_ == other.version_ && fields_ == other.fields_ &&
            partition_keys_ == other.partition_keys_ && primary_keys_ == other.primary_keys_ &&
@@ -332,18 +361,7 @@ Result<std::unique_ptr<TableSchema>> TableSchema::InitSchema(
     auto table_schema = std::unique_ptr<TableSchema>(
         new TableSchema(TableSchema::CURRENT_VERSION, schema_id, fields, highest_field_id,
                         partition_keys, primary_keys, options, comment, time_millis));
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> keys, table_schema->TrimmedPrimaryKeys());
-
-    // Try to validate bucket keys
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> bucket_keys,
-                           table_schema->OriginalBucketKeys());
-    if (bucket_keys.empty()) {
-        bucket_keys = keys;
-    }
-    table_schema->bucket_keys_ = bucket_keys;
-    PAIMON_ASSIGN_OR_RAISE(
-        table_schema->num_bucket_,
-        OptionsUtils::GetValueFromMap<int32_t>(table_schema->Options(), Options::BUCKET, -1));
+    PAIMON_RETURN_NOT_OK(table_schema->DeriveBucketInfo());
 
     return table_schema;
 }

@@ -32,6 +32,9 @@
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/catalog.h"
+#include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/data_define.h"
 #include "paimon/common/utils/decimal_utils.h"
@@ -1161,10 +1164,18 @@ TEST_P(ScanInteTest, TestScanAppendWithInvalidOptions) {
             "scan.snapshot-id or scan.tag-name must be set when startup mode is FROM_SNAPSHOT");
     }
     {
+        // `bucket` = -2 is refused by the scan itself, which a copy of the table carrying it
+        // reaches: an option on the context would contradict the table the catalog loaded,
+        // which a scan through that table refuses.
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog,
+                             Catalog::Create(paimon::test::GetDataDir() + "orc", {}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog->GetTable(Identifier("append_09", "append_09")));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied, table->Copy({{Options::BUCKET, "-2"}}));
         ScanContextBuilder context_builder(table_path);
-        context_builder.AddOption(Options::BUCKET, "-2").WithStreamingMode(true);
+        context_builder.WithStreamingMode(true);
         ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(context_builder));
-        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)),
+        ASSERT_NOK_WITH_MSG(copied->NewScan(std::move(scan_context)),
                             "do not support bucket=-2 in scan process");
     }
 }
@@ -1726,10 +1737,18 @@ TEST_P(ScanInteTest, TestScanPKWithSnapshot1WithBucketStats) {
 TEST_P(ScanInteTest, TestScanPKWithInvalidOptions) {
     std::string table_path = paimon::test::GetDataDir() +
                              "orc/pk_table_with_total_buckets.db/pk_table_with_total_buckets";
+    // Like the append case above, the invalid bucket count rides on a copy of the table: the
+    // scan refuses it where the bucket count is validated.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog,
+                         Catalog::Create(paimon::test::GetDataDir() + "orc", {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         catalog->GetTable(Identifier("pk_table_with_total_buckets",
+                                                      "pk_table_with_total_buckets")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied, table->Copy({{Options::BUCKET, "-1"}}));
     ScanContextBuilder context_builder(table_path);
-    context_builder.AddOption(Options::BUCKET, "-1").WithStreamingMode(true);
+    context_builder.WithStreamingMode(true);
     ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(context_builder));
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)),
+    ASSERT_NOK_WITH_MSG(copied->NewScan(std::move(scan_context)),
                         "do not support pk table bucket=-1 in scan process");
 }
 

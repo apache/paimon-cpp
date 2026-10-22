@@ -33,6 +33,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
@@ -473,15 +474,21 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompacted
     ASSERT_EQ(0, data_split_count);
 
     ReadContextBuilder read_builder(table_path_);
-    // The source build above keeps lazy decoding enabled. Disable it only for the final data-row
-    // assertion, whose predicate reader is outside the maintenance path covered by this test.
     read_builder.SetReadFieldNames({"id", "value"})
         .SetPredicate(value_predicate)
-        .AddOption("orc.read.enable-lazy-decoding", "false")
         .EnablePredicateFilter(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    // The source build above keeps lazy decoding enabled. Disable it only for the final data-row
+    // assertion, whose predicate reader is outside the maintenance path covered by this test.
+    // The table is copied with it off because a read through the loaded table refuses an option
+    // that contradicts the one it carries.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(directory_->Str(), {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> loaded_table,
+                         catalog->GetTable(Identifier("db", "table")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied_table,
+                         loaded_table->Copy({{"orc.read.enable-lazy-decoding", "false"}}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         copied_table->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -707,11 +714,18 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, ContinuesCompactionWhenIndexBuildF
     ReadContextBuilder read_builder(table_path_);
     read_builder.SetReadFieldNames({"id", "value"})
         .SetPredicate(value_predicate)
-        .AddOption("orc.read.enable-lazy-decoding", "false")
         .EnablePredicateFilter(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    // Like the test above, the assertion reads with lazy decoding disabled, so it reads through
+    // a copy of the table carrying it off: a read through the loaded table refuses an option that
+    // contradicts the one it carries.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(directory_->Str(), {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> loaded_table,
+                         catalog->GetTable(Identifier("db", "table")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied_table,
+                         loaded_table->Copy({{"orc.read.enable-lazy-decoding", "false"}}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         copied_table->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,

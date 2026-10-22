@@ -49,6 +49,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
@@ -1139,8 +1140,9 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     ASSERT_EQ(0, main_case_schema->Options().count(Options::BRANCH));
     // the branch the alias spells resolves to the main branch, not to a branch
     // directory named after the alias
-    ASSERT_OK_AND_ASSIGN(std::string main_case_branch, main_case_table->CurrentBranch());
-    ASSERT_EQ("main", main_case_branch);
+    auto main_case_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(main_case_table);
+    ASSERT_NE(nullptr, main_case_file_store_table);
+    ASSERT_EQ("main", main_case_file_store_table->CurrentBranch());
 
     // a system table on a branch resolves against the branch's data table: the system
     // suffix is stripped while the branch stays in the identifier sent to the server

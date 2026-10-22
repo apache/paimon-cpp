@@ -1,0 +1,125 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+#pragma once
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "paimon/catalog/identifier.h"
+#include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/utils/branch_manager.h"
+#include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/result.h"
+#include "paimon/type_fwd.h"
+
+namespace arrow {
+class Schema;
+}  // namespace arrow
+
+namespace paimon {
+
+class Catalog;
+class CoreOptions;
+class TableSchema;
+
+/// The storage a managed table is served through: the file system, root path, schema and branch
+/// it was loaded with, and the schema and snapshot managers that read its root path on that
+/// branch - the state Java Paimon's `AbstractFileStore` carries. `FileStoreTable` hands the
+/// state it was loaded with to one of these and asks it back for the pieces every operator
+/// opens with.
+///
+/// The factory methods build a fresh instance on every call, never a cached one: a path factory
+/// names each file it builds, and a snapshot manager a write or a commit arms with a catalog
+/// loader is not one a scan should be served through afterwards.
+class FileStore {
+ public:
+    /// @param file_system File system the table's data is accessed through.
+    /// @param root_path Root path of the table in the file system.
+    /// @param schema The schema the table was loaded with, whose partition keys name the
+    ///        partitions the paths below are built for.
+    /// @param branch The branch the store serves, normalized here.
+    /// @param schema_manager A schema manager to carry instead of building one - the one a
+    ///        context dispatch read the schema through, whose cache the operators then serve.
+    /// @param snapshot_manager A snapshot manager to carry instead of building one.
+    /// A null manager is built over `root_path` on `branch`, so the operators always read
+    /// through the managers the store carries.
+    FileStore(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+              const std::shared_ptr<TableSchema>& schema, const std::string& branch,
+              const std::shared_ptr<SchemaManager>& schema_manager = nullptr,
+              const std::shared_ptr<SnapshotManager>& snapshot_manager = nullptr);
+
+    /// The branch this store serves, as resolved when it was built.
+    const std::string& branch() const {
+        return branch_;
+    }
+
+    /// The schema manager the operators read through. It carries the schema cache of `root_path`
+    /// on `branch()`.
+    const std::shared_ptr<SchemaManager>& schema_manager() const {
+        return schema_manager_;
+    }
+
+    /// The snapshot manager a scan reads through. A write or a commit builds its own: see
+    /// `NewSnapshotManager`.
+    const std::shared_ptr<SnapshotManager>& snapshot_manager() const {
+        return snapshot_manager_;
+    }
+
+    /// The path factory an operator builds its metadata paths through: over this store's root
+    /// path and the partition keys of its schema. The file format identifier is the caller's to
+    /// name: a write names the format its level-0 files are written in, which the options may
+    /// set per level, while a scan, a read and a commit name the table's format.
+    Result<std::shared_ptr<FileStorePathFactory>> NewPathFactory(
+        const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
+        const std::string& file_format_identifier,
+        const std::shared_ptr<MemoryPool>& memory_pool) const;
+
+    /// The snapshot manager a write or a commit reads snapshots through, over this store's root
+    /// path and branch. The file system is the caller's to name, from the options its operator
+    /// serves: a table opened without one has its options build the resolving file system. A
+    /// catalog that version-manages the table hands its snapshots out itself, so its loader is
+    /// attached, the catalog captured to keep the versioned interface - and the loader with it
+    /// - alive. Such a catalog names the table by an identifier, which the context must have
+    /// supplied.
+    Result<std::shared_ptr<SnapshotManager>> NewSnapshotManager(
+        const CoreOptions& options, const std::shared_ptr<Catalog>& catalog,
+        const std::optional<Identifier>& catalog_identifier) const;
+
+    /// The assembly the factory methods above share: a path factory over a root path and
+    /// partition keys named by the caller rather than the store's own, which the read path
+    /// needs - the schema it serves may be a fallback branch's, not the table's.
+    static Result<std::shared_ptr<FileStorePathFactory>> MakePathFactory(
+        const std::string& root_path, const std::shared_ptr<arrow::Schema>& arrow_schema,
+        const std::vector<std::string>& partition_keys, const CoreOptions& options,
+        const std::string& file_format_identifier, const std::shared_ptr<MemoryPool>& memory_pool);
+
+ private:
+    std::shared_ptr<FileSystem> file_system_;
+    std::string root_path_;
+    std::shared_ptr<TableSchema> schema_;
+    std::string branch_;
+    std::shared_ptr<SchemaManager> schema_manager_;
+    std::shared_ptr<SnapshotManager> snapshot_manager_;
+};
+
+}  // namespace paimon

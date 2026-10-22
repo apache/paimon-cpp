@@ -66,6 +66,12 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     /// The read-only schema this system table exposes, which is not the data table's schema.
     virtual Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const = 0;
 
+    /// A system table has no options of its own to override: its schema is the read-only view it
+    /// exposes, which is not reconfigured by a copy. The data table underneath is copied through
+    /// its own `Table`.
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     /// A system table is read-only: writing it or committing for it is refused rather than
     /// routed to the data table underneath.
     Result<std::unique_ptr<FileStoreWrite>> NewWrite(

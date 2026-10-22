@@ -347,8 +347,12 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
     // table rather than at the first read.
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckManagedTableType(identifier, *latest_schema,
                                                              "FileSystemCatalog::GetTable"));
-    return std::make_shared<FileStoreTable>(
-        fs_, table_path, checked_pointer_cast<Schema>(*latest_schema), identifier);
+    // The branch the schema above was read on, which the table carries so its managers read
+    // the same branch: `GetBranchNameOrDefault` folds any spelling of `main`.
+    PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
+    return std::make_shared<FileStoreTable>(fs_, table_path,
+                                            checked_pointer_cast<Schema>(*latest_schema),
+                                            identifier, /*uuid=*/"", branch);
 }
 
 Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(

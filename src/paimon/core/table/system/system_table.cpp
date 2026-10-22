@@ -191,6 +191,11 @@ Status SystemTable::AdoptOwnSchema() {
     return Status::OK();
 }
 
+Result<std::shared_ptr<Table>> SystemTable::Copy(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    return Status::NotImplemented(Name(), " system table is read-only: copying is not supported");
+}
+
 Result<std::unique_ptr<FileStoreWrite>> SystemTable::NewWrite(
     std::unique_ptr<WriteContext> /*context*/) const {
     return Status::NotImplemented(Name(), " system table is read-only: writing is not supported");

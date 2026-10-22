@@ -36,6 +36,9 @@
 #include "fmt/ranges.h"
 #include "gtest/gtest.h"
 #include "paimon/bucket/bucket_id_calculator.h"
+#include "paimon/catalog/catalog.h"
+#include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
@@ -796,19 +799,27 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
         }
         ASSERT_GE(other_index, 0);
         // These keys share a current two-bucket selection but need different historical buckets.
+        // The data was written with four buckets, so reading a rescaled layout reads through a
+        // copy of the table carrying the rescaled bucket count: an option on the context would
+        // contradict the table the catalog loaded.
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog,
+                             Catalog::Create(test_dir->Str(), {}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog->GetTable(Identifier("foo", "bar")));
         for (int32_t lookup_index : {32, other_index}) {
-            // The data was written with four buckets. Read it with rescaled table options too.
             for (const std::string current_bucket_count : {"2", "4", "8", "17"}) {
                 SCOPED_TRACE(current_bucket_count);
                 const std::string lookup_key = fmt::format("key{:03}", lookup_index);
                 auto lookup_predicate = PredicateBuilder::Equal(
                     0, "rowkey", field_type,
                     Literal(field_type, lookup_key.data(), lookup_key.size()));
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> rescaled_table,
+                                     table->Copy({{Options::BUCKET, current_bucket_count}}));
                 ScanContextBuilder scan_builder(table_path);
                 scan_builder.SetPredicate(lookup_predicate)
                     .AddOption(Options::BUCKET, current_bucket_count);
                 ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_builder));
-                ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+                ASSERT_OK_AND_ASSIGN(auto scan, rescaled_table->NewScan(std::move(scan_context)));
                 ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
                 if (EnableSnapshotLiveManifestCache()) {
                     ASSERT_OK_AND_ASSIGN(
@@ -820,7 +831,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
                         .AddOption(Options::BUCKET, current_bucket_count);
                     ASSERT_OK_AND_ASSIGN(auto cached_context, FinishScanContext(cached_builder));
                     ASSERT_OK_AND_ASSIGN(auto cached_scan,
-                                         TableScan::Create(std::move(cached_context)));
+                                         rescaled_table->NewScan(std::move(cached_context)));
                     ASSERT_OK_AND_ASSIGN(plan, cached_scan->CreatePlan());
                     ASSERT_OK_AND_ASSIGN(uint64_t hit, cached_scan->GetMetrics()->GetCounter(
                                                            ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
@@ -3086,12 +3097,21 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
         PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
                                 Literal(FieldType::STRING, "Alice0", 6));
 
+    // The table was loaded with its index enabled, so the index-disabled pass below goes through
+    // a copy carrying it disabled: an option on the context would contradict the table.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog,
+                         Catalog::Create(paimon::test::GetDataDir() + file_format, {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         catalog->GetTable(Identifier("append_with_bitmap", "append_with_bitmap")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> disabled_table,
+                         table->Copy({{"file-index.read.enabled", "false"}}));
+
     // scan
     ScanContextBuilder scan_context_builder(table_path);
     ASSERT_OK_AND_ASSIGN(
         auto scan_context,
         scan_context_builder.AddOption("file-index.read.enabled", "false").Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, disabled_table->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
 
@@ -3102,7 +3122,7 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
     read_context_builder.AddOption("file-index.read.enabled", "false");
     AddReadOptionsForPrefetch(&read_context_builder);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read, disabled_table->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
                          ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -3158,6 +3178,13 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
         helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0, std::nullopt));
     ASSERT_FALSE(commit_messages.empty());
 
+    // The statistics-only baseline below disables the file index the table carries, so it scans
+    // through a copy with it disabled: an option on the context would contradict the table.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(dir->Str(), {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(Identifier("foo", "bar")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> stats_only_table,
+                         table->Copy({{Options::FILE_INDEX_READ_ENABLED, "false"}}));
+
     // 15 falls inside the file's [10, 30] min/max range, so statistics alone must retain the
     // file. Disabling file-index reads verifies that baseline explicitly.
     const std::shared_ptr<Predicate> absent_predicate = PredicateBuilder::Equal(
@@ -3169,7 +3196,7 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> stats_only_scan_context,
                          stats_only_scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> stats_only_scan,
-                         TableScan::Create(std::move(stats_only_scan_context)));
+                         stats_only_table->NewScan(std::move(stats_only_scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> stats_only_plan, stats_only_scan->CreatePlan());
     ASSERT_FALSE(stats_only_plan->Splits().empty());
 
@@ -3262,6 +3289,13 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvReconstructsFileIndexPredicateAfterSc
     const std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
         /*field_index=*/1, /*field_name=*/"renamed_value", FieldType::INT, Literal(15));
 
+    // The statistics-only baseline below disables the file index the table carries, so it scans
+    // through a copy with it disabled: an option on the context would contradict the table.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(dir->Str(), {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(Identifier("foo", "bar")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> stats_only_table,
+                         table->Copy({{Options::FILE_INDEX_READ_ENABLED, "false"}}));
+
     // The evolved min/max range is still [10, 30], so statistics alone retain the old file.
     ScanContextBuilder stats_only_scan_builder(table_path);
     stats_only_scan_builder.SetOptions(options)
@@ -3270,7 +3304,7 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvReconstructsFileIndexPredicateAfterSc
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> stats_only_scan_context,
                          stats_only_scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> stats_only_scan,
-                         TableScan::Create(std::move(stats_only_scan_context)));
+                         stats_only_table->NewScan(std::move(stats_only_scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> stats_only_plan, stats_only_scan->CreatePlan());
     ASSERT_FALSE(stats_only_plan->Splits().empty());
 
@@ -4021,16 +4055,25 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
     auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT,
                                              Literal(static_cast<int32_t>(0)));
 
-    // Historical files use two buckets even when the current option has changed.
+    // Historical files use two buckets even when the current option has changed, so the scan
+    // goes through a copy of the table carrying the bucket count it selects by: an option on
+    // the context would contradict the table the catalog loaded.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog,
+                         Catalog::Create(paimon::test::GetDataDir() + file_format, {}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        catalog->GetTable(Identifier("pk_table_scan_and_read_dv", "pk_table_scan_and_read_dv")));
     for (const std::string current_bucket_count : {"2", "4", "8", "17"}) {
         SCOPED_TRACE(current_bucket_count);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> rescaled_table,
+                             table->Copy({{Options::BUCKET, current_bucket_count}}));
         ScanContextBuilder scan_context_builder(table_path);
         scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
         scan_context_builder.AddOption(Options::BUCKET, current_bucket_count);
         scan_context_builder.SetPartitionFilter({{{"f1", "10"}}});
         scan_context_builder.SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_scan, rescaled_table->NewScan(std::move(scan_context)));
 
         ReadContextBuilder read_context_builder(table_path);
         AddReadOptionsForPrefetch(&read_context_builder);
@@ -4049,7 +4092,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
                 .SetPartitionFilter({{{"f1", "10"}}})
                 .SetPredicate(predicate);
             ASSERT_OK_AND_ASSIGN(auto cached_context, FinishScanContext(cached_builder));
-            ASSERT_OK_AND_ASSIGN(auto cached_scan, TableScan::Create(std::move(cached_context)));
+            ASSERT_OK_AND_ASSIGN(auto cached_scan,
+                                 rescaled_table->NewScan(std::move(cached_context)));
             ASSERT_OK_AND_ASSIGN(result_plan, cached_scan->CreatePlan());
             ASSERT_OK_AND_ASSIGN(uint64_t hit, cached_scan->GetMetrics()->GetCounter(
                                                    ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));

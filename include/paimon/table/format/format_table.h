@@ -55,8 +55,7 @@ class FileSystem;
 /// loaded through the `FormatTable` constructor every context builder has, which is how a table
 /// whose schema lives in a metastore is reached.
 ///
-/// Every instance lives in a `shared_ptr`, which is what its operators hand to
-/// `FormatTable::Copy()`.
+/// Every instance lives in a `shared_ptr`: a copy that adds nothing hands the same one back.
 ///
 /// See `docs/source/user_guide/format_table.rst` for what is not supported yet.
 class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_this<FormatTable> {
@@ -108,20 +107,7 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
         bool location_carries_paimon_metadata,
         const std::map<std::string, std::string>& dynamic_options);
 
-    /// Copies `table` with `dynamic_options` on top of the options it already carries, which is
-    /// the precedence every context builder promises for a table it was handed rather than loaded
-    /// itself. `table` comes back as it is when there is nothing to add.
-    ///
-    /// `type` is not overridable: it is structural and is read from the schema alone.
-    ///
-    /// @param table The table to copy.
-    /// @param dynamic_options Options given at the call.
-    /// @return A result containing the copied table, or an error status.
-    static Result<std::shared_ptr<FormatTable>> Copy(
-        const std::shared_ptr<FormatTable>& table,
-        const std::map<std::string, std::string>& dynamic_options);
-
-    ~FormatTable();
+    ~FormatTable() override;
 
     std::string Name() const override {
         return identifier_.GetObjectName();
@@ -130,6 +116,11 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
     std::string FullName() const override {
         return identifier_.GetFullName();
     }
+
+    /// Copies the table with `dynamic_options` on top of the options it carries, the precedence
+    /// every context builder promises. The same table comes back when there is nothing to add.
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
 
     /// Directory the data files live in.
     const std::string& Location() const {
@@ -217,14 +208,20 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
                 const std::string& file_compression, const std::string& partition_default_name,
                 bool partition_only_value_in_path, bool location_carries_paimon_metadata);
 
-    /// This table as a `shared_ptr`, which the operators above hand to `FormatTable::Copy()`.
+    /// This table as a `shared_ptr`, which a copy that adds nothing hands back.
     ///
     /// `shared_from_this()` on a const method hands back a `shared_ptr<const FormatTable>`, while
-    /// `Copy()` takes a mutable one; the cast is safe because `Copy()` never writes to the table
-    /// it is given.
+    /// the copy below needs a mutable one; the cast is safe because the table is never written to.
     std::shared_ptr<FormatTable> SharedSelf() const {
         return std::const_pointer_cast<FormatTable>(shared_from_this());
     }
+
+    /// Copies this table with `dynamic_options` on top of the options it carries, as a format
+    /// table rather than the `Table` `Copy()` hands back, which is what its operators need. The
+    /// same table comes back when there is nothing to add; `type` is not overridable, and
+    /// `Create()` keeps the schema's own.
+    Result<std::shared_ptr<FormatTable>> CopySelf(
+        const std::map<std::string, std::string>& dynamic_options) const;
 
     std::map<std::string, std::string> options_;
     Format format_;

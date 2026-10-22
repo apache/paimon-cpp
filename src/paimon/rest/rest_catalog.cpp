@@ -469,8 +469,12 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     // tokens binds to this table.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
-    return std::make_shared<FileStoreTable>(table_file_system, table_path, schema, identifier,
-                                            uuid);
+    // The branch the identifier carries, which the schema and path above were read on, so the
+    // table and its managers serve it.
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+    return std::make_shared<FileStoreTable>(
+        table_file_system, table_path, schema, identifier, uuid,
+        NormalizeBranch(std::move(branch)).value_or(Identifier::kDefaultMainBranch));
 }
 
 std::string RestCatalog::GetRootPath() const {
