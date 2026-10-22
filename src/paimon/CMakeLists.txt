@@ -443,9 +443,10 @@ set(PAIMON_CORE_SRCS
     core/stats/simple_stats_converter.cpp
     core/stats/simple_stats.cpp
     core/stats/simple_stats_evolution.cpp
-    core/table/table.cpp
+    core/table/append_only_file_store_table.cpp
     core/table/bucket_mode.cpp
     core/table/file_store.cpp
+    core/table/file_store_table.cpp
     core/table/format/format_file_listing.cpp
     core/table/format/format_file_naming.cpp
     core/table/format/format_path_validation.cpp
@@ -457,6 +458,7 @@ set(PAIMON_CORE_SRCS
     core/table/format/format_table_scan.cpp
     core/table/format/format_table_write.cpp
     core/table/format/lazy_concat_batch_reader.cpp
+    core/table/primary_key_file_store_table.cpp
     core/table/sink/commit_message.cpp
     core/table/sink/commit_message_impl.cpp
     core/table/sink/commit_message_serializer.cpp

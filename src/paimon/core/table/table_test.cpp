@@ -66,7 +66,7 @@ Result<std::shared_ptr<Table>> CreateManagedTable(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> created,
                            schema_manager.CreateTable(schema, /*partition_keys=*/{},
                                                       /*primary_keys=*/{}, options));
-    return std::make_shared<FileStoreTable>(
+    return FileStoreTable::Create(
         file_system, path,
         checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))), identifier,
         /*uuid=*/"", branch);
@@ -346,11 +346,13 @@ TEST(TableTest, TestMainBranchAliasResolvesToTheMainBranch) {
          {Identifier("db", "tbl"), Identifier("db", "tbl$branch_main"),
           Identifier("db", "tbl$branch_MAIN")}) {
         SCOPED_TRACE(main_identifier.ToString());
-        // A catalog that loaded the schema itself calls the constructor directly, which a
+        // A catalog that loaded the schema itself builds the table through the factory, which a
         // rest catalog is shaped like. The alias resolves to the main branch as well.
         ASSERT_OK_AND_ASSIGN(std::string branch, main_identifier.GetBranchNameOrDefault());
-        FileStoreTable table(fs, dir->Str(), schema, main_identifier, /*uuid=*/"", branch);
-        EXPECT_EQ("main", table.CurrentBranch());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStoreTable> table,
+                             FileStoreTable::Create(fs, dir->Str(), schema, main_identifier,
+                                                    /*uuid=*/"", branch));
+        EXPECT_EQ("main", table->CurrentBranch());
     }
 }
 
