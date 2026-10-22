@@ -46,7 +46,7 @@ FileIndexFormatV1::Writer::Writer(const std::shared_ptr<OutputStream>& output,
 }
 
 Status FileIndexFormatV1::Writer::WriteIndex(const std::string& column, const std::string& type,
-                                             const PayloadWriter& payload) {
+                                             const PayloadWriter& payload_writer) {
     if (finished_ || closed_ || failed_) {
         return Status::Invalid("File index writer is not writable");
     }
@@ -54,12 +54,12 @@ Status FileIndexFormatV1::Writer::WriteIndex(const std::string& column, const st
         return Status::Invalid("Duplicate file index entry");
     }
     std::shared_ptr<Bytes> bytes;
-    if (payload) {
+    if (payload_writer) {
         auto output =
             std::make_shared<ByteArrayOutputStream>(std::make_unique<MemorySegmentOutputStream>(
                 MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_));
         failed_ = true;
-        PAIMON_ASSIGN_OR_RAISE(bool written, payload(output.get()));
+        PAIMON_ASSIGN_OR_RAISE(bool written, payload_writer(output.get()));
         PAIMON_ASSIGN_OR_RAISE(int64_t length, output->GetPos());
         if (!written && length != 0) {
             return Status::Invalid("Absent file index payload must not write bytes");

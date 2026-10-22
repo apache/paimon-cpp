@@ -98,7 +98,7 @@ class PAIMON_EXPORT FileIndexFormat::Writer {
     /// A true result indicates that a non-empty payload was written.
     /// Call Finish() after the last index. Payload failures are terminal.
     virtual Status WriteIndex(const std::string& column_name, const std::string& index_type,
-                              const PayloadWriter& payload) = 0;
+                              const PayloadWriter& payload_writer) = 0;
 
     /// Completes the container: writes V1's header and buffered bodies, or V2's footer and trailer.
     virtual Status Finish() = 0;

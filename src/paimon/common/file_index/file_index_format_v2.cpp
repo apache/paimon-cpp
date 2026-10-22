@@ -48,7 +48,7 @@ Result<std::unique_ptr<FileIndexFormatV2::Writer>> FileIndexFormatV2::Writer::Cr
 }
 
 Status FileIndexFormatV2::Writer::WriteIndex(const std::string& column, const std::string& type,
-                                             const PayloadWriter& payload) {
+                                             const PayloadWriter& payload_writer) {
     if (failed_ || finished_ || closed_) {
         return Status::Invalid("File index writer is not writable");
     }
@@ -61,11 +61,11 @@ Status FileIndexFormatV2::Writer::WriteIndex(const std::string& column, const st
     failed_ = true;
     int64_t start = FileIndexFormat::EMPTY_INDEX_FLAG;
     int64_t length = 0;
-    if (payload) {
+    if (payload_writer) {
         PAIMON_ASSIGN_OR_RAISE(start, output_->GetPos());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OffsetOutputStream> payload_output,
                                OffsetOutputStream::Create(output_.get()));
-        PAIMON_ASSIGN_OR_RAISE(bool written, payload(payload_output.get()));
+        PAIMON_ASSIGN_OR_RAISE(bool written, payload_writer(payload_output.get()));
         PAIMON_ASSIGN_OR_RAISE(int64_t end, output_->GetPos());
         length = end - start;
         if (!written) {

@@ -98,7 +98,7 @@ class FileIndexFormatV1::Writer : public FileIndexFormat::Writer {
  public:
     Writer(const std::shared_ptr<OutputStream>& output, const std::shared_ptr<MemoryPool>& pool);
     Status WriteIndex(const std::string& column, const std::string& type,
-                      const PayloadWriter& payload) override;
+                      const PayloadWriter& payload_writer) override;
     Status Finish() override;
     Status Close() override;
 
