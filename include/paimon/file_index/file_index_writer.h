@@ -59,6 +59,7 @@ class PAIMON_EXPORT FileIndexWriter {
 
     /// Writes one index payload to the caller-owned stream without closing it.
     /// The stream is borrowed for this call and must not be retained by the writer.
+    /// The supplied stream must report positions relative to the start of this index payload.
     /// The default implementation writes SerializedBytes(); streaming writers can override this
     /// method to avoid materializing the complete payload. Write failures must be propagated.
     /// @return true if a non-empty index payload was produced, false if there is no index, or an

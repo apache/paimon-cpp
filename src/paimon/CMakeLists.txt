@@ -97,6 +97,7 @@ set(PAIMON_COMMON_SRCS
     common/io/data_output_stream.cpp
     common/io/memory_segment_output_stream.cpp
     common/io/offset_input_stream.cpp
+    common/io/offset_output_stream.cpp
     common/io/cache/cache.cpp
     common/io/cache/cache_key.cpp
     common/io/cache/cache_manager.cpp
@@ -645,6 +646,7 @@ if(PAIMON_BUILD_TESTS)
                     common/io/memory_segment_output_stream_test.cpp
                     common/io/cache_input_stream_test.cpp
                     common/io/offset_input_stream_test.cpp
+                    common/io/offset_output_stream_test.cpp
                     common/lookup/sort/sort_lookup_store_test.cpp
                     common/logging/logging_test.cpp
                     common/metrics/metrics_impl_test.cpp

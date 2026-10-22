@@ -85,6 +85,8 @@ class PAIMON_EXPORT FileIndexFormat::Writer {
  public:
     /// Writes one payload without closing the stream. Returns false for an absent index
     /// (without writing bytes), or true after writing a non-empty payload.
+    /// The borrowed stream reports positions relative to the start of this payload, starting at 0.
+    /// The callback must not retain the stream.
     using PayloadWriter = std::function<Result<bool>(OutputStream*)>;
     virtual ~Writer() = default;
 

@@ -29,6 +29,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/io/byte_array_output_stream.h"
+#include "paimon/common/io/offset_output_stream.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/memory_pool.h"
@@ -155,13 +156,15 @@ TEST(LuminaFileIndexTest, WriteToUsesRelativeOffsetsAndKeepsStreamOpen) {
     ASSERT_OK(writer->AddBatch(&c_batch));
 
     // Write after a prefix so the payload starts at a nonzero stream position.
-    // Lumina must record its internal offsets relative to this payload start.
+    // The caller supplies a view so Lumina sees positions relative to the payload start.
     auto output =
         std::make_shared<ByteArrayOutputStream>(std::make_unique<MemorySegmentOutputStream>(
             MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool));
     ASSERT_OK_AND_ASSIGN(int64_t prefix_length, output->Write("prefix", 6));
     ASSERT_EQ(6, prefix_length);
-    ASSERT_OK_AND_ASSIGN(bool written, writer->WriteTo(output.get()));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OffsetOutputStream> payload_output,
+                         OffsetOutputStream::Create(output.get()));
+    ASSERT_OK_AND_ASSIGN(bool written, writer->WriteTo(payload_output.get()));
     ASSERT_TRUE(written);
     ASSERT_OK_AND_ASSIGN(int64_t end, output->GetPos());
     int64_t length = end - prefix_length;

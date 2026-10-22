@@ -39,40 +39,6 @@
 namespace paimon::lumina {
 namespace {
 
-/// Reports positions relative to the wrapped stream's position at creation.
-/// Flush forwards to the wrapped stream; Close leaves it open so the container can continue
-/// writing.
-class OffsetOutputStream : public OutputStream {
- public:
-    static Result<std::unique_ptr<OffsetOutputStream>> Create(OutputStream* output) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t start, output->GetPos());
-        return std::unique_ptr<OffsetOutputStream>(new OffsetOutputStream(output, start));
-    }
-
-    Result<int64_t> Write(const char* buffer, int64_t size) override {
-        return output_->Write(buffer, size);
-    }
-    Result<int64_t> GetPos() const override {
-        PAIMON_ASSIGN_OR_RAISE(int64_t position, output_->GetPos());
-        return position - start_;
-    }
-    Result<std::string> GetUri() const override {
-        return output_->GetUri();
-    }
-    Status Flush() override {
-        return output_->Flush();
-    }
-    Status Close() override {
-        return Status::OK();
-    }
-
- private:
-    OffsetOutputStream(OutputStream* output, int64_t start) : output_(output), start_(start) {}
-
-    OutputStream* output_;
-    int64_t start_;
-};
-
 Result<std::shared_ptr<arrow::Schema>> ImportVectorSchema(::ArrowSchema* c_schema,
                                                           const std::string& owner) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
@@ -158,15 +124,15 @@ Result<bool> LuminaFileIndexWriter::WriteTo(OutputStream* output) const {
     if (accumulator_.IndexedCount() == 0) {
         return false;
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetOutputStream> offset_output,
-                           OffsetOutputStream::Create(output));
     std::unique_ptr<::lumina::extensions::experimental::CkptManager> checkpoint_manager;
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<LuminaIndexBuildContext> build_context,
         accumulator_.Build(builder_options_, index_info_.dimension, !tag_fields_.empty(),
                            std::move(checkpoint_manager), pool_.get()));
 
-    auto file_writer = std::make_unique<LuminaFileWriter>(offset_output);
+    // Dump completes synchronously; ownership of the supplied payload stream stays with the caller.
+    std::shared_ptr<OutputStream> borrowed_output(output, [](OutputStream*) {});
+    auto file_writer = std::make_unique<LuminaFileWriter>(borrowed_output);
     PAIMON_RETURN_NOT_OK_FROM_LUMINA(
         build_context->builder.Dump(std::move(file_writer), ::lumina::api::IOOptions()));
     return true;

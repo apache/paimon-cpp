@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "paimon/common/io/data_output_stream.h"
+#include "paimon/common/io/offset_output_stream.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/io/data_input_stream.h"
@@ -62,7 +63,9 @@ Status FileIndexFormatV2::Writer::WriteIndex(const std::string& column, const st
     int64_t length = 0;
     if (payload) {
         PAIMON_ASSIGN_OR_RAISE(start, output_->GetPos());
-        PAIMON_ASSIGN_OR_RAISE(bool written, payload(output_.get()));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OffsetOutputStream> payload_output,
+                               OffsetOutputStream::Create(output_.get()));
+        PAIMON_ASSIGN_OR_RAISE(bool written, payload(payload_output.get()));
         PAIMON_ASSIGN_OR_RAISE(int64_t end, output_->GetPos());
         length = end - start;
         if (!written) {
