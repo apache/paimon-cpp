@@ -1025,6 +1025,40 @@ TEST(TableTest, TestCopyRefusesThePhysicalOptionsTheDataWasLaidOutWith) {
     }
 }
 
+TEST(TableTest, TestALoadNamesTheDatabaseThePathLaysOut) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+
+    // A context that names no catalog knows the table by its directory: the directory above
+    // the table's names the database when it carries the `.db` suffix, the way the Java
+    // `identifierFromPath` reads it, so the table the load serves is named for both - which
+    // the load of a directory without a schema says in the error it fails with. The option
+    // the context carries is what drives the load to that error: it hands the table the merge
+    // would build, which is where the name is spoken.
+    const std::string table_dir = dir->Str() + "/my_db.db/my_table";
+    ASSERT_OK(fs->Mkdirs(table_dir));
+    {
+        ScanContextBuilder builder(table_dir);
+        builder.AddOption("read.batch-size", "2");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
+        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)),
+                            "not found latest schema of my_db.my_table");
+    }
+
+    // A table sitting directly under the root, with no `.db` directory above it, names no
+    // database: the table is known by its directory alone, the way it was before.
+    const std::string loose_table_dir = dir->Str() + "/loose_table";
+    ASSERT_OK(fs->Mkdirs(loose_table_dir));
+    {
+        ScanContextBuilder builder(loose_table_dir);
+        builder.AddOption("read.batch-size", "2");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
+        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)),
+                            "not found latest schema of loose_table");
+    }
+}
+
 TEST(TableTest, TestCreateBuildsTheOperator) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
