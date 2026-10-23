@@ -130,6 +130,15 @@ class FileStoreScan {
         return this;
     }
 
+    /// Replaces the partition filter taken from the scan filter; a null filter accepts every
+    /// partition. `partition_schema` holds the partition fields the filter is indexed by.
+    FileStoreScan* WithPartitionFilter(const std::shared_ptr<PredicateFilter>& partition_filter,
+                                       const std::shared_ptr<arrow::Schema>& partition_schema) {
+        partition_filter_ = partition_filter;
+        partition_schema_ = partition_schema;
+        return this;
+    }
+
     FileStoreScan* WithTablePath(const std::string& table_path) {
         table_path_ = table_path;
         return this;

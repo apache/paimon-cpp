@@ -708,6 +708,9 @@ Result<bool> FileStoreScan::FilterNonPartitionManifestEntry(const ManifestEntry&
 Status FileStoreScan::SplitAndSetFilter(const std::vector<std::string>& partition_keys,
                                         const std::shared_ptr<arrow::Schema>& arrow_schema,
                                         const std::shared_ptr<ScanFilter>& scan_filters) {
+    if (PredicateUtils::ContainsFullTextMatch(scan_filters->GetPredicate())) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    }
     if (scan_filters->GetPredicate()) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FieldMappingBuilder> mapping_builder,
                                FieldMappingBuilder::Create(arrow_schema, partition_keys,

@@ -29,6 +29,8 @@
 struct ArrowArray;
 
 namespace paimon {
+class OutputStream;
+
 /// Interface for writing file-level index data from Arrow batches.
 class PAIMON_EXPORT FileIndexWriter {
  public:
@@ -48,9 +50,22 @@ class PAIMON_EXPORT FileIndexWriter {
     /// have been added. It can be called only once and typically assumes no further calls to
     /// `AddBatch()` will occur afterward.
     ///
+    /// Streaming-only writers may override WriteTo() and use the default NotImplemented result
+    /// from this method.
+    ///
     /// @return A unique pointer to a byte array containing the serialized index data,
     ///         or an error if serialization fails.
-    virtual Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const = 0;
+    virtual Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const;
+
+    /// Writes one index payload to the caller-owned stream without closing it.
+    /// The stream is borrowed for this call and must not be retained by the writer.
+    /// The supplied stream must report positions relative to the start of this index payload.
+    /// The default implementation writes SerializedBytes(); streaming writers can override this
+    /// method to avoid materializing the complete payload. Write failures must be propagated.
+    /// @return true if a non-empty index payload was produced, false if there is no index, or an
+    /// error. Returning false must not write any bytes. The default implementation treats null or
+    /// zero-length SerializedBytes() results as no index.
+    virtual Result<bool> WriteTo(OutputStream* output) const;
 };
 
 }  // namespace paimon

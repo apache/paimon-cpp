@@ -197,13 +197,27 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        Paimon C++ supports VECTOR value columns in append-only and primary-key
        tables backed by Parquet data files. They use the standard Parquet LIST
        representation on disk and are restored as Arrow ``FixedSizeList``
-       values on read. Row-tracking append-only tables with data evolution also
-       support full-row and partial-column VECTOR writes, including reads across
+       values on read. With Vortex enabled at build time, Vortex data files also
+       support VECTOR value columns. Row-tracking append-only Parquet tables
+       with data evolution support full-row and partial-column VECTOR writes, including reads across
        schema versions that add or drop VECTOR columns. Changing a VECTOR's
        dimension or element type is not supported. VECTOR columns cannot be
        primary, partition, or bucket keys, nor comparator-based
-       ordering fields such as sequence and sequence-group fields. Dedicated
-       vector storage is not included yet.
+       ordering fields such as sequence and sequence-group fields.
+
+       ``vector.file.format`` stores a single top-level VECTOR column in dedicated
+       ``.vector.<format>`` files. Supported formats are ``parquet``, ``lance``,
+       and ``vortex``; Lance and Vortex must be enabled at build time.
+       This mode requires ``file.format=parquet``, ``bucket=-1``,
+       ``row-tracking.enabled=true``, and ``data-evolution.enabled=true``, plus at
+       least one ordinary non-partition column. It supports full-row inserts into append-only
+       tables. Custom write schemas, partial writes, multiple or nested VECTOR
+       columns, and BLOB columns are not supported in this mode.
+
+       VECTOR files roll independently at ``vector.target-file-size``, which
+       defaults to ``target-file-size``. Main files roll at ``target-file-size``
+       or ``target-file-row-num`` and also close the current VECTOR file. One
+       main file can therefore cover the combined row range of several VECTOR files.
 
        Paimon C++ also reads Parquet files written by Paimon Rust or Python whose
        embedded Arrow schema restores VECTOR columns as ``FixedSizeList``,

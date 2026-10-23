@@ -88,8 +88,9 @@ class PAIMON_EXPORT GlobalIndexScan {
 
     /// Creates several `GlobalIndexReader`s for a specific field.
     /// @param field_name       Name of the indexed column.
-    /// @param row_range_index  Optional row range that limits the scan to a sub-range of row ids.
-    ///                         If not provided, the entire row range is considered.
+    /// @param row_range_index  Optional row ranges used to skip non-intersecting index shards and
+    ///                         provide pruning hints. Returned candidates are not guaranteed to be
+    ///                         clipped; callers must intersect them with the requested ranges.
     /// @return A `Result` that is:
     ///         - Successful with several readers(with global row id) if the indexes exist and load
     ///         correctly;
@@ -103,8 +104,9 @@ class PAIMON_EXPORT GlobalIndexScan {
     /// Creates a `GlobalIndexReader` for a specific field with a specific index type.
     /// @param field_name       Name of the indexed column.
     /// @param index_type       Name of index type.
-    /// @param row_range_index  Optional row range that limits the scan to a sub-range of row ids.
-    ///                         If not provided, the entire row range is considered.
+    /// @param row_range_index  Optional row ranges used to skip non-intersecting index shards and
+    ///                         provide pruning hints. Returned candidates are not guaranteed to be
+    ///                         clipped; callers must intersect them with the requested ranges.
     /// @return A `Result` that is:
     ///         - Successful with a reader(with global row id) if the index exists and loads
     ///         correctly;
@@ -118,8 +120,9 @@ class PAIMON_EXPORT GlobalIndexScan {
 
     /// Creates several `GlobalIndexReader`s for a specific field (looked up by id),
     /// @param field_id         Field id of the indexed column.
-    /// @param row_range_index  Optional row range that limits the scan to a sub-range of row ids.
-    ///                         If not provided, the entire row range is considered.
+    /// @param row_range_index  Optional row ranges used to skip non-intersecting index shards and
+    ///                         provide pruning hints. Returned candidates are not guaranteed to be
+    ///                         clipped; callers must intersect them with the requested ranges.
     /// @return A `Result` that is:
     ///         - Successful with several readers(with global row id) if the indexes exist and load
     ///         correctly;

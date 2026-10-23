@@ -27,6 +27,7 @@
 
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -43,9 +44,11 @@ class MemoryPool;
 BloomFilterFileIndex::BloomFilterFileIndex(const std::map<std::string, std::string>& options)
     : options_(options) {}
 Result<std::shared_ptr<FileIndexReader>> BloomFilterFileIndex::CreateReader(
-    ::ArrowSchema* c_arrow_schema, int32_t start, int32_t length,
+    ::ArrowSchema* c_arrow_schema, int64_t start, int64_t length,
     const std::shared_ptr<InputStream>& input_stream,
     const std::shared_ptr<MemoryPool>& pool) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetInputStream> bounded_stream,
+                           OffsetInputStream::Create(input_stream, length, start));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
                                       arrow::ImportSchema(c_arrow_schema));
     if (arrow_schema->num_fields() != 1) {
@@ -55,10 +58,9 @@ Result<std::shared_ptr<FileIndexReader>> BloomFilterFileIndex::CreateReader(
     }
     auto arrow_type = arrow_schema->field(0)->type();
 
-    PAIMON_RETURN_NOT_OK(input_stream->Seek(start, SeekOrigin::FS_SEEK_SET));
     auto bytes = std::make_shared<Bytes>(length, pool.get());
     PAIMON_ASSIGN_OR_RAISE(int64_t actual_read_len,
-                           input_stream->Read(bytes->data(), bytes->size()));
+                           bounded_stream->Read(bytes->data(), bytes->size()));
     if (static_cast<size_t>(actual_read_len) != bytes->size()) {
         return Status::Invalid(
             fmt::format("create reader for BloomFilterFileIndex failed, expected read len "

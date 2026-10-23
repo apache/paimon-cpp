@@ -39,7 +39,8 @@ class LazyFilteredBitmapReader : public SortedFileGlobalIndexReader {
         const std::shared_ptr<GlobalIndexFileReader>& file_reader,
         const std::vector<GlobalIndexIOMeta>& files,
         const std::shared_ptr<arrow::DataType>& key_type, int64_t fallback_scan_max_size,
-        const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<Executor>& executor);
+        int64_t total_row_count, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<Executor>& executor);
 
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;
@@ -54,7 +55,7 @@ class LazyFilteredBitmapReader : public SortedFileGlobalIndexReader {
     LazyFilteredBitmapReader(const std::shared_ptr<GlobalIndexFileReader>& file_reader,
                              std::unique_ptr<SortedFileMetaSelector> file_selector,
                              const std::shared_ptr<KeySerializer>& key_serializer,
-                             int64_t fallback_scan_max_size,
+                             int64_t fallback_scan_max_size, int64_t total_row_count,
                              const std::shared_ptr<MemoryPool>& pool,
                              const std::shared_ptr<Executor>& executor);
 

@@ -104,6 +104,7 @@
 #include "paimon/file_store_write.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
@@ -317,6 +318,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         CoreOptions options,
         CoreOptions::FromMap(opts, specific_fs, ctx->GetFileSystemSchemeToIdentifierMap()));
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*schema, options));
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateVectorStore(*schema, options));
+    if (options.GetVectorFileFormat() && !ctx->GetWriteSchema().empty()) {
+        return Status::NotImplemented(
+            "Dedicated VECTOR storage does not yet support custom write schemas or partial writes");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 
@@ -983,6 +989,12 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
 Result<std::unique_ptr<TableRead>> CreateTableRead(
     const std::shared_ptr<InternalReadContext>& internal_context,
     const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor) {
+    if (PredicateUtils::ContainsFullTextMatch(internal_context->GetPredicate())) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    }
+    if (!internal_context->GetIndexScoreBindings().empty()) {
+        return Status::NotImplemented("Per-field index score output is not implemented yet");
+    }
     const auto& core_options = internal_context->GetCoreOptions();
     const auto& table_schema = internal_context->GetTableSchema();
     if (internal_context->GetRealtimeContext() && !core_options.RealtimeEnabled()) {
@@ -1046,6 +1058,9 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(
 /// refuses by name what a format table cannot honour.
 Result<std::unique_ptr<TableRead>> NewFormatTableRead(const std::shared_ptr<FormatTable>& table,
                                                       const std::shared_ptr<ReadContext>& context) {
+    if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
                            FormatTableRead::Create(table, context));
     return std::unique_ptr<TableRead>(std::move(read));
@@ -1081,6 +1096,10 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
+        if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+            return Status::NotImplemented(
+                "FullTextMatch predicate execution is not implemented yet");
+        }
         if (context->HasVectorOrFullTextSearch()) {
             return Status::NotImplemented(
                 "VectorSearch or FullTextSearch is not supported for system tables");

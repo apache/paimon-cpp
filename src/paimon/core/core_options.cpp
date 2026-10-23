@@ -29,6 +29,7 @@
 #include "paimon/common/fs/resolving_file_system.h"
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/options/time_duration.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
@@ -341,6 +342,7 @@ struct CoreOptions::Impl {
     int64_t deletion_vector_target_file_size = 2 * 1024 * 1024;
     int64_t manifest_full_compaction_file_size = 16 * 1024 * 1024;
     int64_t file_index_in_manifest_threshold = 500;
+    int32_t file_index_format_version = 1;
     int64_t write_buffer_size = 256 * 1024 * 1024;
     int64_t commit_timeout = std::numeric_limits<int64_t>::max();
     int64_t commit_min_retry_wait = 10;
@@ -358,7 +360,9 @@ struct CoreOptions::Impl {
 
     std::optional<int64_t> target_file_size;
     std::optional<int64_t> blob_target_file_size;
+    std::optional<int64_t> vector_target_file_size;
     std::shared_ptr<FileFormat> file_format;
+    std::shared_ptr<FileFormat> vector_file_format;
     std::shared_ptr<FileSystem> file_system;
     std::shared_ptr<FileFormat> manifest_file_format;
     std::shared_ptr<Cache> cache;
@@ -388,7 +392,6 @@ struct CoreOptions::Impl {
     std::optional<std::string> field_default_func;
     std::optional<std::string> scan_fallback_branch;
     std::optional<std::string> data_file_external_paths;
-    std::optional<std::string> blob_view_upstream_warehouse;
     std::optional<std::string> changelog_file_compression;
     std::optional<std::string> global_index_external_path;
     std::optional<std::string> scan_tag_name;
@@ -580,9 +583,6 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.ParseList<std::string>(Options::BLOB_VIEW_FIELD,
                                                            Options::FIELDS_SEPARATOR,
                                                            &blob_view_fields, /*need_trim=*/true));
-        // Parse blob-view-upstream-warehouse - warehouse path for configured blob view fields
-        PAIMON_RETURN_NOT_OK(
-            parser.Parse(Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, &blob_view_upstream_warehouse));
         // Parse blob-view.resolve.enabled - whether to resolve blob view fields at read time
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::BLOB_VIEW_RESOLVE_ENABLED, &blob_view_resolve_enabled));
@@ -599,6 +599,15 @@ struct CoreOptions::Impl {
         // Parse file.format - data file format, default "parquet"
         PAIMON_RETURN_NOT_OK(parser.ParseObject<FileFormatFactory>(
             Options::FILE_FORMAT, /*default_identifier=*/"parquet", &file_format));
+        if (parser.ContainsKey(Options::VECTOR_FILE_FORMAT)) {
+            PAIMON_RETURN_NOT_OK(parser.ParseObject<FileFormatFactory>(
+                Options::VECTOR_FILE_FORMAT, /*default_identifier=*/"vortex", &vector_file_format));
+        }
+        PAIMON_RETURN_NOT_OK(
+            parser.ParseMemorySize(Options::VECTOR_TARGET_FILE_SIZE, &vector_target_file_size));
+        if (vector_target_file_size && vector_target_file_size.value() <= 0) {
+            return Status::Invalid("vector.target-file-size must be positive");
+        }
         // Parse file.compression - default file compression, default "zstd"
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::FILE_COMPRESSION, &file_compression));
         // Parse changelog-file.format - no default value
@@ -873,9 +882,16 @@ struct CoreOptions::Impl {
 
     // Parse index-related configurations: file index, global index.
     Status ParseIndexOptions(const ConfigParser& parser) {
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<int32_t>(Options::FILE_INDEX_FORMAT_VERSION, &file_index_format_version));
+        if (file_index_format_version != 1 && file_index_format_version != 2) {
+            return Status::Invalid("file-index.format.version must be 1 or 2");
+        }
         // Parse file-index.in-manifest-threshold - max inline file index size, default 500B
         PAIMON_RETURN_NOT_OK(parser.ParseMemorySize(Options::FILE_INDEX_IN_MANIFEST_THRESHOLD,
                                                     &file_index_in_manifest_threshold));
+        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(file_index_in_manifest_threshold,
+                                                           "file index inline threshold"));
         // Parse file-index.read.enabled - whether to enable reading file index, default true
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::FILE_INDEX_READ_ENABLED, &file_index_read_enabled));
@@ -1123,6 +1139,10 @@ std::shared_ptr<FileFormat> CoreOptions::GetFileFormat() const {
     return impl_->file_format;
 }
 
+std::shared_ptr<FileFormat> CoreOptions::GetVectorFileFormat() const {
+    return impl_->vector_file_format;
+}
+
 std::shared_ptr<FileSystem> CoreOptions::GetFileSystem() const {
     return impl_->file_system;
 }
@@ -1167,6 +1187,10 @@ int64_t CoreOptions::GetBlobTargetFileSize() const {
 
 bool CoreOptions::BlobSplitByFileSize() const {
     return impl_->blob_split_by_file_size.value_or(!impl_->blob_as_descriptor);
+}
+
+int64_t CoreOptions::GetVectorTargetFileSize() const {
+    return impl_->vector_target_file_size.value_or(GetTargetFileSize(/*has_primary_key=*/false));
 }
 
 int64_t CoreOptions::GetCompactionFileSize(bool has_primary_key) const {
@@ -1757,6 +1781,10 @@ bool CoreOptions::FileIndexReadEnabled() const {
     return impl_->file_index_read_enabled;
 }
 
+int32_t CoreOptions::FileIndexFormatVersion() const {
+    return impl_->file_index_format_version;
+}
+
 int64_t CoreOptions::FileIndexInManifestThreshold() const {
     return impl_->file_index_in_manifest_threshold;
 }
@@ -1945,10 +1973,6 @@ const std::vector<std::string>& CoreOptions::GetBlobDescriptorFields() const {
 
 const std::vector<std::string>& CoreOptions::GetBlobViewFields() const {
     return impl_->blob_view_fields;
-}
-
-std::optional<std::string> CoreOptions::GetBlobViewUpstreamWarehouse() const {
-    return impl_->blob_view_upstream_warehouse;
 }
 
 bool CoreOptions::BlobViewResolveEnabled() const {

@@ -1291,6 +1291,84 @@ TEST_F(RealtimeWriteInteTest, TestAppendCommitAndRead) {
     FinalizeCommitAndCheck(writer.get(), /*realtime_commits=*/{}, /*prepare_identifier=*/0, rows);
 }
 
+TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateRollingRestoresEveryOffsetSidecar) {
+    options_[Options::TARGET_FILE_ROW_NUM] = "2";
+    ConfigureRealtimeDeduplicateTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    for (int64_t id = 1; id <= 5; id += 2) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             MakeBatch({Row{id, "old", "p0"}, Row{id + 1, "old", "p0"}},
+                                       /*partitioned=*/false));
+        ASSERT_OK(writer->Write(std::move(batch)));
+    }
+    const std::vector<Row> first_expected = {{1, "old", "p0"}, {2, "old", "p0"}, {3, "old", "p0"},
+                                             {4, "old", "p0"}, {5, "old", "p0"}, {6, "old", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_prepare, ReadRows(realtime_context));
+    ASSERT_EQ(first_expected, rows_before_prepare);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_EQ(OffsetRange(0, 6), progress[0].offset_range);
+    std::shared_ptr<CommitMessageImpl> message =
+        std::dynamic_pointer_cast<CommitMessageImpl>(progress[0].commit_message);
+    ASSERT_NE(nullptr, message);
+    const std::vector<std::shared_ptr<DataFileMeta>>& files =
+        message->GetNewFilesIncrement().NewFiles();
+    ASSERT_EQ(3, files.size());
+    for (const std::shared_ptr<DataFileMeta>& file : files) {
+        ASSERT_EQ(2, file->row_count);
+        ASSERT_EQ(1, std::count(file->extra_files.begin(), file->extra_files.end(),
+                                std::optional<std::string>(file->file_name + ".offset")));
+    }
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
+    ASSERT_EQ(first_expected, rows_after_prepare);
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(progress, /*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(first_expected, rows_before_refresh);
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(first_expected, rows_after_refresh);
+    ASSERT_OK(writer->Close());
+    writer.reset();
+    realtime_context.reset();
+
+    // Restart lookup from disk and overwrite one key from each of the three rolled files.
+    ASSERT_OK_AND_ASSIGN(realtime_context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> restored_rows, ReadRows(realtime_context));
+    ASSERT_EQ(first_expected, restored_rows);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> update,
+                         MakeBatch({Row{1, "new", "p0"}, Row{3, "new", "p0"}, Row{5, "new", "p0"}},
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(update)));
+    const std::vector<Row> expected = {{2, "old", "p0"}, {4, "old", "p0"}, {6, "old", "p0"},
+                                       {1, "new", "p0"}, {3, "new", "p0"}, {5, "new", "p0"}};
+    ASSERT_OK_AND_ASSIGN(rows_before_prepare, ReadRows(realtime_context));
+    ASSERT_EQ(expected, rows_before_prepare);
+    ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_EQ(OffsetRange(6, 9), progress[0].offset_range);
+    ASSERT_NE(nullptr, progress[0].deleted_offsets);
+    ASSERT_EQ(3, progress[0].deleted_offsets->Cardinality());
+    for (int64_t offset : {0, 2, 4}) {
+        ASSERT_TRUE(progress[0].deleted_offsets->Contains(offset));
+    }
+    ASSERT_OK_AND_ASSIGN(rows_after_prepare, ReadRows(realtime_context));
+    ASSERT_EQ(expected, rows_after_prepare);
+    ASSERT_OK_AND_ASSIGN(snapshot_id, Commit(progress, /*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(rows_before_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(expected, rows_before_refresh);
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_OK_AND_ASSIGN(rows_after_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(expected, rows_after_refresh);
+    ASSERT_OK(writer->Close());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, ReadRows());
+    ASSERT_EQ(expected, rows);
+}
+
 TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWritesDeletionVector) {
     ConfigureRealtimeDeduplicateTable();
 

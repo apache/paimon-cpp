@@ -24,10 +24,11 @@
 
 namespace paimon {
 SstFileWriter::SstFileWriter(const std::shared_ptr<OutputStream>& out,
-                             const std::shared_ptr<BloomFilter>& bloom_filter, int32_t block_size,
+                             const std::shared_ptr<BloomFilter::Builder>& bloom_filter_builder,
+                             int32_t block_size,
                              const std::shared_ptr<BlockCompressionFactory>& factory,
                              const std::shared_ptr<MemoryPool>& pool)
-    : pool_(pool), out_(out), bloom_filter_(bloom_filter), block_size_(block_size) {
+    : pool_(pool), out_(out), bloom_filter_builder_(bloom_filter_builder), block_size_(block_size) {
     // block_size * 1.1 exceeds INT32_MAX for block_size above ~1.9GB; saturate instead of
     // relying on the undefined double->int32_t conversion.
     data_block_writer_ =
@@ -44,12 +45,8 @@ Status SstFileWriter::Write(std::shared_ptr<Bytes>&& key, std::shared_ptr<Bytes>
     if (data_block_writer_->Memory() > block_size_) {
         PAIMON_RETURN_NOT_OK(Flush());
     }
-    if (bloom_filter_) {
-        // Double-check that bloom_filter_ is valid
-        if (!bloom_filter_->GetBitSet()) {
-            return Status::Invalid("Bloom filter bit set is null");
-        }
-        PAIMON_RETURN_NOT_OK(bloom_filter_->AddHash(MurmurHashUtils::HashBytes(key)));
+    if (bloom_filter_builder_) {
+        PAIMON_RETURN_NOT_OK(bloom_filter_builder_->AddHash(MurmurHashUtils::HashBytes(key)));
     }
     return Status::OK();
 }
@@ -72,13 +69,18 @@ Result<BlockHandle> SstFileWriter::WriteIndexBlock() {
 }
 
 Result<std::optional<BloomFilterHandle>> SstFileWriter::WriteBloomFilter() {
-    if (!bloom_filter_) {
+    if (!bloom_filter_builder_) {
         return std::optional<BloomFilterHandle>();
     }
-    auto bf_slice = bloom_filter_->GetBitSet()->ToSlice();
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BloomFilter> bloom_filter,
+                           bloom_filter_builder_->Build());
+    if (!bloom_filter) {
+        return std::optional<BloomFilterHandle>();
+    }
+    auto bf_slice = bloom_filter->GetBitSet()->ToSlice();
     auto data = bf_slice.ReadStringView();
     PAIMON_ASSIGN_OR_RAISE(int64_t bloom_filter_pos, out_->GetPos());
-    BloomFilterHandle handle(bloom_filter_pos, data.size(), bloom_filter_->ExpectedEntries());
+    BloomFilterHandle handle(bloom_filter_pos, data.size(), bloom_filter->ExpectedEntries());
 
     PAIMON_RETURN_NOT_OK(WriteBytes(data.data(), data.size()));
 

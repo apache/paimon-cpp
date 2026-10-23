@@ -26,21 +26,29 @@
 #include <utility>
 #include <vector>
 
+#include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/table.h"
+#include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/abstract_split_read.h"
 #include "paimon/core/operation/split_read.h"
+#include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/defs.h"
+#include "paimon/fs/local/local_file_system.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
+#include "paimon/table/format/format_table.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -115,6 +123,52 @@ TEST(TableReadTest, TestReadWithSpecifiedInvalidSchema) {
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
                         "Get field field_no_exist failed: not exist in table schema");
+}
+
+TEST(TableReadTest, TestFullTextMatchExecutionIsNotImplemented) {
+    auto match = std::make_shared<FullTextMatch>("f0", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(auto full_text, PredicateBuilder::FullTextMatch(/*field_index=*/0, match));
+    auto scalar = PredicateBuilder::Equal(/*field_index=*/1, "f1", FieldType::INT, Literal(1));
+    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::Or({scalar, full_text}));
+    const std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto fs = std::make_shared<LocalFileSystem>();
+    SchemaManager schema_manager(fs, table_path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, schema_manager.ReadSchema(0));
+    Table table(fs, table_path, schema, Identifier("append_09.db", "append_09"));
+    for (bool table_entry : {false, true}) {
+        ReadContextBuilder builder(table_path);
+        builder.SetReadFieldNames({"f0", "f1"}).SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+        auto result =
+            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        ASSERT_NOK_WITH_MSG(result, "FullTextMatch predicate execution is not implemented yet");
+        ASSERT_TRUE(result.status().IsNotImplemented());
+
+        builder.SetReadFieldNames({"f0", "f1", "_f0_INDEX_SCORE"}).SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(context, builder.Finish());
+        result =
+            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        ASSERT_NOK_WITH_MSG(result, "Score-producing FullTextMatch cannot appear under OR");
+    }
+}
+
+TEST(TableReadTest, TestPerFieldScoreExecutionIsNotImplemented) {
+    const std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto search =
+        std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"apple"}})", /*limit=*/1);
+    auto fs = std::make_shared<LocalFileSystem>();
+    SchemaManager schema_manager(fs, path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, schema_manager.ReadSchema(0));
+    Table table(fs, path, schema, Identifier("append_09.db", "append_09"));
+    for (bool table_entry : {false, true}) {
+        ReadContextBuilder builder(path);
+        builder.SetFullTextSearch(search).SetReadFieldNames({"f1", "_f0_INDEX_SCORE"});
+        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+        auto result =
+            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        ASSERT_NOK_WITH_MSG(result, "Per-field index score output is not implemented yet");
+        ASSERT_TRUE(result.status().IsNotImplemented());
+    }
 }
 
 TEST(TableReadTest, TestCreateKeyValueTableRead) {
@@ -215,6 +269,39 @@ TEST(TableReadTest, TestMergeOptions) {
         {"bucket", "10"},           {"bucket-key", "f3"},
         {"manifest.format", "orc"}, {"file.format", "orc"}};
     ASSERT_EQ(expected_options, core_options.ToMap());
+}
+
+TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {
+    const std::string read_via_option = "header.X-Paimon-Read-Via";
+    const std::map<std::string, std::string> table_options = {
+        {Options::FILE_FORMAT, "orc"}, {Options::BUCKET, "-1"}, {read_via_option, "table-view"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> table_schema,
+        TableSchema::Create(0, arrow::schema({arrow::field("id", arrow::int32())}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, table_options));
+    ASSERT_OK_AND_ASSIGN(std::string schema_json, table_schema->ToJsonString());
+
+    for (bool explicit_header : {false, true}) {
+        ReadContextBuilder builder("warehouse/db.db/table");
+        builder.SetTableSchema(schema_json);
+        if (explicit_header) {
+            builder.AddOption(read_via_option, "read-view");
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, builder.Finish());
+        // Exercise the actual table/read merge before creating the dependency context.
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                             TableRead::Create(std::move(read_context)));
+        auto* append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
+        ASSERT_NE(append_only_table_read, nullptr);
+        const auto& internal_context = append_only_table_read->context_;
+        auto dependency_context = internal_context->CreateDependencyCatalogContext();
+
+        auto expected_options = table_options;
+        expected_options[read_via_option] = explicit_header ? "read-view" : "table-view";
+        ASSERT_EQ(dependency_context->root_path, "warehouse");
+        ASSERT_EQ(dependency_context->options, expected_options);
+        ASSERT_EQ(internal_context->GetTableSchema()->Options(), table_options);
+    }
 }
 
 }  // namespace paimon::test

@@ -33,6 +33,7 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/long_counter.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -44,8 +45,10 @@
 #include "paimon/core/io/multiple_blob_file_writer.h"
 #include "paimon/core/io/rolling_blob_file_writer.h"
 #include "paimon/core/io/rolling_file_writer.h"
+#include "paimon/core/io/rolling_vector_file_writer.h"
 #include "paimon/core/io/shredding_append_data_file_writer_factory.h"
 #include "paimon/core/io/single_file_writer.h"
+#include "paimon/core/io/vector_data_file_writer_factory.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/operation/blob_file_context.h"
 #include "paimon/core/utils/commit_increment.h"
@@ -176,6 +179,35 @@ Status AppendOnlyWriter::Flush(bool wait_for_latest_compaction, bool forced_full
 }
 
 AppendOnlyWriter::RollingFileWriterResult AppendOnlyWriter::CreateRollingRowWriter() {
+    if (options_.GetVectorFileFormat()) {
+        arrow::FieldVector main_fields;
+        arrow::FieldVector vector_fields;
+        int32_t vector_index = -1;
+        for (int32_t i = 0; i < write_schema_->num_fields(); ++i) {
+            const auto& field = write_schema_->field(i);
+            if (VectorUtils::ContainsVectorField(field)) {
+                vector_fields.push_back(field);
+                vector_index = i;
+            } else {
+                main_fields.push_back(field);
+            }
+        }
+        if (vector_fields.size() != 1 || main_fields.empty()) {
+            return Status::Invalid(
+                "Dedicated VECTOR storage requires normal columns and one VECTOR column");
+        }
+        auto main_schema = arrow::schema(main_fields);
+        auto vector_schema = arrow::schema(vector_fields);
+        PAIMON_ASSIGN_OR_RAISE(WriterFactory main_factory,
+                               GetDataFileWriterFactory(main_schema, main_schema->field_names()));
+        auto vector_factory = std::make_shared<VectorDataFileWriterFactory>(
+            options_, schema_id_, vector_schema, vector_schema->field_names(), seq_num_counter_,
+            FileSource::Append(), path_factory_, memory_pool_);
+        return std::make_unique<RollingVectorFileWriter>(
+            options_.GetTargetFileSize(/*has_primary_key=*/false), options_.GetTargetFileRowNum(),
+            options_.GetVectorTargetFileSize(), main_factory, vector_factory, write_schema_,
+            vector_index);
+    }
     auto blob_context = BlobFileContext::Create(write_schema_, options_);
 
     // Save inline descriptor and view fields for validation in Write()

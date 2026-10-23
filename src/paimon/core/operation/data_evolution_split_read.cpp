@@ -34,7 +34,6 @@
 #include "arrow/array/array_binary.h"
 #include "arrow/array/array_nested.h"
 #include "arrow/c/bridge.h"
-#include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/blob_view_struct.h"
@@ -49,13 +48,14 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
-#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/range_helper.h"
+#include "paimon/common/utils/vector_store_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/io/file_index_options.h"
+#include "paimon/core/table/format/lazy_concat_batch_reader.h"
 #include "paimon/core/utils/blob_view_lookup.h"
 #include "paimon/core/utils/data_evolution_utils.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -280,33 +280,18 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewRes
     if (read_blob_view_fields.empty()) {
         return std::move(inner_reader);
     }
-    // The explicit upstream warehouse is optional. Absent it, fall back to the warehouse this
-    // (downstream) table itself lives in, which is where a co-located upstream table is resolved
-    // from; a metastore-backed catalog resolves the upstream location by identifier anyway, so the
-    // root is only a hint there. Stripping the trailing `<database>.db/<table>` (or
-    // `<database>/<table>`) components off this table's path yields that warehouse.
-    std::optional<std::string> warehouse_path = options_.GetBlobViewUpstreamWarehouse();
-    if (!warehouse_path) {
-        // TODO(yonghao.fyh): refactor warehouse path in the future
-        warehouse_path =
-            PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(context_->GetPath()));
-    }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> pre_reader,
                            CreateBlobViewReader(data_split, read_blob_view_fields, row_ranges));
     PAIMON_ASSIGN_OR_RAISE(std::unordered_set<BlobViewStruct> blob_view_structs,
                            ExtractBlobViewStructs(pre_reader.get()));
-    // The dependency table is read through a catalog of its own, told how to resolve a scheme but
-    // not handed this read's file system: that one authenticates as this table, and the table about
-    // to be read is a different one whose credentials the metastore issues only for it.
-    auto catalog_context = std::make_shared<CatalogContext>(
-        warehouse_path.value(), options_.ToMap(), context_->GetFileSystemSchemeToIdentifierMap());
     // use global thread number
     uint32_t cpu_count = std::thread::hardware_concurrency();
     uint32_t thread_num = cpu_count > 0 ? cpu_count : 1;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor, CreateDefaultExecutor(thread_num));
     PAIMON_ASSIGN_OR_RAISE(
         BlobViewResolver resolver,
-        BlobViewLookup::CreateResolver(blob_view_structs, catalog_context, pool_, executor));
+        BlobViewLookup::CreateResolver(
+            blob_view_structs, context_->CreateDependencyCatalogContext(), pool_, executor));
     return std::make_unique<BlobViewResolvingBatchReader>(std::move(inner_reader),
                                                           std::move(read_blob_view_fields),
                                                           std::move(resolver), arrow_pool_);
@@ -345,11 +330,11 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobViewReade
 
     std::vector<std::unique_ptr<BatchReader>> batch_readers;
     for (const std::vector<std::shared_ptr<DataFileMeta>>& group : split_by_row_id) {
-        // skip blob files: they only contain blob payloads, not the blob-view columns.
+        // Dedicated files contain payloads, not the blob-view columns.
         std::vector<std::shared_ptr<DataFileMeta>> data_files;
         data_files.reserve(group.size());
         for (const auto& file : group) {
-            if (!BlobUtils::IsBlobFile(file->file_name)) {
+            if (DataEvolutionUtils::IsNormalFile(file->file_name)) {
                 data_files.push_back(file);
             }
         }
@@ -475,7 +460,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
             sub_readers.push_back(std::move(raw_file_readers[0]));
         } else {
             PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<DataEvolutionFileReader> evolution_reader,
+                std::unique_ptr<BatchReader> evolution_reader,
                 CreateUnionReader(split_impl->Partition(), need_merge_files, row_ranges,
                                   data_file_path_factory, group_dv_factory, group_dv, read_schema));
             sub_readers.push_back(std::move(evolution_reader));
@@ -674,7 +659,203 @@ DataEvolutionSplitRead::SplitFieldBunches(
     return fields_files;
 }
 
-Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateUnionReader(
+Result<std::vector<DataEvolutionSplitRead::VectorReadRange>>
+DataEvolutionSplitRead::PlanVectorReadRanges(
+    const std::vector<std::shared_ptr<DataFileMeta>>& files,
+    const std::vector<int32_t>& read_field_ids,
+    const std::function<Result<std::vector<int32_t>>(const std::shared_ptr<DataFileMeta>&)>&
+        file_to_field_ids) {
+    struct Candidate {
+        std::shared_ptr<DataFileMeta> file;
+        std::vector<int32_t> field_ids;
+    };
+    std::vector<Candidate> candidates;
+    std::vector<std::shared_ptr<DataFileMeta>> other_files;
+    std::map<int64_t, std::vector<size_t>> boundaries;
+    std::unordered_set<int32_t> projected_ids(read_field_ids.begin(), read_field_ids.end());
+    std::optional<Range> logical_range;
+    int64_t first_row_id = std::numeric_limits<int64_t>::max();
+    int64_t end_row_id = std::numeric_limits<int64_t>::min();
+    bool vector_only = std::all_of(files.begin(), files.end(), [](const auto& file) {
+        return VectorStoreUtils::IsVectorStoreFile(file->file_name);
+    });
+    for (const auto& file : files) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t first, file->NonNullFirstRowId());
+        if (first < 0 || file->row_count <= 0 ||
+            first > std::numeric_limits<int64_t>::max() - file->row_count) {
+            return Status::Invalid("Invalid row id range in VECTOR merge group");
+        }
+        int64_t end = first + file->row_count;
+        first_row_id = std::min(first_row_id, first);
+        end_row_id = std::max(end_row_id, end);
+        if (!VectorStoreUtils::IsVectorStoreFile(file->file_name)) {
+            other_files.push_back(file);
+            if (DataEvolutionUtils::IsNormalFile(file->file_name)) {
+                logical_range = Range(first, end - 1);
+            }
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> field_ids, file_to_field_ids(file));
+        field_ids.erase(std::remove_if(field_ids.begin(), field_ids.end(),
+                                       [&](int32_t id) { return projected_ids.count(id) == 0; }),
+                        field_ids.end());
+        if (!field_ids.empty() || vector_only) {
+            size_t index = candidates.size();
+            candidates.push_back(Candidate{file, std::move(field_ids)});
+            boundaries[first].push_back(index);
+            boundaries[end].push_back(index);
+        }
+    }
+    if (files.empty()) {
+        return std::vector<VectorReadRange>();
+    }
+    if (!logical_range) {
+        logical_range = Range(first_row_id, end_row_id - 1);
+    }
+    boundaries[logical_range->from];
+    boundaries[logical_range->to + 1];
+
+    auto newest_first = [&](size_t left, size_t right) {
+        const auto& lhs = candidates[left].file;
+        const auto& rhs = candidates[right].file;
+        if (lhs->max_sequence_number != rhs->max_sequence_number) {
+            return lhs->max_sequence_number > rhs->max_sequence_number;
+        }
+        if (lhs->file_name != rhs->file_name) {
+            return lhs->file_name < rhs->file_name;
+        }
+        return left < right;
+    };
+    std::set<size_t, decltype(newest_first)> active(newest_first);
+    std::vector<VectorReadRange> result;
+    int64_t start = boundaries.begin()->first;
+    for (const auto& [end, events] : boundaries) {
+        int64_t from = std::max(start, logical_range->from);
+        int64_t to = std::min(end - 1, logical_range->to);
+        if (from <= to) {
+            std::unordered_set<int32_t> assigned;
+            std::vector<std::shared_ptr<DataFileMeta>> providers = other_files;
+            for (size_t index : active) {
+                const auto& candidate = candidates[index];
+                bool provides_field = false;
+                for (int32_t id : candidate.field_ids) {
+                    provides_field |= assigned.insert(id).second;
+                }
+                // An explicit NULL in a newer file overrides the older value as well.
+                if (provides_field) {
+                    providers.push_back(candidate.file);
+                }
+            }
+            if (providers.empty() && vector_only && !active.empty()) {
+                providers.push_back(candidates[*active.begin()].file);
+            }
+            // Ordinary inline fields and dedicated fields share the same sequence precedence.
+            // BLOB files remain last and retain their own per-row fallback ordering.
+            std::stable_sort(
+                providers.begin(), providers.end(), [](const auto& lhs, const auto& rhs) {
+                    bool lhs_blob = BlobUtils::IsBlobFile(lhs->file_name);
+                    bool rhs_blob = BlobUtils::IsBlobFile(rhs->file_name);
+                    if (lhs_blob != rhs_blob) {
+                        return !lhs_blob;
+                    }
+                    return !lhs_blob && lhs->max_sequence_number > rhs->max_sequence_number;
+                });
+            if (!result.empty() && result.back().range.to + 1 == from &&
+                result.back().files == providers) {
+                result.back().range.to = to;
+            } else {
+                result.push_back(VectorReadRange{Range(from, to), std::move(providers)});
+            }
+        }
+        for (size_t index : events) {
+            if (active.erase(index) == 0) {
+                active.insert(index);
+            }
+        }
+        start = end;
+    }
+    return result;
+}
+
+Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateUnionReader(
+    const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
+    const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const DeletionVector::Factory& group_dv_factory,
+    const std::optional<GroupDeletionVector>& group_dv,
+    const std::shared_ptr<arrow::Schema>& read_schema) const {
+    if (std::none_of(need_merge_files.begin(), need_merge_files.end(), [](const auto& file) {
+            return VectorStoreUtils::IsVectorStoreFile(file->file_name);
+        })) {
+        return CreateFieldUnionReader(partition, need_merge_files, row_ranges,
+                                      data_file_path_factory, group_dv_factory, group_dv,
+                                      read_schema);
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> read_fields,
+                           DataField::ConvertArrowSchemaToDataFields(read_schema));
+    std::vector<int32_t> read_field_ids;
+    for (const auto& field : read_fields) {
+        if (!SpecialFields::IsSystemField(field.Name())) {
+            read_field_ids.push_back(field.Id());
+        }
+    }
+    auto file_to_field_ids =
+        [&](const std::shared_ptr<DataFileMeta>& file) -> Result<std::vector<int32_t>> {
+        if (!file->write_cols) {
+            return Status::Invalid("VECTOR files must declare their write columns");
+        }
+        auto data_schema = context_->GetTableSchema();
+        if (file->schema_id != data_schema->Id()) {
+            PAIMON_ASSIGN_OR_RAISE(data_schema, schema_manager_->ReadSchema(file->schema_id));
+        }
+        std::vector<int32_t> ids;
+        for (const auto& name : file->write_cols.value()) {
+            if (SpecialFields::IsSystemField(name)) {
+                continue;
+            }
+            PAIMON_ASSIGN_OR_RAISE(DataField field, data_schema->GetField(name));
+            ids.push_back(field.Id());
+        }
+        return ids;
+    };
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<VectorReadRange> ranges,
+        PlanVectorReadRanges(need_merge_files, read_field_ids, file_to_field_ids));
+    // Each range creates a separate field-union reader, reopening a main file that spans ranges.
+    // TODO(ChaomingZhangCN): Keep one main reader and concatenate VECTOR readers for contiguous,
+    // non-overlapping files whose field providers can be merged sequentially.
+    std::vector<LazyConcatBatchReader::Source> sources;
+    auto split_read =
+        std::make_shared<DataEvolutionSplitRead>(path_factory_, context_, pool_, executor_);
+    std::optional<std::vector<Range>> normalized_ranges;
+    if (row_ranges) {
+        normalized_ranges = Range::SortAndMergeOverlap(row_ranges.value(), /*adjacent=*/true);
+    }
+    for (const auto& range : ranges) {
+        std::vector<Range> selected = {range.range};
+        if (normalized_ranges) {
+            selected = Range::And(selected, normalized_ranges.value());
+        }
+        if (selected.empty() || range.files.empty()) {
+            continue;
+        }
+        // Keep original file metadata and the group's DV; selection uses absolute row ids.
+        // Open one range at a time, so independently rolled files do not multiply open readers.
+        sources.push_back(LazyConcatBatchReader::Source{
+            range.range.ToString(),
+            [split_read, partition, files = range.files, selected = std::move(selected),
+             data_file_path_factory, group_dv_factory, group_dv,
+             read_schema]() -> Result<std::unique_ptr<BatchReader>> {
+                return split_read->CreateFieldUnionReader(partition, files, selected,
+                                                          data_file_path_factory, group_dv_factory,
+                                                          group_dv, read_schema);
+            }});
+    }
+    return std::make_unique<LazyConcatBatchReader>(std::move(sources), arrow_pool_);
+}
+
+Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateFieldUnionReader(
     const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
     const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
@@ -796,10 +977,26 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateU
             }
         }
     }
+    if (std::none_of(file_batch_readers.begin(), file_batch_readers.end(),
+                     [](const auto& reader) { return reader != nullptr; })) {
+        // A projected VECTOR can be absent in this range. Let schema evolution fill NULLs,
+        // using an original file as the row-count provider even when no field is projected.
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::unique_ptr<FileBatchReader>> file_readers,
+            CreateRawFileReaders(partition, fields_files[0]->Files(), read_schema,
+                                 /*predicate=*/nullptr, group_dv_factory, row_ranges,
+                                 data_file_path_factory, /*extra_format_options=*/{}));
+        auto readers =
+            ObjectUtils::MoveVector<std::unique_ptr<BatchReader>>(std::move(file_readers));
+        return std::make_unique<ConcatBatchReader>(std::move(readers), arrow_pool_);
+    }
     // TODO(xinyu.lxy): check nullable when reader_offsets[read_field_idx] = -1
-    return DataEvolutionFileReader::Create(std::move(file_batch_readers), read_schema,
-                                           options_.GetReadBatchSize(), reader_offsets,
-                                           field_offsets, arrow_pool_);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BatchReader> reader,
+        DataEvolutionFileReader::Create(std::move(file_batch_readers), read_schema,
+                                        options_.GetReadBatchSize(), reader_offsets, field_offsets,
+                                        arrow_pool_));
+    return reader;
 }
 
 namespace {
@@ -876,15 +1073,19 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobFallbackR
                         BlobFallbackBatchReader::Segment{nullptr, std::move(gap_selected_ranges)});
                 }
             }
-            PAIMON_ASSIGN_OR_RAISE(
-                std::vector<std::unique_ptr<FileBatchReader>> file_readers,
-                CreateRawFileReaders(partition, {file}, file_read_schema,
-                                     /*predicate=*/nullptr, group_dv_factory, row_ranges,
-                                     data_file_path_factory, blob_format_options));
-            if (file_readers.size() != 1) {
-                return Status::Invalid("Unexpected: blob fallback file reader was skipped.");
+            if (!SelectedRangesInRange(first_row_id, first_row_id + file->row_count - 1, row_ranges)
+                     .empty()) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::vector<std::unique_ptr<FileBatchReader>> file_readers,
+                    CreateRawFileReaders(partition, {file}, file_read_schema,
+                                         /*predicate=*/nullptr, group_dv_factory, row_ranges,
+                                         data_file_path_factory, blob_format_options));
+                if (file_readers.size() != 1) {
+                    return Status::Invalid("Unexpected: blob fallback file reader was skipped.");
+                }
+                segments.push_back(
+                    BlobFallbackBatchReader::Segment{std::move(file_readers[0]), {}});
             }
-            segments.push_back(BlobFallbackBatchReader::Segment{std::move(file_readers[0]), {}});
             next_row_id = first_row_id + file->row_count;
         }
         if (next_row_id <= union_last_row_id) {
@@ -927,16 +1128,20 @@ DataEvolutionSplitRead::MergeRangesAndSort(std::vector<std::shared_ptr<DataFileM
 
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> result,
                            range_helper.MergeOverlappingRanges(std::move(files)));
-    // in group, sort by blob file and max_seq
+    // Keep ordinary files separate from independently rolled dedicated files.
     for (auto& group : result) {
         // split to data files and blob files
         std::vector<std::shared_ptr<DataFileMeta>> data_files;
         data_files.reserve(group.size());
         std::vector<std::shared_ptr<DataFileMeta>> blob_files;
         blob_files.reserve(group.size());
+        std::vector<std::shared_ptr<DataFileMeta>> vector_files;
+        vector_files.reserve(group.size());
         for (auto& meta : group) {
             if (BlobUtils::IsBlobFile(meta->file_name)) {
                 blob_files.push_back(std::move(meta));
+            } else if (VectorStoreUtils::IsVectorStoreFile(meta->file_name)) {
+                vector_files.push_back(std::move(meta));
             } else {
                 data_files.push_back(std::move(meta));
             }
@@ -963,10 +1168,18 @@ DataEvolutionSplitRead::MergeRangesAndSort(std::vector<std::shared_ptr<DataFileM
                 }
                 return m1->max_sequence_number > m2->max_sequence_number;
             });
-        // concat data files and blob files
+        std::stable_sort(vector_files.begin(), vector_files.end(),
+                         [](const auto& lhs, const auto& rhs) {
+                             if (lhs->first_row_id != rhs->first_row_id) {
+                                 return lhs->first_row_id < rhs->first_row_id;
+                             }
+                             return lhs->max_sequence_number > rhs->max_sequence_number;
+                         });
         group.clear();
         group.insert(group.end(), std::make_move_iterator(data_files.begin()),
                      std::make_move_iterator(data_files.end()));
+        group.insert(group.end(), std::make_move_iterator(vector_files.begin()),
+                     std::make_move_iterator(vector_files.end()));
         group.insert(group.end(), std::make_move_iterator(blob_files.begin()),
                      std::make_move_iterator(blob_files.end()));
     }

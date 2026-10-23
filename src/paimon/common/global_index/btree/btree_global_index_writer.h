@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "arrow/api.h"
 #include "paimon/common/global_index/btree/btree_file_footer.h"
@@ -64,7 +65,7 @@ class BTreeGlobalIndexWriter : public GlobalIndexWriter {
         const std::string& field_name, const std::shared_ptr<arrow::StructType>& arrow_type,
         const std::shared_ptr<GlobalIndexFileWriter>& file_writer, int32_t block_size,
         const std::shared_ptr<paimon::BlockCompressionFactory>& compression_factory,
-        const std::shared_ptr<MemoryPool>& pool);
+        bool bloom_filter_enabled, const std::shared_ptr<MemoryPool>& pool);
 
     ~BTreeGlobalIndexWriter() override = default;
 
@@ -101,6 +102,7 @@ class BTreeGlobalIndexWriter : public GlobalIndexWriter {
     std::optional<Literal> first_key_;
     std::optional<Literal> last_key_;
 
+    int64_t row_count_ = 0;
     // Null bitmap tracking
     RoaringBitmap64 null_bitmap_;
     std::vector<int64_t> current_row_ids_;

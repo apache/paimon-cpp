@@ -92,6 +92,7 @@ SubmissionResult Submit(uint32_t workers, int32_t ordinal, bool recover, bool sh
             caught = true;
         }
     }
+    task = nullptr;
     SubmissionResult result = {allocations, fired, caught, false, retained.expired(), 0};
     if (recover) {
         executor->Add(std::move(recovery));
@@ -165,6 +166,7 @@ TEST(ExecutorSubmissionTest, QueueAllocationFailurePreservesAcceptedPrefix) {
                 caught = true;
             }
         }
+        task = nullptr;
         if (fired) {
             hit = true;
             released = retained[accepted].expired();

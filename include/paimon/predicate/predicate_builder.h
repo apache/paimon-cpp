@@ -27,6 +27,7 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
+struct FullTextMatch;
 class Literal;
 enum class FieldType;
 
@@ -38,6 +39,15 @@ class PAIMON_EXPORT PredicateBuilder {
  public:
     PredicateBuilder() = delete;
     ~PredicateBuilder() = delete;
+
+    /// Create a full-text predicate returning all matching rows without TopK truncation.
+    /// The field must have STRING type and a full-text index.
+    /// Project `_<field>_INDEX_SCORE` in the read schema to request score output.
+    /// @param field_index The index of the field in read schema (0-based).
+    /// @param match The full-text request, including the field name, JSON DSL query and
+    /// optional eligible row ids.
+    static Result<std::shared_ptr<Predicate>> FullTextMatch(
+        int32_t field_index, const std::shared_ptr<FullTextMatch>& match);
 
     /// Create an equality predicate (field == literal).
     ///

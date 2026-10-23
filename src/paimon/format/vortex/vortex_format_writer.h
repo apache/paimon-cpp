@@ -72,6 +72,7 @@ class VortexFormatWriter : public FormatWriter {
     // RAII alias cannot express. Nulled right after either, so it is never used or freed twice.
     vx_callback_sink* sink_;
     std::shared_ptr<Metrics> metrics_;
+    int64_t ffi_bytes_ = 0;
     bool finished_ = false;
 };
 

@@ -127,6 +127,11 @@ struct DataFileMeta {
         return Status::Invalid(fmt::format("First row id of {} should not be null.", file_name));
     }
 
+    /// Returns the global row ids of this file, as Java `nonNullRowIdRange` does. Fails if the
+    /// first row id is null or negative, the file has no rows, or its last row id would pass the
+    /// largest int64 value.
+    Result<Range> NonNullRowIdRange() const;
+
     // empty row_ranges indicates all rows in the file are needed, return null bitmap
     Result<std::optional<RoaringBitmap32>> ToFileSelection(
         const std::optional<std::vector<Range>>& row_ranges) const;

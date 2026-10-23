@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -37,57 +38,10 @@ class Bytes;
 class OutputStream;
 
 /// Defines the on-disk format and versioning for Paimon file-level indexes.
-/// File index file format. Put all column and offset in the header.
-///
-/// <pre>
-///  _______________________________________    _____________________
-/// |     magic    | version | head length |
-/// |--------------------------------------|
-/// |            column number             |
-/// |--------------------------------------|
-/// |   column 1        |  index number    |
-/// |--------------------------------------|
-/// |  index name 1 | start pos | length   |
-/// |--------------------------------------|
-/// |  index name 2 | start pos | length   |
-/// |--------------------------------------|
-/// |  index name 3 | start pos | length   |
-/// |--------------------------------------|            HEAD
-/// |   column 2        |  index number    |
-/// |--------------------------------------|
-/// |  index name 1 | start pos | length   |
-/// |--------------------------------------|
-/// |  index name 2 | start pos | length   |
-/// |--------------------------------------|
-/// |  index name 3 | start pos | length   |
-/// |--------------------------------------|
-/// |                 ...                  |
-/// |--------------------------------------|
-/// |                 ...                  |
-/// |--------------------------------------|
-/// |  redundant length | redundant bytes  |
-/// |--------------------------------------|    ---------------------
-/// |                BODY                  |
-/// |                BODY                  |
-/// |                BODY                  |             BODY
-/// |                BODY                  |
-/// |______________________________________|    _____________________
-///
-/// magic:               8 bytes long
-/// version:             4 bytes int
-/// head length:         4 bytes int
-/// column number:       4 bytes int
-/// column x:            var bytes utf (length + bytes)
-/// index number:        4 bytes int (how many column items below)
-/// index name x:        var bytes utf
-/// start pos:           4 bytes int
-/// length:              4 bytes int
-/// redundant length:    4 bytes int (for compatibility with later versions, in this version,
-///                      content is zero)
-/// redundant bytes:     var bytes (for compatibility with later version, in this version, is empty)
-/// BODY:                column index bytes + column index bytes + column index bytes + .......
-/// </pre>
-///
+/// Supports V1 and V2 containers. V2 uses int64 offsets and lengths and supports streaming index
+/// payloads directly to the output; avoiding full payload buffering requires a streaming WriteTo()
+/// implementation in the index plugin.
+/// See file_index_format_v1.h and file_index_format_v2.h for the serialized layouts.
 class PAIMON_EXPORT FileIndexFormat {
  public:
     class Reader;
@@ -109,35 +63,49 @@ class PAIMON_EXPORT FileIndexFormat {
         const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool,
         const std::map<std::string, std::string>& options);
 
-    /// Creates a `Writer` which serializes a complete V1 file index container.
+    /// Creates a `Writer` for file index container.
     ///
     /// @param output_stream Destination stream for serialized index data.
+    /// @param version Container format version (V1 or V2).
     /// @param pool Memory pool for writer-side allocations.
     /// @return A unique pointer to a `Writer` on success.
     static Result<std::unique_ptr<Writer>> CreateWriter(
-        const std::shared_ptr<OutputStream>& output_stream,
+        const std::shared_ptr<OutputStream>& output_stream, int32_t version,
         const std::shared_ptr<MemoryPool>& pool);
 
  public:
     static const int64_t MAGIC;
     static const int32_t EMPTY_INDEX_FLAG;
     static const int32_t V_1;
+    static const int32_t V_2;
 };
 
 /// Writer for file index file.
-class FileIndexFormat::Writer {
+class PAIMON_EXPORT FileIndexFormat::Writer {
  public:
+    /// Writes one payload without closing the stream. Returns false for an absent index
+    /// (without writing bytes), or true after writing a non-empty payload.
+    /// The borrowed stream reports positions relative to the start of this payload, starting at 0.
+    /// The callback must not retain the stream.
+    using PayloadWriter = std::function<Result<bool>(OutputStream*)>;
     virtual ~Writer() = default;
-
-    /// Writes all column indexes. This is a terminal, one-shot operation.
-    virtual Status WriteColumnIndexes(const FileIndexFormat::ColumnIndexes& indexes) = 0;
 
     /// Flushes and closes the output stream supplied to `CreateWriter()`.
     virtual Status Close() = 0;
+
+    /// Writes one index. V1 buffers payloads; V2 writes them directly to the destination.
+    /// An empty callback or a false result denotes an empty index (-1, 0).
+    /// A true result indicates that a non-empty payload was written.
+    /// Call Finish() after the last index. Payload failures are terminal.
+    virtual Status WriteIndex(const std::string& column_name, const std::string& index_type,
+                              const PayloadWriter& payload_writer) = 0;
+
+    /// Completes the container: writes V1's header and buffered bodies, or V2's footer and trailer.
+    virtual Status Finish() = 0;
 };
 
 /// Reader for file index file.
-class FileIndexFormat::Reader {
+class PAIMON_EXPORT FileIndexFormat::Reader {
  public:
     virtual ~Reader() = default;
     /// Reads index data for a specific column from the index file.

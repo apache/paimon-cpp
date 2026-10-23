@@ -25,7 +25,6 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/reader/concat_batch_reader.h"
-#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -109,27 +108,20 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
         store_state.deduplicate_state->AttachFileIndexLookup(created_lookup, store));
     return std::shared_ptr<RealtimeDeduplicateWriter>(new RealtimeDeduplicateWriter(
         store, file_writer, schema_layout, schema_layout->StoreWriteSchema()->field(key_position),
-        data_file_path_factory, options.GetFileSystem(), store_state.initial_offset, memory_pool,
-        options.ToMap()));
+        store_state.initial_offset, memory_pool));
 }
 
 RealtimeDeduplicateWriter::RealtimeDeduplicateWriter(
     std::shared_ptr<ArrowDeduplicateRealtimeStore> realtime_store,
     std::shared_ptr<AppendOnlyWriter> file_writer,
     std::shared_ptr<RealtimeSchemaLayout> schema_layout,
-    std::shared_ptr<arrow::Field> deduplicate_key_field,
-    std::shared_ptr<DataFilePathFactory> data_file_path_factory,
-    std::shared_ptr<FileSystem> file_system, int64_t next_offset,
-    std::shared_ptr<MemoryPool> memory_pool, std::map<std::string, std::string> options)
+    std::shared_ptr<arrow::Field> deduplicate_key_field, int64_t next_offset,
+    std::shared_ptr<MemoryPool> memory_pool)
     : arrow_pool_(GetArrowPool(memory_pool)),
       realtime_store_(std::move(realtime_store)),
       file_writer_(std::move(file_writer)),
       schema_layout_(std::move(schema_layout)),
       deduplicate_key_field_(std::move(deduplicate_key_field)),
-      data_file_path_factory_(std::move(data_file_path_factory)),
-      file_system_(std::move(file_system)),
-      memory_pool_(std::move(memory_pool)),
-      options_(std::move(options)),
       next_offset_(next_offset) {}
 
 Status RealtimeDeduplicateWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
@@ -221,41 +213,29 @@ Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compa
         if (segment->GetRowCount() == 0) {
             continue;
         }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<DataFileKeyOffsetIndexWriter> offset_index_writer,
-            DataFileKeyOffsetIndexWriter::Create(deduplicate_key_field_, data_file_path_factory_,
-                                                 file_system_, memory_pool_, options_));
-        ScopeGuard offset_index_guard([&offset_index_writer]() {
-            if (offset_index_writer) {
-                offset_index_writer->Abort();
-            }
-        });
-        PAIMON_RETURN_NOT_OK(FlushSegment(segment, offset_index_writer.get()));
+        PAIMON_RETURN_NOT_OK(FlushSegment(segment));
         PAIMON_ASSIGN_OR_RAISE(CommitIncrement segment_increment,
                                file_writer_->PrepareCommit(wait_compaction));
         const DataIncrement& increment = segment_increment.GetNewFilesIncrement();
-        // TODO(xinyu.lxy): Make offset-index writing follow data-file rolling boundaries so one
-        // deduplicate segment can produce multiple data files with one `.offset` sidecar per file.
-        if (increment.NewFiles().size() != 1 || !increment.DeletedFiles().empty() ||
+        if (increment.NewFiles().empty() || !increment.DeletedFiles().empty() ||
             !increment.ChangelogFiles().empty() ||
             !segment_increment.GetCompactIncrement().IsEmpty() ||
             segment_increment.GetCompactDeletionFile()) {
-            return Status::Invalid(
-                "one non-empty deduplicate segment must produce one append data file");
+            return Status::Invalid("deduplicate segment must produce append data files only");
         }
-        std::shared_ptr<DataFileMeta> data_file = increment.NewFiles().front();
-        if (data_file->row_count != segment->GetRowCount()) {
+        int64_t remaining_rows = segment->GetRowCount();
+        for (const std::shared_ptr<DataFileMeta>& data_file : increment.NewFiles()) {
+            if (!data_file || data_file->row_count <= 0 || data_file->row_count > remaining_rows) {
+                return Status::Invalid("deduplicate segment and data-file row counts differ");
+            }
+            remaining_rows -= data_file->row_count;
+            new_files.push_back(data_file);
+        }
+        if (remaining_rows != 0) {
             return Status::Invalid("deduplicate segment and data-file row counts differ");
         }
-        PAIMON_ASSIGN_OR_RAISE(std::string offset_index_file,
-                               offset_index_writer->Finish(data_file));
-        std::vector<std::optional<std::string>> extra_files = data_file->extra_files;
-        extra_files.emplace_back(std::move(offset_index_file));
-        data_file = data_file->CopyWithExtraFiles(extra_files);
-        new_files.push_back(data_file);
         AppendAll(increment.NewIndexFiles(), &new_index_files);
         AppendAll(increment.DeletedIndexFiles(), &deleted_index_files);
-        offset_index_guard.Release();
     }
 
     DataIncrement data_increment(std::move(new_files), {}, {}, std::move(new_index_files),
@@ -269,11 +249,7 @@ Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compa
 }
 
 Status RealtimeDeduplicateWriter::FlushSegment(
-    const std::shared_ptr<RealtimeSegmentHandle>& segment,
-    DataFileKeyOffsetIndexWriter* offset_index_writer) {
-    if (!offset_index_writer) {
-        return Status::Invalid("deduplicate offset-index writer is null");
-    }
+    const std::shared_ptr<RealtimeSegmentHandle>& segment) {
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> readers,
                            realtime_store_->CreateCommitReaders(segment));
     ConcatBatchReader reader(std::move(readers), arrow_pool_);
@@ -292,17 +268,6 @@ Status RealtimeDeduplicateWriter::FlushSegment(
         }
         std::shared_ptr<arrow::StructArray> data =
             checked_pointer_cast<arrow::StructArray>(imported);
-        std::shared_ptr<arrow::Array> raw_offsets =
-            data->GetFieldByName(SpecialFields::RealtimeOffset().Name());
-        if (!raw_offsets || raw_offsets->type_id() != arrow::Type::INT64) {
-            return Status::Invalid("deduplicate commit batch has no realtime offset");
-        }
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            std::shared_ptr<arrow::StructArray> keys,
-            arrow::StructArray::Make({data->GetFieldByName(deduplicate_key_field_->name())},
-                                     {deduplicate_key_field_}));
-        PAIMON_RETURN_NOT_OK(offset_index_writer->AddBatch(
-            keys, checked_pointer_cast<arrow::Int64Array>(raw_offsets)));
         emitted_rows += data->length();
 
         auto output = std::make_unique<ArrowArray>();

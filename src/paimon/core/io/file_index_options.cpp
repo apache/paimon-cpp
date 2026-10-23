@@ -24,7 +24,6 @@
 #include <utility>
 
 #include "fmt/format.h"
-#include "paimon/common/options/memory_size.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/defs.h"
@@ -40,24 +39,17 @@ constexpr size_t kColumnsSuffixLength = sizeof(kColumnsSuffix) - 1;
 
 }  // namespace
 
-Result<FileIndexOptions> FileIndexOptions::FromCoreOptions(const CoreOptions& options) {
-    return Parse(options.ToMap(), options.FileIndexInManifestThreshold());
-}
-
 Result<FileIndexOptions> FileIndexOptions::FromMap(
     const std::map<std::string, std::string>& raw_options) {
-    int64_t in_manifest_threshold = CoreOptions().FileIndexInManifestThreshold();
-    auto iter = raw_options.find(Options::FILE_INDEX_IN_MANIFEST_THRESHOLD);
-    if (iter != raw_options.end()) {
-        PAIMON_ASSIGN_OR_RAISE(in_manifest_threshold, MemorySize::ParseBytes(iter->second));
-    }
-    return Parse(raw_options, in_manifest_threshold);
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(raw_options));
+    return FromCoreOptions(options);
 }
 
-Result<FileIndexOptions> FileIndexOptions::Parse(
-    const std::map<std::string, std::string>& raw_options, int64_t in_manifest_threshold) {
+Result<FileIndexOptions> FileIndexOptions::FromCoreOptions(const CoreOptions& options) {
+    const std::map<std::string, std::string>& raw_options = options.ToMap();
     FileIndexOptions result;
-    result.in_manifest_threshold_ = in_manifest_threshold;
+    result.in_manifest_threshold_ = options.FileIndexInManifestThreshold();
+    result.format_version_ = options.FileIndexFormatVersion();
 
     std::set<std::pair<std::string, std::string>> declared;
     for (const auto& [key, value] : raw_options) {

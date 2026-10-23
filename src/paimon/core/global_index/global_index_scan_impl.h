@@ -29,6 +29,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/global_index/global_index_evaluator.h"
 #include "paimon/core/global_index/global_index_file_manager.h"
+#include "paimon/core/global_index/live_row_global_index_reader.h"
 #include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/index/index_path_factory.h"
 #include "paimon/core/schema/table_schema.h"
@@ -67,7 +68,9 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
     GlobalIndexScanImpl(const std::shared_ptr<TableSchema>& table_schema,
                         const CoreOptions& options,
                         const std::shared_ptr<IndexPathFactory>& path_factory,
-                        IndexMetaMap&& index_metas, const std::shared_ptr<Executor>& executor,
+                        IndexMetaMap&& index_metas,
+                        LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier,
+                        const std::shared_ptr<Executor>& executor,
                         const std::shared_ptr<MemoryPool>& pool);
 
     Result<std::shared_ptr<GlobalIndexEvaluator>> GetOrCreateIndexEvaluator();
@@ -88,6 +91,8 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
     CoreOptions options_;
     std::shared_ptr<GlobalIndexFileManager> index_file_manager_;
     IndexMetaMap index_metas_;
+    /// Supplies the rows live in the scanned snapshot; empty when deletion vectors are disabled.
+    LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<GlobalIndexEvaluator> evaluator_;
 };

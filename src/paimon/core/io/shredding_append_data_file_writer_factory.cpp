@@ -95,6 +95,11 @@ ShreddingAppendDataFileWriterFactory::CreateShreddedWriter(
     if (file_index_writer) {
         writer->SetFileIndexWriter(std::move(file_index_writer), write_schema_);
     }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileKeyOffsetIndexWriter> offset_index_writer,
+                           CreateOffsetIndexWriter(write_schema_));
+    if (offset_index_writer) {
+        writer->SetOffsetIndexWriter(std::move(offset_index_writer), write_schema_);
+    }
     PAIMON_RETURN_NOT_OK(
         writer->Init(options_.GetFileSystem(), path_factory_->NewPath(), resources.writer_builder));
     ShreddingWritePlanFactory::MetadataFinalizer finalizer =

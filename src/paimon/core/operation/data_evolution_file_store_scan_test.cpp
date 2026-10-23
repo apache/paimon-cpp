@@ -20,19 +20,26 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/reader/data_evolution_array.h"
 #include "paimon/common/reader/data_evolution_row.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
+#include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
+#include "paimon/scan_context.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -55,16 +62,16 @@ class DataEvolutionFileStoreScanTest : public ::testing::Test {
     ManifestEntry CreateManifestEntry(
         int64_t schema_id, const SimpleStats& stats,
         const std::optional<std::vector<std::string>>& value_stats_cols,
-        const std::optional<std::vector<std::string>>& write_cols,
-        int64_t sequence_number = 0) const {
+        const std::optional<std::vector<std::string>>& write_cols, int64_t sequence_number = 0,
+        const std::string& file_name = "test-file.parquet", int64_t row_count = 100,
+        int64_t first_row_id = 0) const {
         EXPECT_OK_AND_ASSIGN(
             auto meta,
-            DataFileMeta::ForAppend(
-                /*file_name=*/"test-file.parquet", /*file_size=*/100l, /*row_count=*/100l, stats,
-                /*min_sequence_number=*/sequence_number,
-                /*max_sequence_number=*/sequence_number, schema_id,
-                /*file_source=*/FileSource::Append(), value_stats_cols,
-                /*external_path=*/std::nullopt, /*first_row_id=*/0, write_cols));
+            DataFileMeta::ForAppend(file_name, /*file_size=*/100l, row_count, stats,
+                                    /*min_sequence_number=*/sequence_number,
+                                    /*max_sequence_number=*/sequence_number, schema_id,
+                                    /*file_source=*/FileSource::Append(), value_stats_cols,
+                                    /*external_path=*/std::nullopt, first_row_id, write_cols));
         return ManifestEntry(FileKind::Add(), /*partition=*/BinaryRow::EmptyRow(), /*bucket=*/0,
                              /*total_buckets=*/1, meta);
     }
@@ -541,6 +548,139 @@ TEST_F(DataEvolutionFileStoreScanTest, TestEvolutionStatsWithBlob) {
     ASSERT_EQ(null_counts->GetLong(0), 0);
     ASSERT_EQ(null_counts->GetLong(1), 1);
     ASSERT_TRUE(null_counts->IsNullAt(2));
+}
+
+TEST_F(DataEvolutionFileStoreScanTest, TestEvolutionStatsWithRolledVectorFiles) {
+    std::vector<DataField> fields = {
+        DataField(0, arrow::field("id", arrow::int32())),
+        DataField(1, arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3))),
+        DataField(2, arrow::field("tag", arrow::utf8())),
+    };
+    auto table_schema = CreateTableSchema(/*schema_id=*/0, fields);
+    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(fields);
+    auto schema_fetcher = [&](int64_t) -> Result<std::shared_ptr<TableSchema>> {
+        return table_schema;
+    };
+    constexpr int64_t kFirstRowId = 123;
+    constexpr int64_t kRowCount = 10000;
+    constexpr int64_t kVectorRows = 1000;
+    auto main_entry = CreateManifestEntry(
+        /*schema_id=*/0,
+        BinaryRowGenerator::GenerateStats({0, std::string("a")}, {9999, std::string("z")},
+                                          {0, 1000}, pool_.get()),
+        /*value_stats_cols=*/std::nullopt,
+        /*write_cols=*/std::vector<std::string>{"id", "tag"},
+        /*sequence_number=*/1, "main.parquet", kRowCount, kFirstRowId);
+    std::vector<ManifestEntry> entries = {main_entry};
+    for (int64_t i = 0; i < kRowCount / kVectorRows; ++i) {
+        entries.push_back(CreateManifestEntry(
+            /*schema_id=*/0, SimpleStats::EmptyStats(),
+            /*value_stats_cols=*/std::vector<std::string>{},
+            /*write_cols=*/std::vector<std::string>{"embedding"},
+            /*sequence_number=*/i + 2, fmt::format("data-{}.vector.vortex", i), kVectorRows,
+            kFirstRowId + i * kVectorRows));
+    }
+    // VECTOR updates are newer than the full-range main file and cover only 1,000 rows each.
+    for (bool reverse_order : {false, true}) {
+        SCOPED_TRACE(reverse_order);
+        if (reverse_order) {
+            std::reverse(entries.begin(), entries.end());
+        }
+        ASSERT_OK_AND_ASSIGN(auto result_stats, DataEvolutionFileStoreScan::EvolutionStats(
+                                                    entries, table_schema, schema_fetcher));
+        ASSERT_EQ(result_stats.first, kRowCount);
+        const auto& stats = result_stats.second;
+        ASSERT_EQ(stats.min_values->GetString(2).ToString(), "a");
+        ASSERT_EQ(stats.max_values->GetString(2).ToString(), "z");
+        ASSERT_EQ(stats.null_counts->GetLong(2), kVectorRows);
+        ASSERT_TRUE(stats.min_values->IsNullAt(1));
+        ASSERT_TRUE(stats.max_values->IsNullAt(1));
+        ASSERT_TRUE(stats.null_counts->IsNullAt(1));
+
+        const std::vector<std::pair<std::shared_ptr<Predicate>, bool>> cases = {
+            {PredicateBuilder::IsNotNull(2, "tag", FieldType::STRING), true},
+            {PredicateBuilder::IsNull(2, "tag", FieldType::STRING), true},
+            {PredicateBuilder::IsNull(0, "id", FieldType::INT), false},
+            {PredicateBuilder::Equal(0, "id", FieldType::INT, Literal(10000)), false},
+        };
+        ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+        for (const auto& [predicate, keep] : cases) {
+            SCOPED_TRACE(predicate->ToString());
+            auto filters = std::make_shared<ScanFilter>(
+                predicate, std::vector<std::map<std::string, std::string>>{}, std::nullopt);
+            ASSERT_OK_AND_ASSIGN(auto scan,
+                                 DataEvolutionFileStoreScan::Create(
+                                     nullptr, nullptr, nullptr, nullptr, table_schema, arrow_schema,
+                                     filters, options, CreateDefaultExecutor(), pool_));
+            ASSERT_OK_AND_ASSIGN(auto filtered, scan->PostFilterManifestEntries(
+                                                    std::vector<ManifestEntry>(entries)));
+            ASSERT_EQ(filtered.size(), keep ? entries.size() : 0);
+        }
+    }
+}
+
+TEST_F(DataEvolutionFileStoreScanTest, TestEvolutionStatsWithOnlyVectorFiles) {
+    std::vector<DataField> fields = {
+        DataField(0, arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3))),
+    };
+    auto table_schema = CreateTableSchema(/*schema_id=*/0, fields);
+    auto schema_fetcher = [&](int64_t) -> Result<std::shared_ptr<TableSchema>> {
+        ADD_FAILURE() << "Dedicated VECTOR files must not contribute column statistics";
+        return table_schema;
+    };
+    // An incremental scan can contain only a contiguous subset of independently rolled files.
+    auto first = CreateManifestEntry(
+        /*schema_id=*/0, SimpleStats::EmptyStats(),
+        /*value_stats_cols=*/std::vector<std::string>{},
+        /*write_cols=*/std::vector<std::string>{"embedding"},
+        /*sequence_number=*/2, "first.vector.vortex", /*row_count=*/1000, /*first_row_id=*/123);
+    auto second = CreateManifestEntry(
+        /*schema_id=*/0, SimpleStats::EmptyStats(),
+        /*value_stats_cols=*/std::vector<std::string>{},
+        /*write_cols=*/std::vector<std::string>{"embedding"},
+        /*sequence_number=*/3, "second.vector.vortex", /*row_count=*/500,
+        /*first_row_id=*/1123);
+    ASSERT_OK_AND_ASSIGN(auto result_stats, DataEvolutionFileStoreScan::EvolutionStats(
+                                                {second, first}, table_schema, schema_fetcher));
+    ASSERT_EQ(result_stats.first, 1500);
+    ASSERT_TRUE(result_stats.second.min_values->IsNullAt(0));
+    ASSERT_TRUE(result_stats.second.max_values->IsNullAt(0));
+    ASSERT_TRUE(result_stats.second.null_counts->IsNullAt(0));
+}
+
+TEST_F(DataEvolutionFileStoreScanTest, TestEvolutionStatsWithPartialRangeProviders) {
+    std::vector<DataField> fields = {
+        DataField(0, arrow::field("tag", arrow::utf8())),
+        DataField(1, arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3))),
+    };
+    auto table_schema = CreateTableSchema(/*schema_id=*/0, fields);
+    auto schema_fetcher = [&](int64_t) -> Result<std::shared_ptr<TableSchema>> {
+        return table_schema;
+    };
+    auto first = CreateManifestEntry(
+        /*schema_id=*/0,
+        BinaryRowGenerator::GenerateStats({std::string("a")}, {std::string("z")}, {0}, pool_.get()),
+        /*value_stats_cols=*/std::nullopt, /*write_cols=*/std::vector<std::string>{"tag"},
+        /*sequence_number=*/1, "first.parquet", /*row_count=*/1000, /*first_row_id=*/123);
+    auto second = CreateManifestEntry(
+        /*schema_id=*/0,
+        BinaryRowGenerator::GenerateStats({std::string("a")}, {std::string("z")}, {500},
+                                          pool_.get()),
+        /*value_stats_cols=*/std::nullopt, /*write_cols=*/std::vector<std::string>{"tag"},
+        /*sequence_number=*/2, "second.parquet", /*row_count=*/1000, /*first_row_id=*/1123);
+    auto vector = CreateManifestEntry(
+        /*schema_id=*/0, SimpleStats::EmptyStats(),
+        /*value_stats_cols=*/std::vector<std::string>{},
+        /*write_cols=*/std::vector<std::string>{"embedding"},
+        /*sequence_number=*/3, "data.vector.vortex", /*row_count=*/2000, /*first_row_id=*/123);
+    ASSERT_OK_AND_ASSIGN(auto result_stats,
+                         DataEvolutionFileStoreScan::EvolutionStats({first, vector, second},
+                                                                    table_schema, schema_fetcher));
+    ASSERT_EQ(result_stats.first, 2000);
+    // The VECTOR range joins two main files; neither file's stats describe the whole group.
+    ASSERT_TRUE(result_stats.second.min_values->IsNullAt(0));
+    ASSERT_TRUE(result_stats.second.max_values->IsNullAt(0));
+    ASSERT_TRUE(result_stats.second.null_counts->IsNullAt(0));
 }
 
 TEST_F(DataEvolutionFileStoreScanTest, TestFilterEntryByRowRanges) {

@@ -35,6 +35,7 @@ class Schema;
 
 namespace paimon {
 
+class CacheManager;
 class CoreOptions;
 class DataFilePathFactory;
 class FileSystem;
@@ -67,14 +68,13 @@ class RealtimeOffsetFileIndexLookup {
     }
 
  private:
-    RealtimeOffsetFileIndexLookup(std::shared_ptr<arrow::Schema> data_schema,
-                                  int64_t data_schema_id,
-                                  std::shared_ptr<arrow::Field> deduplicate_key_field,
-                                  std::vector<std::shared_ptr<DataFileMeta>> data_files,
-                                  std::shared_ptr<DataFilePathFactory> path_factory,
-                                  std::shared_ptr<FileSystem> file_system,
-                                  std::shared_ptr<MemoryPool> memory_pool,
-                                  std::map<std::string, std::string> options);
+    RealtimeOffsetFileIndexLookup(
+        std::shared_ptr<arrow::Schema> data_schema, int64_t data_schema_id,
+        std::shared_ptr<arrow::Field> deduplicate_key_field,
+        std::vector<std::shared_ptr<DataFileMeta>> data_files,
+        std::shared_ptr<DataFilePathFactory> path_factory, std::shared_ptr<FileSystem> file_system,
+        std::map<std::string, std::string> options, uint32_t cache_page_size,
+        std::shared_ptr<CacheManager> cache_manager, std::shared_ptr<MemoryPool> memory_pool);
 
     std::shared_ptr<arrow::Schema> data_schema_;
     int64_t data_schema_id_;
@@ -84,6 +84,9 @@ class RealtimeOffsetFileIndexLookup {
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::map<std::string, std::string> options_;
+    uint32_t cache_page_size_;
+    // One budget for all sidecars and all pinned committed snapshots of this bucket.
+    std::shared_ptr<CacheManager> cache_manager_;
 };
 
 }  // namespace paimon

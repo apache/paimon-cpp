@@ -47,6 +47,7 @@
 #include "paimon/status.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/counting_cache_test_utils.h"
+#include "paimon/testing/utils/deletion_vector_test_helper.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
@@ -281,6 +282,113 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         ASSERT_OK_AND_ASSIGN(readers, global_index_scan->CreateReaders("f0", row_range_index));
         ASSERT_EQ(readers.size(), 1u);
         CheckFullTextTopK(readers[0], query, std::nullopt, {3});
+    }
+
+    void CheckSearchSkipsDeletedRows(const std::string& index_type,
+                                     const std::map<std::string, std::string>& index_options) {
+        arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
+                                     arrow::field("f1", arrow::int32())};
+        auto schema = arrow::schema(fields);
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
+                                                      {Options::FILE_SYSTEM, "local"},
+                                                      {Options::ROW_TRACKING_ENABLED, "true"},
+                                                      {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"}};
+        CreateTable(/*partition_keys=*/{}, schema, options);
+        std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+        auto src_array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+["apple apple apple apple apple apple apple apple apple apple", 0],
+["apple apple apple apple apple apple apple apple apple", 1],
+["apple apple apple apple apple apple apple apple", 2],
+["apple apple apple apple apple apple apple", 3],
+["apple apple apple apple apple apple", 4]
+    ])")
+                              .ValueOrDie();
+        auto src_array2 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+["apple apple apple apple apple", 5],
+["apple apple apple apple", 6],
+["apple apple apple", 7],
+["apple apple", 8],
+["apple", 9]
+    ])")
+                              .ValueOrDie();
+        ASSERT_OK_AND_ASSIGN(auto commit_msgs1,
+                             WriteArray(table_path, schema->field_names(), src_array1));
+        ASSERT_OK(Commit(table_path, commit_msgs1));
+        ASSERT_OK_AND_ASSIGN(auto commit_msgs2,
+                             WriteArray(table_path, schema->field_names(), src_array2));
+        ASSERT_OK(Commit(table_path, commit_msgs2));
+        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", index_type, index_options,
+                             Range(0, 4)));
+        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", index_type, index_options,
+                             Range(5, 9)));
+
+        auto create_scan = [&]() {
+            return GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                           /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                           /*executor=*/nullptr, pool_);
+        };
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> scan_before_deletion, create_scan());
+
+        ASSERT_OK_AND_ASSIGN(auto split, ScanData(table_path, /*partition_filters=*/{}));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
+                             DeletionVectorTestHelper::RetrieveAnchorFileNames(split->DataFiles()));
+        ASSERT_EQ(anchor_file_names.size(), 2u);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<CommitMessage> dv_commit_msg,
+                             DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+                                 dir_->GetFileSystem(), table_path, file_format_, commit_msgs1[0],
+                                 {{anchor_file_names[0], /*deleted_positions=*/{0, 1, 2, 3}},
+                                  {anchor_file_names[1], /*deleted_positions=*/{0}}},
+                                 pool_));
+        ASSERT_OK(Commit(table_path, {dv_commit_msg}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> scan, create_scan());
+
+        std::string query = R"({"match":{"query":"apple"}})";
+        ASSERT_OK_AND_ASSIGN(
+            auto readers_before_deletion,
+            scan_before_deletion->CreateReaders("f0", /*row_range_index=*/std::nullopt));
+        ASSERT_EQ(readers_before_deletion.size(), 1u);
+        CheckFullTextTopK(readers_before_deletion[0], query, std::nullopt,
+                          {0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
+        ASSERT_OK_AND_ASSIGN(
+            ScoredRows rows_before_deletion,
+            SearchFullText(readers_before_deletion[0], query, /*limit=*/100, std::nullopt));
+        RoaringBitmap64 deleted_rows = RoaringBitmap64::From({0, 1, 2, 3, 5});
+        ScoredRows expected_live_rows;
+        for (const auto& row : rows_before_deletion) {
+            if (!deleted_rows.Contains(row.first)) {
+                expected_live_rows.push_back(row);
+            }
+        }
+
+        ASSERT_OK_AND_ASSIGN(auto readers,
+                             scan->CreateReaders("f0", /*row_range_index=*/std::nullopt));
+        ASSERT_EQ(readers.size(), 1u);
+        ASSERT_OK_AND_ASSIGN(ScoredRows live_rows,
+                             SearchFullText(readers[0], query, /*limit=*/100, std::nullopt));
+        ASSERT_EQ(live_rows, expected_live_rows);
+        CheckFullTextTopK(readers[0], query, std::nullopt, {4, 6, 7, 8, 9});
+        CheckFullTextTopK(readers[0], query, RoaringBitmap64::From({0, 5, 8}), {8});
+        CheckFullTextTopK(readers[0], query, RoaringBitmap64::From({0, 1}), {});
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> index_result,
+                             readers[0]->VisitFullTextSearch(
+                                 std::make_shared<FullTextSearch>("f0", query, /*limit=*/5)));
+        ASSERT_OK_AND_ASSIGN(auto plan, ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
+                                                               /*options=*/{}, index_result));
+        auto expected_array =
+            arrow::ipc::internal::json::ArrayFromJSON(
+                arrow::struct_({SpecialFields::ValueKind().ArrowField(), fields[1]}),
+                R"([
+[0, 4],
+[0, 6],
+[0, 7],
+[0, 8],
+[0, 9]
+    ])")
+                .ValueOrDie();
+        ASSERT_OK(ReadData(table_path, {"f1"}, expected_array, /*predicate=*/nullptr, plan));
     }
 
     Result<std::shared_ptr<Plan>> ScanGlobalIndexAndData(
@@ -2924,6 +3032,14 @@ TEST_P(GlobalIndexTest, TestLuceneSearchOverlappingIndexRanges) {
                                        {"lucene-fts.write.tmp.directory", tmp_dir->Str()}},
                                       R"({"match":{"query":"document","operator":"And"}})");
 }
+
+TEST_P(GlobalIndexTest, TestLuceneSearchSkipsRowsDeletedByDeletionVectors) {
+    auto tmp_dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(tmp_dir);
+    CheckSearchSkipsDeletedRows("lucene-fts",
+                                {{"lucene-fts.write.omit-term-freq-and-position", "false"},
+                                 {"lucene-fts.write.tmp.directory", tmp_dir->Str()}});
+}
 #endif
 
 #ifdef PAIMON_ENABLE_FULL_TEXT
@@ -3070,6 +3186,10 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadFullTextIndexWithPartition) {
 TEST_P(GlobalIndexTest, TestFullTextSearchOverlappingIndexRanges) {
     CheckSearchOverlappingIndexRanges("full-text", {{"full-text.tokenizer", "default"}},
                                       R"({"match":{"query":"document"}})");
+}
+
+TEST_P(GlobalIndexTest, TestFullTextSearchSkipsRowsDeletedByDeletionVectors) {
+    CheckSearchSkipsDeletedRows("full-text", {{"full-text.tokenizer", "default"}});
 }
 #endif
 
@@ -3457,22 +3577,30 @@ TEST_P(GlobalIndexTest, TestBTreeWriteCommitScanReadIndexWithPartition) {
         ASSERT_EQ(result2->ToString(), "{}");
     }
 
-    // Scan with row_range_index filtering: only range [5,7] (partition f1=20)
+    // Scan with row_range_index filtering: only global row 6 in range [5,7]. This verifies
+    // that the global range is translated to the file-local range [1,1] before creating the
+    // BTree reader.
     {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
                              GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
                                                      /*partitions=*/std::nullopt, /*options=*/{},
                                                      fs_, /*executor=*/nullptr, pool_));
-        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(5, 7)}));
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(6, 6)}));
         ASSERT_OK_AND_ASSIGN(auto index_readers,
                              global_index_scan->CreateReaders("f0", row_range_index));
         ASSERT_EQ(index_readers.size(), 1u);
 
-        // "Tony" in range [5,7]: local id {2} in range [5,7] -> global {7}
+        // "Lucy" is local row 1 in the index range [5,7] -> global row 6.
         ASSERT_OK_AND_ASSIGN(auto result,
+                             index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Lucy", 4)));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->ToString(), "{6}");
+
+        // "Tony" is in the selected index file but outside the requested row range.
+        ASSERT_OK_AND_ASSIGN(result,
                              index_readers[0]->VisitEqual(Literal(FieldType::STRING, "Tony", 4)));
         ASSERT_TRUE(result);
-        ASSERT_EQ(result->ToString(), "{7}");
+        ASSERT_EQ(result->ToString(), "{}");
     }
 
     // Full pipeline with evaluator: Scan(predicate) -> read data

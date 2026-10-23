@@ -50,7 +50,7 @@ class BloomFilterFileIndex : public FileIndexer {
     ~BloomFilterFileIndex() override = default;
 
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema* arrow_schema, int32_t start, int32_t length,
+        ::ArrowSchema* arrow_schema, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input_stream,
         const std::shared_ptr<MemoryPool>& pool) const override;
 

@@ -44,6 +44,7 @@ class PAIMON_EXPORT FileIndexer {
     }
 
     /// Create `FileIndexReader` with input stream.
+    /// @note Plugin implementations should validate their own payload size limits.
     ///
     /// @param arrow_schema ArrowSchema derived from arrow schema or struct type with
     /// specified indexed field.
@@ -53,7 +54,7 @@ class PAIMON_EXPORT FileIndexer {
     /// @param pool Memory pool for memory allocation.
     /// @return A `FileIndexReader` to read index.
     virtual Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema* arrow_schema, int32_t start, int32_t length,
+        ::ArrowSchema* arrow_schema, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input_stream,
         const std::shared_ptr<MemoryPool>& pool) const = 0;
 

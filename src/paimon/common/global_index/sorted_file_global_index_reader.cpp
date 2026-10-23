@@ -19,6 +19,7 @@
 
 #include "paimon/common/global_index/sorted_file_global_index_reader.h"
 
+#include <cassert>
 #include <future>
 #include <limits>
 #include <optional>
@@ -40,15 +41,20 @@ std::shared_ptr<GlobalIndexResult> EmptyResult() {
 
 SortedFileGlobalIndexReader::SortedFileGlobalIndexReader(
     std::unique_ptr<SortedFileMetaSelector> file_selector, int64_t fallback_scan_max_size,
-    std::shared_ptr<Executor> executor)
+    int64_t total_row_count, std::shared_ptr<Executor> executor)
     : file_selector_(std::move(file_selector)),
       fallback_scan_max_size_(fallback_scan_max_size),
-      executor_(std::move(executor)) {}
+      executor_(std::move(executor)),
+      total_row_count_(total_row_count) {
+    assert(total_row_count_ >= 0);
+}
 
 Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitIsNotNull() {
-    return VisitParallel(
-        [this]() { return file_selector_->VisitIsNotNull(); },
-        [](const std::shared_ptr<GlobalIndexReader>& reader) { return reader->VisitIsNotNull(); });
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> null_result, VisitIsNull());
+    if (null_result == nullptr) {
+        return null_result;
+    }
+    return Complement({null_result});
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitIsNull() {
@@ -67,10 +73,15 @@ Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitEqu
 
 Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitNotEqual(
     const Literal& literal) {
-    return VisitParallel([this, &literal]() { return file_selector_->VisitNotEqual(literal); },
-                         [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
-                             return reader->VisitNotEqual(literal);
-                         });
+    if (literal.IsNull()) {
+        return EmptyResult();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> null_result, VisitIsNull());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> equal_result, VisitEqual(literal));
+    if (null_result == nullptr || equal_result == nullptr) {
+        return std::shared_ptr<GlobalIndexResult>(nullptr);
+    }
+    return Complement({null_result, equal_result});
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitLessThan(
@@ -131,10 +142,17 @@ Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitIn(
 
 Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitNotIn(
     const std::vector<Literal>& literals) {
-    return VisitParallel([this, &literals]() { return file_selector_->VisitNotIn(literals); },
-                         [&literals](const std::shared_ptr<GlobalIndexReader>& reader) {
-                             return reader->VisitNotIn(literals);
-                         });
+    for (const Literal& literal : literals) {
+        if (literal.IsNull()) {
+            return EmptyResult();
+        }
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> null_result, VisitIsNull());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> in_result, VisitIn(literals));
+    if (null_result == nullptr || in_result == nullptr) {
+        return std::shared_ptr<GlobalIndexResult>(nullptr);
+    }
+    return Complement({null_result, in_result});
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitStartsWith(
@@ -275,6 +293,26 @@ Result<std::shared_ptr<GlobalIndexReader>> SortedFileGlobalIndexReader::GetOrCre
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexReader> reader, OpenReader(meta));
     reader_cache_[meta.file_path] = reader;
     return reader;
+}
+
+Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::Complement(
+    const std::vector<std::shared_ptr<GlobalIndexResult>>& excluded_results) const {
+    int64_t total_row_count = total_row_count_;
+    auto supplier = [total_row_count, excluded_results]() -> Result<RoaringBitmap64> {
+        RoaringBitmap64 result;
+        result.AddRange(/*min=*/0, /*max=*/total_row_count);
+        for (const std::shared_ptr<GlobalIndexResult>& excluded_result : excluded_results) {
+            std::shared_ptr<BitmapGlobalIndexResult> bitmap_result =
+                std::dynamic_pointer_cast<BitmapGlobalIndexResult>(excluded_result);
+            if (bitmap_result == nullptr) {
+                return Status::Invalid("SortedFileGlobalIndexReader expects bitmap index results.");
+            }
+            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* excluded, bitmap_result->GetBitmap());
+            result -= *excluded;
+        }
+        return result;
+    };
+    return std::make_shared<BitmapGlobalIndexResult>(std::move(supplier));
 }
 
 bool SortedFileGlobalIndexReader::FallbackScanEnabled(

@@ -36,9 +36,7 @@ namespace paimon {
 class AppendOnlyWriter;
 class ArrowDeduplicateRealtimeStore;
 class CoreOptions;
-class DataFileKeyOffsetIndexWriter;
 class DataFilePathFactory;
-class FileSystem;
 class MemoryPool;
 class RealtimeContext;
 class RealtimeSchemaLayout;
@@ -77,24 +75,16 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
                               std::shared_ptr<AppendOnlyWriter> file_writer,
                               std::shared_ptr<RealtimeSchemaLayout> schema_layout,
                               std::shared_ptr<arrow::Field> deduplicate_key_field,
-                              std::shared_ptr<DataFilePathFactory> data_file_path_factory,
-                              std::shared_ptr<FileSystem> file_system, int64_t next_offset,
-                              std::shared_ptr<MemoryPool> memory_pool,
-                              std::map<std::string, std::string> options);
+                              int64_t next_offset, std::shared_ptr<MemoryPool> memory_pool);
 
     Status SealCurrentSegment();
-    Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment,
-                        DataFileKeyOffsetIndexWriter* offset_index_writer);
+    Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<ArrowDeduplicateRealtimeStore> realtime_store_;
     std::shared_ptr<AppendOnlyWriter> file_writer_;
     std::shared_ptr<RealtimeSchemaLayout> schema_layout_;
     std::shared_ptr<arrow::Field> deduplicate_key_field_;
-    std::shared_ptr<DataFilePathFactory> data_file_path_factory_;
-    std::shared_ptr<FileSystem> file_system_;
-    std::shared_ptr<MemoryPool> memory_pool_;
-    std::map<std::string, std::string> options_;
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> sealed_segments_;
     int64_t next_offset_;
     bool has_building_data_ = false;

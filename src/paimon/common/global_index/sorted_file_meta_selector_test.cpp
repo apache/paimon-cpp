@@ -57,12 +57,12 @@ class SortedFileMetaSelectorTest : public ::testing::Test {
         // file6: only-nulls file (no keys, has_nulls=true)
         auto meta6 = std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, true);
         files_ = {
-            GlobalIndexIOMeta("file1", 1, meta1->Serialize(pool_.get())),
-            GlobalIndexIOMeta("file2", 1, meta2->Serialize(pool_.get())),
-            GlobalIndexIOMeta("file3", 1, meta3->Serialize(pool_.get())),
-            GlobalIndexIOMeta("file4", 1, meta4->Serialize(pool_.get())),
-            GlobalIndexIOMeta("file5", 1, meta5->Serialize(pool_.get())),
-            GlobalIndexIOMeta("file6", 1, meta6->Serialize(pool_.get())),
+            GlobalIndexIOMeta("file1", 1, /*row_count=*/1, meta1->Serialize(pool_.get())),
+            GlobalIndexIOMeta("file2", 1, /*row_count=*/1, meta2->Serialize(pool_.get())),
+            GlobalIndexIOMeta("file3", 1, /*row_count=*/1, meta3->Serialize(pool_.get())),
+            GlobalIndexIOMeta("file4", 1, /*row_count=*/1, meta4->Serialize(pool_.get())),
+            GlobalIndexIOMeta("file5", 1, /*row_count=*/1, meta5->Serialize(pool_.get())),
+            GlobalIndexIOMeta("file6", 1, /*row_count=*/1, meta6->Serialize(pool_.get())),
         };
     }
 
@@ -244,10 +244,10 @@ TEST_F(SortedFileMetaSelectorTest, TestVisitStartsWith) {
     auto only_nulls_meta =
         std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, /*has_nulls=*/true);
     std::vector<GlobalIndexIOMeta> files = {
-        GlobalIndexIOMeta("first", 1, first_meta->Serialize(pool.get())),
-        GlobalIndexIOMeta("second", 1, second_meta->Serialize(pool.get())),
-        GlobalIndexIOMeta("third", 1, third_meta->Serialize(pool.get())),
-        GlobalIndexIOMeta("only_nulls", 1, only_nulls_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("first", 1, /*row_count=*/1, first_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("second", 1, /*row_count=*/1, second_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("third", 1, /*row_count=*/1, third_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("only_nulls", 1, /*row_count=*/1, only_nulls_meta->Serialize(pool.get())),
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
                          SortedFileMetaSelector::Create(files, key_serializer));
@@ -328,9 +328,9 @@ TEST_F(SortedFileMetaSelectorTest, TestEmptyStringKeyDoesNotCrash) {
                                                              serialize("zzz.com", 7), false);
     auto null_meta = std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, true);
     std::vector<GlobalIndexIOMeta> files = {
-        GlobalIndexIOMeta("file_empty", 1, empty_meta->Serialize(pool.get())),
-        GlobalIndexIOMeta("file_normal", 1, normal_meta->Serialize(pool.get())),
-        GlobalIndexIOMeta("file_nulls", 1, null_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("file_empty", 1, /*row_count=*/1, empty_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("file_normal", 1, /*row_count=*/1, normal_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("file_nulls", 1, /*row_count=*/1, null_meta->Serialize(pool.get())),
     };
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
@@ -356,36 +356,42 @@ TEST_F(SortedFileMetaSelectorTest, RejectsMalformedFileMetadata) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
                          KeySerializer::Create(arrow::int32(), pool));
-    std::vector<GlobalIndexIOMeta> files = {GlobalIndexIOMeta("missing", 1, /*metadata=*/nullptr)};
+    std::vector<GlobalIndexIOMeta> files = {
+        GlobalIndexIOMeta("missing", 1, /*row_count=*/1, /*metadata=*/nullptr)};
     ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto truncated = std::make_shared<Bytes>(std::string(4, '\0'), pool.get());
-    files = {GlobalIndexIOMeta("truncated", 1, truncated)};
+    files = {GlobalIndexIOMeta("truncated", 1, /*row_count=*/1, truncated)};
     ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto short_key = std::make_shared<Bytes>(std::string(1, '\0'), pool.get());
     auto invalid_key_meta = std::make_shared<SortedIndexFileMeta>(short_key, short_key, false);
-    files = {GlobalIndexIOMeta("invalid-key", 1, invalid_key_meta->Serialize(pool.get()))};
+    files = {GlobalIndexIOMeta("invalid-key", 1, /*row_count=*/1,
+                               invalid_key_meta->Serialize(pool.get()))};
     ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto reversed_meta =
         std::make_shared<SortedIndexFileMeta>(SerializeInt(10), SerializeInt(1), false);
-    files = {GlobalIndexIOMeta("reversed-range", 1, reversed_meta->Serialize(pool.get()))};
+    files = {GlobalIndexIOMeta("reversed-range", 1, /*row_count=*/1,
+                               reversed_meta->Serialize(pool.get()))};
     ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto only_first_meta =
         std::make_shared<SortedIndexFileMeta>(SerializeInt(1), /*last_key=*/nullptr, false);
-    files = {GlobalIndexIOMeta("only-first-key", 1, only_first_meta->Serialize(pool.get()))};
+    files = {GlobalIndexIOMeta("only-first-key", 1, /*row_count=*/1,
+                               only_first_meta->Serialize(pool.get()))};
     ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto only_last_meta =
         std::make_shared<SortedIndexFileMeta>(/*first_key=*/nullptr, SerializeInt(1), false);
-    files = {GlobalIndexIOMeta("only-last-key", 1, only_last_meta->Serialize(pool.get()))};
+    files = {GlobalIndexIOMeta("only-last-key", 1, /*row_count=*/1,
+                               only_last_meta->Serialize(pool.get()))};
     ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 
     auto empty_nonnull_meta =
         std::make_shared<SortedIndexFileMeta>(/*first_key=*/nullptr, /*last_key=*/nullptr, false);
-    files = {GlobalIndexIOMeta("empty-nonnull", 1, empty_nonnull_meta->Serialize(pool.get()))};
+    files = {GlobalIndexIOMeta("empty-nonnull", 1, /*row_count=*/1,
+                               empty_nonnull_meta->Serialize(pool.get()))};
     ASSERT_NOK(SortedFileMetaSelector::Create(files, key_serializer));
 }
 

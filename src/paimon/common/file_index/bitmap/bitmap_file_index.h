@@ -46,7 +46,7 @@ class PAIMON_EXPORT BitmapFileIndex : public FileIndexer {
     ~BitmapFileIndex() override = default;
 
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema* arrow_schema, int32_t start, int32_t length,
+        ::ArrowSchema* arrow_schema, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input_stream,
         const std::shared_ptr<MemoryPool>& pool) const override;
 
@@ -101,7 +101,7 @@ class BitmapFileIndexReader : public FileIndexReader,
                               public std::enable_shared_from_this<BitmapFileIndexReader> {
  public:
     BitmapFileIndexReader(const std::shared_ptr<arrow::DataType>& arrow_type,
-                          const FieldType& data_type, int32_t start, int32_t length,
+                          const FieldType& data_type,
                           const std::shared_ptr<InputStream>& input_stream,
                           const std::shared_ptr<MemoryPool>& pool);
 
@@ -123,8 +123,6 @@ class BitmapFileIndexReader : public FileIndexReader,
     Status ReadInternalMeta();
 
  private:
-    int32_t head_start_;
-    int32_t length_;
     FieldType data_type_;
     std::shared_ptr<arrow::DataType> arrow_type_;
     std::shared_ptr<MemoryPool> pool_;

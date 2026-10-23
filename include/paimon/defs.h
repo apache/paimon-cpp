@@ -162,6 +162,14 @@ struct PAIMON_EXPORT Options {
     /// "blob.target-file-size" - Target size of a blob file. Default is TARGET_FILE_SIZE.
     static const char BLOB_TARGET_FILE_SIZE[];
 
+    /// "vector.file.format" - Optional dedicated VECTOR storage format (parquet, lance or vortex)
+    /// for a single top-level VECTOR column in row-tracking append-only tables.
+    static const char VECTOR_FILE_FORMAT[];
+
+    /// "vector.target-file-size" - Target size of the vector file. Defaults to TARGET_FILE_SIZE.
+    /// VECTOR files roll independently; rolling a main file also closes the current VECTOR file.
+    static const char VECTOR_TARGET_FILE_SIZE[];
+
     /// "blob.split-by-file-size" - Whether to consider blob file size as a factor when performing
     /// scan splitting. When unset, defaults to the negation of BLOB_AS_DESCRIPTOR.
     static const char BLOB_SPLIT_BY_FILE_SIZE[];
@@ -470,6 +478,9 @@ struct PAIMON_EXPORT Options {
     /// manifest. Default value is 500B.
     static const char FILE_INDEX_IN_MANIFEST_THRESHOLD[];
 
+    /// "file-index.format.version" - File index container write version, 1 or 2. Defaults to 1.
+    static const char FILE_INDEX_FORMAT_VERSION[];
+
     /// "data-file.external-paths" - The external paths where the data of this table will be
     /// written, multiple elements separated by commas.
     static const char DATA_FILE_EXTERNAL_PATHS[];
@@ -569,12 +580,6 @@ struct PAIMON_EXPORT Options {
     /// tables at read time. Set to false to preserve serialized BlobViewStruct bytes when
     /// forwarding blob view values to another blob-view table. Default value is "true".
     static const char BLOB_VIEW_RESOLVE_ENABLED[];
-    /// "blob-view-upstream-warehouse" - Warehouse root the upstream table a blob-view field points
-    /// at is resolved from. Since the catalog capabilities are partially missing, cpp paimon cannot
-    /// always obtain it automatically, so it may be configured explicitly. When it is not set, the
-    /// read falls back to the warehouse the downstream table itself lives in, which resolves a
-    /// co-located upstream table. No default value.
-    static const char BLOB_VIEW_UPSTREAM_WAREHOUSE[];
     /// "blob-write-null-on-missing-file" - Whether to write NULL for a descriptor BLOB value,
     /// including an ARRAY<BLOB> element or a MAP<..., BLOB> value, when the referenced file does
     /// not exist at write time.

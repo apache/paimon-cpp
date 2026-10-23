@@ -80,6 +80,7 @@ class PAIMON_EXPORT CoreOptions {
 
     int32_t GetBucket() const;
     std::shared_ptr<FileFormat> GetFileFormat() const;
+    std::shared_ptr<FileFormat> GetVectorFileFormat() const;
     std::shared_ptr<FileFormat> GetWriteFileFormat(int32_t level) const;
     std::shared_ptr<FileSystem> GetFileSystem() const;
     const std::string& GetFileCompression() const;
@@ -89,6 +90,7 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetTargetFileSize(bool has_primary_key) const;
     int64_t GetTargetFileRowNum() const;
     int64_t GetBlobTargetFileSize() const;
+    int64_t GetVectorTargetFileSize() const;
     bool BlobSplitByFileSize() const;
     int64_t GetCompactionFileSize(bool has_primary_key) const;
     std::string GetPartitionDefaultName() const;
@@ -224,6 +226,7 @@ class PAIMON_EXPORT CoreOptions {
     bool PrepareCommitWaitCompaction() const;
     bool FileIndexReadEnabled() const;
     int64_t FileIndexInManifestThreshold() const;
+    int32_t FileIndexFormatVersion() const;
 
     std::map<std::string, std::string> GetFieldsSequenceGroups() const;
     bool PartialUpdateRemoveRecordOnDelete() const;
@@ -302,7 +305,6 @@ class PAIMON_EXPORT CoreOptions {
     const std::vector<std::string>& GetBlobFields() const;
     const std::vector<std::string>& GetBlobDescriptorFields() const;
     const std::vector<std::string>& GetBlobViewFields() const;
-    std::optional<std::string> GetBlobViewUpstreamWarehouse() const;
     bool BlobViewResolveEnabled() const;
     std::vector<std::string> GetBlobInlineFields() const;
 

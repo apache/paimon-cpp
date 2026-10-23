@@ -57,6 +57,7 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/table/source/plan_impl.h"
 #include "paimon/core/utils/file_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/data/blob.h"
@@ -199,20 +200,15 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
     }
 
     /// Creates the (f0 INT, view) blob-view table the dangling-reference tests share: unaware
-    /// bucket, data evolution on, and `view` resolved against `upstream_warehouse`. Returns the
-    /// table's fields, which the callers reuse to build their expected arrays.
-    arrow::FieldVector CreateBlobViewTable(const std::string& upstream_warehouse,
-                                           bool deletion_vectors_enabled) const {
+    /// bucket and data evolution on. Returns the table's fields, which the callers reuse to
+    /// build their expected arrays.
+    arrow::FieldVector CreateBlobViewTable(bool deletion_vectors_enabled) const {
         arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                      BlobUtils::ToArrowField("view", true)};
         std::map<std::string, std::string> options = {
-            {Options::FILE_FORMAT, GetParam()},
-            {Options::BUCKET, "-1"},
-            {Options::ROW_TRACKING_ENABLED, "true"},
-            {Options::DATA_EVOLUTION_ENABLED, "true"},
-            {Options::BLOB_VIEW_FIELD, "view"},
-            {Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, upstream_warehouse},
-            {Options::FILE_SYSTEM, "local"}};
+            {Options::FILE_FORMAT, GetParam()},      {Options::BUCKET, "-1"},
+            {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+            {Options::BLOB_VIEW_FIELD, "view"},      {Options::FILE_SYSTEM, "local"}};
         if (deletion_vectors_enabled) {
             options.emplace(Options::DELETION_VECTORS_ENABLED, "true");
         }
@@ -1894,12 +1890,32 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateMultipleLayers) {
     const std::vector<std::string> expected_rows = {
         R"([[1, "a", "update1_0"]])", R"([[2, "b", "blob_1"]])", R"([[3, "c", "blob_2"]])",
         R"([[4, "d", "update2_3"]])"};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> unpruned_plan, ScanTable(table_path));
+    ASSERT_EQ(unpruned_plan->Splits().size(), 1);
+    auto unpruned_split = std::dynamic_pointer_cast<DataSplitImpl>(unpruned_plan->Splits()[0]);
+    ASSERT_NE(unpruned_split, nullptr);
+    ASSERT_EQ(unpruned_split->DataFiles().size(), 4);
     for (int32_t i = 0; i < static_cast<int32_t>(expected_rows.size()); i++) {
+        SCOPED_TRACE(i);
         auto expected_single = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), expected_rows[i])
                 .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_single,
                               /*predicate=*/nullptr, /*row_ranges=*/{Range(i, i)}));
+
+        // Range planning can narrow a read after scanning, leaving unselected BLOB files
+        // in the split. Their sequence layers must still align with the selected rows.
+        auto indexed_split =
+            std::make_shared<IndexedSplitImpl>(unpruned_split, std::vector<Range>{Range(i, i)});
+        auto indexed_plan = std::make_shared<PlanImpl>(
+            unpruned_plan->SnapshotId(), std::vector<std::shared_ptr<Split>>{indexed_split});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadTable(table_path, schema->field_names(), indexed_plan));
+        ASSERT_NE(result, nullptr);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> expected_with_row_kind,
+                             PrependRowKindColumn(expected_single));
+        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected_with_row_kind)))
+            << result->ToString();
     }
 }
 
@@ -3992,13 +4008,9 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamTable) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("view", true)};
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, file_format},
-        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_VIEW_FIELD, "view"},
-        {Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, dir_->Str()},
-        {Options::FILE_SYSTEM, "local"}};
+        {Options::FILE_FORMAT, file_format},     {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::BLOB_VIEW_FIELD, "view"},      {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -4156,8 +4168,7 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
         PathUtil::JoinPath(dir_->Str(), upstream_db_name + ".db/" + upstream_table_name);
     ASSERT_TRUE(TestUtil::CopyDirectory(src_db_path, dst_db_path));
 
-    // The source table configures no explicit upstream warehouse; a default read falls back to the
-    // warehouse it lives in (dir_), where the copied upstream table sits.
+    // Both blob-view tables resolve the upstream table from the warehouse they share.
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("view", true)};
     std::map<std::string, std::string> source_options = {
@@ -4167,15 +4178,12 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
     CreateTable(fields, /*partition_keys=*/{}, source_options);
     std::string source_table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
-    // The target table configures the upstream warehouse for resolving forwarded references.
-    std::map<std::string, std::string> target_options = source_options;
-    target_options[Options::BLOB_VIEW_UPSTREAM_WAREHOUSE] = dir_->Str();
     auto schema = arrow::schema(fields);
     ::ArrowSchema c_target_schema;
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_target_schema).ok());
     ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(dir_->Str(), {}));
     ASSERT_OK(catalog->CreateTable(Identifier("foo", "bar_forward"), &c_target_schema,
-                                   /*partition_keys=*/{}, /*primary_keys=*/{}, target_options,
+                                   /*partition_keys=*/{}, /*primary_keys=*/{}, source_options,
                                    /*ignore_if_exists=*/false));
     std::string target_table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar_forward");
 
@@ -4210,9 +4218,8 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
                          WriteArray(source_table_path, {}, schema->field_names(), {write_struct}));
     ASSERT_OK(Commit(source_table_path, commit_msgs));
 
-    // With no explicit upstream warehouse, a default read now falls back to the source table's own
-    // warehouse (dir_) and resolves the copied upstream table instead of failing. The pass-through
-    // read below still uses the dynamic option to preserve the raw BlobViewStruct bytes.
+    // A default read resolves the copied upstream table in the source table's warehouse. The
+    // pass-through read below uses the dynamic option to preserve the raw BlobViewStruct bytes.
     ASSERT_OK_AND_ASSIGN(auto source_plan, ScanTable(source_table_path));
     ASSERT_OK_AND_ASSIGN(
         auto source_default_result,
@@ -4349,13 +4356,9 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamDescriptorBlob) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("view", true)};
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, file_format},
-        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_VIEW_FIELD, "view"},
-        {Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, dir_->Str()},
-        {Options::FILE_SYSTEM, "local"}};
+        {Options::FILE_FORMAT, file_format},     {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::BLOB_VIEW_FIELD, "view"},      {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -4454,13 +4457,9 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
                                  BlobUtils::ToArrowField("view1", true),
                                  BlobUtils::ToArrowField("view2", true)};
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, file_format},
-        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_VIEW_FIELD, "view1,view2"},
-        {Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, dir_->Str()},
-        {Options::FILE_SYSTEM, "local"}};
+        {Options::FILE_FORMAT, file_format},       {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},   {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::BLOB_VIEW_FIELD, "view1,view2"}, {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -4584,9 +4583,7 @@ TEST_P(BlobTableInteTest, TestBlobViewFailsWhenUpstreamTableAbsent) {
     if (GetParam() == "mosaic") {
         return;
     }
-    auto upstream_dir = UniqueTestDirectory::Create("local");
-    arrow::FieldVector fields =
-        CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/false);
+    arrow::FieldVector fields = CreateBlobViewTable(/*deletion_vectors_enabled=*/false);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields);
 
@@ -4602,9 +4599,7 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
     if (GetParam() == "mosaic") {
         return;
     }
-    auto upstream_dir = UniqueTestDirectory::Create("local");
-    arrow::FieldVector fields =
-        CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/true);
+    arrow::FieldVector fields = CreateBlobViewTable(/*deletion_vectors_enabled=*/true);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields);
 
@@ -4645,9 +4640,7 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceInEveryRowRangeGroup
     if (GetParam() == "mosaic") {
         return;
     }
-    auto upstream_dir = UniqueTestDirectory::Create("local");
-    arrow::FieldVector fields =
-        CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/true);
+    arrow::FieldVector fields = CreateBlobViewTable(/*deletion_vectors_enabled=*/true);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields);
 
@@ -4689,9 +4682,7 @@ TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
     if (GetParam() == "mosaic") {
         return;
     }
-    auto upstream_dir = UniqueTestDirectory::Create("local");
-    arrow::FieldVector fields =
-        CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/false);
+    arrow::FieldVector fields = CreateBlobViewTable(/*deletion_vectors_enabled=*/false);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields);
 

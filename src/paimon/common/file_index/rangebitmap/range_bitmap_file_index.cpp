@@ -21,6 +21,8 @@
 #include <arrow/c/bridge.h>
 #include <arrow/type.h>
 
+#include <limits>
+
 #include "paimon/common/file_index/rangebitmap/range_bitmap.h"
 #include "paimon/common/file_index/rangebitmap/range_bitmap_type_adapter.h"
 #include "paimon/common/io/offset_input_stream.h"
@@ -39,7 +41,7 @@ RangeBitmapFileIndex::RangeBitmapFileIndex(const std::map<std::string, std::stri
     : options_(options) {}
 
 Result<std::shared_ptr<FileIndexReader>> RangeBitmapFileIndex::CreateReader(
-    ::ArrowSchema* arrow_schema, const int32_t start, const int32_t length,
+    ::ArrowSchema* arrow_schema, const int64_t start, const int64_t length,
     const std::shared_ptr<InputStream>& input_stream,
     const std::shared_ptr<MemoryPool>& pool) const {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema_ptr,
@@ -113,8 +115,12 @@ RangeBitmapFileIndexWriter::RangeBitmapFileIndexWriter(
       appender_(std::move(appender)) {}
 
 Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexReader::Create(
-    const std::shared_ptr<arrow::DataType>& arrow_type, const int32_t start, const int32_t length,
+    const std::shared_ptr<arrow::DataType>& arrow_type, const int64_t start, const int64_t length,
     const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool) {
+    if (length > std::numeric_limits<int32_t>::max()) {
+        return Status::NotImplemented(
+            "Range bitmap file index does not support payloads larger than INT32_MAX");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RangeBitmapTypeAdapter> type_adapter,
                            RangeBitmapTypeAdapter::Create(arrow_type));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetInputStream> bounded_stream,

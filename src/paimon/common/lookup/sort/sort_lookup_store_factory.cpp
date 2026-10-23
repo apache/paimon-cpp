@@ -24,13 +24,14 @@
 namespace paimon {
 Result<std::unique_ptr<LookupStoreWriter>> SortLookupStoreFactory::CreateWriter(
     const std::shared_ptr<paimon::FileSystem>& fs, const std::string& file_path,
-    const std::shared_ptr<BloomFilter>& bloom_filter,
+    const std::shared_ptr<BloomFilter::Builder>& bloom_filter_builder,
     const std::shared_ptr<MemoryPool>& pool) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out,
                            fs->Create(file_path, /*overwrite=*/false));
     return std::make_unique<SortLookupStoreWriter>(
         out,
-        std::make_shared<SstFileWriter>(out, bloom_filter, block_size_, compression_factory_, pool),
+        std::make_shared<SstFileWriter>(out, bloom_filter_builder, block_size_,
+                                        compression_factory_, pool),
         pool);
 }
 

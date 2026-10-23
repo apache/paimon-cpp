@@ -21,18 +21,93 @@
 
 #include <utility>
 
+#include "arrow/array/array_nested.h"
+#include "arrow/array/data.h"
 #include "arrow/c/bridge.h"
+#include "arrow/compute/api.h"
 #include "arrow/memory_pool.h"
+#include "arrow/scalar.h"
 #include "arrow/type.h"
+#include "arrow/util/byte_size.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/arrow/vector_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
 #include "paimon/fs/file_system.h"
 
 namespace paimon::vortex {
+namespace {
+
+constexpr double COMPRESSION_RATIO = 0.25;
+
+Status ValidateVisibleVectorElements(const std::shared_ptr<arrow::Array>& array,
+                                     arrow::MemoryPool* pool) {
+    if (!VectorUtils::ContainsVectorType(array->type())) {
+        return Status::OK();
+    }
+    switch (array->type_id()) {
+        case arrow::Type::STRUCT: {
+            const auto& rows = checked_cast<const arrow::StructArray&>(*array);
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(arrow::ArrayVector fields, rows.Flatten(pool));
+            for (const auto& field : fields) {
+                PAIMON_RETURN_NOT_OK(ValidateVisibleVectorElements(field, pool));
+            }
+            return Status::OK();
+        }
+        case arrow::Type::LIST: {
+            const auto& list = checked_cast<const arrow::ListArray&>(*array);
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> values,
+                                              list.Flatten(pool));
+            return ValidateVisibleVectorElements(values, pool);
+        }
+        case arrow::Type::FIXED_SIZE_LIST: {
+            const auto& list = checked_cast<const arrow::FixedSizeListArray&>(*array);
+            if (!array->type()->field(0)->nullable()) {
+                PAIMON_RETURN_NOT_OK(VectorUtils::ValidateVectorElements(list));
+            }
+            if (!VectorUtils::ContainsVectorType(list.value_type())) {
+                return Status::OK();
+            }
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> values,
+                                              list.Flatten(pool));
+            return ValidateVisibleVectorElements(values, pool);
+        }
+        default:
+            return Status::OK();
+    }
+}
+
+Result<std::shared_ptr<arrow::ArrayData>> NormalizeVectorNullElements(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::compute::ExecContext* context) {
+    std::shared_ptr<arrow::ArrayData> normalized = data;
+    for (size_t i = 0; i < data->child_data.size(); ++i) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> child,
+                               NormalizeVectorNullElements(data->child_data[i], context));
+        if (data->type->id() == arrow::Type::FIXED_SIZE_LIST && !data->type->field(0)->nullable() &&
+            child->GetNullCount() != 0) {
+            // Null VECTORs or ancestors may own null slots. Vortex imports these masked slots too.
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Scalar> zero,
+                                              arrow::MakeScalar(child->type, 0));
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                arrow::Datum filled,
+                arrow::compute::CallFunction("coalesce", {arrow::MakeArray(child), zero}, context));
+            child = filled.make_array()->data();
+        }
+        if (child != data->child_data[i]) {
+            if (normalized == data) {
+                normalized = data->Copy();
+            }
+            normalized->child_data[i] = child;
+        }
+    }
+    return normalized;
+}
+
+}  // namespace
 
 VortexFormatWriter::VortexFormatWriter(std::shared_ptr<OutputStream> output,
                                        std::shared_ptr<arrow::Schema> schema, VxSessionPtr session,
@@ -103,6 +178,13 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
                                       arrow::ImportArray(batch, arrow::struct_(schema_->fields())));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized,
                            ArrowUtils::NormalizeArrayOffsets(imported, arrow_pool_.get()));
+    PAIMON_RETURN_NOT_OK(ValidateVisibleVectorElements(normalized, arrow_pool_.get()));
+    arrow::compute::ExecContext context(arrow_pool_.get());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> normalized_data,
+                           NormalizeVectorNullElements(normalized->data(), &context));
+    normalized = arrow::MakeArray(normalized_data);
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(int64_t batch_bytes,
+                                      arrow::util::ReferencedBufferSize(*normalized));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*normalized, &rebased_batch));
     // The rebased buffers belong to arrow_pool_, which dies with this writer; keep it alive until
     // Rust releases the exported array.
@@ -122,6 +204,7 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
         return VortexCallbackError("push batch to Vortex sink", error,
                                    output_context_->GetCallbackStatus());
     }
+    ffi_bytes_ += batch_bytes;
     return Status::OK();
 }
 
@@ -156,7 +239,8 @@ Result<bool> VortexFormatWriter::ReachTargetSize(bool suggested_check, int64_t t
     if (!suggested_check || output_context_ == nullptr) {
         return false;
     }
-    return output_context_->BytesWritten() >= target_size;
+    // Match Java's estimate: background writes may still be buffered when rolling is checked.
+    return static_cast<int64_t>(ffi_bytes_ * COMPRESSION_RATIO) >= target_size;
 }
 
 std::shared_ptr<Metrics> VortexFormatWriter::GetWriterMetrics() const {

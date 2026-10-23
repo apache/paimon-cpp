@@ -21,12 +21,55 @@
 #include <utility>
 
 #include "gtest/gtest.h"
+#include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/defs.h"
+#include "paimon/predicate/compound_predicate.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+TEST(PredicateUtilsTest, TestFullTextMatchFieldUtilities) {
+    auto match = std::make_shared<FullTextMatch>("text", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> text,
+                         PredicateBuilder::FullTextMatch(1, match));
+    auto scalar = PredicateBuilder::Equal(0, "id", FieldType::INT, Literal(7));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({scalar, text}));
+    ASSERT_TRUE(PredicateUtils::ContainsFullTextMatch(predicate));
+    ASSERT_FALSE(PredicateUtils::ContainsFullTextMatch(scalar));
+    ASSERT_FALSE(PredicateUtils::ContainsFullTextMatch(nullptr));
+    std::set<std::string> names;
+    ASSERT_OK(PredicateUtils::GetAllNames(predicate, &names));
+    ASSERT_EQ(names, (std::set<std::string>{"id", "text"}));
+    ASSERT_OK_AND_ASSIGN(bool contains, PredicateUtils::ContainAnyField(predicate, {"text"}));
+    ASSERT_TRUE(contains);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> picked,
+                         PredicateUtils::CreatePickedFieldFilter(predicate, {{"text", 4}}));
+    auto picked_text = std::dynamic_pointer_cast<FullTextMatchPredicate>(picked);
+    ASSERT_TRUE(picked_text);
+    ASSERT_EQ(picked_text->FieldIndex(), 4);
+    ASSERT_EQ(picked_text->GetFullTextMatch(), match);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
+                         PredicateBuilder::Or({scalar, text}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> missing,
+                         PredicateUtils::CreatePickedFieldFilter(disjunction, {{"text", 4}}));
+    ASSERT_FALSE(missing);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> remapped,
+        PredicateUtils::CreatePickedFieldFilter(disjunction, {{"id", 2}, {"text", 4}}));
+    auto compound = std::dynamic_pointer_cast<CompoundPredicate>(remapped);
+    ASSERT_TRUE(compound);
+    ASSERT_EQ(compound->GetFunction().GetType(), Function::Type::OR);
+    picked_text = std::dynamic_pointer_cast<FullTextMatchPredicate>(compound->Children()[1]);
+    ASSERT_TRUE(picked_text);
+    ASSERT_EQ(picked_text->FieldIndex(), 4);
+    ASSERT_EQ(picked_text->GetFullTextMatch(), match);
+}
+
 TEST(PredicateUtilsTest, TestSplitAnd) {
     ASSERT_OK_AND_ASSIGN(
         auto child1,

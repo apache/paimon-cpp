@@ -28,6 +28,7 @@
 #include "paimon/common/utils/bin_packing.h"
 #include "paimon/common/utils/range_helper.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/utils/range.h"
 
 namespace paimon {
 Result<std::vector<SplitGenerator::SplitGroup>> DataEvolutionSplitGenerator::SplitForBatch(
@@ -37,8 +38,8 @@ Result<std::vector<SplitGenerator::SplitGroup>> DataEvolutionSplitGenerator::Spl
             return meta->NonNullFirstRowId();
         },
         [](const std::shared_ptr<DataFileMeta>& meta) -> Result<int64_t> {
-            PAIMON_ASSIGN_OR_RAISE(int64_t first_row_id, meta->NonNullFirstRowId());
-            return first_row_id + meta->row_count - 1;
+            PAIMON_ASSIGN_OR_RAISE(Range row_id_range, meta->NonNullRowIdRange());
+            return row_id_range.to;
         });
 
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> ranges,

@@ -31,24 +31,25 @@
 #include "paimon/common/global_index/union_global_index_reader.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
+#include "paimon/core/global_index/global_index_live_row_filter.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/global_index/global_indexer_factory.h"
 
 namespace paimon {
-GlobalIndexScanImpl::GlobalIndexScanImpl(const std::shared_ptr<TableSchema>& table_schema,
-                                         const CoreOptions& options,
-                                         const std::shared_ptr<IndexPathFactory>& path_factory,
-                                         IndexMetaMap&& index_metas,
-                                         const std::shared_ptr<Executor>& executor,
-                                         const std::shared_ptr<MemoryPool>& pool)
+GlobalIndexScanImpl::GlobalIndexScanImpl(
+    const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& options,
+    const std::shared_ptr<IndexPathFactory>& path_factory, IndexMetaMap&& index_metas,
+    LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier,
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
     : pool_(pool),
       table_schema_(table_schema),
       options_(options),
       index_file_manager_(std::make_shared<GlobalIndexFileManager>(
           options.GetFileSystem(), path_factory, /*checkpoint_path_factory=*/nullptr)),
       index_metas_(std::move(index_metas)),
+      live_rows_supplier_(std::move(live_rows_supplier)),
       executor_(executor) {}
 
 Result<std::unique_ptr<GlobalIndexScanImpl>> GlobalIndexScanImpl::Create(
@@ -122,8 +123,18 @@ Result<std::unique_ptr<GlobalIndexScanImpl>> GlobalIndexScanImpl::Create(
         index_metas[index_meta->index_field_id][index_file_meta->IndexType()][range].push_back(
             index_file_meta);
     }
-    return std::unique_ptr<GlobalIndexScanImpl>(new GlobalIndexScanImpl(
-        table_schema, options, path_factory, std::move(index_metas), final_executor, pool));
+    // Full-text searches rank only the rows live in the snapshot the index is read from.
+    LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier;
+    if (options.DeletionVectorsEnabled()) {
+        live_rows_supplier = LiveRowGlobalIndexReader::CacheLiveRows(
+            [root_path, table_schema, snapshot, partitions, options, final_executor, pool]() {
+                return GlobalIndexLiveRowFilter::LiveRows(
+                    root_path, table_schema, snapshot, partitions, options, final_executor, pool);
+            });
+    }
+    return std::unique_ptr<GlobalIndexScanImpl>(
+        new GlobalIndexScanImpl(table_schema, options, path_factory, std::move(index_metas),
+                                std::move(live_rows_supplier), final_executor, pool));
 }
 
 Result<std::shared_ptr<GlobalIndexEvaluator>> GlobalIndexScanImpl::GetOrCreateIndexEvaluator() {
@@ -205,6 +216,17 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
             if (row_range_index && !row_range_index->Intersects(range.from, range.to)) {
                 continue;
             }
+            std::optional<std::vector<Range>> local_row_ranges;
+            if (row_range_index) {
+                std::vector<Range> intersected_ranges =
+                    row_range_index->IntersectedRanges(range.from, range.to);
+                local_row_ranges.emplace();
+                local_row_ranges->reserve(intersected_ranges.size());
+                for (const Range& intersected_range : intersected_ranges) {
+                    local_row_ranges->emplace_back(intersected_range.from - range.from,
+                                                   intersected_range.to - range.from);
+                }
+            }
             auto arrow_field = DataField::ConvertDataFieldToArrowField(field);
             auto arrow_schema = arrow::schema({arrow_field});
 
@@ -214,7 +236,8 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
             ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<GlobalIndexReader> index_reader,
-                indexer->CreateReader(&c_arrow_schema, index_file_manager_, index_io_metas, pool_));
+                indexer->CreateReader(&c_arrow_schema, index_file_manager_, index_io_metas,
+                                      range.Count(), local_row_ranges, pool_));
             union_readers.push_back(std::make_shared<OffsetGlobalIndexReader>(
                 std::move(index_reader), range.from, range.to));
             row_ranges.push_back(range);
@@ -223,8 +246,15 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
         if (union_readers.empty()) {
             continue;
         }
-        readers.push_back(std::make_shared<UnionGlobalIndexReader>(
-            std::move(union_readers), std::move(row_ranges), std::move(search_ranges), executor_));
+        if (live_rows_supplier_) {
+            readers.push_back(LiveRowGlobalIndexReader::CreateUnion(
+                std::move(union_readers), std::move(row_ranges), std::move(search_ranges),
+                executor_, live_rows_supplier_));
+        } else {
+            readers.push_back(std::make_shared<UnionGlobalIndexReader>(
+                std::move(union_readers), std::move(row_ranges), std::move(search_ranges),
+                executor_));
+        }
     }
     return readers;
 }
@@ -243,7 +273,7 @@ GlobalIndexIOMeta GlobalIndexScanImpl::ToGlobalIndexIOMeta(
     const std::shared_ptr<IndexFileMeta>& index_meta) const {
     assert(index_meta->GetGlobalIndexMeta());
     const auto& global_index_meta = index_meta->GetGlobalIndexMeta().value();
-    return {index_file_manager_->ToPath(index_meta), index_meta->FileSize(),
+    return {index_file_manager_->ToPath(index_meta), index_meta->FileSize(), index_meta->RowCount(),
             global_index_meta.index_meta};
 }
 

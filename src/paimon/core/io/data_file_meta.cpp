@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <utility>
 
 #include "arrow/type_fwd.h"
@@ -165,6 +166,17 @@ std::optional<std::string> DataFileMeta::ExternalPathDir() const {
 Result<int64_t> DataFileMeta::CreationTimeEpochMillis() const {
     PAIMON_ASSIGN_OR_RAISE(Timestamp utc_ts, DateTimeUtils::ToUTCTimestamp(creation_time));
     return utc_ts.GetMillisecond();
+}
+
+Result<Range> DataFileMeta::NonNullRowIdRange() const {
+    PAIMON_ASSIGN_OR_RAISE(int64_t start, NonNullFirstRowId());
+    if (start < 0 || row_count <= 0 ||
+        row_count - 1 > std::numeric_limits<int64_t>::max() - start) {
+        return Status::Invalid(
+            fmt::format("Invalid row id range of {}: first row id {}, row count {}.", file_name,
+                        start, row_count));
+    }
+    return Range(start, start + (row_count - 1));
 }
 
 Result<std::optional<RoaringBitmap32>> DataFileMeta::ToFileSelection(

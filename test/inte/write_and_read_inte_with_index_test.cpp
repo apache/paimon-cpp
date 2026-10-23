@@ -16,18 +16,22 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
 #include "arrow/c/abi.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "arrow/util/string_builder.h"
 #include "gtest/gtest.h"
@@ -38,7 +42,12 @@
 #include "paimon/common/file_index/bsi/bit_slice_index_bitmap_file_index_factory.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
+#include "paimon/core/deletionvectors/deletion_vector_index_file_writer.h"
+#include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/stats/simple_stats.h"
@@ -55,11 +64,17 @@
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
+#include "paimon/record_batch.h"
 #include "paimon/result.h"
+#include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/source/plan.h"
 #include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
+#include "paimon/testing/mock/mock_index_path_factory.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/read_result_collector.h"
+#include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon {
@@ -68,11 +83,49 @@ class Predicate;
 }  // namespace paimon
 
 namespace paimon::test {
-class ReadInteWithIndexTest : public testing::Test,
-                              public ::testing::WithParamInterface<std::pair<std::string, bool>> {
+enum class IndexDataSource { CppV1, CppV2, Java };
+
+constexpr char kBitmapData[] = R"([
+    ["Alice", 10, 1, 11.1], ["Bob", 10, 1, 12.1],
+    ["Emily", 10, 0, 13.1], ["Tony", 10, 0, 14.1],
+    ["Lucy", 20, 1, 15.1], ["Bob", 10, 1, 16.1],
+    ["Tony", 20, 0, 17.1], ["Alice", 20, null, 18.1]
+])";
+
+constexpr char kNumericData[] = R"([
+    ["Alice", 100, -2, 11.1, 1745542802000123000],
+    ["Bob", 200, -3, 12.1, 1745542902000123000],
+    ["Emily", 300, 1, 13.1, 1745542602000123000],
+    ["Tony", 50, 1, 14.1, -1744877000],
+    ["Lucy", 500, -1, 15.1, -1764877000],
+    ["Bob", 100, 2, 16.1, null],
+    ["Tony", null, -2, 17.1, 1745542802000123001],
+    ["Alice", 20, null, 18.1, -1724877000]
+])";
+
+constexpr char kRangeBitmapData[] = R"([
+    [17, 100, 1.1, 11.11, 19739, "row0"],
+    [3, 200, 2.2, 22.22, 19725, "row1"],
+    [5, 300, 3.3, 33.33, 19727, "row2"],
+    [7, 400, 4.4, 44.44, 19729, "row3"],
+    [9, 500, 5.5, 55.55, 19731, "row4"],
+    [null, null, null, null, null, null],
+    [null, null, null, null, null, "null_row"],
+    [10, 600, 6.6, 66.66, 19732, "row7"]
+])";
+
+class WriteAndReadInteWithIndexTest
+    : public testing::Test,
+      public ::testing::WithParamInterface<std::tuple<std::string, bool, IndexDataSource>> {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
+        std::tie(file_format_, enable_prefetch_, data_source_) = GetParam();
+        if (data_source_ != IndexDataSource::Java) {
+            dir_ = UniqueTestDirectory::Create();
+            embedded_index_ = RandomNumber(0, 1) == 0;
+            RecordProperty("index_storage", embedded_index_ ? "embedded" : "external");
+        }
     }
     void TearDown() override {}
 
@@ -80,13 +133,12 @@ class ReadInteWithIndexTest : public testing::Test,
                      const std::vector<std::shared_ptr<Split>> splits,
                      const std::shared_ptr<Predicate>& predicate,
                      const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
-        auto [file_format, enable_prefetch] = GetParam();
         ReadContextBuilder context_builder(table_path);
         context_builder.AddOption("read.batch-size", "2")
             .AddOption("test.enable-adaptive-prefetch-strategy", "false")
             .SetPredicate(predicate)
             .EnableLateMaterializing(false);
-        if (enable_prefetch) {
+        if (enable_prefetch_) {
             context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
@@ -898,33 +950,178 @@ class ReadInteWithIndexTest : public testing::Test,
         }
     }
 
- private:
+    std::map<std::string, std::string> CppOptions(
+        std::map<std::string, std::string> options) const {
+        options[Options::FILE_FORMAT] = file_format_;
+        options.emplace(Options::BUCKET, "-1");
+        options[Options::FILE_INDEX_FORMAT_VERSION] =
+            data_source_ == IndexDataSource::CppV1 ? "1" : "2";
+        options[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = embedded_index_ ? "100MB" : "1B";
+        return options;
+    }
+
+    void CheckIndexStorage(const std::shared_ptr<DataSplitImpl>& split) const {
+        SCOPED_TRACE(embedded_index_ ? "embedded index" : "external index");
+        for (const auto& file : split->DataFiles()) {
+            ASSERT_EQ(embedded_index_, file->embedded_index != nullptr);
+            ASSERT_EQ(embedded_index_ ? 0 : 1, file->extra_files.size());
+        }
+    }
+
+    void ScanCppTable(TestHelper* helper, std::shared_ptr<DataSplitImpl>* split) const {
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                             helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+        ASSERT_EQ(1, splits.size());
+        *split = checked_pointer_cast<DataSplitImpl>(splits[0]);
+        ASSERT_NO_FATAL_FAILURE(CheckIndexStorage(*split));
+    }
+
+    void WriteCppTable(const std::vector<DataField>& read_fields, const std::string& json,
+                       const std::map<std::string, std::string>& index_options, std::string* path,
+                       std::shared_ptr<DataSplitImpl>* split, bool single_row_batches = false,
+                       const std::vector<std::string>& primary_keys = {}) const {
+        auto options = CppOptions(index_options);
+        arrow::FieldVector fields;
+        for (size_t i = 1; i < read_fields.size(); ++i) {
+            auto field = read_fields[i].ArrowField();
+            if (std::find(primary_keys.begin(), primary_keys.end(), field->name()) !=
+                primary_keys.end()) {
+                field = field->WithNullable(false);
+            }
+            fields.push_back(field);
+        }
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TestHelper> helper,
+            TestHelper::Create(dir_->Str(), arrow::schema(fields), {}, primary_keys, options,
+                               /*is_streaming_mode=*/false, /*ignore_if_exists=*/false,
+                               /*temp_directory=*/dir_->Str() + "/tmp"));
+        if (single_row_batches) {
+            // Flush each record separately so a tiny stripe/row-group size produces eight parts.
+            auto array_result =
+                arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), json);
+            ASSERT_TRUE(array_result.ok()) << array_result.status().ToString();
+            auto array = array_result.ValueOrDie();
+            std::vector<std::unique_ptr<RecordBatch>> batches;
+            for (int64_t i = 0; i < array->length(); ++i) {
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> row,
+                                     ArrowUtils::NormalizeArrayOffsets(
+                                         array->Slice(i, 1), arrow::default_memory_pool()));
+                ::ArrowArray c_array;
+                ASSERT_TRUE(arrow::ExportArray(*row, &c_array).ok());
+                RecordBatchBuilder builder(&c_array);
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                                     builder.SetBucket(0).Finish());
+                batches.push_back(std::move(batch));
+            }
+            ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
+        } else {
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<RecordBatch> batch,
+                TestHelper::MakeRecordBatch(arrow::struct_(fields), json, {}, 0, {}));
+            ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+        }
+        *path = dir_->Str() + "/foo.db/bar";
+        ASSERT_NO_FATAL_FAILURE(ScanCppTable(helper.get(), split));
+    }
+
+    void WriteCppTableWithDv(const std::vector<DataField>& read_fields, std::string* path,
+                             std::shared_ptr<DataSplitImpl>* split) const {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(read_fields, R"([
+            [0, "Alice", 10, 1, 11.1], [1, "Bob", 10, 1, 12.1],
+            [2, "Emily", 10, 0, 13.1], [3, "Tony", 10, 0, 14.1],
+            [4, "Lucy", 20, 1, 15.1], [5, "Bob", 10, 1, 16.1],
+            [6, "Tony", 20, 0, 17.1], [7, "Alice", 20, null, 18.1]
+        ])",
+                                              {{"file-index.bitmap.columns", "f0,f1,f2"},
+                                               {Options::BUCKET, "1"},
+                                               {"deletion-vectors.enabled", "true"}},
+                                              path, split, /*single_row_batches=*/false,
+                                              /*primary_keys=*/{"key"}));
+        ASSERT_EQ(1, (*split)->DataFiles().size());
+        auto deletion_vector = std::make_shared<BitmapDeletionVector>(RoaringBitmap32());
+        ASSERT_OK(deletion_vector->Delete(0));
+        ASSERT_OK(deletion_vector->Delete(4));
+        auto index_paths = std::make_shared<MockIndexPathFactory>(dir_->Str());
+        DeletionVectorIndexFileWriter dv_writer(dir_->GetFileSystem(), index_paths, pool_);
+        const auto& file_name = (*split)->DataFiles()[0]->file_name;
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> dv_meta,
+                             dv_writer.WriteSingleFile({{file_name, deletion_vector}}));
+        const auto& range = dv_meta->DvRanges().value().find(file_name)->second;
+        DeletionFile deletion_file(index_paths->ToPath(dv_meta), range.GetOffset(),
+                                   range.GetLength(), range.GetCardinality());
+        DataSplitImpl::Builder builder((*split)->Partition(), (*split)->Bucket(),
+                                       (*split)->BucketPath(), {(*split)->DataFiles()[0]});
+        ASSERT_OK_AND_ASSIGN(*split, builder.WithSnapshot((*split)->SnapshotId())
+                                         .WithDataDeletionFiles({deletion_file})
+                                         .IsStreaming(false)
+                                         .RawConvertible(true)
+                                         .Build());
+    }
+
+    void WriteCppTableWithAlter(const std::vector<DataField>& read_fields, std::string* path,
+                                std::shared_ptr<DataSplitImpl>* split) const {
+        std::vector<DataField> original_fields = {
+            SpecialFields::ValueKind(), DataField(0, arrow::field("f0", arrow::utf8())),
+            DataField(1, arrow::field("f1", arrow::int32())),
+            DataField(2, arrow::field("f2", arrow::int32())),
+            DataField(3, arrow::field("f3", arrow::float64()))};
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(original_fields, kBitmapData,
+                                              {{"file-index.bitmap.columns", "f0,f1,f2"}}, path,
+                                              split));
+        auto options = CppOptions({{"file-index.bitmap.columns", "f1,f4,f5"}});
+        std::vector<DataField> current_fields(read_fields.begin() + 1, read_fields.end());
+        ASSERT_OK(TestHelper::WriteNextSchema(dir_->GetFileSystem(), *path, current_fields,
+                                              /*highest_field_id=*/4, options));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                             TestHelper::Create(*path, options, /*is_streaming_mode=*/false));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             TestHelper::MakeRecordBatch(
+                                 DataField::ConvertDataFieldsToArrowStructType(current_fields), R"([
+            [30, "Alice", 21.1, 100], [20, "Emily", 22.1, 101],
+            [10, "Bob", 23.1, 100], [30, "David", 24.1, null]
+        ])",
+                                 {}, 0, {}));
+        ASSERT_OK(helper->WriteAndCommit(std::move(batch), 1, std::nullopt));
+        ASSERT_NO_FATAL_FAILURE(ScanCppTable(helper.get(), split));
+        ASSERT_EQ(2, (*split)->DataFiles().size());
+        ASSERT_EQ(0, (*split)->DataFiles()[0]->schema_id);
+        ASSERT_EQ(1, (*split)->DataFiles()[1]->schema_id);
+    }
+
+ protected:
+    std::string file_format_;
+    bool enable_prefetch_ = false;
+    bool embedded_index_ = false;
+    IndexDataSource data_source_ = IndexDataSource::Java;
     std::shared_ptr<MemoryPool> pool_;
+    std::unique_ptr<UniqueTestDirectory> dir_;
 };
 
-std::vector<std::pair<std::string, bool>> GetTestValuesForReadInteWithIndexTest() {
-    std::vector<std::pair<std::string, bool>> values = {{"parquet", false}, {"parquet", true}};
+std::vector<std::string> GetFileFormatsForWriteAndReadInteWithIndexTest() {
+    std::vector<std::string> values = {"parquet"};
+    values.reserve(10);
 #ifdef PAIMON_ENABLE_ORC
-    values.emplace_back("orc", false);
-    values.emplace_back("orc", true);
+    values.emplace_back("orc");
 #endif
     return values;
 }
 
-INSTANTIATE_TEST_SUITE_P(FileFormatAndEnablePaimonPrefetch, ReadInteWithIndexTest,
-                         ::testing::ValuesIn(std::vector<std::pair<std::string, bool>>(
-                             GetTestValuesForReadInteWithIndexTest())));
+INSTANTIATE_TEST_SUITE_P(
+    FileFormatAndPrefetchAndDataSource, WriteAndReadInteWithIndexTest,
+    ::testing::Combine(::testing::ValuesIn(GetFileFormatsForWriteAndReadInteWithIndexTest()),
+                       ::testing::Bool(),
+                       ::testing::Values(IndexDataSource::CppV1, IndexDataSource::CppV2,
+                                         IndexDataSource::Java)),
+    [](const ::testing::TestParamInfo<WriteAndReadInteWithIndexTest::ParamType>& info) {
+        IndexDataSource source = std::get<2>(info.param);
+        std::string source_name = source == IndexDataSource::Java
+                                      ? "Java"
+                                      : (source == IndexDataSource::CppV1 ? "CppV1" : "CppV2");
+        return std::get<0>(info.param) + (std::get<1>(info.param) ? "Prefetch" : "NoPrefetch") +
+               source_name;
+    });
 
-TEST_P(ReadInteWithIndexTest, TestSimple) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
-    }
+TEST_P(WriteAndReadInteWithIndexTest, TestSimple) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -932,25 +1129,41 @@ TEST_P(ReadInteWithIndexTest, TestSimple) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(
+            read_fields, kBitmapData, {{"file-index.bitmap.columns", "f0,f1,f2"}}, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
+        }
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/689,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/689,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     auto predicate =
         PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
@@ -968,7 +1181,7 @@ TEST_P(ReadInteWithIndexTest, TestSimple) {
         .AddOption("test.enable-adaptive-prefetch-strategy", "false")
         .AddOption("orc.read.enable-metrics", "true")
         .SetPredicate(predicate);
-    if (enable_prefetch) {
+    if (enable_prefetch_) {
         context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
@@ -980,7 +1193,7 @@ TEST_P(ReadInteWithIndexTest, TestSimple) {
     ASSERT_TRUE(result_array->Equals(*expected_array));
 
     // test metrics
-    if (file_format == "orc") {
+    if (file_format_ == "orc") {
         ASSERT_OK_AND_ASSIGN(uint64_t io_count, read_metrics->GetCounter("orc.read.io.count"));
         ASSERT_GT(io_count, 0);
         ASSERT_OK_AND_ASSIGN(uint64_t latency,
@@ -989,17 +1202,7 @@ TEST_P(ReadInteWithIndexTest, TestSimple) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestReadWithLimits) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1007,24 +1210,41 @@ TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/689,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(
+            read_fields, kBitmapData, {{"file-index.bitmap.columns", "f0,f1,f2"}}, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
+        }
+
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/689,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     auto predicate =
         PredicateBuilder::NotEqual(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
@@ -1035,7 +1255,7 @@ TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
         .AddOption(Options::READ_BATCH_SIZE, "1")
         .AddOption("orc.read.enable-metrics", "true")
         .SetPredicate(predicate);
-    if (enable_prefetch) {
+    if (enable_prefetch_) {
         context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
@@ -1059,7 +1279,7 @@ TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
     }
 
     // test metrics
-    if (file_format == "orc") {
+    if (file_format_ == "orc") {
         ASSERT_TRUE(read_metrics);
         ASSERT_OK_AND_ASSIGN(uint64_t io_count, read_metrics->GetCounter("orc.read.io.count"));
         ASSERT_GT(io_count, 0);
@@ -1069,17 +1289,7 @@ TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestEmbeddingBitmapIndex) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path =
-        GetDataDir() + "/" + file_format + "/append_with_bitmap.db/append_with_bitmap/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-62feb610-c83f-4217-9b50-bbad9cd08eb4-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-54b396b6-df2d-4c6a-a0ae-b6a5afb612d7-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestEmbeddingBitmapIndex) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1087,69 +1297,74 @@ TEST_P(ReadInteWithIndexTest, TestEmbeddingBitmapIndex) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(
+            read_fields, kBitmapData, {{"file-index.bitmap.columns", "f0,f1,f2"}}, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ + "/append_with_bitmap.db/append_with_bitmap/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-62feb610-c83f-4217-9b50-bbad9cd08eb4-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-54b396b6-df2d-4c6a-a0ae-b6a5afb612d7-0.parquet";
+        }
 
-    std::vector<uint8_t> embedded_bytes = {
-        0,  5,   78,  78,  208, 26,  53,  174, 0,   0,   0,   1,   0,   0,   0,   96,  0,   0,
-        0,  3,   0,   2,   102, 48,  0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112,
-        0,  0,   0,   96,  0,   0,   0,   176, 0,   2,   102, 49,  0,   0,   0,   1,   0,   6,
-        98, 105, 116, 109, 97,  112, 0,   0,   1,   16,  0,   0,   0,   102, 0,   2,   102, 50,
-        0,  0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112, 0,   0,   1,   118, 0,   0,
-        0,  108, 0,   0,   0,   0,   2,   0,   0,   0,   8,   0,   0,   0,   5,   0,   0,   0,
-        0,  1,   0,   0,   0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,   0,   0,   0,
-        85, 0,   0,   0,   5,   0,   0,   0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,
-        0,  0,   0,   20,  0,   0,   0,   3,   66,  111, 98,  0,   0,   0,   20,  0,   0,   0,
-        20, 0,   0,   0,   5,   69,  109, 105, 108, 121, 255, 255, 255, 253, 255, 255, 255, 255,
-        0,  0,   0,   4,   76,  117, 99,  121, 255, 255, 255, 251, 255, 255, 255, 255, 0,   0,
-        0,  4,   84,  111, 110, 121, 0,   0,   0,   40,  0,   0,   0,   20,  58,  48,  0,   0,
-        1,  0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   0,   0,   7,   0,   58,  48,
-        0,  0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   1,   0,   5,   0,
-        58, 48,  0,   0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   3,   0,
-        6,  0,   2,   0,   0,   0,   8,   0,   0,   0,   2,   0,   0,   0,   0,   1,   0,   0,
-        0,  10,  0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,   0,   10,
-        0,  0,   0,   22,  0,   0,   0,   26,  0,   0,   0,   20,  0,   0,   0,   0,   0,   0,
-        0,  22,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,   16,  0,   0,   0,
-        4,  0,   6,   0,   7,   0,   58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   4,   0,
-        16, 0,   0,   0,   0,   0,   1,   0,   2,   0,   3,   0,   5,   0,   2,   0,   0,   0,
-        8,  0,   0,   0,   2,   1,   255, 255, 255, 248, 0,   0,   0,   18,  0,   0,   0,   1,
-        0,  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,
-        0,  0,   0,   0,   0,   0,   0,   0,   0,   22,  0,   0,   0,   1,   0,   0,   0,   22,
-        0,  0,   0,   24,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,   16,  0,
-        0,  0,   2,   0,   3,   0,   6,   0,   58,  48,  0,   0,   1,   0,   0,   0,   0,   0,
-        3,  0,   16,  0,   0,   0,   0,   0,   1,   0,   4,   0,   5,   0};
-    auto embedded_index = std::make_shared<Bytes>(embedded_bytes.size(), pool_.get());
-    memcpy(embedded_index->data(), reinterpret_cast<const void*>(embedded_bytes.data()),
-           embedded_bytes.size());
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/689,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/std::vector<std::optional<std::string>>(),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/embedded_index, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        std::vector<uint8_t> embedded_bytes = {
+            0,  5,   78,  78,  208, 26,  53,  174, 0,   0,   0,   1,   0,   0,   0,   96,  0,   0,
+            0,  3,   0,   2,   102, 48,  0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112,
+            0,  0,   0,   96,  0,   0,   0,   176, 0,   2,   102, 49,  0,   0,   0,   1,   0,   6,
+            98, 105, 116, 109, 97,  112, 0,   0,   1,   16,  0,   0,   0,   102, 0,   2,   102, 50,
+            0,  0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112, 0,   0,   1,   118, 0,   0,
+            0,  108, 0,   0,   0,   0,   2,   0,   0,   0,   8,   0,   0,   0,   5,   0,   0,   0,
+            0,  1,   0,   0,   0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,   0,   0,   0,
+            85, 0,   0,   0,   5,   0,   0,   0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,
+            0,  0,   0,   20,  0,   0,   0,   3,   66,  111, 98,  0,   0,   0,   20,  0,   0,   0,
+            20, 0,   0,   0,   5,   69,  109, 105, 108, 121, 255, 255, 255, 253, 255, 255, 255, 255,
+            0,  0,   0,   4,   76,  117, 99,  121, 255, 255, 255, 251, 255, 255, 255, 255, 0,   0,
+            0,  4,   84,  111, 110, 121, 0,   0,   0,   40,  0,   0,   0,   20,  58,  48,  0,   0,
+            1,  0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   0,   0,   7,   0,   58,  48,
+            0,  0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   1,   0,   5,   0,
+            58, 48,  0,   0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   3,   0,
+            6,  0,   2,   0,   0,   0,   8,   0,   0,   0,   2,   0,   0,   0,   0,   1,   0,   0,
+            0,  10,  0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,   0,   10,
+            0,  0,   0,   22,  0,   0,   0,   26,  0,   0,   0,   20,  0,   0,   0,   0,   0,   0,
+            0,  22,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,   16,  0,   0,   0,
+            4,  0,   6,   0,   7,   0,   58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   4,   0,
+            16, 0,   0,   0,   0,   0,   1,   0,   2,   0,   3,   0,   5,   0,   2,   0,   0,   0,
+            8,  0,   0,   0,   2,   1,   255, 255, 255, 248, 0,   0,   0,   18,  0,   0,   0,   1,
+            0,  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,
+            0,  0,   0,   0,   0,   0,   0,   0,   0,   22,  0,   0,   0,   1,   0,   0,   0,   22,
+            0,  0,   0,   24,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,   16,  0,
+            0,  0,   2,   0,   3,   0,   6,   0,   58,  48,  0,   0,   1,   0,   0,   0,   0,   0,
+            3,  0,   16,  0,   0,   0,   0,   0,   1,   0,   4,   0,   5,   0};
+        auto embedded_index = std::make_shared<Bytes>(embedded_bytes.size(), pool_.get());
+        memcpy(embedded_index->data(), reinterpret_cast<const void*>(embedded_bytes.data()),
+               embedded_bytes.size());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/689,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/std::vector<std::optional<std::string>>(),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/embedded_index, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestBitmapWithV1) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path =
-        GetDataDir() + "/" + file_format + "/append_with_bitmap_v1.db/append_with_bitmap_v1/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-c29cf741-80ce-4b74-9cf3-e42efef557b3-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-6b38a150-c99c-4add-a449-a48a5d34e36c-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestBitmapWithV1) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1157,63 +1372,73 @@ TEST_P(ReadInteWithIndexTest, TestBitmapWithV1) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(read_fields, kBitmapData,
+                                              {{"file-index.bitmap.columns", "f0,f1,f2"},
+                                               {"file-index.bitmap.f0.version", "1"},
+                                               {"file-index.bitmap.f1.version", "1"},
+                                               {"file-index.bitmap.f2.version", "1"}},
+                                              &path, &split));
+    } else {
+        path =
+            GetDataDir() + "/" + file_format_ + "/append_with_bitmap_v1.db/append_with_bitmap_v1/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-c29cf741-80ce-4b74-9cf3-e42efef557b3-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-6b38a150-c99c-4add-a449-a48a5d34e36c-0.parquet";
+        }
 
-    std::vector<uint8_t> embedded_bytes = {
-        0,   5,   78,  78,  208, 26,  53,  174, 0,   0,   0,   1,   0,  0,   0,   96,  0,   0,
-        0,   3,   0,   2,   102, 48,  0,   0,   0,   1,   0,   6,   98, 105, 116, 109, 97,  112,
-        0,   0,   0,   96,  0,   0,   0,   131, 0,   2,   102, 49,  0,  0,   0,   1,   0,   6,
-        98,  105, 116, 109, 97,  112, 0,   0,   0,   227, 0,   0,   0,  74,  0,   2,   102, 50,
-        0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112, 0,  0,   1,   45,  0,   0,
-        0,   76,  0,   0,   0,   0,   1,   0,   0,   0,   8,   0,   0,  0,   5,   0,   0,   0,
-        0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,   0,   0,  0,   4,   76,  117, 99,
-        121, 255, 255, 255, 251, 0,   0,   0,   3,   66,  111, 98,  0,  0,   0,   20,  0,   0,
-        0,   5,   69,  109, 105, 108, 121, 255, 255, 255, 253, 0,   0,  0,   4,   84,  111, 110,
-        121, 0,   0,   0,   40,  58,  48,  0,   0,   1,   0,   0,   0,  0,   0,   1,   0,   16,
-        0,   0,   0,   0,   0,   7,   0,   58,  48,  0,   0,   1,   0,  0,   0,   0,   0,   1,
-        0,   16,  0,   0,   0,   1,   0,   5,   0,   58,  48,  0,   0,  1,   0,   0,   0,   0,
-        0,   1,   0,   16,  0,   0,   0,   3,   0,   6,   0,   1,   0,  0,   0,   8,   0,   0,
-        0,   2,   0,   0,   0,   0,   20,  0,   0,   0,   0,   0,   0,  0,   10,  0,   0,   0,
-        22,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,  16,  0,   0,   0,   4,
-        0,   6,   0,   7,   0,   58,  48,  0,   0,   1,   0,   0,   0,  0,   0,   4,   0,   16,
-        0,   0,   0,   0,   0,   1,   0,   2,   0,   3,   0,   5,   0,  1,   0,   0,   0,   8,
-        0,   0,   0,   2,   1,   255, 255, 255, 248, 0,   0,   0,   0,  0,   0,   0,   0,   0,
-        0,   0,   1,   0,   0,   0,   22,  58,  48,  0,   0,   1,   0,  0,   0,   0,   0,   2,
-        0,   16,  0,   0,   0,   2,   0,   3,   0,   6,   0,   58,  48, 0,   0,   1,   0,   0,
-        0,   0,   0,   3,   0,   16,  0,   0,   0,   0,   0,   1,   0,  4,   0,   5,   0};
-    auto embedded_index = std::make_shared<Bytes>(embedded_bytes.size(), pool_.get());
-    memcpy(embedded_index->data(), reinterpret_cast<const void*>(embedded_bytes.data()),
-           embedded_bytes.size());
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/689,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/std::vector<std::optional<std::string>>(),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/embedded_index, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        std::vector<uint8_t> embedded_bytes = {
+            0,   5,   78,  78,  208, 26,  53,  174, 0,   0,   0,   1,   0,  0,   0,   96,  0,   0,
+            0,   3,   0,   2,   102, 48,  0,   0,   0,   1,   0,   6,   98, 105, 116, 109, 97,  112,
+            0,   0,   0,   96,  0,   0,   0,   131, 0,   2,   102, 49,  0,  0,   0,   1,   0,   6,
+            98,  105, 116, 109, 97,  112, 0,   0,   0,   227, 0,   0,   0,  74,  0,   2,   102, 50,
+            0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112, 0,  0,   1,   45,  0,   0,
+            0,   76,  0,   0,   0,   0,   1,   0,   0,   0,   8,   0,   0,  0,   5,   0,   0,   0,
+            0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,   0,   0,  0,   4,   76,  117, 99,
+            121, 255, 255, 255, 251, 0,   0,   0,   3,   66,  111, 98,  0,  0,   0,   20,  0,   0,
+            0,   5,   69,  109, 105, 108, 121, 255, 255, 255, 253, 0,   0,  0,   4,   84,  111, 110,
+            121, 0,   0,   0,   40,  58,  48,  0,   0,   1,   0,   0,   0,  0,   0,   1,   0,   16,
+            0,   0,   0,   0,   0,   7,   0,   58,  48,  0,   0,   1,   0,  0,   0,   0,   0,   1,
+            0,   16,  0,   0,   0,   1,   0,   5,   0,   58,  48,  0,   0,  1,   0,   0,   0,   0,
+            0,   1,   0,   16,  0,   0,   0,   3,   0,   6,   0,   1,   0,  0,   0,   8,   0,   0,
+            0,   2,   0,   0,   0,   0,   20,  0,   0,   0,   0,   0,   0,  0,   10,  0,   0,   0,
+            22,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,  16,  0,   0,   0,   4,
+            0,   6,   0,   7,   0,   58,  48,  0,   0,   1,   0,   0,   0,  0,   0,   4,   0,   16,
+            0,   0,   0,   0,   0,   1,   0,   2,   0,   3,   0,   5,   0,  1,   0,   0,   0,   8,
+            0,   0,   0,   2,   1,   255, 255, 255, 248, 0,   0,   0,   0,  0,   0,   0,   0,   0,
+            0,   0,   1,   0,   0,   0,   22,  58,  48,  0,   0,   1,   0,  0,   0,   0,   0,   2,
+            0,   16,  0,   0,   0,   2,   0,   3,   0,   6,   0,   58,  48, 0,   0,   1,   0,   0,
+            0,   0,   0,   3,   0,   16,  0,   0,   0,   0,   0,   1,   0,  4,   0,   5,   0};
+        auto embedded_index = std::make_shared<Bytes>(embedded_bytes.size(), pool_.get());
+        memcpy(embedded_index->data(), reinterpret_cast<const void*>(embedded_bytes.data()),
+               embedded_bytes.size());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/689,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/std::vector<std::optional<std::string>>(),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/embedded_index, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndex) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestNoEmbeddingBitmapIndex) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1221,39 +1446,45 @@ TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndex) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(
+            read_fields, kBitmapData, {{"file-index.bitmap.columns", "f0,f1,f2"}}, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
+        }
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/689,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/689,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1261,25 +1492,41 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(
+            read_fields, kBitmapData, {{"file-index.bitmap.columns", "f0,f1,f2"}}, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
+        }
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/689,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/689,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     std::string literal_str = "Bob";
     auto predicate = PredicateBuilder::Equal(
@@ -1292,7 +1539,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
         .SetPredicate(predicate)
         .EnablePredicateFilter(true)
         .EnableLateMaterializing(true);
-    if (enable_prefetch) {
+    if (enable_prefetch_) {
         context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
@@ -1313,23 +1560,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
     ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
 }
 
-TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndexWithExternalPath) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
-    std::string file_name, external_file_path;
-    if (file_format == "orc") {
-        file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
-        external_file_path = GetDataDir() + "/" + file_format +
-                             "/append_with_bitmap_no_embedding.db/external-path/bucket-0/" +
-                             file_name;
-    } else if (file_format == "parquet") {
-        file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
-        external_file_path = GetDataDir() + "/" + file_format +
-                             "/append_with_bitmap_no_embedding.db/external-path/bucket-0/" +
-                             file_name;
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestNoEmbeddingBitmapIndexWithExternalPath) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -1337,41 +1568,56 @@ TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndexWithExternalPath) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(
+            read_fields, kBitmapData,
+            {{"file-index.bitmap.columns", "f0,f1,f2"},
+             {Options::DATA_FILE_EXTERNAL_PATHS, "file://" + dir_->Str() + "/external"},
+             {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "round-robin"}},
+            &path, &split));
+        ASSERT_EQ(1, split->DataFiles().size());
+        ASSERT_TRUE(split->DataFiles()[0]->external_path.has_value());
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
+        std::string file_name, external_file_path;
+        if (file_format_ == "orc") {
+            file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
+            external_file_path = GetDataDir() + "/" + file_format_ +
+                                 "/append_with_bitmap_no_embedding.db/external-path/bucket-0/" +
+                                 file_name;
+        } else if (file_format_ == "parquet") {
+            file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
+            external_file_path = GetDataDir() + "/" + file_format_ +
+                                 "/append_with_bitmap_no_embedding.db/external-path/bucket-0/" +
+                                 file_name;
+        }
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/689,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/external_file_path, /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/689,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/external_file_path, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithDv) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path =
-        GetDataDir() + "/" + file_format + "/pk_with_bitmap_dv.db/pk_with_bitmap_dv/";
-    std::string file_name, deletion_file_path;
-    if (file_format == "orc") {
-        file_name = "data-0da0dc51-797c-4c82-9b08-269b2ce400dc-0.orc";
-        deletion_file_path = path + "/index/index-73ec72e9-489e-49d9-a96c-f6db9b56fa07-0";
-    } else if (file_format == "parquet") {
-        file_name = "data-bfa36b28-40e7-4026-893b-d23116973174-0.parquet";
-        deletion_file_path = path + "/index/index-daed25d2-8e68-45ba-aaad-ff342666ef27-0";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithDv) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("key", arrow::int32())),
                                           DataField(1, arrow::field("f0", arrow::utf8())),
@@ -1380,30 +1626,46 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithDv) {
                                           DataField(4, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTableWithDv(read_fields, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ + "/pk_with_bitmap_dv.db/pk_with_bitmap_dv/";
+        std::string file_name, deletion_file_path;
+        if (file_format_ == "orc") {
+            file_name = "data-0da0dc51-797c-4c82-9b08-269b2ce400dc-0.orc";
+            deletion_file_path = path + "/index/index-73ec72e9-489e-49d9-a96c-f6db9b56fa07-0";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-bfa36b28-40e7-4026-893b-d23116973174-0.parquet";
+            deletion_file_path = path + "/index/index-daed25d2-8e68-45ba-aaad-ff342666ef27-0";
+        }
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/1001,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/5,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DeletionFile deletion_file(deletion_file_path,
-                               /*offset=*/1, /*length=*/24, /*cardinality=*/2);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split, builder.WithSnapshot(4)
-                                         .WithDataDeletionFiles({deletion_file})
-                                         .IsStreaming(false)
-                                         .RawConvertible(true)
-                                         .Build());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/1001,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/5,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DeletionFile deletion_file(deletion_file_path,
+                                   /*offset=*/1, /*length=*/24, /*cardinality=*/2);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(split, builder.WithSnapshot(4)
+                                        .WithDataDeletionFiles({deletion_file})
+                                        .IsStreaming(false)
+                                        .RawConvertible(true)
+                                        .Build());
+    }
     {
         // test with non predicate
         std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -1461,19 +1723,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithDv) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithAlterTable) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bitmap_alter_table.db/append_with_bitmap_alter_table/";
-    std::string file_name1, file_name2;
-    if (file_format == "orc") {
-        file_name1 = "data-68014988-5451-478f-a18a-a1668214cf3d-0.orc";
-        file_name2 = "data-a29b7235-760d-4838-881c-39cbef585dd2-0.orc";
-    } else if (file_format == "parquet") {
-        file_name1 = "data-da667947-0604-4459-973b-9d364c3953a9-0.parquet";
-        file_name2 = "data-2efd8477-9fb4-44a6-9a39-901dd5a83b28-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(1, arrow::field("f1", arrow::int64())),
                                           DataField(0, arrow::field("f4", arrow::utf8())),
@@ -1481,86 +1731,103 @@ TEST_P(ReadInteWithIndexTest, TestWithAlterTable) {
                                           DataField(4, arrow::field("f5", arrow::int32()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTableWithAlter(read_fields, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bitmap_alter_table.db/append_with_bitmap_alter_table/";
+        std::string file_name1, file_name2;
+        if (file_format_ == "orc") {
+            file_name1 = "data-68014988-5451-478f-a18a-a1668214cf3d-0.orc";
+            file_name2 = "data-a29b7235-760d-4838-881c-39cbef585dd2-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name1 = "data-da667947-0604-4459-973b-9d364c3953a9-0.parquet";
+            file_name2 = "data-2efd8477-9fb4-44a6-9a39-901dd5a83b28-0.parquet";
+        }
 
-    auto create_data_file_meta = [&](const std::string& file_name, int32_t schema_id,
-                                     const std::vector<uint8_t>& embedded_bytes) {
-        auto embedded_index = std::make_shared<Bytes>(embedded_bytes.size(), pool_.get());
-        memcpy(embedded_index->data(), reinterpret_cast<const void*>(embedded_bytes.data()),
-               embedded_bytes.size());
-        return std::make_shared<DataFileMeta>(
-            file_name, /*file_size=*/10,
-            /*row_count=*/10, /*min_key=*/BinaryRow::EmptyRow(),
-            /*max_key=*/BinaryRow::EmptyRow(),
-            /*key_stats=*/SimpleStats::EmptyStats(),
-            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-            /*max_sequence_number=*/10, schema_id,
-            /*level=*/0,
-            /*extra_files=*/std::vector<std::optional<std::string>>(),
-            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-            /*embedded_index=*/embedded_index, FileSource::Append(),
-            /*value_stats_cols=*/std::nullopt,
-            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
-    };
+        auto create_data_file_meta = [&](const std::string& file_name, int32_t schema_id,
+                                         const std::vector<uint8_t>& embedded_bytes) {
+            auto embedded_index = std::make_shared<Bytes>(embedded_bytes.size(), pool_.get());
+            memcpy(embedded_index->data(), reinterpret_cast<const void*>(embedded_bytes.data()),
+                   embedded_bytes.size());
+            return std::make_shared<DataFileMeta>(
+                file_name, /*file_size=*/10,
+                /*row_count=*/10, /*min_key=*/BinaryRow::EmptyRow(),
+                /*max_key=*/BinaryRow::EmptyRow(),
+                /*key_stats=*/SimpleStats::EmptyStats(),
+                /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+                /*max_sequence_number=*/10, schema_id,
+                /*level=*/0,
+                /*extra_files=*/std::vector<std::optional<std::string>>(),
+                /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+                /*embedded_index=*/embedded_index, FileSource::Append(),
+                /*value_stats_cols=*/std::nullopt,
+                /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+                /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
+        };
 
-    std::vector<uint8_t> embedded_bytes1 = {
-        0,  5,   78,  78,  208, 26,  53,  174, 0,   0,   0,   1,   0,   0,   0,   96,  0,   0,
-        0,  3,   0,   2,   102, 48,  0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112,
-        0,  0,   0,   96,  0,   0,   0,   176, 0,   2,   102, 49,  0,   0,   0,   1,   0,   6,
-        98, 105, 116, 109, 97,  112, 0,   0,   1,   16,  0,   0,   0,   102, 0,   2,   102, 50,
-        0,  0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112, 0,   0,   1,   118, 0,   0,
-        0,  108, 0,   0,   0,   0,   2,   0,   0,   0,   8,   0,   0,   0,   5,   0,   0,   0,
-        0,  1,   0,   0,   0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,   0,   0,   0,
-        85, 0,   0,   0,   5,   0,   0,   0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,
-        0,  0,   0,   20,  0,   0,   0,   3,   66,  111, 98,  0,   0,   0,   20,  0,   0,   0,
-        20, 0,   0,   0,   5,   69,  109, 105, 108, 121, 255, 255, 255, 253, 255, 255, 255, 255,
-        0,  0,   0,   4,   76,  117, 99,  121, 255, 255, 255, 251, 255, 255, 255, 255, 0,   0,
-        0,  4,   84,  111, 110, 121, 0,   0,   0,   40,  0,   0,   0,   20,  58,  48,  0,   0,
-        1,  0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   0,   0,   7,   0,   58,  48,
-        0,  0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   1,   0,   5,   0,
-        58, 48,  0,   0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   3,   0,
-        6,  0,   2,   0,   0,   0,   8,   0,   0,   0,   2,   0,   0,   0,   0,   1,   0,   0,
-        0,  10,  0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,   0,   10,
-        0,  0,   0,   22,  0,   0,   0,   26,  0,   0,   0,   20,  0,   0,   0,   0,   0,   0,
-        0,  22,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,   16,  0,   0,   0,
-        4,  0,   6,   0,   7,   0,   58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   4,   0,
-        16, 0,   0,   0,   0,   0,   1,   0,   2,   0,   3,   0,   5,   0,   2,   0,   0,   0,
-        8,  0,   0,   0,   2,   1,   255, 255, 255, 248, 0,   0,   0,   18,  0,   0,   0,   1,
-        0,  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,
-        0,  0,   0,   0,   0,   0,   0,   0,   0,   22,  0,   0,   0,   1,   0,   0,   0,   22,
-        0,  0,   0,   24,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,   16,  0,
-        0,  0,   2,   0,   3,   0,   6,   0,   58,  48,  0,   0,   1,   0,   0,   0,   0,   0,
-        3,  0,   16,  0,   0,   0,   0,   0,   1,   0,   4,   0,   5,   0};
-    std::vector<uint8_t> embedded_bytes2 = {
-        0,   5,   78,  78,  208, 26,  53,  174, 0,   0,   0,   1,   0,   0,   0,   96,  0,   0,
-        0,   3,   0,   2,   102, 49,  0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112,
-        0,   0,   0,   96,  0,   0,   0,   102, 0,   2,   102, 52,  0,   0,   0,   1,   0,   6,
-        98,  105, 116, 109, 97,  112, 0,   0,   0,   198, 0,   0,   0,   101, 0,   2,   102, 53,
-        0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112, 0,   0,   1,   43,  0,   0,
-        0,   82,  0,   0,   0,   0,   2,   0,   0,   0,   4,   0,   0,   0,   3,   0,   0,   0,
-        0,   1,   0,   0,   0,   0,   0,   0,   0,   10,  0,   0,   0,   0,   0,   0,   0,   52,
-        0,   0,   0,   3,   0,   0,   0,   0,   0,   0,   0,   10,  255, 255, 255, 253, 255, 255,
-        255, 255, 0,   0,   0,   0,   0,   0,   0,   20,  255, 255, 255, 254, 255, 255, 255, 255,
-        0,   0,   0,   0,   0,   0,   0,   30,  0,   0,   0,   0,   0,   0,   0,   20,  58,  48,
-        0,   0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   0,   0,   3,   0,
-        2,   0,   0,   0,   4,   0,   0,   0,   4,   0,   0,   0,   0,   1,   0,   0,   0,   5,
-        65,  108, 105, 99,  101, 0,   0,   0,   0,   0,   0,   0,   70,  0,   0,   0,   4,   0,
-        0,   0,   5,   65,  108, 105, 99,  101, 255, 255, 255, 255, 255, 255, 255, 255, 0,   0,
-        0,   3,   66,  111, 98,  255, 255, 255, 253, 255, 255, 255, 255, 0,   0,   0,   5,   68,
-        97,  118, 105, 100, 255, 255, 255, 252, 255, 255, 255, 255, 0,   0,   0,   5,   69,  109,
-        105, 108, 121, 255, 255, 255, 254, 255, 255, 255, 255, 2,   0,   0,   0,   4,   0,   0,
-        0,   2,   1,   255, 255, 255, 252, 0,   0,   0,   18,  0,   0,   0,   1,   0,   0,   0,
-        100, 0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,   0,   100, 0,
-        0,   0,   0,   0,   0,   0,   20,  0,   0,   0,   101, 255, 255, 255, 254, 255, 255, 255,
-        255, 58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   0,
-        0,   2,   0};
-    auto data_file_meta1 = create_data_file_meta(file_name1, 0, embedded_bytes1);
-    auto data_file_meta2 = create_data_file_meta(file_name2, 1, embedded_bytes2);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "/bucket-0/",
-                                   {data_file_meta1, data_file_meta2});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(2).IsStreaming(false).RawConvertible(true).Build());
+        std::vector<uint8_t> embedded_bytes1 = {
+            0,  5,   78,  78,  208, 26,  53,  174, 0,   0,   0,   1,   0,   0,   0,   96,  0,   0,
+            0,  3,   0,   2,   102, 48,  0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112,
+            0,  0,   0,   96,  0,   0,   0,   176, 0,   2,   102, 49,  0,   0,   0,   1,   0,   6,
+            98, 105, 116, 109, 97,  112, 0,   0,   1,   16,  0,   0,   0,   102, 0,   2,   102, 50,
+            0,  0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112, 0,   0,   1,   118, 0,   0,
+            0,  108, 0,   0,   0,   0,   2,   0,   0,   0,   8,   0,   0,   0,   5,   0,   0,   0,
+            0,  1,   0,   0,   0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,   0,   0,   0,
+            85, 0,   0,   0,   5,   0,   0,   0,   5,   65,  108, 105, 99,  101, 0,   0,   0,   0,
+            0,  0,   0,   20,  0,   0,   0,   3,   66,  111, 98,  0,   0,   0,   20,  0,   0,   0,
+            20, 0,   0,   0,   5,   69,  109, 105, 108, 121, 255, 255, 255, 253, 255, 255, 255, 255,
+            0,  0,   0,   4,   76,  117, 99,  121, 255, 255, 255, 251, 255, 255, 255, 255, 0,   0,
+            0,  4,   84,  111, 110, 121, 0,   0,   0,   40,  0,   0,   0,   20,  58,  48,  0,   0,
+            1,  0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   0,   0,   7,   0,   58,  48,
+            0,  0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   1,   0,   5,   0,
+            58, 48,  0,   0,   1,   0,   0,   0,   0,   0,   1,   0,   16,  0,   0,   0,   3,   0,
+            6,  0,   2,   0,   0,   0,   8,   0,   0,   0,   2,   0,   0,   0,   0,   1,   0,   0,
+            0,  10,  0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,   0,   10,
+            0,  0,   0,   22,  0,   0,   0,   26,  0,   0,   0,   20,  0,   0,   0,   0,   0,   0,
+            0,  22,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,   16,  0,   0,   0,
+            4,  0,   6,   0,   7,   0,   58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   4,   0,
+            16, 0,   0,   0,   0,   0,   1,   0,   2,   0,   3,   0,   5,   0,   2,   0,   0,   0,
+            8,  0,   0,   0,   2,   1,   255, 255, 255, 248, 0,   0,   0,   18,  0,   0,   0,   1,
+            0,  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,
+            0,  0,   0,   0,   0,   0,   0,   0,   0,   22,  0,   0,   0,   1,   0,   0,   0,   22,
+            0,  0,   0,   24,  58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   2,   0,   16,  0,
+            0,  0,   2,   0,   3,   0,   6,   0,   58,  48,  0,   0,   1,   0,   0,   0,   0,   0,
+            3,  0,   16,  0,   0,   0,   0,   0,   1,   0,   4,   0,   5,   0};
+        std::vector<uint8_t> embedded_bytes2 = {
+            0,   5,   78,  78,  208, 26,  53,  174, 0,   0,   0,   1,   0,   0,   0,   96,  0,
+            0,   0,   3,   0,   2,   102, 49,  0,   0,   0,   1,   0,   6,   98,  105, 116, 109,
+            97,  112, 0,   0,   0,   96,  0,   0,   0,   102, 0,   2,   102, 52,  0,   0,   0,
+            1,   0,   6,   98,  105, 116, 109, 97,  112, 0,   0,   0,   198, 0,   0,   0,   101,
+            0,   2,   102, 53,  0,   0,   0,   1,   0,   6,   98,  105, 116, 109, 97,  112, 0,
+            0,   1,   43,  0,   0,   0,   82,  0,   0,   0,   0,   2,   0,   0,   0,   4,   0,
+            0,   0,   3,   0,   0,   0,   0,   1,   0,   0,   0,   0,   0,   0,   0,   10,  0,
+            0,   0,   0,   0,   0,   0,   52,  0,   0,   0,   3,   0,   0,   0,   0,   0,   0,
+            0,   10,  255, 255, 255, 253, 255, 255, 255, 255, 0,   0,   0,   0,   0,   0,   0,
+            20,  255, 255, 255, 254, 255, 255, 255, 255, 0,   0,   0,   0,   0,   0,   0,   30,
+            0,   0,   0,   0,   0,   0,   0,   20,  58,  48,  0,   0,   1,   0,   0,   0,   0,
+            0,   1,   0,   16,  0,   0,   0,   0,   0,   3,   0,   2,   0,   0,   0,   4,   0,
+            0,   0,   4,   0,   0,   0,   0,   1,   0,   0,   0,   5,   65,  108, 105, 99,  101,
+            0,   0,   0,   0,   0,   0,   0,   70,  0,   0,   0,   4,   0,   0,   0,   5,   65,
+            108, 105, 99,  101, 255, 255, 255, 255, 255, 255, 255, 255, 0,   0,   0,   3,   66,
+            111, 98,  255, 255, 255, 253, 255, 255, 255, 255, 0,   0,   0,   5,   68,  97,  118,
+            105, 100, 255, 255, 255, 252, 255, 255, 255, 255, 0,   0,   0,   5,   69,  109, 105,
+            108, 121, 255, 255, 255, 254, 255, 255, 255, 255, 2,   0,   0,   0,   4,   0,   0,
+            0,   2,   1,   255, 255, 255, 252, 0,   0,   0,   18,  0,   0,   0,   1,   0,   0,
+            0,   100, 0,   0,   0,   0,   0,   0,   0,   28,  0,   0,   0,   2,   0,   0,   0,
+            100, 0,   0,   0,   0,   0,   0,   0,   20,  0,   0,   0,   101, 255, 255, 255, 254,
+            255, 255, 255, 255, 58,  48,  0,   0,   1,   0,   0,   0,   0,   0,   1,   0,   16,
+            0,   0,   0,   0,   0,   2,   0};
+        auto data_file_meta1 = create_data_file_meta(file_name1, 0, embedded_bytes1);
+        auto data_file_meta2 = create_data_file_meta(file_name2, 1, embedded_bytes2);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "/bucket-0/",
+                                       {data_file_meta1, data_file_meta2});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(2).IsStreaming(false).RawConvertible(true).Build());
+    }
     {
         // test with non predicate
         std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -1852,16 +2119,7 @@ TEST_P(ReadInteWithIndexTest, TestWithAlterTable) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithBsiIndex) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format + "/append_with_bsi.db/append_with_bsi/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-0befce14-587d-48e5-ad08-efeecceb0f09-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-af9e31b7-b44d-4a0e-85ae-5877d224ec9f-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestWithBsiIndex) {
     std::vector<DataField> read_fields = {
         SpecialFields::ValueKind(),
         DataField(0, arrow::field("f0", arrow::utf8())),
@@ -1871,24 +2129,40 @@ TEST_P(ReadInteWithIndexTest, TestWithBsiIndex) {
         DataField(4, arrow::field("f4", arrow::timestamp(arrow::TimeUnit::NANO)))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/932,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(
+            read_fields, kNumericData, {{"file-index.bsi.columns", "f1,f2,f4"}}, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ + "/append_with_bsi.db/append_with_bsi/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-0befce14-587d-48e5-ad08-efeecceb0f09-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-af9e31b7-b44d-4a0e-85ae-5877d224ec9f-0.parquet";
+        }
+
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/932,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
     {
         // test equal predicate for f0, take no effective as bsi does not support string
         auto predicate =
@@ -1912,17 +2186,7 @@ TEST_P(ReadInteWithIndexTest, TestWithBsiIndex) {
     CheckResultForBsi(path, arrow_data_type, {split});
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithBloomFilterIndex) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path =
-        GetDataDir() + "/" + file_format + "/append_with_bloomfilter.db/append_with_bloomfilter/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-34e8acb2-110b-4c32-9dc6-d6435178d0ad-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-79a27bc0-bcec-4062-9915-83ec8eb1622d-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestWithBloomFilterIndex) {
     std::vector<DataField> read_fields = {
         SpecialFields::ValueKind(),
         DataField(0, arrow::field("f0", arrow::utf8())),
@@ -1932,24 +2196,42 @@ TEST_P(ReadInteWithIndexTest, TestWithBloomFilterIndex) {
         DataField(4, arrow::field("f4", arrow::timestamp(arrow::TimeUnit::NANO)))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/932,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(
+            WriteCppTable(read_fields, kNumericData,
+                          {{"file-index.bloom-filter.columns", "f0,f1,f2,f3,f4"}}, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bloomfilter.db/append_with_bloomfilter/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-34e8acb2-110b-4c32-9dc6-d6435178d0ad-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-79a27bc0-bcec-4062-9915-83ec8eb1622d-0.parquet";
+        }
+
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/932,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     std::shared_ptr<arrow::ChunkedArray> all_array;
     auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
@@ -2116,21 +2398,7 @@ TEST_P(ReadInteWithIndexTest, TestWithBloomFilterIndex) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = paimon::test::GetDataDir() +
-                       "/append_with_bitmap_multi_stripes.db/append_with_bitmap_multi_stripes/";
-    std::string file_name, index_file_name;
-    if (file_format == "orc") {
-        // each record is a stripe
-        file_name = "data-55e21ed3-d118-4d75-a0fd-cd52039cb634-0.orc";
-        index_file_name = "data-55e21ed3-d118-4d75-a0fd-cd52039cb634-0.orc.index";
-    } else if (file_format == "parquet") {
-        // each record is a row group
-        file_name = "data-multi-row-groups.parquet";
-        index_file_name = "data-55e21ed3-d118-4d75-a0fd-cd52039cb634-0.orc.index";
-    }
-    // each record is a stripe
+TEST_P(WriteAndReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -2138,25 +2406,51 @@ TEST_P(ReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(read_fields, kBitmapData,
+                                              {{"file-index.bitmap.columns", "f0,f1,f2"},
+                                               {"write.batch-size", "1"},
+                                               {"orc.stripe.size", "1"},
+                                               {"orc.row.index.stride", "1"},
+                                               {"parquet.write.max-row-group-length", "1"}},
+                                              &path, &split, /*single_row_batches=*/true));
+    } else {
+        path = paimon::test::GetDataDir() +
+               "/append_with_bitmap_multi_stripes.db/append_with_bitmap_multi_stripes/";
+        std::string file_name, index_file_name;
+        if (file_format_ == "orc") {
+            // each record is a stripe
+            file_name = "data-55e21ed3-d118-4d75-a0fd-cd52039cb634-0.orc";
+            index_file_name = "data-55e21ed3-d118-4d75-a0fd-cd52039cb634-0.orc.index";
+        } else if (file_format_ == "parquet") {
+            // each record is a row group
+            file_name = "data-multi-row-groups.parquet";
+            index_file_name = "data-55e21ed3-d118-4d75-a0fd-cd52039cb634-0.orc.index";
+        }
+        // each record is a stripe
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/2637,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({index_file_name}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/2637,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({index_file_name}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     // test bitmap index takes effective
     CheckResultForBitmap(path, arrow_data_type, split);
@@ -2230,17 +2524,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithBitmapAndBsiAndBloomFilterIndex) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bsi_bitmap_bloomfilter.db/append_with_bsi_bitmap_bloomfilter/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-d77394c5-8f82-4fca-93ca-d4da892e7f4f-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-15f89029-c10f-437f-b819-338c3e8ab2ee-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestWithBitmapAndBsiAndBloomFilterIndex) {
     std::vector<DataField> read_fields = {
         SpecialFields::ValueKind(),
         DataField(0, arrow::field("f0", arrow::utf8())),
@@ -2250,24 +2534,44 @@ TEST_P(ReadInteWithIndexTest, TestWithBitmapAndBsiAndBloomFilterIndex) {
         DataField(4, arrow::field("f4", arrow::timestamp(arrow::TimeUnit::NANO)))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/932,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(
+            WriteCppTable(read_fields, kNumericData,
+                          {{"file-index.bsi.columns", "f1,f2,f4"},
+                           {"file-index.bloom-filter.columns", "f0,f1,f2,f3,f4"},
+                           {"file-index.bitmap.columns", "f0,f1,f2,f4"}},
+                          &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bsi_bitmap_bloomfilter.db/append_with_bsi_bitmap_bloomfilter/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-d77394c5-8f82-4fca-93ca-d4da892e7f4f-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-15f89029-c10f-437f-b819-338c3e8ab2ee-0.parquet";
+        }
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/932,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     CheckResultForBsi(path, arrow_data_type, split);
     {
@@ -2311,18 +2615,7 @@ TEST_P(ReadInteWithIndexTest, TestWithBitmapAndBsiAndBloomFilterIndex) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithIndexWithoutRegistered) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bsi_bitmap_bloomfilter.db/append_with_bsi_bitmap_bloomfilter/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-d77394c5-8f82-4fca-93ca-d4da892e7f4f-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-15f89029-c10f-437f-b819-338c3e8ab2ee-0.parquet";
-    }
-
-    auto factory_creator = FactoryCreator::GetInstance();
+TEST_P(WriteAndReadInteWithIndexTest, TestWithIndexWithoutRegistered) {
     std::vector<DataField> read_fields = {
         SpecialFields::ValueKind(),
         DataField(0, arrow::field("f0", arrow::utf8())),
@@ -2332,25 +2625,47 @@ TEST_P(ReadInteWithIndexTest, TestWithIndexWithoutRegistered) {
         DataField(4, arrow::field("f4", arrow::timestamp(arrow::TimeUnit::NANO)))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
-    // index file contains bitmap & bsi & bloomfilter
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/932,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    auto factory_creator = FactoryCreator::GetInstance();
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(
+            WriteCppTable(read_fields, kNumericData,
+                          {{"file-index.bsi.columns", "f1,f2,f4"},
+                           {"file-index.bloom-filter.columns", "f0,f1,f2,f3,f4"},
+                           {"file-index.bitmap.columns", "f0,f1,f2,f4"}},
+                          &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bsi_bitmap_bloomfilter.db/append_with_bsi_bitmap_bloomfilter/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-d77394c5-8f82-4fca-93ca-d4da892e7f4f-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-15f89029-c10f-437f-b819-338c3e8ab2ee-0.parquet";
+        }
+
+        // index file contains bitmap & bsi & bloomfilter
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/932,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
     {
         // only bitmap is registered
         factory_creator->TEST_Unregister("bsi");
@@ -2450,17 +2765,7 @@ TEST_P(ReadInteWithIndexTest, TestWithIndexWithoutRegistered) {
     }
 }
 
-TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndex) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path =
-        GetDataDir() + file_format + "/append_with_rangebitmap.db/append_with_rangebitmap/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-5759403d-17fc-4031-b5bb-5e22b02fdb3b-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-2fb852e2-e4b5-4807-bf92-04401ed10560-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestRangeBitmapIndex) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::int32())),
                                           DataField(1, arrow::field("f1", arrow::int64())),
@@ -2470,43 +2775,48 @@ TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndex) {
                                           DataField(5, arrow::field("f5", arrow::utf8()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(
+            WriteCppTable(read_fields, kRangeBitmapData,
+                          {{"file-index.range-bitmap.columns", "f0,f1,f2,f3,f4"}}, &path, &split));
+    } else {
+        path = GetDataDir() + file_format_ + "/append_with_rangebitmap.db/append_with_rangebitmap/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-5759403d-17fc-4031-b5bb-5e22b02fdb3b-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-2fb852e2-e4b5-4807-bf92-04401ed10560-0.parquet";
+        }
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/1288,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/1288,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
 
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     // Run comprehensive range bitmap index tests
     CheckResultForRangeBitmap(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndexMultiChunk) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path =
-        GetDataDir() + file_format +
-        "/append_with_rangebitmap_multi_chunk.db/append_with_rangebitmap_multi_chunk/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-b6b64e1e-e3d2-4f08-9a36-726a96cde1be-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-e4673af1-afcb-4b84-b69a-ae472ba517f2-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestRangeBitmapIndexMultiChunk) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::int32())),
                                           DataField(1, arrow::field("f1", arrow::int64())),
@@ -2516,42 +2826,55 @@ TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndexMultiChunk) {
                                           DataField(5, arrow::field("f5", arrow::utf8()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(
+            WriteCppTable(read_fields, kRangeBitmapData,
+                          {{"file-index.range-bitmap.columns", "f0,f1,f2,f3,f4"},
+                           {"file-index.range-bitmap.f0.chunk-size", "16B"},
+                           {"file-index.range-bitmap.f1.chunk-size", "16B"},
+                           {"file-index.range-bitmap.f2.chunk-size", "16B"},
+                           {"file-index.range-bitmap.f3.chunk-size", "16B"},
+                           {"file-index.range-bitmap.f4.chunk-size", "16B"}},
+                          &path, &split));
+    } else {
+        path = GetDataDir() + file_format_ +
+               "/append_with_rangebitmap_multi_chunk.db/append_with_rangebitmap_multi_chunk/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-b6b64e1e-e3d2-4f08-9a36-726a96cde1be-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-e4673af1-afcb-4b84-b69a-ae472ba517f2-0.parquet";
+        }
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/1413,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/1413,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
 
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     // Run range bitmap index tests with multi-chunk test data
     CheckResultForRangeBitmap(path, arrow_data_type, split);
 }
 
-TEST_P(ReadInteWithIndexTest, TestWithIOException) {
-    auto [file_format, enable_prefetch] = GetParam();
-    std::string path = GetDataDir() + "/" + file_format +
-                       "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
-    std::string file_name;
-    if (file_format == "orc") {
-        file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
-    } else if (file_format == "parquet") {
-        file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
-    }
-
+TEST_P(WriteAndReadInteWithIndexTest, TestWithIOException) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
@@ -2559,25 +2882,41 @@ TEST_P(ReadInteWithIndexTest, TestWithIOException) {
                                           DataField(3, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
+    std::string path;
+    std::shared_ptr<DataSplitImpl> split;
+    if (data_source_ != IndexDataSource::Java) {
+        ASSERT_NO_FATAL_FAILURE(WriteCppTable(
+            read_fields, kBitmapData, {{"file-index.bitmap.columns", "f0,f1,f2"}}, &path, &split));
+    } else {
+        path = GetDataDir() + "/" + file_format_ +
+               "/append_with_bitmap_no_embedding.db/append_with_bitmap_no_embedding/";
+        std::string file_name;
+        if (file_format_ == "orc") {
+            file_name = "data-414509f5-e40c-4245-b992-bbf486778ac9-0.orc";
+        } else if (file_format_ == "parquet") {
+            file_name = "data-783929b2-49d4-4006-a898-194a62e3278d-0.parquet";
+        }
 
-    auto data_file_meta = std::make_shared<DataFileMeta>(
-        file_name, /*file_size=*/689,
-        /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-        /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-        /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-        /*max_sequence_number=*/7, /*schema_id=*/0,
-        /*level=*/0,
-        /*extra_files=*/
-        std::vector<std::optional<std::string>>({file_name + ".index"}),
-        /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-        /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
-        /*column_max_sequence_numbers=*/std::nullopt);
-    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                   /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-    ASSERT_OK_AND_ASSIGN(auto split,
-                         builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+        auto data_file_meta = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/689,
+            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
+            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
+            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
+            /*max_sequence_number=*/7, /*schema_id=*/0,
+            /*level=*/0,
+            /*extra_files=*/
+            std::vector<std::optional<std::string>>({file_name + ".index"}),
+            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
+        ASSERT_OK_AND_ASSIGN(
+            split, builder.WithSnapshot(1).IsStreaming(false).RawConvertible(true).Build());
+    }
 
     auto predicate =
         PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
@@ -2599,7 +2938,7 @@ TEST_P(ReadInteWithIndexTest, TestWithIOException) {
         context_builder.AddOption("read.batch-size", "2")
             .AddOption("test.enable-adaptive-prefetch-strategy", "false")
             .SetPredicate(predicate);
-        if (enable_prefetch) {
+        if (enable_prefetch_) {
             context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
