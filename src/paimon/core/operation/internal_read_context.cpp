@@ -413,7 +413,7 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromCore
         context, table_schema, read_schema, core_options, arrow_pool,
         path != nullptr ? std::optional<std::string>(*path) : std::nullopt));
     PAIMON_RETURN_NOT_OK(internal_context->BindIndexScores());
-    return internal_context
+    return internal_context;
 }
 
 Status InternalReadContext::BindIndexScores() {

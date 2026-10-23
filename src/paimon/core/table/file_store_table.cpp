@@ -329,7 +329,7 @@ Result<std::shared_ptr<Table>> TableOf(const ReadContext& ctx) {
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(ctx.GetPath()));
     if (system_table_path) {
-        if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+        if (PredicateUtils::ContainsFullTextMatch(ctx.GetPredicate())) {
             return Status::NotImplemented(
                 "FullTextMatch predicate execution is not implemented yet");
         }
