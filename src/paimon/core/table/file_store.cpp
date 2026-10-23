@@ -19,9 +19,11 @@
 
 #include "paimon/core/table/file_store.h"
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "paimon/catalog/catalog.h"
@@ -39,30 +41,71 @@
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/defs.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 
 namespace paimon {
+
+Result<std::shared_ptr<FileStore>> FileStore::Create(
+    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+    const std::shared_ptr<TableSchema>& schema, const std::string& branch,
+    const std::shared_ptr<SchemaManager>& schema_manager,
+    const std::shared_ptr<SnapshotManager>& snapshot_manager) {
+    auto store = std::shared_ptr<FileStore>(
+        new FileStore(file_system, root_path, schema, branch, schema_manager, snapshot_manager));
+    if (schema != nullptr) {
+        // The options the schema was loaded with, on the branch this store serves: what reads
+        // through them - whose cache keys are scoped by the branch - reads the same one the
+        // managers point at.
+        std::map<std::string, std::string> options = schema->Options();
+        if (BranchManager::IsMainBranch(store->branch_)) {
+            options.erase(Options::BRANCH);
+        } else {
+            options[Options::BRANCH] = store->branch_;
+        }
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
+                               CoreOptions::FromMap(options, file_system, {}));
+        store->core_options_ = std::move(core_options);
+    }
+    // The file system the table is served through: the one the options resolve - a schema
+    // carrying access configuration names its own, which the file system the caller opened the
+    // table through wins over - and without a schema, the one handed over, whose absence leaves
+    // the default local one.
+    if (store->core_options_.has_value()) {
+        store->file_system_ = store->core_options_->GetFileSystem();
+    } else if (file_system != nullptr) {
+        store->file_system_ = file_system;
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions default_options, CoreOptions::FromMap({}));
+        store->file_system_ = default_options.GetFileSystem();
+    }
+    // The managers read through the same file system: the metadata belongs to the data, and
+    // both were written under the options the schema carries. A manager handed over already
+    // points at `root_path` on `branch`; a missing one is built here, so the operators always
+    // read through the managers the store carries.
+    if (store->schema_manager_ == nullptr) {
+        store->schema_manager_ =
+            std::make_shared<SchemaManager>(store->file_system_, root_path, store->branch_);
+    }
+    if (store->snapshot_manager_ == nullptr) {
+        store->snapshot_manager_ =
+            std::make_shared<SnapshotManager>(store->file_system_, root_path, store->branch_);
+    }
+    return store;
+}
 
 FileStore::FileStore(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
                      const std::shared_ptr<TableSchema>& schema, const std::string& branch,
                      const std::shared_ptr<SchemaManager>& schema_manager,
                      const std::shared_ptr<SnapshotManager>& snapshot_manager)
     : file_system_(file_system),
+      specified_file_system_(file_system),
       root_path_(root_path),
       schema_(schema),
       branch_(BranchManager::NormalizeBranch(branch)),
       schema_manager_(schema_manager),
-      snapshot_manager_(snapshot_manager) {
-    // A manager handed over points at `root_path` on `branch` already; a missing one is built
-    // here, so the operators always read through the managers the store carries.
-    if (schema_manager_ == nullptr) {
-        schema_manager_ = std::make_shared<SchemaManager>(file_system_, root_path_, branch_);
-    }
-    if (snapshot_manager_ == nullptr) {
-        snapshot_manager_ = std::make_shared<SnapshotManager>(file_system_, root_path_, branch_);
-    }
-}
+      snapshot_manager_(snapshot_manager) {}
 
 Result<std::shared_ptr<FileStorePathFactory>> FileStore::NewPathFactory(
     const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,

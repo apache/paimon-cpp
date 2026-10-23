@@ -395,7 +395,12 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
         .WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        // The data table behind this view is served through the file system the view itself was
+        // opened with, so a context without one of its own falls back to it rather than the
+        // default backend.
+        .WithFileSystem(context->GetSpecificFileSystem() != nullptr
+                            ? context->GetSpecificFileSystem()
+                            : GetFileSystem())
         .WithCache(context->GetCache());
     if (scan_filter) {
         if (scan_filter->GetBucketFilter()) {
@@ -458,7 +463,12 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
         .WithBranch(core_options.GetBranch())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        // The data table behind this view is served through the file system the view itself was
+        // opened with, so a context without one of its own falls back to it rather than the
+        // default backend.
+        .WithFileSystem(context->GetSpecificFileSystem() != nullptr
+                            ? context->GetSpecificFileSystem()
+                            : GetFileSystem())
         .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .EnablePrefetch(context->EnablePrefetch())
         .SetPrefetchBatchCount(context->GetPrefetchBatchCount())

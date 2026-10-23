@@ -48,22 +48,19 @@
 
 namespace paimon {
 
-AppendOnlyFileStoreTable::AppendOnlyFileStoreTable(
-    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-    const std::shared_ptr<Schema>& schema, const Identifier& identifier, const std::string& uuid,
-    const std::string& branch, const std::shared_ptr<SchemaManager>& schema_manager,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager)
-    : FileStoreTable(file_system, root_path, schema, identifier, uuid, branch, schema_manager,
-                     snapshot_manager) {}
+AppendOnlyFileStoreTable::AppendOnlyFileStoreTable(const std::shared_ptr<FileStore>& store,
+                                                   const Identifier& identifier,
+                                                   const std::string& uuid)
+    : FileStoreTable(store, identifier, uuid) {}
 
 Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
-    const WriteContext& ctx, const std::shared_ptr<TableSchema>& schema,
-    const std::shared_ptr<arrow::Schema>& arrow_schema,
+    const WriteContext& ctx, const std::shared_ptr<arrow::Schema>& arrow_schema,
     const std::shared_ptr<arrow::Schema>& partition_schema, const CoreOptions& options,
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const {
     // append table
+    const std::shared_ptr<TableSchema>& schema = store_->schema();
     const bool realtime_deduplicate = !options.GetRealtimeDeduplicateKeyFields().empty();
     bool need_dv_maintainer_factory = options.DeletionVectorsEnabled();
     if (options.GetBucket() == -1) {
@@ -138,11 +135,11 @@ Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
 Result<std::unique_ptr<FileStoreScan>> AppendOnlyFileStoreTable::NewFileStoreScan(
     const std::shared_ptr<ManifestList>& manifest_list,
     const std::shared_ptr<ManifestFile>& manifest_file,
-    const std::shared_ptr<arrow::Schema>& arrow_schema,
-    const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
+    const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& core_options,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
     const ScanContext* context) const {
     // TODO(liancheng.lsz): support fallback branch in scan
+    const std::shared_ptr<TableSchema>& table_schema = store_->schema();
     std::unique_ptr<FileStoreScan> scan;
     if (core_options.DataEvolutionEnabled()) {
         PAIMON_ASSIGN_OR_RAISE(
@@ -161,7 +158,7 @@ Result<std::unique_ptr<FileStoreScan>> AppendOnlyFileStoreTable::NewFileStoreSca
 }
 
 Result<std::unique_ptr<SplitGenerator>> AppendOnlyFileStoreTable::NewSplitGenerator(
-    const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options) const {
+    const CoreOptions& core_options) const {
     auto source_split_target_size = core_options.GetSourceSplitTargetSize();
     auto source_split_open_file_cost = core_options.GetSourceSplitOpenFileCost();
     if (core_options.DataEvolutionEnabled()) {
@@ -188,12 +185,12 @@ CommitScanner::ScanSupplier AppendOnlyFileStoreTable::NewCommitScanSupplier(
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<ManifestList>& manifest_list,
     const std::shared_ptr<ManifestFile>& manifest_file,
-    const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) const {
     // The schema manager the table carries, which the scans this supplier hands out read the
     // schema through.
     const std::shared_ptr<SchemaManager>& schema_manager = GetSchemaManager();
+    const std::shared_ptr<TableSchema>& table_schema = store_->schema();
     return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
             arrow_schema, options, executor, pool](const std::shared_ptr<ScanFilter>& scan_filter)
                -> Result<std::unique_ptr<FileStoreScan>> {

@@ -71,7 +71,12 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
         .WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        // The data table behind this view is served through the file system the view itself was
+        // opened with, so a context without one of its own falls back to it rather than the
+        // default backend.
+        .WithFileSystem(context->GetSpecificFileSystem() != nullptr
+                            ? context->GetSpecificFileSystem()
+                            : GetFileSystem())
         .WithCache(context->GetCache());
     if (context->GetLimit().has_value()) {
         builder.SetLimit(context->GetLimit().value());
@@ -114,7 +119,12 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        // The data table behind this view is served through the file system the view itself was
+        // opened with, so a context without one of its own falls back to it rather than the
+        // default backend.
+        .WithFileSystem(context->GetSpecificFileSystem() != nullptr
+                            ? context->GetSpecificFileSystem()
+                            : GetFileSystem())
         .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
