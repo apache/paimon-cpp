@@ -81,7 +81,8 @@ class BucketedAppendCompactManager : public CompactFutureManager {
         const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer, int32_t min_file_num,
         int64_t target_file_size, int64_t compaction_file_size, bool force_rewrite_all_files,
         CompactRewriter rewriter, const std::shared_ptr<CompactionMetrics::Reporter>& reporter,
-        const std::shared_ptr<CancellationController>& cancellation_controller);
+        const std::shared_ptr<CancellationController>& cancellation_controller,
+        bool materialize_dv_on_commit);
     ~BucketedAppendCompactManager() override = default;
 
     void RequestCancelCompaction() override;
@@ -125,7 +126,8 @@ class BucketedAppendCompactManager : public CompactFutureManager {
 
     static Result<std::shared_ptr<CompactResult>> Compact(
         const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer,
-        const std::vector<std::shared_ptr<DataFileMeta>>& to_compact, CompactRewriter rewriter);
+        const std::vector<std::shared_ptr<DataFileMeta>>& to_compact, CompactRewriter rewriter,
+        bool materialize_dv_on_commit);
 
     /// A `CompactTask` impl for full compaction of append-only table.
     class FullCompactTask : public CompactTask {
@@ -134,13 +136,14 @@ class BucketedAppendCompactManager : public CompactFutureManager {
                         const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer,
                         const std::vector<std::shared_ptr<DataFileMeta>>& inputs,
                         int64_t compaction_file_size, bool force_rewrite_all_files,
-                        CompactRewriter rewriter)
+                        CompactRewriter rewriter, bool materialize_dv_on_commit)
             : CompactTask(reporter),
               dv_maintainer_(dv_maintainer),
               to_compact_(inputs.begin(), inputs.end()),
               compaction_file_size_(compaction_file_size),
               force_rewrite_all_files_(force_rewrite_all_files),
-              rewriter_(rewriter) {}
+              rewriter_(rewriter),
+              materialize_dv_on_commit_(materialize_dv_on_commit) {}
 
      protected:
         Result<std::shared_ptr<CompactResult>> DoCompact() override;
@@ -160,6 +163,7 @@ class BucketedAppendCompactManager : public CompactFutureManager {
         int64_t compaction_file_size_;
         bool force_rewrite_all_files_;
         CompactRewriter rewriter_;
+        bool materialize_dv_on_commit_;
     };
 
     /// A `CompactTask` impl for append-only table auto-compaction.
@@ -172,21 +176,23 @@ class BucketedAppendCompactManager : public CompactFutureManager {
         AutoCompactTask(const std::shared_ptr<CompactionMetrics::Reporter>& reporter,
                         const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer,
                         const std::vector<std::shared_ptr<DataFileMeta>>& to_compact,
-                        CompactRewriter rewriter)
+                        CompactRewriter rewriter, bool materialize_dv_on_commit)
             : CompactTask(reporter),
               dv_maintainer_(dv_maintainer),
               to_compact_(to_compact),
-              rewriter_(rewriter) {}
+              rewriter_(rewriter),
+              materialize_dv_on_commit_(materialize_dv_on_commit) {}
 
      protected:
         Result<std::shared_ptr<CompactResult>> DoCompact() override {
-            return Compact(dv_maintainer_, to_compact_, rewriter_);
+            return Compact(dv_maintainer_, to_compact_, rewriter_, materialize_dv_on_commit_);
         }
 
      private:
         std::shared_ptr<BucketedDvMaintainer> dv_maintainer_;
         std::vector<std::shared_ptr<DataFileMeta>> to_compact_;
         CompactRewriter rewriter_;
+        bool materialize_dv_on_commit_;
     };
 
     DataFileMetaPriorityQueue GetToCompact() const {
@@ -208,6 +214,8 @@ class BucketedAppendCompactManager : public CompactFutureManager {
     std::optional<std::vector<std::shared_ptr<DataFileMeta>>> compacting_;
     DataFileMetaPriorityQueue to_compact_;
     std::shared_ptr<CancellationController> cancellation_controller_;
+    // Realtime deduplicate commits rebuild the bucket DV against their publication snapshot.
+    bool materialize_dv_on_commit_;
 };
 
 }  // namespace paimon

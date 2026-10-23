@@ -385,6 +385,9 @@ set(PAIMON_CORE_SRCS
     core/operation/commit/conflict_detection.cpp
     core/operation/commit/commit_scanner.cpp
     core/operation/commit/commit_changes_provider.cpp
+    core/operation/commit/realtime_deduplicate_commit_changes_provider.cpp
+    core/operation/commit/realtime_deduplicate_compaction_changes_provider.cpp
+    core/operation/commit/realtime_deduplicate_dv_materializer.cpp
     core/operation/commit/compacted_changelog_path_resolver.cpp
     core/operation/commit/overwrite_changes_provider.cpp
     core/operation/commit/realtime_commit_properties.cpp
@@ -972,6 +975,7 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/row_id_column_conflict_checker_test.cpp
                     core/operation/commit/row_tracking_commit_utils_test.cpp
                     core/operation/commit/realtime_commit_properties_test.cpp
+                    core/operation/commit/realtime_deduplicate_dv_materializer_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp
                     core/operation/key_value_file_store_write_test.cpp
                     core/operation/internal_read_context_test.cpp
