@@ -275,16 +275,30 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
+    CoreOptions core_options, const std::string* path) {
+    core_options.WithCache(context->GetCache());
+    return CreateFromCoreOptions(context, table_schema, std::move(core_options), path);
+}
+
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
+    const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
     const std::map<std::string, std::string>& options,
     const std::shared_ptr<FileSystem>& file_system, const std::string* path) {
-    // The file system a table reads through, or null for the read context's own, which callers
-    // without a table hand over.
+    // The file system the caller named, or null for the read context's own, which callers
+    // without a table hand over. The scheme map the context carries does not take part: a file
+    // system handed over wins and one missing falls to the resolving one, the same way a scan
+    // resolves its own.
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions core_options,
-        CoreOptions::FromMap(
-            options, file_system != nullptr ? file_system : context->GetSpecificFileSystem(),
-            context->GetFileSystemSchemeToIdentifierMap()));
+        CoreOptions::FromMap(options, file_system != nullptr ? file_system
+                                                             : context->GetSpecificFileSystem()));
     core_options.WithCache(context->GetCache());
+    return CreateFromCoreOptions(context, table_schema, std::move(core_options), path);
+}
+
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromCoreOptions(
+    const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
+    CoreOptions core_options, const std::string* path) {
     if (context->HasVectorOrFullTextSearch()) {
         if (!core_options.FileIndexReadEnabled()) {
             return Status::Invalid(

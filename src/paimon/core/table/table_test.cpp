@@ -28,6 +28,7 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
+#include "paimon/cache/cache.h"
 #include "paimon/commit_context.h"
 #include "paimon/commit_message.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -70,6 +71,57 @@ Result<std::shared_ptr<Table>> CreateManagedTable(
         file_system, path,
         checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))), identifier,
         /*uuid=*/"", branch);
+}
+
+/// Counts the lookups a scan makes, which is enough to tell that the cache a context carries
+/// reached the scan's manifest reading rather than being dropped on the way.
+class CountingCache : public Cache {
+ public:
+    Result<std::shared_ptr<CacheValue>> Get(
+        const std::shared_ptr<CacheKey>& key,
+        std::function<Result<std::shared_ptr<CacheValue>>(const std::shared_ptr<CacheKey>&)>
+            supplier) override {
+        gets++;
+        return supplier(key);
+    }
+    Status Put(const std::shared_ptr<CacheKey>&, const std::shared_ptr<CacheValue>&) override {
+        return Status::OK();
+    }
+    void Invalidate(const std::shared_ptr<CacheKey>&) override {}
+    void InvalidateAll() override {}
+    size_t Size() const override {
+        return 0;
+    }
+
+    int32_t gets = 0;
+};
+
+/// Writes two rows through the table's own write and commit, so a scan below has data to find.
+void WriteAndCommitTwoRows(const std::shared_ptr<Table>& table, const std::string& root_path) {
+    WriteContextBuilder write_builder(root_path, "commit-user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
+                         table->NewWrite(std::move(write_context)));
+    arrow::Int32Builder ids_builder;
+    ASSERT_TRUE(ids_builder.AppendValues({1, 2}).ok());
+    std::shared_ptr<arrow::Array> ids_array;
+    ASSERT_TRUE(ids_builder.Finish(&ids_array).ok());
+    auto struct_array = arrow::StructArray::Make({ids_array}, {arrow::field("id", arrow::int32(),
+                                                                            /*nullable=*/false)})
+                            .ValueOrDie();
+    ::ArrowArray arrow_array;
+    ASSERT_TRUE(arrow::ExportArray(*struct_array, &arrow_array).ok());
+    RecordBatchBuilder batch_builder(&arrow_array);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch, batch_builder.SetBucket(0).Finish());
+    ASSERT_OK(write->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         write->PrepareCommit());
+    CommitContextBuilder commit_builder(root_path, "commit-user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         table->NewCommit(std::move(commit_context)));
+    ASSERT_OK(commit->Commit(messages));
+    ASSERT_OK(write->Close());
 }
 
 }  // namespace
@@ -387,10 +439,11 @@ TEST(TableTest, TestCatalogOpenedTableServesThePerTableFileSystem) {
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetTableSchema(table->LatestSchema());
 
-    // A catalog that hands out no per-table file system opens the table without one, and one
-    // that does opens it with the file system issued for that table.
+    // A catalog that hands out no per-table file system opens the table through the one its
+    // schema's options resolve - never through none, the default local one when they name no
+    // other - and one that does opens it with the file system issued for that table.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> opened, catalog->GetTable(identifier));
-    EXPECT_EQ(opened->GetFileSystem(), nullptr);
+    EXPECT_NE(opened->GetFileSystem(), nullptr);
 
     catalog->SetTableFileSystem(dir->GetFileSystem());
     ASSERT_OK_AND_ASSIGN(opened, catalog->GetTable(identifier));
@@ -721,6 +774,92 @@ TEST(TableTest, TestOperatorsRefuseAnOptionThatContradictsTheTable) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, agreeing_scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
                          copied->NewScan(std::move(ctx)));
+}
+
+TEST(TableTest, TestOperatorsIgnoreARuntimeKeyTheTableWasNotLoadedWith) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier,
+                                            /*branch=*/"main",
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    WriteAndCommitTwoRows(table, dir->Str());
+
+    // `scan.mode` and `scan.snapshot-id` name no option the table was loaded with, so they name
+    // a runtime setting the scan does not take: the scan serves the table's own options and
+    // reads its latest snapshot - a merged context would have gone looking for snapshot 999,
+    // which was never committed.
+    ScanContextBuilder scan_builder(dir->Str());
+    scan_builder.AddOption(Options::SCAN_MODE, "from-snapshot")
+        .AddOption(Options::SCAN_SNAPSHOT_ID, "999");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_ctx)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_FALSE(plan->Splits().empty());
+    ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(1));
+
+    // A read takes a runtime key the same way: the key names nothing the table carries, so the
+    // read is served rather than refused.
+    ReadContextBuilder read_builder(dir->Str());
+    read_builder.AddOption(Options::SCAN_MODE, "from-snapshot")
+        .AddOption(Options::SCAN_SNAPSHOT_ID, "999");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_ctx, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
+                         table->NewRead(std::move(read_ctx)));
+
+    // The runtime setting a caller means to serve is the copy's: `Table::Copy` derives the table
+    // whose options carry it, and that table's scan reads the snapshot it names - which is not
+    // there, as this table only ever committed snapshot 1.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> copied,
+        table->Copy({{Options::SCAN_MODE, "from-snapshot"}, {Options::SCAN_SNAPSHOT_ID, "999"}}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> copied_scan_ctx,
+                         ScanContextBuilder(dir->Str()).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> copied_scan,
+                         copied->NewScan(std::move(copied_scan_ctx)));
+    ASSERT_NOK_WITH_MSG(copied_scan->CreatePlan(), "snapshot");
+}
+
+TEST(TableTest, TestCreateFailsWhenTheSchemaOptionsDoNotParse) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    // The schema itself carries no validation, so a schema written with options no
+    // `CoreOptions` accepts surfaces when the store parses them - at the load, not at the first
+    // operator built on the table.
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> created,
+        TableSchema::Create(
+            /*schema_id=*/0,
+            arrow::schema({arrow::field("id", arrow::int32(),
+                                        /*nullable=*/false)}),
+            /*partition_keys=*/{}, /*primary_keys=*/{}, {{Options::TARGET_FILE_ROW_NUM, "0"}}));
+    auto schema = checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created)));
+    ASSERT_NOK_WITH_MSG(
+        FileStoreTable::Create(dir->GetFileSystem(), dir->Str(), schema, Identifier("db", "tbl")),
+        "target-file-row-num should be at least 1");
+}
+
+TEST(TableTest, TestTheCacheAScanContextCarriesReachesTheScan) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier,
+                                            /*branch=*/"main",
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    WriteAndCommitTwoRows(table, dir->Str());
+
+    // The cache is a runtime setting the scan serves from the context rather than from the
+    // table's own options, so a scan built with one reads its manifests through it.
+    auto cache = std::make_shared<CountingCache>();
+    ScanContextBuilder scan_builder(dir->Str());
+    scan_builder.WithCache(cache);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_ctx)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_FALSE(plan->Splits().empty());
+    ASSERT_GT(cache->gets, 0) << "the cache the scan context carries never reached the scan";
 }
 
 TEST(TableTest, TestCopyServesTheTableWithTheGivenOptionsOnTop) {

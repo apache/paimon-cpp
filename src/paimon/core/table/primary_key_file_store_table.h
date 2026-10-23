@@ -24,13 +24,11 @@
 
 #include "paimon/catalog/identifier.h"
 #include "paimon/core/table/file_store_table.h"
-#include "paimon/core/utils/branch_manager.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
 
 namespace paimon {
 
-class CoreOptions;
 class FileStoreScan;
 class IOManager;
 class SplitGenerator;
@@ -42,19 +40,14 @@ class TableSchema;
 /// those flows hand down are built here.
 class PrimaryKeyFileStoreTable : public FileStoreTable {
  public:
-    /// The constructor `FileStoreTable::Create` builds a primary key table through; the
-    /// parameters are the ones it takes, and the base class carries them.
-    PrimaryKeyFileStoreTable(const std::shared_ptr<FileSystem>& file_system,
-                             const std::string& root_path, const std::shared_ptr<Schema>& schema,
-                             const Identifier& identifier, const std::string& uuid = "",
-                             const std::string& branch = BranchManager::DEFAULT_MAIN_BRANCH,
-                             const std::shared_ptr<SchemaManager>& schema_manager = nullptr,
-                             const std::shared_ptr<SnapshotManager>& snapshot_manager = nullptr);
+    /// The constructor `FileStoreTable::Create` builds a primary key table through: the store
+    /// carries every state, and the base class holds it.
+    PrimaryKeyFileStoreTable(const std::shared_ptr<FileStore>& store, const Identifier& identifier,
+                             const std::string& uuid = "");
 
  private:
     Result<std::unique_ptr<FileStoreWrite>> CreateWrite(
-        const WriteContext& ctx, const std::shared_ptr<TableSchema>& schema,
-        const std::shared_ptr<arrow::Schema>& arrow_schema,
+        const WriteContext& ctx, const std::shared_ptr<arrow::Schema>& arrow_schema,
         const std::shared_ptr<arrow::Schema>& partition_schema, const CoreOptions& options,
         const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<SnapshotManager>& snapshot_manager,
@@ -63,13 +56,11 @@ class PrimaryKeyFileStoreTable : public FileStoreTable {
     Result<std::unique_ptr<FileStoreScan>> NewFileStoreScan(
         const std::shared_ptr<ManifestList>& manifest_list,
         const std::shared_ptr<ManifestFile>& manifest_file,
-        const std::shared_ptr<arrow::Schema>& arrow_schema,
-        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
+        const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& core_options,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
         const ScanContext* context) const override;
 
     Result<std::unique_ptr<SplitGenerator>> NewSplitGenerator(
-        const std::shared_ptr<TableSchema>& table_schema,
         const CoreOptions& core_options) const override;
 
     Result<std::unique_ptr<TableRead>> NewTableRead(
@@ -82,7 +73,6 @@ class PrimaryKeyFileStoreTable : public FileStoreTable {
         const std::shared_ptr<SnapshotManager>& snapshot_manager,
         const std::shared_ptr<ManifestList>& manifest_list,
         const std::shared_ptr<ManifestFile>& manifest_file,
-        const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
         const std::shared_ptr<Executor>& executor,
         const std::shared_ptr<MemoryPool>& pool) const override;

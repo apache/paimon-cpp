@@ -251,7 +251,7 @@ TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
 TEST(TableReadTest, TestMergeOptions) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     {
-        // The options the table was loaded with stand as they are, and a runtime setting the
+        // The options the schema carries stand in the table the load builds, and a setting the
         // context adds on top - the table was loaded with neither of these keys - is served as
         // given.
         ReadContextBuilder context_builder(path);
@@ -276,14 +276,21 @@ TEST(TableReadTest, TestMergeOptions) {
         ASSERT_EQ(expected_options, core_options.ToMap());
     }
     {
-        // An option that contradicts the table is refused: the read serves the options the table
-        // was loaded with, and a caller that means to change them copies the table.
+        // An option the schema also carries speaks at the load: the table the context is
+        // handed back is built with the context's value over the schema's, and the read serves
+        // the merged options. A caller holding a table already - a load that is over - is the
+        // one that gets a refusal instead, which `TableTest` covers.
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
         context_builder.AddOption("bucket", "10");
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
-                            "option 'bucket' is '10' in the context but '2' on the table");
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
+        ASSERT_TRUE(append_only_table_read);
+        auto* typed_split_read =
+            dynamic_cast<AbstractSplitRead*>(append_only_table_read->split_reads_[0].get());
+        ASSERT_TRUE(typed_split_read);
+        ASSERT_EQ(10, typed_split_read->options_.GetBucket());
     }
 }
 

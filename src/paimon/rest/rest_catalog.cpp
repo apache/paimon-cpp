@@ -434,6 +434,24 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
 }
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
+    // The global system tables of the "sys" database expose the catalog itself rather than any
+    // table the server stands behind, so they are served locally - the way `LoadTableSchema`
+    // serves them their schema - and never reach the managed-table load below, whose schema
+    // cast a read-only system table schema would not survive.
+    if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
+        PAIMON_ASSIGN_OR_RAISE(bool supported,
+                               GlobalSystemTableLoader::IsSupported(identifier.GetObjectName(),
+                                                                    api_->GetMergedOptions()));
+        if (!supported) {
+            return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
+        }
+        GlobalSystemTableContext context;
+        context.catalog = this;
+        context.fs = fs_;
+        context.warehouse = warehouse_;
+        context.catalog_options = api_->GetMergedOptions();
+        return GlobalSystemTableLoader::Load(identifier.GetObjectName(), context);
+    }
     // A `T$system` identifier opens the read-only view it names, which reads the data table it
     // belongs to and answers for itself through the same `Table` interface.
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());

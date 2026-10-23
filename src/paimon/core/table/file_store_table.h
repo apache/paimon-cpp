@@ -148,13 +148,11 @@ class FileStoreTable : public Table {
         const std::shared_ptr<Executor>& executor) const;
 
  protected:
-    /// The base constructor the kinds of managed table build through, `Create` above. The
-    /// parameters are the ones it takes; see there for what each one is.
-    FileStoreTable(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-                   const std::shared_ptr<Schema>& schema, const Identifier& identifier,
-                   const std::string& uuid, const std::string& branch,
-                   const std::shared_ptr<SchemaManager>& schema_manager,
-                   const std::shared_ptr<SnapshotManager>& snapshot_manager);
+    /// The base constructor the kinds of managed table build through, `Create` above: the store
+    /// the table was loaded with carries every state the kinds hand down - see `Create` for what
+    /// each piece of it is.
+    FileStoreTable(const std::shared_ptr<FileStore>& store, const Identifier& identifier,
+                   const std::string& uuid);
 
     /// The committed progress a real-time write restores, from the latest snapshot the snapshot
     /// manager reads: where the write picks up after, which both kinds of real-time write ask
@@ -170,32 +168,32 @@ class FileStoreTable : public Table {
 
     /// The write of this kind of table, which `NewWrite` hands the shared flow's pieces to: the
     /// kind's writer, built over the path factory, snapshot manager and options that flow
-    /// resolved. The branch the write serves is the table's, `CurrentBranch()`.
+    /// resolved. The schema is the store's own, the one the table was loaded with, and the
+    /// branch the write serves is the table's, `CurrentBranch()`.
     /// @param io_manager The spill manager the context's temp directory names, or null when the
     ///        context named none.
     /// @param ignore_previous_files Whether the write starts over rather than appending, which
     ///        the flow resolved with this kind's own rules.
     virtual Result<std::unique_ptr<FileStoreWrite>> CreateWrite(
-        const WriteContext& ctx, const std::shared_ptr<TableSchema>& schema,
-        const std::shared_ptr<arrow::Schema>& arrow_schema,
+        const WriteContext& ctx, const std::shared_ptr<arrow::Schema>& arrow_schema,
         const std::shared_ptr<arrow::Schema>& partition_schema, const CoreOptions& options,
         const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<SnapshotManager>& snapshot_manager,
         const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const = 0;
 
     /// The scan of this kind of table, which `NewScan` hands the manifest list and file it built
-    /// to. The snapshot and schema managers are the table's own, which the scan serves.
+    /// to. The schema is the store's own and the snapshot and schema managers are the table's
+    /// own, which the scan serves.
     virtual Result<std::unique_ptr<FileStoreScan>> NewFileStoreScan(
         const std::shared_ptr<ManifestList>& manifest_list,
         const std::shared_ptr<ManifestFile>& manifest_file,
-        const std::shared_ptr<arrow::Schema>& arrow_schema,
-        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
+        const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& core_options,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
         const ScanContext* context) const = 0;
 
-    /// The split generator of this kind of table, Java Paimon's `splitGenerator()`.
+    /// The split generator of this kind of table, Java Paimon's `splitGenerator()`. The schema
+    /// it reads its kind's keys from is the store's own.
     virtual Result<std::unique_ptr<SplitGenerator>> NewSplitGenerator(
-        const std::shared_ptr<TableSchema>& table_schema,
         const CoreOptions& core_options) const = 0;
 
     /// The read of this kind of table, which `NewRead` hands the internal context it read the
@@ -207,13 +205,12 @@ class FileStoreTable : public Table {
         const std::shared_ptr<Executor>& executor) const = 0;
 
     /// The manifest entry scan supplier of this kind of table, which `NewCommit` hands the
-    /// manifest list and file it built to. The schema manager the scans it hands out read through
-    /// is the table's own.
+    /// manifest list and file it built to. The schema is the store's own, and the schema manager
+    /// the scans it hands out read through is the table's own.
     virtual CommitScanner::ScanSupplier NewCommitScanSupplier(
         const std::shared_ptr<SnapshotManager>& snapshot_manager,
         const std::shared_ptr<ManifestList>& manifest_list,
         const std::shared_ptr<ManifestFile>& manifest_file,
-        const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
         const std::shared_ptr<Executor>& executor,
         const std::shared_ptr<MemoryPool>& pool) const = 0;

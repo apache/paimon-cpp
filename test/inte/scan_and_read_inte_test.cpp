@@ -813,8 +813,17 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
                 auto lookup_predicate = PredicateBuilder::Equal(
                     0, "rowkey", field_type,
                     Literal(field_type, lookup_key.data(), lookup_key.size()));
+                // The rescaled bucket count and, with it, the cache settings `FinishScanContext`
+                // also puts on the context: a table already held takes its runtime settings
+                // through the copy it is made of, and the context carries them only to agree
+                // with it.
+                std::map<std::string, std::string> dynamic_options{
+                    {Options::BUCKET, current_bucket_count}};
+                if (EnableSnapshotLiveManifestCache()) {
+                    dynamic_options.emplace(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3");
+                }
                 ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> rescaled_table,
-                                     table->Copy({{Options::BUCKET, current_bucket_count}}));
+                                     table->Copy(dynamic_options));
                 ScanContextBuilder scan_builder(table_path);
                 scan_builder.SetPredicate(lookup_predicate)
                     .AddOption(Options::BUCKET, current_bucket_count);
@@ -4065,8 +4074,14 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
         catalog->GetTable(Identifier("pk_table_scan_and_read_dv", "pk_table_scan_and_read_dv")));
     for (const std::string current_bucket_count : {"2", "4", "8", "17"}) {
         SCOPED_TRACE(current_bucket_count);
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> rescaled_table,
-                             table->Copy({{Options::BUCKET, current_bucket_count}}));
+        // The rescaled bucket count and, with it, the cache settings `FinishScanContext` also
+        // puts on the context: a table already held takes its runtime settings through the copy
+        // it is made of, and the context carries them only to agree with it.
+        std::map<std::string, std::string> dynamic_options{{Options::BUCKET, current_bucket_count}};
+        if (EnableSnapshotLiveManifestCache()) {
+            dynamic_options.emplace(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3");
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> rescaled_table, table->Copy(dynamic_options));
         ScanContextBuilder scan_context_builder(table_path);
         scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
         scan_context_builder.AddOption(Options::BUCKET, current_bucket_count);
