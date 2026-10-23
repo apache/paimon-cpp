@@ -19,6 +19,7 @@
 
 #include "paimon/core/table/file_store_table.h"
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <optional>
@@ -104,6 +105,26 @@ class MemoryPool;
 
 namespace {
 
+/// The identifier a table path names when no catalog name goes with it, the C++ reading of
+/// the Java `SchemaManagerUtils#identifierFromPath` over `ignoreIfUnknownDatabase = true`: the
+/// directory above the table's names the database when it carries the `.db` suffix, the way a
+/// catalog lays its databases out, and a path that names no database - a table sitting directly
+/// under the root, say - leaves the database unknown, which is all a caller that only knows the
+/// directory can say.
+Identifier IdentifierFromPath(const std::string& table_path, const std::string& branch) {
+    const std::vector<std::string> paths = StringUtils::Split(table_path, "/");
+    if (paths.size() < 2) {
+        return Identifier(Identifier::kUnknownDatabase,
+                          paths.empty() ? std::string() : paths.front());
+    }
+    const std::string& database = paths[paths.size() - 2];
+    const std::string::size_type index = database.rfind(Catalog::DB_SUFFIX);
+    if (index == std::string::npos) {
+        return Identifier(Identifier::kUnknownDatabase, paths.back(), branch);
+    }
+    return Identifier(database.substr(0, index), paths.back(), branch);
+}
+
 /// Recognises a format table behind `table_path`, or returns null when it is not one.
 ///
 /// The scan, read, write and commit entry points below all take a path and have to answer the
@@ -135,9 +156,10 @@ Result<std::shared_ptr<FormatTable>> TryLoadFormatTable(
             fmt::format("a format table has no branches, so {} cannot be read on branch '{}'",
                         table_path, branch));
     }
-    // A context names a path, never a catalog identifier, so the table is known by the directory
-    // it sits in.
-    Identifier identifier(Identifier::kUnknownDatabase, PathUtil::GetName(table_path));
+    // A context names a path, never a catalog identifier, so the table is known by the
+    // directory it sits in - which names the database too, when it carries the `.db` suffix a
+    // catalog lays its databases out with.
+    Identifier identifier = IdentifierFromPath(table_path, branch);
     return FormatTable::Create(file_system, table_path, identifier,
                                checked_pointer_cast<DataSchema>(table_schema),
                                /*location_carries_paimon_metadata=*/true, options);
@@ -161,6 +183,63 @@ bool FileSystemResolutionMayChange(const TableSchema& schema,
         }
     }
     return false;
+}
+
+/// The options a copy is refused to change, mirroring the Java `SchemaManagerUtils#
+/// checkAlterTableOption` over the immutable options the C++ side has constants for. These name
+/// the physical layout and the file set the data on the table's path was written by: a
+/// `bucket-key` the options rename, say, re-hashes the bucket pruning while the files stay
+/// hashed by the old key, so the scans a copy serves would filter out the buckets its rows are
+/// actually in. The check runs over every option the call gives, before the merge, so it holds
+/// on every path that merges options into a table - `Copy` itself and the load a context
+/// drives alike. The differences from the Java set: `merge-engine`, `bucket`,
+/// `row-tracking.enabled` and `data-evolution.enabled` stay servable as dynamic options here -
+/// the C++ tests load tables through context options that move them - and `type`/`branch` are
+/// dropped by `Copy` before this point.
+const char* const kImmutableOptions[] = {
+    Options::BUCKET_KEY,
+    Options::BUCKET_FUNCTION_TYPE,
+    Options::AGGREGATION_REMOVE_RECORD_ON_DELETE,
+    Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE,
+    Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_SEQUENCE_GROUP,
+    Options::FORCE_LOOKUP,
+    Options::INDEX_FILE_IN_DATA_FILE_DIR,
+    Options::BLOB_FIELD,
+    Options::FALLBACK_BLOB_DESCRIPTOR_FIELD,
+    Options::BLOB_VIEW_FIELD,
+    Options::PK_CLUSTERING_OVERRIDE,
+};
+
+/// Whether the dynamic options of a copy stay within what the data on the table's path was
+/// laid out with - the C++ reading of the Java `AbstractFileStoreTable#checkImmutability`:
+/// every option that says what the schema already says moves nothing, an immutable one that
+/// says anything else is refused, and an `ignore-delete` carries the directional rule of its
+/// own the Java check carries too: it may only ever be turned on, never back off.
+Status CheckImmutableOptions(const TableSchema& schema,
+                             const std::map<std::string, std::string>& dynamic_options) {
+    const std::map<std::string, std::string>& schema_options = schema.Options();
+    for (const auto& [key, value] : dynamic_options) {
+        auto schema_option = schema_options.find(key);
+        if (schema_option != schema_options.end() && schema_option->second == value) {
+            continue;
+        }
+        if (std::find(std::begin(kImmutableOptions), std::end(kImmutableOptions), key) !=
+            std::end(kImmutableOptions)) {
+            return Status::Invalid(fmt::format("Change '{}' is not supported yet.", key));
+        }
+        if (key == Options::IGNORE_DELETE) {
+            // An unset option is one that never ignored deletes, the same default the options
+            // parse to.
+            PAIMON_ASSIGN_OR_RAISE(bool old_ignore_delete,
+                                   OptionsUtils::GetValueFromMap<bool>(schema_options, key, false));
+            PAIMON_ASSIGN_OR_RAISE(bool new_ignore_delete,
+                                   OptionsUtils::GetValueFromMap<bool>(dynamic_options, key));
+            if (old_ignore_delete && !new_ignore_delete) {
+                return Status::Invalid("Cannot change ignore-delete from true to false.");
+            }
+        }
+    }
+    return Status::OK();
 }
 
 /// The options a context carries, merged into the table the load hands back: a table is the
@@ -211,10 +290,11 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     if (format_table != nullptr) {
         return std::shared_ptr<Table>(std::move(format_table));
     }
-    // A context names a path, never a catalog identifier, so the table is known by the directory
-    // it sits in - the same convention `TryLoadFormatTable` follows above.
-    Identifier table_identifier =
-        identifier.value_or(Identifier(Identifier::kUnknownDatabase, PathUtil::GetName(path)));
+    // A context names a path, never a catalog identifier, so the table is known by the
+    // directory it sits in - which names the database too, when it carries the `.db` suffix a
+    // catalog lays its databases out with. The branch the schema was read on travels the same
+    // way, folded into the object name.
+    Identifier table_identifier = identifier.value_or(IdentifierFromPath(path, branch));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> table,
                            FileStoreTable::Create(explicit_file_system, path, latest_schema,
                                                   table_identifier, uuid, branch, schema_manager,
@@ -541,6 +621,10 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     std::map<std::string, std::string> overridable = dynamic_options;
     overridable.erase(Options::TYPE);
     overridable.erase(Options::BRANCH);
+    // The physical layout the data on the path was written by is as immovable as the style or
+    // the branch: the copy serves the same data, so it is refused an option that would lay new
+    // data out differently than the data it serves was laid out.
+    PAIMON_RETURN_NOT_OK(CheckImmutableOptions(*loaded_schema, overridable));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
                            loaded_schema->MergeOptions(overridable));
     // The managers are handed over, not rebuilt, when the copy resolves the same file system

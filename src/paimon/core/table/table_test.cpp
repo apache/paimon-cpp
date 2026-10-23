@@ -973,6 +973,58 @@ TEST(TableTest, TestCopyServesTheTableWithTheGivenOptionsOnTop) {
     ASSERT_FALSE(plan->Splits().empty());
 }
 
+TEST(TableTest, TestCopyRefusesThePhysicalOptionsTheDataWasLaidOutWith) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier,
+                                            /*branch=*/"main",
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+
+    // The data on the path was hashed by the `bucket-key` it was written with: a copy that
+    // renamed the key would prune by a hash its rows never matched, dropping them silently, so
+    // the change is refused - at `Copy` and at the load a context drives alike, which merges
+    // through `Copy` - the way the Java `checkImmutability` refuses it. The same goes for the
+    // other options that name the physical layout, which a key the schema does not carry
+    // changes as much as one it carries differently. `merge-engine`, `bucket`,
+    // `row-tracking.enabled` and `data-evolution.enabled` are the options the Java immutable
+    // set holds that stay servable here.
+    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET_KEY, "v"}}),
+                        "Change 'bucket-key' is not supported yet.");
+    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET_FUNCTION_TYPE, "hash"}}),
+                        "Change 'bucket-function.type' is not supported yet.");
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> restyled,
+                         table->Copy({{Options::MERGE_ENGINE, "deduplicate"}}));
+    {
+        ScanContextBuilder scan_builder(dir->Str());
+        scan_builder.AddOption(Options::BUCKET_KEY, "v");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, scan_builder.Finish());
+        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)),
+                            "Change 'bucket-key' is not supported yet.");
+    }
+
+    // An option that says what the schema already says moves nothing, and a bucket count is
+    // the physical option a rescale legitimately rewrites, so a copy may move it. An
+    // `ignore-delete` may only be turned on, never back off.
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> unchanged,
+                         table->Copy({{Options::BUCKET_KEY, "id"}, {Options::BUCKET, "1"}}));
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> rescaled,
+                         table->Copy({{Options::BUCKET, "2"}}));
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> ignoring_deletes,
+                         table->Copy({{Options::IGNORE_DELETE, "true"}}));
+    {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> ignore_delete_table,
+                             CreateManagedTable(dir->GetFileSystem(), dir->Str() + "/ignore_delete",
+                                                Identifier("db", "igd"), /*branch=*/"main",
+                                                {{Options::BUCKET, "1"},
+                                                 {Options::BUCKET_KEY, "id"},
+                                                 {Options::IGNORE_DELETE, "true"}}));
+        ASSERT_NOK_WITH_MSG(ignore_delete_table->Copy({{Options::IGNORE_DELETE, "false"}}),
+                            "Cannot change ignore-delete from true to false.");
+    }
+}
+
 TEST(TableTest, TestCreateBuildsTheOperator) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
