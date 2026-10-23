@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table.h"
 #include "paimon/result.h"
 #include "paimon/schema/schema.h"
 #include "paimon/status.h"
@@ -47,13 +48,17 @@ class FileSystem;
 /// Writes only insert - there is nowhere to record an update or a delete - so a read fills
 /// `_VALUE_KIND` with inserts throughout.
 ///
-/// Reading and writing go through the entry points every other table uses: `TableScan`,
-/// `TableRead`, `FileStoreWrite` and `FileStoreCommit`. Each recognises a format table from the
-/// schema under the table path, or takes one already loaded through the `FormatTable` constructor
-/// every context builder has, which is how a table whose schema lives in a metastore is reached.
+/// A format table is a `Table`, so the operators it inherits create its scan, read, write and
+/// commit from this table, with the context's options applied on top of the ones it carries. The
+/// entry points every other table uses remain open too - `TableScan::Create()` and friends - each
+/// of which recognises a format table from the schema under the table path, or takes one already
+/// loaded through the `FormatTable` constructor every context builder has, which is how a table
+/// whose schema lives in a metastore is reached.
+///
+/// Every instance lives in a `shared_ptr`: a copy that adds nothing hands the same one back.
 ///
 /// See `docs/source/user_guide/format_table.rst` for what is not supported yet.
-class PAIMON_EXPORT FormatTable {
+class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_this<FormatTable> {
  public:
     /// Formats a format table's files can be in.
     enum class Format {
@@ -72,7 +77,7 @@ class PAIMON_EXPORT FormatTable {
     ///
     /// This needs a schema file under the table directory, which a table created through
     /// `SchemaManager` or a file system catalog has. A table whose schema lives in a metastore has
-    /// none, and is loaded through `Catalog::GetFormatTable()` instead.
+    /// none, and is loaded through `Catalog::GetTable()` instead.
     ///
     /// @param file_system File system holding the table directory.
     /// @param table_path Root path of the table, which is also its data location.
@@ -102,24 +107,24 @@ class PAIMON_EXPORT FormatTable {
         bool location_carries_paimon_metadata,
         const std::map<std::string, std::string>& dynamic_options);
 
-    /// Copies `table` with `dynamic_options` on top of the options it already carries, which is
-    /// the precedence every context builder promises for a table it was handed rather than loaded
-    /// itself. `table` comes back as it is when there is nothing to add.
-    ///
-    /// `type` is not overridable: it is structural and is read from the schema alone.
-    ///
-    /// @param table The table to copy.
-    /// @param dynamic_options Options given at the call.
-    /// @return A result containing the copied table, or an error status.
-    static Result<std::shared_ptr<FormatTable>> Copy(
-        const std::shared_ptr<FormatTable>& table,
-        const std::map<std::string, std::string>& dynamic_options);
+    ~FormatTable() override;
 
-    ~FormatTable();
+    std::string Name() const override {
+        return identifier_.GetObjectName();
+    }
+
+    std::string FullName() const override {
+        return identifier_.GetFullName();
+    }
+
+    /// Copies the table with `dynamic_options` on top of the options it carries, the precedence
+    /// every context builder promises. The same table comes back when there is nothing to add.
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
 
     /// Directory the data files live in.
     const std::string& Location() const {
-        return location_;
+        return GetRootPath();
     }
 
     /// Format of every data file in the directory.
@@ -155,26 +160,15 @@ class PAIMON_EXPORT FormatTable {
         return options_;
     }
 
-    /// A name to identify this table.
-    std::string Name() const {
-        return identifier_.GetObjectName();
-    }
-
-    /// Full name of the table, database.tableName.
-    std::string FullName() const;
-
-    /// Schema of the table, including its partition fields.
+    /// Schema of the table, including its partition fields. It hides `Table::LatestSchema()`,
+    /// which returns the same schema as the base every table sees; this one hands it back as the
+    /// `DataSchema` a format table is always created with.
     std::shared_ptr<DataSchema> LatestSchema() const {
-        return schema_;
+        return std::static_pointer_cast<DataSchema>(schema_);
     }
 
     /// Schema of the table as an arrow schema, including its partition fields.
     Result<std::unique_ptr<::ArrowSchema>> GetArrowSchema() const;
-
-    /// File system holding the table directory.
-    std::shared_ptr<FileSystem> GetFileSystem() const {
-        return file_system_;
-    }
 
     /// Whether this table's own metadata lives under its location, as told by whoever loaded it.
     ///
@@ -185,6 +179,28 @@ class PAIMON_EXPORT FormatTable {
         return location_carries_paimon_metadata_;
     }
 
+    /// Creates a scan of this table from a finished scan context, refusing by name what a format
+    /// table cannot honour. The context's options are applied on top of the ones this table
+    /// carries, the precedence every context builder promises.
+    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
+
+    /// Creates a read of this table from a finished read context, refusing by name what a format
+    /// table cannot honour. The context's options are applied on top of the ones this table
+    /// carries, the precedence every context builder promises.
+    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
+
+    /// Creates a write of this table from a finished write context, refusing by name what a format
+    /// table cannot honour. The context's options are applied on top of the ones this table
+    /// carries, the precedence every context builder promises.
+    Result<std::unique_ptr<FileStoreWrite>> NewWrite(
+        std::unique_ptr<WriteContext> context) const override;
+
+    /// Creates a commit of this table from a finished commit context, refusing by name what a
+    /// format table cannot honour. The context's options are applied on top of the ones this
+    /// table carries, the precedence every context builder promises.
+    Result<std::unique_ptr<FileStoreCommit>> NewCommit(
+        std::unique_ptr<CommitContext> context) const override;
+
  private:
     FormatTable(const std::shared_ptr<FileSystem>& file_system, const std::string& location,
                 const Identifier& identifier, const std::shared_ptr<DataSchema>& schema,
@@ -192,10 +208,21 @@ class PAIMON_EXPORT FormatTable {
                 const std::string& file_compression, const std::string& partition_default_name,
                 bool partition_only_value_in_path, bool location_carries_paimon_metadata);
 
-    std::shared_ptr<FileSystem> file_system_;
-    std::string location_;
-    Identifier identifier_;
-    std::shared_ptr<DataSchema> schema_;
+    /// This table as a `shared_ptr`, which a copy that adds nothing hands back.
+    ///
+    /// `shared_from_this()` on a const method hands back a `shared_ptr<const FormatTable>`, while
+    /// the copy below needs a mutable one; the cast is safe because the table is never written to.
+    std::shared_ptr<FormatTable> SharedSelf() const {
+        return std::const_pointer_cast<FormatTable>(shared_from_this());
+    }
+
+    /// Copies this table with `dynamic_options` on top of the options it carries, as a format
+    /// table rather than the `Table` `Copy()` hands back, which is what its operators need. The
+    /// same table comes back when there is nothing to add; `type` is not overridable, and
+    /// `Create()` keeps the schema's own.
+    Result<std::shared_ptr<FormatTable>> CopySelf(
+        const std::map<std::string, std::string>& dynamic_options) const;
+
     std::map<std::string, std::string> options_;
     Format format_;
     std::string file_compression_;

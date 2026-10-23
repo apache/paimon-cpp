@@ -44,6 +44,8 @@
 #include "paimon/core/catalog/commit_table_request.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
+#include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
@@ -994,9 +996,13 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
         requests_before = state_->get_table_requests;
     }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(system_identifier));
-    ASSERT_EQ("t1$options", table->Name());
+    // A system table comes back as the read-only `SystemTable` it is, answering for itself
+    // with the kind it serves rather than the identifier it was opened by.
+    std::shared_ptr<SystemTable> system_table = std::dynamic_pointer_cast<SystemTable>(table);
+    ASSERT_NE(nullptr, system_table);
+    ASSERT_EQ("options", system_table->Name());
     ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->LatestSchema()->FieldNames());
-    ASSERT_EQ("db1.t1$options", table->Uuid());
+    ASSERT_EQ("options", table->Uuid());
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_EQ(requests_before + 1, state_->get_table_requests);
@@ -1067,8 +1073,9 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     ASSERT_EQ(0, main_case_schema->Options().count(Options::BRANCH));
     // the branch the alias spells resolves to the main branch, not to a branch
     // directory named after the alias
-    ASSERT_OK_AND_ASSIGN(std::string main_case_branch, main_case_table->CurrentBranch());
-    ASSERT_EQ("main", main_case_branch);
+    auto main_case_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(main_case_table);
+    ASSERT_NE(nullptr, main_case_file_store_table);
+    ASSERT_EQ("main", main_case_file_store_table->CurrentBranch());
 
     // a system table on a branch resolves against the branch's data table: the system
     // suffix is stripped while the branch stays in the identifier sent to the server
@@ -1146,8 +1153,10 @@ TEST_F(RestCatalogTest, CreateRefusesAFormatTableThisClientCouldNotOpen) {
 
     // And a schema this library can open is created and opens.
     ASSERT_OK(create("fine", good, {"dt"}, format_table));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
-                         catalog->GetFormatTable(Identifier("db1", "fine")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> loaded,
+                         catalog->GetTable(Identifier("db1", "fine")));
+    std::shared_ptr<FormatTable> table = std::dynamic_pointer_cast<FormatTable>(loaded);
+    ASSERT_NE(nullptr, table);
     ASSERT_EQ(FormatTable::Format::PARQUET, table->GetFormat());
 }
 
@@ -1169,7 +1178,7 @@ TEST_F(RestCatalogTest, TableResponseWithoutAPathIsRejected) {
     // would be checked against an empty one has no boundary at all, so the response is refused
     // rather than turned into a table. What the response said is not repeated back: a body may
     // carry credentials, so a failure to read one names the request and nothing else.
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "no_path")),
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "no_path")),
                         "failed to deserialize the response");
     ASSERT_NOK_WITH_MSG(catalog->GetTableLocation(Identifier("db1", "no_path")),
                         "failed to deserialize the response");
@@ -1192,8 +1201,10 @@ TEST_F(RestCatalogTest, FormatTableIsLoadedInOneRequest) {
         state_->get_table_requests = 0;
     }
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
-                         catalog->GetFormatTable(Identifier("db1", "fmt")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> loaded,
+                         catalog->GetTable(Identifier("db1", "fmt")));
+    std::shared_ptr<FormatTable> table = std::dynamic_pointer_cast<FormatTable>(loaded);
+    ASSERT_NE(nullptr, table);
     ASSERT_EQ("wh1/db1.db/fmt", table->Location());
     ASSERT_EQ(FormatTable::Format::PARQUET, table->GetFormat());
     ASSERT_EQ((std::vector<std::string>{"dt"}), table->PartitionKeys());
@@ -1208,18 +1219,11 @@ TEST_F(RestCatalogTest, FormatTableIsLoadedInOneRequest) {
     // directory named "schema" there is a partition value, not metadata to skip.
     ASSERT_FALSE(table->LocationCarriesPaimonMetadata());
 
-    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "fmt")), "Cannot open format table");
-
-    // A managed table stays out of this path, and so does a system table.
+    // A managed table comes back through the same call, as the managed table it is.
     ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "t1")), "is not a format table");
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "t1$snapshots")),
-                        "for system table");
-    // The database is checked before the table name is parsed, so a malformed name under "sys"
-    // is refused as a system table rather than surfacing a parse error.
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("sys", "all_table_options")),
-                        "for system table");
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("sys", "a$b$c$d")), "for system table");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> managed,
+                         catalog->GetTable(Identifier("db1", "t1")));
+    ASSERT_EQ(nullptr, std::dynamic_pointer_cast<FormatTable>(managed));
 }
 
 TEST_F(RestCatalogTest, FormatTableWithAnUnusableSchemaIsRejectedOnLoad) {
@@ -1245,24 +1249,23 @@ TEST_F(RestCatalogTest, FormatTableWithAnUnusableSchemaIsRejectedOnLoad) {
     // A format table format with no reader here.
     seed("csv_table", R"({"type": "format-table", "file.format": "csv"})", R"(["dt"])",
          default_fields);
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "csv_table")),
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "csv_table")),
                         "not supported by paimon-cpp yet");
 
     // A row count no file could ever reach.
     seed("bad_rows",
          R"({"type": "format-table", "file.format": "parquet", "target-file-row-num": "0"})",
          R"(["dt"])", default_fields);
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "bad_rows")),
-                        "should be at least 1");
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "bad_rows")), "should be at least 1");
 
     // The failure names the table, which is all a caller holding several has to go on.
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "bad_rows")), "db1.bad_rows");
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "bad_rows")), "db1.bad_rows");
 
     // The structural rules run here too, not only the format-table ones: a partition key that is
     // not a field of the schema is a table nothing could ever read.
     seed("bad_partition_key", R"({"type": "format-table", "file.format": "parquet"})",
          R"(["nosuchfield"])", default_fields);
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "bad_partition_key")),
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "bad_partition_key")),
                         "should include all partition fields");
 
     // Two schemas this library cannot open, refused when the table is opened rather than when a
@@ -1272,12 +1275,12 @@ TEST_F(RestCatalogTest, FormatTableWithAnUnusableSchemaIsRejectedOnLoad) {
          R"([{"id": 0, "name": "f0", "type": "INT NOT NULL"},)"
          // Not a raw string: `TIMESTAMP(6)"` holds the sequence that would end one.
          " {\"id\": 1, \"name\": \"dt\", \"type\": \"TIMESTAMP(6)\"}]");
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "timestamp_partition")),
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "timestamp_partition")),
                         "cannot be TIMESTAMP/DECIMAL/BLOB");
 
     seed("only_partitions", R"({"type": "format-table", "file.format": "parquet"})", R"(["dt"])",
          R"([{"id": 0, "name": "dt", "type": "STRING"}])");
-    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "only_partitions")),
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "only_partitions")),
                         "every one of its columns");
 
     // An option this library does not honour keeps its own status code, so a caller can still
@@ -1286,8 +1289,7 @@ TEST_F(RestCatalogTest, FormatTableWithAnUnusableSchemaIsRejectedOnLoad) {
          R"({"type": "format-table", "file.format": "parquet",)"
          R"( "metastore.partitioned-table": "true"})",
          R"(["dt"])", default_fields);
-    Status not_implemented =
-        catalog->GetFormatTable(Identifier("db1", "catalog_partitions")).status();
+    Status not_implemented = catalog->GetTable(Identifier("db1", "catalog_partitions")).status();
     ASSERT_TRUE(not_implemented.IsNotImplemented()) << not_implemented.ToString();
 }
 

@@ -358,7 +358,8 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
 AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::shared_ptr<TableSchema> table_schema,
                                          std::map<std::string, std::string> options)
-    : fs_(std::move(fs)),
+    : SystemTable(fs, table_path),
+      fs_(std::move(fs)),
       table_path_(std::move(table_path)),
       table_schema_(std::move(table_schema)),
       options_(std::move(options)) {}
@@ -383,7 +384,8 @@ Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ArrowSchema() const 
 }
 
 Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
-    const std::shared_ptr<ScanContext>& context) const {
+    std::unique_ptr<ScanContext> ctx) const {
+    const std::shared_ptr<ScanContext> context = std::move(ctx);
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
         return Status::NotImplemented("audit_log system table predicate pushdown is not supported");
     }
@@ -393,7 +395,12 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
         .WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        // The data table behind this view is served through the file system the view itself was
+        // opened with, so a context without one of its own falls back to it rather than the
+        // default backend.
+        .WithFileSystem(context->GetSpecificFileSystem() != nullptr
+                            ? context->GetSpecificFileSystem()
+                            : GetFileSystem())
         .WithCache(context->GetCache());
     if (scan_filter) {
         if (scan_filter->GetBucketFilter()) {
@@ -411,7 +418,8 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
 }
 
 Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
     return NewChangelogRead(context, std::make_shared<AuditLogBatchConverter>());
 }
 
@@ -450,12 +458,20 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema, BaseReadSchema());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     ReadContextBuilder builder(table_path_);
+    // The data table behind this view is served through the file system the view itself was
+    // opened with, but only when the context names neither a file system of its own nor a
+    // scheme map to resolve through - a file system and a scheme map cannot both be named, and
+    // the context's own answer always wins.
+    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
+    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
+        data_table_fs = GetFileSystem();
+    }
     builder.SetOptions(read_options)
         .SetReadFieldNames(base_read_schema->field_names())
         .WithBranch(core_options.GetBranch())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        .WithFileSystem(data_table_fs)
         .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .EnablePrefetch(context->EnablePrefetch())
         .SetPrefetchBatchCount(context->GetPrefetchBatchCount())

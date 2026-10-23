@@ -35,7 +35,8 @@ class OptionsSystemTable : public InMemorySystemTable {
  public:
     static constexpr const char* kName = "options";
 
-    OptionsSystemTable(std::string table_path, std::shared_ptr<TableSchema> table_schema);
+    OptionsSystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path,
+                       std::shared_ptr<TableSchema> table_schema);
 
     std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;

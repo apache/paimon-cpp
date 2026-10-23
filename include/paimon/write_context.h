@@ -178,20 +178,23 @@ class PAIMON_EXPORT WriteContextBuilder {
     ///
     /// There is no commit user: a format table keeps no snapshot to record one in.
     ///
-    /// @param table The format table to write to, as `Catalog::GetFormatTable()` hands it back.
+    /// @param table The format table to write to, as `Catalog::GetTable()` hands it back.
     explicit WriteContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~WriteContextBuilder();
 
-    /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite.
+    /// Set a configuration options map. The options take part in loading the table a write
+    /// serves: the load merges them over the ones the table's schema carries and the table it
+    /// hands back serves the merged ones. A caller holding a table already loaded - a load
+    /// that is over - changes it through `Table::Copy()`; an option contradicting a table held
+    /// that way is refused when a write is asked of it. A format table takes the options as its
+    /// own.
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 
-    /// Add a single configuration option which is not defined in the table schema or whose value
-    /// you want to overwrite.
+    /// Add a single configuration option, served the way `SetOptions()` describes.
     ///
     /// If you want to add multiple options, call `AddOption()` multiple times or use `SetOptions()`
     /// instead.

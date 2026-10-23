@@ -34,14 +34,21 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/system/global_system_tables.h"
+#include "paimon/core/table/system/system_table.h"
 #include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
+#include "paimon/read_context.h"
+#include "paimon/scan_context.h"
 #include "paimon/snapshot/snapshot_info.h"
 #include "paimon/table/format/format_table.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/write_context.h"
 
 namespace paimon::test {
 
@@ -223,10 +230,15 @@ TEST(FileSystemCatalogTest, TestOptionsSystemTableCatalog) {
     ASSERT_FALSE(loaded_schema->field(1)->nullable());
 
     ASSERT_OK_AND_ASSIGN(auto system_table, catalog.GetTable(options_identifier));
-    ASSERT_EQ(system_table->Name(), "tbl1$options");
-    // A system table reads the files of the data table it belongs to, so the table opened
-    // for it carries that table's root path.
+    // A system table comes back as the `SystemTable` it is: it answers for itself with its own
+    // read-only schema and the root path of the data table it reads.
+    ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(system_table) != nullptr);
+    ASSERT_TRUE(std::dynamic_pointer_cast<FormatTable>(system_table) == nullptr);
+    ASSERT_EQ("options", system_table->Name());
+    ASSERT_EQ("options", system_table->FullName());
     ASSERT_EQ(system_table->GetRootPath(), table_path);
+    ASSERT_EQ((std::vector<std::string>{"key", "value"}),
+              system_table->LatestSchema()->FieldNames());
     ASSERT_NOK_WITH_MSG(catalog.LoadTableSchema(Identifier("db1", "tbl1$unknown")), "not exist");
     ASSERT_NOK_WITH_MSG(catalog.LoadTableSchema(Identifier("db1", "missing$options")), "not exist");
 
@@ -240,6 +252,71 @@ TEST(FileSystemCatalogTest, TestOptionsSystemTableCatalog) {
                         "Cannot 'dropTable' for system table");
     ASSERT_NOK_WITH_MSG(catalog.RenameTable(options_identifier, Identifier("db1", "tbl2"), false),
                         "Cannot 'renameTable' for system table");
+}
+
+// A `T$system` identifier opens the read-only view it names, which serves scans and reads of
+// the data table it belongs to through the same `Table` interface, and refuses the operations
+// that would modify the data table.
+TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK(catalog.CreateDatabase("db1", options, /*ignore_if_exists=*/true));
+
+    auto typed_schema = arrow::schema({arrow::field("f0", arrow::int32(), /*nullable=*/false),
+                                       arrow::field("dt", arrow::utf8())});
+    ::ArrowSchema schema;
+    ASSERT_TRUE(arrow::ExportSchema(*typed_schema, &schema).ok());
+    ASSERT_OK(catalog.CreateTable(Identifier("db1", "tbl1"), &schema, /*partition_keys=*/{"dt"},
+                                  /*primary_keys=*/{}, options, /*ignore_if_exists=*/false));
+    ArrowSchemaRelease(&schema);
+
+    // A managed table with no `type` option still opens, as the managed table it is.
+    ASSERT_OK_AND_ASSIGN(auto managed, catalog.GetTable(Identifier("db1", "tbl1")));
+    ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(managed) == nullptr);
+
+    ASSERT_OK_AND_ASSIGN(auto system_table, catalog.GetTable(Identifier("db1", "tbl1$options")));
+    ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(system_table) != nullptr);
+    ASSERT_EQ("options", system_table->Name());
+
+    // The scan and the read work from a context of the caller's, like every other table.
+    ScanContextBuilder scan_builder(system_table->GetRootPath());
+    scan_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto scan, system_table->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+
+    ReadContextBuilder read_builder(system_table->GetRootPath());
+    read_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto read, system_table->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(auto table_result, reader->NextBatch());
+
+    // The options the table was created with come back, one row per key.
+    auto& [c_array, c_schema] = table_result;
+    std::shared_ptr<arrow::RecordBatch> batch;
+    auto maybe_batch = arrow::ImportRecordBatch(c_array.get(), c_schema.get());
+    ASSERT_TRUE(maybe_batch.ok()) << maybe_batch.status().ToString();
+    batch = std::move(maybe_batch).ValueUnsafe();
+    ASSERT_GE(batch->num_rows(), 2);
+
+    // The operations that would modify the data table underneath are refused by name.
+    WriteContextBuilder write_builder(system_table->GetRootPath(), "commit_user");
+    write_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(auto write_context, write_builder.Finish());
+    ASSERT_NOK_WITH_MSG(system_table->NewWrite(std::move(write_context)),
+                        "options system table is read-only: writing is not supported");
+
+    CommitContextBuilder commit_builder(system_table->GetRootPath(), "commit_user");
+    commit_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(auto commit_context, commit_builder.Finish());
+    ASSERT_NOK_WITH_MSG(system_table->NewCommit(std::move(commit_context)),
+                        "options system table is read-only: committing for it is not supported");
 }
 
 TEST(FileSystemCatalogTest, TestBranchTableLoadsBranchSchema) {
@@ -629,7 +706,7 @@ TEST(FileSystemCatalogTest, TestCreateTableWithBlob) {
     ArrowSchemaRelease(&schema);
 }
 
-TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
+TEST(FileSystemCatalogTest, TestGetTableServesAFormatTable) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
     options[Options::FILE_FORMAT] = "orc";
@@ -650,11 +727,11 @@ TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
                                   /*ignore_if_exists=*/false));
     ArrowSchemaRelease(&schema);
 
-    // A format table has no snapshots and no manifests, so handing it back as a Table would
-    // describe it as something it is not.
-    ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier("db1", "fmt")), "Cannot open format table");
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> format_table,
-                         catalog.GetFormatTable(Identifier("db1", "fmt")));
+    // The table's `type` says what it is, so the one call that opens a table hands a format
+    // table back as the `FormatTable` it is, through the `Table` interface the two share.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(Identifier("db1", "fmt")));
+    std::shared_ptr<FormatTable> format_table = std::dynamic_pointer_cast<FormatTable>(table);
+    ASSERT_NE(nullptr, format_table);
     ASSERT_EQ(format_table->GetFormat(), FormatTable::Format::PARQUET);
     ASSERT_EQ(format_table->FullName(), "db1.fmt");
 
@@ -662,15 +739,6 @@ TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
     // `branch` directories there are its metadata and a scan leaves them alone. A catalog that
     // keeps schemas elsewhere says no, and then every directory below the location is data.
     ASSERT_TRUE(format_table->LocationCarriesPaimonMetadata());
-
-    // A system table is refused by `Catalog::GetFormatTable()` itself, so every catalog answers
-    // alike. The database is checked before the table name is parsed, so a malformed name under
-    // "sys" is refused as a system table rather than surfacing a parse error.
-    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("db1", "fmt$snapshots")),
-                        "for system table");
-    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("sys", "all_table_options")),
-                        "for system table");
-    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("sys", "a$b$c$d")), "for system table");
 }
 
 TEST(FileSystemCatalogTest, TestInvalidCreateTable) {

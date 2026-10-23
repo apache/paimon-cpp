@@ -35,10 +35,12 @@
 
 namespace paimon {
 
-ReadOptimizedSystemTable::ReadOptimizedSystemTable(std::string table_path,
+ReadOptimizedSystemTable::ReadOptimizedSystemTable(const std::shared_ptr<FileSystem>& fs,
+                                                   std::string table_path,
                                                    std::shared_ptr<TableSchema> table_schema,
                                                    std::map<std::string, std::string> options)
-    : table_path_(std::move(table_path)),
+    : SystemTable(fs, table_path),
+      table_path_(std::move(table_path)),
       table_schema_(std::move(table_schema)),
       options_(std::move(options)) {}
 
@@ -57,7 +59,8 @@ std::map<std::string, std::string> ReadOptimizedSystemTable::ReadOptimizedOption
 }
 
 Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
-    const std::shared_ptr<ScanContext>& context) const {
+    std::unique_ptr<ScanContext> ctx) const {
+    const std::shared_ptr<ScanContext> context = std::move(ctx);
     if (context->GetRealtimeContext() && !table_schema_->PrimaryKeys().empty()) {
         return Status::NotImplemented(
             "PK real-time union read does not support read-optimized scans");
@@ -68,7 +71,12 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
         .WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        // The data table behind this view is served through the file system the view itself was
+        // opened with, so a context without one of its own falls back to it rather than the
+        // default backend.
+        .WithFileSystem(context->GetSpecificFileSystem() != nullptr
+                            ? context->GetSpecificFileSystem()
+                            : GetFileSystem())
         .WithCache(context->GetCache());
     if (context->GetLimit().has_value()) {
         builder.SetLimit(context->GetLimit().value());
@@ -100,6 +108,14 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         branch = branch_iter->second;
     }
     ReadContextBuilder builder(table_path_);
+    // The data table behind this view is served through the file system the view itself was
+    // opened with, but only when the context names neither a file system of its own nor a
+    // scheme map to resolve through - a file system and a scheme map cannot both be named, and
+    // the context's own answer always wins.
+    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
+    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
+        data_table_fs = GetFileSystem();
+    }
     builder.SetOptions(options)
         .WithBranch(branch)
         .SetPredicate(context->GetPredicate())
@@ -111,7 +127,7 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        .WithFileSystem(data_table_fs)
         .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
@@ -133,7 +149,8 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
 }
 
 Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> base_context,
                            CreateDataReadContext(context));
     return TableRead::Create(std::move(base_context));

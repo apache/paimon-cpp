@@ -300,7 +300,13 @@ Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::Load(
                 return Status::NotImplemented("global system table requires catalog context: ",
                                               table_name);
             }
-            return entry.factory(context);
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                                   entry.factory(context));
+            // The table is handed out through the `Table` interface, which serves the schema
+            // the base holds, so its own read-only schema is adopted before it leaves the
+            // loader.
+            PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
+            return system_table;
         }
     }
     return Status::NotImplemented("unsupported global system table: ", table_name);
@@ -324,7 +330,7 @@ Result<std::vector<std::string>> GlobalSystemTableLoader::GetSupportedTableNames
 // =============================================================================
 
 CatalogOptionsSystemTable::CatalogOptionsSystemTable(GlobalSystemTableContext context)
-    : InMemorySystemTable("sys/catalog_options"), context_(std::move(context)) {}
+    : InMemorySystemTable(context.fs, "sys/catalog_options"), context_(std::move(context)) {}
 
 std::string CatalogOptionsSystemTable::Name() const {
     return kName;
@@ -360,7 +366,7 @@ Result<std::vector<GenericRow>> CatalogOptionsSystemTable::BuildRows() const {
 // =============================================================================
 
 AllTableOptionsSystemTable::AllTableOptionsSystemTable(GlobalSystemTableContext context)
-    : InMemorySystemTable("sys/all_table_options"), context_(std::move(context)) {}
+    : InMemorySystemTable(context.fs, "sys/all_table_options"), context_(std::move(context)) {}
 
 std::string AllTableOptionsSystemTable::Name() const {
     return kName;
@@ -399,7 +405,7 @@ Result<std::vector<GenericRow>> AllTableOptionsSystemTable::BuildRows() const {
 // =============================================================================
 
 TablesSystemTable::TablesSystemTable(GlobalSystemTableContext context)
-    : InMemorySystemTable("sys/tables"), context_(std::move(context)) {}
+    : InMemorySystemTable(context.fs, "sys/tables"), context_(std::move(context)) {}
 
 std::string TablesSystemTable::Name() const {
     return kName;
@@ -471,7 +477,7 @@ Result<std::vector<GenericRow>> TablesSystemTable::BuildRows() const {
 // =============================================================================
 
 PartitionsSystemTable::PartitionsSystemTable(GlobalSystemTableContext context)
-    : InMemorySystemTable("sys/partitions"), context_(std::move(context)) {}
+    : InMemorySystemTable(context.fs, "sys/partitions"), context_(std::move(context)) {}
 
 std::string PartitionsSystemTable::Name() const {
     return kName;

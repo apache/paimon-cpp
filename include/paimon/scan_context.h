@@ -183,7 +183,7 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// table a REST catalog serves. The table carries what such a location does not say, so
     /// `SetTableSchema()` and `WithFileSystem()` are refused here rather than ignored.
     ///
-    /// @param table The format table to scan, as `Catalog::GetFormatTable()` hands it back.
+    /// @param table The format table to scan, as `Catalog::GetTable()` hands it back.
     explicit ScanContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~ScanContextBuilder();
@@ -208,11 +208,15 @@ class PAIMON_EXPORT ScanContextBuilder {
     ScanContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);
 
-    /// The options added or set in `ScanContextBuilder` have high priority and will be merged with
-    /// the options in table schema.
+    /// Add a single configuration option. See `SetOptions()` for how the options a context
+    /// carries are served.
     ScanContextBuilder& AddOption(const std::string& key, const std::string& value);
-    /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite.
+    /// Set a configuration options map. The options take part in loading the table a scan
+    /// serves: the load merges them over the ones the table's schema carries and the table it
+    /// hands back serves the merged ones. A caller holding a table already loaded - a load
+    /// that is over - changes it through `Table::Copy()`; an option contradicting a table held
+    /// that way is refused when a scan is asked of it. A format table takes the options as its
+    /// own.
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.

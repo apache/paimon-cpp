@@ -227,6 +227,20 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
     ASSERT_EQ(arrow_schema->field(1)->type()->id(), arrow::Type::INT32);
 }
 
+TEST(SystemTableTest, TestCopyIsRefused) {
+    // A system table is a read-only view over the data table underneath it, and the schema it
+    // exposes is not one a copy reconfigures. The data table is copied through its own `Table`.
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> system_table,
+                         SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
+                                                 "/tmp/table", table_schema,
+                                                 /*dynamic_options=*/{}));
+    ASSERT_NOK_WITH_MSG(system_table->Copy({{"probe", "on-top"}}), "copying is not supported");
+}
+
 TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
     ASSERT_OK_AND_ASSIGN(std::optional<SystemTablePath> parsed,
                          SystemTableLoader::TryParsePath("/tmp/db.db/t$branch_audit$ro"));
@@ -249,7 +263,7 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
 
     AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
     BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
         ReadContextBuilder builder("/tmp/table");

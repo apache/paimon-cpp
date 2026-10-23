@@ -246,7 +246,7 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// `SetTableSchema()`, `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()` and a
     /// branch are refused here rather than ignored.
     ///
-    /// @param table The format table to read, as `Catalog::GetFormatTable()` hands it back.
+    /// @param table The format table to read, as `Catalog::GetTable()` hands it back.
     explicit ReadContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~ReadContextBuilder();
@@ -324,15 +324,18 @@ class PAIMON_EXPORT ReadContextBuilder {
     ///       When set, read_field_ids and read_field_names are ignored.
     ReadContextBuilder& SetReadSchema(std::unique_ptr<ArrowSchema> read_schema);
 
-    /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite.
+    /// Set a configuration options map. The options take part in loading the table a read
+    /// serves: the load merges them over the ones the table's schema carries and the table it
+    /// hands back serves the merged ones. A caller holding a table already loaded - a load
+    /// that is over - changes it through `Table::Copy()`; an option contradicting a table held
+    /// that way is refused when a read is asked of it. A format table takes the options as its
+    /// own.
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 
-    /// Add a single configuration option which is not defined in the table schema or whose value
-    /// you want to overwrite.
+    /// Add a single configuration option, served the way `SetOptions()` describes.
     ///
     /// If you want to add multiple options, call `AddOption()` multiple times or use `SetOptions()`
     /// instead.

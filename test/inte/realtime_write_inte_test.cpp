@@ -43,6 +43,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
@@ -557,6 +558,41 @@ class RealtimeWriteInteTest : public ::testing::Test {
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> context, builder.Finish());
         return FileStoreWrite::Create(std::move(context));
+    }
+
+    // A writer that means to change an option the table was created with writes through a copy
+    // carrying it, which the context then agrees with.
+    Result<std::shared_ptr<Table>> CopiedTable(
+        const std::map<std::string, std::string>& overrides) const {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Catalog> catalog, Catalog::Create(dir_->Str(), {}));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
+                               catalog->GetTable(Identifier("foo", "bar")));
+        return table->Copy(overrides);
+    }
+
+    // Evolves the table schema to the current options with its fields unchanged, the way an
+    // ALTER TABLE changing an option would: the table itself then serves the changed option.
+    // The fields are carried over from the latest schema so their attributes survive: rebuilt
+    // raw fields would lose the non-nullable primary keys the table schema enforces.
+    Status EvolveSchemaWithOptions() const {
+        SchemaManager schema_manager(dir_->GetFileSystem(), table_path_);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               schema_manager.Latest());
+        if (!latest.has_value()) {
+            return Status::Invalid("table schema does not exist");
+        }
+        return TestHelper::WriteNextSchema(dir_->GetFileSystem(), table_path_,
+                                           latest.value()->Fields(),
+                                           latest.value()->HighestFieldId(), options_);
+    }
+
+    Result<std::unique_ptr<FileStoreWrite>> CreateRealtimeWriter(
+        const std::shared_ptr<RealtimeContext>& realtime_context,
+        const std::shared_ptr<Table>& table) const {
+        WriteContextBuilder builder(table_path_, commit_user_);
+        builder.SetOptions(options_).WithStreamingMode(true).WithRealtimeContext(realtime_context);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> context, builder.Finish());
+        return table->NewWrite(std::move(context));
     }
 
     Result<std::unique_ptr<FileStoreWrite>> CreateRealtimeWriter() const {
@@ -1249,32 +1285,36 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeOperationsRequireEnabledOption) {
     disabled_options[Options::REALTIME_ENABLED] = "false";
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
+    // The table was created enabled, so each operation below goes through a copy carrying it
+    // disabled, whose contexts then agree: each reports that real-time needs the option itself.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> disabled_table,
+                         CopiedTable({{Options::REALTIME_ENABLED, "false"}}));
 
     WriteContextBuilder write_builder(table_path_, commit_user_);
     write_builder.SetOptions(disabled_options)
         .WithStreamingMode(true)
         .WithRealtimeContext(realtime_context);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)),
+    ASSERT_NOK_WITH_MSG(disabled_table->NewWrite(std::move(write_context)),
                         "real-time write requires realtime.enabled=true");
 
     ScanContextBuilder scan_builder(table_path_);
     scan_builder.SetOptions(disabled_options).WithRealtimeContext(realtime_context);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)),
+    ASSERT_NOK_WITH_MSG(disabled_table->NewScan(std::move(scan_context)),
                         "real-time scan requires realtime.enabled=true");
 
     ReadContextBuilder read_builder(table_path_);
     read_builder.SetOptions(disabled_options).WithRealtimeContext(realtime_context);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+    ASSERT_NOK_WITH_MSG(disabled_table->NewRead(std::move(read_context)),
                         "real-time read requires realtime.enabled=true");
 
     CommitContextBuilder commit_builder(table_path_, commit_user_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
                          commit_builder.SetOptions(disabled_options).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
+                         disabled_table->NewCommit(std::move(commit_context)));
     ASSERT_NOK_WITH_MSG(commit->CommitWithProgress(/*realtime_commits=*/{},
                                                    /*commit_identifier=*/0,
                                                    /*watermark=*/std::nullopt),
@@ -2084,6 +2124,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateAcrossMultipleFileIndexStor
     ASSERT_OK(embedded_writer->Close());
 
     options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
+    // The tighter threshold is a change the table itself carries, the way an ALTER TABLE would:
+    // the schema is evolved to it, so every later write, commit, and read serves it.
+    ASSERT_OK(EvolveSchemaWithOptions());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> external_writer,
                          CreateRealtimeWriter(realtime_context));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> external_batch,
@@ -3766,6 +3809,9 @@ TEST_F(RealtimeWriteInteTest, TestAppendRealtimeReadUsesEmbeddedAndExternalBitma
     ASSERT_OK(embedded_writer->Close());
 
     options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
+    // The tighter threshold is a change the table itself carries, the way an ALTER TABLE would:
+    // the schema is evolved to it, so every later write, commit, and read serves it.
+    ASSERT_OK(EvolveSchemaWithOptions());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> external_writer,
                          CreateRealtimeWriter(realtime_context));
     ASSERT_OK_AND_ASSIGN(
@@ -4083,6 +4129,9 @@ TEST_F(RealtimeWriteInteTest, TestPkDvRealtimeReadUsesEmbeddedAndExternalBitmapI
     ASSERT_OK(embedded_writer->Close());
 
     options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
+    // The tighter threshold is a change the table itself carries, the way an ALTER TABLE would:
+    // the schema is evolved to it, so every later write, commit, and read serves it.
+    ASSERT_OK(EvolveSchemaWithOptions());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> external_writer,
                          CreateRealtimeWriter(realtime_context));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> external_batch,

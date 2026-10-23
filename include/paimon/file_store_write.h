@@ -42,7 +42,8 @@ class WriteContext;
 /// Interface for write operations in a file store.
 class PAIMON_EXPORT FileStoreWrite {
  public:
-    /// Create an instance of `FileStoreWrite`.
+    /// Create an instance of `FileStoreWrite`: the table the context names is loaded first, then
+    /// the context is handed to that table's `NewWrite`.
     ///
     /// @param context A unique pointer to the `WriteContext` used for write operations.
     ///

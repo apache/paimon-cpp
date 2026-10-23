@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,7 @@ class Schema;
 namespace paimon {
 struct CatalogContext;
 class Executor;
+class FileSystem;
 class MemoryPool;
 class Predicate;
 class RealtimeContext;
@@ -56,10 +58,27 @@ class InternalReadContext {
         std::string field_name;
     };
 
+    /// Builds the context of a read a table serves: the options are the table's own, already
+    /// parsed - the store's `options()` - and the cache the context carries is armed on them
+    /// here. `path` names the root path the table was opened with, which the read reads from in
+    /// place of the one named by the context.
+    static Result<std::unique_ptr<InternalReadContext>> Create(
+        const std::shared_ptr<ReadContext>& read_context,
+        const std::shared_ptr<TableSchema>& table_schema, CoreOptions core_options,
+        const std::string* path = nullptr);
+
+    /// Builds the context of a read whose options are composed on the spot rather than the
+    /// table's own - the fallback branch of a read, whose schema belongs to another branch, and
+    /// the reads a write or a lookup serve inside themselves. The options are parsed from
+    /// `options` here: the read's own file system is `file_system`, or the context's when null -
+    /// the scheme map the context carries does not take part. A cache the context carries is
+    /// armed on the options this parses.
     static Result<std::unique_ptr<InternalReadContext>> Create(
         const std::shared_ptr<ReadContext>& read_context,
         const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& options);
+        const std::map<std::string, std::string>& options,
+        const std::shared_ptr<FileSystem>& file_system = nullptr,
+        const std::string* path = nullptr);
 
     /// Maps score output positions in the read schema to their logical search sources.
     const std::map<int32_t, IndexScoreSource>& GetIndexScoreBindings() const {
@@ -79,7 +98,7 @@ class InternalReadContext {
         return table_schema_;
     }
     const std::string& GetPath() const {
-        return read_context_->GetPath();
+        return path_ ? *path_ : read_context_->GetPath();
     }
 
     std::shared_ptr<CatalogContext> CreateDependencyCatalogContext() const;
@@ -164,7 +183,15 @@ class InternalReadContext {
                         const std::shared_ptr<TableSchema>& table_schema,
                         const std::shared_ptr<arrow::Schema>& read_schema,
                         const CoreOptions& options,
-                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+                        std::optional<std::string> path = std::nullopt);
+
+    /// The tail both `Create` entries share: the options arrive parsed and cached, and the
+    /// validations and the read schema below are the same whichever way they were resolved.
+    static Result<std::unique_ptr<InternalReadContext>> CreateFromCoreOptions(
+        const std::shared_ptr<ReadContext>& read_context,
+        const std::shared_ptr<TableSchema>& table_schema, CoreOptions core_options,
+        const std::string* path);
 
     static std::optional<DataField> TryResolveSpecialFieldById(int32_t field_id,
                                                                const CoreOptions& core_options,
@@ -184,6 +211,9 @@ class InternalReadContext {
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     CoreOptions options_;
     std::map<int32_t, IndexScoreSource> index_score_bindings_;
+    /// The root path a table reads through, or null for the read context's own, which callers
+    /// without a table hand over.
+    std::optional<std::string> path_;
 };
 
 }  // namespace paimon
