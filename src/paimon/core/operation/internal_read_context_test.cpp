@@ -113,7 +113,7 @@ TEST(InternalReadContext, TestDependencyReadMergesTableCatalogAndReadOptions) {
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(read_context, table_schema, options));
 
-    auto dependency_context = internal_context->CreateDependencyReadContext();
+    auto dependency_context = internal_context->CreateDependencyCatalogContext();
     auto expected_options = options;
     expected_options[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
     ASSERT_EQ(dependency_context->root_path, catalog->GetRootPath());
@@ -158,7 +158,7 @@ TEST(InternalReadContext, TestDependencyReadKeepsTheOutermostView) {
             test_case.read_header ? test_case.read_header : "table-view";
         ASSERT_OK_AND_ASSIGN(auto internal_context,
                              InternalReadContext::Create(read_context, table_schema, options));
-        auto dependency_context = internal_context->CreateDependencyReadContext();
+        auto dependency_context = internal_context->CreateDependencyCatalogContext();
         ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"),
                   test_case.expected_header);
         ASSERT_EQ(read_context->GetOptions(), read_options);
@@ -212,7 +212,7 @@ TEST(InternalReadContext, TestDependencyReadHeaderUsesFinalMetastore) {
                                  .Finish());
         ASSERT_OK_AND_ASSIGN(auto internal_context,
                              InternalReadContext::Create(read_context, table_schema, options));
-        auto dependency_context = internal_context->CreateDependencyReadContext();
+        auto dependency_context = internal_context->CreateDependencyCatalogContext();
         if (test_case.expected_metastore) {
             ASSERT_EQ(dependency_context->options.at(CatalogOptions::METASTORE),
                       test_case.expected_metastore);
@@ -242,7 +242,7 @@ TEST(InternalReadContext, TestDependencyReadHeaderNeedsAnIdentifier) {
     options[CatalogOptions::METASTORE] = "REST";
     ASSERT_OK_AND_ASSIGN(auto internal_context, InternalReadContext::Create(std::move(read_context),
                                                                             table_schema, options));
-    auto dependency_context = internal_context->CreateDependencyReadContext();
+    auto dependency_context = internal_context->CreateDependencyCatalogContext();
     ASSERT_EQ(dependency_context->options.count("header.X-Paimon-Read-Via"), 0u);
 }
 
@@ -259,7 +259,7 @@ TEST(InternalReadContext, TestDependencyReadHeaderReportsTheBranchOfTheStartingT
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
                                                      table_schema->Options()));
-    auto dependency_context = internal_context->CreateDependencyReadContext();
+    auto dependency_context = internal_context->CreateDependencyCatalogContext();
     ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"),
               "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%24branch_dev%22%7D");
 }
@@ -281,7 +281,7 @@ TEST(InternalReadContext, TestFileSystemSchemeMapReachesTheDependencyRead) {
                          InternalReadContext::Create(std::move(read_context), table_schema,
                                                      table_schema->Options()));
     ASSERT_EQ(internal_context->GetFileSystemSchemeToIdentifierMap(), scheme_map);
-    ASSERT_EQ(internal_context->CreateDependencyReadContext()->fs_scheme_to_identifier_map,
+    ASSERT_EQ(internal_context->CreateDependencyCatalogContext()->fs_scheme_to_identifier_map,
               scheme_map);
 }
 
