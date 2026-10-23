@@ -204,6 +204,11 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
     } else {
         PAIMON_RETURN_NOT_OK(
             ReadManifestLists(snapshot, &all_manifest_file_metas, &filtered_manifest_file_metas));
+        all_data_files =
+            std::accumulate(all_manifest_file_metas.begin(), all_manifest_file_metas.end(),
+                            int64_t{0}, [](int64_t sum, const ManifestFileMeta& meta) {
+                                return sum + meta.NumAddedFiles() - meta.NumDeletedFiles();
+                            });
         lazy_decode_scanned_rows = std::accumulate(
             filtered_manifest_file_metas.begin(), filtered_manifest_file_metas.end(), uint64_t{0},
             [](uint64_t sum, const ManifestFileMeta& meta) {
@@ -241,13 +246,6 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         for (ManifestEntry& entry : manifest_entries) {
             entry = entry.CopyWithoutStats();
         }
-    }
-    if (!snapshot_cache_hit) {
-        all_data_files =
-            std::accumulate(all_manifest_file_metas.begin(), all_manifest_file_metas.end(),
-                            int64_t{0}, [](int64_t sum, const ManifestFileMeta& meta) {
-                                return sum + meta.NumAddedFiles() - meta.NumDeletedFiles();
-                            });
     }
     const uint64_t scan_duration_ms = duration.Get();
     metrics_->SetCounter(ScanMetrics::LAST_SCAN_DURATION, scan_duration_ms);
@@ -420,7 +418,7 @@ Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
         if (predicate_failed) {
             return selected.status();
         }
-        if (selected.ok() && selected.value() && selected.value()->total_data_files >= 0) {
+        if (selected.ok() && selected.value()) {
             *cache_hit = true;
             *all_data_files = selected.value()->total_data_files;
             partition_filtered = static_cast<bool>(row_filter);

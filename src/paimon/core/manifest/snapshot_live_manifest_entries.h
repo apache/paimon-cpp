@@ -45,13 +45,12 @@ class SnapshotLiveManifestEntries {
     struct Selection {
         std::vector<ManifestEntry> entries;
         uint64_t candidate_entries = 0;
-        int64_t total_data_files = -1;
+        int64_t total_data_files = 0;
     };
 
     explicit SnapshotLiveManifestEntries(int32_t max_snapshots);
 
-    void Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries,
-             int64_t total_data_files = -1);
+    void Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries, int64_t total_data_files);
     size_t Size() const;
 
     Result<std::shared_ptr<Bytes>> Serialize(const std::shared_ptr<MemoryPool>& pool) const;

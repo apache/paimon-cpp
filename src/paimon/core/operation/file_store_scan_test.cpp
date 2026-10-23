@@ -232,8 +232,8 @@ TEST_F(FileStoreScanTest, TestSnapshotLiveManifestEntriesSerialization) {
     manifest_entries.emplace_back(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0,
                                   /*total_buckets=*/1, file1);
     SnapshotLiveManifestEntries entries(/*max_snapshots=*/2);
-    entries.Put(/*snapshot_id=*/1, std::move(manifest_entries));
-    entries.Put(/*snapshot_id=*/3, {});
+    entries.Put(/*snapshot_id=*/1, std::move(manifest_entries), /*total_data_files=*/1);
+    entries.Put(/*snapshot_id=*/3, {}, /*total_data_files=*/0);
 
     ASSERT_OK_AND_ASSIGN(auto bytes, entries.Serialize(GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(auto deserialized,
@@ -273,9 +273,9 @@ TEST_F(FileStoreScanTest, SelectExactRetainedSnapshot) {
                              BinaryRowGenerator::GenerateRow({partition}, pool.get()), 0, 1, file);
     }
     SnapshotLiveManifestEntries entries(3);
-    entries.Put(1, {records[0]});
+    entries.Put(1, {records[0]}, 1);
     entries.Put(3, {records[1], records[2]}, 17);
-    entries.Put(5, {});
+    entries.Put(5, {}, 0);
     ASSERT_OK_AND_ASSIGN(auto bytes, entries.Serialize(pool));
     const MemorySegment segment = MemorySegment::Wrap(bytes);
     ASSERT_OK_AND_ASSIGN(auto first,
@@ -327,7 +327,7 @@ TEST_F(FileStoreScanTest, SelectExactRetainedSnapshot) {
                             pool),
                         "injected filter error");
 
-    entries.Put(7, {});
+    entries.Put(7, {}, 0);
     ASSERT_EQ(entries.Size(), 3);
     ASSERT_OK_AND_ASSIGN(auto updated, entries.Serialize(pool));
     // Put must evict the oldest snapshot even when the reader permits more snapshots.
@@ -351,7 +351,7 @@ TEST_F(FileStoreScanTest, SkipDecodingFilteredManifestEntries) {
     ManifestEntry excluded(FileKind(static_cast<int8_t>(2)),
                            BinaryRowGenerator::GenerateRow({10}, pool.get()), 0, 1, file);
     SnapshotLiveManifestEntries entries(1);
-    entries.Put(1, {excluded});
+    entries.Put(1, {excluded}, 1);
     ASSERT_OK_AND_ASSIGN(auto bytes, entries.Serialize(pool));
     const MemorySegment segment = MemorySegment::Wrap(bytes);
     ASSERT_OK_AND_ASSIGN(auto selected, SnapshotLiveManifestEntries::ReadSnapshot(

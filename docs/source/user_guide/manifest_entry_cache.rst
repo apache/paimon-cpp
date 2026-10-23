@@ -123,4 +123,3 @@ The scan metrics expose existing counters for the last scan:
 
 On an exact cache hit, ``lastScannedManifests`` is zero. The cached table file
 count preserves the skipped-file metric even when manifest lists are bypassed.
-This changes only transient cache values; persisted table formats are unchanged.

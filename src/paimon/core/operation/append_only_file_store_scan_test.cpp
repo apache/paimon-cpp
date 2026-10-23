@@ -1032,9 +1032,10 @@ TEST(AppendOnlyFileStoreScanTest, SnapshotCacheRebuildsCorruptValues) {
             segment.PutValue<int32_t>(offset, -1);
         }
         MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
-        out.WriteValue<int32_t>(corruption == "magic" ? 0 : 0x534d4543);
+        out.WriteValue<int32_t>(corruption == "magic" ? 0 : 0x534d4544);
         out.WriteValue<int32_t>(1);
         out.WriteValue<int64_t>(snapshot.Id());
+        out.WriteValue<int64_t>(1);
         out.WriteValue<int32_t>(1);
         ASSERT_OK(row_serializer.Serialize(row, &out));
         ASSERT_EQ(out.Segments().size(), 1);
