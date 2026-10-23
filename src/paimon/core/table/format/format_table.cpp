@@ -43,6 +43,7 @@
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
