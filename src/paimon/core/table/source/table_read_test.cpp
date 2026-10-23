@@ -142,15 +142,15 @@ TEST(TableReadTest, TestFullTextMatchExecutionIsNotImplemented) {
         ReadContextBuilder builder(table_path);
         builder.SetReadFieldNames({"f0", "f1"}).SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-        auto result =
-            table_entry ? table->NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        auto result = table_entry ? table->NewRead(std::move(context))
+                                  : TableRead::Create(std::move(context));
         ASSERT_NOK_WITH_MSG(result, "FullTextMatch predicate execution is not implemented yet");
         ASSERT_TRUE(result.status().IsNotImplemented());
 
         builder.SetReadFieldNames({"f0", "f1", "_f0_INDEX_SCORE"}).SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(context, builder.Finish());
-        result =
-            table_entry ? table->NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        result = table_entry ? table->NewRead(std::move(context))
+                             : TableRead::Create(std::move(context));
         ASSERT_NOK_WITH_MSG(result, "Score-producing FullTextMatch cannot appear under OR");
     }
 }
@@ -169,8 +169,8 @@ TEST(TableReadTest, TestPerFieldScoreExecutionIsNotImplemented) {
         ReadContextBuilder builder(path);
         builder.SetFullTextSearch(search).SetReadFieldNames({"f1", "_f0_INDEX_SCORE"});
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-        auto result =
-            table_entry ? table->NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        auto result = table_entry ? table->NewRead(std::move(context))
+                                  : TableRead::Create(std::move(context));
         ASSERT_NOK_WITH_MSG(result, "Per-field index score output is not implemented yet");
         ASSERT_TRUE(result.status().IsNotImplemented());
     }
