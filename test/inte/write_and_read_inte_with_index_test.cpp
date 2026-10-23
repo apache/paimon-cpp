@@ -1099,6 +1099,7 @@ class WriteAndReadInteWithIndexTest
 
 std::vector<std::string> GetFileFormatsForWriteAndReadInteWithIndexTest() {
     std::vector<std::string> values = {"parquet"};
+    values.reserve(10);
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
 #endif
