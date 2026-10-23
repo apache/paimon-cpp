@@ -78,13 +78,17 @@ class FileStoreTable : public Table {
     ///        `Copy` hands its table's over so both share one.
     /// A null manager is built over `root_path` on `branch`, so the operators always read
     /// through the managers the table carries.
+    /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
+    ///        schemes through, which the store's options resolve through as well - see
+    ///        `FileStore::Create`. `Copy` hands its table's map over.
     static Result<std::shared_ptr<FileStoreTable>> Create(
         const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
         const std::shared_ptr<Schema>& schema, const Identifier& identifier,
         const std::string& uuid = "",
         const std::string& branch = BranchManager::DEFAULT_MAIN_BRANCH,
         const std::shared_ptr<SchemaManager>& schema_manager = nullptr,
-        const std::shared_ptr<SnapshotManager>& snapshot_manager = nullptr);
+        const std::shared_ptr<SnapshotManager>& snapshot_manager = nullptr,
+        const std::map<std::string, std::string>& fs_scheme_map = {});
 
     /// The branch this table serves, as resolved when the table was built: the schema the table
     /// was loaded with came from it, and its managers point at it.
