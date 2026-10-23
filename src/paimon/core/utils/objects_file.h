@@ -69,8 +69,9 @@ class ObjectsFile {
     ///                  skip the metadata request a bare `Open` issues on a remote store. Pass
     ///                  std::nullopt when the length is not known; the read then discovers it
     ///                  itself.
-    Status Read(const std::string& file_name, const std::function<Result<bool>(const T&)>& filter,
-                std::optional<int64_t> file_size, std::vector<T>* result) const;
+    virtual Status Read(const std::string& file_name,
+                        const std::function<Result<bool>(const T&)>& filter,
+                        std::optional<int64_t> file_size, std::vector<T>* result) const;
     Status ReadIfFileExist(const std::string& file_name,
                            const std::function<Result<bool>(const T&)>& filter,
                            std::optional<int64_t> file_size, std::vector<T>* result) const;
@@ -99,6 +100,11 @@ class ObjectsFile {
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
         const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
 
+    Status ReadUncachedArrowBatches(
+        const std::string& file_name, std::optional<int64_t> file_size,
+        const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
+        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
+
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
@@ -117,11 +123,6 @@ class ObjectsFile {
         const std::string& file_name, std::optional<int64_t> file_size,
         std::vector<std::shared_ptr<arrow::StructArray>>* batches,
         std::optional<Status>* read_status) const;
-
-    Status ReadUncachedArrowBatches(
-        const std::string& file_name, std::optional<int64_t> file_size,
-        const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
 
     /// Opens the file for reading, handing over the length when the caller already has it.
     Result<std::unique_ptr<InputStream>> OpenForRead(const std::string& file_path,

@@ -983,31 +983,27 @@ TEST(AppendOnlyFileStoreScanTest, SnapshotCacheRebuildsCorruptValues) {
     ASSERT_OK_AND_ASSIGN(auto expected_plan, expected->CreatePlan());
     const auto expected_names = SortedFileNames(expected_plan->Files());
     auto pool = GetDefaultPool();
-    ManifestEntrySerializer serializer(pool);
-    BinaryRowSerializer row_serializer(serializer.NumFields(), pool);
-    for (const std::string corruption : {"magic", "version", "truncated", "partition"}) {
+    for (const std::string corruption :
+         {"magic", "obsolete", "version", "truncated", "partition"}) {
         SCOPED_TRACE(corruption);
-        ASSERT_OK_AND_ASSIGN(BinaryRow row, serializer.ToRow(first));
-        if (corruption == "version") {
-            row.SetInt(0, 999);
-        } else if (corruption == "partition") {
-            // A negative partition arity fails before predicate evaluation, regardless of mode.
-            auto segment = row.GetSegment();
-            const int32_t offset =
-                static_cast<int32_t>(row.GetStringView(2).data() - segment.Data());
-            segment.PutValue<int32_t>(offset, -1);
-        }
-        MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
-        out.WriteValue<int32_t>(corruption == "magic" ? 0 : 0x534d4543);
-        out.WriteValue<int32_t>(1);
-        out.WriteValue<int64_t>(snapshot.Id());
-        out.WriteValue<int32_t>(1);
-        ASSERT_OK(row_serializer.Serialize(row, &out));
-        ASSERT_EQ(out.Segments().size(), 1);
-        const int64_t size = out.CurrentSize() - (corruption == "truncated" ? 1 : 0);
+        SnapshotLiveManifestEntries snapshots(8);
+        snapshots.Put(snapshot.Id(), {first});
+        ASSERT_OK_AND_ASSIGN(auto serialized, snapshots.Serialize(pool));
+        const int64_t size = serialized->size() - (corruption == "truncated" ? 1 : 0);
         std::shared_ptr<Bytes> bytes =
-            Bytes::AllocateBytes(std::string(out.Segments().front().Data(), size), pool.get());
-        const auto segment = MemorySegment::Wrap(bytes);
+            Bytes::AllocateBytes(std::string(serialized->data(), size), pool.get());
+        auto segment = MemorySegment::Wrap(bytes);
+        if (corruption == "magic") {
+            segment.PutValue<int32_t>(0, 0);
+        } else if (corruption == "obsolete") {
+            segment.PutValue<int32_t>(0, EndianSwapValue<int32_t>(0x534d4543));
+        } else if (corruption == "version") {
+            // The first indexed block begins at byte 20; its version follows the magic.
+            segment.PutValue<int32_t>(24, EndianSwapValue<int32_t>(999));
+        } else if (corruption == "partition") {
+            // Snapshot header + index header + partition length; negative partition arity.
+            segment.PutValue<int32_t>(40, -1);
+        }
         ASSERT_NOK(SnapshotLiveManifestEntries::ReadSnapshot(segment, snapshot.Id(), 8,
                                                              /*row_filter=*/nullptr, pool));
         for (bool lazy_decode : {false, true}) {
