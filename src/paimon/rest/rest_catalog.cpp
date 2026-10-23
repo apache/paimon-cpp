@@ -426,12 +426,14 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
     if (branch) {
         dynamic_options[Options::BRANCH] = branch.value();
     }
-    // The file system is only used to build the system table, whose schema does not
-    // read any file, so the catalog wide one is enough here. The credentials of the
-    // table are applied when its rows are read, through the file system of the read or
-    // scan context.
-    return SystemTableLoader::Load(system_table_name.value(), fs_, data_table_path, latest_schema,
-                                   dynamic_options);
+    // The system table reads the data table's own files - snapshots, manifests, data - so it is
+    // served by the file system that table's credentials open, which with data tokens is the
+    // only one that can: `GetTableFileSystem` folds the system identifier to the data table it
+    // belongs to and hands the catalog-wide file system out when no tokens are issued.
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
+                           GetTableFileSystem(identifier));
+    return SystemTableLoader::Load(system_table_name.value(), table_file_system, data_table_path,
+                                   latest_schema, dynamic_options);
 }
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {

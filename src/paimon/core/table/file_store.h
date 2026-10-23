@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -77,6 +78,11 @@ class FileStore {
     /// @param snapshot_manager A snapshot manager to carry instead of building one.
     /// A null manager is built over `root_path` on `branch`, so the operators always read
     /// through the managers the store carries.
+    /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
+    ///        schemes through. It takes part in building the store's options the way it took
+    ///        part in reading the schema: without it a schema naming a custom scheme would
+    ///        resolve to the default backend once its operators run. It is kept for a copy to
+    ///        hand over again, so the copy resolves as this store does.
     ///
     /// Building the store parses the schema's options, so it fails when they do not parse: the
     /// error is the caller's to see, which is why a store is built through this factory rather
@@ -85,7 +91,8 @@ class FileStore {
         const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
         const std::shared_ptr<TableSchema>& schema, const std::string& branch,
         const std::shared_ptr<SchemaManager>& schema_manager = nullptr,
-        const std::shared_ptr<SnapshotManager>& snapshot_manager = nullptr);
+        const std::shared_ptr<SnapshotManager>& snapshot_manager = nullptr,
+        const std::map<std::string, std::string>& fs_scheme_map = {});
 
     /// The branch this store serves, as resolved when it was built.
     const std::string& branch() const {
@@ -123,6 +130,12 @@ class FileStore {
     /// the runtime ones it merges in - a file-system option among them - can speak.
     const std::shared_ptr<FileSystem>& specified_file_system() const {
         return specified_file_system_;
+    }
+
+    /// The scheme-to-identifier map the options were resolved with, kept for a copy to resolve
+    /// through again: see `Create`'s `fs_scheme_map`.
+    const std::map<std::string, std::string>& fs_scheme_map() const {
+        return fs_scheme_map_;
     }
 
     /// The root path of the table in its file system, as the table was opened with it.
@@ -199,13 +212,17 @@ class FileStore {
     FileStore(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
               const std::shared_ptr<TableSchema>& schema, const std::string& branch,
               const std::shared_ptr<SchemaManager>& schema_manager,
-              const std::shared_ptr<SnapshotManager>& snapshot_manager);
+              const std::shared_ptr<SnapshotManager>& snapshot_manager,
+              const std::map<std::string, std::string>& fs_scheme_map);
 
     std::shared_ptr<FileSystem> file_system_;
     /// The file system the caller opened the table through, as handed to `Create` - null when
     /// the call had none - kept for a copy to hand over again: what `file_system_` holds is
     /// resolved, and would pin the copy to this table's resolution.
     std::shared_ptr<FileSystem> specified_file_system_;
+    /// The scheme-to-identifier map the options were resolved with, kept for a copy to resolve
+    /// through again.
+    std::map<std::string, std::string> fs_scheme_map_;
     std::string root_path_;
     std::shared_ptr<TableSchema> schema_;
     std::string branch_;

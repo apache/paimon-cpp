@@ -36,6 +36,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/sensitive_config_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -142,6 +143,26 @@ Result<std::shared_ptr<FormatTable>> TryLoadFormatTable(
                                /*location_carries_paimon_metadata=*/true, options);
 }
 
+/// Whether an option of a copy names the file system its store resolves: the backend
+/// `file-system` picks, or the access configuration a `fs.` key carries. A copy whose dynamic
+/// options change one of these resolves to another file system, so the managers of the table it
+/// was copied from - built over that table's resolution - are not its to inherit: they would
+/// keep reading metadata through the backend the copy just left.
+bool FileSystemResolutionMayChange(const TableSchema& schema,
+                                   const std::map<std::string, std::string>& dynamic_options) {
+    const std::map<std::string, std::string>& schema_options = schema.Options();
+    for (const auto& [key, value] : dynamic_options) {
+        if (key != Options::FILE_SYSTEM && key.rfind("fs.", 0) != 0) {
+            continue;
+        }
+        auto schema_option = schema_options.find(key);
+        if (schema_option == schema_options.end() || schema_option->second != value) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// The options a context carries, merged into the table the load hands back: a table is the
 /// product of the load, so the options speak there - the way `Copy` merges them, over the ones
 /// the schema carries - and `NewXxx` on the product serves them without merging again. A
@@ -184,7 +205,7 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     const std::string& branch, const std::map<std::string, std::string>& options,
     const std::shared_ptr<SchemaManager>& schema_manager,
     const std::shared_ptr<TableSchema>& latest_schema, const std::optional<Identifier>& identifier,
-    const std::string& uuid = "") {
+    const std::string& uuid = "", const std::map<std::string, std::string>& fs_scheme_map = {}) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
                            TryLoadFormatTable(file_system, path, branch, options, latest_schema));
     if (format_table != nullptr) {
@@ -196,7 +217,8 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
         identifier.value_or(Identifier(Identifier::kUnknownDatabase, PathUtil::GetName(path)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> table,
                            FileStoreTable::Create(explicit_file_system, path, latest_schema,
-                                                  table_identifier, uuid, branch, schema_manager));
+                                                  table_identifier, uuid, branch, schema_manager,
+                                                  /*snapshot_manager=*/nullptr, fs_scheme_map));
     return WithContextOptions(table, latest_schema, options);
 }
 
@@ -214,7 +236,7 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
     const std::shared_ptr<FileSystem>& explicit_file_system, const std::string& path,
     const std::string& branch, const std::map<std::string, std::string>& options,
     const std::optional<std::string>& schema_json, const std::optional<Identifier>& identifier,
-    const std::string& uuid = "") {
+    const std::string& uuid = "", const std::map<std::string, std::string>& fs_scheme_map = {}) {
     auto schema_manager = std::make_shared<SchemaManager>(file_system, path, branch);
     std::shared_ptr<TableSchema> latest_schema;
     if (branch == BranchManager::DEFAULT_MAIN_BRANCH && schema_json) {
@@ -229,7 +251,7 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
         }
     }
     return TableOfLoadedSchema(file_system, explicit_file_system, path, branch, options,
-                               schema_manager, latest_schema, identifier, uuid);
+                               schema_manager, latest_schema, identifier, uuid, fs_scheme_map);
 }
 
 /// The identifier a catalog knows the table by, on `branch`: a non-main branch is folded into
@@ -326,9 +348,12 @@ Result<std::shared_ptr<Table>> TableOf(const ReadContext& ctx) {
     // which files there are and how a row is put back together is its own. How a file is opened
     // is not: both paths go through `DataFileReaderFactory`.
     const std::string branch = ctx.GetBranch();
+    // The scheme map the schema was read through, so the table it describes resolves custom
+    // schemes the same way - the data belongs to the metadata, both sit behind the map.
     return ManagedTableOf(tmp_core_options.GetFileSystem(), ctx.GetSpecificFileSystem(),
                           ctx.GetPath(), branch, ctx.GetOptions(), ctx.GetSpecificTableSchema(),
-                          ctx.GetIdentifier());
+                          ctx.GetIdentifier(), /*uuid=*/"",
+                          ctx.GetFileSystemSchemeToIdentifierMap());
 }
 
 /// The table a write context names, read from what the context carries: a format table the
@@ -366,7 +391,8 @@ Result<std::shared_ptr<Table>> TableOf(const WriteContext& ctx) {
     // A format table writes plain data files into a directory, so it never reaches the manifest
     // path below.
     return ManagedTableOf(tmp_options.GetFileSystem(), specific_fs, ctx.GetRootPath(), branch,
-                          ctx.GetOptions(), catalog_table_schema, ctx.GetIdentifier());
+                          ctx.GetOptions(), catalog_table_schema, ctx.GetIdentifier(), /*uuid=*/"",
+                          ctx.GetFileSystemSchemeToIdentifierMap());
 }
 
 /// The table a commit context names, read from what the context carries: a format table the
@@ -426,9 +452,12 @@ Status CheckOptionsAgreeWithTable(const TableSchema& table_schema,
     for (const auto& [key, value] : context_options) {
         auto table_option = table_options.find(key);
         if (table_option != table_options.end() && table_option->second != value) {
+            // A value may be a credential, and the error travels into logs: it is redacted the
+            // way every surface that exposes options redacts them.
             return Status::Invalid(
-                fmt::format("option '{}' is '{}' in the context but '{}' on the table", key, value,
-                            table_option->second));
+                fmt::format("option '{}' is '{}' in the context but '{}' on the table", key,
+                            SensitiveConfigUtils::RedactValue(key, value),
+                            SensitiveConfigUtils::RedactValue(key, table_option->second)));
         }
     }
     return Status::OK();
@@ -471,7 +500,8 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
     const std::shared_ptr<Schema>& schema, const Identifier& identifier, const std::string& uuid,
     const std::string& branch, const std::shared_ptr<SchemaManager>& schema_manager,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager) {
+    const std::shared_ptr<SnapshotManager>& snapshot_manager,
+    const std::map<std::string, std::string>& fs_scheme_map) {
     // The kind the schema's primary keys name, which no schema change can add or drop, so the
     // kind the table is built as is the kind every schema its root path ever held describes. A
     // caller without a schema gets the append-only kind, whose operators then report that no
@@ -489,7 +519,7 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     // here: the table it names cannot be served, not by one operator more than another.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStore> store,
                            FileStore::Create(file_system, root_path, table_schema, branch,
-                                             schema_manager, snapshot_manager));
+                                             schema_manager, snapshot_manager, fs_scheme_map));
     if (table_schema != nullptr && !table_schema->PrimaryKeys().empty()) {
         return std::make_shared<PrimaryKeyFileStoreTable>(store, identifier, uuid);
     }
@@ -508,15 +538,22 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     overridable.erase(Options::TYPE);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
                            loaded_schema->MergeOptions(overridable));
-    // The managers are handed over, not rebuilt: the copy serves the same root path and branch,
-    // so its operators read the schema cache this table already warmed. The file system is the
-    // one the caller opened this table through, not the one it resolved to: the copy resolves
-    // from its own merged options again, so a file-system option among the ones it was given
-    // speaks rather than being pinned to this table's resolution.
+    // The managers are handed over, not rebuilt, when the copy resolves the same file system
+    // this table does: its operators then read the schema cache this table already warmed. The
+    // file system is the one the caller opened this table through, not the one it resolved to:
+    // the copy resolves from its own merged options again, so a file-system option among the
+    // ones it was given speaks rather than being pinned to this table's resolution - and when
+    // one does change the resolution, fresh managers are built over it instead, so the metadata
+    // is read through the same backend the data is. The scheme map travels the same way, so the
+    // copy resolves custom schemes as this table does.
+    const bool fs_resolution_may_change =
+        FileSystemResolutionMayChange(*loaded_schema, overridable);
     return FileStoreTable::Create(store_->specified_file_system(), root_path_,
                                   std::shared_ptr<TableSchema>(std::move(merged_schema)),
                                   identifier_, CatalogUuid().value_or(""), CurrentBranch(),
-                                  GetSchemaManager(), GetSnapshotManager());
+                                  fs_resolution_may_change ? nullptr : GetSchemaManager(),
+                                  fs_resolution_may_change ? nullptr : GetSnapshotManager(),
+                                  store_->fs_scheme_map());
 }
 
 Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string& branch) const {
@@ -526,7 +563,8 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
         // the same table to the caller.
         return FileStoreTable::Create(store_->specified_file_system(), root_path_, schema_,
                                       identifier_, CatalogUuid().value_or(""), CurrentBranch(),
-                                      GetSchemaManager(), GetSnapshotManager());
+                                      GetSchemaManager(), GetSnapshotManager(),
+                                      store_->fs_scheme_map());
     }
     // The schema of the branch switched to, read from its own directory, which a branch without
     // one does not have.
@@ -547,7 +585,8 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
     return FileStoreTable::Create(store_->specified_file_system(), root_path_,
                                   std::shared_ptr<TableSchema>(std::move(branch_schema)),
                                   identifier_, CatalogUuid().value_or(""), target_branch,
-                                  schema_manager);
+                                  schema_manager, /*snapshot_manager=*/nullptr,
+                                  store_->fs_scheme_map());
 }
 
 Status FileStoreTable::RestoreRealtimeCommittedProgress(
@@ -839,8 +878,20 @@ Result<std::unique_ptr<InternalReadContext>> CreateFallbackReadContext(
     }
     assert(table_schema);
     auto options = table_schema->Options();
+    // The dynamic options the load merged into the table this read serves - a sequence-number
+    // flag, a batch size - speak for the read, and the fallback branch serves the same read:
+    // they are merged over the fallback branch's own schema options the way the load merged
+    // them over the table's, so the fallback reader recognises what the main one does. `type`
+    // stays the branch's own: a copy never restyles the table, and neither does a fallback.
+    for (const auto& [key, value] : context->GetOptions()) {
+        if (key != Options::TYPE) {
+            options[key] = value;
+        }
+    }
     if (branch != BranchManager::DEFAULT_MAIN_BRANCH) {
         options[Options::BRANCH] = branch;
+    } else {
+        options.erase(Options::BRANCH);
     }
     return InternalReadContext::Create(context, table_schema, options, file_system, &root_path);
 }

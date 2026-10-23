@@ -290,8 +290,8 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     // resolves its own.
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions core_options,
-        CoreOptions::FromMap(options, file_system != nullptr ? file_system
-                                                             : context->GetSpecificFileSystem()));
+        CoreOptions::FromMap(
+            options, file_system != nullptr ? file_system : context->GetSpecificFileSystem()));
     core_options.WithCache(context->GetCache());
     return CreateFromCoreOptions(context, table_schema, std::move(core_options), path);
 }

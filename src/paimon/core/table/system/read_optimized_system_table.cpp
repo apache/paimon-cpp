@@ -108,6 +108,14 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         branch = branch_iter->second;
     }
     ReadContextBuilder builder(table_path_);
+    // The data table behind this view is served through the file system the view itself was
+    // opened with, but only when the context names neither a file system of its own nor a
+    // scheme map to resolve through - a file system and a scheme map cannot both be named, and
+    // the context's own answer always wins.
+    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
+    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
+        data_table_fs = GetFileSystem();
+    }
     builder.SetOptions(options)
         .WithBranch(branch)
         .SetPredicate(context->GetPredicate())
@@ -119,12 +127,7 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        // The data table behind this view is served through the file system the view itself was
-        // opened with, so a context without one of its own falls back to it rather than the
-        // default backend.
-        .WithFileSystem(context->GetSpecificFileSystem() != nullptr
-                            ? context->GetSpecificFileSystem()
-                            : GetFileSystem())
+        .WithFileSystem(data_table_fs)
         .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())

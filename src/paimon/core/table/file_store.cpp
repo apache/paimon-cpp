@@ -51,13 +51,15 @@ Result<std::shared_ptr<FileStore>> FileStore::Create(
     const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
     const std::shared_ptr<TableSchema>& schema, const std::string& branch,
     const std::shared_ptr<SchemaManager>& schema_manager,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager) {
-    auto store = std::shared_ptr<FileStore>(
-        new FileStore(file_system, root_path, schema, branch, schema_manager, snapshot_manager));
+    const std::shared_ptr<SnapshotManager>& snapshot_manager,
+    const std::map<std::string, std::string>& fs_scheme_map) {
+    auto store = std::shared_ptr<FileStore>(new FileStore(
+        file_system, root_path, schema, branch, schema_manager, snapshot_manager, fs_scheme_map));
     if (schema != nullptr) {
         // The options the schema was loaded with, on the branch this store serves: what reads
         // through them - whose cache keys are scoped by the branch - reads the same one the
-        // managers point at.
+        // managers point at. The scheme map is the one the schema was read through, so a scheme
+        // it mapped resolves here the way it resolved there.
         std::map<std::string, std::string> options = schema->Options();
         if (BranchManager::IsMainBranch(store->branch_)) {
             options.erase(Options::BRANCH);
@@ -65,7 +67,7 @@ Result<std::shared_ptr<FileStore>> FileStore::Create(
             options[Options::BRANCH] = store->branch_;
         }
         PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                               CoreOptions::FromMap(options, file_system, {}));
+                               CoreOptions::FromMap(options, file_system, fs_scheme_map));
         store->core_options_ = std::move(core_options);
     }
     // The file system the table is served through: the one the options resolve - a schema
@@ -98,9 +100,11 @@ Result<std::shared_ptr<FileStore>> FileStore::Create(
 FileStore::FileStore(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
                      const std::shared_ptr<TableSchema>& schema, const std::string& branch,
                      const std::shared_ptr<SchemaManager>& schema_manager,
-                     const std::shared_ptr<SnapshotManager>& snapshot_manager)
+                     const std::shared_ptr<SnapshotManager>& snapshot_manager,
+                     const std::map<std::string, std::string>& fs_scheme_map)
     : file_system_(file_system),
       specified_file_system_(file_system),
+      fs_scheme_map_(fs_scheme_map),
       root_path_(root_path),
       schema_(schema),
       branch_(BranchManager::NormalizeBranch(branch)),
