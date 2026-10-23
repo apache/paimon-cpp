@@ -1,0 +1,76 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="special__field__ids_8h" kind="file" language="C++">
+    <compoundname>special_field_ids.h</compoundname>
+    <includes local="no">cstdint</includes>
+    <includes local="no">limits</includes>
+    <incdepgraph>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h</label>
+        <link refid="special__field__ids_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>cstdint</label>
+      </node>
+      <node id="3">
+        <label>limits</label>
+      </node>
+    </incdepgraph>
+    <innerclass refid="classpaimon_1_1_special_field_ids" prot="public">paimon::SpecialFieldIds</innerclass>
+    <innernamespace refid="namespacepaimon">paimon</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="comment">/*</highlight></codeline>
+<codeline lineno="2"><highlight class="comment"><sp/>*<sp/>Licensed<sp/>to<sp/>the<sp/>Apache<sp/>Software<sp/>Foundation<sp/>(ASF)<sp/>under<sp/>one</highlight></codeline>
+<codeline lineno="3"><highlight class="comment"><sp/>*<sp/>or<sp/>more<sp/>contributor<sp/>license<sp/>agreements.<sp/><sp/>See<sp/>the<sp/>NOTICE<sp/>file</highlight></codeline>
+<codeline lineno="4"><highlight class="comment"><sp/>*<sp/>distributed<sp/>with<sp/>this<sp/>work<sp/>for<sp/>additional<sp/>information</highlight></codeline>
+<codeline lineno="5"><highlight class="comment"><sp/>*<sp/>regarding<sp/>copyright<sp/>ownership.<sp/><sp/>The<sp/>ASF<sp/>licenses<sp/>this<sp/>file</highlight></codeline>
+<codeline lineno="6"><highlight class="comment"><sp/>*<sp/>to<sp/>you<sp/>under<sp/>the<sp/>Apache<sp/>License,<sp/>Version<sp/>2.0<sp/>(the</highlight></codeline>
+<codeline lineno="7"><highlight class="comment"><sp/>*<sp/>&quot;License&quot;);<sp/>you<sp/>may<sp/>not<sp/>use<sp/>this<sp/>file<sp/>except<sp/>in<sp/>compliance</highlight></codeline>
+<codeline lineno="8"><highlight class="comment"><sp/>*<sp/>with<sp/>the<sp/>License.<sp/><sp/>You<sp/>may<sp/>obtain<sp/>a<sp/>copy<sp/>of<sp/>the<sp/>License<sp/>at</highlight></codeline>
+<codeline lineno="9"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="10"><highlight class="comment"><sp/>*<sp/><sp/><sp/>http://www.apache.org/licenses/LICENSE-2.0</highlight></codeline>
+<codeline lineno="11"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="12"><highlight class="comment"><sp/>*<sp/>Unless<sp/>required<sp/>by<sp/>applicable<sp/>law<sp/>or<sp/>agreed<sp/>to<sp/>in<sp/>writing,</highlight></codeline>
+<codeline lineno="13"><highlight class="comment"><sp/>*<sp/>software<sp/>distributed<sp/>under<sp/>the<sp/>License<sp/>is<sp/>distributed<sp/>on<sp/>an</highlight></codeline>
+<codeline lineno="14"><highlight class="comment"><sp/>*<sp/>&quot;AS<sp/>IS&quot;<sp/>BASIS,<sp/>WITHOUT<sp/>WARRANTIES<sp/>OR<sp/>CONDITIONS<sp/>OF<sp/>ANY</highlight></codeline>
+<codeline lineno="15"><highlight class="comment"><sp/>*<sp/>KIND,<sp/>either<sp/>express<sp/>or<sp/>implied.<sp/><sp/>See<sp/>the<sp/>License<sp/>for<sp/>the</highlight></codeline>
+<codeline lineno="16"><highlight class="comment"><sp/>*<sp/>specific<sp/>language<sp/>governing<sp/>permissions<sp/>and<sp/>limitations</highlight></codeline>
+<codeline lineno="17"><highlight class="comment"><sp/>*<sp/>under<sp/>the<sp/>License.</highlight></codeline>
+<codeline lineno="18"><highlight class="comment"><sp/>*/</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal"></highlight><highlight class="preprocessor">#pragma<sp/>once</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;cstdint&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="23"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;limits&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="24"><highlight class="normal"></highlight></codeline>
+<codeline lineno="25"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal"><ref refid="namespacepaimon" kindref="compound">paimon</ref><sp/>{</highlight></codeline>
+<codeline lineno="26"><highlight class="normal"></highlight></codeline>
+<codeline lineno="28" refid="classpaimon_1_1_special_field_ids" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="classpaimon_1_1_special_field_ids" kindref="compound">SpecialFieldIds</ref><sp/>{</highlight></codeline>
+<codeline lineno="29"><highlight class="normal"><sp/></highlight><highlight class="keyword">protected</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="31" refid="classpaimon_1_1_special_field_ids_1a6e76e7a190695b6ed2b81f90c7517ba0" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">inline</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/><ref refid="classpaimon_1_1_special_field_ids_1a6e76e7a190695b6ed2b81f90c7517ba0" kindref="member">CPP_FIELD_ID_END</ref><sp/>=<sp/>std::numeric_limits&lt;int32_t&gt;::max()<sp/>-<sp/>10000;</highlight></codeline>
+<codeline lineno="32"><highlight class="normal"></highlight></codeline>
+<codeline lineno="33"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="35" refid="classpaimon_1_1_special_field_ids_1a60db8ef8362514ddae9c8f09fb96c0a9" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">inline</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/><ref refid="classpaimon_1_1_special_field_ids_1a60db8ef8362514ddae9c8f09fb96c0a9" kindref="member">SEQUENCE_NUMBER</ref><sp/>=<sp/>std::numeric_limits&lt;int32_t&gt;::max()<sp/>-<sp/>1;</highlight></codeline>
+<codeline lineno="37" refid="classpaimon_1_1_special_field_ids_1a66a717dc0735bf0d13698a7bb3e4b863" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">inline</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/><ref refid="classpaimon_1_1_special_field_ids_1a66a717dc0735bf0d13698a7bb3e4b863" kindref="member">VALUE_KIND</ref><sp/>=<sp/>std::numeric_limits&lt;int32_t&gt;::max()<sp/>-<sp/>2;</highlight></codeline>
+<codeline lineno="39" refid="classpaimon_1_1_special_field_ids_1ac5dac77a4a0bbdd38cc89da32362c103" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">inline</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/><ref refid="classpaimon_1_1_special_field_ids_1ac5dac77a4a0bbdd38cc89da32362c103" kindref="member">ROW_KIND</ref><sp/>=<sp/>std::numeric_limits&lt;int32_t&gt;::max()<sp/>-<sp/>3;</highlight></codeline>
+<codeline lineno="41" refid="classpaimon_1_1_special_field_ids_1a0843959789b9bdb37f5916cfee6b2dc4" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">inline</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/><ref refid="classpaimon_1_1_special_field_ids_1a0843959789b9bdb37f5916cfee6b2dc4" kindref="member">ROW_ID</ref><sp/>=<sp/>std::numeric_limits&lt;int32_t&gt;::max()<sp/>-<sp/>5;</highlight></codeline>
+<codeline lineno="42"><highlight class="normal"></highlight></codeline>
+<codeline lineno="44" refid="classpaimon_1_1_special_field_ids_1a17151d6b0f70588133b969014e009c87" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">inline</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/><ref refid="classpaimon_1_1_special_field_ids_1a17151d6b0f70588133b969014e009c87" kindref="member">INDEX_SCORE</ref><sp/>=<sp/><ref refid="classpaimon_1_1_special_field_ids_1a6e76e7a190695b6ed2b81f90c7517ba0" kindref="member">CPP_FIELD_ID_END</ref><sp/>-<sp/>1;</highlight></codeline>
+<codeline lineno="46" refid="classpaimon_1_1_special_field_ids_1a3a36bd8aa1c0a5fd3ed12743724a8125" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">inline</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/><ref refid="classpaimon_1_1_special_field_ids_1a3a36bd8aa1c0a5fd3ed12743724a8125" kindref="member">REALTIME_OFFSET</ref><sp/>=<sp/><ref refid="classpaimon_1_1_special_field_ids_1a6e76e7a190695b6ed2b81f90c7517ba0" kindref="member">CPP_FIELD_ID_END</ref><sp/>-<sp/>2;</highlight></codeline>
+<codeline lineno="47"><highlight class="normal"></highlight></codeline>
+<codeline lineno="50" refid="classpaimon_1_1_special_field_ids_1a733b95bd0449e32a1416d3cd79c48667" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">inline</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/><ref refid="classpaimon_1_1_special_field_ids_1a733b95bd0449e32a1416d3cd79c48667" kindref="member">SYSTEM_FIELD_ID_START</ref><sp/>=<sp/>std::numeric_limits&lt;int32_t&gt;::max()<sp/>/<sp/>2;</highlight></codeline>
+<codeline lineno="51"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="52"><highlight class="normal"></highlight></codeline>
+<codeline lineno="53"><highlight class="normal">}<sp/><sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>paimon</highlight><highlight class="normal"></highlight></codeline>
+    </programlisting>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h"/>
+  </compounddef>
+</doxygen>

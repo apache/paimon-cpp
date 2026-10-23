@@ -1,0 +1,180 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_blob_view" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::BlobView</compoundname>
+    <includes refid="blob__view_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_blob_view_1aa9341ffb0a84a8ffc4408d86db69ef85" prot="public" static="no" mutable="no">
+        <type><ref refid="classpaimon_1_1_identifier" kindref="compound">Identifier</ref></type>
+        <definition>Identifier paimon::BlobView::identifier</definition>
+        <argsstring></argsstring>
+        <name>identifier</name>
+        <qualifiedname>paimon::BlobView::identifier</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="36" column="16" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" bodystart="36" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_blob_view_1aa81f076badbf6a24726015edb7426daa" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>int32_t paimon::BlobView::field_id</definition>
+        <argsstring></argsstring>
+        <name>field_id</name>
+        <qualifiedname>paimon::BlobView::field_id</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="37" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" bodystart="37" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_blob_view_1a70dddc1d0289b5f4625c6e1fbc64f697" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::BlobView::row_id</definition>
+        <argsstring></argsstring>
+        <name>row_id</name>
+        <qualifiedname>paimon::BlobView::row_id</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="38" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" bodystart="38" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="structpaimon_1_1_blob_view_1adfb912b53198b507d0568244cf9b9df1" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::BlobView::operator==</definition>
+        <argsstring>(const BlobView &amp;other) const</argsstring>
+        <name>operator==</name>
+        <qualifiedname>paimon::BlobView::operator==</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_blob_view" kindref="compound">BlobView</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="40" column="10"/>
+      </memberdef>
+      <memberdef kind="function" id="structpaimon_1_1_blob_view_1a05c32d239509a21acdf4f92b8ed1a2a3" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::BlobView::operator!=</definition>
+        <argsstring>(const BlobView &amp;other) const</argsstring>
+        <name>operator!=</name>
+        <qualifiedname>paimon::BlobView::operator!=</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_blob_view" kindref="compound">BlobView</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="41" column="10"/>
+      </memberdef>
+      <memberdef kind="function" id="structpaimon_1_1_blob_view_1a743b85b6f173f760c12847c84d82ec89" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string paimon::BlobView::ToString</definition>
+        <argsstring>() const</argsstring>
+        <name>ToString</name>
+        <qualifiedname>paimon::BlobView::ToString</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="43" column="17"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="structpaimon_1_1_blob_view_1a4b510675e07440c2a6009e990e20fd59" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="structpaimon_1_1_blob_view" kindref="compound">BlobView</ref> &gt;</type>
+        <definition>static Result&lt; BlobView &gt; paimon::BlobView::FromView</definition>
+        <argsstring>(const char *buffer, uint64_t size)</argsstring>
+        <name>FromView</name>
+        <qualifiedname>paimon::BlobView::FromView</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref> *</type>
+          <declname>buffer</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+          <declname>size</declname>
+        </param>
+        <briefdescription>
+<para>Deserializes BLOB view bytes into a <ref refid="structpaimon_1_1_blob_view" kindref="compound">BlobView</ref>. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="46" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="structpaimon_1_1_blob_view_1a8ea913c2986290d07a5954bf7645a4df" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_UNIQUE_PTR</ref>&lt; <ref refid="classpaimon_1_1_bytes" kindref="compound">Bytes</ref> &gt; &gt;</type>
+        <definition>static Result&lt; PAIMON_UNIQUE_PTR&lt; Bytes &gt; &gt; paimon::BlobView::ToView</definition>
+        <argsstring>(const BlobView &amp;blob_view, const std::shared_ptr&lt; MemoryPool &gt; &amp;pool)</argsstring>
+        <name>ToView</name>
+        <qualifiedname>paimon::BlobView::ToView</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_blob_view" kindref="compound">BlobView</ref> &amp;</type>
+          <declname>blob_view</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <briefdescription>
+<para>Serializes a <ref refid="structpaimon_1_1_blob_view" kindref="compound">BlobView</ref> into BLOB view bytes. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="49" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Coordinates of a BLOB value stored in an upstream table. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <collaborationgraph>
+      <node id="1">
+        <label>paimon::BlobView</label>
+        <link refid="structpaimon_1_1_blob_view"/>
+        <childnode refid="2" relation="usage">
+          <edgelabel>identifier</edgelabel>
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::Identifier</label>
+        <link refid="classpaimon_1_1_identifier"/>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" line="35" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_view.h" bodystart="35" bodyend="51"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_blob_view_1aa81f076badbf6a24726015edb7426daa" prot="public" virt="non-virtual"><scope>paimon::BlobView</scope><name>field_id</name></member>
+      <member refid="structpaimon_1_1_blob_view_1a4b510675e07440c2a6009e990e20fd59" prot="public" virt="non-virtual"><scope>paimon::BlobView</scope><name>FromView</name></member>
+      <member refid="structpaimon_1_1_blob_view_1aa9341ffb0a84a8ffc4408d86db69ef85" prot="public" virt="non-virtual"><scope>paimon::BlobView</scope><name>identifier</name></member>
+      <member refid="structpaimon_1_1_blob_view_1a05c32d239509a21acdf4f92b8ed1a2a3" prot="public" virt="non-virtual"><scope>paimon::BlobView</scope><name>operator!=</name></member>
+      <member refid="structpaimon_1_1_blob_view_1adfb912b53198b507d0568244cf9b9df1" prot="public" virt="non-virtual"><scope>paimon::BlobView</scope><name>operator==</name></member>
+      <member refid="structpaimon_1_1_blob_view_1a70dddc1d0289b5f4625c6e1fbc64f697" prot="public" virt="non-virtual"><scope>paimon::BlobView</scope><name>row_id</name></member>
+      <member refid="structpaimon_1_1_blob_view_1a743b85b6f173f760c12847c84d82ec89" prot="public" virt="non-virtual"><scope>paimon::BlobView</scope><name>ToString</name></member>
+      <member refid="structpaimon_1_1_blob_view_1a8ea913c2986290d07a5954bf7645a4df" prot="public" virt="non-virtual"><scope>paimon::BlobView</scope><name>ToView</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
