@@ -153,6 +153,51 @@ TEST(TableTest, TestTableCarriesManagersOfItsBranch) {
     EXPECT_EQ(file_store_copy->GetSnapshotManager(), file_store_table->GetSnapshotManager());
 }
 
+TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier, /*branch=*/"main",
+                           {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+
+    // A copy handed a `branch` option is the table it was copied from: the branch is the
+    // table's own - `SwitchToBranch` is the way to change it - so the option moves neither the
+    // copy nor its options, and an operator asked for the branch the copy serves - `main` - is
+    // served rather than refused by options claiming a `dev` the copy does not serve.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy, table->Copy({{Options::BRANCH, "dev"}}));
+    auto file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(copy);
+    ASSERT_TRUE(file_store_copy != nullptr);
+    EXPECT_EQ(file_store_copy->CurrentBranch(), "main");
+    {
+        ScanContextBuilder scan_builder(dir->Str());
+        scan_builder.AddOption(Options::BRANCH, "main");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
+                             file_store_copy->NewScan(std::move(ctx)));
+    }
+
+    // The same the other way round: a copy of a branch table serves that branch still, so
+    // naming the branch it serves - `dev` - is agreed with rather than refused.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> branch_table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str() + "/branch_tbl",
+                                            identifier, /*branch=*/"dev",
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> branch_copy,
+                         branch_table->Copy({{Options::BRANCH, "main"}}));
+    auto branch_file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(branch_copy);
+    ASSERT_TRUE(branch_file_store_copy != nullptr);
+    EXPECT_EQ(branch_file_store_copy->CurrentBranch(), "dev");
+    {
+        ScanContextBuilder scan_builder(dir->Str() + "/branch_tbl");
+        scan_builder.AddOption(Options::BRANCH, "dev");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
+                             branch_file_store_copy->NewScan(std::move(ctx)));
+    }
+}
+
 TEST(TableTest, TestSwitchToBranch) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);

@@ -532,9 +532,14 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
         return Status::Invalid(fmt::format("not found latest schema of {}", FullName()));
     }
     // `type` is structural and read from the schema alone, the promise `Copy` makes: an option
-    // given at the call must not restyle the table.
+    // given at the call must not restyle the table. `branch` is the same kind of promise: the
+    // copy is the table it was copied from, on the branch that table serves, so a branch option
+    // given at the call moves neither - it would only claim a branch the copy does not serve -
+    // and a caller that means to move it has `SwitchToBranch`. Both are dropped before the
+    // merge, so the copy's options never speak of a branch its operators do not.
     std::map<std::string, std::string> overridable = dynamic_options;
     overridable.erase(Options::TYPE);
+    overridable.erase(Options::BRANCH);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
                            loaded_schema->MergeOptions(overridable));
     // The managers are handed over, not rebuilt, when the copy resolves the same file system
