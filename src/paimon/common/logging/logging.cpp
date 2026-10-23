@@ -21,6 +21,7 @@
 
 #include <cerrno>
 #include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <optional>
@@ -78,15 +79,23 @@ class GlogAdaptor : public Logger {
  public:
     void LogV(PaimonLogLevel level, const char* fname, int lineno, const char* function,
               const char* fmt, ...) override {
+        // RawLog__ is variadic and cannot take a va_list, so format the message first.
+        char message[kMessageBufferSize] = {};
         va_list args;
         va_start(args, fmt);
-        google::RawLog__(ToGlogLevel(level), fname, lineno, fmt, args);
+        std::vsnprintf(message, sizeof(message), fmt, args);
         va_end(args);
+        google::RawLog__(ToGlogLevel(level), fname, lineno, "%s", message);
     }
 
     bool IsLevelEnabled(PaimonLogLevel level) const override {
         return true;
     }
+
+ private:
+    // Stays below glog's 3000-byte raw log buffer, so long messages are truncated
+    // instead of being replaced by glog's "Message was too long" error.
+    static constexpr size_t kMessageBufferSize = 2048;
 };
 
 std::unique_ptr<Logger> Logger::GetLogger(const std::string& path) {

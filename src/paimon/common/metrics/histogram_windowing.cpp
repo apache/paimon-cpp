@@ -40,7 +40,7 @@ void HistogramWindowingImpl::Init() {
     std::lock_guard<std::mutex> guard(mu_);
     window_start_micros_.assign(num_windows_, std::nullopt);
     histograms_.assign(num_windows_, nullptr);
-    const uint64_t now = AlignWindowStartMicros(NowMicros());
+    const uint64_t now = AlignWindowStartMicros(now_micros_());
     ResetLocked(now);
 }
 
@@ -131,7 +131,7 @@ void HistogramWindowingImpl::Add(double value) {
     std::shared_ptr<HistogramImpl> hist;
     {
         std::lock_guard<std::mutex> guard(mu_);
-        const uint64_t now = NowMicros();
+        const uint64_t now = now_micros_();
         const uint64_t aligned_now = AlignWindowStartMicros(now);
         // Ignore if clock moves backwards.
         if (aligned_now < current_window_start_micros_) {
@@ -158,7 +158,7 @@ HistogramStats HistogramWindowingImpl::GetStats() const {
     uint64_t aligned_now = 0;
     {
         std::lock_guard<std::mutex> guard(mu_);
-        aligned_now = AlignWindowStartMicros(NowMicros());
+        aligned_now = AlignWindowStartMicros(now_micros_());
         // Note: do NOT force AdvanceLocked here, to keep semantics consistent with RocksDB's
         // min_num_per_window behavior (windows advance upon Add() after enough samples).
         hists.reserve(histograms_.size());
@@ -201,7 +201,7 @@ void HistogramWindowingImpl::Merge(const Histogram& other) {
         std::shared_ptr<HistogramImpl> target;
         {
             std::lock_guard<std::mutex> guard(mu_);
-            const uint64_t aligned_now = AlignWindowStartMicros(NowMicros());
+            const uint64_t aligned_now = AlignWindowStartMicros(now_micros_());
             if (aligned_now < current_window_start_micros_) {
                 return;
             }
@@ -231,7 +231,7 @@ void HistogramWindowingImpl::Merge(const Histogram& other) {
         std::shared_ptr<HistogramImpl> target;
         {
             std::lock_guard<std::mutex> guard(mu_);
-            const uint64_t aligned_now = AlignWindowStartMicros(NowMicros());
+            const uint64_t aligned_now = AlignWindowStartMicros(now_micros_());
             if (aligned_now < current_window_start_micros_) {
                 return;
             }
@@ -264,7 +264,7 @@ void HistogramWindowingImpl::Merge(const Histogram& other) {
 
     {
         std::lock_guard<std::mutex> guard(mu_);
-        const uint64_t aligned_now = AlignWindowStartMicros(NowMicros());
+        const uint64_t aligned_now = AlignWindowStartMicros(now_micros_());
         if (aligned_now < current_window_start_micros_) {
             return;
         }
@@ -285,7 +285,7 @@ void HistogramWindowingImpl::Merge(const Histogram& other) {
 
 std::shared_ptr<Histogram> HistogramWindowingImpl::Clone() const {
     auto cloned = std::make_shared<HistogramWindowingImpl>(num_windows_, micros_per_window_,
-                                                           min_num_per_window_);
+                                                           min_num_per_window_, now_micros_);
     std::lock_guard<std::mutex> guard(mu_);
     std::lock_guard<std::mutex> guard2(cloned->mu_);
 

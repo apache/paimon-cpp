@@ -19,19 +19,26 @@
 
 #include "paimon/common/metrics/histogram_windowing.h"
 
-#include <chrono>
-#include <thread>
-
 #include "gtest/gtest.h"
 
 namespace paimon::test {
 
-TEST(HistogramWindowingImplTest, TestAdvanceAndAggregateAcrossWindows) {
-    // Use a relatively large span to avoid flakiness around boundary (aligned_now - start == span).
-    HistogramWindowingImpl h(/*num_windows=*/4, /*micros_per_window=*/25000,
+class HistogramWindowingImplTest : public ::testing::Test {
+ protected:
+    HistogramWindowingImpl CreateHistogram(uint64_t num_windows, uint64_t micros_per_window,
+                                           uint64_t min_num_per_window) {
+        return HistogramWindowingImpl(num_windows, micros_per_window, min_num_per_window,
+                                      [this]() { return now_micros_; });
+    }
+
+    uint64_t now_micros_ = 1000000;
+};
+
+TEST_F(HistogramWindowingImplTest, TestAdvanceAndAggregateAcrossWindows) {
+    auto h = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
                              /*min_num_per_window=*/1);
     h.Add(1);
-    std::this_thread::sleep_for(std::chrono::milliseconds(26));
+    now_micros_ += 1000;
     h.Add(2);
 
     HistogramStats s = h.GetStats();
@@ -41,16 +48,16 @@ TEST(HistogramWindowingImplTest, TestAdvanceAndAggregateAcrossWindows) {
     EXPECT_NEAR(s.average, 1.5, 1e-12);
 }
 
-TEST(HistogramWindowingImplTest, TestResetWhenBeyondMaxSpan) {
-    HistogramWindowingImpl h(/*num_windows=*/2, /*micros_per_window=*/1000,
+TEST_F(HistogramWindowingImplTest, TestResetWhenBeyondMaxSpan) {
+    auto h = CreateHistogram(/*num_windows=*/2, /*micros_per_window=*/1000,
                              /*min_num_per_window=*/1);
     h.Add(1);
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    now_micros_ += 1000;
     h.Add(2);
+    ASSERT_EQ(h.GetStats().count, 2);
 
-    // Sleep long enough so that aligned_now - current_window_start >=
-    // micros_per_window*num_windows.
-    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    // Move beyond max_span relative to the current window start.
+    now_micros_ += 3000;
     h.Add(3);
 
     HistogramStats s = h.GetStats();
@@ -60,11 +67,26 @@ TEST(HistogramWindowingImplTest, TestResetWhenBeyondMaxSpan) {
     EXPECT_NEAR(s.average, 3.0, 1e-12);
 }
 
-TEST(HistogramWindowingImplTest, TestMergeSameParams) {
-    // Use a large window to avoid relying on wall clock for this test.
-    HistogramWindowingImpl h1(/*num_windows=*/4, /*micros_per_window=*/1000ULL * 1000ULL,
+TEST_F(HistogramWindowingImplTest, TestExpiresAtMaxSpan) {
+    auto h = CreateHistogram(/*num_windows=*/2, /*micros_per_window=*/1000,
+                             /*min_num_per_window=*/1);
+    h.Add(3);
+
+    now_micros_ += 1999;
+    ASSERT_EQ(h.GetStats().count, 1);
+    now_micros_ += 1;
+    EXPECT_EQ(h.GetStats().count, 0);
+
+    h.Add(4);
+    HistogramStats s = h.GetStats();
+    EXPECT_EQ(s.count, 1);
+    EXPECT_DOUBLE_EQ(s.sum, 4);
+}
+
+TEST_F(HistogramWindowingImplTest, TestMergeSameParams) {
+    auto h1 = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
                               /*min_num_per_window=*/1);
-    HistogramWindowingImpl h2(/*num_windows=*/4, /*micros_per_window=*/1000ULL * 1000ULL,
+    auto h2 = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
                               /*min_num_per_window=*/1);
     h1.Add(1);
     h1.Add(2);
@@ -78,10 +100,10 @@ TEST(HistogramWindowingImplTest, TestMergeSameParams) {
     EXPECT_DOUBLE_EQ(s.max, 3);
 }
 
-TEST(HistogramWindowingImplTest, TestMergeDifferentParamsFallback) {
-    HistogramWindowingImpl h1(/*num_windows=*/4, /*micros_per_window=*/1000ULL * 1000ULL,
+TEST_F(HistogramWindowingImplTest, TestMergeDifferentParamsFallback) {
+    auto h1 = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
                               /*min_num_per_window=*/1);
-    HistogramWindowingImpl h2(/*num_windows=*/8, /*micros_per_window=*/1000ULL * 1000ULL,
+    auto h2 = CreateHistogram(/*num_windows=*/8, /*micros_per_window=*/1000,
                               /*min_num_per_window=*/1);
     h2.Add(10);
     h2.Add(20);
@@ -93,12 +115,27 @@ TEST(HistogramWindowingImplTest, TestMergeDifferentParamsFallback) {
     EXPECT_DOUBLE_EQ(s.max, 20);
 }
 
-TEST(HistogramWindowingImplTest, TestMinNumPerWindow100Case) {
+TEST_F(HistogramWindowingImplTest, TestMergePlainHistogram) {
+    auto h = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
+                             /*min_num_per_window=*/1);
+    HistogramImpl other;
+    other.Add(10);
+    other.Add(20);
+
+    now_micros_ += 1000;
+    h.Merge(other);
+    HistogramStats s = h.GetStats();
+    EXPECT_EQ(s.count, 2);
+    EXPECT_DOUBLE_EQ(s.sum, 30);
+    EXPECT_DOUBLE_EQ(s.min, 10);
+    EXPECT_DOUBLE_EQ(s.max, 20);
+}
+
+TEST_F(HistogramWindowingImplTest, TestMinNumPerWindow100Case) {
     // Validate min_num_per_window behavior:
     // - window advancement is gated by sample count
     // - if the histogram doesn't advance in time, it may get reset once beyond max span
-    // Use a larger window to reduce wall-clock sensitivity and avoid flakiness.
-    HistogramWindowingImpl h(/*num_windows=*/3, /*micros_per_window=*/50000,
+    auto h = CreateHistogram(/*num_windows=*/3, /*micros_per_window=*/50000,
                              /*min_num_per_window=*/100);
 
     // Fill current window but keep it below min_num.
@@ -107,7 +144,7 @@ TEST(HistogramWindowingImplTest, TestMinNumPerWindow100Case) {
     }
 
     // Cross at least one window.
-    std::this_thread::sleep_for(std::chrono::milliseconds(75));
+    now_micros_ += 75000;
     h.Add(2);  // 100th sample; advancement check happens before this add.
 
     HistogramStats s1 = h.GetStats();
@@ -117,7 +154,7 @@ TEST(HistogramWindowingImplTest, TestMinNumPerWindow100Case) {
 
     // Cross enough time so that aligned_now - current_window_start >= max_span
     // (max_span = num_windows * micros_per_window = 150ms here).
-    std::this_thread::sleep_for(std::chrono::milliseconds(175));
+    now_micros_ += 175000;
     h.Add(1000);
 
     HistogramStats s2 = h.GetStats();
@@ -126,9 +163,8 @@ TEST(HistogramWindowingImplTest, TestMinNumPerWindow100Case) {
     EXPECT_DOUBLE_EQ(s2.max, 1000);
 }
 
-TEST(HistogramWindowingImplTest, TestLargeDatasetInSingleWindow) {
-    // Use a large window to avoid relying on wall clock.
-    HistogramWindowingImpl h(/*num_windows=*/4, /*micros_per_window=*/60ULL * 1000ULL * 1000ULL,
+TEST_F(HistogramWindowingImplTest, TestLargeDatasetInSingleWindow) {
+    auto h = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
                              /*min_num_per_window=*/1);
 
     constexpr uint64_t n = 10000;
@@ -144,18 +180,18 @@ TEST(HistogramWindowingImplTest, TestLargeDatasetInSingleWindow) {
     EXPECT_NEAR(s.average, (static_cast<double>(n) + 1.0) / 2.0, 1e-12);
 }
 
-TEST(HistogramWindowingImplTest, TestCrossMaxSpanAfterAdvance) {
+TEST_F(HistogramWindowingImplTest, TestCrossMaxSpanAfterAdvance) {
     // Build multiple windows, then cross max_span so that all previous windows are dropped.
-    HistogramWindowingImpl h(/*num_windows=*/2, /*micros_per_window=*/2000,
+    auto h = CreateHistogram(/*num_windows=*/2, /*micros_per_window=*/2000,
                              /*min_num_per_window=*/1);
 
     h.Add(1);
-    std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    now_micros_ += 2000;
     h.Add(2);  // should advance to next window.
+    ASSERT_EQ(h.GetStats().count, 2);
 
-    // Cross max_span (4ms) relative to the current window start.
-    // max_span = 4ms here.
-    std::this_thread::sleep_for(std::chrono::milliseconds(7));
+    // Reach max_span (4ms) relative to the current window start.
+    now_micros_ += 4000;
     h.Add(3);  // should reset.
 
     HistogramStats s = h.GetStats();
@@ -165,9 +201,8 @@ TEST(HistogramWindowingImplTest, TestCrossMaxSpanAfterAdvance) {
     EXPECT_DOUBLE_EQ(s.sum, 3);
 }
 
-TEST(HistogramWindowingImplTest, TestCloneConsistencyAndIndependence) {
-    // Use a large window to avoid relying on wall clock and window advancement.
-    HistogramWindowingImpl h(/*num_windows=*/4, /*micros_per_window=*/60ULL * 1000ULL * 1000ULL,
+TEST_F(HistogramWindowingImplTest, TestCloneConsistencyAndIndependence) {
+    auto h = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
                              /*min_num_per_window=*/1);
     h.Add(1);
     h.Add(2);
@@ -206,6 +241,11 @@ TEST(HistogramWindowingImplTest, TestCloneConsistencyAndIndependence) {
     const HistogramStats after_original2 = h.GetStats();
     EXPECT_EQ(after_original2.count, after_original.count);
     EXPECT_EQ(after_clone2.count, cloned_before.count + 1);
+
+    // Clones share the same time source, while keeping independent samples.
+    now_micros_ += 4000;
+    EXPECT_EQ(h.GetStats().count, 0);
+    EXPECT_EQ(cloned->GetStats().count, 0);
 }
 
 }  // namespace paimon::test
