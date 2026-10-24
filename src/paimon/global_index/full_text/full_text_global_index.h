@@ -50,6 +50,10 @@ class FullTextGlobalIndex : public GlobalIndexer {
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<MemoryPool>& pool) const override;
 
+    bool SupportsFullTextSearch() const override {
+        return true;
+    }
+
  private:
     std::map<std::string, std::string> options_;
 };

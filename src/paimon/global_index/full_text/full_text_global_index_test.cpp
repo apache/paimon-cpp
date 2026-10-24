@@ -368,6 +368,7 @@ TEST_F(FullTextGlobalIndexTest, TestWriteAndSearch) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<GlobalIndexer> indexer,
                          GlobalIndexerFactory::Get("full-text", options));
     ASSERT_TRUE(dynamic_cast<FullTextGlobalIndex*>(indexer.get()));
+    ASSERT_TRUE(indexer->SupportsFullTextSearch());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexWriter> writer,
                          indexer->CreateWriter("f0", CreateArrowSchema(data_type_).get(),
                                                CreateFileManager(), pool_));
