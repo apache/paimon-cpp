@@ -69,6 +69,7 @@ namespace paimon::test {
 namespace {
 constexpr uint64_t kAmpleBudget = 32 * 1024 * 1024;
 
+#if defined(__linux__) && defined(__GLIBCXX__) && _GLIBCXX_USE_CXX11_ABI && _GLIBCXX_RELEASE >= 9
 std::string ReadText(const std::string& path) {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -242,6 +243,7 @@ class FaultPool : public MemoryPool {
     uint64_t calls = 0, live = 0, peak = 0;
     uint64_t fail_at = UINT64_MAX;
 };
+#endif
 }  // namespace
 
 TEST(PlanningBudgetTest, ExactAdmissionOverflowAndNonReplenishingFree) {
