@@ -32,6 +32,7 @@
 
 namespace paimon {
 class ScanContext;
+class PlanningBudget;
 
 /// A scanner interface for reading table's meta and create a plan.
 class PAIMON_EXPORT TableScan {
@@ -41,6 +42,13 @@ class PAIMON_EXPORT TableScan {
     /// @param context A unique pointer to the `ScanContext` used for scan operations.
     /// @return A Result containing a unique pointer to the `TableScan` instance.
     static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context);
+
+    /// Create a synchronous scan with pre-allocation planning-byte admission.
+    /// See docs/source/user_guide/bounded_planning.rst for the admitted profile,
+    /// cumulative-byte contract, allocator qualification and ownership boundaries.
+    /// Unsupported inputs return an error without invoking the unrestricted planner.
+    static Result<std::unique_ptr<TableScan>> CreateWithPlanningBudget(
+        std::unique_ptr<ScanContext> context, const std::shared_ptr<PlanningBudget>& budget);
 
     virtual ~TableScan() = default;
 
