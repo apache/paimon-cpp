@@ -294,7 +294,7 @@ class Cursor {
         uint64_t bits = 0;
         for (uint32_t shift = 0; shift < 70; shift += 7) {
             PAIMON_ASSIGN_OR_RAISE(std::string_view byte, Take(1));
-            uint8_t value = static_cast<uint8_t>(byte[0]);
+            auto value = static_cast<uint8_t>(byte[0]);
             if (shift == 63 && value > 1) {
                 return Status::Invalid("Avro integer overflow");
             }

@@ -119,7 +119,7 @@ class PlanningAllocator {
     explicit PlanningAllocator(std::shared_ptr<PlanningBudget> budget)
         : budget(std::move(budget)) {}
     template <typename U>
-    PlanningAllocator(const PlanningAllocator<U>& other) : budget(other.budget) {}
+    explicit PlanningAllocator(const PlanningAllocator<U>& other) : budget(other.budget) {}
     T* allocate(size_t count) {
         if (count > std::numeric_limits<size_t>::max() / sizeof(T)) {
             throw std::bad_alloc();

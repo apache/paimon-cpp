@@ -583,7 +583,7 @@ TEST(BoundedTableScanTest, OcfNullZstdDuplicateDeleteAndLateCorruption) {
     }
     Synthetic(path, Entry(), 1);
     auto valid = ReadText(path + "/manifest/bounded-manifest");
-    for (size_t length : {size_t(0), size_t(4), valid.size() - 1}) {
+    for (size_t length : {static_cast<size_t>(0), static_cast<size_t>(4), valid.size() - 1}) {
         WriteText(path + "/manifest/bounded-manifest", valid.substr(0, length));
         ASSERT_OK_AND_ASSIGN(auto budget, PlanningBudget::Create(kAmpleBudget));
         EXPECT_FALSE(BoundedPlan(path, budget).ok());
@@ -605,7 +605,7 @@ TEST(BoundedTableScanTest, RejectMalformedWriterTypesAndDuplicateFields) {
             std::string schema = kEntrySchema;
             auto position = schema.rfind("]}}");
             ASSERT_NE(position, std::string::npos);
-            schema.insert(position, ",{\"name\":\"" + field + "\",\"type\":\"" + type + "\"}");
+            schema.insert(position, R"(,{"name":")" + field + R"(","type":")" + type + R"("})");
             std::string row = Entry();
             row.append(type == "double" ? 8 : type == "float" ? 4 : 1, '\0');
             WriteText(path + "/manifest/bounded-manifest", Ocf(schema, row, 1));
@@ -634,7 +634,7 @@ TEST(BoundedTableScanTest, RejectEmptyWrongTypesAndJsonAmbiguity) {
           R"({"type":"fixed","name":"NotAPath","size":0})", R"("bytes")", R"("string")"}) {
         Synthetic(path, Entry(), 1);
         std::string schema = kEntrySchema;
-        schema.insert(schema.rfind("]}}"), ",{\"name\":\"_EXTERNAL_PATH\",\"type\":" + type + "}");
+        schema.insert(schema.rfind("]}}"), R"(,{"name":"_EXTERNAL_PATH","type":)" + type + "}");
         std::string row = Entry();
         if (type.find("fixed") == std::string::npos) {
             Long(0, &row);
