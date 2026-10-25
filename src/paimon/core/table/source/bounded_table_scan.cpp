@@ -51,7 +51,8 @@
 #include "rapidjson/document.h"
 
 namespace paimon {
-#if defined(__linux__) && defined(__GLIBCXX__) && _GLIBCXX_USE_CXX11_ABI && _GLIBCXX_RELEASE >= 9
+#if defined(__linux__) && defined(__GLIBCXX__) && _GLIBCXX_USE_CXX11_ABI && \
+    _GLIBCXX_RELEASE >= 9 && PAIMON_BOUNDED_PLANNING_ZSTD
 namespace {
 constexpr size_t kMaximumDepth = 64;
 
@@ -1136,10 +1137,15 @@ class BoundedTableScan : public TableScan {
 
 Result<std::unique_ptr<TableScan>> TableScan::CreateWithPlanningBudget(
     std::unique_ptr<ScanContext> context, const std::shared_ptr<PlanningBudget>& budget) {
-#if !defined(__GLIBCXX__) || !_GLIBCXX_USE_CXX11_ABI || !defined(__linux__) || _GLIBCXX_RELEASE < 9
+#if !defined(__GLIBCXX__) || !_GLIBCXX_USE_CXX11_ABI || !defined(__linux__) || \
+    _GLIBCXX_RELEASE < 9 || !PAIMON_BOUNDED_PLANNING_ZSTD
     return Status::NotImplemented(
-        "Bounded planning requires a qualified Linux libstdc++ 9+ C++11 ABI build");
+        "Bounded planning requires Linux libstdc++ 9+ C++11 ABI and compatible static Zstd");
 #else
+    if (ZSTD_versionNumber() != ZSTD_VERSION_NUMBER) {
+        return Status::NotImplemented(
+            "Bounded planning requires matching Zstd headers and library");
+    }
     if (!context || !budget) {
         return Status::Invalid("Bounded planning requires context and budget");
     }

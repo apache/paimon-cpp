@@ -20,9 +20,12 @@
 #include <zstd.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <thread>
 
 #include "arrow/api.h"
@@ -69,7 +72,8 @@ namespace paimon::test {
 namespace {
 constexpr uint64_t kAmpleBudget = 32 * 1024 * 1024;
 
-#if defined(__linux__) && defined(__GLIBCXX__) && _GLIBCXX_USE_CXX11_ABI && _GLIBCXX_RELEASE >= 9
+#if defined(__linux__) && defined(__GLIBCXX__) && _GLIBCXX_USE_CXX11_ABI && \
+    _GLIBCXX_RELEASE >= 9 && PAIMON_BOUNDED_PLANNING_ZSTD
 std::string ReadText(const std::string& path) {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
@@ -99,8 +103,9 @@ Result<std::unique_ptr<ScanContext>> Context(
 }
 Result<std::shared_ptr<Plan>> BoundedPlan(const std::string& path,
                                           const std::shared_ptr<PlanningBudget>& budget) {
-    PAIMON_ASSIGN_OR_RAISE(auto context, Context(path, PlanningBudgetAccess::Upstream(budget)));
-    PAIMON_ASSIGN_OR_RAISE(auto scan,
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context,
+                           Context(path, PlanningBudgetAccess::Upstream(budget)));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
                            TableScan::CreateWithPlanningBudget(std::move(context), budget));
     return scan->CreatePlan();
 }
@@ -113,12 +118,12 @@ Result<std::shared_ptr<arrow::Array>> ReadSplits(
         // data-reader path without expanding this planning change into type fixes.
         builder.SetReadFieldNames({"id"});
     }
-    PAIMON_ASSIGN_OR_RAISE(auto context, builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(auto table, TableRead::Create(std::move(context)));
-    PAIMON_ASSIGN_OR_RAISE(auto reader, table->CreateReader(splits));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table, TableRead::Create(std::move(context)));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader, table->CreateReader(splits));
     std::vector<std::shared_ptr<arrow::Array>> arrays;
     while (true) {
-        PAIMON_ASSIGN_OR_RAISE(auto batch, reader->NextBatch());
+        PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader->NextBatch());
         if (BatchReader::IsEofBatch(batch)) {
             break;
         }
@@ -283,7 +288,81 @@ TEST(PlanningBudgetTest, SharedConcurrentAdmissionCannotOversubscribe) {
     EXPECT_EQ(budget->BytesAdmitted(), 1000);
 }
 
-#if defined(__linux__) && defined(__GLIBCXX__) && _GLIBCXX_USE_CXX11_ABI && _GLIBCXX_RELEASE >= 9
+TEST(PlanningBudgetTest, SharedAllocationAndCrossThreadFreeMayOverlap) {
+    class RendezvousPool : public MemoryPool {
+     public:
+        void* Malloc(uint64_t size, uint64_t alignment) override {
+            Rendezvous();
+            return upstream->Malloc(size, alignment);
+        }
+        void Free(void* p, uint64_t size) override {
+            Rendezvous();
+            upstream->Free(p, size);
+        }
+        void* Realloc(void* p, size_t old_size, size_t new_size, uint64_t alignment) override {
+            return upstream->Realloc(p, old_size, new_size, alignment);
+        }
+        uint64_t CurrentUsage() const override {
+            return upstream->CurrentUsage();
+        }
+        uint64_t MaxMemoryUsage() const override {
+            return upstream->MaxMemoryUsage();
+        }
+        void Rendezvous() {
+            if (!overlap) {
+                return;
+            }
+            std::unique_lock<std::mutex> lock(mutex);
+            ++arrivals;
+            ready.notify_all();
+            timed_out |=
+                !ready.wait_for(lock, std::chrono::seconds(5), [&] { return arrivals == 2; });
+        }
+        // Same implementation as GetDefaultPool(), with isolated usage counters.
+        std::unique_ptr<MemoryPool> upstream = GetMemoryPool();
+        bool overlap = false, timed_out = false;
+        uint32_t arrivals = 0;
+        std::mutex mutex;
+        std::condition_variable ready;
+    };
+    auto pool = std::make_shared<RendezvousPool>();
+    constexpr uint64_t kBytes = 8;
+    constexpr uint64_t kIterations = 1000;
+    constexpr uint64_t kWorkers = 8;
+    constexpr uint64_t kLimit = (kWorkers * kIterations + 2) * kBytes;
+    ASSERT_OK_AND_ASSIGN(auto budget, PlanningBudget::Create(kLimit, pool));
+    void* escaped = PlanningBudgetAccess::Allocate(budget, kBytes, kBytes);
+    void* allocated = nullptr;
+    pool->overlap = true;
+    std::thread allocating(
+        [&] { allocated = PlanningBudgetAccess::Allocate(budget, kBytes, kBytes); });
+    std::thread freeing([&] { PlanningBudgetAccess::Free(budget, escaped, kBytes, kBytes); });
+    allocating.join();
+    freeing.join();
+    pool->overlap = false;
+    EXPECT_FALSE(pool->timed_out);
+    EXPECT_EQ(pool->arrivals, 2);
+    PlanningBudgetAccess::Free(budget, allocated, kBytes, kBytes);
+
+    std::vector<std::thread> workers;
+    for (uint64_t i = 0; i < kWorkers; ++i) {
+        workers.emplace_back([&] {
+            for (uint64_t j = 0; j < kIterations; ++j) {
+                void* p = PlanningBudgetAccess::Allocate(budget, kBytes, kBytes);
+                PlanningBudgetAccess::Free(budget, p, kBytes, kBytes);
+            }
+        });
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    EXPECT_EQ(budget->BytesAdmitted(), kLimit);
+    EXPECT_EQ(pool->CurrentUsage(), 0);
+    EXPECT_TRUE(PlanningBudgetAccess::Failure(budget).ok());
+}
+
+#if defined(__linux__) && defined(__GLIBCXX__) && _GLIBCXX_USE_CXX11_ABI && \
+    _GLIBCXX_RELEASE >= 9 && PAIMON_BOUNDED_PLANNING_ZSTD
 #ifdef PAIMON_TEST_PLANNING_ALLOCATIONS
 TEST(BoundedTableScanTest, CalibrateStringAllocationObservationAndInjection) {
     ASSERT_OK_AND_ASSIGN(auto budget, PlanningBudget::Create(kAmpleBudget));
@@ -313,7 +392,7 @@ TEST(BoundedTableScanTest, ObserveRealAllocationRequestsAndFailEveryPublicationA
     auto path = Fixture("parquet");
     auto pool = std::make_shared<FaultPool>();
     ASSERT_OK_AND_ASSIGN(auto budget, PlanningBudget::Create(kAmpleBudget, pool));
-    ASSERT_OK_AND_ASSIGN(auto context, Context(path, pool));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, Context(path, pool));
     requested = 0;
     ordinary_allocations = 0;
     observed_overdraft = false;
@@ -365,7 +444,7 @@ TEST(BoundedTableScanTest, RealParquetAndOrcPlanReadParityAndEscapedSplit) {
     for (const std::string format : {"parquet", "orc"}) {
         SCOPED_TRACE(format);
         auto path = Fixture(format);
-        ASSERT_OK_AND_ASSIGN(auto context, Context(path));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, Context(path));
         ASSERT_OK_AND_ASSIGN(auto ordinary, TableScan::Create(std::move(context)));
         ASSERT_OK_AND_ASSIGN(auto baseline, ordinary->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto budget, PlanningBudget::Create(kAmpleBudget));
@@ -463,9 +542,10 @@ TEST(BoundedTableScanTest, RefusesUnsupportedProfileAndIdentityRatherThanFalling
                                                          {{"data-evolution.enabled", "true"}},
                                                          {{"deletion-vectors.enabled", "true"}},
                                                          {{"manifest.format", "orc"}}}) {
-        ASSERT_OK_AND_ASSIGN(auto context, Context(path, GetDefaultPool(), options));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context,
+                             Context(path, GetDefaultPool(), options));
         ASSERT_OK_AND_ASSIGN(auto budget, PlanningBudget::Create(kAmpleBudget));
-        ASSERT_OK_AND_ASSIGN(auto scan,
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
                              TableScan::CreateWithPlanningBudget(std::move(context), budget));
         auto first = scan->CreatePlan();
         ASSERT_FALSE(first.ok());
@@ -473,7 +553,7 @@ TEST(BoundedTableScanTest, RefusesUnsupportedProfileAndIdentityRatherThanFalling
         ASSERT_FALSE(second.ok());
         EXPECT_EQ(first.status().ToString(), second.status().ToString());
     }
-    ASSERT_OK_AND_ASSIGN(auto context, Context(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, Context(path));
     ASSERT_OK_AND_ASSIGN(auto budget, PlanningBudget::Create(kAmpleBudget, GetMemoryPool()));
     EXPECT_FALSE(TableScan::CreateWithPlanningBudget(std::move(context), budget).ok());
     auto directory = UniqueTestDirectory::Create();
@@ -616,6 +696,19 @@ TEST(BoundedTableScanTest, UnqualifiedPlatformFailsExplicitly) {
     auto result = TableScan::CreateWithPlanningBudget(nullptr, budget);
     EXPECT_FALSE(result.ok());
     EXPECT_TRUE(result.status().IsNotImplemented());
+
+    const std::string path =
+        GetDataDir() + "/parquet/append_types_compatibility.db/rust_time_types";
+    std::ifstream input(path + "/schema/schema-0", std::ios::binary);
+    ASSERT_TRUE(input.good());
+    const std::string schema{std::istreambuf_iterator<char>(input),
+                             std::istreambuf_iterator<char>()};
+    ScanContextBuilder builder(path);
+    builder.SetTableSchema(schema).AddOption("scan.snapshot-id", "1");
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto ordinary, TableScan::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(auto plan, ordinary->CreatePlan());
+    EXPECT_FALSE(plan->Splits().empty());
 }
 #endif
 }  // namespace paimon::test

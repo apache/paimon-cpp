@@ -522,6 +522,44 @@ if(PAIMON_ENABLE_REST)
          rest/rest_util.cpp)
 endif()
 
+# The bounded decoder uses Zstd's static-only workspace API. Ordinary scans also
+# support shared Zstd, so disable only the bounded entry point for that build.
+set(PAIMON_BOUNDED_PLANNING_ZSTD OFF)
+set(_bounded_zstd_target zstd)
+get_target_property(_bounded_zstd_type ${_bounded_zstd_target} TYPE)
+if(_bounded_zstd_type STREQUAL "INTERFACE_LIBRARY")
+    get_target_property(_bounded_zstd_links zstd INTERFACE_LINK_LIBRARIES)
+    list(LENGTH _bounded_zstd_links _bounded_zstd_link_count)
+    if(_bounded_zstd_link_count EQUAL 1 AND TARGET "${_bounded_zstd_links}")
+        set(_bounded_zstd_target ${_bounded_zstd_links})
+        get_target_property(_bounded_zstd_type ${_bounded_zstd_target} TYPE)
+    endif()
+endif()
+get_target_property(_bounded_zstd_location ${_bounded_zstd_target} IMPORTED_LOCATION)
+if(_bounded_zstd_type STREQUAL "STATIC_LIBRARY"
+   OR (_bounded_zstd_type STREQUAL "UNKNOWN_LIBRARY" AND _bounded_zstd_location MATCHES
+                                                         "\\.a$"))
+    if(TARGET zstd_ep)
+        # The pinned bundled static library is built after configuration.
+        set(PAIMON_BOUNDED_PLANNING_ZSTD ON)
+    else()
+        include(CMakePushCheckState)
+        include(CheckCXXSourceCompiles)
+        cmake_push_check_state(RESET)
+        set(CMAKE_REQUIRED_LIBRARIES zstd)
+        check_cxx_source_compiles("#define ZSTD_STATIC_LINKING_ONLY
+#include <zstd.h>
+int main() {
+    auto volatile estimate = &ZSTD_estimateDStreamSize_fromFrame;
+    auto volatile initialize = &ZSTD_initStaticDStream;
+    return !estimate || !initialize;
+}"
+                                  PAIMON_BOUNDED_ZSTD_STATIC_API)
+        cmake_pop_check_state()
+        set(PAIMON_BOUNDED_PLANNING_ZSTD ${PAIMON_BOUNDED_ZSTD_STATIC_API})
+    endif()
+endif()
+
 add_paimon_lib(paimon
                SOURCES
                ${PAIMON_COMMON_SRCS}
@@ -554,6 +592,11 @@ add_paimon_lib(paimon
                ${PAIMON_REST_LINK_LIBS}
                SHARED_LINK_FLAGS
                ${PAIMON_VERSION_SCRIPT_FLAGS})
+set_property(SOURCE core/table/source/bounded_table_scan.cpp
+             APPEND
+             PROPERTY COMPILE_DEFINITIONS
+                      PAIMON_BOUNDED_PLANNING_ZSTD=$<BOOL:${PAIMON_BOUNDED_PLANNING_ZSTD}>
+)
 
 add_subdirectory(common/file_index)
 add_subdirectory(common/global_index)
@@ -590,6 +633,9 @@ if(PAIMON_BUILD_TESTS)
                     ${PAIMON_ORC_FILE_FORMAT_STATIC_LINK_LIBS}
                     ${PAIMON_AVRO_FILE_FORMAT_STATIC_LINK_LIBS}
                     ${GTEST_LINK_TOOLCHAIN})
+    target_compile_definitions(paimon-bounded-table-scan-test
+                               PRIVATE PAIMON_BOUNDED_PLANNING_ZSTD=$<BOOL:${PAIMON_BOUNDED_PLANNING_ZSTD}>
+    )
     include(CheckCXXSourceCompiles)
     check_cxx_source_compiles("#include <string>
 #if !defined(__GLIBCXX__) || !_GLIBCXX_USE_CXX11_ABI || _GLIBCXX_RELEASE < 9

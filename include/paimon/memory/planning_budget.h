@@ -33,6 +33,9 @@ class PlanningBudgetAccess;
 /// Query-owned cumulative allocation admission for bounded metadata planning.
 /// Frees do not replenish admission: this deliberately also bounds temporary peaks.
 /// The limit covers requested storage, not allocator overhead or process RSS.
+/// Admission is atomic, but upstream Malloc/Free calls are not serialized. Overlapping
+/// scans or destruction of escaped plans/splits require a thread-safe upstream (such
+/// as GetDefaultPool()), or caller synchronization covering operations and cleanup.
 class PAIMON_EXPORT PlanningBudget {
  public:
     static Result<std::shared_ptr<PlanningBudget>> Create(

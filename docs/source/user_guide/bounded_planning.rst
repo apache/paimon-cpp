@@ -43,7 +43,11 @@ Zstandard frames with unknown decoded length grow output only after admission.
 Compressed and decoded storage coexist within the same budget.
 
 Create the budget once per query. Scans may share it; atomic admission never exceeds
-the shared limit. The first allocation failure makes the budget terminal.
+the shared limit. Admission does not serialize upstream ``Malloc``/``Free`` calls.
+Overlapping scans or destruction of escaped plans/splits require a thread-safe
+upstream, such as ``GetDefaultPool()``, or caller synchronization covering both
+operations and cleanup. Individual scan objects must not be called concurrently.
+The first allocation failure makes the budget terminal.
 Exhaustion returns ``CapacityError``; upstream allocation failure returns
 ``OutOfMemory``. Malformed inputs return an error and unsupported profiles return
 ``NotImplemented``. No failure returns a partial plan or invokes the unrestricted
@@ -68,8 +72,11 @@ still counts in ``BytesAdmitted()``.
 Admitted profile
 ----------------
 
-The first implementation supports Linux with libstdc++ 9 or later and its C++11 string ABI. Other
-platforms return ``NotImplemented``. It supports local filesystem tables with:
+The first implementation supports Linux with libstdc++ 9 or later, its C++11
+string ABI, and statically linked Zstandard with matching headers and static
+workspace APIs (including the default bundled Zstandard). Other builds return
+``NotImplemented`` from the bounded factory and retain ordinary scan support.
+It supports local filesystem tables with:
 
 * An explicitly retained schema and positive numeric ``scan.snapshot-id``.
 * Unpartitioned append-only data, ``bucket=-1``, main branch and matching schema ID.
