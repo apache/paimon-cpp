@@ -358,7 +358,7 @@ TEST(PlanningBudgetTest, SharedAllocationAndCrossThreadFreeMayOverlap) {
     }
     EXPECT_EQ(budget->BytesAdmitted(), kLimit);
     EXPECT_EQ(pool->CurrentUsage(), 0);
-    EXPECT_TRUE(PlanningBudgetAccess::Failure(budget).ok());
+    EXPECT_NO_THROW(PlanningBudgetAccess::Reserve(budget, 0));
 }
 
 #if defined(__linux__) && defined(__GLIBCXX__) && _GLIBCXX_USE_CXX11_ABI && \

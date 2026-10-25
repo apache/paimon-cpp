@@ -547,6 +547,8 @@ if(_bounded_zstd_type STREQUAL "STATIC_LIBRARY"
         include(CheckCXXSourceCompiles)
         cmake_push_check_state(RESET)
         set(CMAKE_REQUIRED_LIBRARIES zstd)
+        # Reconfiguration may select a different system library in the same build.
+        unset(PAIMON_BOUNDED_ZSTD_STATIC_API CACHE)
         check_cxx_source_compiles("#define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
 int main() {
