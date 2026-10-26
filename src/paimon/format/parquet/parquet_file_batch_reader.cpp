@@ -397,15 +397,18 @@ Status ParquetFileBatchReader::SetReadSchema(
             OptionsUtils::GetValueFromMap<bool>(options_, PARQUET_READ_ENABLE_PAGE_INDEX_FILTER,
                                                 DEFAULT_PARQUET_READ_ENABLE_PAGE_INDEX_FILTER));
 
-        if (predicate) {
+        // Prune by bitmap before evaluating statistics for the remaining row groups.
+        if (selection_bitmap) {
+            PAIMON_ASSIGN_OR_RAISE(
+                target_row_groups,
+                FilterRowGroupsByBitmap(selection_bitmap.value(), target_row_groups));
+        }
+        if (predicate && !target_row_groups.empty()) {
             PAIMON_ASSIGN_OR_RAISE(
                 target_row_groups,
                 FilterRowGroupsByPredicate(predicate, file_schema, target_row_groups));
         }
         if (selection_bitmap) {
-            PAIMON_ASSIGN_OR_RAISE(
-                target_row_groups,
-                FilterRowGroupsByBitmap(selection_bitmap.value(), target_row_groups));
             if (enable_page_index_filter) {
                 // To decide which strategy to use, "trim" or "coalesce". "Coalesce" By default.
                 PAIMON_ASSIGN_OR_RAISE(

@@ -777,6 +777,65 @@ DataEvolutionSplitRead::PlanVectorReadRanges(
     return result;
 }
 
+Result<std::vector<std::shared_ptr<DataEvolutionSplitRead::FieldBunch>>>
+DataEvolutionSplitRead::TryPlanSequentialVectorRead(
+    const std::vector<std::shared_ptr<DataFileMeta>>& files,
+    const std::function<Result<std::vector<int32_t>>(const std::shared_ptr<DataFileMeta>&)>&
+        file_to_field_ids) {
+    std::vector<std::shared_ptr<FieldBunch>> no_match;
+    std::shared_ptr<DataFileMeta> main_file;
+    std::vector<std::shared_ptr<DataFileMeta>> vector_files;
+    for (const auto& file : files) {
+        if (VectorStoreUtils::IsVectorStoreFile(file->file_name)) {
+            vector_files.push_back(file);
+        } else if (DataEvolutionUtils::IsNormalFile(file->file_name) && !main_file) {
+            main_file = file;
+        } else {
+            return no_match;
+        }
+    }
+    if (!main_file || vector_files.empty()) {
+        return no_match;
+    }
+    for (const auto& file : files) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t first, file->NonNullFirstRowId());
+        if (first < 0 || file->row_count <= 0 ||
+            first > std::numeric_limits<int64_t>::max() - file->row_count) {
+            return Status::Invalid("Invalid row id range in VECTOR merge group");
+        }
+    }
+    std::sort(vector_files.begin(), vector_files.end(), [](const auto& left, const auto& right) {
+        return left->first_row_id.value() < right->first_row_id.value();
+    });
+    const auto& first_vector = vector_files[0];
+    if (!first_vector->write_cols || first_vector->write_cols->size() != 1) {
+        return no_match;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::string format, first_vector->FileFormat());
+    int64_t next_row_id = main_file->first_row_id.value();
+    for (const auto& file : vector_files) {
+        PAIMON_ASSIGN_OR_RAISE(std::string current_format, file->FileFormat());
+        if (file->schema_id != first_vector->schema_id || current_format != format ||
+            file->write_cols != first_vector->write_cols || file->first_row_id != next_row_id) {
+            return no_match;
+        }
+        next_row_id += file->row_count;
+    }
+    if (next_row_id != main_file->first_row_id.value() + main_file->row_count) {
+        return no_match;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> vector_ids, file_to_field_ids(first_vector));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> main_ids, file_to_field_ids(main_file));
+    // An inline VECTOR in a historical main file can have different precedence in each range.
+    if (vector_ids.size() != 1 ||
+        std::find(main_ids.begin(), main_ids.end(), vector_ids[0]) != main_ids.end()) {
+        return no_match;
+    }
+    return std::vector<std::shared_ptr<FieldBunch>>{
+        std::make_shared<DataBunch>(main_file),
+        std::make_shared<VectorBunch>(std::move(vector_files), main_file->row_count)};
+}
+
 Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateUnionReader(
     const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
     const std::optional<std::vector<Range>>& row_ranges,
@@ -802,12 +861,15 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateUnionReader(
     }
     auto file_to_field_ids =
         [&](const std::shared_ptr<DataFileMeta>& file) -> Result<std::vector<int32_t>> {
-        if (!file->write_cols) {
+        if (VectorStoreUtils::IsVectorStoreFile(file->file_name) && !file->write_cols) {
             return Status::Invalid("VECTOR files must declare their write columns");
         }
         auto data_schema = context_->GetTableSchema();
         if (file->schema_id != data_schema->Id()) {
             PAIMON_ASSIGN_OR_RAISE(data_schema, schema_manager_->ReadSchema(file->schema_id));
+        }
+        if (!file->write_cols) {
+            return DataField::GetAllFieldIds(data_schema->Fields());
         }
         std::vector<int32_t> ids;
         for (const auto& name : file->write_cols.value()) {
@@ -819,19 +881,31 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateUnionReader(
         }
         return ids;
     };
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<VectorReadRange> ranges,
-        PlanVectorReadRanges(need_merge_files, read_field_ids, file_to_field_ids));
-    // Each range creates a separate field-union reader, reopening a main file that spans ranges.
-    // TODO(ChaomingZhangCN): Keep one main reader and concatenate VECTOR readers for contiguous,
-    // non-overlapping files whose field providers can be merged sequentially.
-    std::vector<LazyConcatBatchReader::Source> sources;
-    auto split_read =
-        std::make_shared<DataEvolutionSplitRead>(path_factory_, context_, pool_, executor_);
     std::optional<std::vector<Range>> normalized_ranges;
     if (row_ranges) {
         normalized_ranges = Range::SortAndMergeOverlap(row_ranges.value(), /*adjacent=*/true);
     }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FieldBunch>> sequential_bunches,
+                           TryPlanSequentialVectorRead(need_merge_files, file_to_field_ids));
+    auto split_read =
+        std::make_shared<DataEvolutionSplitRead>(path_factory_, context_, pool_, executor_);
+    if (!sequential_bunches.empty()) {
+        std::vector<LazyConcatBatchReader::Source> sources;
+        sources.push_back(LazyConcatBatchReader::Source{
+            sequential_bunches[0]->Files()[0]->file_name,
+            [split_read, partition, sequential_bunches = std::move(sequential_bunches),
+             normalized_ranges, data_file_path_factory, group_dv_factory, group_dv,
+             read_schema]() -> Result<std::unique_ptr<BatchReader>> {
+                return split_read->CreateFieldUnionReader(partition, sequential_bunches,
+                                                          normalized_ranges, data_file_path_factory,
+                                                          group_dv_factory, group_dv, read_schema);
+            }});
+        return std::make_unique<LazyConcatBatchReader>(std::move(sources), arrow_pool_);
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<VectorReadRange> ranges,
+        PlanVectorReadRanges(need_merge_files, read_field_ids, file_to_field_ids));
+    std::vector<LazyConcatBatchReader::Source> sources;
     for (const auto& range : ranges) {
         std::vector<Range> selected = {range.range};
         if (normalized_ranges) {
@@ -884,6 +958,17 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateFieldUnionRea
         SplitFieldBunches(need_merge_files, blob_field_to_field_id,
                           /*has_row_ranges_selection=*/row_ranges.has_value()));
 
+    return CreateFieldUnionReader(partition, fields_files, row_ranges, data_file_path_factory,
+                                  group_dv_factory, group_dv, read_schema);
+}
+
+Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateFieldUnionReader(
+    const BinaryRow& partition, const std::vector<std::shared_ptr<FieldBunch>>& fields_files,
+    const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const DeletionVector::Factory& group_dv_factory,
+    const std::optional<GroupDeletionVector>& group_dv,
+    const std::shared_ptr<arrow::Schema>& read_schema) const {
     assert(!fields_files.empty());
     int64_t row_count = fields_files[0]->RowCount();
     PAIMON_ASSIGN_OR_RAISE(int64_t first_row_id, fields_files[0]->Files()[0]->NonNullFirstRowId());
@@ -912,6 +997,10 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateFieldUnionRea
     std::vector<int32_t> reader_offsets(all_read_fields.size(), -1);
     // which field index in the reading row
     std::vector<int32_t> field_offsets(all_read_fields.size(), -1);
+    const bool has_normal_file =
+        std::any_of(fields_files.begin(), fields_files.end(), [](const auto& bunch) {
+            return DataEvolutionUtils::IsNormalFile(bunch->Files()[0]->file_name);
+        });
 
     for (int32_t file_idx = 0; file_idx < static_cast<int32_t>(fields_files.size()); file_idx++) {
         const auto& bunch = fields_files[file_idx];
@@ -932,6 +1021,11 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateFieldUnionRea
             if (reader_offsets[read_field_idx] != -1) {
                 continue;
             }
+            // Java takes sequence numbers from normal files before dedicated column files.
+            if (has_normal_file && !DataEvolutionUtils::IsNormalFile(first_file->file_name) &&
+                read_field_ids[read_field_idx] == SpecialFields::SequenceNumber().Id()) {
+                continue;
+            }
             for (int32_t data_field_id : data_field_ids) {
                 // Check if the read field index matches the file field
                 // index
@@ -950,7 +1044,40 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateFieldUnionRea
             // create new FieldMappingReader for read partial fields
             auto file_read_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields_in_file);
             auto blob_bunch = std::dynamic_pointer_cast<BlobBunch>(bunch);
-            if (blob_bunch && !blob_bunch->SequentialReadOptimize()) {
+            if (std::dynamic_pointer_cast<VectorBunch>(bunch)) {
+                std::vector<LazyConcatBatchReader::Source> sources;
+                auto split_read = std::make_shared<DataEvolutionSplitRead>(path_factory_, context_,
+                                                                           pool_, executor_);
+                for (const auto& file : bunch->Files()) {
+                    std::optional<std::vector<Range>> selected = row_ranges;
+                    if (row_ranges) {
+                        PAIMON_ASSIGN_OR_RAISE(int64_t first, file->NonNullFirstRowId());
+                        selected = Range::And({Range(first, first + file->row_count - 1)},
+                                              row_ranges.value());
+                        if (selected->empty()) {
+                            continue;
+                        }
+                    }
+                    sources.push_back(LazyConcatBatchReader::Source{
+                        file->file_name,
+                        [split_read, partition, file, file_read_schema, selected,
+                         data_file_path_factory,
+                         group_dv_factory]() -> Result<std::unique_ptr<BatchReader>> {
+                            PAIMON_ASSIGN_OR_RAISE(
+                                std::vector<std::unique_ptr<FileBatchReader>> readers,
+                                split_read->CreateRawFileReaders(
+                                    partition, {file}, file_read_schema, /*predicate=*/nullptr,
+                                    group_dv_factory, selected, data_file_path_factory,
+                                    /*extra_format_options=*/{}));
+                            return std::make_unique<ConcatBatchReader>(
+                                ObjectUtils::MoveVector<std::unique_ptr<BatchReader>>(
+                                    std::move(readers)),
+                                split_read->arrow_pool_);
+                        }});
+                }
+                file_batch_readers[file_idx] =
+                    std::make_unique<LazyConcatBatchReader>(std::move(sources), arrow_pool_);
+            } else if (blob_bunch && !blob_bunch->SequentialReadOptimize()) {
                 // blob files span multiple max sequence number layers: placeholder entries of
                 // newer layers must fall back row by row to older layers
                 PAIMON_ASSIGN_OR_RAISE(

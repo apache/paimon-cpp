@@ -26,6 +26,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "paimon/common/data/blob_view_struct.h"
@@ -121,6 +122,23 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
 
      private:
         std::vector<std::shared_ptr<DataFileMeta>> data_files_;
+    };
+
+    /// Compatible VECTOR files tiling one main file's row range without gaps or overlaps.
+    class VectorBunch : public FieldBunch {
+     public:
+        VectorBunch(std::vector<std::shared_ptr<DataFileMeta>> files, int64_t row_count)
+            : files_(std::move(files)), row_count_(row_count) {}
+        int64_t RowCount() const override {
+            return row_count_;
+        }
+        const std::vector<std::shared_ptr<DataFileMeta>>& Files() const override {
+            return files_;
+        }
+
+     private:
+        std::vector<std::shared_ptr<DataFileMeta>> files_;
+        int64_t row_count_;
     };
 
     /// All blob files of one blob field in a merge group. Unlike data files, every file is kept
@@ -227,6 +245,12 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         const std::function<Result<std::vector<int32_t>>(const std::shared_ptr<DataFileMeta>&)>&
             file_to_field_ids);
 
+    /// Empty means the layout needs range planning. Errors resolving providers still propagate.
+    static Result<std::vector<std::shared_ptr<FieldBunch>>> TryPlanSequentialVectorRead(
+        const std::vector<std::shared_ptr<DataFileMeta>>& files,
+        const std::function<Result<std::vector<int32_t>>(const std::shared_ptr<DataFileMeta>&)>&
+            file_to_field_ids);
+
     static Result<std::vector<std::shared_ptr<DataEvolutionSplitRead::FieldBunch>>>
     SplitFieldBunches(const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
                       const std::function<Result<int32_t>(const std::shared_ptr<DataFileMeta>&)>&
@@ -272,6 +296,14 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
     Result<std::unique_ptr<BatchReader>> CreateFieldUnionReader(
         const BinaryRow& partition,
         const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const DeletionVector::Factory& group_dv_factory,
+        const std::optional<GroupDeletionVector>& group_dv,
+        const std::shared_ptr<arrow::Schema>& read_schema) const;
+
+    Result<std::unique_ptr<BatchReader>> CreateFieldUnionReader(
+        const BinaryRow& partition, const std::vector<std::shared_ptr<FieldBunch>>& fields_files,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const DeletionVector::Factory& group_dv_factory,

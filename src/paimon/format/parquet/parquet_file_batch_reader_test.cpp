@@ -50,6 +50,7 @@
 #include "paimon/common/data/columnar/columnar_row_ref.h"
 #include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/predicate/equal.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
@@ -67,6 +68,7 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/reader/batch_reader.h"
@@ -1347,6 +1349,94 @@ TEST_F(ParquetFileBatchReaderTest, TestBitmapPagePushDownWithMultiRowGroups) {
 
     auto expected_array = arrow::ChunkedArray(src_array->Slice(3, 3));
     ASSERT_TRUE(result_array->Equals(expected_array)) << result_array->ToString();
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestBitmapPruningPrecedesPredicatePushDown) {
+    class CountingPredicate : public LeafPredicate {
+     public:
+        CountingPredicate()
+            : LeafPredicate(Equal::Instance(), 0, "f0", FieldType::INT, {Literal(4)}) {}
+
+        const Function& GetFunction() const override {
+            ++function_calls;
+            return LeafPredicate::GetFunction();
+        }
+
+        mutable int32_t function_calls = 0;
+    };
+
+    auto src_array = MakeSequentialIntData(12);
+    auto arrow_schema = arrow::schema(src_array->type()->fields());
+    // Four row groups of three rows each, with one row per page.
+    WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/3, /*max_page_size=*/1);
+
+    for (bool enable_page_filter : {false, true}) {
+        for (const std::string strategy : {"trim", "coalesce"}) {
+            SCOPED_TRACE(fmt::format("page_filter={}, strategy={}", enable_page_filter, strategy));
+            std::map<std::string, std::string> options = {
+                {PARQUET_READ_ENABLE_PAGE_INDEX_FILTER, enable_page_filter ? "true" : "false"},
+                {PARQUET_READ_BITMAP_ROW_RANGE_REFINING_STRATEGY, strategy}};
+            ASSERT_OK_AND_ASSIGN(auto input, fs_->Open(file_path_));
+            ASSERT_OK_AND_ASSIGN(auto file_status, fs_->GetFileStatus(file_path_));
+            auto input_stream = std::make_unique<ArrowInputStreamAdapter>(
+                std::move(input), file_status.GetLen(), pool_);
+            auto reader = PrepareParquetFileBatchReader(
+                std::move(input_stream), options, arrow_schema, /*predicate=*/nullptr,
+                /*selection_bitmap=*/std::nullopt, /*batch_size=*/2);
+            auto predicate = std::make_shared<CountingPredicate>();
+            auto check_selection = [&](const std::optional<RoaringBitmap32>& bitmap,
+                                       const std::vector<int32_t>& expected_rows) {
+                predicate->function_calls = 0;
+                ArrowSchema c_schema;
+                ASSERT_TRUE(arrow::ExportSchema(*arrow_schema, &c_schema).ok());
+                ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, bitmap));
+                if (expected_rows.empty()) {
+                    ASSERT_EQ(0, predicate->function_calls);
+                } else {
+                    ASSERT_GT(predicate->function_calls, 0);
+                }
+                auto metrics = reader->GetReaderMetrics();
+                ASSERT_OK_AND_ASSIGN(auto total_row_groups,
+                                     metrics->GetCounter(ParquetMetrics::READ_ROW_GROUPS_TOTAL));
+                ASSERT_OK_AND_ASSIGN(
+                    auto filtered_row_groups,
+                    metrics->GetCounter(ParquetMetrics::READ_ROW_GROUPS_AFTER_FILTER));
+                ASSERT_EQ(4, total_row_groups);
+                ASSERT_EQ(expected_rows.empty() ? 0 : 1, filtered_row_groups);
+
+                size_t row_index = 0;
+                while (true) {
+                    ASSERT_OK_AND_ASSIGN(
+                        auto batch,
+                        paimon::test::ReadResultCollector::CollectResultOneBatch(reader.get()));
+                    if (!batch) {
+                        break;
+                    }
+                    ASSERT_EQ(1, batch->num_chunks());
+                    const auto& chunk = batch->chunk(0);
+                    for (int64_t i = 0; i < chunk->length(); ++i) {
+                        ASSERT_LT(row_index, expected_rows.size());
+                        int32_t file_row = expected_rows[row_index++];
+                        ASSERT_TRUE(chunk->Slice(i, 1)->Equals(src_array->Slice(file_row, 1)));
+                        ASSERT_OK_AND_ASSIGN(auto row_id, reader->GetPreviousBatchFileRowId(i));
+                        ASSERT_EQ(file_row, row_id);
+                    }
+                }
+                ASSERT_EQ(expected_rows.size(), row_index);
+            };
+
+            std::vector<int32_t> expected_rows =
+                enable_page_filter ? std::vector<int32_t>{4} : std::vector<int32_t>{3, 4, 5};
+            ASSERT_NO_FATAL_FAILURE(check_selection(std::nullopt, expected_rows));
+            // Bitmap keeps groups 0, 1 and 3; the predicate keeps only group 1.
+            ASSERT_NO_FATAL_FAILURE(
+                check_selection(RoaringBitmap32::From({1, 4, 10}), expected_rows));
+            // A nonempty bitmap with no rows in this file must skip all predicate work.
+            ASSERT_NO_FATAL_FAILURE(check_selection(RoaringBitmap32::From({12}), {}));
+            ASSERT_NO_FATAL_FAILURE(check_selection(std::nullopt, expected_rows));
+        }
+    }
 }
 
 TEST_F(ParquetFileBatchReaderTest, TestPredicateAndBitmapRowGroupPushDown) {

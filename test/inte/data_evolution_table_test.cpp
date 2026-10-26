@@ -18,6 +18,7 @@
  */
 #include <algorithm>
 #include <iterator>
+#include <set>
 #include <tuple>
 
 #include "arrow/type.h"
@@ -2027,6 +2028,77 @@ TEST_P(DataEvolutionTableTest, TestReadJavaIndependentlyRolledVectorStore) {
         ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected_rows)))
             << "actual=" << result->ToString() << "\nexpected=" << expected_rows->ToString();
     }
+
+    // Like Java, the normal file supplies sequence numbers even when VECTOR files are newer.
+    auto sequence_main = std::make_shared<DataFileMeta>(*main_file);
+    sequence_main->AssignSequenceNumber(3, 3);
+    std::vector<std::shared_ptr<DataFileMeta>> sequence_files = {sequence_main};
+    int64_t sequence = 2;
+    for (const auto& [first, file] : vector_files) {
+        auto sequence_vector = std::make_shared<DataFileMeta>(*file);
+        sequence_vector->AssignSequenceNumber(sequence, sequence);
+        sequence_files.push_back(sequence_vector);
+        ++sequence;
+    }
+    auto sequence_tail = sequence_files.back();
+    DataSplitImpl::Builder sequence_builder(original_split->Partition(), original_split->Bucket(),
+                                            original_split->BucketPath(),
+                                            std::move(sequence_files));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> sequence_split,
+                         sequence_builder.RawConvertible(false).Build());
+    auto tracking = PrepareBulkData(
+        kRowCount, [](int32_t id) { return fmt::format("0, {}, 3", id); },
+        {SpecialFields::ValueKind().ArrowField(), SpecialFields::RowId().ArrowField(),
+         SpecialFields::SequenceNumber().ArrowField()});
+    for (bool sequential : {true, false}) {
+        SCOPED_TRACE(sequential);
+        std::shared_ptr<Split> split = sequence_split;
+        std::shared_ptr<arrow::Array> vectors = expected->field(1);
+        if (!sequential) {
+            // A newer VECTOR covering only the tail forces the range-reader fallback.
+            const auto& tail = sequence_tail;
+            ASSERT_GT(tail->max_sequence_number, sequence_main->max_sequence_number);
+            DataSplitImpl::Builder tail_builder(
+                original_split->Partition(), original_split->Bucket(), original_split->BucketPath(),
+                std::vector<std::shared_ptr<DataFileMeta>>{sequence_main, tail});
+            ASSERT_OK_AND_ASSIGN(split, tail_builder.RawConvertible(false).Build());
+            const int64_t first = tail->first_row_id.value();
+            auto missing = arrow::MakeArrayOfNull(vector_type, first).ValueOrDie();
+            vectors = arrow::Concatenate({missing, vectors->Slice(first)}).ValueOrDie();
+        }
+        auto sequence_expected =
+            arrow::StructArray::Make(
+                {tracking->field(0), expected->field(0), vectors, tracking->field(1),
+                 tracking->field(2)},
+                {"_VALUE_KIND", "id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"})
+                .ValueOrDie();
+        for (const std::vector<std::string>& projection :
+             {std::vector<std::string>{"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"},
+              std::vector<std::string>{"id", "_ROW_ID", "_SEQUENCE_NUMBER"},
+              std::vector<std::string>{"_ROW_ID", "_SEQUENCE_NUMBER"}}) {
+            ReadContextBuilder sequence_read_builder(table_path);
+            sequence_read_builder.SetReadFieldNames(projection);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> sequence_context,
+                                 sequence_read_builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> sequence_read,
+                                 TableRead::Create(std::move(sequence_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> sequence_reader,
+                                 sequence_read->CreateReader(split));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> sequence_result,
+                                 ReadResultCollector::CollectResult(std::move(sequence_reader)));
+            ASSERT_NE(sequence_result, nullptr);
+            arrow::ArrayVector projected_arrays = {tracking->field(0)};
+            std::vector<std::string> projected_names = {"_VALUE_KIND"};
+            for (const auto& name : projection) {
+                projected_arrays.push_back(sequence_expected->GetFieldByName(name));
+                projected_names.push_back(name);
+            }
+            auto projected_expected =
+                arrow::StructArray::Make(projected_arrays, projected_names).ValueOrDie();
+            ASSERT_TRUE(sequence_result->Equals(arrow::ChunkedArray(projected_expected)))
+                << sequence_result->ToString();
+        }
+    }
 }
 
 #endif
@@ -2137,12 +2209,19 @@ TEST_P(DedicatedVectorTableTest, TestIndependentVectorRolling) {
                                  arrow::field("embedding", vector_type),
                                  arrow::field("tag", arrow::utf8())};
     const std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, "parquet"},       {Options::VECTOR_FILE_FORMAT, FileFormat()},
-        {Options::FILE_SYSTEM, "local"},         {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::WRITE_ONLY, "true"},           {Options::TARGET_FILE_SIZE, "128 mb"},
-        {Options::TARGET_FILE_ROW_NUM, "2500"},  {Options::VECTOR_TARGET_FILE_SIZE, "1 b"},
-        {Options::WRITE_BATCH_SIZE, "100"},      {Options::READ_BATCH_SIZE, "127"}};
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::VECTOR_FILE_FORMAT, FileFormat()},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::WRITE_ONLY, "true"},
+        {Options::TARGET_FILE_SIZE, "128 mb"},
+        {Options::TARGET_FILE_ROW_NUM, "2500"},
+        {Options::VECTOR_TARGET_FILE_SIZE, "1 b"},
+        {Options::WRITE_BATCH_SIZE, "100"},
+        {Options::READ_BATCH_SIZE, "127"},
+        {Options::DELETION_VECTORS_ENABLED, "true"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     const std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto input = PrepareBulkData(
@@ -2232,6 +2311,48 @@ TEST_P(DedicatedVectorTableTest, TestIndependentVectorRolling) {
             input->Slice(range.from, range.to - range.from + 1));
         ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, expected,
                               /*predicate=*/nullptr, /*row_ranges=*/{range}));
+    }
+
+    // Delete across main/VECTOR boundaries, including a whole VECTOR file and the last row.
+    std::set<int64_t> deleted_ids = {0, 999, 1000, 2499, 2500, 2999, 3000, 4999, 6000};
+    if (FileFormat() != "lance") {
+        const auto& deleted_file = std::next(vector_files.begin())->second;
+        for (int64_t i = 0; i < deleted_file->row_count; ++i) {
+            deleted_ids.insert(deleted_file->first_row_id.value() + i);
+        }
+    }
+    std::map<std::string, std::vector<int64_t>> deleted_positions;
+    for (const auto& [first, file] : main_files) {
+        for (int64_t id : deleted_ids) {
+            if (id >= first && id < first + file->row_count) {
+                deleted_positions[file->file_name].push_back(id - first);
+            }
+        }
+    }
+    ASSERT_OK(CommitDeletionVectors(table_path, messages[0], deleted_positions));
+    for (const std::vector<Range>& selection :
+         {std::vector<Range>{Range(0, 6000)},
+          std::vector<Range>{Range(998, 1002), Range(2498, 2502), Range(5998, 6000)}}) {
+        arrow::ArrayVector surviving_rows;
+        for (const auto& range : selection) {
+            int64_t next = range.from;
+            for (int64_t id : deleted_ids) {
+                if (id < next || id > range.to) {
+                    continue;
+                }
+                if (next < id) {
+                    surviving_rows.push_back(input->Slice(next, id - next));
+                }
+                next = id + 1;
+            }
+            if (next <= range.to) {
+                surviving_rows.push_back(input->Slice(next, range.to - next + 1));
+            }
+        }
+        auto expected = checked_pointer_cast<arrow::StructArray>(
+            arrow::Concatenate(surviving_rows).ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, expected,
+                              /*predicate=*/nullptr, selection));
     }
 
     ASSERT_OK_AND_ASSIGN(messages, WriteArray(table_path, {}, input->Slice(0, 2)));

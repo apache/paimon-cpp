@@ -19,14 +19,21 @@
 #include "paimon/core/operation/data_evolution_split_read.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <utility>
 
+#include "arrow/api.h"
+#include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/vector_store_utils.h"
 #include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
@@ -39,15 +46,42 @@
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
+#include "paimon/format/file_format_factory.h"
+#include "paimon/format/format_writer.h"
+#include "paimon/format/writer_builder.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+class CountingLocalFileSystem : public LocalFileSystem {
+ public:
+    explicit CountingLocalFileSystem(std::string counted_path)
+        : counted_path_(std::move(counted_path)) {}
+
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        if (path == counted_path_) {
+            ++open_count_;
+        }
+        return LocalFileSystem::Open(path);
+    }
+
+    int32_t OpenCount() const {
+        return open_count_.load();
+    }
+
+ private:
+    std::string counted_path_;
+    mutable std::atomic<int32_t> open_count_{0};
+};
+}  // namespace
+
 class DataEvolutionSplitReadTest : public ::testing::Test {
  public:
     std::shared_ptr<DataFileMeta> CreateDataFileMeta(
@@ -749,6 +783,203 @@ TEST_F(DataEvolutionSplitReadTest, TestPlanIndependentlyRolledVectorReadRanges) 
     ASSERT_EQ(main->row_count, 10);
     ASSERT_EQ(vector1->first_row_id, 103);
     ASSERT_EQ(vector1->row_count, 4);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanSequentialVectorRead) {
+    auto main = CreateNormalFile("main.parquet", 100, 10, 0);
+    auto vector0 = CreateDataFileMeta("vector0.vector.vortex", 100, 3, 1);
+    auto vector1 = CreateDataFileMeta("vector1.vector.vortex", 103, 4, 2);
+    auto vector2 = CreateDataFileMeta("vector2.vector.vortex", 107, 3, 3);
+    for (const auto& file : {vector0, vector1, vector2}) {
+        file->write_cols = std::vector<std::string>{"embedding"};
+    }
+    auto field_ids =
+        [main](const std::shared_ptr<DataFileMeta>& file) -> Result<std::vector<int32_t>> {
+        return file == main ? std::vector<int32_t>{0, 2} : std::vector<int32_t>{1};
+    };
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<DataEvolutionSplitRead::FieldBunch>> bunches,
+                         DataEvolutionSplitRead::TryPlanSequentialVectorRead(
+                             {vector2, main, vector0, vector1}, field_ids));
+    ASSERT_EQ(bunches.size(), 2);
+    ASSERT_EQ(bunches[0]->Files(), std::vector<std::shared_ptr<DataFileMeta>>{main});
+    ASSERT_EQ(bunches[1]->Files(),
+              (std::vector<std::shared_ptr<DataFileMeta>>{vector0, vector1, vector2}));
+    ASSERT_EQ(bunches[0]->RowCount(), 10);
+    ASSERT_EQ(bunches[1]->RowCount(), 10);
+    ASSERT_EQ(vector1->first_row_id, 103);
+    ASSERT_EQ(vector1->row_count, 4);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadFallsBackForUnsupportedLayouts) {
+    auto main = CreateNormalFile("main.parquet", 100, 10, 0);
+    auto vector0 = CreateDataFileMeta("vector0.vector.vortex", 100, 4, 1);
+    auto vector1 = CreateDataFileMeta("vector1.vector.vortex", 104, 6, 1);
+    vector0->write_cols = vector1->write_cols = std::vector<std::string>{"embedding"};
+    auto field_ids =
+        [main](const std::shared_ptr<DataFileMeta>& file) -> Result<std::vector<int32_t>> {
+        return file == main ? std::vector<int32_t>{0, 2} : std::vector<int32_t>{1};
+    };
+    auto check_fallback = [&](const std::vector<std::shared_ptr<DataFileMeta>>& files) {
+        ASSERT_OK_AND_ASSIGN(
+            std::vector<std::shared_ptr<DataEvolutionSplitRead::FieldBunch>> bunches,
+            DataEvolutionSplitRead::TryPlanSequentialVectorRead(files, field_ids));
+        ASSERT_TRUE(bunches.empty());
+    };
+    check_fallback({vector0, vector1});
+    check_fallback({main, main, vector0, vector1});
+    check_fallback({main, vector0, vector1, CreateBlobFile("payload", 100, 10, 1, {{"payload"}})});
+    check_fallback({main, vector1});
+    vector1->first_row_id = 103;
+    check_fallback({main, vector0, vector1});
+    vector1->first_row_id = 105;
+    check_fallback({main, vector0, vector1});
+    vector1->first_row_id = 104;
+    vector1->row_count = 7;
+    check_fallback({main, vector0, vector1});
+    vector1->row_count = 6;
+    vector1->schema_id = 1;
+    check_fallback({main, vector0, vector1});
+    vector1->schema_id = 0;
+    vector1->file_name = "vector1.vector.parquet";
+    check_fallback({main, vector0, vector1});
+    vector1->file_name = "vector1.vector.vortex";
+    vector1->write_cols = std::vector<std::string>{"another_embedding"};
+    check_fallback({main, vector0, vector1});
+    vector1->write_cols = vector0->write_cols =
+        std::vector<std::string>{"embedding", "another_embedding"};
+    check_fallback({main, vector0, vector1});
+
+    vector1->write_cols = vector0->write_cols = std::vector<std::string>{"embedding"};
+    auto inline_field_ids =
+        [main](const std::shared_ptr<DataFileMeta>& file) -> Result<std::vector<int32_t>> {
+        return file == main ? std::vector<int32_t>{0, 1, 2} : std::vector<int32_t>{1};
+    };
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<DataEvolutionSplitRead::FieldBunch>> bunches,
+                         DataEvolutionSplitRead::TryPlanSequentialVectorRead(
+                             {main, vector0, vector1}, inline_field_ids));
+    ASSERT_TRUE(bunches.empty());
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadPropagatesMetadataErrors) {
+    auto main = CreateNormalFile("main.parquet", 100, 10, 0);
+    auto vector = CreateDataFileMeta("vector.vector.vortex", 100, 10, 1);
+    vector->write_cols = std::vector<std::string>{"embedding"};
+    auto failed_schema = [](const std::shared_ptr<DataFileMeta>&) -> Result<std::vector<int32_t>> {
+        return Status::IOError("schema unavailable");
+    };
+    auto result =
+        DataEvolutionSplitRead::TryPlanSequentialVectorRead({main, vector}, failed_schema);
+    ASSERT_NOK_WITH_MSG(result, "schema unavailable");
+    ASSERT_TRUE(result.status().IsIOError());
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadReusesMainReader) {
+    auto dir = UniqueTestDirectory::Create("local");
+    auto fs = std::make_shared<LocalFileSystem>();
+    auto schema = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(0, arrow::field("id", arrow::int32())),
+         DataField(1, arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 2)))});
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                        {Options::ROW_TRACKING_ENABLED, "true"},
+                                                        {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                        {Options::READ_BATCH_SIZE, "2"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        FileStorePathFactory::Create(dir->Str(), schema, {}, "default", "parquet", "data-",
+                                     /*legacy_partition_name_enabled=*/true, {}, std::nullopt,
+                                     /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(std::string bucket_path,
+                         path_factory->BucketPath(BinaryRow::EmptyRow(), 0));
+    ASSERT_OK(fs->Mkdirs(bucket_path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileFormat> format,
+                         FileFormatFactory::Get("parquet", options));
+    auto write_file = [&](const std::string& file_name, int64_t first_row_id,
+                          const std::shared_ptr<arrow::Array>& array,
+                          int64_t sequence) -> Result<std::shared_ptr<DataFileMeta>> {
+        ArrowSchema c_schema;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportType(*array->type(), &c_schema));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriterBuilder> builder,
+                               format->CreateWriterBuilder(&c_schema, 2));
+        const std::string path = PathUtil::JoinPath(bucket_path, file_name);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out, fs->Create(path, false));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatWriter> writer, builder->Build(out, "zstd"));
+        ArrowArray c_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+        PAIMON_RETURN_NOT_OK(writer->AddBatch(&c_array));
+        PAIMON_RETURN_NOT_OK(writer->Finish());
+        PAIMON_RETURN_NOT_OK(out->Close());
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs->GetFileStatus(path));
+        std::vector<std::string> write_cols;
+        for (const auto& field : array->type()->fields()) {
+            write_cols.push_back(field->name());
+        }
+        return DataFileMeta::ForAppend(file_name, file_status.GetLen(), array->length(),
+                                       SimpleStats::EmptyStats(), sequence, sequence,
+                                       /*schema_id=*/0, FileSource::Append(), std::nullopt,
+                                       std::nullopt, first_row_id, write_cols);
+    };
+    auto main_data = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({schema->field(0)}),
+                                                               "[[0], [1], [2], [3], [4], [5]]")
+                         .ValueOrDie();
+    auto vector_type = arrow::struct_(
+        {DataField(1, arrow::field("embedding", arrow::list(arrow::float32()))).ArrowField()});
+    auto vector0_data =
+        arrow::ipc::internal::json::ArrayFromJSON(vector_type, "[[[0, 1]], [null], [[2, 3]]]")
+            .ValueOrDie();
+    auto vector1_data =
+        arrow::ipc::internal::json::ArrayFromJSON(vector_type, "[[[3, 4]], [[4, 5]], [[5, 6]]]")
+            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> main,
+                         write_file("main.parquet", 0, main_data, 3));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> vector0,
+                         write_file("vector0.vector.parquet", 0, vector0_data, 4));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> vector1,
+                         write_file("vector1.vector.parquet", 3, vector1_data, 5));
+    DataSplitImpl::Builder split_builder(BinaryRow::EmptyRow(), 0, bucket_path,
+                                         {vector1, main, vector0});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> split,
+                         split_builder.RawConvertible(false).Build());
+    auto expected_type = arrow::struct_({SpecialFields::ValueKind().ArrowField(), schema->field(0),
+                                         schema->field(1), SpecialFields::RowId().ArrowField(),
+                                         SpecialFields::SequenceNumber().ArrowField()});
+    auto expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type, R"([
+            [0, 0, [0, 1], 0, 3], [0, 1, null, 1, 3], [0, 2, [2, 3], 2, 3],
+            [0, 3, [3, 4], 3, 3], [0, 4, [4, 5], 4, 3], [0, 5, [5, 6], 5, 3]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
+    for (const std::vector<std::string>& projection :
+         {std::vector<std::string>{"id", "embedding"},
+          std::vector<std::string>{"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"},
+          std::vector<std::string>{"id", "_ROW_ID", "_SEQUENCE_NUMBER"},
+          std::vector<std::string>{"_ROW_ID", "_SEQUENCE_NUMBER"}}) {
+        auto counting_fs = std::make_shared<CountingLocalFileSystem>(
+            PathUtil::JoinPath(bucket_path, main->file_name));
+        ReadContextBuilder builder(dir->Str());
+        builder.WithFileSystem(counting_fs).EnablePrefetch(false).SetReadFieldNames(projection);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
+                             InternalReadContext::Create(read_context, table_schema, options));
+        auto split_read = std::make_unique<DataEvolutionSplitRead>(path_factory, context,
+                                                                   GetDefaultPool(), executor);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, split_read->CreateReader(split));
+        split_read.reset();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_NE(result, nullptr);
+        arrow::ArrayVector columns = {expected->field(0)};
+        std::vector<std::string> names = {"_VALUE_KIND"};
+        for (const auto& name : projection) {
+            columns.push_back(expected->GetFieldByName(name));
+            names.push_back(name);
+        }
+        auto projected = arrow::StructArray::Make(columns, names).ValueOrDie();
+        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(projected))) << result->ToString();
+        ASSERT_EQ(counting_fs->OpenCount(), 1);
+    }
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesPreservesOldPrefixAndSuffix) {
