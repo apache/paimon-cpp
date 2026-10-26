@@ -22,6 +22,10 @@
 #include <optional>
 #include <string>
 
+#include "paimon/common/utils/path_util.h"
+#include "paimon/result.h"
+#include "paimon/status.h"
+
 namespace paimon {
 
 /// Path factory for global index checkpoints scoped to one task.
@@ -38,6 +42,13 @@ class IndexCheckpointPathFactory {
 
     /// Returns the checkpoint id when the file name belongs to this factory.
     virtual std::optional<int64_t> GetCheckpointId(const std::string& file_name) const = 0;
+
+    /// Returns the task's checkpoint directory after validating its identifier.
+    static Result<std::string> GetTaskDirectory(const std::string& table_path,
+                                                const std::string& task_id) {
+        PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint task id", task_id));
+        return PathUtil::JoinPath(PathUtil::JoinPath(table_path, "index/checkpoint"), task_id);
+    }
 };
 
 }  // namespace paimon

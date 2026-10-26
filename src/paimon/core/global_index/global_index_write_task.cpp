@@ -20,6 +20,7 @@
 #include "paimon/global_index/global_index_write_task.h"
 
 #include <set>
+#include <utility>
 
 #include "arrow/array/array_nested.h"
 #include "arrow/c/bridge.h"
@@ -34,6 +35,7 @@
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/global_index/global_index_file_manager.h"
+#include "paimon/core/index/index_checkpoint_path_factory.h"
 #include "paimon/core/io/data_increment.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
@@ -47,6 +49,26 @@
 #include "paimon/table/source/table_read.h"
 namespace paimon {
 namespace {
+Result<std::pair<std::shared_ptr<TableSchema>, CoreOptions>> LoadSchemaAndOptions(
+    const std::string& table_path, const std::map<std::string, std::string>& options,
+    const std::shared_ptr<FileSystem>& file_system) {
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options, CoreOptions::FromMap(options, file_system));
+    SchemaManager schema_manager(tmp_options.GetFileSystem(), table_path);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_table_schema,
+                           schema_manager.Latest());
+    if (latest_table_schema == std::nullopt) {
+        return Status::Invalid("not found latest schema");
+    }
+    const auto& table_schema = latest_table_schema.value();
+    auto final_options = table_schema->Options();
+    for (const auto& [key, value] : options) {
+        final_options[key] = value;
+    }
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
+                           CoreOptions::FromMap(final_options, file_system));
+    return std::make_pair(table_schema, std::move(core_options));
+}
+
 Result<std::unique_ptr<GlobalIndexer>> CreateGlobalIndexer(const std::string& index_type,
                                                            const CoreOptions& core_options) {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GlobalIndexer> indexer,
@@ -342,22 +364,10 @@ Result<std::shared_ptr<CommitMessage>> GlobalIndexWriteTask::WriteIndex(
     std::shared_ptr<MemoryPool> pool = memory_pool ? memory_pool : GetDefaultPool();
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
 
-    // load schema
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options, CoreOptions::FromMap(options, file_system));
-    SchemaManager schema_manager(tmp_options.GetFileSystem(), table_path);
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_table_schema,
-                           schema_manager.Latest());
-    if (latest_table_schema == std::nullopt) {
-        return Status::Invalid("not found latest schema");
-    }
-    // merge options
-    const auto& table_schema = latest_table_schema.value();
-    auto final_options = table_schema->Options();
-    for (const auto& [key, value] : options) {
-        final_options[key] = value;
-    }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                           CoreOptions::FromMap(final_options, file_system));
+    std::pair<std::shared_ptr<TableSchema>, CoreOptions> schema_and_options;
+    PAIMON_ASSIGN_OR_RAISE(schema_and_options,
+                           LoadSchemaAndOptions(table_path, options, file_system));
+    const auto& [table_schema, core_options] = schema_and_options;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GlobalIndexer> indexer,
                            CreateGlobalIndexer(index_type, core_options));
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::vector<std::string>> extra_field_names,
@@ -408,6 +418,24 @@ Result<std::shared_ptr<CommitMessage>> GlobalIndexWriteTask::WriteIndex(
     return ToCommitMessage(index_type, field.Id(), range, global_index_io_metas,
                            data_split->Partition(), data_split->Bucket(), index_file_manager,
                            extra_field_ids);
+}
+
+Status GlobalIndexWriteTask::DeleteCheckpoint(const std::string& table_path,
+                                              const std::string& task_id,
+                                              const std::map<std::string, std::string>& options,
+                                              const std::shared_ptr<FileSystem>& file_system) {
+    PAIMON_ASSIGN_OR_RAISE(std::string task_directory,
+                           IndexCheckpointPathFactory::GetTaskDirectory(table_path, task_id));
+    std::pair<std::shared_ptr<TableSchema>, CoreOptions> schema_and_options;
+    PAIMON_ASSIGN_OR_RAISE(schema_and_options,
+                           LoadSchemaAndOptions(table_path, options, file_system));
+    std::shared_ptr<FileSystem> fs = schema_and_options.second.GetFileSystem();
+    PAIMON_ASSIGN_OR_RAISE(bool exists, fs->Exists(task_directory));
+    if (!exists) {
+        return Status::OK();
+    }
+    Status status = fs->Delete(task_directory, /*recursive=*/true);
+    return status.IsNotExist() ? Status::OK() : status;
 }
 
 }  // namespace paimon

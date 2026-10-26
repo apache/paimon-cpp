@@ -38,6 +38,22 @@ Global indexes work on top of Data Evolution tables. To use global indexes, your
 - ``'row-tracking.enabled' = 'true'``
 - ``'data-evolution.enabled' = 'true'``
 
+Cleaning Up Build Checkpoints
+-----------------------------
+
+Checkpoint-enabled index builds remove their checkpoints after a successful build. If a process
+crashes, use ``GlobalIndexWriteTask::DeleteCheckpoint`` to remove all checkpoints left by that
+task once it is no longer running or being retried:
+
+.. code-block:: cpp
+
+   PAIMON_RETURN_NOT_OK(paimon::GlobalIndexWriteTask::DeleteCheckpoint(
+       table_path, "build-task-1", options, file_system));
+
+Pass the same table path and task id used in ``WriteIndex``. Task ids must be unique within the
+table. The cleanup recursively removes the whole task directory, other tasks' directories and completed
+index files are preserved.
+
 Bitmap Index
 ------------
 

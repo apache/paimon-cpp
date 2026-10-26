@@ -27,6 +27,7 @@
 #include "paimon/global_index/indexed_split.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
+#include "paimon/status.h"
 #include "paimon/utils/range.h"
 #include "paimon/visibility.h"
 
@@ -48,9 +49,9 @@ class PAIMON_EXPORT GlobalIndexWriteTask {
     /// @param options      Index-specific configuration (e.g., false positive rate for bloom
     ///                     filters).
     /// @param task_id      When checkpoints are enabled, the caller must provide a non-empty task
-    ///                     identifier that uniquely identifies an index build task. Reuse it when
-    ///                     retrying the same build. If the source data, build configuration, or
-    ///                     build source code changes, the caller must use a new identifier;
+    ///                     identifier that uniquely identifies an index build task within the
+    ///                     table. Reuse it when retrying the same build. If the source data, build
+    ///                     configuration, or build source code changes, use a new identifier;
     ///                     otherwise, the index build may fail. Pass nullopt when checkpoints are
     ///                     disabled. Index types without checkpoint support ignore this value.
     /// @param pool         Memory pool for temporary allocations during index construction.
@@ -65,6 +66,19 @@ class PAIMON_EXPORT GlobalIndexWriteTask {
         const std::map<std::string, std::string>& options,
         const std::optional<std::string>& task_id, const std::shared_ptr<MemoryPool>& pool,
         const std::shared_ptr<FileSystem>& file_system = nullptr);
+
+    /// Deletes all checkpoints left by a global index build task. The caller must ensure that this
+    /// task is no longer building or being retried.
+    ///
+    /// @param table_path   Path to the table root directory used for the build.
+    /// @param task_id      Non-empty, unique task identifier passed to `WriteIndex`.
+    /// @param options      Configuration overrides. Used to load the schema, then merged with
+    ///                     schema options, with these overrides taking precedence.
+    /// @param file_system  Specifies the file system. If `nullptr`, use default file system.
+    /// @return OK if the task directory was deleted or does not exist.
+    static Status DeleteCheckpoint(const std::string& table_path, const std::string& task_id,
+                                   const std::map<std::string, std::string>& options,
+                                   const std::shared_ptr<FileSystem>& file_system = nullptr);
 };
 
 }  // namespace paimon

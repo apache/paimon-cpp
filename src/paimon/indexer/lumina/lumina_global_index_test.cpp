@@ -429,7 +429,7 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
     auto test_root_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);
     std::string test_root = test_root_dir->Str();
-    std::string prefix = "lumina-global-index-f0-10-20-task-1-";
+    std::string prefix = "lumina-global-index-f0-10-20-";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory,
                          CreateCheckpointPathFactory(test_root, "lumina", "f0", Range(10, 20)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
@@ -457,13 +457,13 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
     ASSERT_EQ(second_written, 6);
     ASSERT_OK(second_output->Close());
 
-    std::string checkpoint_dir = PathUtil::JoinPath(test_root, "index/checkpoint");
+    std::string checkpoint_dir = PathUtil::JoinPath(test_root, "index/checkpoint/task-1");
     ASSERT_OK(fs_->WriteFile(PathUtil::JoinPath(checkpoint_dir, prefix + "9.index.ckpt"), "id-nine",
                              /*overwrite=*/false));
     ASSERT_OK(fs_->WriteFile(PathUtil::JoinPath(checkpoint_dir, prefix + "10.index.ckpt"), "id-ten",
                              /*overwrite=*/false));
     std::string unrelated_file =
-        PathUtil::JoinPath(checkpoint_dir, "lumina-global-index-other-10-20-task-2-99.index.ckpt");
+        PathUtil::JoinPath(checkpoint_dir, "lumina-global-index-other-10-20-99.index.ckpt");
     ASSERT_OK(fs_->WriteFile(unrelated_file, "unrelated", /*overwrite=*/false));
     std::string malformed_file =
         PathUtil::JoinPath(checkpoint_dir, prefix + "invalid-99.index.ckpt");
@@ -709,7 +709,8 @@ TEST_F(LuminaGlobalIndexTest, TestWriteAndReadWithTagFilter) {
         GlobalIndexIOMeta meta,
         WriteGlobalIndex(test_root, tag_data_type, tag_options, tag_array, Range(0, 3)));
     std::vector<BasicFileStatus> checkpoint_files;
-    ASSERT_OK(fs_->ListDir(PathUtil::JoinPath(test_root, "index/checkpoint"), &checkpoint_files));
+    ASSERT_OK(
+        fs_->ListDir(PathUtil::JoinPath(test_root, "index/checkpoint/task-1"), &checkpoint_files));
     ASSERT_TRUE(checkpoint_files.empty());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader,
                          CreateGlobalIndexReader(test_root, data_type_, tag_options, meta));
