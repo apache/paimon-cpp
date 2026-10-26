@@ -55,8 +55,24 @@ class PAIMON_EXPORT Logger {
  public:
     using LoggerCreator = std::function<std::unique_ptr<Logger>(const std::string&)>;
 
+    /// Register a creator that `GetLogger()` uses instead of the default glog logger.
+    ///
+    /// @param creator Creates a logger from the `path` passed to `GetLogger()`. All `GetLogger()`
+    /// calls share it, so it must be safe to call from multiple threads simultaneously, and its
+    /// state persists across calls. It may call `RegisterLogger()`. It replaces any previously
+    /// registered creator, which stays alive until running `GetLogger()` calls finish with it.
+    ///
+    /// @note This method is thread-safe and can be called concurrently with `GetLogger()`.
     static void RegisterLogger(LoggerCreator creator);
 
+    /// Get a logger from the registered creator, or a glog logger if no creator is registered.
+    ///
+    /// @param path Name of the logger, such as the class that logs. It is passed to the
+    /// registered creator, and the glog logger ignores it.
+    ///
+    /// @return A unique pointer to the logger.
+    ///
+    /// @note This method is thread-safe.
     static std::unique_ptr<Logger> GetLogger(const std::string& path);
 
     virtual void LogV(PaimonLogLevel level, const char* fname, int lineno, const char* function,

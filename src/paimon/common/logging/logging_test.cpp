@@ -19,6 +19,7 @@
 #include "paimon/logging.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <functional>
 #include <future>
@@ -64,6 +65,55 @@ void RegisterCustomLoggerCreatorAndExit() {
                               g_creator_calls.load() == 1 &&
                               logger->IsLevelEnabled(PAIMON_LOG_LEVEL_INFO);
     std::_Exit(used_creator ? 0 : 1);
+}
+
+void RegisterStatefulLoggerCreatorAndExit() {
+    g_creator_calls.store(0);
+    Logger::RegisterLogger([calls = 0](const std::string&) mutable -> std::unique_ptr<Logger> {
+        g_creator_calls.store(++calls);
+        return nullptr;
+    });
+    Logger::GetLogger("first");
+    Logger::GetLogger("second");
+    std::_Exit(g_creator_calls.load() == 2 ? 0 : 1);
+}
+
+void RegisterLoggerCreatorWhileGettingLoggerAndExit() {
+    g_creator_calls.store(0);
+    std::thread getter([]() {
+        while (g_creator_calls.load() == 0) {
+            Logger::GetLogger("getter");
+        }
+    });
+    Logger::RegisterLogger([](const std::string&) -> std::unique_ptr<Logger> {
+        g_creator_calls.fetch_add(1);
+        return nullptr;
+    });
+    getter.join();
+    // std::exit runs ThreadSanitizer's exit check, which fails the process on a race.
+    std::exit(0);
+}
+
+void RegisterLoggerFromLoggerCreatorAndExit() {
+    static std::weak_ptr<int> creator_state;
+    static bool kept_alive = false;
+    auto state = std::make_shared<int>(0);
+    creator_state = state;
+    Logger::RegisterLogger([state](const std::string&) -> std::unique_ptr<Logger> {
+        Logger::RegisterLogger(
+            [](const std::string&) -> std::unique_ptr<Logger> { return nullptr; });
+        kept_alive = !creator_state.expired();
+        return nullptr;
+    });
+    state.reset();
+    std::future<void> getter =
+        std::async(std::launch::async, []() { Logger::GetLogger("getter"); });
+    if (getter.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
+        std::cerr << "GetLogger() did not finish within 30 seconds" << std::endl;
+        std::_Exit(1);
+    }
+    getter.get();
+    std::_Exit(kept_alive && creator_state.expired() ? 0 : 1);
 }
 
 }  // namespace
@@ -191,5 +241,20 @@ TEST(LoggerTest, TestGlogWritesLogFileToDisk) {
 TEST(LoggerTest, TestRegisterCustomLoggerCreator) {
     ::testing::FLAGS_gtest_death_test_style = "threadsafe";
     ASSERT_EXIT(RegisterCustomLoggerCreatorAndExit(), ::testing::ExitedWithCode(0), "");
+}
+
+TEST(LoggerTest, TestRegisterStatefulLoggerCreator) {
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT(RegisterStatefulLoggerCreatorAndExit(), ::testing::ExitedWithCode(0), "");
+}
+
+TEST(LoggerTest, TestRegisterLoggerCreatorWhileGettingLogger) {
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT(RegisterLoggerCreatorWhileGettingLoggerAndExit(), ::testing::ExitedWithCode(0), "");
+}
+
+TEST(LoggerTest, TestRegisterLoggerFromLoggerCreator) {
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT(RegisterLoggerFromLoggerCreatorAndExit(), ::testing::ExitedWithCode(0), "");
 }
 }  // namespace paimon::test
