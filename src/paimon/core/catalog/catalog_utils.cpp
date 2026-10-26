@@ -22,10 +22,12 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/options/table_type.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
@@ -42,6 +44,21 @@ Status SystemTableError(const Identifier& identifier, const std::string& action)
 }
 
 }  // namespace
+
+Identifier CatalogUtils::IdentifierFromPath(const std::string& table_path,
+                                            const std::string& branch) {
+    const std::vector<std::string> paths = StringUtils::Split(table_path, "/");
+    if (paths.size() < 2) {
+        return Identifier(Identifier::kUnknownDatabase,
+                          paths.empty() ? std::string() : paths.front());
+    }
+    const std::string& database = paths[paths.size() - 2];
+    const std::string::size_type index = database.rfind(Catalog::DB_SUFFIX);
+    if (index == std::string::npos) {
+        return Identifier(Identifier::kUnknownDatabase, paths.back(), branch);
+    }
+    return Identifier(database.substr(0, index), paths.back(), branch);
+}
 
 bool CatalogUtils::IsSystemDatabase(const std::string& db_name) {
     return db_name == Catalog::SYSTEM_DATABASE_NAME;
@@ -72,6 +89,16 @@ Result<Identifier> CatalogUtils::BranchIdentifier(const Identifier& identifier,
                                                   const std::string& branch) {
     PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
     return Identifier(identifier.GetDatabaseName(), data_table_name, branch);
+}
+
+Result<std::optional<Identifier>> CatalogUtils::BranchIdentifier(
+    const std::optional<Identifier>& identifier, const std::string& branch) {
+    if (!identifier) {
+        return std::optional<Identifier>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
+                           BranchIdentifier(identifier.value(), branch));
+    return std::optional<Identifier>(std::move(branch_identifier));
 }
 
 Status CatalogUtils::CheckNotBranch(const Identifier& identifier, const std::string& action) {

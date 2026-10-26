@@ -33,7 +33,14 @@ class FileSystem;
 /// Context passed to global system table constructors, providing catalog-level
 /// access for enumerating databases, tables, and reading metadata.
 struct GlobalSystemTableContext {
-    const Catalog* catalog = nullptr;  // non-owning pointer
+    /// The catalog the table reads its rows through, non-owning: the rows are built lazily,
+    /// so a table that outlives the call that built it must be handed the shared ownership
+    /// below too, or this pointer dangles at the first `BuildRows`.
+    const Catalog* catalog = nullptr;
+    /// The shared ownership a returned table keeps of its catalog, so its lazy `BuildRows`
+    /// cannot read through one already destroyed. Empty where the table is transient - used
+    /// within the call, before the catalog can go away.
+    std::shared_ptr<const Catalog> catalog_retainer;
     std::shared_ptr<FileSystem> fs;
     std::string warehouse;
     std::map<std::string, std::string> catalog_options;

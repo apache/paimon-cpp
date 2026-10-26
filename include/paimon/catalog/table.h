@@ -44,36 +44,33 @@ class WriteContext;
 
 /// A table provides basic abstraction for table type.
 ///
-/// The state a table of every kind carries - file system, root path, schema and identifier - lives
-/// here, and each kind of table fills the operations in: the operators below create this table's
-/// scan, read, write or commit, from a context the caller finishes through its builder. What the
-/// context asks for that this table cannot honour is refused by name by the implementation rather
+/// The state every kind of table carries - file system, root path, schema and identifier - lives
+/// here, and each kind fills the operations in. The `NewXxx` operators below are the table-first
+/// entry points: `TableScan::Create()` and friends load the table a context names and hand the
+/// context to them. What a context asks for that the table cannot honour is refused by name rather
 /// than silently dropped.
 class PAIMON_EXPORT Table {
  public:
     virtual ~Table() = default;
 
-    /// Returns the file system the table was opened with, which serves the table's
-    /// files. A catalog that hands out per-table file systems opens a table with the
-    /// one for that table; it is null when the opener had none. The `NewXxx`
-    /// operations read the table through it.
+    /// Returns the file system the table was opened with, null when the opener had none. A
+    /// catalog that hands out per-table file systems opens a table with the one for that table.
     std::shared_ptr<FileSystem> GetFileSystem() const {
         return file_system_;
     }
 
-    /// Returns the root path of the table in its file system. It is empty when the
-    /// opener had no location for the table, which a mock in a test is one case of.
-    /// The `NewXxx` operations serve the table from it.
+    /// Returns the root path of the table in its file system. It is empty when the opener had no
+    /// location for the table, which a mock in a test is one case of.
     const std::string& GetRootPath() const {
         return root_path_;
     }
 
-    /// A name to identify this table, which each kind of table answers for itself: a managed or
-    /// format table is named by its identifier, a system table by its own kind.
+    /// A name to identify this table: a managed or format table answers its identifier's object
+    /// name, a system table its own kind.
     virtual std::string Name() const = 0;
 
-    /// Full name of the table, which each kind of table answers for itself. A managed or format
-    /// table answers database.tableName, a system table the same name as `Name()`.
+    /// Full name of the table: `database.tableName` for a managed or format table, the same name
+    /// as `Name()` for a system table.
     virtual std::string FullName() const = 0;
 
     /// Returns the metastore UUID, falling back to `FullName()`.
@@ -93,41 +90,34 @@ class PAIMON_EXPORT Table {
         return schema_;
     }
 
-    /// Copies this table with `dynamic_options` on top of the options it carries, which is
-    /// the precedence every context builder promises for a table it was handed rather than loaded
-    /// itself: an option given at the call wins over the one the schema stored.
-    ///
-    /// `type` is not overridable: it is structural and is read from the schema alone.
+    /// Copies this table with `dynamic_options` on top of the options it carries: an option given
+    /// at the call wins over the one the schema stored, the precedence every context builder
+    /// promises. `type` is not overridable - it is structural and read from the schema alone.
     ///
     /// @param dynamic_options Options given at the call.
     /// @return A result containing the copied table, or the error copying it reports.
     virtual Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const = 0;
 
-    /// Creates a scan of this table from a finished scan context, the table-first entry point
-    /// that `TableScan::Create()` loads the table the context names and hands the context to.
+    /// Creates a scan of this table from a finished scan context.
     /// @param context The finished scan context.
     /// @return The scan, or the error building it reports.
     virtual Result<std::unique_ptr<TableScan>> NewScan(
         std::unique_ptr<ScanContext> context) const = 0;
 
-    /// Creates a read of this table from a finished read context, the table-first entry point
-    /// that `TableRead::Create()` loads the table the context names and hands the context to.
+    /// Creates a read of this table from a finished read context.
     /// @param context The finished read context.
     /// @return The read, or the error building it reports.
     virtual Result<std::unique_ptr<TableRead>> NewRead(
         std::unique_ptr<ReadContext> context) const = 0;
 
-    /// Creates a write of this table from a finished write context, the table-first entry point
-    /// that `FileStoreWrite::Create()` loads the table the context names and hands the context to.
+    /// Creates a write of this table from a finished write context.
     /// @param context The finished write context.
     /// @return The write, or the error building it reports.
     virtual Result<std::unique_ptr<FileStoreWrite>> NewWrite(
         std::unique_ptr<WriteContext> context) const = 0;
 
-    /// Creates a commit of this table from a finished commit context, the table-first entry point
-    /// that `FileStoreCommit::Create()` loads the table the context names and hands the context
-    /// to.
+    /// Creates a commit of this table from a finished commit context.
     /// @param context The finished commit context.
     /// @return The commit, or the error building it reports.
     virtual Result<std::unique_ptr<FileStoreCommit>> NewCommit(

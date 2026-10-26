@@ -51,6 +51,15 @@ class SchemaValidation {
 
     static Status ValidateTableSchema(const TableSchema& schema);
 
+    /// Whether a copy's dynamic options stay within what the data on the table's path was laid out
+    /// with - the C++ reading of the Java `AbstractFileStoreTable#checkImmutability`. An option
+    /// that says what the schema already says moves nothing, an immutable one that says anything
+    /// else is refused, and `ignore-delete` carries the Java check's directional rule of its own:
+    /// it may only ever be turned on, never back off. The immutable options themselves are the
+    /// Java `CoreOptions.IMMUTABLE_OPTIONS`, as far as the C++ side has constants for them.
+    static Status CheckImmutableOptions(const TableSchema& schema,
+                                        const std::map<std::string, std::string>& dynamic_options);
+
     /// Validates real-time options after operation-specific options have been merged with the
     /// table schema options.
     static Status ValidateRealtime(const TableSchema& schema, const CoreOptions& options);

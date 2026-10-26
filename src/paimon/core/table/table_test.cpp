@@ -36,10 +36,13 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/file_store_table.h"
+#include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/table/source/fallback_data_split.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/read_context.h"
+#include "paimon/reader/batch_reader.h"
 #include "paimon/record_batch.h"
 #include "paimon/scan_context.h"
 #include "paimon/schema/schema.h"
@@ -49,6 +52,8 @@
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/mock/mock_file_system.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/write_context.h"
 
@@ -73,29 +78,6 @@ Result<std::shared_ptr<Table>> CreateManagedTable(
         /*uuid=*/"", branch);
 }
 
-/// Counts the lookups a scan makes, which is enough to tell that the cache a context carries
-/// reached the scan's manifest reading rather than being dropped on the way.
-class CountingCache : public Cache {
- public:
-    Result<std::shared_ptr<CacheValue>> Get(
-        const std::shared_ptr<CacheKey>& key,
-        std::function<Result<std::shared_ptr<CacheValue>>(const std::shared_ptr<CacheKey>&)>
-            supplier) override {
-        gets++;
-        return supplier(key);
-    }
-    Status Put(const std::shared_ptr<CacheKey>&, const std::shared_ptr<CacheValue>&) override {
-        return Status::OK();
-    }
-    void Invalidate(const std::shared_ptr<CacheKey>&) override {}
-    void InvalidateAll() override {}
-    size_t Size() const override {
-        return 0;
-    }
-
-    int32_t gets = 0;
-};
-
 /// Writes two rows through the table's own write and commit, so a scan below has data to find.
 void WriteAndCommitTwoRows(const std::shared_ptr<Table>& table, const std::string& root_path) {
     WriteContextBuilder write_builder(root_path, "commit-user");
@@ -109,6 +91,42 @@ void WriteAndCommitTwoRows(const std::shared_ptr<Table>& table, const std::strin
     auto struct_array = arrow::StructArray::Make({ids_array}, {arrow::field("id", arrow::int32(),
                                                                             /*nullable=*/false)})
                             .ValueOrDie();
+    ::ArrowArray arrow_array;
+    ASSERT_TRUE(arrow::ExportArray(*struct_array, &arrow_array).ok());
+    RecordBatchBuilder batch_builder(&arrow_array);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch, batch_builder.SetBucket(0).Finish());
+    ASSERT_OK(write->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         write->PrepareCommit());
+    CommitContextBuilder commit_builder(root_path, "commit-user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         table->NewCommit(std::move(commit_context)));
+    ASSERT_OK(commit->Commit(messages));
+    ASSERT_OK(write->Close());
+}
+
+/// Writes one `id`/`v` row through the table's own write and commit, so a scan below has data
+/// to find.
+void WriteAndCommitRow(const std::shared_ptr<Table>& table, const std::string& root_path,
+                       int32_t id, int32_t v) {
+    WriteContextBuilder write_builder(root_path, "commit-user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
+                         table->NewWrite(std::move(write_context)));
+    arrow::Int32Builder ids_builder;
+    arrow::Int32Builder vs_builder;
+    ASSERT_TRUE(ids_builder.AppendValues({id}).ok());
+    ASSERT_TRUE(vs_builder.AppendValues({v}).ok());
+    std::shared_ptr<arrow::Array> ids_array;
+    std::shared_ptr<arrow::Array> vs_array;
+    ASSERT_TRUE(ids_builder.Finish(&ids_array).ok());
+    ASSERT_TRUE(vs_builder.Finish(&vs_array).ok());
+    auto struct_array =
+        arrow::StructArray::Make({ids_array, vs_array},
+                                 {arrow::field("id", arrow::int32(), /*nullable=*/false),
+                                  arrow::field("v", arrow::int32())})
+            .ValueOrDie();
     ::ArrowArray arrow_array;
     ASSERT_TRUE(arrow::ExportArray(*struct_array, &arrow_array).ok());
     RecordBatchBuilder batch_builder(&arrow_array);
@@ -196,6 +214,219 @@ TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
         ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
                              branch_file_store_copy->NewScan(std::move(ctx)));
     }
+}
+
+TEST(TableTest, TestACopyHandsItsDynamicOptionsToTheFallbackReader) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/tbl";
+    const Identifier identifier("db", "tbl");
+
+    // A primary-key table whose reads fall back to the `fb` branch, and that branch's schema.
+    SchemaManager schema_manager(fs, path, "main");
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> created,
+        schema_manager.CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                                   {{Options::BUCKET, "1"},
+                                    {Options::BUCKET_KEY, "id"},
+                                    {Options::SCAN_FALLBACK_BRANCH, "fb"}}));
+    SchemaManager fallback_schema_manager(fs, path, "fb");
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> fallback_schema,
+        fallback_schema_manager.CreateTable(schema, /*partition_keys=*/{},
+                                            /*primary_keys=*/{"id"},
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        FileStoreTable::Create(
+            fs, path,
+            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))),
+            identifier, /*uuid=*/"", /*branch=*/"main"));
+
+    // The copy turns the sequence-number column on, and a read projects it through a context
+    // that carries no options of its own. The main reader serves the copy's merged options, so
+    // it knows the column; the fallback serves the `fb` branch's schema, whose options do not
+    // name it, so the copy's own dynamic options are what let the fallback reader know it too -
+    // without them the read as a whole fails to build.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy,
+                         table->Copy({{Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"}}));
+    ReadContextBuilder read_builder(path);
+    read_builder.SetReadFieldNames({"id", "_SEQUENCE_NUMBER"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
+                         copy->NewRead(std::move(read_context)));
+}
+
+TEST(TableTest, TestACopyOfACopyServesTheLatestValueOfARepeatedDynamicOption) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/tbl";
+    const Identifier identifier("db", "tbl");
+
+    // A primary-key table whose reads fall back to the `fb` branch, and that branch's schema.
+    SchemaManager schema_manager(fs, path, "main");
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> created,
+        schema_manager.CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                                   {{Options::BUCKET, "1"},
+                                    {Options::BUCKET_KEY, "id"},
+                                    {Options::SCAN_FALLBACK_BRANCH, "fb"}}));
+    SchemaManager fallback_schema_manager(fs, path, "fb");
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> fallback_schema,
+        fallback_schema_manager.CreateTable(schema, /*partition_keys=*/{},
+                                            /*primary_keys=*/{"id"},
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        FileStoreTable::Create(
+            fs, path,
+            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))),
+            identifier, /*uuid=*/"", /*branch=*/"main"));
+
+    // The option is turned off and then on again by the copy the read serves, so the copy's
+    // schema carries the latest value. The fallback branch's schema does not carry the option
+    // at all, so what lets its reader know the column is the copy's accumulated dynamic
+    // options - which must speak the same latest value the schema does, not the older one a
+    // first copy left, or the fallback reader fails to build while the main one succeeds.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> off,
+                         table->Copy({{Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "false"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy,
+                         off->Copy({{Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"}}));
+    ReadContextBuilder read_builder(path);
+    read_builder.SetReadFieldNames({"id", "_SEQUENCE_NUMBER"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
+                         copy->NewRead(std::move(read_context)));
+}
+
+TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnSchema) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/tbl";
+    const Identifier identifier("db", "tbl");
+
+    // The main branch is an append-only table whose reads fall back to the `fb` branch, and
+    // that branch is laid out as a primary-key table: a second write of the key the first
+    // wrote is a merge, not a duplicate.
+    SchemaManager main_schema_manager(fs, path, "main");
+    auto row_schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
+                                     arrow::field("v", arrow::int32())});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> main_created,
+                         main_schema_manager.CreateTable(row_schema, /*partition_keys=*/{},
+                                                         /*primary_keys=*/{},
+                                                         {{Options::BUCKET, "1"},
+                                                          {Options::BUCKET_KEY, "id"},
+                                                          {Options::SCAN_FALLBACK_BRANCH, "fb"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> main,
+        FileStoreTable::Create(
+            fs, path,
+            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(main_created))),
+            identifier, /*uuid=*/"", /*branch=*/"main"));
+
+    SchemaManager fallback_schema_manager(fs, path, "fb");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> fallback_created,
+        fallback_schema_manager.CreateTable(row_schema, /*partition_keys=*/{},
+                                            /*primary_keys=*/{"id"},
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> fallback,
+        FileStoreTable::Create(
+            fs, path,
+            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(fallback_created))),
+            identifier, /*uuid=*/"", /*branch=*/"fb"));
+    WriteAndCommitRow(fallback, path, /*id=*/1, /*v=*/10);
+    WriteAndCommitRow(fallback, path, /*id=*/1, /*v=*/20);
+
+    // The read of the main table carries its fallback reader, which reads the `fb` branch's
+    // data through the `fb` branch's own schema - so it is the primary-key read that schema's
+    // layout asks for, not the append-only one the main table's kind would pick. Its splits
+    // are the `fb` branch's own, scanned through a table that serves `fb` and read as
+    // fallback ones, which is how a fallback reader is asked for its rows.
+    ReadContextBuilder read_builder(path);
+    read_builder.SetReadFieldNames({"id", "v"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, main->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                         ScanContextBuilder(path).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> fallback_scan,
+                         fallback->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> fallback_plan, fallback_scan->CreatePlan());
+    ASSERT_FALSE(fallback_plan->Splits().empty());
+    std::vector<std::shared_ptr<Split>> fallback_splits;
+    for (const std::shared_ptr<Split>& split : fallback_plan->Splits()) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_TRUE(data_split != nullptr);
+        fallback_splits.push_back(
+            std::make_shared<FallbackDataSplit>(data_split, /*is_fallback=*/true));
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         read->CreateReader(fallback_splits));
+
+    // The one merged row the `fb` branch's primary-key layout leaves behind - at the value
+    // the second write carried - is what the fallback reader answers with; the append-only
+    // reader the main table's kind would have picked answers with both rows, or refuses the
+    // split outright.
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, batch_reader->NextBatch());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                         ReadResultCollector::GetArray(std::move(batch)));
+    ASSERT_TRUE(array);
+    ASSERT_EQ(array->length(), 1);
+    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
+    ASSERT_TRUE(struct_array != nullptr);
+    EXPECT_EQ(struct_array->num_fields(), 3);
+    auto value_kind_array = std::dynamic_pointer_cast<arrow::Int8Array>(struct_array->field(0));
+    auto id_array = std::dynamic_pointer_cast<arrow::Int32Array>(struct_array->field(1));
+    auto v_array = std::dynamic_pointer_cast<arrow::Int32Array>(struct_array->field(2));
+    ASSERT_TRUE(value_kind_array != nullptr);
+    ASSERT_TRUE(id_array != nullptr);
+    ASSERT_TRUE(v_array != nullptr);
+    EXPECT_EQ(value_kind_array->Value(0), 0);
+    EXPECT_EQ(id_array->Value(0), 1);
+    EXPECT_EQ(v_array->Value(0), 20);
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof_batch, batch_reader->NextBatch());
+    EXPECT_TRUE(BatchReader::IsEofBatch(eof_batch));
+}
+
+TEST(TableTest, TestACopyThatMovesAnS3OptionRebuildsItsManagers) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/tbl";
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        CreateManagedTable(
+            fs, path, identifier, /*branch=*/"main",
+            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}, {"s3.endpoint", "http://old"}}));
+    auto file_store_table = std::dynamic_pointer_cast<FileStoreTable>(table);
+    ASSERT_TRUE(file_store_table != nullptr);
+
+    // A native `s3.` option names the file system the S3 backend resolves from, the way an
+    // `fs.` one does: a copy that moves it re-resolves, so the managers are rebuilt rather
+    // than inherited - otherwise the copy would read its metadata through the old endpoint
+    // while its data goes through the new one.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> moved,
+                         table->Copy({{"s3.endpoint", "http://new"}}));
+    auto moved_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(moved);
+    ASSERT_TRUE(moved_file_store_table != nullptr);
+    EXPECT_NE(moved_file_store_table->GetSchemaManager(), file_store_table->GetSchemaManager());
+    EXPECT_NE(moved_file_store_table->GetSnapshotManager(), file_store_table->GetSnapshotManager());
+
+    // A copy whose `s3.` option says what the schema already says resolves the same file
+    // system, so the managers are the ones this table already holds.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> kept, table->Copy({{"s3.endpoint", "http://old"}}));
+    auto kept_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(kept);
+    ASSERT_TRUE(kept_file_store_table != nullptr);
+    EXPECT_EQ(kept_file_store_table->GetSchemaManager(), file_store_table->GetSchemaManager());
+    EXPECT_EQ(kept_file_store_table->GetSnapshotManager(), file_store_table->GetSnapshotManager());
 }
 
 TEST(TableTest, TestSwitchToBranch) {
@@ -896,15 +1127,20 @@ TEST(TableTest, TestTheCacheAScanContextCarriesReachesTheScan) {
     WriteAndCommitTwoRows(table, dir->Str());
 
     // The cache is a runtime setting the scan serves from the context rather than from the
-    // table's own options, so a scan built with one reads its manifests through it.
-    auto cache = std::make_shared<CountingCache>();
+    // table's own options, so a scan built with one reads its manifests through it. A scan reads
+    // the manifest list of a snapshot on its executor's threads, so the counter the cache keeps
+    // is guarded rather than a plain field.
+    auto cache = std::make_shared<CountingRoutingCache>(
+        std::map<CacheKind, int64_t>{{CacheKind::MANIFEST, 64 * 1024 * 1024},
+                                     {CacheKind::SNAPSHOT_LIVE_MANIFEST, 64 * 1024 * 1024}});
     ScanContextBuilder scan_builder(dir->Str());
     scan_builder.WithCache(cache);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx, scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_ctx)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
     ASSERT_FALSE(plan->Splits().empty());
-    ASSERT_GT(cache->gets, 0) << "the cache the scan context carries never reached the scan";
+    ASSERT_GT(cache->GetCount(CacheKind::MANIFEST), 0)
+        << "the cache the scan context carries never reached the scan";
 }
 
 TEST(TableTest, TestCopyServesTheTableWithTheGivenOptionsOnTop) {
@@ -1029,33 +1265,44 @@ TEST(TableTest, TestALoadNamesTheDatabaseThePathLaysOut) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
+                                 arrow::field("dt", arrow::utf8())});
 
     // A context that names no catalog knows the table by its directory: the directory above
     // the table's names the database when it carries the `.db` suffix, the way the Java
-    // `identifierFromPath` reads it, so the table the load serves is named for both - which
-    // the load of a directory without a schema says in the error it fails with. The option
-    // the context carries is what drives the load to that error: it hands the table the merge
-    // would build, which is where the name is spoken.
+    // `identifierFromPath` reads it, so the table the load serves is named for both. The
+    // refusal a format table open speaks names the table - and the option the context
+    // carries is what drives the open to it, since the schema alone opens cleanly.
     const std::string table_dir = dir->Str() + "/my_db.db/my_table";
     ASSERT_OK(fs->Mkdirs(table_dir));
+    SchemaManager schema_manager(fs, table_dir);
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> format_schema,
+        schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"}, /*primary_keys=*/{},
+                                   {{"type", "format-table"}}));
     {
         ScanContextBuilder builder(table_dir);
-        builder.AddOption("read.batch-size", "2");
+        builder.AddOption(Options::REALTIME_ENABLED, "true");
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
         ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)),
-                            "not found latest schema of my_db.my_table");
+                            "cannot open format table my_db.my_table");
     }
 
     // A table sitting directly under the root, with no `.db` directory above it, names no
     // database: the table is known by its directory alone, the way it was before.
     const std::string loose_table_dir = dir->Str() + "/loose_table";
     ASSERT_OK(fs->Mkdirs(loose_table_dir));
+    SchemaManager loose_schema_manager(fs, loose_table_dir);
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> loose_schema,
+        loose_schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"}, /*primary_keys=*/{},
+                                         {{"type", "format-table"}}));
     {
         ScanContextBuilder builder(loose_table_dir);
-        builder.AddOption("read.batch-size", "2");
+        builder.AddOption(Options::REALTIME_ENABLED, "true");
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
         ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)),
-                            "not found latest schema of loose_table");
+                            "cannot open format table loose_table");
     }
 }
 

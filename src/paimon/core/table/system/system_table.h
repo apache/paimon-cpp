@@ -50,13 +50,10 @@ struct SystemTablePath {
     bool is_global = false;
 };
 
-/// Base class for table-scoped system tables such as `T$options` and `T$snapshots`.
-///
-/// A system table is the read-only view a `T$system` identifier names: it exposes a schema of
-/// its own and serves scans and reads from the data table it belongs to, through the same
-/// `Table` interface as every other kind of table. `Name()` - which each kind of system table
-/// answers for itself - is its full name as well: the identifier it is opened by belongs to the
-/// data table underneath and would name that one.
+/// Base class for table-scoped system tables such as `T$options` and `T$snapshots`: the read-only
+/// view a `T$system` identifier names, which exposes a schema of its own and serves scans and
+/// reads from the data table it belongs to. `Name()` - which each kind answers for itself - is
+/// its full name as well: the identifier it is opened by belongs to the data table underneath.
 class SystemTable : public Table, public std::enable_shared_from_this<SystemTable> {
  public:
     std::string FullName() const override {
@@ -66,14 +63,11 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     /// The read-only schema this system table exposes, which is not the data table's schema.
     virtual Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const = 0;
 
-    /// A system table has no options of its own to override: its schema is the read-only view it
-    /// exposes, which is not reconfigured by a copy. The data table underneath is copied through
-    /// its own `Table`.
+    /// A system table is read-only: copying it, writing it and committing for it are refused
+    /// rather than routed to the data table underneath, which its own `Table` serves.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
-    /// A system table is read-only: writing it or committing for it is refused rather than
-    /// routed to the data table underneath.
     Result<std::unique_ptr<FileStoreWrite>> NewWrite(
         std::unique_ptr<WriteContext> context) const override;
 
@@ -85,9 +79,13 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     /// @param table_path Root path of the data table this system table belongs to.
     SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path);
 
-    /// Loaders call this once the object exists, because `ArrowSchema()` is virtual and cannot
-    /// run from a constructor: it fills the schema the base hands out with this table's own
-    /// read-only `SystemTableSchema`.
+    /// Refuses a read whose context asks for a search: each system table builds a context of its
+    /// own for the data table underneath, which carries no search, so answering one would return
+    /// plain rows and quietly drop the search and its top K.
+    static Status CheckNoSearch(const std::shared_ptr<ReadContext>& context);
+
+    /// Loaders call this once the object exists, because `ArrowSchema()` is virtual and cannot run
+    /// from a constructor: it fills in this table's own read-only `SystemTableSchema`.
     Status AdoptOwnSchema();
 
     friend class SystemTableLoader;

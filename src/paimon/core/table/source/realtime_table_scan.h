@@ -30,14 +30,23 @@
 
 namespace paimon {
 
+class CoreOptions;
 class FileStorePathFactory;
 class FileSystem;
+class ScanContext;
 class ScanFilter;
 class SnapshotManager;
+class TableSchema;
 
 /// Adds process-local memory splits to a normal data-table batch scan.
 class RealtimeTableScan : public TableScan {
  public:
+    /// The checks a scan that asks for a real-time union read opens with, run before one of these
+    /// is built: the table has to be able to serve it, and the options have to name a scan one
+    /// can be served over. A context that asks for none of it passes straight through.
+    static Status ValidateScan(const TableSchema& table_schema, const CoreOptions& core_options,
+                               const ScanContext& context, bool read_optimized);
+
     RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan, bool pk_table,
                       const std::shared_ptr<RealtimeContextImpl>& realtime_context,
                       const std::shared_ptr<FileStorePathFactory>& path_factory,

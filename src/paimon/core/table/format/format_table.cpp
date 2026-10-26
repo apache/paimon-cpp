@@ -39,6 +39,7 @@
 #include "paimon/core/table/format/format_table_file_store_write.h"
 #include "paimon/core/table/format/format_table_read.h"
 #include "paimon/core/table/format/format_table_scan.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
@@ -226,15 +227,7 @@ Result<std::unique_ptr<::ArrowSchema>> FormatTable::GetArrowSchema() const {
 Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
     std::shared_ptr<ScanContext> shared_context = std::move(context);
-    if (shared_context == nullptr) {
-        return Status::Invalid("scan context is null pointer");
-    }
-    if (shared_context->GetMemoryPool() == nullptr) {
-        return Status::Invalid("memory pool is null pointer");
-    }
-    if (shared_context->GetExecutor() == nullptr) {
-        return Status::Invalid("executor is null pointer");
-    }
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(shared_context, "scan"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
                            CopySelf(shared_context->GetOptions()));
     // Anything a `ScanContext` carries that a format table cannot honour is refused rather than
@@ -280,15 +273,7 @@ Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
 Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
     std::unique_ptr<ReadContext> context) const {
     std::shared_ptr<ReadContext> read_context = std::move(context);
-    if (read_context == nullptr) {
-        return Status::Invalid("read context is null pointer");
-    }
-    if (read_context->GetMemoryPool() == nullptr) {
-        return Status::Invalid("memory pool is null pointer");
-    }
-    if (read_context->GetExecutor() == nullptr) {
-        return Status::Invalid("executor is null pointer");
-    }
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(read_context, "read"));
     if (read_context->HasVectorOrFullTextSearch()) {
         return Status::NotImplemented(
             "VectorSearch or FullTextSearch is not supported for format tables");
@@ -305,15 +290,7 @@ Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
 
 Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
     std::unique_ptr<WriteContext> context) const {
-    if (context == nullptr) {
-        return Status::Invalid("write context is null pointer");
-    }
-    if (context->GetMemoryPool() == nullptr) {
-        return Status::Invalid("memory pool is null pointer");
-    }
-    if (context->GetExecutor() == nullptr) {
-        return Status::Invalid("executor is null pointer");
-    }
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "write"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, CopySelf(context->GetOptions()));
     if (context->GetCatalog() != nullptr) {
         return Status::Invalid(
@@ -346,15 +323,7 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
 
 Result<std::unique_ptr<FileStoreCommit>> FormatTable::NewCommit(
     std::unique_ptr<CommitContext> context) const {
-    if (context == nullptr) {
-        return Status::Invalid("commit context is null pointer");
-    }
-    if (context->GetMemoryPool() == nullptr) {
-        return Status::Invalid("memory pool is null pointer");
-    }
-    if (context->GetExecutor() == nullptr) {
-        return Status::Invalid("executor is null pointer");
-    }
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "commit"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
                            CopySelf(context->GetOptions()));
     if (!context->IgnoreEmptyCommit()) {

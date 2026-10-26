@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "paimon/catalog/identifier.h"
@@ -31,12 +32,18 @@ class Catalog;
 class FormatTable;
 class Schema;
 
-/// Checks shared by the catalog implementations. Every check takes an `action` naming
-/// the rejected operation in the error message, e.g. "dropTable".
+/// The identifier tools and the checks shared by the catalog implementations. Every check takes an
+/// `action` naming the rejected operation in the error message, e.g. "dropTable".
 class CatalogUtils {
  public:
     CatalogUtils() = delete;
     ~CatalogUtils() = delete;
+
+    /// The identifier a table path names when no catalog name goes with it, the C++ reading of the
+    /// Java `SchemaManagerUtils#identifierFromPath` over `ignoreIfUnknownDatabase = true`: the
+    /// directory above the table's names the database when it carries the `.db` suffix a catalog
+    /// lays its databases out with, and a path that names no database leaves it unknown.
+    static Identifier IdentifierFromPath(const std::string& table_path, const std::string& branch);
 
     /// Returns whether `db_name` is the reserved system database "sys".
     static bool IsSystemDatabase(const std::string& db_name);
@@ -57,6 +64,12 @@ class CatalogUtils {
     /// what is read and what is committed name one object.
     static Result<Identifier> BranchIdentifier(const Identifier& identifier,
                                                const std::string& branch);
+
+    /// The identifier a catalog knows the table by, on `branch`, when there is one to fold a
+    /// branch into: a caller without an identifier has none to ask the catalog about, and gets
+    /// none back rather than an error.
+    static Result<std::optional<Identifier>> BranchIdentifier(
+        const std::optional<Identifier>& identifier, const std::string& branch);
 
     /// Fails when `db_name` cannot be used as a single path component, which is required to
     /// keep the database path under the warehouse.

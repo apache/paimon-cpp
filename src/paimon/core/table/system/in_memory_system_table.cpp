@@ -29,6 +29,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/generic_row_to_arrow_array_converter.h"
 #include "paimon/core/table/system/system_table_scan.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/read_context.h"
 #include "paimon/scan_context.h"
@@ -117,6 +118,10 @@ Result<std::unique_ptr<TableScan>> InMemorySystemTable::NewScan(
 Result<std::unique_ptr<TableRead>> InMemorySystemTable::NewRead(
     std::unique_ptr<ReadContext> ctx) const {
     const std::shared_ptr<ReadContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
+    // The rows this view serves are its own, read straight out of memory: there is no search
+    // over them, so a search the caller asked for would be quietly answered with plain rows.
+    PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     return std::make_unique<InMemorySystemTableRead>(
         checked_pointer_cast<const InMemorySystemTable>(shared_from_this()),
         context->GetMemoryPool());

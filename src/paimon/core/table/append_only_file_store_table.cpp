@@ -38,7 +38,6 @@
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/file_store.h"
 #include "paimon/core/table/source/append_only_split_generator.h"
-#include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/data_evolution_split_generator.h"
 #include "paimon/core/table/source/split_generator.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -60,7 +59,7 @@ Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const {
     // append table
-    const std::shared_ptr<TableSchema>& schema = store_->schema();
+    const std::shared_ptr<TableSchema>& schema = store_->GetSchema();
     const bool realtime_deduplicate = !options.GetRealtimeDeduplicateKeyFields().empty();
     bool need_dv_maintainer_factory = options.DeletionVectorsEnabled();
     if (options.GetBucket() == -1) {
@@ -139,7 +138,7 @@ Result<std::unique_ptr<FileStoreScan>> AppendOnlyFileStoreTable::NewFileStoreSca
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
     const ScanContext* context) const {
     // TODO(liancheng.lsz): support fallback branch in scan
-    const std::shared_ptr<TableSchema>& table_schema = store_->schema();
+    const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
     std::unique_ptr<FileStoreScan> scan;
     if (core_options.DataEvolutionEnabled()) {
         PAIMON_ASSIGN_OR_RAISE(
@@ -172,15 +171,6 @@ Result<std::unique_ptr<SplitGenerator>> AppendOnlyFileStoreTable::NewSplitGenera
                                                       source_split_open_file_cost, bucket_mode);
 }
 
-Result<std::unique_ptr<TableRead>> AppendOnlyFileStoreTable::NewTableRead(
-    const std::shared_ptr<FileStorePathFactory>& path_factory,
-    const std::shared_ptr<InternalReadContext>& internal_context,
-    const std::shared_ptr<MemoryPool>& memory_pool,
-    const std::shared_ptr<Executor>& executor) const {
-    return std::make_unique<AppendOnlyTableRead>(path_factory, internal_context, memory_pool,
-                                                 executor);
-}
-
 CommitScanner::ScanSupplier AppendOnlyFileStoreTable::NewCommitScanSupplier(
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<ManifestList>& manifest_list,
@@ -190,7 +180,7 @@ CommitScanner::ScanSupplier AppendOnlyFileStoreTable::NewCommitScanSupplier(
     // The schema manager the table carries, which the scans this supplier hands out read the
     // schema through.
     const std::shared_ptr<SchemaManager>& schema_manager = GetSchemaManager();
-    const std::shared_ptr<TableSchema>& table_schema = store_->schema();
+    const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
     return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
             arrow_schema, options, executor, pool](const std::shared_ptr<ScanFilter>& scan_filter)
                -> Result<std::unique_ptr<FileStoreScan>> {

@@ -27,6 +27,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/read_optimized_scan_options.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
 #include "paimon/read_context.h"
 #include "paimon/scan_context.h"
@@ -61,6 +62,7 @@ std::map<std::string, std::string> ReadOptimizedSystemTable::ReadOptimizedOption
 Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     std::unique_ptr<ScanContext> ctx) const {
     const std::shared_ptr<ScanContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     if (context->GetRealtimeContext() && !table_schema_->PrimaryKeys().empty()) {
         return Status::NotImplemented(
             "PK real-time union read does not support read-optimized scans");
@@ -71,9 +73,7 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
         .WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        // The data table behind this view is served through the file system the view itself was
-        // opened with, so a context without one of its own falls back to it rather than the
-        // default backend.
+        // The view's own file system when the context names none, rather than the default backend.
         .WithFileSystem(context->GetSpecificFileSystem() != nullptr
                             ? context->GetSpecificFileSystem()
                             : GetFileSystem())
@@ -108,10 +108,8 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         branch = branch_iter->second;
     }
     ReadContextBuilder builder(table_path_);
-    // The data table behind this view is served through the file system the view itself was
-    // opened with, but only when the context names neither a file system of its own nor a
-    // scheme map to resolve through - a file system and a scheme map cannot both be named, and
-    // the context's own answer always wins.
+    // The view's own file system, but only when the context names neither one of its own nor a
+    // scheme map to resolve through - a file system and a scheme map cannot both be named.
     std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
     if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
         data_table_fs = GetFileSystem();
@@ -151,6 +149,8 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
 Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
     std::unique_ptr<ReadContext> ctx) const {
     const std::shared_ptr<ReadContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
+    PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> base_context,
                            CreateDataReadContext(context));
     return TableRead::Create(std::move(base_context));

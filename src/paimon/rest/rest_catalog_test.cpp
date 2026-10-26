@@ -56,10 +56,17 @@
 #include "paimon/file_store_commit.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/read_context.h"
+#include "paimon/reader/batch_reader.h"
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/rest/rest_api.h"
+#include "paimon/scan_context.h"
 #include "paimon/schema/schema.h"
 #include "paimon/table/format/format_table.h"
+#include "paimon/table/source/plan.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -1535,6 +1542,40 @@ TEST_F(RestCatalogTest, SystemDatabase) {
     ASSERT_FALSE(schema->FieldNames().empty());
     Status missing = catalog->LoadTableSchema(Identifier("sys", "unsupported")).status();
     ASSERT_TRUE(missing.IsNotExist()) << missing.ToString();
+}
+
+TEST_F(RestCatalogTest, GlobalSystemTableRetainsItsCatalog) {
+    // A global system table builds its rows lazily through the catalog that served it, so the
+    // table handed back keeps that catalog alive: reading it after the caller let its own
+    // reference go still answers, rather than reading through a catalog already destroyed.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> created, CreateRestCatalog());
+    std::shared_ptr<RestCatalog> catalog = std::move(created);
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+    ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         catalog->GetTable(Identifier("sys", "tables")));
+    std::weak_ptr<const RestCatalog> weak = catalog;
+    catalog.reset();
+    ASSERT_FALSE(weak.expired()) << "the global system table does not retain its catalog";
+
+    // The rows are built through the retained catalog, so they still answer once the caller's
+    // own reference is gone: the one table the catalog stands behind shows up in them.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                         ScanContextBuilder("sys/tables").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_EQ(plan->Splits().size(), 1);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder("sys/tables").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, table->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, batch_reader->NextBatch());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                         ReadResultCollector::GetArray(std::move(batch)));
+    ASSERT_TRUE(array);
+    ASSERT_GT(array->length(), 0);
 }
 
 TEST_F(RestCatalogTest, ListSnapshots) {

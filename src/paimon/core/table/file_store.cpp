@@ -47,6 +47,19 @@
 
 namespace paimon {
 
+namespace {
+
+/// Whether an option key takes part in file-system resolution: the backend `file-system` picks,
+/// an `fs.` access key carries, or a native S3 key names - `s3.` and its `s3a.` spelling, the
+/// prefixes the S3 file system consumes alongside `fs.s3.`/`fs.s3a.`. The scheme-map keys a
+/// context carries are the same set.
+bool IsFileSystemResolutionKey(const std::string& key) {
+    return key == Options::FILE_SYSTEM || key.rfind("fs.", 0) == 0 || key.rfind("s3.", 0) == 0 ||
+           key.rfind("s3a.", 0) == 0;
+}
+
+}  // namespace
+
 Result<std::shared_ptr<FileStore>> FileStore::Create(
     const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
     const std::shared_ptr<TableSchema>& schema, const std::string& branch,
@@ -95,6 +108,42 @@ Result<std::shared_ptr<FileStore>> FileStore::Create(
             std::make_shared<SnapshotManager>(store->file_system_, root_path, store->branch_);
     }
     return store;
+}
+
+bool FileStore::FileSystemResolutionMayChange(
+    const TableSchema& schema, const std::map<std::string, std::string>& dynamic_options) {
+    const std::map<std::string, std::string>& schema_options = schema.Options();
+    for (const auto& [key, value] : dynamic_options) {
+        if (!IsFileSystemResolutionKey(key)) {
+            continue;
+        }
+        auto schema_option = schema_options.find(key);
+        if (schema_option == schema_options.end() || schema_option->second != value) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool FileStore::FileSystemResolutionAgrees(const std::map<std::string, std::string>& left,
+                                           const std::map<std::string, std::string>& right) {
+    for (const auto& [key, value] : left) {
+        if (IsFileSystemResolutionKey(key)) {
+            auto right_option = right.find(key);
+            if (right_option == right.end() || right_option->second != value) {
+                return false;
+            }
+        }
+    }
+    for (const auto& [key, value] : right) {
+        if (IsFileSystemResolutionKey(key)) {
+            auto left_option = left.find(key);
+            if (left_option == left.end() || left_option->second != value) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 FileStore::FileStore(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,

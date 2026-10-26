@@ -267,6 +267,7 @@ set(PAIMON_CORE_SRCS
     core/catalog/catalog_utils.cpp
     core/catalog/file_system_catalog.cpp
     core/catalog/identifier.cpp
+    core/catalog/snapshot_commit.cpp
     core/core_options.cpp
     core/deletionvectors/deletion_vector.cpp
     core/deletionvectors/deletion_file_writer.cpp
@@ -447,6 +448,7 @@ set(PAIMON_CORE_SRCS
     core/table/bucket_mode.cpp
     core/table/file_store.cpp
     core/table/file_store_table.cpp
+    core/table/file_store_table_factory.cpp
     core/table/format/format_file_listing.cpp
     core/table/format/format_file_naming.cpp
     core/table/format/format_path_validation.cpp
@@ -492,6 +494,7 @@ set(PAIMON_CORE_SRCS
     core/table/system/system_table.cpp
     core/table/system/system_table_scan.cpp
     core/table/system/system_table_schema.cpp
+    core/table/table.cpp
     core/tag/tag.cpp
     core/utils/branch_manager.cpp
     core/utils/blob_view_lookup.cpp

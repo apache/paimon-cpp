@@ -36,7 +36,6 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
-#include "paimon/catalog/table.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
@@ -514,25 +513,10 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingNewWriterIgnoresExisting
                                             /*commit_identifier=*/0);
     Commit(table_path, avro_options, avro_commit_msgs);
 
-    // The second batch is written through a copy of the table carrying the shredding options:
-    // an option on the context would contradict the table the catalog loaded, which a write
-    // through that table refuses.
-    ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(dir->Str(), avro_options));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> avro_table,
-                         catalog->GetTable(Identifier("foo", "bar")));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> shredded_table,
-                         avro_table->Copy(shredding_options));
-    WriteContextBuilder shredded_builder(table_path, commit_user_);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> shredded_context, shredded_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto shredded_write,
-                         shredded_table->NewWrite(std::move(shredded_context)));
-    ASSERT_OK(shredded_write->Write(MakeBatch(logical_schema, R"([
+    auto second_commit_msgs = WriteAndPrepare(table_path, logical_schema, shredding_options, R"([
         [2, [["c", 3], ["d", 4], ["e", 5]]]
-    ])")));
-    ASSERT_OK_AND_ASSIGN(auto second_commit_msgs,
-                         shredded_write->PrepareCommit(/*wait_compaction=*/false,
-                                                       /*commit_identifier=*/1));
-    ASSERT_OK(shredded_write->Close());
+    ])",
+                                              /*commit_identifier=*/1);
     auto second_file_schema =
         ReadDataFileSchema(table_path, OnlyNewFile(second_commit_msgs), shredding_options);
     auto second_meta = ShreddingMeta(second_file_schema, /*field_index=*/1);

@@ -48,12 +48,11 @@ class FileSystem;
 /// Writes only insert - there is nowhere to record an update or a delete - so a read fills
 /// `_VALUE_KIND` with inserts throughout.
 ///
-/// A format table is a `Table`, so the operators it inherits create its scan, read, write and
-/// commit from this table, with the context's options applied on top of the ones it carries. The
-/// entry points every other table uses remain open too - `TableScan::Create()` and friends - each
-/// of which recognises a format table from the schema under the table path, or takes one already
-/// loaded through the `FormatTable` constructor every context builder has, which is how a table
-/// whose schema lives in a metastore is reached.
+/// A format table is a `Table`, so it is reached both ways: through the `NewXxx` operators below,
+/// and through the entry points every other table uses - `TableScan::Create()` and friends - which
+/// recognise one from the schema under the table path, or take one already loaded through the
+/// `FormatTable` constructor every context builder has, how a table whose schema lives in a
+/// metastore is reached.
 ///
 /// Every instance lives in a `shared_ptr`: a copy that adds nothing hands the same one back.
 ///
@@ -117,8 +116,7 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
         return identifier_.GetFullName();
     }
 
-    /// Copies the table with `dynamic_options` on top of the options it carries, the precedence
-    /// every context builder promises. The same table comes back when there is nothing to add.
+    /// The same table comes back when there is nothing to add.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
@@ -160,9 +158,8 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
         return options_;
     }
 
-    /// Schema of the table, including its partition fields. It hides `Table::LatestSchema()`,
-    /// which returns the same schema as the base every table sees; this one hands it back as the
-    /// `DataSchema` a format table is always created with.
+    /// Schema of the table, including its partition fields. Hides `Table::LatestSchema()` to hand
+    /// back the same schema as the `DataSchema` a format table is always created with.
     std::shared_ptr<DataSchema> LatestSchema() const {
         return std::static_pointer_cast<DataSchema>(schema_);
     }
@@ -179,25 +176,16 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
         return location_carries_paimon_metadata_;
     }
 
-    /// Creates a scan of this table from a finished scan context, refusing by name what a format
-    /// table cannot honour. The context's options are applied on top of the ones this table
-    /// carries, the precedence every context builder promises.
+    /// The four operators below create this table's scan, read, write and commit, applying the
+    /// context's options on top of the ones this table carries and refusing by name what a
+    /// format table cannot honour.
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
 
-    /// Creates a read of this table from a finished read context, refusing by name what a format
-    /// table cannot honour. The context's options are applied on top of the ones this table
-    /// carries, the precedence every context builder promises.
     Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
 
-    /// Creates a write of this table from a finished write context, refusing by name what a format
-    /// table cannot honour. The context's options are applied on top of the ones this table
-    /// carries, the precedence every context builder promises.
     Result<std::unique_ptr<FileStoreWrite>> NewWrite(
         std::unique_ptr<WriteContext> context) const override;
 
-    /// Creates a commit of this table from a finished commit context, refusing by name what a
-    /// format table cannot honour. The context's options are applied on top of the ones this
-    /// table carries, the precedence every context builder promises.
     Result<std::unique_ptr<FileStoreCommit>> NewCommit(
         std::unique_ptr<CommitContext> context) const override;
 
@@ -208,18 +196,14 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
                 const std::string& file_compression, const std::string& partition_default_name,
                 bool partition_only_value_in_path, bool location_carries_paimon_metadata);
 
-    /// This table as a `shared_ptr`, which a copy that adds nothing hands back.
-    ///
-    /// `shared_from_this()` on a const method hands back a `shared_ptr<const FormatTable>`, while
-    /// the copy below needs a mutable one; the cast is safe because the table is never written to.
+    /// This table as a `shared_ptr`. `shared_from_this()` on a const method hands back a
+    /// `shared_ptr<const FormatTable>`, while the copy below needs a mutable one; the cast is
+    /// safe because the table is never written to.
     std::shared_ptr<FormatTable> SharedSelf() const {
         return std::const_pointer_cast<FormatTable>(shared_from_this());
     }
 
-    /// Copies this table with `dynamic_options` on top of the options it carries, as a format
-    /// table rather than the `Table` `Copy()` hands back, which is what its operators need. The
-    /// same table comes back when there is nothing to add; `type` is not overridable, and
-    /// `Create()` keeps the schema's own.
+    /// `Copy()` as a `FormatTable` rather than a `Table`, which is what its operators need.
     Result<std::shared_ptr<FormatTable>> CopySelf(
         const std::map<std::string, std::string>& dynamic_options) const;
 

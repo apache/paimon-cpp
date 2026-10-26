@@ -147,12 +147,14 @@ class PAIMON_EXPORT Catalog {
 
     /// Gets a table.
     ///
-    /// The table's `type` option decides what is handed back: a `format-table` comes back as
-    /// the `FormatTable` it is - a directory of data files, with no snapshot and no manifest -
-    /// and every other implemented type as the managed table it is. A `T$system` identifier
-    /// names a read-only view instead, which comes back as the `SystemTable` it is. All go
-    /// through this one `Table` interface: `NewScan()` and `NewRead()` serve any of them,
-    /// `NewWrite()` and `NewCommit()` the writable ones.
+    /// The table's `type` option decides what is handed back: a `format-table` comes back as the
+    /// `FormatTable` it is - a directory of data files, with no snapshot and no manifest - and
+    /// every other implemented type as the managed table it is, while a `T$system` identifier names
+    /// a read-only `SystemTable`. All go through this one `Table` interface: `NewScan()` and
+    /// `NewRead()` serve any of them, `NewWrite()` and `NewCommit()` the writable ones.
+    ///
+    /// A global system table of the "sys" database reads its rows lazily through the catalog it
+    /// came from, so a catalog that serves one must be owned by a `std::shared_ptr`.
     ///
     /// @param identifier Identifier of the table to get.
     /// @return A result containing the table, or an error status.

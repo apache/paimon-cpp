@@ -45,10 +45,13 @@
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
+#include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/source/table_read.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
@@ -299,6 +302,62 @@ TEST(SystemTableTest, TestGlobalSystemTableWithoutCatalogReturnsNotImplemented) 
     std::shared_ptr<FileSystem> shared_fs(std::move(fs));
     ASSERT_NOK_WITH_MSG(SystemTableLoader::LoadFromPath(shared_fs, "/tmp/warehouse/sys/tables", {}),
                         "global system table requires catalog context: tables");
+}
+
+// A system table reached through `NewXxx` directly - one a catalog handed out - is checked the
+// way the static factories check the contexts they take: a null context is refused rather than
+// dereferenced.
+TEST(SystemTableTest, TestOperatorEntriesRefuseANullContext) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+
+    ASSERT_NOK_WITH_MSG(audit_log.NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(binlog.NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(read_optimized.NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(audit_log.NewRead(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(binlog.NewRead(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(read_optimized.NewRead(nullptr), "read context is null pointer");
+}
+
+// The reads these views serve build a context of their own for the data table underneath, which
+// carries no search: a search the caller asked for is refused rather than quietly answered with
+// plain rows.
+TEST(SystemTableTest, TestNewReadRefusesASearch) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+
+    auto make_context = [] {
+        auto vector_search = std::make_shared<VectorSearch>(
+            "v", /*limit=*/3, std::vector<float>{1.0f}, /*pre_filter=*/nullptr,
+            /*predicate=*/nullptr, VectorSearch::DistanceType::COSINE,
+            std::map<std::string, std::string>{});
+        ReadContextBuilder builder("/tmp/table");
+        builder.SetVectorSearch(vector_search);
+        return builder.Finish();
+    };
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_log_context, make_context());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context, make_context());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_optimized_context, make_context());
+
+    ASSERT_NOK_WITH_MSG(audit_log.NewRead(std::move(audit_log_context)),
+                        "VectorSearch or FullTextSearch does not support system-table reads yet");
+    ASSERT_NOK_WITH_MSG(binlog.NewRead(std::move(binlog_context)),
+                        "VectorSearch or FullTextSearch does not support system-table reads yet");
+    ASSERT_NOK_WITH_MSG(read_optimized.NewRead(std::move(read_optimized_context)),
+                        "VectorSearch or FullTextSearch does not support system-table reads yet");
 }
 
 namespace {

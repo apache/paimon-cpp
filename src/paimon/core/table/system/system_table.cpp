@@ -42,6 +42,7 @@
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
+#include "paimon/read_context.h"
 #include "paimon/status.h"
 #include "paimon/write_context.h"
 
@@ -184,6 +185,14 @@ std::optional<SystemTableFactory> FindSystemTableFactory(const std::string& syst
 SystemTable::SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path)
     : Table(fs, table_path, /*schema=*/nullptr,
             Identifier(Identifier::kUnknownDatabase, "system_table"), /*uuid=*/"") {}
+
+Status SystemTable::CheckNoSearch(const std::shared_ptr<ReadContext>& context) {
+    if (context->HasVectorOrFullTextSearch()) {
+        return Status::NotImplemented(
+            "VectorSearch or FullTextSearch does not support system-table reads yet");
+    }
+    return Status::OK();
+}
 
 Status SystemTable::AdoptOwnSchema() {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema, ArrowSchema());

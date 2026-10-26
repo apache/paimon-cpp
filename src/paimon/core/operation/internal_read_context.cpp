@@ -19,6 +19,7 @@
 #include "paimon/core/operation/internal_read_context.h"
 
 #include <algorithm>
+#include <cassert>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -44,7 +45,10 @@
 #include "paimon/common/utils/url_utils.h"
 #include "paimon/core/options/map_storage_layout.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
+#include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/nested_projection_utils.h"
+#include "paimon/defs.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/predicate_utils.h"
@@ -294,6 +298,50 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
             options, file_system != nullptr ? file_system : context->GetSpecificFileSystem()));
     core_options.WithCache(context->GetCache());
     return CreateFromCoreOptions(context, table_schema, std::move(core_options), path);
+}
+
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallbackBranch(
+    const std::shared_ptr<ReadContext>& context, const std::string& branch,
+    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+    const std::map<std::string, std::string>& table_dynamic_options) {
+    std::shared_ptr<TableSchema> table_schema;
+    const auto& specific_table_schema = context->GetSpecificTableSchema();
+    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema) {
+        PAIMON_ASSIGN_OR_RAISE(table_schema,
+                               TableSchema::CreateFromJson(specific_table_schema.value()));
+    } else {
+        auto schema_manager = std::make_shared<SchemaManager>(file_system, root_path, branch);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                               schema_manager->Latest());
+        if (!latest_schema) {
+            return Status::Invalid(
+                fmt::format("schema file not found in path {}, branch {}", root_path, branch));
+        }
+        table_schema = latest_schema.value();
+    }
+    assert(table_schema);
+    auto options = table_schema->Options();
+    // The dynamic options the load merged into this table - and the ones its copies accumulated -
+    // speak for the read, and the fallback branch serves the same read: they are merged over the
+    // fallback's own schema options the way the load merged them over the table's, so the fallback
+    // reader recognises what the main one does. `type` stays the branch's own: neither a copy nor
+    // a fallback restyles the table.
+    for (const auto& [key, value] : table_dynamic_options) {
+        if (key != Options::TYPE) {
+            options[key] = value;
+        }
+    }
+    for (const auto& [key, value] : context->GetOptions()) {
+        if (key != Options::TYPE) {
+            options[key] = value;
+        }
+    }
+    if (branch != BranchManager::DEFAULT_MAIN_BRANCH) {
+        options[Options::BRANCH] = branch;
+    } else {
+        options.erase(Options::BRANCH);
+    }
+    return Create(context, table_schema, options, file_system, &root_path);
 }
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromCoreOptions(

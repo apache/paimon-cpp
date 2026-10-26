@@ -42,7 +42,9 @@ class TableSchema;
 /// A catalog backed by a REST catalog server. Metadata operations are delegated to
 /// `RestApi`; table data is accessed through the file system configured by the
 /// server-merged options.
-class RestCatalog : public Catalog, public VersionManagedCatalog {
+class RestCatalog : public Catalog,
+                    public VersionManagedCatalog,
+                    public std::enable_shared_from_this<RestCatalog> {
  public:
     /// Creates the catalog: fetches and merges "/v1/config" from the server configured
     /// by `CatalogOptions::URI`, then builds the file system from the merged options.

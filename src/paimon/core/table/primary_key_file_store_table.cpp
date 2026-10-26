@@ -52,7 +52,6 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/file_store.h"
-#include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/core/table/source/merge_tree_split_generator.h"
 #include "paimon/core/table/source/split_generator.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
@@ -108,7 +107,7 @@ Result<std::unique_ptr<FileStoreWrite>> PrimaryKeyFileStoreTable::CreateWrite(
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const {
     // pk table
-    const std::shared_ptr<TableSchema>& schema = store_->schema();
+    const std::shared_ptr<TableSchema>& schema = store_->GetSchema();
     if (ctx.GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *schema));
         if (ignore_previous_files) {
@@ -228,7 +227,7 @@ Result<std::unique_ptr<FileStoreScan>> PrimaryKeyFileStoreTable::NewFileStoreSca
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
     const ScanContext* context) const {
     // TODO(liancheng.lsz): support fallback branch in scan
-    const std::shared_ptr<TableSchema>& table_schema = store_->schema();
+    const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
     std::unique_ptr<FileStoreScan> scan;
     PAIMON_ASSIGN_OR_RAISE(
         scan, KeyValueFileStoreScan::Create(GetSnapshotManager(), GetSchemaManager(), manifest_list,
@@ -243,7 +242,7 @@ Result<std::unique_ptr<SplitGenerator>> PrimaryKeyFileStoreTable::NewSplitGenera
     auto source_split_target_size = core_options.GetSourceSplitTargetSize();
     auto source_split_open_file_cost = core_options.GetSourceSplitOpenFileCost();
     // TODO(liancheng.lsz): support evolution
-    const std::shared_ptr<TableSchema>& table_schema = store_->schema();
+    const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> trimmed_primary_keys,
                            table_schema->TrimmedPrimaryKeys());
     PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> trimmed_pk_fields,
@@ -256,14 +255,6 @@ Result<std::unique_ptr<SplitGenerator>> PrimaryKeyFileStoreTable::NewSplitGenera
         core_options.DeletionVectorsEnabled(), core_options.GetMergeEngine(), key_comparator);
 }
 
-Result<std::unique_ptr<TableRead>> PrimaryKeyFileStoreTable::NewTableRead(
-    const std::shared_ptr<FileStorePathFactory>& path_factory,
-    const std::shared_ptr<InternalReadContext>& internal_context,
-    const std::shared_ptr<MemoryPool>& memory_pool,
-    const std::shared_ptr<Executor>& executor) const {
-    return KeyValueTableRead::Create(path_factory, internal_context, memory_pool, executor);
-}
-
 CommitScanner::ScanSupplier PrimaryKeyFileStoreTable::NewCommitScanSupplier(
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<ManifestList>& manifest_list,
@@ -273,7 +264,7 @@ CommitScanner::ScanSupplier PrimaryKeyFileStoreTable::NewCommitScanSupplier(
     // The schema manager the table carries, which the scans this supplier hands out read the
     // schema through.
     const std::shared_ptr<SchemaManager>& schema_manager = GetSchemaManager();
-    const std::shared_ptr<TableSchema>& table_schema = store_->schema();
+    const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
     return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
             arrow_schema, options, executor, pool](const std::shared_ptr<ScanFilter>& scan_filter)
                -> Result<std::unique_ptr<FileStoreScan>> {

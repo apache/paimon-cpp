@@ -23,11 +23,16 @@
 #include <string>
 #include <vector>
 
+#include "paimon/catalog/identifier.h"
 #include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/snapshot.h"
 
 namespace paimon {
+
+class Catalog;
+class FileSystem;
+class SnapshotManager;
 
 /// Interface to commit snapshot atomically.
 class SnapshotCommit {
@@ -41,6 +46,26 @@ class SnapshotCommit {
     virtual Result<std::unique_ptr<CommitLockScope>> AcquireLock() {
         return std::unique_ptr<CommitLockScope>();
     }
+    /// The commit a table publishes its snapshots through, the C++ reading of the Java
+    /// `CatalogEnvironment#snapshotCommit`: a catalog that version-manages the table commits
+    /// through it, a caller that only wants the request built gets one with no catalog attached,
+    /// and everything else publishes by renaming the snapshot file into place.
+    ///
+    /// @param catalog The catalog the commit was handed, or null for one that has none.
+    /// @param catalog_identifier The identifier the catalog knows the table by, on the branch the
+    ///        commit commits to. A version-managing catalog needs one and is refused without it.
+    /// @param table_id The catalog's UUID for the table, captured before the changes were
+    ///        prepared; null when there is none.
+    /// @param use_rest_catalog_commit Whether the caller asks for the request rather than for the
+    ///        catalog to send it.
+    /// @param file_system The file system the snapshot file is renamed through.
+    /// @param snapshot_manager The manager that names the snapshot file renamed.
+    static Result<std::shared_ptr<SnapshotCommit>> Create(
+        const std::shared_ptr<Catalog>& catalog,
+        const std::optional<Identifier>& catalog_identifier,
+        const std::optional<std::string>& table_id, bool use_rest_catalog_commit,
+        const std::shared_ptr<FileSystem>& file_system,
+        const std::shared_ptr<SnapshotManager>& snapshot_manager);
 
     /// @param base_snapshot_uuid Base snapshot UUID; null for an absent or legacy snapshot.
     /// @param snapshot Snapshot to be committed.

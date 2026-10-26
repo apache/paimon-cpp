@@ -208,15 +208,12 @@ class PAIMON_EXPORT ScanContextBuilder {
     ScanContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);
 
-    /// Add a single configuration option. See `SetOptions()` for how the options a context
-    /// carries are served.
+    /// Add a single configuration option, served the way `SetOptions()` describes.
     ScanContextBuilder& AddOption(const std::string& key, const std::string& value);
-    /// Set a configuration options map. The options take part in loading the table a scan
-    /// serves: the load merges them over the ones the table's schema carries and the table it
-    /// hands back serves the merged ones. A caller holding a table already loaded - a load
-    /// that is over - changes it through `Table::Copy()`; an option contradicting a table held
-    /// that way is refused when a scan is asked of it. A format table takes the options as its
-    /// own.
+    /// Set a configuration options map to set some option entries which are not defined in the
+    /// table schema or whose values you want to overwrite. A load merges them into the table it
+    /// hands back; an option contradicting a table you loaded already is refused, so change that
+    /// one through `Table::Copy()`.
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.

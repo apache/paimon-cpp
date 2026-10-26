@@ -31,6 +31,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
 #include "paimon/read_context.h"
 #include "paimon/table/source/table_read.h"
@@ -100,6 +101,8 @@ Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ArrowSchema() const {
 Result<std::unique_ptr<TableRead>> BinlogSystemTable::NewRead(
     std::unique_ptr<ReadContext> ctx) const {
     const std::shared_ptr<ReadContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
+    PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     return NewChangelogRead(context, CreateBinlogBatchConverter());
 }
 

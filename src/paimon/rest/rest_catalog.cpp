@@ -426,10 +426,8 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
     if (branch) {
         dynamic_options[Options::BRANCH] = branch.value();
     }
-    // The system table reads the data table's own files - snapshots, manifests, data - so it is
-    // served by the file system that table's credentials open, which with data tokens is the
-    // only one that can: `GetTableFileSystem` folds the system identifier to the data table it
-    // belongs to and hands the catalog-wide file system out when no tokens are issued.
+    // The system table reads the data table's own files, so it is served by that table's own
+    // credentials - with data tokens the only file system that can open them.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
     return SystemTableLoader::Load(system_table_name.value(), table_file_system, data_table_path,
@@ -438,9 +436,8 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
     // The global system tables of the "sys" database expose the catalog itself rather than any
-    // table the server stands behind, so they are served locally - the way `LoadTableSchema`
-    // serves them their schema - and never reach the managed-table load below, whose schema
-    // cast a read-only system table schema would not survive.
+    // table the server stands behind, so they are served locally and never reach the managed-table
+    // load below, whose schema cast a read-only system table schema would not survive.
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
         PAIMON_ASSIGN_OR_RAISE(bool supported,
                                GlobalSystemTableLoader::IsSupported(identifier.GetObjectName(),
@@ -450,13 +447,21 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
         }
         GlobalSystemTableContext context;
         context.catalog = this;
+        // A global system table builds its rows lazily through the catalog above, so the table
+        // handed back has to keep it alive or the pointer dangles at the first `BuildRows`. A
+        // catalog not owned by a `std::shared_ptr` cannot be kept, so it is refused by name.
+        std::shared_ptr<const RestCatalog> self = weak_from_this().lock();
+        if (self == nullptr) {
+            return Status::Invalid(
+                "a global system table retains its catalog, so the catalog must be owned by "
+                "a std::shared_ptr before it is asked for one");
+        }
+        context.catalog_retainer = std::move(self);
         context.fs = fs_;
         context.warehouse = warehouse_;
         context.catalog_options = api_->GetMergedOptions();
         return GlobalSystemTableLoader::Load(identifier.GetObjectName(), context);
     }
-    // A `T$system` identifier opens the read-only view it names, which reads the data table it
-    // belongs to and answers for itself through the same `Table` interface.
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (is_system_table) {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
@@ -468,9 +473,8 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     std::string table_path;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
                            LoadTableSchema(identifier, &uuid, &table_path));
-    // The schema the same response carried says what the table is: a format table is handed
-    // back as the `FormatTable` it is, built from the location of the same response, rather
-    // than refused as the managed table it is not.
+    // The schema the same response carried says what the table is: a format table is handed back
+    // as the `FormatTable` it is rather than refused as the managed table it is not.
     std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
     if (data_schema != nullptr) {
         PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
@@ -489,8 +493,7 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     // tokens binds to this table.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
-    // The branch the identifier carries, which the schema and path above were read on, so the
-    // table and its managers serve it.
+    // The branch the schema and path above were read on, which the table's managers then serve.
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
     return FileStoreTable::Create(
         table_file_system, table_path, schema, identifier, uuid,
