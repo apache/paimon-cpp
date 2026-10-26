@@ -158,8 +158,8 @@ Result<std::vector<PartitionEntry>> FileStoreScan::ReadPartitionEntries() const 
     PAIMON_RETURN_NOT_OK(
         ReadManifests(&snapshot, &all_manifest_file_metas, &filtered_manifest_file_metas));
     std::vector<ManifestEntry> manifest_entries;
-    PAIMON_RETURN_NOT_OK(ReadFileEntries(filtered_manifest_file_metas, &manifest_entries,
-                                         /*apply_scan_filter=*/true));
+    PAIMON_RETURN_NOT_OK(ReadFileEntries(filtered_manifest_file_metas, /*apply_scan_filter=*/true,
+                                         &manifest_entries));
     std::unordered_map<BinaryRow, PartitionEntry> partitions;
     PAIMON_RETURN_NOT_OK(PartitionEntry::Merge(manifest_entries, &partitions));
 
@@ -198,8 +198,8 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
     if (use_snapshot_live_manifest_cache) {
         PAIMON_ASSIGN_OR_RAISE(
             lazy_decode_scanned_rows,
-            ReadManifestEntriesWithCache(snapshot.value(), &all_manifest_file_metas,
-                                         &filtered_manifest_file_metas, cache_bucket.value(),
+            ReadManifestEntriesWithCache(snapshot.value(), cache_bucket.value(),
+                                         &all_manifest_file_metas, &filtered_manifest_file_metas,
                                          &manifest_entries, &snapshot_cache_hit, &all_data_files));
     } else {
         PAIMON_RETURN_NOT_OK(
@@ -349,8 +349,8 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
 }
 
 Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manifest_metas,
-                                      std::vector<ManifestEntry>* manifest_entries,
-                                      bool apply_scan_filter) const {
+                                      bool apply_scan_filter,
+                                      std::vector<ManifestEntry>* manifest_entries) const {
     std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
     for (const auto& meta : manifest_metas) {
         auto read_meta_task = [this, meta,
@@ -395,8 +395,8 @@ Status FileStoreScan::ReadManifestEntries(const std::vector<ManifestFileMeta>& m
 // can be returned directly; cache misses rebuild the target snapshot bucket from the target
 // snapshot's data manifests.
 Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
-    const Snapshot& snapshot, std::vector<ManifestFileMeta>* all_manifest_metas,
-    std::vector<ManifestFileMeta>* filtered_manifest_metas, int32_t bucket,
+    const Snapshot& snapshot, int32_t bucket, std::vector<ManifestFileMeta>* all_manifest_metas,
+    std::vector<ManifestFileMeta>* filtered_manifest_metas,
     std::vector<ManifestEntry>* manifest_entries, bool* cache_hit, int64_t* all_data_files) const {
     Duration cache_load_duration;
     const int32_t max_snapshots = core_options_.GetScanManifestEntryCacheMaxSnapshots();
@@ -550,7 +550,7 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
 
     std::vector<ManifestEntry> unmerged_entries;
     std::vector<ManifestEntry> entries;
-    PAIMON_RETURN_NOT_OK(ReadFileEntries(manifest_metas, &entries, /*apply_scan_filter=*/false));
+    PAIMON_RETURN_NOT_OK(ReadFileEntries(manifest_metas, /*apply_scan_filter=*/false, &entries));
     unmerged_entries.reserve(entries.size());
     for (auto& entry : entries) {
         if (entry.Bucket() == bucket ||
@@ -582,14 +582,14 @@ Status FileStoreScan::ReadAndMergeFileEntries(const std::vector<ManifestFileMeta
                                               std::vector<ManifestEntry>* merged_entries) const {
     std::vector<ManifestEntry> unmerged_entries;
     PAIMON_RETURN_NOT_OK(
-        ReadFileEntries(manifest_metas, &unmerged_entries, /*apply_scan_filter=*/true));
+        ReadFileEntries(manifest_metas, /*apply_scan_filter=*/true, &unmerged_entries));
     return MergeLiveEntries(unmerged_entries, merged_entries);
 }
 
 Status FileStoreScan::ReadAndNoMergeFileEntries(
     const std::vector<ManifestFileMeta>& manifest_metas,
     std::vector<ManifestEntry>* manifest_entries) const {
-    return ReadFileEntries(manifest_metas, manifest_entries, /*apply_scan_filter=*/true);
+    return ReadFileEntries(manifest_metas, /*apply_scan_filter=*/true, manifest_entries);
 }
 
 bool FileStoreScan::MayContainBucket(const ManifestFileMeta& manifest, int32_t bucket) const {
