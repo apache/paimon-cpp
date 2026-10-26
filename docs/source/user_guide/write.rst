@@ -231,9 +231,15 @@ produce a correct ``Snapshot``, which commonly includes (but is not limited to):
    The C++ writer supports Append and PK tables and can produce
    ``CommitMessage`` objects for both. ``FileStoreCommit`` supports direct
    file-system commits for both table types on non-object-store paths.
-   Object-store paths require REST catalog commit mode. Changelog is out of
-   scope and should not be emitted in ``CommitMessage`` until explicitly
-   supported.
+   Object-store paths need a commit that does not rename: either a catalog that
+   manages the versions of its tables, such as the REST catalog, passed to
+   ``CommitContextBuilder::WithCatalog()``, or ``UseRESTCatalogCommit(true)``,
+   which builds the commit request for the caller to send instead of publishing
+   the snapshot itself. The two are mutually exclusive. A catalog without
+   version management still commits by renaming, so passing one is rejected on
+   an object-store path. Changelog files are produced on the write path and
+   committed with their snapshot, except by the overwrite flow, which ignores
+   them and logs a warning naming the files it ignored.
 
 Serialization and Deserialization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -256,7 +262,7 @@ Operational Flow
 1. Writer nodes perform data ingestion and produce Arrow ``RecordBatch``
    organized by partition and bucket.
 
-2. Writers flush batches into ORC, Parquet, or Avro files via registered
+2. Writers flush batches into data files through the registered
    ``file.format`` and ``file-system`` backends, producing file-level metadata
    and per-batch commit state.
 

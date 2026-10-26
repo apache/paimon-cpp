@@ -102,6 +102,8 @@ Paimon provides a set of built-in optional plugins that you can link to as neede
   - ``Paimon::paimon_avro_file_format_shared``
   - ``Paimon::paimon_blob_file_format_shared``
   - ``Paimon::paimon_lance_file_format_shared``
+  - ``Paimon::paimon_mosaic_file_format_shared``
+  - ``Paimon::paimon_vortex_file_format_shared``
 
 - File system plugins:
 
@@ -113,8 +115,17 @@ Paimon provides a set of built-in optional plugins that you can link to as neede
 - Index plugins:
 
   - ``Paimon::paimon_file_index_shared``
+  - ``Paimon::paimon_global_index_shared``
   - ``Paimon::paimon_lumina_index_shared``
   - ``Paimon::paimon_lucene_index_shared``
+  - ``Paimon::paimon_full_text_index_shared``
+
+.. note::
+
+  A plugin target only exists when its component is enabled. ``parquet``,
+  ``blob``, ``local``, ``file_index`` and ``global_index`` are always built; the
+  others require the matching ``PAIMON_ENABLE_*`` flag described in
+  :ref:`cpp_build_optional_components`.
 
 .. note::
 
