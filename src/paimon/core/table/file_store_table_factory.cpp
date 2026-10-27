@@ -29,7 +29,6 @@
 #include "paimon/catalog/identifier.h"
 #include "paimon/catalog/table.h"
 #include "paimon/commit_context.h"
-#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
@@ -41,51 +40,16 @@
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/result.h"
 #include "paimon/scan_context.h"
 #include "paimon/schema/schema.h"
 #include "paimon/status.h"
-#include "paimon/table/format/format_table.h"
 #include "paimon/write_context.h"
 
 namespace paimon {
 
 namespace {
-
-/// Recognises a format table behind `table_path`, or returns null when it is not one. The scan,
-/// read, write and commit entry points below all dispatch on the same question, so one place
-/// answers it and they cannot disagree. Null is also the answer when no schema was found under
-/// the path at all: what to say about a table that is not there is the managed path's to decide.
-///
-/// The table type is read from the schema, never from `options`: `type` is structural, and one
-/// call's options must not decide what kind of table this is.
-Result<std::shared_ptr<FormatTable>> TryLoadFormatTable(
-    const std::shared_ptr<FileSystem>& file_system, const std::string& table_path,
-    const std::string& branch, const std::map<std::string, std::string>& options,
-    const std::shared_ptr<TableSchema>& table_schema) {
-    if (table_schema == nullptr) {
-        return std::shared_ptr<FormatTable>();
-    }
-    // From the schema alone: see `FormatTable::Create()`.
-    PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
-                           TableTypeDefine::IsFormatTable(table_schema->Options()));
-    if (!is_format_table) {
-        return std::shared_ptr<FormatTable>();
-    }
-    // A format table has no branches, so it is refused rather than served from the table path
-    // under another branch's name. See `SchemaValidation::ValidateFormatTableSchema()`.
-    if (BranchManager::NormalizeBranch(branch) != BranchManager::DEFAULT_MAIN_BRANCH) {
-        return Status::Invalid(
-            fmt::format("a format table has no branches, so {} cannot be read on branch '{}'",
-                        table_path, branch));
-    }
-    Identifier identifier = CatalogUtils::IdentifierFromPath(table_path, branch);
-    return FormatTable::Create(file_system, table_path, identifier,
-                               checked_pointer_cast<DataSchema>(table_schema),
-                               /*location_carries_paimon_metadata=*/true, options);
-}
 
 /// The options a context carries, merged into the table the load hands back: a table is the
 /// product of the load, so the options speak there - the way `Copy` merges them - and `NewXxx` on
@@ -108,13 +72,13 @@ Result<std::shared_ptr<Table>> WithContextOptions(
     return table;
 }
 
-/// The tail every `Create` ends with: the schema one of them read says what the path names. A
-/// format table is handed back as the `FormatTable` it is, everything else as the `FileStoreTable`
+/// The tail every `Create` ends with: the schema one of them read says what the path names, and
+/// only a data table is served by it - a format table is refused, the table a catalog hands back
+/// serves one through its own `NewXxx`, and everything else is handed back as the `FileStoreTable`
 /// a managed table is, carrying the schema for its `NewXxx` to build from. A null schema is handed
-/// over as it is - see `TryLoadFormatTable`.
+/// over as it is, so the managed path below decides what to say about a table that is not there.
 ///
-/// @param file_system The file system the schema above was read through, which a format table
-///        is served by - it has no schema options of its own to name another one.
+/// @param file_system The file system the schema above was read through.
 /// @param explicit_file_system The file system the context supplied, which a managed table is
 ///        opened through when there is one. A null one leaves the table to resolve from its
 ///        schema's own access configuration rather than being pinned to the file system this load
@@ -126,10 +90,19 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     const std::shared_ptr<SchemaManager>& schema_manager,
     const std::shared_ptr<TableSchema>& latest_schema, const std::optional<Identifier>& identifier,
     const std::string& uuid, const std::map<std::string, std::string>& fs_scheme_map) {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
-                           TryLoadFormatTable(file_system, path, branch, options, latest_schema));
-    if (format_table != nullptr) {
-        return std::shared_ptr<Table>(std::move(format_table));
+    if (latest_schema != nullptr) {
+        // The table type is read from the schema, never from `options`: `type` is structural, and
+        // one call's options must not decide what kind of table this is. See
+        // `FormatTable::Create()`.
+        PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
+                               TableTypeDefine::IsFormatTable(latest_schema->Options()));
+        if (is_format_table) {
+            return Status::Invalid(fmt::format(
+                "the schema under {} names a format table, which is not loaded from a path: a "
+                "catalog hands the table back through GetTable, and its operators come from "
+                "table->NewScan/NewRead/NewWrite/NewCommit on it",
+                path));
+        }
     }
     // The branch the schema was read on is folded into the object name.
     Identifier table_identifier =
@@ -210,24 +183,21 @@ Result<std::optional<std::string>> CatalogMainBranchSchemaJson(
 
 }  // namespace
 
-/// The table a scan context names: the format table the builder was handed, a system table behind
-/// a `T$system` path, or the table the schema under the context's path says is there.
+/// The data table a scan context names: only a data table is served by a load from the context's
+/// path - a system table behind a `T$system` path and a format table are refused, served by the
+/// table a catalog hands back through its own `NewXxx` instead.
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ScanContext& ctx) {
-    if (ctx.GetFormatTable() != nullptr) {
-        return std::shared_ptr<Table>(ctx.GetFormatTable());
-    }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx.GetOptions(), ctx.GetSpecificFileSystem(), {}));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(ctx.GetPath()));
     if (system_table_path) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(),
-                                                               ctx.GetPath(), ctx.GetOptions()));
-        return std::shared_ptr<Table>(std::move(system_table));
+        return Status::Invalid(fmt::format(
+            "the path {} names a system table, which is not loaded from a path: a catalog "
+            "hands the table back through GetTable, and its operators come from "
+            "table->NewScan/NewRead on it",
+            ctx.GetPath()));
     }
-    // One `TableScan` interface serves a format table too, the way Java Paimon serves both
-    // through one `ReadBuilder`; a format table is planned by listing directories instead.
     const std::string branch = BranchManager::NormalizeBranch(tmp_options.GetBranch());
     return ManagedTableOf(tmp_options.GetFileSystem(), ctx.GetSpecificFileSystem(), ctx.GetPath(),
                           branch, ctx.GetOptions(), ctx.GetSpecificTableSchema(),
@@ -235,35 +205,23 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ScanContext& 
                           /*uuid=*/"", /*fs_scheme_map=*/{});
 }
 
-/// The table a read context names: the format table the builder was handed, a system table behind
-/// a `T$system` path, or the table the schema under the context's path says is there.
+/// The data table a read context names: only a data table is served by a load from the context's
+/// path - a system table behind a `T$system` path and a format table are refused, served by the
+/// table a catalog hands back through its own `NewXxx` instead.
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ReadContext& ctx) {
-    if (ctx.GetFormatTable() != nullptr) {
-        return std::shared_ptr<Table>(ctx.GetFormatTable());
-    }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_core_options,
                            CoreOptions::FromMap(ctx.GetOptions(), ctx.GetSpecificFileSystem(),
                                                 ctx.GetFileSystemSchemeToIdentifierMap()));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(ctx.GetPath()));
     if (system_table_path) {
-        if (PredicateUtils::ContainsFullTextMatch(ctx.GetPredicate())) {
-            return Status::NotImplemented(
-                "FullTextMatch predicate execution is not implemented yet");
-        }
-        if (ctx.HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for system tables");
-        }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(),
-                                                               ctx.GetPath(), ctx.GetOptions()));
-        return std::shared_ptr<Table>(std::move(system_table));
+        return Status::Invalid(fmt::format(
+            "the path {} names a system table, which is not loaded from a path: a catalog "
+            "hands the table back through GetTable, and its operators come from "
+            "table->NewScan/NewRead on it",
+            ctx.GetPath()));
     }
 
-    // A format table has no manifest and a file another engine wrote carries no field ids, so how
-    // a row is put back together is its own; how a file is opened is not - both paths go through
-    // `DataFileReaderFactory`.
     const std::string branch = ctx.GetBranch();
     // The scheme map the schema was read through, so the table's data resolves custom schemes the
     // same way its metadata does.
@@ -273,12 +231,10 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ReadContext& 
                           ctx.GetFileSystemSchemeToIdentifierMap());
 }
 
-/// The table a write context names: the format table the builder was handed, or the table the
-/// schema under the context's root path says is there.
+/// The data table a write context names: only a data table is served by a load from the context's
+/// root path - a format table is refused, served by the table a catalog hands back through its own
+/// `NewXxx` instead.
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const WriteContext& ctx) {
-    if (ctx.GetFormatTable() != nullptr) {
-        return std::shared_ptr<Table>(ctx.GetFormatTable());
-    }
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx.GetCatalog()));
     std::shared_ptr<FileSystem> specific_fs = ctx.GetSpecificFileSystem();
     if (specific_fs == nullptr && ctx.GetFileSystemSchemeToIdentifierMap().empty() &&
@@ -307,12 +263,10 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const WriteContext&
                           ctx.GetFileSystemSchemeToIdentifierMap());
 }
 
-/// The table a commit context names: the format table the builder was handed, or the table the
-/// schema under the context's root path says is there.
+/// The data table a commit context names: only a data table is served by a load from the context's
+/// root path - a format table is refused, served by the table a catalog hands back through its own
+/// `NewXxx` instead.
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const CommitContext& ctx) {
-    if (ctx.GetFormatTable() != nullptr) {
-        return std::shared_ptr<Table>(ctx.GetFormatTable());
-    }
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx.GetCatalog()));
     // Use this table's catalog credentials unless the caller supplied a file system: a catalog
     // issuing per-table temporary ones only hands them out through GetTableFileSystem.

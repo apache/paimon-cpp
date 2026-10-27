@@ -33,7 +33,6 @@
 namespace paimon {
 class Catalog;
 class Executor;
-class FormatTable;
 class MemoryPool;
 
 /// `WriteContext` is some configuration for write operations.
@@ -53,7 +52,6 @@ class PAIMON_EXPORT WriteContext {
                  const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
                  const std::shared_ptr<RealtimeContext>& realtime_context,
                  const std::map<std::string, std::string>& options,
-                 const std::shared_ptr<FormatTable>& format_table,
                  const std::shared_ptr<Catalog>& catalog = nullptr,
                  const std::optional<Identifier>& identifier = std::nullopt);
 
@@ -124,12 +122,6 @@ class PAIMON_EXPORT WriteContext {
         return realtime_context_;
     }
 
-    /// The format table this context was built from, or null when it names a table path and the
-    /// schema under that path says what kind of table it is.
-    const std::shared_ptr<FormatTable>& GetFormatTable() const {
-        return format_table_;
-    }
-
     /// Returns the catalog supplying table metadata, or null if unset.
     const std::shared_ptr<Catalog>& GetCatalog() const {
         return catalog_;
@@ -157,7 +149,6 @@ class PAIMON_EXPORT WriteContext {
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<RealtimeContext> realtime_context_;
     std::map<std::string, std::string> options_;
-    std::shared_ptr<FormatTable> format_table_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
 };
@@ -169,17 +160,6 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @param root_path The root path of the table.
     /// @param commit_user The user identifier for commit operations.
     WriteContextBuilder(const std::string& root_path, const std::string& commit_user);
-
-    /// Constructs a `WriteContextBuilder` for a format table that is already loaded: the only way
-    /// to write one whose schema lives in a metastore rather than under its location, such as a
-    /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()`, `WithCatalog()` and a branch
-    /// are refused here rather than ignored.
-    ///
-    /// There is no commit user: a format table keeps no snapshot to record one in.
-    ///
-    /// @param table The format table to write to, as `Catalog::GetTable()` hands it back.
-    explicit WriteContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~WriteContextBuilder();
 

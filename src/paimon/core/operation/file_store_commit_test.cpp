@@ -99,8 +99,7 @@ TEST(FileStoreCommitTest, TestCreateWithCatalogRequiresIdentifier) {
         dir->Str(), "commit_user", /*ignore_empty_commit=*/true,
         /*use_rest_catalog_commit=*/false, catalog, /*identifier=*/std::nullopt,
         /*table_id=*/std::nullopt, /*append_commit_check_conflict=*/false, GetDefaultPool(),
-        CreateDefaultExecutor(), /*specific_file_system=*/nullptr, options,
-        /*format_table=*/nullptr);
+        CreateDefaultExecutor(), /*specific_file_system=*/nullptr, options);
     ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)),
                         "a catalog commit requires a table identifier");
 }

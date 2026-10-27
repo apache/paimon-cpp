@@ -44,18 +44,10 @@ A format table is served through the same :cpp:func:`Catalog::GetTable` as every
 its ``type`` option says what it is, and the call hands back the ``FormatTable`` it describes,
 through the ``Table`` interface the two kinds of table share.
 
-Reading and writing go through the entry points every other table uses: ``TableScan::Create``,
-``TableRead::Create``, ``FileStoreWrite::Create`` and ``FileStoreCommit::Create``, each from its
-usual context builder. Each reads the table's schema - from under the table path, or from the one
-the context carries - and dispatches to a format table when its ``type`` says so.
-
-That path needs a schema under the table's own location, which is what every table a file system
-catalog serves has. A table loaded from a catalog that keeps the schema elsewhere, such as the
-REST catalog, has none: nothing under the location says that it is a format table, nor that
-``schema`` and ``branch`` below it are data rather than metadata. Such a table is read and written
-by handing the loaded ``FormatTable`` to the context builder instead of a path - every builder has
-a constructor taking one - and calling the table's own operator, which is what Java does through
-``FormatTable.newReadBuilder()`` and ``newBatchWriteBuilder()``:
+Reading and writing go through the table itself: a caller holding one calls ``NewScan()``,
+``NewRead()``, ``NewWrite()`` or ``NewCommit()`` on it, with a context its usual builder builds from
+the table's location. This is what Java serves through ``FormatTable.newReadBuilder()`` and
+``newBatchWriteBuilder()``:
 
 .. code-block:: cpp
 
@@ -64,22 +56,26 @@ a constructor taking one - and calling the table's own operator, which is what J
    // The table's `type` option is `format-table`, so this is a `FormatTable`.
    std::shared_ptr<paimon::FormatTable> table =
        std::dynamic_pointer_cast<paimon::FormatTable>(loaded);
-   paimon::ScanContextBuilder scan_builder(table);
+   paimon::ScanContextBuilder scan_builder(table->Location());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                           scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
                           table->NewScan(std::move(scan_context)));
 
-The table already carries its schema and the file system it was loaded through, so a context built
-from one refuses ``SetTableSchema()``, ``WithFileSystem()``,
-``WithFileSystemSchemeToIdentifierMap()``, ``WithCatalog()`` and a branch. Options
+Because the operator comes from the table itself, this serves a table whose schema does not live
+under its own location as well, such as one a REST catalog serves: the table carries its schema and
+the file system it was loaded through, so nothing under the location has to answer for them. Options
 given at the call still win over the ones the schema stored, as they do everywhere else.
 
-``FormatTable`` is a derived class of ``Table``, so the table serves the same calls itself: a
-caller holding one through a ``std::shared_ptr<paimon::Table>`` calls ``NewScan()``,
-``NewRead()``, ``NewWrite()`` or ``NewCommit()`` on it, and the operators come back for the table
-it is, whether or not the context carries one. This is the C++ side of what Java serves through
-one ``Table.newReadBuilder()`` for both kinds of table.
+The generic entry points - ``TableScan::Create``, ``TableRead::Create``, ``FileStoreWrite::Create``
+and ``FileStoreCommit::Create`` - serve a data table only: a load from a path is the data table's
+way in, and a format table the schema under the path names is refused with a message pointing at
+the catalog and the table's own operators above.
+
+``FormatTable`` is a derived class of ``Table``, so a caller holding one through a
+``std::shared_ptr<paimon::Table>`` calls the same operators on it without the cast: they come back
+for the table it is, whatever kind it turns out to be. This is the C++ side of what Java serves
+through one ``Table.newReadBuilder()`` for both kinds of table.
 
 A batch comes back in the table's column order, or the projection's when the read names one,
 behind the ``_VALUE_KIND`` field every ``BatchReader`` carries. Which columns a *file* is asked for

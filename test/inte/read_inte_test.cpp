@@ -49,6 +49,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/snapshot.h"
@@ -57,6 +58,7 @@
 #include "paimon/core/table/source/deletion_file.h"
 #include "paimon/core/table/source/fallback_data_split.h"
 #include "paimon/core/table/system/global_system_tables.h"
+#include "paimon/core/table/system/system_table.h"
 #include "paimon/core/tag/tag.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/data/decimal.h"
@@ -274,6 +276,13 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadSystemTable(
     const std::string& system_table_path, const std::map<std::string, std::string>& options,
     bool streaming_mode = false, const std::shared_ptr<Predicate>& predicate = nullptr,
     const std::vector<std::string>& read_field_names = {}, bool read_next_plan = false) {
+    // A system table is not served by the operator entry points a path names any more: the loader
+    // hands the table back, and the table serves the scan and the read itself, the way a catalog's
+    // `GetTable` would.
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<SystemTable> table,
+        SystemTableLoader::LoadFromPath(core_options.GetFileSystem(), system_table_path, options));
     ScanContextBuilder scan_context_builder(system_table_path);
     scan_context_builder.SetOptions(options).WithStreamingMode(streaming_mode);
     if (predicate) {
@@ -282,7 +291,7 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadSystemTable(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                            scan_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                           TableScan::Create(std::move(scan_context)));
+                           table->NewScan(std::move(scan_context)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     if (read_next_plan) {
         PAIMON_ASSIGN_OR_RAISE(plan, table_scan->CreatePlan());
@@ -299,7 +308,7 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadSystemTable(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           TableRead::Create(std::move(read_context)));
+                           table->NewRead(std::move(read_context)));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
@@ -650,17 +659,20 @@ TEST(SystemTableReadInteTest, TestReadOptionsSystemTable) {
     ArrowSchemaRelease(&schema);
 
     std::string system_table_path = PathUtil::JoinPath(dir->Str(), "warehouse/db1.db/tbl1$options");
+    // A system table comes from the catalog, and the operators from the table it hands back -
+    // the path alone no longer reaches it.
+    ASSERT_OK_AND_ASSIGN(auto table, catalog->GetTable(Identifier("db1", "tbl1$options")));
     ScanContextBuilder scan_context_builder(system_table_path);
     scan_context_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, table->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
     ASSERT_EQ(plan->Splits().size(), 1);
 
     ReadContextBuilder read_context_builder(system_table_path);
     read_context_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read, table->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_TRUE(result);
@@ -682,17 +694,21 @@ TEST(SystemTableReadInteTest, TestReadBranchOptionsSystemTable) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "parquet"}};
     std::string system_table_path = table_path + "$branch_rt$options";
+    // No catalog here: the loader is the path-side half of what a catalog's `GetTable` does.
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_OK_AND_ASSIGN(auto table, SystemTableLoader::LoadFromPath(core_options.GetFileSystem(),
+                                                                     system_table_path, options));
     ScanContextBuilder scan_context_builder(system_table_path);
     scan_context_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, table->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
     ASSERT_EQ(plan->Splits().size(), 1);
 
     ReadContextBuilder read_context_builder(system_table_path);
     read_context_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read, table->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(batch_reader)));
 
@@ -1002,12 +1018,18 @@ TEST(SystemTableReadInteTest, TestReadOptimizedPrimaryKeyProjectionAndPredicateP
     std::shared_ptr<Predicate> predicate =
         PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k", FieldType::INT, Literal(2));
 
+    // A system table is not served by the operator entry points a path names any more: the loader
+    // hands the table back, and the table serves the scan and the read itself.
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<SystemTable> table,
+        SystemTableLoader::LoadFromPath(core_options.GetFileSystem(), table_path + "$ro", options));
     ScanContextBuilder ro_scan_context_builder(table_path + "$ro");
     ro_scan_context_builder.SetOptions(options).SetPredicate(predicate);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ro_scan_context,
                          ro_scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> ro_table_scan,
-                         TableScan::Create(std::move(ro_scan_context)));
+                         table->NewScan(std::move(ro_scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> ro_plan, ro_table_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(int64_t ro_file_count, CountDataFiles(ro_plan->Splits()));
     ASSERT_EQ(ro_file_count, 1);
@@ -1018,7 +1040,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedPrimaryKeyProjectionAndPredicateP
     read_context_builder.SetOptions(options).SetPredicate(predicate).SetReadFieldNames({"k", "v"});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         table->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(ro_plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -1062,11 +1084,17 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableNestedProjection) {
                                     /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(WriteAndFullCompact(std::move(batch), /*commit_identifier=*/0, helper.get()));
 
+    // A system table is not served by the operator entry points a path names any more: the loader
+    // hands the table back, and the table serves the scan and the read itself.
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<SystemTable> table,
+        SystemTableLoader::LoadFromPath(core_options.GetFileSystem(), table_path + "$ro", options));
     ScanContextBuilder scan_context_builder(table_path + "$ro");
     scan_context_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(std::move(scan_context)));
+                         table->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
     auto projected_schema = arrow::schema({
@@ -1079,7 +1107,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableNestedProjection) {
     read_context_builder.SetOptions(options).SetReadSchema(std::move(c_projected_schema));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         table->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,

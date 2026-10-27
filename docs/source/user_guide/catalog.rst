@@ -168,8 +168,8 @@ Both builders use the file system of the table being written or committed for
 manifests and data, so a catalog that issues temporary credentials per table
 serves them through ``Catalog::GetTableFileSystem``. ``WithFileSystem`` overrides
 it; writers also allow ``WithFileSystemSchemeToIdentifierMap`` to override
-file-system selection. For format tables, use ``WriteContextBuilder(FormatTable)``
-instead.
+file-system selection. A format table is written through the table's own
+``NewWrite`` instead; see :doc:`format_table`.
 
 A file system passed to ``WithFileSystem`` is used exactly as it is: neither the
 built-in file systems nor the table's own credentials are involved, so a custom
@@ -336,10 +336,9 @@ snapshots, manifests and data under the table path, so it signs every access wit
 the table's credentials and reloads them as they expire. An explicit
 ``WithFileSystem`` takes precedence, so the catalog is not asked. A catalog that
 issues no per-table credentials returns its catalog-level file system, so this is
-also how you read with the catalog's own object-store credentials. For a format
-table, use ``ReadContextBuilder(FormatTable)`` or ``ScanContextBuilder(FormatTable)``
-instead; ``WithCatalog`` is rejected because the table already carries the file
-system it was loaded through.
+also how you read with the catalog's own object-store credentials. A format table
+is read through the table's own ``NewRead`` or ``NewScan`` instead; see
+:doc:`format_table`.
 
 The C++ REST catalog covers the database, table, snapshot and commit operations
 of the ``Catalog`` API. The parts of the Java REST catalog that have no C++

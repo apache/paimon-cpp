@@ -30,10 +30,11 @@ class ScanContext;
 class Table;
 class WriteContext;
 
-/// Loads the table a context names, as Java Paimon's `FileStoreTableFactory` does: the format
-/// table the builder was handed, the system table behind a `T$system` path, or the managed table
-/// the schema under the context's path describes. The static `Create` of all four operators asks
-/// the same question, so one place answers it and they cannot disagree.
+/// Loads the data table a context names, as Java Paimon's `FileStoreTableFactory` does: the schema
+/// under the context's path describes it. A system table behind a `T$system` path and a format
+/// table are refused - a catalog hands those back through `GetTable`, and their operators come from
+/// the table itself - so the static `Create` of all four operators answers the one question this
+/// place asks and they cannot disagree.
 class FileStoreTableFactory {
  public:
     FileStoreTableFactory() = delete;

@@ -61,6 +61,7 @@
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/realtime_split.h"
+#include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/data/variant.h"
@@ -2918,10 +2919,16 @@ TEST_F(RealtimeWriteInteTest, TestPkRealtimeReadOptimizedScanUnsupported) {
     ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
     ASSERT_EQ(rows, disk_rows);
 
+    // A system table is not served by the entry point a path names any more: the loader hands
+    // the table back, and the table refuses the scan itself.
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> table,
+                         SystemTableLoader::LoadFromPath(core_options.GetFileSystem(),
+                                                         table_path_ + "$ro", options_));
     ScanContextBuilder scan_builder(table_path_ + "$ro");
     scan_builder.SetOptions(options_).WithRealtimeContext(realtime_context).WithMemoryPool(pool_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    Result<std::unique_ptr<TableScan>> scan = TableScan::Create(std::move(scan_context));
+    Result<std::unique_ptr<TableScan>> scan = table->NewScan(std::move(scan_context));
     ASSERT_TRUE(scan.status().IsNotImplemented()) << scan.status().ToString();
     ASSERT_NE(std::string::npos, scan.status().ToString().find(
                                      "PK real-time union read does not support read-optimized"));

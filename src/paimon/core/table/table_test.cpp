@@ -36,6 +36,7 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/file_store_table.h"
+#include "paimon/core/table/file_store_table_factory.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/fallback_data_split.h"
 #include "paimon/defs.h"
@@ -1289,22 +1290,18 @@ TEST(TableTest, TestALoadNamesTheDatabaseThePathLaysOut) {
 
     // A context that names no catalog knows the table by its directory: the directory above
     // the table's names the database when it carries the `.db` suffix, the way the Java
-    // `identifierFromPath` reads it, so the table the load serves is named for both. The
-    // refusal a format table open speaks names the table - and the option the context
-    // carries is what drives the open to it, since the schema alone opens cleanly.
+    // `identifierFromPath` reads it, so the table the load serves is named for both.
     const std::string table_dir = dir->Str() + "/my_db.db/my_table";
     ASSERT_OK(fs->Mkdirs(table_dir));
     SchemaManager schema_manager(fs, table_dir);
-    ASSERT_OK_AND_ASSIGN(
-        [[maybe_unused]] std::unique_ptr<TableSchema> format_schema,
-        schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"}, /*primary_keys=*/{},
-                                   {{"type", "format-table"}}));
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> managed_schema,
+                         schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"},
+                                                    /*primary_keys=*/{}, {{"file.format", "orc"}}));
     {
         ScanContextBuilder builder(table_dir);
-        builder.AddOption(Options::REALTIME_ENABLED, "true");
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
-        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)),
-                            "cannot open format table my_db.my_table");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+        ASSERT_EQ(table->FullName(), "my_db.my_table");
     }
 
     // A table sitting directly under the root, with no `.db` directory above it, names no
@@ -1315,13 +1312,12 @@ TEST(TableTest, TestALoadNamesTheDatabaseThePathLaysOut) {
     ASSERT_OK_AND_ASSIGN(
         [[maybe_unused]] std::unique_ptr<TableSchema> loose_schema,
         loose_schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"}, /*primary_keys=*/{},
-                                         {{"type", "format-table"}}));
+                                         {{"file.format", "orc"}}));
     {
         ScanContextBuilder builder(loose_table_dir);
-        builder.AddOption(Options::REALTIME_ENABLED, "true");
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
-        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)),
-                            "cannot open format table loose_table");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+        ASSERT_EQ(table->FullName(), "loose_table");
     }
 }
 

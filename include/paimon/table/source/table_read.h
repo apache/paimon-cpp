@@ -42,8 +42,9 @@ class PAIMON_EXPORT TableRead {
  public:
     virtual ~TableRead() = default;
 
-    /// Create an instance of `TableRead`. A context that already carries a loaded table goes
-    /// straight to that table's `NewRead`; otherwise the table the context names is loaded first.
+    /// Create an instance of `TableRead`. The data table the context names is loaded from its path
+    /// - a system table behind a `T$system` path and a format table are refused, served by the
+    /// table a catalog hands back through its own `NewRead` instead.
     ///
     /// @param context A unique pointer to the `ReadContext` used for read operations.
     /// @return A Result containing a unique pointer to the `TableRead` instance.

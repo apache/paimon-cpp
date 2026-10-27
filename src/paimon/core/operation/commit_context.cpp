@@ -33,7 +33,6 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
-#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 
@@ -43,12 +42,11 @@ CommitContext::CommitContext(const std::string& root_path, const std::string& co
                              const std::shared_ptr<MemoryPool>& memory_pool,
                              const std::shared_ptr<Executor>& executor,
                              const std::shared_ptr<FileSystem>& specific_file_system,
-                             const std::map<std::string, std::string>& options,
-                             const std::shared_ptr<FormatTable>& format_table)
+                             const std::map<std::string, std::string>& options)
     : CommitContext(root_path, commit_user, ignore_empty_commit, use_rest_catalog_commit,
                     /*catalog=*/nullptr, /*identifier=*/std::nullopt, /*table_id=*/std::nullopt,
                     append_commit_check_conflict, memory_pool, executor, specific_file_system,
-                    options, format_table) {}
+                    options) {}
 
 CommitContext::CommitContext(const std::string& root_path, const std::string& commit_user,
                              bool ignore_empty_commit, bool use_rest_catalog_commit,
@@ -59,8 +57,7 @@ CommitContext::CommitContext(const std::string& root_path, const std::string& co
                              const std::shared_ptr<MemoryPool>& memory_pool,
                              const std::shared_ptr<Executor>& executor,
                              const std::shared_ptr<FileSystem>& specific_file_system,
-                             const std::map<std::string, std::string>& options,
-                             const std::shared_ptr<FormatTable>& format_table)
+                             const std::map<std::string, std::string>& options)
     : root_path_(root_path),
       commit_user_(commit_user),
       ignore_empty_commit_(ignore_empty_commit),
@@ -72,8 +69,7 @@ CommitContext::CommitContext(const std::string& root_path, const std::string& co
       memory_pool_(memory_pool),
       executor_(executor),
       specific_file_system_(specific_file_system),
-      options_(options),
-      format_table_(format_table) {}
+      options_(options) {}
 
 CommitContext::~CommitContext() = default;
 
@@ -96,10 +92,6 @@ class CommitContextBuilder::Impl {
 
  private:
     std::string root_path_;
-    /// Kept across `Reset()`, as `root_path_` is: both name the table this builder builds for,
-    /// rather than a setting of one commit to it.
-    std::shared_ptr<FormatTable> format_table_;
-    bool built_from_format_table_ = false;
     std::string commit_user_;
     bool ignore_empty_commit_ = true;
     bool use_rest_catalog_commit_ = false;
@@ -118,15 +110,6 @@ CommitContextBuilder::CommitContextBuilder(const std::string& root_path,
     : impl_(std::make_unique<Impl>()) {
     impl_->root_path_ = root_path;
     impl_->commit_user_ = commit_user;
-}
-
-CommitContextBuilder::CommitContextBuilder(const std::shared_ptr<FormatTable>& table)
-    : impl_(std::make_unique<Impl>()) {
-    impl_->format_table_ = table;
-    impl_->built_from_format_table_ = true;
-    if (table != nullptr) {
-        impl_->root_path_ = table->Location();
-    }
 }
 
 CommitContextBuilder::~CommitContextBuilder() = default;
@@ -190,9 +173,6 @@ CommitContextBuilder& CommitContextBuilder::WithFileSystem(
 }
 
 Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
-    if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
-        return Status::Invalid("cannot commit with null format table");
-    }
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot commit through a null catalog");
     }
@@ -230,13 +210,6 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
             "a commit either goes to the catalog of WithCatalog() or is handed back as a request "
             "for the caller to send, which is what UseRESTCatalogCommit() asks for");
     }
-    // The table already carries the file system it was loaded through, and from a source this
-    // cannot see behind, so a second answer is refused rather than silently dropped.
-    if (impl_->format_table_ != nullptr && impl_->specific_file_system_ != nullptr) {
-        return Status::Invalid(
-            "a format table carries the file system it was loaded through, so WithFileSystem() "
-            "cannot be used with one");
-    }
     PAIMON_ASSIGN_OR_RAISE(impl_->root_path_, PathUtil::NormalizePath(impl_->root_path_));
     if (impl_->root_path_.empty()) {
         return Status::Invalid("root path is empty");
@@ -245,7 +218,7 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
         impl_->root_path_, impl_->commit_user_, impl_->ignore_empty_commit_,
         impl_->use_rest_catalog_commit_, impl_->catalog_, impl_->identifier_, impl_->table_id_,
         impl_->append_commit_check_conflict_, impl_->memory_pool_, impl_->executor_,
-        impl_->specific_file_system_, impl_->options_, impl_->format_table_);
+        impl_->specific_file_system_, impl_->options_);
     impl_->Reset();
     return ctx;
 }

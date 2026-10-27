@@ -297,8 +297,8 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, CopySelf(context->GetOptions()));
     if (context->GetCatalog() != nullptr) {
         return Status::Invalid(
-            "WithCatalog() requires a native table; use WriteContextBuilder(FormatTable) for a "
-            "format table");
+            "WithCatalog() requires a native table; a format table takes a WriteContextBuilder "
+            "built from its location instead");
     }
     if (context->IsStreamingMode()) {
         return Status::Invalid(

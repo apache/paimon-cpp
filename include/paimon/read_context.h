@@ -38,7 +38,6 @@ namespace paimon {
 class Catalog;
 class Executor;
 struct FullTextSearch;
-class FormatTable;
 class MemoryPool;
 class Predicate;
 class FileSystem;
@@ -52,23 +51,25 @@ struct VectorSearch;
 /// @see ReadContextBuilder
 class PAIMON_EXPORT ReadContext {
  public:
-    ReadContext(
-        const std::string& path, const std::string& branch,
-        const std::vector<std::string>& read_field_names,
-        const std::vector<int32_t>& read_field_ids, const std::shared_ptr<Predicate>& predicate,
-        const std::shared_ptr<VectorSearch>& vector_search,
-        const std::shared_ptr<FullTextSearch>& full_text_search, bool enable_predicate_filter,
-        bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
-        uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
-        uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
-        const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
-        const std::shared_ptr<FileSystem>& specific_file_system,
-        const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-        const std::shared_ptr<RealtimeContext>& realtime_context,
-        const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
-        const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-        const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
-        const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier);
+    ReadContext(const std::string& path, const std::string& branch,
+                const std::vector<std::string>& read_field_names,
+                const std::vector<int32_t>& read_field_ids,
+                const std::shared_ptr<Predicate>& predicate,
+                const std::shared_ptr<VectorSearch>& vector_search,
+                const std::shared_ptr<FullTextSearch>& full_text_search,
+                bool enable_predicate_filter, bool enable_prefetch, bool enable_late_materializing,
+                uint32_t prefetch_batch_count, uint32_t prefetch_max_parallel_num,
+                bool enable_multi_thread_row_to_batch, uint32_t row_to_batch_thread_number,
+                const std::optional<std::string>& table_schema,
+                const std::shared_ptr<MemoryPool>& memory_pool,
+                const std::shared_ptr<Executor>& executor,
+                const std::shared_ptr<FileSystem>& specific_file_system,
+                const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
+                const std::shared_ptr<RealtimeContext>& realtime_context,
+                const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
+                const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
+                WarmupLevel warmup_level, const std::shared_ptr<Catalog>& catalog,
+                const std::optional<Identifier>& identifier);
 
     ~ReadContext();
 
@@ -164,12 +165,6 @@ class PAIMON_EXPORT ReadContext {
         return cache_;
     }
 
-    /// The format table this context was built from, or null when it names a table path and the
-    /// schema under that path says what kind of table it is.
-    const std::shared_ptr<FormatTable>& GetFormatTable() const {
-        return format_table_;
-    }
-
     WarmupLevel GetWarmupLevel() const {
         return warmup_level_;
     }
@@ -225,7 +220,6 @@ class PAIMON_EXPORT ReadContext {
     bool read_ahead_cache_enabled_;
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
-    std::shared_ptr<FormatTable> format_table_;
     WarmupLevel warmup_level_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
@@ -239,15 +233,6 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Constructs a `ReadContextBuilder` with required parameters.
     /// @param path The root path of the table.
     explicit ReadContextBuilder(const std::string& path);
-
-    /// Constructs a `ReadContextBuilder` for a format table that is already loaded: the only way
-    /// to read one whose schema lives in a metastore rather than under its location, such as a
-    /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `SetTableSchema()`, `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()` and a
-    /// branch are refused here rather than ignored.
-    ///
-    /// @param table The format table to read, as `Catalog::GetTable()` hands it back.
-    explicit ReadContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~ReadContextBuilder();
 

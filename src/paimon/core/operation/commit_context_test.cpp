@@ -40,7 +40,7 @@ TEST(CommitContextTest, TestLegacyConstructor) {
     auto fs = std::make_shared<MockFileSystem>();
     const std::map<std::string, std::string> options = {{"key", "value"}};
     CommitContext context("table_root_path", "commit_user_1", false, true, true, pool, executor, fs,
-                          options, nullptr);
+                          options);
     ASSERT_EQ(context.GetRootPath(), "table_root_path");
     ASSERT_EQ(context.GetCommitUser(), "commit_user_1");
     ASSERT_FALSE(context.IgnoreEmptyCommit());

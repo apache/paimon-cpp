@@ -56,6 +56,7 @@
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
 #include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
@@ -329,6 +330,21 @@ TEST(SystemTableTest, TestOperatorEntriesRefuseANullContext) {
     ASSERT_NOK_WITH_MSG(audit_log.NewRead(nullptr), "read context is null pointer");
     ASSERT_NOK_WITH_MSG(binlog.NewRead(nullptr), "read context is null pointer");
     ASSERT_NOK_WITH_MSG(read_optimized.NewRead(nullptr), "read context is null pointer");
+}
+
+// The scan and read entry points serve a data table only: a `T$system` path is refused with a
+// message pointing at the catalog that hands the table back, so a caller holding only the path is
+// not told the table does not exist.
+TEST(SystemTableTest, TestTheOperatorEntriesRefuseASystemTablePath) {
+    const std::string system_table_path = "/tmp/warehouse/db.db/tbl$options";
+
+    ScanContextBuilder scan_builder(system_table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)), "names a system table");
+
+    ReadContextBuilder read_builder(system_table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), "names a system table");
 }
 
 // The reads these views serve build a context of their own for the data table underneath, which

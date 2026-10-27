@@ -25,7 +25,6 @@
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
-#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 class Predicate;
@@ -39,8 +38,7 @@ ScanContext::ScanContext(
     const std::shared_ptr<FileSystem>& specific_file_system,
     const std::optional<std::string>& table_schema,
     const std::map<std::string, std::string>& options, const std::shared_ptr<Cache>& cache,
-    const std::shared_ptr<FormatTable>& format_table, const std::shared_ptr<Catalog>& catalog,
-    const std::optional<Identifier>& identifier)
+    const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier)
     : path_(path),
       is_streaming_mode_(is_streaming_mode),
       limit_(limit),
@@ -53,7 +51,6 @@ ScanContext::ScanContext(
       table_schema_(table_schema),
       options_(options),
       cache_(cache),
-      format_table_(format_table),
       catalog_(catalog),
       identifier_(identifier) {}
 
@@ -83,10 +80,6 @@ class ScanContextBuilder::Impl {
 
  private:
     std::string path_;
-    /// Kept across `Reset()`, as `path_` is: both name the table this builder builds for, rather
-    /// than a setting of one scan of it.
-    std::shared_ptr<FormatTable> format_table_;
-    bool built_from_format_table_ = false;
     bool is_streaming_mode_ = false;
     std::optional<int32_t> limit_;
     std::optional<int32_t> bucket_filter_;
@@ -108,15 +101,6 @@ class ScanContextBuilder::Impl {
 ScanContextBuilder::ScanContextBuilder(const std::string& path)
     : impl_(std::make_unique<ScanContextBuilder::Impl>()) {
     impl_->path_ = path;
-}
-
-ScanContextBuilder::ScanContextBuilder(const std::shared_ptr<FormatTable>& table)
-    : impl_(std::make_unique<ScanContextBuilder::Impl>()) {
-    impl_->format_table_ = table;
-    impl_->built_from_format_table_ = true;
-    if (table != nullptr) {
-        impl_->path_ = table->Location();
-    }
 }
 
 ScanContextBuilder::~ScanContextBuilder() = default;
@@ -205,28 +189,6 @@ ScanContextBuilder& ScanContextBuilder::WithCache(const std::shared_ptr<Cache>& 
 }
 
 Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
-    if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
-        return Status::Invalid("cannot scan with null format table");
-    }
-    if (impl_->format_table_ != nullptr) {
-        // The table already answers both, and from a source this cannot see behind, so a second
-        // answer is refused rather than silently dropped.
-        if (impl_->catalog_ != nullptr) {
-            return Status::Invalid(
-                "a format table carries the file system it was loaded through, so WithCatalog() "
-                "cannot be used with one");
-        }
-        if (impl_->table_schema_) {
-            return Status::Invalid(
-                "a format table carries its own schema, so SetTableSchema() cannot be used with "
-                "one");
-        }
-        if (impl_->specific_file_system_ != nullptr) {
-            return Status::Invalid(
-                "a format table carries the file system it was loaded through, so WithFileSystem() "
-                "cannot be used with one");
-        }
-    }
     PAIMON_ASSIGN_OR_RAISE(impl_->path_, PathUtil::NormalizePath(impl_->path_));
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot scan with empty table path");
@@ -248,7 +210,7 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
         impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
-        impl_->format_table_, impl_->catalog_, impl_->identifier_);
+        impl_->catalog_, impl_->identifier_);
     impl_->Reset();
     return ctx;
 }

@@ -50,8 +50,9 @@ class CommitMessage;
 /// manages versions. `UseRESTCatalogCommit()` only prepares a request for the caller to send.
 class PAIMON_EXPORT FileStoreCommit {
  public:
-    /// Create an instance of `FileStoreCommit`. A context that already carries a loaded table goes
-    /// straight to that table's `NewCommit`; otherwise the table the context names is loaded first.
+    /// Create an instance of `FileStoreCommit`. The data table the context names is loaded from its
+    /// root path - a format table is refused, served by the table a catalog hands back through its
+    /// own `NewCommit` instead.
     ///
     /// @param context A unique pointer to the `CommitContext` used for commit operations.
     ///
