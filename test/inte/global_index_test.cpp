@@ -575,37 +575,48 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithCheckpoint) {
     ASSERT_OK_AND_ASSIGN(auto split, ScanData(table_path, /*partition_filters=*/{}));
     std::shared_ptr<FileSystem> checkpoint_fs = dir_->GetFileSystem();
     std::string task_id = "task-1";
-    std::string checkpoint_dir = PathUtil::JoinPath(table_path, "index/checkpoint");
-    std::string task_checkpoint_dir = PathUtil::JoinPath(checkpoint_dir, task_id);
-    ASSERT_OK(checkpoint_fs->Mkdirs(task_checkpoint_dir));
-    ASSERT_OK(checkpoint_fs->Mkdirs(PathUtil::JoinPath(checkpoint_dir, "another-task")));
-    auto checkpoint_path = [&](const std::string& task, int64_t id) {
-        return PathUtil::JoinPath(PathUtil::JoinPath(checkpoint_dir, task),
-                                  fmt::format("lumina-global-index-f1-0-3-{}.index.ckpt", id));
-    };
-    std::string matching_checkpoint = checkpoint_path(task_id, 9);
-    ASSERT_OK(checkpoint_fs->WriteFile(matching_checkpoint, "invalid checkpoint",
-                                       /*overwrite=*/false));
-    std::string unrelated_checkpoint = checkpoint_path("another-task", 999);
-    ASSERT_OK(checkpoint_fs->WriteFile(unrelated_checkpoint, "another task",
-                                       /*overwrite=*/false));
+    auto external_dir = UniqueTestDirectory::Create("local");
+    ASSERT_TRUE(external_dir);
+    for (bool use_external_path : {false, true}) {
+        std::map<std::string, std::string> checkpoint_options = lumina_options;
+        std::string checkpoint_dir = PathUtil::JoinPath(table_path, "index/checkpoint");
+        if (use_external_path) {
+            checkpoint_options["global-index.external-path"] = "FILE://" + external_dir->Str();
+            checkpoint_dir = PathUtil::JoinPath(external_dir->Str(), "checkpoint");
+        }
+        std::string task_checkpoint_dir = PathUtil::JoinPath(checkpoint_dir, task_id);
+        ASSERT_OK(checkpoint_fs->Mkdirs(task_checkpoint_dir));
+        ASSERT_OK(checkpoint_fs->Mkdirs(PathUtil::JoinPath(checkpoint_dir, "another-task")));
+        auto checkpoint_path = [&](const std::string& task, int64_t id) {
+            return PathUtil::JoinPath(PathUtil::JoinPath(checkpoint_dir, task),
+                                      fmt::format("lumina-global-index-f1-0-3-{}.index.ckpt", id));
+        };
+        std::string matching_checkpoint = checkpoint_path(task_id, 9);
+        ASSERT_OK(checkpoint_fs->WriteFile(matching_checkpoint, "invalid checkpoint",
+                                           /*overwrite=*/false));
+        std::string unrelated_checkpoint = checkpoint_path("another-task", 999);
+        ASSERT_OK(checkpoint_fs->WriteFile(unrelated_checkpoint, "another task",
+                                           /*overwrite=*/false));
 
-    ASSERT_OK(GlobalIndexWriteTask::WriteIndex(
-        table_path, "f1", "lumina",
-        std::make_shared<IndexedSplitImpl>(split, std::vector<Range>{Range(0, 3)}), lumina_options,
-        task_id, pool_));
-    std::vector<BasicFileStatus> checkpoint_files;
-    ASSERT_OK(checkpoint_fs->ListDir(task_checkpoint_dir, &checkpoint_files));
-    ASSERT_TRUE(checkpoint_files.empty());
-    ASSERT_OK_AND_ASSIGN(bool unrelated_exists, checkpoint_fs->Exists(unrelated_checkpoint));
-    ASSERT_TRUE(unrelated_exists);
+        ASSERT_OK(GlobalIndexWriteTask::WriteIndex(
+            table_path, "f1", "lumina",
+            std::make_shared<IndexedSplitImpl>(split, std::vector<Range>{Range(0, 3)}),
+            checkpoint_options, task_id, pool_));
+        std::vector<BasicFileStatus> checkpoint_files;
+        ASSERT_OK(checkpoint_fs->ListDir(task_checkpoint_dir, &checkpoint_files));
+        ASSERT_TRUE(checkpoint_files.empty());
+        ASSERT_OK_AND_ASSIGN(bool unrelated_exists, checkpoint_fs->Exists(unrelated_checkpoint));
+        ASSERT_TRUE(unrelated_exists);
 
-    ASSERT_OK(GlobalIndexWriteTask::DeleteCheckpoint(table_path, "another-task", lumina_options));
-    ASSERT_OK_AND_ASSIGN(unrelated_exists, checkpoint_fs->Exists(unrelated_checkpoint));
-    ASSERT_FALSE(unrelated_exists);
-    ASSERT_OK_AND_ASSIGN(bool unrelated_directory_exists,
-                         checkpoint_fs->Exists(PathUtil::JoinPath(checkpoint_dir, "another-task")));
-    ASSERT_FALSE(unrelated_directory_exists);
+        ASSERT_OK(
+            GlobalIndexWriteTask::DeleteCheckpoint(table_path, "another-task", checkpoint_options));
+        ASSERT_OK_AND_ASSIGN(unrelated_exists, checkpoint_fs->Exists(unrelated_checkpoint));
+        ASSERT_FALSE(unrelated_exists);
+        ASSERT_OK_AND_ASSIGN(
+            bool unrelated_directory_exists,
+            checkpoint_fs->Exists(PathUtil::JoinPath(checkpoint_dir, "another-task")));
+        ASSERT_FALSE(unrelated_directory_exists);
+    }
 }
 
 TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithMismatchedDimension) {

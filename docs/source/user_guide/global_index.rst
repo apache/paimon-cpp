@@ -50,9 +50,15 @@ task once it is no longer running or being retried:
    PAIMON_RETURN_NOT_OK(paimon::GlobalIndexWriteTask::DeleteCheckpoint(
        table_path, "build-task-1", options, file_system));
 
-Pass the same table path and task id used in ``WriteIndex``. Task ids must be unique within the
-table. The cleanup recursively removes the whole task directory, other tasks' directories and completed
-index files are preserved.
+Checkpoints are stored in ``<table_path>/index/checkpoint/<task_id>`` by default. When
+``global-index.external-path`` is configured, they are stored in
+``<global-index.external-path>/checkpoint/<task_id>`` instead.
+
+Pass the same table path, task id, and ``global-index.external-path`` configuration used in
+``WriteIndex``. Cleanup reads the configuration from the table schema and applies any supplied
+options as overrides. Task ids must be unique among builds sharing the same global index directory,
+including builds for different tables sharing an external path. The cleanup recursively removes
+the whole task directory, other tasks' directories and completed index files are preserved.
 
 Bitmap Index
 ------------

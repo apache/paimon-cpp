@@ -50,7 +50,8 @@ class PAIMON_EXPORT GlobalIndexWriteTask {
     ///                     filters).
     /// @param task_id      When checkpoints are enabled, the caller must provide a non-empty task
     ///                     identifier that uniquely identifies an index build task within the
-    ///                     table. Reuse it when retrying the same build. If the source data, build
+    ///                     global index directory, including tables sharing an external path.
+    ///                     Reuse it when retrying the same build. If the source data, build
     ///                     configuration, or build source code changes, use a new identifier;
     ///                     otherwise, the index build may fail. Pass nullopt when checkpoints are
     ///                     disabled. Index types without checkpoint support ignore this value.
@@ -73,9 +74,12 @@ class PAIMON_EXPORT GlobalIndexWriteTask {
     /// @param table_path   Path to the table root directory used for the build.
     /// @param task_id      Non-empty, unique task identifier passed to `WriteIndex`.
     /// @param options      Configuration overrides. Used to load the schema, then merged with
-    ///                     schema options, with these overrides taking precedence.
+    ///                     schema options, with these overrides taking precedence. Checkpoints
+    ///                     are deleted from the configured global index external path, or from
+    ///                     the table's index directory when no external path is configured.
     /// @param file_system  Specifies the file system. If `nullptr`, use default file system.
     /// @return OK if the task directory was deleted or does not exist.
+    ///         File system errors are propagated to the caller without being suppressed.
     static Status DeleteCheckpoint(const std::string& table_path, const std::string& task_id,
                                    const std::map<std::string, std::string>& options,
                                    const std::shared_ptr<FileSystem>& file_system = nullptr);
