@@ -456,6 +456,10 @@ TEST(TableTest, TestSwitchToBranch) {
     auto dev_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(dev_table);
     ASSERT_TRUE(dev_file_store_table != nullptr);
     EXPECT_EQ("dev", dev_file_store_table->CurrentBranch());
+    // The identifier names the branch switched to, so `Name()` and `FullName()` answer for the
+    // table served, and a caller that reloads through `FullName()` lands on the same branch.
+    EXPECT_EQ("tbl$branch_dev", dev_table->Name());
+    EXPECT_EQ("tbl$branch_dev", dev_table->FullName());
     ASSERT_EQ((std::vector<std::string>{"c0"}), dev_table->LatestSchema()->FieldNames());
     auto dev_table_schema = std::dynamic_pointer_cast<TableSchema>(dev_table->LatestSchema());
     ASSERT_TRUE(dev_table_schema != nullptr);
@@ -480,6 +484,9 @@ TEST(TableTest, TestSwitchToBranch) {
     auto main_again_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(main_again);
     ASSERT_TRUE(main_again_file_store_table != nullptr);
     EXPECT_EQ("main", main_again_file_store_table->CurrentBranch());
+    // Switching back leaves no branch in the name either, the way the main branch is addressed.
+    EXPECT_EQ("tbl", main_again->Name());
+    EXPECT_EQ("tbl", main_again->FullName());
     ASSERT_EQ((std::vector<std::string>{"id"}), main_again->LatestSchema()->FieldNames());
     auto main_again_schema = std::dynamic_pointer_cast<TableSchema>(main_again->LatestSchema());
     ASSERT_TRUE(main_again_schema != nullptr);

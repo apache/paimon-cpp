@@ -139,7 +139,7 @@ without an atomic snapshot-file rename:
    }
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context, builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
-                          paimon::FileStoreCommit::Create(std::move(context)));
+                          table->NewCommit(std::move(context)));
    PAIMON_RETURN_NOT_OK(commit->Commit(commit_messages));
 
 Configure native writers with the same catalog and identifier. They load the

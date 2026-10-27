@@ -57,7 +57,6 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/append_only_file_store_table.h"
 #include "paimon/core/table/file_store.h"
-#include "paimon/core/table/file_store_table_factory.h"
 #include "paimon/core/table/primary_key_file_store_table.h"
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/data_evolution_batch_scan.h"
@@ -212,9 +211,13 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
               branch_schema->Options(), std::static_pointer_cast<TableSchema>(schema_)->Options())))
             ? nullptr
             : schema_manager;
+    // The identifier names the branch switched to, as Java's `newCatalogEnvironment` rebuilds it,
+    // so `Name()` and `FullName()` answer for the table served rather than the one left behind.
+    PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
+                           CatalogUtils::BranchIdentifier(identifier_, target_branch));
     return FileStoreTable::Create(store_->GetSpecifiedFileSystem(), root_path_,
                                   std::shared_ptr<TableSchema>(std::move(branch_schema)),
-                                  identifier_, CatalogUuid().value_or(""), target_branch,
+                                  branch_identifier, CatalogUuid().value_or(""), target_branch,
                                   branch_schema_manager, /*snapshot_manager=*/nullptr,
                                   store_->GetFsSchemeMap(), /*dynamic_options=*/{});
 }
@@ -314,12 +317,6 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
     }
     return CreateWrite(*ctx, arrow_schema, partition_schema, options, file_store_path_factory,
                        snapshot_manager, io_manager, ignore_previous_files);
-}
-
-Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<WriteContext> ctx) {
-    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "write"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
-    return table->NewWrite(std::move(ctx));
 }
 
 Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
@@ -422,12 +419,6 @@ Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
         }
     }
     return batch_scan;
-}
-
-Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context) {
-    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*context));
-    return table->NewScan(std::move(context));
 }
 
 Result<std::unique_ptr<TableRead>> FileStoreTable::CreateTableRead(
@@ -649,13 +640,6 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
         ctx->IgnoreEmptyCommit(), ctx->AppendCommitCheckConflict(), schema,
         std::move(schema_id_loader), manifest_file, manifest_list, index_manifest_file,
         expire_snapshots, GetSchemaManager(), std::move(scan_supplier));
-}
-
-Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
-    std::unique_ptr<CommitContext> ctx) {
-    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "commit"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
-    return table->NewCommit(std::move(ctx));
 }
 
 }  // namespace paimon

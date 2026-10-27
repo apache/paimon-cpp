@@ -85,6 +85,11 @@ constexpr char kDeletionVectorsMergeOnRead[] = "deletion-vectors.merge-on-read";
 /// into a table. Unlike the Java set, `merge-engine`, `bucket`, `row-tracking.enabled` and
 /// `data-evolution.enabled` stay servable as dynamic options here, and `type`/`branch` are dropped
 /// by `Copy` before this point.
+// TODO(yonghao.fyh): refuse the rest of Java's immutable set, which this list does not cover yet:
+// `blob-descriptor-field` (only its deprecated `blob.stored-descriptor-fields` fallback is above),
+// `data-file.path-directory`, `sequence.snapshot-ordering`, `rowkind.field`, `primary-key`,
+// `primary-key.nullable`, `partition`, `dynamic-bucket.initial-buckets`, `video-frame-field`, and
+// the four servable keys named above, should the C++ side stop serving them as dynamic options.
 const char* const kImmutableOptions[] = {
     Options::BUCKET_KEY,
     Options::BUCKET_FUNCTION_TYPE,

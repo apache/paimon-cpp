@@ -18,3 +18,19 @@
  */
 
 #include "paimon/file_store_commit.h"
+
+#include "paimon/catalog/table.h"
+#include "paimon/commit_context.h"
+#include "paimon/core/table/file_store_table_factory.h"
+#include "paimon/core/utils/context_utils.h"
+
+namespace paimon {
+
+Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
+    std::unique_ptr<CommitContext> ctx) {
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "commit"));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+    return table->NewCommit(std::move(ctx));
+}
+
+}  // namespace paimon
