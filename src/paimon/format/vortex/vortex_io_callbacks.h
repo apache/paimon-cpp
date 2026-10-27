@@ -36,6 +36,10 @@ class OutputStream;
 
 namespace paimon::vortex {
 
+/// I/O coalescing policy. Low-latency sources must explicitly opt into LOCAL;
+/// the reader does not infer filesystem semantics from InputStream URIs.
+enum class VortexIoCoalesceMode { OBJECT_STORAGE, LOCAL };
+
 /// Bridges Vortex's positional reads to a paimon `InputStream`.
 class VortexInputContext {
  public:

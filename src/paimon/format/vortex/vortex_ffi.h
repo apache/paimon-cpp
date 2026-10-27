@@ -49,6 +49,11 @@ extern "C" {
 // crates/vortex_callback_io/callback_io.rs); keep in sync with the Rust definitions.
 extern "C" {
 
+/// Create an owned handle to the shared, fixed-runtime Paimon callback-reader session.
+/// Free it with vx_session_free. Do not configure/register against this session or use it
+/// for writers/multi-file sources; those require the fresh vx_session_new API.
+vx_session* vx_paimon_read_session_new();
+
 /// Fill `length` bytes starting at `offset` into `dst`. Returns 0 on success and non-zero on
 /// failure; a partial read must be reported as a failure. Only the status code crosses the
 /// boundary, so the callback is expected to keep its error detail on `ctx`.
@@ -75,6 +80,13 @@ struct vx_input_callbacks {
 const vx_data_source* vx_data_source_new_callback(const vx_session* session,
                                                   vx_input_callbacks callbacks, uint64_t size,
                                                   vx_error** err);
+
+/// Create a callback data source with explicit I/O coalescing. max_size must be positive and
+/// max_gap must not exceed max_size. The callback context is released exactly once, even on error.
+const vx_data_source* vx_data_source_new_callback_with_coalesce(const vx_session* session,
+                                                                vx_input_callbacks callbacks,
+                                                                uint64_t size, uint64_t max_gap,
+                                                                uint64_t max_size, vx_error** err);
 
 /// Append `length` bytes from `src` to the host sink. Returns 0 on success and non-zero on failure;
 /// a partial write must be reported as a failure. Writes for one sink are sequential, never
@@ -112,4 +124,21 @@ void vx_callback_sink_close(vx_callback_sink* sink, vx_error** error_out);
 
 /// Discard the sink without writing a footer, leaving whatever the host received invalid.
 void vx_callback_sink_abort(vx_callback_sink* sink);
+
+/// Timestamp literal unit. Values must match vx_time_unit in callback_io.rs.
+enum vx_time_unit {
+    VX_TIME_UNIT_SECOND = 0,
+    VX_TIME_UNIT_MILLISECOND = 1,
+    VX_TIME_UNIT_MICROSECOND = 2,
+    VX_TIME_UNIT_NANOSECOND = 3,
+};
+
+/// Create a timestamp literal in `unit` since the Unix epoch. `timezone` is an IANA zone name,
+/// or null for wall-clock time. Returns null and sets `err` on failure; free with vx_scalar_free.
+vx_scalar* vx_scalar_new_timestamp(int64_t value, vx_time_unit unit, const char* timezone,
+                                   bool is_nullable, vx_error** err);
+
+/// Create a date scalar literal: `days` days since the Unix epoch (1970-01-01). Returns null and
+/// sets `err` on failure; free the result with `vx_scalar_free`.
+vx_scalar* vx_scalar_new_date(int32_t days, bool is_nullable, vx_error** err);
 }

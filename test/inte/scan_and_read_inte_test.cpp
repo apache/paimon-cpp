@@ -3727,6 +3727,233 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
 #endif
 
 #ifdef PAIMON_ENABLE_VORTEX
+namespace {
+
+Result<std::shared_ptr<arrow::ChunkedArray>> ReadVortexSdkRows(
+    const std::string& table_path, const std::vector<std::shared_ptr<Split>>& splits,
+    const std::vector<std::string>& projection, const std::shared_ptr<Predicate>& predicate,
+    bool exact_filter, bool late_materializing) {
+    ReadContextBuilder builder(table_path);
+    builder.SetReadFieldNames(projection)
+        .SetPredicate(predicate)
+        .EnablePredicateFilter(exact_filter)
+        .EnableLateMaterializing(late_materializing)
+        .EnablePrefetch(true)
+        .SetPrefetchBatchCount(2)
+        .SetPrefetchMaxParallelNum(2)
+        .AddOption(Options::READ_BATCH_SIZE, "2");
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read, TableRead::Create(std::move(context)));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
+    return ReadResultCollector::CollectResult(std::move(reader));
+}
+
+// Append splits need not have a stable file order. Compare full rows as a multiset.
+void AssertVortexSdkRows(const std::shared_ptr<arrow::ChunkedArray>& actual,
+                         const std::shared_ptr<arrow::DataType>& type,
+                         const std::string& expected_json, bool exact_filter = true) {
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(type, expected_json).ValueOrDie();
+    if (!actual) {
+        ASSERT_EQ(expected->length(), 0);
+        return;
+    }
+    ASSERT_TRUE(actual->type()->Equals(type)) << actual->type()->ToString();
+    if (exact_filter) {
+        ASSERT_EQ(actual->length(), expected->length()) << actual->ToString();
+    } else {
+        ASSERT_GE(actual->length(), expected->length());
+    }
+    arrow::ArrayVector candidates;
+    for (const auto& chunk : actual->chunks()) {
+        ASSERT_TRUE(chunk->ValidateFull().ok());
+        for (int64_t row = 0; row < chunk->length(); ++row) {
+            candidates.push_back(chunk->Slice(row, 1));
+        }
+    }
+    std::vector<bool> used(candidates.size(), false);
+    for (int64_t row = 0; row < expected->length(); ++row) {
+        bool found = false;
+        for (size_t candidate = 0; candidate < candidates.size(); ++candidate) {
+            if (!used[candidate] && expected->Slice(row, 1)->Equals(candidates[candidate])) {
+                used[candidate] = true;
+                found = true;
+                break;
+            }
+        }
+        ASSERT_TRUE(found) << "Missing row: " << expected->Slice(row, 1)->ToString()
+                           << "\nActual: " << actual->ToString();
+    }
+}
+
+}  // namespace
+
+TEST_F(ScanAndReadInteTest, TestVortexSdkPredicatesWithResidualAndLateMaterialization) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                       arrow::field("tag", arrow::utf8()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "vortex"},
+                                                        {Options::FILE_SYSTEM, "local"},
+                                                        {Options::BUCKET, "-1"},
+                                                        {Options::WRITE_ONLY, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {}, {}, options,
+                                            /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+            [0,"skip","zero"],[1,null,"one"],[2,"keep","two"],[3,"drop","three"],
+            [4,"keep",null],[5,"keep","five"],[6,"skip","six"],[7,"keep","seven"]
+        ])",
+                                                     {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+    const auto result_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), fields[2], fields[0], fields[1]});
+    auto equal = PredicateBuilder::Equal(1, "id", FieldType::INT, Literal(int32_t{4}));
+    auto greater = PredicateBuilder::GreaterThan(1, "id", FieldType::INT, Literal(int32_t{1}));
+    auto tag =
+        PredicateBuilder::Equal(2, "tag", FieldType::STRING, Literal(FieldType::STRING, "keep", 4));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> conjunction,
+                         PredicateBuilder::And({greater, tag}));
+    // Sparse IN(64) exceeds the auto expression budget and requires the SDK residual filter.
+    std::vector<Literal> sparse = {Literal(int32_t{2}), Literal(int32_t{5})};
+    for (int32_t index = 0; index < 62; ++index) {
+        sparse.emplace_back(1000 + index * 2);
+    }
+    auto membership = PredicateBuilder::In(1, "id", FieldType::INT, sparse);
+    const std::vector<std::pair<std::shared_ptr<Predicate>, std::string>> cases = {
+        {equal, R"([[0,null,4,"keep"]])"},
+        {conjunction, R"([[0,"two",2,"keep"],[0,null,4,"keep"],
+                           [0,"five",5,"keep"],[0,"seven",7,"keep"]])"},
+        {membership, R"([[0,"two",2,"keep"],[0,"five",5,"keep"]])"}};
+    for (bool late_materializing : {false, true}) {
+        SCOPED_TRACE(late_materializing);
+        for (const auto& [predicate, expected] : cases) {
+            SCOPED_TRACE(predicate->ToString());
+            for (bool exact_filter : {false, true}) {
+                SCOPED_TRACE(exact_filter);
+                ASSERT_OK_AND_ASSIGN(
+                    std::shared_ptr<arrow::ChunkedArray> actual,
+                    ReadVortexSdkRows(table_path, splits, {"payload", "id", "tag"}, predicate,
+                                      exact_filter, late_materializing));
+                // A non-exact reader may prune candidates, but it must retain every matching row.
+                ASSERT_NO_FATAL_FAILURE(
+                    AssertVortexSdkRows(actual, result_type, expected, exact_filter));
+            }
+        }
+    }
+}
+
+TEST_F(ScanAndReadInteTest, TestVortexSdkPrimaryKeyMergeBeforeValueFiltering) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    const arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
+                                       arrow::field("value", arrow::int32()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "vortex"},
+                                                        {Options::FILE_SYSTEM, "local"},
+                                                        {Options::BUCKET, "1"},
+                                                        {Options::WRITE_ONLY, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {}, {"pk"}, options,
+                                            /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> original,
+                         TestHelper::MakeRecordBatch(
+                             arrow::struct_(fields),
+                             R"([["a",10,"old-a"],["b",20,"old-b"],["c",30,"old-c"]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(original), 0, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> changes,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([["a",1,"new-a"],["b",20,"old-b"],["d",40,"new-d"]])", {}, 0,
+                                    {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::DELETE,
+                                     RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(changes), 1, std::nullopt));
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+    const auto result_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1], fields[2]});
+    auto value = PredicateBuilder::GreaterOrEqual(1, "value", FieldType::INT, Literal(int32_t{10}));
+    auto key = PredicateBuilder::In(
+        0, "pk", FieldType::STRING,
+        {Literal(FieldType::STRING, "a", 1), Literal(FieldType::STRING, "b", 1),
+         Literal(FieldType::STRING, "c", 1)});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> both, PredicateBuilder::And({key, value}));
+    const std::vector<std::pair<std::shared_ptr<Predicate>, std::string>> cases = {
+        {nullptr, R"([[0,"a",1,"new-a"],[0,"c",30,"old-c"],[0,"d",40,"new-d"]])"},
+        {value, R"([[0,"c",30,"old-c"],[0,"d",40,"new-d"]])"},
+        {key, R"([[0,"a",1,"new-a"],[0,"c",30,"old-c"]])"},
+        {both, R"([[0,"c",30,"old-c"]])"}};
+    for (bool late_materializing : {false, true}) {
+        SCOPED_TRACE(late_materializing);
+        for (const auto& [predicate, expected] : cases) {
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<arrow::ChunkedArray> actual,
+                ReadVortexSdkRows(table_path, splits, {"pk", "value", "payload"}, predicate,
+                                  /*exact_filter=*/true, late_materializing));
+            ASSERT_NO_FATAL_FAILURE(AssertVortexSdkRows(actual, result_type, expected));
+        }
+    }
+}
+
+TEST_F(ScanAndReadInteTest, TestVortexSdkSchemaEvolutionWithMissingRowIndexColumn) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    const arrow::FieldVector original_fields = {arrow::field("id", arrow::int32()),
+                                                arrow::field("payload", arrow::utf8())};
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "vortex"},
+                                                        {Options::FILE_SYSTEM, "local"},
+                                                        {Options::BUCKET, "-1"},
+                                                        {Options::WRITE_ONLY, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(original_fields), {}, {},
+                                            options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(original_fields),
+                                    R"([[0,"old-zero"],[1,"old-one"],[2,null]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    helper.reset();
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    const arrow::FieldVector fields = {original_fields[0], original_fields[1],
+                                       arrow::field("added", arrow::utf8()),
+                                       arrow::field("_row_idx", arrow::int64())};
+    ASSERT_OK(TestHelper::WriteNextSchema(dir->GetFileSystem(), table_path,
+                                          {DataField(0, fields[0]), DataField(1, fields[1]),
+                                           DataField(2, fields[2]), DataField(3, fields[3])},
+                                          /*highest_field_id=*/3, options));
+    ASSERT_OK_AND_ASSIGN(helper, TestHelper::Create(table_path, options, false));
+    ASSERT_OK_AND_ASSIGN(
+        batch, TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                           R"([[3,"new-three","present",303]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 1, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+    const auto result_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1], fields[2], fields[3]});
+    auto greater = PredicateBuilder::GreaterOrEqual(0, "id", FieldType::INT, Literal(int32_t{1}));
+    auto missing = PredicateBuilder::IsNull(3, "_row_idx", FieldType::BIGINT);
+    const std::vector<std::pair<std::shared_ptr<Predicate>, std::string>> cases = {
+        {greater, R"([[0,1,"old-one",null,null],[0,2,null,null,null],
+                       [0,3,"new-three","present",303]])"},
+        {missing, R"([[0,0,"old-zero",null,null],[0,1,"old-one",null,null],
+                       [0,2,null,null,null]])"}};
+    for (bool late_materializing : {false, true}) {
+        SCOPED_TRACE(late_materializing);
+        for (const auto& [predicate, expected] : cases) {
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<arrow::ChunkedArray> actual,
+                ReadVortexSdkRows(table_path, splits, {"id", "payload", "added", "_row_idx"},
+                                  predicate, /*exact_filter=*/true, late_materializing));
+            ASSERT_NO_FATAL_FAILURE(AssertVortexSdkRows(actual, result_type, expected));
+        }
+    }
+}
+
 TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibility) {
     // Fixture written by Paimon Java 2.0.0 with file.format=vortex; see
     // test/test_data/vortex/append_java_compat.db/append_java_compat/README.md. This verifies that

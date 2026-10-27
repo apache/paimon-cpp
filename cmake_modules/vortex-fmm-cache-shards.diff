@@ -1,0 +1,114 @@
+diff --git a/vortex-layout/src/layouts/struct_/reader.rs b/vortex-layout/src/layouts/struct_/reader.rs
+--- a/vortex-layout/src/layouts/struct_/reader.rs
++++ b/vortex-layout/src/layouts/struct_/reader.rs
+@@ -115,7 +115,8 @@
+             expanded_root_expr,
+             lazy_children,
+             field_lookup,
+-            partitioned_expr_cache: Default::default(),
++            // Each file evaluates few expressions; avoid CPU-count-sized shard allocations.
++            partitioned_expr_cache: DashMap::with_hasher_and_shard_amount(Default::default(), 16),
+         })
+     }
+
+diff --git a/vortex-file/src/v2/file_stats_reader.rs b/vortex-file/src/v2/file_stats_reader.rs
+--- a/vortex-file/src/v2/file_stats_reader.rs
++++ b/vortex-file/src/v2/file_stats_reader.rs
+@@ -74,7 +74,8 @@
+             file_stats,
+             struct_fields,
+             session,
+-            prune_cache: Default::default(),
++            // File-level pruning reuses only a small set of expressions per reader.
++            prune_cache: DashMap::with_hasher_and_shard_amount(Default::default(), 16),
+         }
+     }
+
+diff --git a/vortex-layout/src/segments/shared.rs b/vortex-layout/src/segments/shared.rs
+--- a/vortex-layout/src/segments/shared.rs
++++ b/vortex-layout/src/segments/shared.rs
+@@ -32,7 +32,8 @@
+     pub fn new(inner: S) -> Self {
+         Self {
+             inner,
+-            in_flight: DashMap::default(),
++            // A per-file request set does not need a shard for every available CPU.
++            in_flight: DashMap::with_hasher_and_shard_amount(Default::default(), 16),
+         }
+     }
+ }
+@@ -65,10 +66,16 @@
+
+ #[cfg(test)]
+ mod tests {
++    use std::sync::Barrier;
+     use std::sync::atomic::AtomicUsize;
+     use std::sync::atomic::Ordering;
+-
++    use std::thread;
++
++    use futures::executor::block_on;
++    use futures::future::join_all;
+     use vortex_buffer::ByteBuffer;
++    use vortex_error::VortexResult;
++    use vortex_error::vortex_err;
+
+     use super::*;
+     use crate::segments::SegmentSink;
+@@ -119,5 +126,56 @@
+     }
+
+     #[tokio::test]
++    async fn test_shared_source_deduplicates_many_segments_across_threads() -> VortexResult<()> {
++        let source = CountingSegmentSource::default();
++        let mut ids = Vec::new();
++        let mut expected = Vec::new();
++        for value in 0..64u8 {
++            let data = ByteBuffer::from(vec![value; 4]);
++            ids.push(
++                source
++                    .segments
++                    .write(SequenceId::root().downgrade(), vec![data.clone()])
++                    .await?,
++            );
++            expected.push(data);
++        }
++
++        let shared_source = SharedSegmentSource::new(source.clone());
++        let barrier = Barrier::new(8);
++        thread::scope(|scope| -> VortexResult<()> {
++            let mut requests = Vec::new();
++            for _ in 0..8 {
++                let shared_source = &shared_source;
++                let ids = &ids;
++                let expected = &expected;
++                let barrier = &barrier;
++                requests.push(scope.spawn(move || -> VortexResult<()> {
++                    let pending = ids
++                        .iter()
++                        .map(|id| shared_source.request(*id))
++                        .collect::<Vec<_>>();
++                    // Hold every request until all threads share the same in-flight futures.
++                    barrier.wait();
++                    for (actual, expected) in block_on(join_all(pending)).into_iter().zip(expected)
++                    {
++                        assert_eq!(actual?.unwrap_host(), *expected);
++                    }
++                    Ok(())
++                }));
++            }
++            for request in requests {
++                request
++                    .join()
++                    .map_err(|_| vortex_err!("segment requester panicked"))??;
++            }
++            Ok(())
++        })?;
++
++        assert_eq!(source.request_count.load(Ordering::SeqCst), ids.len());
++        Ok(())
++    }
++
++    #[tokio::test]
+     async fn test_shared_source_handles_dropped_futures() {
+         let source = CountingSegmentSource::default();

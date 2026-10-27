@@ -22,11 +22,13 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #include "arrow/type_fwd.h"
 #include "paimon/format/vortex/vortex_ffi.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
 #include "paimon/format/vortex/vortex_io_callbacks.h"
+#include "paimon/format/vortex/vortex_predicate_converter.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/result.h"
 
@@ -50,7 +52,9 @@ class VortexFileBatchReader : public FileBatchReader {
  public:
     static Result<std::unique_ptr<VortexFileBatchReader>> Create(
         const std::shared_ptr<InputStream>& input, int32_t batch_size,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+        const VortexPredicateOptions& predicate_options = {},
+        VortexIoCoalesceMode coalesce_mode = VortexIoCoalesceMode::OBJECT_STORAGE);
 
     ~VortexFileBatchReader() override;
 
@@ -63,16 +67,16 @@ class VortexFileBatchReader : public FileBatchReader {
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
     void Close() override;
     bool SupportPreciseBitmapSelection() const override {
-        return false;
+        return true;
     }
 
  private:
     VortexFileBatchReader(const std::shared_ptr<InputStream>& input, int32_t batch_size,
                           std::shared_ptr<VortexInputContext> input_context, VxSessionPtr session,
                           VxDataSourcePtr data_source, VxScanPtr scan,
-                          const std::shared_ptr<arrow::Schema>& file_schema,
-                          const std::shared_ptr<arrow::DataType>& struct_type, uint64_t total_rows,
-                          const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+                          const std::shared_ptr<arrow::Schema>& file_schema, uint64_t total_rows,
+                          const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+                          const VortexPredicateOptions& predicate_options);
 
     /// Pull the next Arrow array from the current partition stream, opening the next partition's
     /// stream when the current one is exhausted. Returns nullptr at end of scan.
@@ -96,20 +100,16 @@ class VortexFileBatchReader : public FileBatchReader {
     VxSessionPtr session_;
     VxDataSourcePtr data_source_;
     VxScanPtr scan_;
-    // The file schema with Vortex's string/binary view types normalized to the standard types; this
-    // is what GetFileSchema() reports to paimon.
+    // Full file schema with standard Arrow types, as reported by GetFileSchema().
     std::shared_ptr<arrow::Schema> file_schema_;
-    // The RAW view-typed struct that Vortex's Arrow export produces. NextBatch imports each scanned
-    // batch as this type (so it must match the C export's buffer layout), then NormalizeViewArray
-    // rewrites it to file_schema_'s types. Keeping this view-typed is load-bearing: normalizing it
-    // would make ImportArray misread the buffers.
-    std::shared_ptr<arrow::DataType> struct_type_;
     // The schema NextBatch must output, set by SetReadSchema (the projected read schema). Null
     // until SetReadSchema is called, in which case the full file schema is returned.
     std::shared_ptr<arrow::Schema> read_schema_;
     uint64_t total_rows_ = 0;
 
     ::ArrowArrayStream current_stream_{};
+    // Actual scan output schema, including projection and any hidden physical row index.
+    std::shared_ptr<arrow::Schema> current_stream_schema_;
     bool stream_active_ = false;
     std::shared_ptr<arrow::Array> current_batch_;
     int64_t current_batch_offset_ = 0;
@@ -118,8 +118,18 @@ class VortexFileBatchReader : public FileBatchReader {
     uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
     uint64_t previous_batch_row_count_ = 0;
 
+    // Selected physical row ids in output order, used when selection is pushed without a filter.
+    bool has_selection_ = false;
+    std::vector<uint64_t> selection_row_ids_;
+
+    // A pushed filter returns physical row ids in a hidden _row_idx column. Retain the last
+    // batch's column because emitted offsets no longer identify physical rows after filtering.
+    bool has_filter_ = false;
+    std::shared_ptr<arrow::Array> previous_batch_row_idx_;
+
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
-    std::shared_ptr<PredicateFilter> predicate_filter_;  // from SetReadSchema; not pushed down
+    VortexPredicateOptions predicate_options_;
+    std::shared_ptr<PredicateFilter> predicate_filter_;
     std::shared_ptr<Metrics> metrics_;
     bool closed_ = false;
 };

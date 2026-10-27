@@ -20,7 +20,9 @@
 #include "paimon/format/vortex/vortex_file_format.h"
 
 #include "arrow/c/bridge.h"
+#include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/format/vortex/vortex_predicate_converter.h"
 #include "paimon/format/vortex/vortex_reader_builder.h"
 #include "paimon/format/vortex/vortex_stats_extractor.h"
 #include "paimon/format/vortex/vortex_writer_builder.h"
@@ -29,7 +31,33 @@ namespace paimon::vortex {
 
 Result<std::unique_ptr<ReaderBuilder>> VortexFileFormat::CreateReaderBuilder(
     int32_t batch_size) const {
-    return std::make_unique<VortexReaderBuilder>(batch_size);
+    VortexPredicateOptions predicate_options;
+    const auto membership_mode = options_.find("vortex.read.membership-pushdown");
+    if (membership_mode != options_.end()) {
+        if (membership_mode->second == "auto") {
+            predicate_options.membership_pushdown = MembershipPushdownMode::AUTO;
+        } else if (membership_mode->second == "force") {
+            predicate_options.membership_pushdown = MembershipPushdownMode::FORCE;
+        } else if (membership_mode->second == "off") {
+            predicate_options.membership_pushdown = MembershipPushdownMode::OFF;
+        } else {
+            return Status::Invalid(
+                fmt::format("vortex.read.membership-pushdown must be auto, force or off, got: {}",
+                            membership_mode->second));
+        }
+    }
+    VortexIoCoalesceMode coalesce_mode = VortexIoCoalesceMode::OBJECT_STORAGE;
+    const auto coalesce = options_.find("vortex.read.io-coalesce");
+    if (coalesce != options_.end()) {
+        if (coalesce->second == "local") {
+            coalesce_mode = VortexIoCoalesceMode::LOCAL;
+        } else if (coalesce->second != "object-storage") {
+            return Status::Invalid(
+                fmt::format("vortex.read.io-coalesce must be object-storage or local, got: {}",
+                            coalesce->second));
+        }
+    }
+    return std::make_unique<VortexReaderBuilder>(batch_size, predicate_options, coalesce_mode);
 }
 
 Result<std::unique_ptr<WriterBuilder>> VortexFileFormat::CreateWriterBuilder(

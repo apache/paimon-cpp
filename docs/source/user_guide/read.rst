@@ -41,6 +41,26 @@ cross-language task scheduling and interaction (e.g., Java and C++), substantial
 across the two language ecosystems.
 
 
+Vortex Read Options
+-------------------
+
+For Vortex files, pass these options through ``ReadContextBuilder::AddOption``:
+
+- ``vortex.read.membership-pushdown`` accepts ``auto`` (default), ``force`` or ``off``.
+  ``auto`` limits each IN/NOT IN expression to 64 comparison and boolean nodes after
+  deduplication and integer-range compression. ``force`` bypasses this budget while
+  retaining type and value safety checks. ``off`` disables only IN/NOT IN pushdown.
+- ``vortex.read.io-coalesce`` accepts ``object-storage`` (default) or ``local``.
+  The default retains Vortex's object-storage coalescing policy. ``local`` uses a
+  64 KiB maximum gap and a 4 MiB coalescing limit for low-latency storage.
+  Choose the mode explicitly; it is not selected from the file path.
+
+Native pushdown may return candidate rows requiring further filtering. For exact
+results, retain the full residual predicate: enable ``EnablePredicateFilter(true)``
+with ``TableRead``, or apply equivalent filtering in the caller. ``force`` does not
+bypass this requirement.
+
+
 Schema Evolution
 -----------------------
 Scope and Compatibility

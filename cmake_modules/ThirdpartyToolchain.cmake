@@ -1529,9 +1529,13 @@ macro(build_vortex)
                         # returns immediately when nothing changed, and copy_if_different keeps
                         # the archive's timestamp stable so dependents do not relink.
                         BUILD_ALWAYS TRUE
-                        BUILD_COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                                      "${VORTEX_CALLBACK_IO_SRC}"
-                                      "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
+                        BUILD_COMMAND ${CMAKE_COMMAND} "-DVORTEX_SOURCE_DIR=<SOURCE_DIR>"
+                                      "-DVORTEX_READ_PATCH=${CMAKE_CURRENT_LIST_DIR}/vortex-point-read.diff"
+                                      -P
+                                      "${CMAKE_CURRENT_LIST_DIR}/ApplyVortexReadPatch.cmake"
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                "${VORTEX_CALLBACK_IO_SRC}"
+                                "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
                         COMMAND ${CMAKE_COMMAND} -E env "FLATC=${VORTEX_FLATC}"
                                 "RUSTUP_TOOLCHAIN=stable" "CC=${CMAKE_C_COMPILER}"
                                 "CXX=${CMAKE_CXX_COMPILER}"

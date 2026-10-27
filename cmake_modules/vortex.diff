@@ -7,3 +7,74 @@ diff --git a/vortex-ffi/src/lib.rs b/vortex-ffi/src/lib.rs
  mod array_iterator;
  mod binary;
  mod data_source;
+diff --git a/vortex-ffi/src/scan.rs b/vortex-ffi/src/scan.rs
+--- a/vortex-ffi/src/scan.rs
++++ b/vortex-ffi/src/scan.rs
+@@ -25,8 +25,11 @@
+ use vortex::error::VortexResult;
+ use vortex::error::vortex_bail;
+ use vortex::error::vortex_ensure;
++use vortex::expr::merge;
++use vortex::expr::pack;
+ use vortex::expr::root;
+ use vortex::io::runtime::BlockingRuntime;
++use vortex::layout::layouts::row_idx::row_idx;
+ use vortex::layout::scan::arrow::RecordBatchIteratorAdapter;
+ use vortex::scan::DataSourceScan;
+ use vortex::scan::Partition;
+@@ -112,4 +115,7 @@
+     pub limit: u64,
+     /// If true, return in storage order.
+     pub ordered: bool,
++    /// If true, append a `_row_idx` UInt64 column carrying each returned row's original physical
++    /// row index, stable across `filter` and `selection`. The host strips it before use.
++    pub include_row_idx: bool,
+ }
+@@ -182,5 +188,12 @@
+     Ok(ScanRequest {
+-        projection,
++        // paimon-cpp: when include_row_idx is set, append a hidden `_row_idx` column so the host can
++        // recover each surviving row's original physical index after `filter`/`selection` drop rows.
++        // row_idx() is substituted with the real index array during the scan; the host strips it.
++        projection: if opts.include_row_idx {
++            merge([projection, pack([("_row_idx", row_idx())], false.into())])
++        } else {
++            projection
++        },
+         filter,
+         row_range,
+         selection,
+@@ -356,3 +369,5 @@
+-        let schema = dtype.to_arrow_schema()?;
++        // paimon-cpp: export standard (non-view) string/binary types so the C++ reader skips its
++        // per-row view->standard rebuild; execute_arrow casts to this target internally.
++        let schema = crate::callback_io::normalize_arrow_schema_views(dtype.to_arrow_schema()?);
+         let schema = Arc::new(schema);
+         let target = Field::new_struct("", schema.fields().clone(), false);
+diff --git a/vortex-ffi/src/dtype.rs b/vortex-ffi/src/dtype.rs
+--- a/vortex-ffi/src/dtype.rs
++++ b/vortex-ffi/src/dtype.rs
+@@ -344,7 +344,9 @@
+ ) -> c_int {
+     try_or(err, 1, || {
+         let dtype = vx_dtype::as_ref(dtype);
+-        let arrow_schema = dtype.to_arrow_schema()?;
++        // paimon-cpp: report standard (non-view) string/binary types so the exported schema matches
++        // the data that vx_partition_scan_arrow now produces (see callback_io normalize).
++        let arrow_schema = crate::callback_io::normalize_arrow_schema_views(dtype.to_arrow_schema()?);
+         let arrow_schema = FFI_ArrowSchema::try_from(&arrow_schema)?;
+         unsafe { ptr::write(schema, arrow_schema) };
+         Ok(0)
+diff --git a/vortex-ffi/cinclude/vortex.h b/vortex-ffi/cinclude/vortex.h
+--- a/vortex-ffi/cinclude/vortex.h
++++ b/vortex-ffi/cinclude/vortex.h
+@@ -622,4 +622,9 @@
+      * If true, return in storage order.
+      */
+     bool ordered;
++    /**
++     * If true, append a `_row_idx` UInt64 column carrying each returned row's original physical
++     * row index, stable across filter and selection. The host strips it before use.
++     */
++    bool include_row_idx;
+ } vx_scan_options;
