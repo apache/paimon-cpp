@@ -52,6 +52,7 @@
 #include "paimon/common/utils/vector_store_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
+#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/io/file_index_options.h"
@@ -421,36 +422,34 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
 
     std::vector<std::unique_ptr<BatchReader>> sub_readers;
     for (const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files : split_by_row_id) {
-        bool has_bitmap_selection = false;
-        PAIMON_ASSIGN_OR_RAISE(
-            std::optional<std::vector<Range>> selected_ranges,
-            SelectByFileIndex(push_down_predicate, need_merge_files, read_schema, row_ranges,
-                              data_file_path_factory, &has_bitmap_selection));
-        if (selected_ranges && selected_ranges->empty()) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap32> group_selection,
+                               SelectByFileIndex(push_down_predicate, need_merge_files, read_schema,
+                                                 row_ranges, data_file_path_factory));
+        if (group_selection && group_selection->IsEmpty()) {
             continue;
         }
         PAIMON_ASSIGN_OR_RAISE(std::optional<GroupDeletionVector> group_dv,
                                ReadGroupDeletionVector(need_merge_files, split_dv_factory));
         PAIMON_ASSIGN_OR_RAISE(DeletionVector::Factory group_dv_factory,
-                               CreateGroupDvFactory(need_merge_files, group_dv, selected_ranges));
-        if (group_dv && has_bitmap_selection) {
+                               CreateGroupDvFactory(need_merge_files, group_dv, row_ranges));
+        if (group_dv && group_selection) {
             PAIMON_ASSIGN_OR_RAISE(
-                selected_ranges,
-                ExcludeDeletedRowIds(Range::And(*selected_ranges, {group_dv->anchor_range}),
-                                     *group_dv));
-            if (selected_ranges->empty()) {
+                *group_selection,
+                ExcludeDeletedPositions(std::move(*group_selection), group_dv->deletion_vector));
+            if (group_selection->IsEmpty()) {
                 continue;
             }
         }
         DataEvolutionSplitRead group_read(path_factory_, context_, pool_, executor_);
         group_read.file_indexes_evaluated_ = true;
+        group_read.group_selection_ = std::move(group_selection);
         if (need_merge_files.size() == 1) {
             // No need to merge fields, just create a single file reader
             PAIMON_ASSIGN_OR_RAISE(
                 std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
                 group_read.CreateRawFileReaders(split_impl->Partition(), need_merge_files,
                                                 read_schema, push_down_predicate, group_dv_factory,
-                                                selected_ranges, data_file_path_factory,
+                                                row_ranges, data_file_path_factory,
                                                 /*extra_format_options=*/{}));
             if (raw_file_readers.empty()) {
                 continue;
@@ -462,9 +461,9 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
         } else {
             PAIMON_ASSIGN_OR_RAISE(
                 std::unique_ptr<BatchReader> evolution_reader,
-                group_read.CreateUnionReader(split_impl->Partition(), need_merge_files,
-                                             selected_ranges, data_file_path_factory,
-                                             group_dv_factory, group_dv, read_schema));
+                group_read.CreateUnionReader(split_impl->Partition(), need_merge_files, row_ranges,
+                                             data_file_path_factory, group_dv_factory, group_dv,
+                                             read_schema));
             sub_readers.push_back(std::move(evolution_reader));
         }
     }
@@ -489,27 +488,26 @@ Result<std::shared_ptr<Predicate>> DataEvolutionSplitRead::CreatePushDownPredica
     return PredicateUtils::CreatePickedFieldFilter(predicate, picked_field_name_to_idx);
 }
 
-Result<std::optional<std::vector<Range>>> DataEvolutionSplitRead::SelectByFileIndex(
+Result<std::optional<RoaringBitmap32>> DataEvolutionSplitRead::SelectByFileIndex(
     const std::shared_ptr<Predicate>& predicate,
     const std::vector<std::shared_ptr<DataFileMeta>>& files,
     const std::shared_ptr<arrow::Schema>& read_schema,
     const std::optional<std::vector<Range>>& row_ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-    bool* has_bitmap_selection) const {
-    *has_bitmap_selection = false;
-    std::optional<std::vector<Range>> selected_ranges;
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
     if (row_ranges) {
-        selected_ranges = Range::SortAndMergeOverlap(*row_ranges, /*adjacent=*/true);
         std::vector<Range> file_ranges;
         for (const auto& file : files) {
             PAIMON_ASSIGN_OR_RAISE(Range range, file->NonNullRowIdRange());
             file_ranges.push_back(range);
         }
-        selected_ranges = Range::And(*selected_ranges,
-                                     Range::SortAndMergeOverlap(file_ranges, /*adjacent=*/true));
+        if (Range::And(Range::SortAndMergeOverlap(*row_ranges, /*adjacent=*/true),
+                       Range::SortAndMergeOverlap(file_ranges, /*adjacent=*/true))
+                .empty()) {
+            return std::optional<RoaringBitmap32>(RoaringBitmap32());
+        }
     }
     if (!options_.FileIndexReadEnabled() || !predicate) {
-        return selected_ranges;
+        return std::optional<RoaringBitmap32>();
     }
 
     // Like Java's canPushDownGroupSelection, only share exact bitmap selections across
@@ -534,7 +532,6 @@ Result<std::optional<std::vector<Range>>> DataEvolutionSplitRead::SelectByFileIn
         std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
         FieldMappingBuilder::Create(read_schema, context_->GetPartitionKeys(), predicate));
     std::optional<RoaringBitmap32> selection;
-    std::optional<int64_t> first_row_id;
     std::set<int32_t> claimed_field_ids;
     for (const auto& file : files) {
         // Blob and vector-store files may cover only part of the row range, so their indexes
@@ -592,7 +589,7 @@ Result<std::optional<std::vector<Range>>> DataEvolutionSplitRead::SelectByFileIn
                                                             file, options_.GetFileSystem(), pool_));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, index_result->IsRemain());
         if (!is_remain) {
-            return std::optional<std::vector<Range>>(std::vector<Range>());
+            return std::optional<RoaringBitmap32>(RoaringBitmap32());
         }
         if (!can_push_down_selection) {
             continue;
@@ -603,27 +600,17 @@ Result<std::optional<std::vector<Range>>> DataEvolutionSplitRead::SelectByFileIn
                 *selection &= *bitmap;
             } else {
                 selection = *bitmap;
-                PAIMON_ASSIGN_OR_RAISE(first_row_id, file->NonNullFirstRowId());
             }
         }
     }
-    if (!selection) {
-        return selected_ranges;
-    }
-    *has_bitmap_selection = true;
-    std::vector<Range> index_ranges;
-    for (auto iter = selection->Begin(); iter != selection->End(); ++iter) {
-        int64_t row_id = *first_row_id + static_cast<uint32_t>(*iter);
-        if (!index_ranges.empty() && index_ranges.back().to + 1 == row_id) {
-            index_ranges.back().to = row_id;
-        } else {
-            index_ranges.emplace_back(row_id, row_id);
+    if (selection && row_ranges) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap32> range_selection,
+                               files[0]->ToFileSelection(row_ranges));
+        if (range_selection) {
+            *selection &= *range_selection;
         }
     }
-    if (selected_ranges) {
-        index_ranges = Range::And(index_ranges, *selected_ranges);
-    }
-    return std::optional<std::vector<Range>>(std::move(index_ranges));
+    return selection;
 }
 
 Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDvReaderIfNeeded(
@@ -645,7 +632,7 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
             return std::unique_ptr<FileBatchReader>();
         }
     }
-    const RoaringBitmap32* index_selection = nullptr;
+    const RoaringBitmap32* index_selection = group_selection_ ? &*group_selection_ : nullptr;
     if (auto* bitmap_index = dynamic_cast<BitmapIndexResult*>(file_index_result.get())) {
         PAIMON_ASSIGN_OR_RAISE(index_selection, bitmap_index->GetBitmap());
     }
@@ -957,6 +944,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateUnionReader(
     auto split_read =
         std::make_shared<DataEvolutionSplitRead>(path_factory_, context_, pool_, executor_);
     split_read->file_indexes_evaluated_ = file_indexes_evaluated_;
+    split_read->group_selection_ = group_selection_;
     if (!sequential_bunches.empty()) {
         std::vector<LazyConcatBatchReader::Source> sources;
         sources.push_back(LazyConcatBatchReader::Source{
@@ -1124,6 +1112,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateFieldUnionRea
                 auto split_read = std::make_shared<DataEvolutionSplitRead>(path_factory_, context_,
                                                                            pool_, executor_);
                 split_read->file_indexes_evaluated_ = file_indexes_evaluated_;
+                split_read->group_selection_ = group_selection_;
                 for (const auto& file : bunch->Files()) {
                     std::optional<std::vector<Range>> selected = row_ranges;
                     if (row_ranges) {
@@ -1478,6 +1467,38 @@ Result<DeletionVector::Factory> DataEvolutionSplitRead::CreateGroupDvFactory(
             }
             return iter->second;
         });
+}
+
+Result<RoaringBitmap32> DataEvolutionSplitRead::ExcludeDeletedPositions(
+    RoaringBitmap32 selection, const std::shared_ptr<DeletionVector>& deletion_vector) {
+    if (selection.IsEmpty() || deletion_vector->IsEmpty()) {
+        return selection;
+    }
+    if (auto* bitmap_dv = dynamic_cast<BitmapDeletionVector*>(deletion_vector.get())) {
+        selection -= *bitmap_dv->GetBitmap();
+        return selection;
+    }
+    PAIMON_ASSIGN_OR_RAISE(int64_t cardinality, deletion_vector->GetCardinality());
+    if (cardinality < selection.Cardinality()) {
+        RoaringBitmap32 deleted;
+        PAIMON_RETURN_NOT_OK(deletion_vector->ForEachDeletedPosition([&](int64_t position) {
+            if (position >= 0 && position <= std::numeric_limits<uint32_t>::max()) {
+                deleted.Add(static_cast<int32_t>(position));
+            }
+        }));
+        selection -= deleted;
+        return selection;
+    }
+    RoaringBitmap32 live;
+    const auto end = selection.End();
+    for (auto iter = selection.Begin(); iter != end; ++iter) {
+        PAIMON_ASSIGN_OR_RAISE(bool is_deleted,
+                               deletion_vector->IsDeleted(static_cast<uint32_t>(*iter)));
+        if (!is_deleted) {
+            live.Add(*iter);
+        }
+    }
+    return live;
 }
 
 Result<std::vector<Range>> DataEvolutionSplitRead::ExcludeDeletedRowIds(

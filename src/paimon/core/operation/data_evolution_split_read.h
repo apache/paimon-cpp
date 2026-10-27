@@ -36,6 +36,7 @@
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace arrow {
 class Schema;
@@ -186,15 +187,14 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
 
     /// Evaluates the winning files' indexes before opening the group's DV or data files. Shared
     /// bitmap selection is restricted to normal files with the same row-id range; a single-file
-    /// group may always use its bitmap. Nullopt selects all rows; an empty vector rejects the
-    /// group.
-    Result<std::optional<std::vector<Range>>> SelectByFileIndex(
+    /// group may always use its bitmap. The bitmap uses file-local positions and is intersected
+    /// with `row_ranges`. Nullopt means no bitmap restriction; an empty bitmap rejects the group.
+    Result<std::optional<RoaringBitmap32>> SelectByFileIndex(
         const std::shared_ptr<Predicate>& predicate,
         const std::vector<std::shared_ptr<DataFileMeta>>& files,
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::optional<std::vector<Range>>& row_ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        bool* has_bitmap_selection) const;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
 
     /// Builds the deletion vector factory over the split's deletion files, keyed by data file
     /// name. Only anchor files carry one. Returns a null factory when the split has none.
@@ -214,6 +214,11 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         const std::vector<std::shared_ptr<DataFileMeta>>& group,
         const std::optional<GroupDeletionVector>& group_dv,
         const std::optional<std::vector<Range>>& row_ranges);
+
+    /// Removes deleted positions without expanding the selection into row-id ranges. Both the
+    /// selection and the deletion vector must use the same file-local positions.
+    static Result<RoaringBitmap32> ExcludeDeletedPositions(
+        RoaringBitmap32 selection, const std::shared_ptr<DeletionVector>& deletion_vector);
 
     /// Removes the row ids deleted by `group_dv` from the sorted disjoint `ranges` (absolute
     /// row ids). Iterates over deletions when they are sparser than the selected rows.
@@ -314,6 +319,10 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
     /// Set only on a per-group reader after SelectByFileIndex has evaluated its indexes.
     /// Lazy child readers inherit it so no sidecar is reopened during reader construction.
     bool file_indexes_evaluated_ = false;
+
+    /// Shared file-local selection on a per-group reader. Present only for a single-file group
+    /// or normal files with identical row-id ranges; every column reader consumes the same bitmap.
+    std::optional<RoaringBitmap32> group_selection_;
 };
 
 }  // namespace paimon

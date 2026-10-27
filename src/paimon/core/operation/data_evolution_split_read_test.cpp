@@ -1294,42 +1294,64 @@ TEST_F(DataEvolutionSplitReadTest, TestFileIndexSelectionOnlyPushesDownNormalGro
     different_range->write_cols = std::vector<std::string>{"b0"};
     auto match = PredicateBuilder::Equal(0, "f0", FieldType::INT, Literal(1));
     auto miss = PredicateBuilder::Equal(0, "f0", FieldType::INT, Literal(9));
+    auto last_match = PredicateBuilder::Equal(0, "f0", FieldType::INT, Literal(3));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> sparse_match,
+                         PredicateBuilder::Or({match, last_match}));
 
     for (const auto& other : {blob, vector, different_range}) {
-        bool has_bitmap_selection = true;
-        ASSERT_OK_AND_ASSIGN(std::optional<std::vector<Range>> selection,
-                             split_read.SelectByFileIndex(
-                                 match, {normal, other}, schema, std::nullopt,
-                                 /*data_file_path_factory=*/nullptr, &has_bitmap_selection));
-        ASSERT_FALSE(has_bitmap_selection);
+        ASSERT_OK_AND_ASSIGN(
+            std::optional<RoaringBitmap32> selection,
+            split_read.SelectByFileIndex(match, {normal, other}, schema, std::nullopt,
+                                         /*data_file_path_factory=*/nullptr));
         ASSERT_FALSE(selection.has_value());
 
         std::vector<Range> row_ranges = {Range(100, 102)};
         ASSERT_OK_AND_ASSIGN(
             selection, split_read.SelectByFileIndex(match, {normal, other}, schema, row_ranges,
-                                                    /*data_file_path_factory=*/nullptr,
-                                                    &has_bitmap_selection));
-        ASSERT_FALSE(has_bitmap_selection);
-        ASSERT_EQ(selection, std::optional<std::vector<Range>>(row_ranges));
+                                                    /*data_file_path_factory=*/nullptr));
+        ASSERT_FALSE(selection.has_value());
 
         // The normal file can still reject the entire group when its index has no matches.
         ASSERT_OK_AND_ASSIGN(
             selection, split_read.SelectByFileIndex(miss, {normal, other}, schema, std::nullopt,
-                                                    /*data_file_path_factory=*/nullptr,
-                                                    &has_bitmap_selection));
+                                                    /*data_file_path_factory=*/nullptr));
         ASSERT_TRUE(selection.has_value());
-        ASSERT_TRUE(selection->empty());
+        ASSERT_TRUE(selection->IsEmpty());
     }
     for (const auto& files : {std::vector<std::shared_ptr<DataFileMeta>>{normal},
                               std::vector<std::shared_ptr<DataFileMeta>>{normal, same_range}}) {
-        bool has_bitmap_selection = false;
-        ASSERT_OK_AND_ASSIGN(std::optional<std::vector<Range>> selection,
+        ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap32> selection,
                              split_read.SelectByFileIndex(match, files, schema, std::nullopt,
-                                                          /*data_file_path_factory=*/nullptr,
-                                                          &has_bitmap_selection));
-        ASSERT_TRUE(has_bitmap_selection);
-        ASSERT_EQ(selection,
-                  std::optional<std::vector<Range>>(std::vector<Range>{Range(101, 101)}));
+                                                          /*data_file_path_factory=*/nullptr));
+        ASSERT_EQ(selection, std::optional<RoaringBitmap32>(RoaringBitmap32::From({1})));
+
+        // Row ranges use absolute IDs; the returned bitmap keeps file-local positions.
+        const std::vector<std::pair<std::vector<Range>, std::vector<int32_t>>> cases = {
+            {{Range(101, 101)}, {1}},
+            {{Range(103, 103)}, {3}},
+            {{Range(100, 100)}, {}},
+            {{Range(102, 102)}, {}},
+            {{Range(104, 105)}, {}},
+            {{}, {}},
+            {{Range(103, 103), Range(100, 101), Range(101, 102)}, {1, 3}},
+            {{Range(103, 110), Range(99, 101)}, {1, 3}}};
+        for (const auto& [row_ranges, expected] : cases) {
+            ASSERT_OK_AND_ASSIGN(
+                selection, split_read.SelectByFileIndex(sparse_match, files, schema, row_ranges,
+                                                        /*data_file_path_factory=*/nullptr));
+            ASSERT_EQ(selection, std::optional<RoaringBitmap32>(RoaringBitmap32::From(expected)));
+        }
+        ASSERT_OK_AND_ASSIGN(selection,
+                             split_read.SelectByFileIndex(/*predicate=*/nullptr, files, schema,
+                                                          std::vector<Range>{Range(100, 102)},
+                                                          /*data_file_path_factory=*/nullptr));
+        ASSERT_FALSE(selection.has_value());
+        ASSERT_OK_AND_ASSIGN(selection,
+                             split_read.SelectByFileIndex(/*predicate=*/nullptr, files, schema,
+                                                          std::vector<Range>{Range(200, 201)},
+                                                          /*data_file_path_factory=*/nullptr));
+        ASSERT_TRUE(selection.has_value());
+        ASSERT_TRUE(selection->IsEmpty());
     }
 }
 
@@ -1353,6 +1375,62 @@ DeletionVector::Factory MakeSingleFileDvFactory(const std::string& expected_file
     };
 }
 }  // namespace
+
+TEST_F(DataEvolutionSplitReadTest, TestExcludeDeletedPositionsKeepsBitmapSelection) {
+    const std::vector<std::pair<std::vector<int32_t>, std::vector<int32_t>>> cases = {
+        {{0, 1, 2, 3, 4, 5, 6, 7}, {0, 2, 4, 5, 6, 7}}, {{1, 3}, {}}, {{0, 2}, {0, 2}}, {{}, {}}};
+    for (bool bitmap64 : {false, true}) {
+        std::shared_ptr<DeletionVector> dv =
+            bitmap64 ? std::shared_ptr<DeletionVector>(std::make_shared<Bitmap64DeletionVector>())
+                     : MakeBitmapDv({});
+        ASSERT_OK(dv->Delete(1));
+        ASSERT_OK(dv->Delete(3));
+        if (bitmap64) {
+            ASSERT_OK(dv->Delete(1LL << 32));
+        }
+        for (const auto& [selected, expected] : cases) {
+            ASSERT_OK_AND_ASSIGN(RoaringBitmap32 live,
+                                 DataEvolutionSplitRead::ExcludeDeletedPositions(
+                                     RoaringBitmap32::From(selected), dv));
+            ASSERT_EQ(live, RoaringBitmap32::From(expected));
+        }
+    }
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestGroupBitmapCombinesWithRowRangesAndDvInFileReader) {
+    auto dir = UniqueTestDirectory::Create("local");
+    auto schema = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(0, arrow::field("f0", arrow::int32()))});
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                        {Options::ROW_TRACKING_ENABLED, "true"},
+                                                        {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, options));
+    ReadContextBuilder builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
+                         InternalReadContext::Create(read_context, table_schema, options));
+    DataEvolutionSplitRead split_read(/*path_factory=*/nullptr, context, GetDefaultPool(),
+                                      /*executor=*/nullptr);
+    split_read.file_indexes_evaluated_ = true;
+    split_read.group_selection_ = RoaringBitmap32::From({0, 1, 3});
+    auto file = CreateNormalFile("normal.parquet", 100, 4, 20);
+    auto type = arrow::struct_(schema->fields());
+    auto data =
+        arrow::ipc::internal::json::ArrayFromJSON(type, R"([[0],[1],[2],[3]])").ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileBatchReader> reader,
+        split_read.ApplyIndexAndDvReaderIfNeeded(
+            std::make_unique<MockFileBatchReader>(data, type, 2), file, schema, schema,
+            /*predicate=*/nullptr, MakeSingleFileDvFactory(file->file_name, MakeBitmapDv({1})),
+            std::vector<Range>{Range(101, 103)}, /*data_file_path_factory=*/nullptr,
+            /*file_index_options=*/{}, /*index_scores=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(type, R"([[3]])").ValueOrDie();
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected))) << result->ToString();
+}
 
 TEST_F(DataEvolutionSplitReadTest, TestReadGroupDeletionVector) {
     // the anchor is the oldest normal file; blob files never anchor the deletion vector
