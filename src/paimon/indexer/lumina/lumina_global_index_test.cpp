@@ -281,7 +281,27 @@ class LuminaGlobalIndexTest : public ::testing::Test {
     std::vector<float> query_ = {1.0f, 1.0f, 1.0f, 1.1f};
 };
 
-TEST_F(LuminaGlobalIndexTest, TestSimple) {
+class LuminaGlobalIndexBackendTest : public LuminaGlobalIndexTest,
+                                     public ::testing::WithParamInterface<std::string> {
+ public:
+    void SetUp() override {
+        LuminaGlobalIndexTest::SetUp();
+        options_["lumina.index.type"] = GetParam();
+        if (GetParam() == "flatnsw") {
+            options_["lumina.flatnsw.build.thread_count"] = "1";
+            // Use a large search width for the small dataset to reduce approximate-search misses.
+            options_["lumina.flatnsw.search.ef_search"] = "64";
+        }
+    }
+};
+
+INSTANTIATE_TEST_SUITE_P(Backends, LuminaGlobalIndexBackendTest,
+                         ::testing::Values(std::string("bruteforce"), std::string("flatnsw")),
+                         [](const ::testing::TestParamInfo<std::string>& info) {
+                             return info.param;
+                         });
+
+TEST_P(LuminaGlobalIndexBackendTest, TestSimple) {
     auto test_root_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);
     std::string test_root = test_root_dir->Str();
@@ -315,7 +335,7 @@ TEST_F(LuminaGlobalIndexTest, TestSimple) {
     }
 }
 
-TEST_F(LuminaGlobalIndexTest, TestWithFilter) {
+TEST_P(LuminaGlobalIndexBackendTest, TestWithFilter) {
     auto test_root_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);
     std::string test_root = test_root_dir->Str();
@@ -736,7 +756,7 @@ TEST_F(LuminaGlobalIndexTest, TestWriteAndReadWithTagFilter) {
     }
 }
 
-TEST_F(LuminaGlobalIndexTest, TestWriteAndReadWithMixedTagPredicates) {
+TEST_P(LuminaGlobalIndexBackendTest, TestWriteAndReadWithMixedTagPredicates) {
     auto test_root_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);
     std::string test_root = test_root_dir->Str();
@@ -1360,7 +1380,7 @@ TEST_F(LuminaGlobalIndexTest, TestHighCardinalityAndMultiThreadSearch) {
     }
 }
 
-TEST_F(LuminaGlobalIndexTest, TestWriteWithNullRows) {
+TEST_P(LuminaGlobalIndexBackendTest, TestWriteWithNullRows) {
     auto test_root_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);
     std::string test_root = test_root_dir->Str();
