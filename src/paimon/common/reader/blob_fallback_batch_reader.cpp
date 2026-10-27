@@ -42,10 +42,8 @@ Result<std::unique_ptr<BlobFallbackBatchReader>> BlobFallbackBatchReader::Create
     std::vector<std::vector<Segment>>&& sequence_groups,
     const std::shared_ptr<arrow::Schema>& read_schema, int32_t read_batch_size,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
-    if (sequence_groups.size() < 2) {
-        return Status::Invalid(
-            "Blob fallback needs at least two sequence groups; a single group should be read "
-            "sequentially.");
+    if (sequence_groups.empty()) {
+        return Status::Invalid("Blob fallback needs at least one sequence group.");
     }
     if (read_schema == nullptr) {
         return Status::Invalid("Blob fallback read schema cannot be nullptr.");

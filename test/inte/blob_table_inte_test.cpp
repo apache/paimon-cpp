@@ -2004,6 +2004,132 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateWithDeletionVectors)
                           /*predicate=*/nullptr, /*row_ranges=*/{Range(0, 1)}));
 }
 
+TEST_P(BlobTableInteTest, TestDataEvolutionPartialBlobBackfillWithDeletionVectors) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 BlobUtils::ToArrowField("b0", /*nullable=*/true)};
+    CreateTable(fields, {},
+                {{Options::FILE_FORMAT, GetParam()},
+                 {Options::FILE_SYSTEM, "local"},
+                 {Options::ROW_TRACKING_ENABLED, "true"},
+                 {Options::DATA_EVOLUTION_ENABLED, "true"},
+                 {Options::DELETION_VECTORS_ENABLED, "true"},
+                 {Options::DELETION_VECTOR_BITMAP64, "true"},
+                 {Options::READ_BATCH_SIZE, "2"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto normal_type = arrow::struct_({fields[0]});
+    auto normal = arrow::ipc::internal::json::ArrayFromJSON(
+                      normal_type, R"([[0],[1],[2],[3],[4],[5],[6],[7],[8],[9]])")
+                      .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> base,
+                         WriteArray(table_path, {}, {"f0"}, {normal}));
+    SetFirstRowId(100, base);
+    ASSERT_OK(Commit(table_path, base));
+    auto blobs = MakeBlobUpdateArray(fields[1], {"b3", "b4", "b5"});
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> backfill,
+                         WriteArray(table_path, {}, {"b0"}, {blobs}));
+    SetFirstRowId(103, backfill);
+    ASSERT_OK(Commit(table_path, backfill));
+
+    auto full = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[0,null],[1,null],[2,null],[3,"b3"],[4,"b4"],
+                                       [5,"b5"],[6,null],[7,null],[8,null],[9,null]])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "b0"}, full));
+    auto blob_only = checked_pointer_cast<arrow::StructArray>(
+        arrow::StructArray::Make({full->field(1)}, {fields[1]}).ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"b0"}, blob_only));
+
+    ASSERT_OK_AND_ASSIGN(std::string anchor,
+                         DeletionVectorTestHelper::RetrieveAnchorFileName(base));
+    // Delete rows in the physical blob file, the leading gap, and the trailing gap.
+    ASSERT_OK(CommitDeletionVectors(table_path, base[0], {{anchor, {1, 3, 7, 9}}}));
+    arrow::FieldVector read_fields = {fields[0], fields[1], SpecialFields::RowId().ArrowField()};
+    auto expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(read_fields),
+            R"([[0,null,100],[2,null,102],[4,"b4",104],[5,"b5",105],[6,null,106],[8,null,108]])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "b0", "_ROW_ID"}, expected));
+    blob_only = checked_pointer_cast<arrow::StructArray>(
+        arrow::StructArray::Make({expected->field(1)}, {fields[1]}).ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"b0"}, blob_only));
+    auto selected = checked_pointer_cast<arrow::StructArray>(blob_only->Slice(1, 4));
+    ASSERT_OK(ScanAndRead(table_path, {"b0"}, selected, nullptr, {Range(102, 106)}));
+    auto gap_only = checked_pointer_cast<arrow::StructArray>(blob_only->Slice(4, 2));
+    ASSERT_OK(ScanAndRead(table_path, {"b0"}, gap_only, nullptr, {Range(106, 108)}));
+    ASSERT_OK(ScanAndRead(table_path, {"b0"}, nullptr, nullptr, {Range(101, 101)}));
+}
+
+TEST_P(BlobTableInteTest, TestDataEvolutionDvValidatesSelectedBlobRange) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 BlobUtils::ToArrowField("b0", /*nullable=*/true)};
+    CreateTable(fields, {},
+                {{Options::FILE_FORMAT, GetParam()},
+                 {Options::FILE_SYSTEM, "local"},
+                 {Options::ROW_TRACKING_ENABLED, "true"},
+                 {Options::DATA_EVOLUTION_ENABLED, "true"},
+                 {Options::DELETION_VECTORS_ENABLED, "true"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto normal = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[0]}),
+                                                            R"([[0],[1],[2],[3]])")
+                      .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> base,
+                         WriteArray(table_path, {}, {"f0"}, {normal}));
+    SetFirstRowId(100, base);
+    ASSERT_OK(Commit(table_path, base));
+    auto blobs = MakeBlobUpdateArray(fields[1], {"b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7"});
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> backfill,
+                         WriteArray(table_path, {}, {"b0"}, {blobs}));
+    SetFirstRowId(98, backfill);
+    ASSERT_OK(Commit(table_path, backfill));
+    ASSERT_OK_AND_ASSIGN(std::string anchor,
+                         DeletionVectorTestHelper::RetrieveAnchorFileName(base));
+    ASSERT_OK(CommitDeletionVectors(table_path, base[0], {{anchor, {1}}}));
+    auto expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[0,"b2"],[2,"b4"],[3,"b5"]])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "b0"}, expected, nullptr, {Range(100, 103)}));
+    ASSERT_NOK_WITH_MSG(ScanAndRead(table_path, {"f0", "b0"}, nullptr),
+                        "should contain selected row id range");
+    ASSERT_NOK_WITH_MSG(ScanAndRead(table_path, {"f0", "b0"}, expected, nullptr, {Range(99, 100)}),
+                        "should contain selected row id range");
+}
+
+TEST_P(BlobTableInteTest, TestDataEvolutionRejectsAnchorlessGroupWithDeletionVectors) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 BlobUtils::ToArrowField("b0", /*nullable=*/true)};
+    CreateTable(fields, {},
+                {{Options::FILE_FORMAT, GetParam()},
+                 {Options::FILE_SYSTEM, "local"},
+                 {Options::ROW_TRACKING_ENABLED, "true"},
+                 {Options::DATA_EVOLUTION_ENABLED, "true"},
+                 {Options::DELETION_VECTORS_ENABLED, "true"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto normal =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[0]}), R"([[0],[1],[2]])")
+            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> base,
+                         WriteArray(table_path, {}, {"f0"}, {normal}));
+    SetFirstRowId(100, base);
+    ASSERT_OK(Commit(table_path, base));
+    auto blobs = MakeBlobUpdateArray(fields[1], {"b0", "b1"});
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> dedicated,
+                         WriteArray(table_path, {}, {"b0"}, {blobs}));
+    SetFirstRowId(200, dedicated);
+    ASSERT_OK(Commit(table_path, dedicated));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> rows,
+                         ScanAndReadResult(table_path, {"b0", "_ROW_ID"}));
+    ASSERT_TRUE(rows);
+    ASSERT_EQ(rows->length(), 5);
+    ASSERT_OK_AND_ASSIGN(std::string anchor,
+                         DeletionVectorTestHelper::RetrieveAnchorFileName(base));
+    ASSERT_OK(CommitDeletionVectors(table_path, base[0], {{anchor, {1}}}));
+    // The same split now carries a DV. Match Java by requiring a normal anchor in each group.
+    ASSERT_NOK_WITH_MSG(ScanAndReadResult(table_path, {"b0", "_ROW_ID"}), "normal anchor file");
+}
+
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateCompactedLayers) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()), BlobUtils::ToArrowField("b0")};
@@ -2350,11 +2476,10 @@ TEST_P(BlobTableInteTest, TestBlobSentinelValueInBaseLayerDegradesToNull) {
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 }
 
-TEST_P(BlobTableInteTest, TestUserSuppliedInternalPlaceholderOptionsIgnored) {
+TEST_P(BlobTableInteTest, TestSingleBlobLayerPlaceholderBecomesNull) {
     // blob.internal.emit-placeholder-sentinel is reserved for the data-evolution fallback read
-    // path. Set in the user table options it must be ignored: were it honored, a read of a
-    // placeholder entry that no older layer can resolve would return the sentinel bytes as the
-    // blob value instead of failing.
+    // path. A single layer also uses fallback: an unresolved placeholder becomes null, and the
+    // internal sentinel must never be exposed as the blob value.
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()),
                                  BlobUtils::ToArrowField("b0", /*nullable=*/true)};
@@ -2376,9 +2501,11 @@ TEST_P(BlobTableInteTest, TestUserSuppliedInternalPlaceholderOptionsIgnored) {
                          WriteArray(table_path, {}, schema->field_names(), {src_array}));
     ASSERT_OK(Commit(table_path, commit_msgs));
 
-    // the user-supplied key was stripped, so the single-layer read rejects the placeholder
-    ASSERT_NOK_WITH_MSG(ScanAndReadResult(table_path, schema->field_names()),
-                        "contains a placeholder entry");
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[1, "a", null], [2, "b", "blob_b"]])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 }
 
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobOnlyFirstCommitFailsWithoutFirstRowId) {

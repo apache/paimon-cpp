@@ -30,11 +30,14 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
+#include "paimon/common/data/blob_utils.h"
+#include "paimon/common/file_index/bitmap/bitmap_file_index.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/vector_store_utils.h"
+#include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
 #include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -46,6 +49,7 @@
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
+#include "paimon/file_index/file_index_writer.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/format/format_writer.h"
 #include "paimon/format/writer_builder.h"
@@ -55,6 +59,8 @@
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
+#include "paimon/testing/mock/mock_file_batch_reader.h"
+#include "paimon/testing/mock/mock_search_file_index.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -206,12 +212,13 @@ TEST_F(DataEvolutionSplitReadTest, TestAddSingleBlobEntry) {
                        /*max_sequence_number=*/1,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry));
 
     ASSERT_EQ(blob_bunch->Files().size(), 1);
     ASSERT_EQ(blob_bunch->Files()[0], blob_entry);
-    ASSERT_EQ(blob_bunch->RowCount(), 100);
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 100);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestAddBlobEntryAndTail) {
@@ -224,21 +231,22 @@ TEST_F(DataEvolutionSplitReadTest, TestAddBlobEntryAndTail) {
                        /*max_sequence_number=*/1,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry));
     ASSERT_OK(blob_bunch->Add(blob_tail));
 
     ASSERT_EQ(blob_bunch->Files().size(), 2);
     ASSERT_EQ(blob_bunch->Files()[0], blob_entry);
     ASSERT_EQ(blob_bunch->Files()[1], blob_tail);
-    ASSERT_EQ(blob_bunch->RowCount(), 300);
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 300);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestAddNonBlobFileInvalid) {
     auto blob_entry =
         CreateDataFileMeta("normal1.parquet", /*first_row_id=*/0, FileSource::Append());
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_NOK_WITH_MSG(blob_bunch->Add(blob_entry),
                         "Only blob file can be added to a blob bunch.");
 }
@@ -257,7 +265,7 @@ TEST_F(DataEvolutionSplitReadTest, TestAddBlobWithSameFirstRowId) {
                        /*max_sequence_number=*/1,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry));
     // Files with the same first row id and lower sequence numbers are older layers of a
     // partial update; they are kept for the row-level placeholder fallback, whether they
@@ -269,8 +277,8 @@ TEST_F(DataEvolutionSplitReadTest, TestAddBlobWithSameFirstRowId) {
     ASSERT_EQ(blob_bunch->Files()[0], blob_entry);
     ASSERT_EQ(blob_bunch->Files()[1], blob_full_tail);
     ASSERT_EQ(blob_bunch->Files()[2], blob_short_tail);
-    ASSERT_EQ(blob_bunch->RowCount(), 100);
-    ASSERT_FALSE(blob_bunch->SequentialReadOptimize());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 100);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithOverlappingRowId) {
@@ -283,14 +291,14 @@ TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithOverlappingRowId) {
                        /*max_sequence_number=*/1,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry));
     // Overlapping layers with different sequence numbers are kept for the fallback.
     ASSERT_OK(blob_bunch->Add(blob_tail));
 
     ASSERT_EQ(blob_bunch->Files().size(), 2);
-    ASSERT_EQ(blob_bunch->RowCount(), 200);
-    ASSERT_FALSE(blob_bunch->SequentialReadOptimize());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 200);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithOverlappingRowIdAndHigherSequenceNumber) {
@@ -303,13 +311,13 @@ TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithOverlappingRowIdAndHigherS
                        /*max_sequence_number=*/2,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry));
     ASSERT_OK(blob_bunch->Add(blob_tail));
 
     ASSERT_EQ(blob_bunch->Files().size(), 2);
-    ASSERT_EQ(blob_bunch->RowCount(), 200);
-    ASSERT_FALSE(blob_bunch->SequentialReadOptimize());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 200);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithOverlappingRowIdInSameLayer) {
@@ -322,12 +330,12 @@ TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithOverlappingRowIdInSameLaye
                        /*max_sequence_number=*/1,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry));
-    // Files sharing a max sequence number form one layer and must not overlap.
-    ASSERT_NOK_WITH_MSG(blob_bunch->Add(blob_tail),
-                        "Blob files with the same max sequence number should not have overlapping "
-                        "row id ranges");
+    // The bunch collects ranges; the fallback reader validates overlaps within each layer.
+    ASSERT_OK(blob_bunch->Add(blob_tail));
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 200);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithNonContinuousRowId) {
@@ -340,11 +348,11 @@ TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithNonContinuousRowId) {
                        /*max_sequence_number=*/1,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry));
-    // Adding file with non-continuous row id should return bad status
-    ASSERT_NOK_WITH_MSG(blob_bunch->Add(blob_tail),
-                        "Blob file first row id should be continuous, expect 100 but got 200");
+    ASSERT_OK(blob_bunch->Add(blob_tail));
+    ASSERT_NOK_WITH_MSG(blob_bunch->RowCount(),
+                        "Blob file bunch should always contain a contiguous row range.");
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithDifferentWriteCols) {
@@ -357,11 +365,77 @@ TEST_F(DataEvolutionSplitReadTest, TestAddBlobFileWithDifferentWriteCols) {
                        /*max_sequence_number=*/1,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"diff_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry));
     // Adding file with different write columns should return bad status
     ASSERT_NOK_WITH_MSG(blob_bunch->Add(blob_tail),
                         "All files in a blob bunch should have the same write columns.");
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestBlobBunchChecksContinuityAfterCollectingAllFiles) {
+    DataEvolutionSplitRead::BlobBunch bunch(std::nullopt, /*has_row_ids_selection=*/false);
+    for (int64_t first_row_id : {0, 20, 10}) {
+        ASSERT_OK(bunch.Add(CreateBlobFile(std::to_string(first_row_id), first_row_id, 10, 1,
+                                           std::optional<std::vector<std::string>>({"blob_col"}))));
+    }
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, bunch.RowCount());
+    ASSERT_EQ(row_count, 30);
+    ASSERT_OK_AND_ASSIGN(Range range, bunch.LogicalRange());
+    ASSERT_EQ(range, Range(0, 29));
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestBlobBunchRowCountValidatesExpectedRange) {
+    for (bool has_row_ids_selection : {false, true}) {
+        DataEvolutionSplitRead::BlobBunch bunch(Range(100, 109), has_row_ids_selection);
+        ASSERT_OK(bunch.Add(CreateBlobFile("blob", 99, 4, 1,
+                                           std::optional<std::vector<std::string>>({"blob_col"}))));
+        ASSERT_NOK_WITH_MSG(bunch.RowCount(),
+                            "Blob file range should be within normal file range.");
+        ASSERT_OK_AND_ASSIGN(Range range, bunch.LogicalRange());
+        ASSERT_EQ(range, Range(100, 109));
+    }
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestEmptyBlobBunchLogicalRange) {
+    DataEvolutionSplitRead::BlobBunch bunch(std::nullopt, /*has_row_ids_selection=*/true);
+    ASSERT_NOK_WITH_MSG(bunch.LogicalRange(), "Blob file bunch should not be empty.");
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestBlobFallbackValidatesRangesBeforeOpeningFiles) {
+    auto dir = UniqueTestDirectory::Create("local");
+    auto schema = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(0, arrow::field("id", arrow::int32()))});
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                        {Options::ROW_TRACKING_ENABLED, "true"},
+                                                        {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, options));
+    ReadContextBuilder builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
+                         InternalReadContext::Create(read_context, table_schema, options));
+    DataEvolutionSplitRead split_read(/*path_factory=*/nullptr, context, GetDefaultPool(),
+                                      /*executor=*/nullptr);
+    auto blob =
+        CreateBlobFile("blob", 100, 10, 1, std::optional<std::vector<std::string>>({"blob_col"}));
+    auto overlap =
+        CreateBlobFile("overlap", 105, 5, 1, std::optional<std::vector<std::string>>({"blob_col"}));
+    auto create_reader = [&](const std::vector<std::shared_ptr<DataFileMeta>>& files,
+                             const Range& range,
+                             const std::optional<std::vector<Range>>& row_ranges) {
+        return split_read.CreateBlobFallbackReader(
+            BinaryRow::EmptyRow(), files, range, schema, row_ranges,
+            /*data_file_path_factory=*/nullptr, /*group_dv_factory=*/nullptr,
+            /*group_dv=*/std::nullopt);
+    };
+    ASSERT_NOK_WITH_MSG(create_reader({}, Range(100, 109), std::nullopt),
+                        "Blob bunch should not be empty.");
+    ASSERT_NOK_WITH_MSG(create_reader({blob}, Range(101, 109), std::nullopt),
+                        "Blob file range should be within logical range.");
+    ASSERT_NOK_WITH_MSG(create_reader({blob}, Range(200, 209), std::vector<Range>{Range(200, 200)}),
+                        "Blob file range should intersect logical range.");
+    ASSERT_NOK_WITH_MSG(create_reader({overlap, blob}, Range(100, 109), std::nullopt),
+                        "should not have overlapping row id ranges");
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestRowIdSelectionWithOverlap) {
@@ -380,7 +454,7 @@ TEST_F(DataEvolutionSplitReadTest, TestRowIdSelectionWithOverlap) {
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
 
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/true);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/true);
     ASSERT_OK(blob_bunch->Add(blob_entry));
     // blob_sub1 was pruned by the row-ids selection in the scan process; blob_sub2 is a newer
     // layer and both files are kept for the row-level placeholder fallback.
@@ -388,8 +462,8 @@ TEST_F(DataEvolutionSplitReadTest, TestRowIdSelectionWithOverlap) {
     ASSERT_EQ(blob_bunch->Files().size(), 2);
     ASSERT_EQ(blob_bunch->Files()[0], blob_entry);
     ASSERT_EQ(blob_bunch->Files()[1], blob_sub2);
-    ASSERT_EQ(blob_bunch->RowCount(), 10);
-    ASSERT_FALSE(blob_bunch->SequentialReadOptimize());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 10);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestRowIdSelectionWithOverlap2) {
@@ -408,7 +482,7 @@ TEST_F(DataEvolutionSplitReadTest, TestRowIdSelectionWithOverlap2) {
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
 
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/true);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/true);
     ASSERT_OK(blob_bunch->Add(blob_entry));
     // blob_sub1 was pruned by the row-ids selection in the scan process; blob_sub2 is an older
     // layer and both files are kept for the row-level placeholder fallback.
@@ -416,8 +490,8 @@ TEST_F(DataEvolutionSplitReadTest, TestRowIdSelectionWithOverlap2) {
     ASSERT_EQ(blob_bunch->Files().size(), 2);
     ASSERT_EQ(blob_bunch->Files()[0], blob_entry);
     ASSERT_EQ(blob_bunch->Files()[1], blob_sub2);
-    ASSERT_EQ(blob_bunch->RowCount(), 10);
-    ASSERT_FALSE(blob_bunch->SequentialReadOptimize());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 10);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestRowIdSelection) {
@@ -436,14 +510,15 @@ TEST_F(DataEvolutionSplitReadTest, TestRowIdSelection) {
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
 
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/true);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/true);
     ASSERT_OK(blob_bunch->Add(blob_entry0));
     // blob_entry1 will not be added, for it has been skipped by row_ids in scan process.
     ASSERT_OK(blob_bunch->Add(blob_entry2));
     ASSERT_EQ(blob_bunch->Files().size(), 2);
     ASSERT_EQ(blob_bunch->Files()[0], blob_entry0);
     ASSERT_EQ(blob_bunch->Files()[1], blob_entry2);
-    ASSERT_EQ(blob_bunch->RowCount(), 20);
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 20);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestComplexBlobBunchScenario) {
@@ -464,7 +539,7 @@ TEST_F(DataEvolutionSplitReadTest, TestComplexBlobBunchScenario) {
                        /*max_sequence_number=*/1,
                        /*write_cols=*/std::optional<std::vector<std::string>>({"blob_col"}));
     auto blob_bunch = std::make_shared<DataEvolutionSplitRead::BlobBunch>(
-        INT64_MAX, /*has_row_ids_selection=*/false);
+        /*expected_row_range=*/std::nullopt, /*has_row_ids_selection=*/false);
     ASSERT_OK(blob_bunch->Add(blob_entry1));
     ASSERT_OK(blob_bunch->Add(blob_entry2));
     ASSERT_OK(blob_bunch->Add(blob_entry3));
@@ -475,7 +550,8 @@ TEST_F(DataEvolutionSplitReadTest, TestComplexBlobBunchScenario) {
     ASSERT_EQ(blob_bunch->Files()[1], blob_entry2);
     ASSERT_EQ(blob_bunch->Files()[2], blob_entry3);
     ASSERT_EQ(blob_bunch->Files()[3], blob_entry4);
-    ASSERT_EQ(blob_bunch->RowCount(), 1000);
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 1000);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestComplexBlobBunchScenario2) {
@@ -571,8 +647,8 @@ TEST_F(DataEvolutionSplitReadTest, TestComplexBlobBunchScenario2) {
     ASSERT_EQ(blob_bunch->Files()[6], blob_entry7);
     ASSERT_EQ(blob_bunch->Files()[7], blob_entry4);
     ASSERT_EQ(blob_bunch->Files()[8], blob_entry8);
-    ASSERT_EQ(blob_bunch->RowCount(), 1000);
-    ASSERT_FALSE(blob_bunch->SequentialReadOptimize());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 1000);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestComplexBlobBunchScenario3) {
@@ -699,8 +775,8 @@ TEST_F(DataEvolutionSplitReadTest, TestComplexBlobBunchScenario3) {
     ASSERT_EQ(blob_bunch->Files()[6], blob_entry7);
     ASSERT_EQ(blob_bunch->Files()[7], blob_entry4);
     ASSERT_EQ(blob_bunch->Files()[8], blob_entry8);
-    ASSERT_EQ(blob_bunch->RowCount(), 1000);
-    ASSERT_FALSE(blob_bunch->SequentialReadOptimize());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, blob_bunch->RowCount());
+    ASSERT_EQ(row_count, 1000);
 
     auto blob_bunch2 = std::dynamic_pointer_cast<DataEvolutionSplitRead::BlobBunch>(bunch[2]);
     ASSERT_EQ(blob_bunch2->Files().size(), 9);
@@ -713,8 +789,8 @@ TEST_F(DataEvolutionSplitReadTest, TestComplexBlobBunchScenario3) {
     ASSERT_EQ(blob_bunch2->Files()[6], blob_entry17);
     ASSERT_EQ(blob_bunch2->Files()[7], blob_entry14);
     ASSERT_EQ(blob_bunch2->Files()[8], blob_entry18);
-    ASSERT_EQ(blob_bunch2->RowCount(), 1000);
-    ASSERT_FALSE(blob_bunch2->SequentialReadOptimize());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count2, blob_bunch2->RowCount());
+    ASSERT_EQ(row_count2, 1000);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestDifferentRowIdRange) {
@@ -804,8 +880,10 @@ TEST_F(DataEvolutionSplitReadTest, TestPlanSequentialVectorRead) {
     ASSERT_EQ(bunches[0]->Files(), std::vector<std::shared_ptr<DataFileMeta>>{main});
     ASSERT_EQ(bunches[1]->Files(),
               (std::vector<std::shared_ptr<DataFileMeta>>{vector0, vector1, vector2}));
-    ASSERT_EQ(bunches[0]->RowCount(), 10);
-    ASSERT_EQ(bunches[1]->RowCount(), 10);
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, bunches[0]->RowCount());
+    ASSERT_EQ(row_count, 10);
+    ASSERT_OK_AND_ASSIGN(int64_t row_count2, bunches[1]->RowCount());
+    ASSERT_EQ(row_count2, 10);
     ASSERT_EQ(vector1->first_row_id, 103);
     ASSERT_EQ(vector1->row_count, 4);
 }
@@ -1167,6 +1245,94 @@ TEST_F(DataEvolutionSplitReadTest, TestSplitWithMultipleBlobFilesPerGroup) {
     ASSERT_EQ(expected_metas, split_metas);
 }
 
+TEST_F(DataEvolutionSplitReadTest, TestFileIndexSelectionOnlyPushesDownNormalGroups) {
+    auto dir = UniqueTestDirectory::Create("local");
+    auto pool = GetDefaultPool();
+    auto schema = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(0, arrow::field("f0", arrow::int32())),
+         DataField(1, BlobUtils::ToArrowField("b0")),
+         DataField(2, arrow::field("embedding", arrow::list(arrow::float32())))});
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                        {Options::ROW_TRACKING_ENABLED, "true"},
+                                                        {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                        {Options::FILE_INDEX_READ_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, options));
+    ReadContextBuilder builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
+                         InternalReadContext::Create(read_context, table_schema, options));
+    DataEvolutionSplitRead split_read(/*path_factory=*/nullptr, context, pool,
+                                      /*executor=*/nullptr);
+
+    // Use a real embedded bitmap index without creating any data files.
+    auto index_schema = arrow::schema({schema->field(0)});
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(index_schema->fields()),
+                                                          R"([[0],[1],[2],[3]])")
+                    .ValueOrDie();
+    ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*index_schema, &c_schema).ok());
+    BitmapFileIndex index({});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexWriter> writer,
+                         index.CreateWriter(&c_schema, pool));
+    ArrowArray c_array;
+    ASSERT_TRUE(arrow::ExportArray(*data, &c_array).ok());
+    ASSERT_OK(writer->AddBatch(&c_array));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> payload, writer->SerializedBytes());
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["f0"]["bitmap"] = payload;
+    auto normal = CreateNormalFile("normal.parquet", 100, 4, 20);
+    normal->write_cols = std::vector<std::string>{"f0"};
+    ASSERT_OK_AND_ASSIGN(normal->embedded_index, MockSearchFileIndex::Serialize(indexes, pool));
+
+    auto blob = CreateBlobFile("partial", 101, 2, 30, std::vector<std::string>{"b0"});
+    auto vector = CreateNormalFile("partial.vector.parquet", 101, 2, 30);
+    vector->write_cols = std::vector<std::string>{"embedding"};
+    auto same_range = CreateNormalFile("same.parquet", 100, 4, 10);
+    same_range->write_cols = std::vector<std::string>{"b0"};
+    auto different_range = CreateNormalFile("different.parquet", 101, 2, 10);
+    different_range->write_cols = std::vector<std::string>{"b0"};
+    auto match = PredicateBuilder::Equal(0, "f0", FieldType::INT, Literal(1));
+    auto miss = PredicateBuilder::Equal(0, "f0", FieldType::INT, Literal(9));
+
+    for (const auto& other : {blob, vector, different_range}) {
+        bool has_bitmap_selection = true;
+        ASSERT_OK_AND_ASSIGN(std::optional<std::vector<Range>> selection,
+                             split_read.SelectByFileIndex(
+                                 match, {normal, other}, schema, std::nullopt,
+                                 /*data_file_path_factory=*/nullptr, &has_bitmap_selection));
+        ASSERT_FALSE(has_bitmap_selection);
+        ASSERT_FALSE(selection.has_value());
+
+        std::vector<Range> row_ranges = {Range(100, 102)};
+        ASSERT_OK_AND_ASSIGN(
+            selection, split_read.SelectByFileIndex(match, {normal, other}, schema, row_ranges,
+                                                    /*data_file_path_factory=*/nullptr,
+                                                    &has_bitmap_selection));
+        ASSERT_FALSE(has_bitmap_selection);
+        ASSERT_EQ(selection, std::optional<std::vector<Range>>(row_ranges));
+
+        // The normal file can still reject the entire group when its index has no matches.
+        ASSERT_OK_AND_ASSIGN(
+            selection, split_read.SelectByFileIndex(miss, {normal, other}, schema, std::nullopt,
+                                                    /*data_file_path_factory=*/nullptr,
+                                                    &has_bitmap_selection));
+        ASSERT_TRUE(selection.has_value());
+        ASSERT_TRUE(selection->empty());
+    }
+    for (const auto& files : {std::vector<std::shared_ptr<DataFileMeta>>{normal},
+                              std::vector<std::shared_ptr<DataFileMeta>>{normal, same_range}}) {
+        bool has_bitmap_selection = false;
+        ASSERT_OK_AND_ASSIGN(std::optional<std::vector<Range>> selection,
+                             split_read.SelectByFileIndex(match, files, schema, std::nullopt,
+                                                          /*data_file_path_factory=*/nullptr,
+                                                          &has_bitmap_selection));
+        ASSERT_TRUE(has_bitmap_selection);
+        ASSERT_EQ(selection,
+                  std::optional<std::vector<Range>>(std::vector<Range>{Range(101, 101)}));
+    }
+}
+
 namespace {
 std::shared_ptr<DeletionVector> MakeBitmapDv(const std::vector<int64_t>& deleted_positions) {
     RoaringBitmap32 bitmap;
@@ -1221,17 +1387,17 @@ TEST_F(DataEvolutionSplitReadTest, TestReadGroupDeletionVector) {
                                        group, DeletionVector::Factory()));
     ASSERT_FALSE(group_dv.has_value());
 
-    // a group of nothing but dedicated storage files has no anchor, so no deletion vector can be
-    // keyed by it. The split's factory is non-null because another group of the same split
-    // carries one, which must not fail this group's read.
+    // Match Java: a split carrying deletion files requires a normal anchor in every read group.
     std::vector<std::shared_ptr<DataFileMeta>> anchorless_group = {
         CreateDataFileMeta("blob1.blob", /*first_row_id=*/100, /*row_count=*/100, /*max_seq=*/5),
         CreateDataFileMeta("blob2.blob", /*first_row_id=*/100, /*row_count=*/100, /*max_seq=*/6),
         CreateDataFileMeta("vector-store.vector.parquet", /*first_row_id=*/100, /*row_count=*/100,
                            /*max_seq=*/7)};
-    ASSERT_OK_AND_ASSIGN(group_dv,
-                         DataEvolutionSplitRead::ReadGroupDeletionVector(
-                             anchorless_group, MakeSingleFileDvFactory("anchor.parquet", dv)));
+    ASSERT_NOK_WITH_MSG(DataEvolutionSplitRead::ReadGroupDeletionVector(
+                            anchorless_group, MakeSingleFileDvFactory("anchor.parquet", dv)),
+                        "normal anchor file");
+    ASSERT_OK_AND_ASSIGN(group_dv, DataEvolutionSplitRead::ReadGroupDeletionVector(
+                                       anchorless_group, DeletionVector::Factory()));
     ASSERT_FALSE(group_dv.has_value());
 }
 
@@ -1245,8 +1411,9 @@ TEST_F(DataEvolutionSplitReadTest, TestCreateGroupDvFactoryShiftsPositions) {
 
     // deletion vector positions are anchor-relative: positions {10, 45} are row ids {110, 145}
     DataEvolutionSplitRead::GroupDeletionVector group_dv{MakeBitmapDv({10, 45}), Range(100, 199)};
-    ASSERT_OK_AND_ASSIGN(DeletionVector::Factory factory,
-                         DataEvolutionSplitRead::CreateGroupDvFactory(group, group_dv));
+    ASSERT_OK_AND_ASSIGN(
+        DeletionVector::Factory factory,
+        DataEvolutionSplitRead::CreateGroupDvFactory(group, group_dv, /*row_ranges=*/std::nullopt));
     ASSERT_TRUE(factory);
 
     // the anchor file reads the deletion vector unshifted
@@ -1285,7 +1452,8 @@ TEST_F(DataEvolutionSplitReadTest, TestCreateGroupDvFactoryShiftsPositions) {
     ASSERT_FALSE(unknown_dv);
 
     ASSERT_OK_AND_ASSIGN(DeletionVector::Factory null_factory,
-                         DataEvolutionSplitRead::CreateGroupDvFactory(group, std::nullopt));
+                         DataEvolutionSplitRead::CreateGroupDvFactory(group, std::nullopt,
+                                                                      /*row_ranges=*/std::nullopt));
     ASSERT_FALSE(null_factory);
 }
 
@@ -1297,8 +1465,72 @@ TEST_F(DataEvolutionSplitReadTest, TestCreateGroupDvFactoryRejectsFileOutsideAnc
     std::vector<std::shared_ptr<DataFileMeta>> group = {anchor, blob};
 
     DataEvolutionSplitRead::GroupDeletionVector group_dv{MakeBitmapDv({10}), Range(100, 199)};
-    ASSERT_NOK_WITH_MSG(DataEvolutionSplitRead::CreateGroupDvFactory(group, group_dv),
-                        "should contain row id range");
+    ASSERT_NOK_WITH_MSG(
+        DataEvolutionSplitRead::CreateGroupDvFactory(group, group_dv, /*row_ranges=*/std::nullopt),
+        "should contain selected row id range");
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestGroupDvChecksOnlySelectedRanges) {
+    auto anchor = CreateNormalFile("anchor.parquet", 100, 100, 10);
+    auto prefix = CreateDataFileMeta("prefix.blob", 90, 30, 20);
+    auto suffix = CreateDataFileMeta("suffix.blob", 180, 30, 20);
+    std::vector<std::shared_ptr<DataFileMeta>> group = {anchor, prefix, suffix};
+    for (bool bitmap64 : {false, true}) {
+        std::shared_ptr<DeletionVector> dv =
+            bitmap64 ? std::shared_ptr<DeletionVector>(std::make_shared<Bitmap64DeletionVector>())
+                     : MakeBitmapDv({});
+        ASSERT_OK(dv->Delete(5));
+        ASSERT_OK(dv->Delete(85));
+        DataEvolutionSplitRead::GroupDeletionVector group_dv{dv, Range(100, 199)};
+        ASSERT_OK_AND_ASSIGN(
+            DeletionVector::Factory factory,
+            DataEvolutionSplitRead::CreateGroupDvFactory(
+                group, group_dv, std::vector<Range>{Range(180, 199), Range(100, 119)}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DeletionVector> prefix_dv, factory("prefix.blob"));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DeletionVector> suffix_dv, factory("suffix.blob"));
+        ASSERT_TRUE(prefix_dv->IsDeleted(15).value());
+        ASSERT_TRUE(suffix_dv->IsDeleted(5).value());
+        ASSERT_NOK_WITH_MSG(DataEvolutionSplitRead::CreateGroupDvFactory(
+                                group, group_dv, std::vector<Range>{Range(99, 105)}),
+                            "should contain selected row id range");
+        ASSERT_NOK_WITH_MSG(DataEvolutionSplitRead::CreateGroupDvFactory(
+                                group, group_dv, std::vector<Range>{Range(195, 200)}),
+                            "should contain selected row id range");
+        ASSERT_OK(DataEvolutionSplitRead::CreateGroupDvFactory(
+            group, group_dv, std::vector<Range>{Range(300, 310)}));
+
+        // A format can return an entire batch with only some rows selected. The DV wrapper
+        // must never probe unselected prefix/suffix positions outside the anchor range.
+        auto type = arrow::struct_({arrow::field("f0", arrow::int32())});
+        auto data =
+            arrow::ipc::internal::json::ArrayFromJSON(type, R"([[0],[1],[2],[3]])").ValueOrDie();
+        auto small_file = CreateDataFileMeta("small.blob", 99, 4, 20);
+        ASSERT_OK_AND_ASSIGN(factory,
+                             DataEvolutionSplitRead::CreateGroupDvFactory(
+                                 {small_file}, group_dv, std::vector<Range>{Range(100, 101)}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DeletionVector> shifted_dv, factory("small.blob"));
+        RoaringBitmap32 selection = RoaringBitmap32::From({1, 2});
+        ApplyDeletionVectorBatchReader reader(
+            std::make_unique<MockFileBatchReader>(data, type, selection, 4), shifted_dv);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(&reader));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->length(), 2);
+    }
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPartialBlobBunchUsesNormalRange) {
+    auto blob = CreateBlobFile("blob", 103, 2, 20, std::optional<std::vector<std::string>>({"b0"}));
+    DataEvolutionSplitRead::BlobBunch bunch(Range(100, 109), /*has_row_ids_selection=*/false);
+    ASSERT_OK(bunch.Add(blob));
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, bunch.RowCount());
+    ASSERT_EQ(row_count, 10);
+    ASSERT_OK_AND_ASSIGN(Range logical_range, bunch.LogicalRange());
+    ASSERT_EQ(logical_range, Range(100, 109));
+    auto tail = CreateBlobFile("tail", 108, 2, 20, std::optional<std::vector<std::string>>({"b0"}));
+    ASSERT_OK(bunch.Add(tail));
+    ASSERT_OK_AND_ASSIGN(int64_t row_count2, bunch.RowCount());
+    ASSERT_EQ(row_count2, 10);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestExcludeDeletedRowIds) {
@@ -1331,8 +1563,8 @@ TEST_F(DataEvolutionSplitReadTest, Bitmap64GroupWindowWithHighOffset) {
         ASSERT_OK(dv->Delete(p));
     }
     DataEvolutionSplitRead::GroupDeletionVector group_dv{dv, Range(100, 100 + offset + 29)};
-    ASSERT_OK_AND_ASSIGN(auto factory,
-                         DataEvolutionSplitRead::CreateGroupDvFactory({anchor, blob}, group_dv));
+    ASSERT_OK_AND_ASSIGN(auto factory, DataEvolutionSplitRead::CreateGroupDvFactory(
+                                           {anchor, blob}, group_dv, /*row_ranges=*/std::nullopt));
     ASSERT_OK_AND_ASSIGN(auto view, factory("blob0.blob"));
     ASSERT_TRUE(view);
     ASSERT_TRUE(view->IsDeleted(0).value());
@@ -1342,6 +1574,11 @@ TEST_F(DataEvolutionSplitReadTest, Bitmap64GroupWindowWithHighOffset) {
     std::vector<int64_t> positions;
     ASSERT_OK(view->ForEachDeletedPosition([&](int64_t p) { positions.push_back(p); }));
     ASSERT_EQ(positions, (std::vector<int64_t>{0, 5}));
+    ASSERT_OK_AND_ASSIGN(std::vector<Range> live, DataEvolutionSplitRead::ExcludeDeletedRowIds(
+                                                      {group_dv.anchor_range}, group_dv));
+    ASSERT_EQ(live, (std::vector<Range>{
+                        Range(100, 100 + offset - 2), Range(101 + offset, 104 + offset),
+                        Range(106 + offset, 119 + offset), Range(121 + offset, 129 + offset)}));
 }
 
 }  // namespace paimon::test

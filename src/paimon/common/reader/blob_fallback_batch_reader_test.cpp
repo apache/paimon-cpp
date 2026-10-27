@@ -145,6 +145,11 @@ TEST_F(BlobFallbackBatchReaderTest, TestBasicFallback) {
         {"b0", "u1", "b2"});
 }
 
+TEST_F(BlobFallbackBatchReaderTest, TestSingleLayerFillsUnwrittenRows) {
+    CheckFallback({{SegmentSpec::Gap(2), SegmentSpec::File({"b2", "PH"}), SegmentSpec::Gap(2)}},
+                  {std::nullopt, std::nullopt, "b2", std::nullopt, std::nullopt, std::nullopt});
+}
+
 TEST_F(BlobFallbackBatchReaderTest, TestGapPadding) {
     // the newer layer only covers rows 2-3; the gaps stand for placeholders
     CheckFallback({{SegmentSpec::Gap(2), SegmentSpec::File({"u2", "PH"})},
@@ -325,12 +330,10 @@ TEST_F(BlobFallbackBatchReaderTest, TestMisalignedGroupsFail) {
 }
 
 TEST_F(BlobFallbackBatchReaderTest, TestCreateValidation) {
-    // a single group needs no fallback
-    std::vector<std::vector<BlobFallbackBatchReader::Segment>> single_group;
-    single_group.push_back(MakeGroup({SegmentSpec::File({"b0"})}, 1024));
-    ASSERT_NOK_WITH_MSG(BlobFallbackBatchReader::Create(std::move(single_group), read_schema_, 1024,
+    std::vector<std::vector<BlobFallbackBatchReader::Segment>> empty_groups;
+    ASSERT_NOK_WITH_MSG(BlobFallbackBatchReader::Create(std::move(empty_groups), read_schema_, 1024,
                                                         GetArrowPool(pool_)),
-                        "at least two sequence groups");
+                        "at least one sequence group");
 
     // the read schema must contain a blob field
     std::vector<std::vector<BlobFallbackBatchReader::Segment>> groups;

@@ -73,9 +73,9 @@ class BlobFallbackBatchReader : public BatchReader {
     };
 
     /// `sequence_groups` must be ordered by descending max sequence number and contain at least
-    /// two groups (a single group needs no fallback). `read_schema` is the schema every file
-    /// reader emits; it must contain exactly one blob field and may additionally contain the
-    /// row-tracking fields _ROW_ID and _SEQUENCE_NUMBER (completed per file by
+    /// one group (a single group can have gaps to fill with NULLs). `read_schema` is the schema
+    /// every file reader emits; it must contain exactly one blob field and may additionally contain
+    /// the row-tracking fields _ROW_ID and _SEQUENCE_NUMBER (completed per file by
     /// CompleteRowTrackingFieldsBatchReader), which stay correct for rows that are a
     /// placeholder in every layer.
     static Result<std::unique_ptr<BlobFallbackBatchReader>> Create(
