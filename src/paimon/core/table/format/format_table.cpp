@@ -224,6 +224,9 @@ Result<std::unique_ptr<::ArrowSchema>> FormatTable::GetArrowSchema() const {
     return schema_->GetArrowSchema();
 }
 
+// The refusals below use two codes. `Invalid` is a setting that clashes with what a format table
+// is, and will never work: no snapshots, no buckets, no real-time store, no manifests, no
+// catalog-side version. `NotImplemented` is a capability this code lacks today and could gain.
 Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
     std::shared_ptr<ScanContext> shared_context = std::move(context);
@@ -233,15 +236,15 @@ Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
     // Anything a `ScanContext` carries that a format table cannot honour is refused rather than
     // silently dropped.
     if (shared_context->IsStreamingMode()) {
-        return Status::NotImplemented(
+        return Status::Invalid(
             "a format table has no snapshots, so there is nothing for a streaming scan to follow");
     }
     if (shared_context->GetRealtimeContext() != nullptr) {
-        return Status::NotImplemented(
+        return Status::Invalid(
             "a format table has no real-time store to union with what is on disk");
     }
     if (shared_context->GetGlobalIndexResult() != nullptr) {
-        return Status::NotImplemented("a format table carries no global index");
+        return Status::Invalid("a format table carries no global index");
     }
     std::map<std::string, std::string> partition_filter;
     std::shared_ptr<ScanFilter> filters = shared_context->GetScanFilters();
@@ -253,12 +256,12 @@ Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
                 "implemented yet; give the partition values as a partition filter instead");
         }
         if (filters->GetBucketFilter()) {
-            return Status::NotImplemented("a format table has no buckets to filter by");
+            return Status::Invalid("a format table has no buckets to filter by");
         }
         const std::vector<std::map<std::string, std::string>>& partition_filters =
             filters->GetPartitionFilters();
         if (partition_filters.size() > 1) {
-            return Status::NotImplemented("a format table scan takes at most one partition filter");
+            return Status::Invalid("a format table scan takes at most one partition filter");
         }
         if (partition_filters.size() == 1) {
             partition_filter = partition_filters.front();
@@ -298,12 +301,12 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
             "format table");
     }
     if (context->IsStreamingMode()) {
-        return Status::NotImplemented(
+        return Status::Invalid(
             "a format table has no snapshots, so there is nothing a streaming write could "
             "commit against");
     }
     if (context->GetRealtimeContext() != nullptr) {
-        return Status::NotImplemented("a format table has no real-time store to write into");
+        return Status::Invalid("a format table has no real-time store to write into");
     }
     if (!context->GetWriteSchema().empty()) {
         return Status::NotImplemented(
@@ -313,8 +316,7 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
     // A write id prefixes a postpone-bucket writer's files so that one compaction reader can
     // put them back in order. A format table has no buckets, so it would identify nothing.
     if (context->GetWriteId().has_value()) {
-        return Status::NotImplemented(
-            "a format table has no buckets, so a write id would name nothing");
+        return Status::Invalid("a format table has no buckets, so a write id would name nothing");
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableFileStoreWrite> format_write,
                            FormatTableFileStoreWrite::Create(table, context->GetMemoryPool()));
@@ -327,26 +329,26 @@ Result<std::unique_ptr<FileStoreCommit>> FormatTable::NewCommit(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
                            CopySelf(context->GetOptions()));
     if (!context->IgnoreEmptyCommit()) {
-        return Status::NotImplemented(
+        return Status::Invalid(
             "a format table cannot record an empty commit: keeping one means writing a "
             "snapshot that adds no files, and there are no snapshots here");
     }
     if (context->UseRESTCatalogCommit()) {
-        return Status::NotImplemented(
+        return Status::Invalid(
             "a format table commits by renaming files into place, not by sending a snapshot "
             "to a rest catalog");
     }
     if (context->GetTableId()) {
-        return Status::NotImplemented(
+        return Status::Invalid(
             "a format table sends no commit table request, so there is nowhere to put a table id");
     }
     if (context->GetCatalog() != nullptr) {
-        return Status::NotImplemented(
+        return Status::Invalid(
             "a format table keeps no snapshot for a catalog to take, so it commits by renaming "
             "files into place rather than through the catalog it was loaded from");
     }
     if (context->AppendCommitCheckConflict()) {
-        return Status::NotImplemented(
+        return Status::Invalid(
             "a format table has no manifests to check a concurrent commit against");
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableFileStoreCommit> format_commit,

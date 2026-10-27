@@ -216,7 +216,7 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
                                   std::shared_ptr<TableSchema>(std::move(branch_schema)),
                                   identifier_, CatalogUuid().value_or(""), target_branch,
                                   branch_schema_manager, /*snapshot_manager=*/nullptr,
-                                  store_->GetFsSchemeMap());
+                                  store_->GetFsSchemeMap(), /*dynamic_options=*/{});
 }
 
 Status FileStoreTable::RestoreRealtimeCommittedProgress(
@@ -472,8 +472,8 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     PAIMON_RETURN_NOT_OK(CheckOptionsAgreeWithTable(*loaded_schema, read_context->GetOptions()));
     // The read reads through the branch the table serves, not the context's own.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
-                           InternalReadContext::Create(read_context, loaded_schema,
-                                                       store_->GetOptions(), &root_path_));
+                           InternalReadContext::CreateForTable(read_context, loaded_schema,
+                                                               store_->GetOptions(), root_path_));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
                            CreateTableRead(internal_context, read_context->GetMemoryPool(),

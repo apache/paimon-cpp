@@ -42,6 +42,7 @@
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
 #include "paimon/write_context.h"
@@ -182,14 +183,26 @@ std::optional<SystemTableFactory> FindSystemTableFactory(const std::string& syst
 
 }  // namespace
 
-SystemTable::SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path)
+SystemTable::SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
+                         std::string name)
     : Table(fs, table_path, /*schema=*/nullptr,
-            Identifier(Identifier::kUnknownDatabase, "system_table"), /*uuid=*/"") {}
+            Identifier(Identifier::kUnknownDatabase, "system_table"), /*uuid=*/""),
+      name_(std::move(name)) {}
+
+std::string SystemTable::ComposeName(const std::string& table_path, const std::string& kind) {
+    return PathUtil::GetName(table_path) + Catalog::SYSTEM_TABLE_SPLITTER + kind;
+}
 
 Status SystemTable::CheckNoSearch(const std::shared_ptr<ReadContext>& context) {
     if (context->HasVectorOrFullTextSearch()) {
         return Status::NotImplemented(
             "VectorSearch or FullTextSearch does not support system-table reads yet");
+    }
+    // A `FullTextMatch` predicate is not a TopK request, so the check above does not see it. The
+    // factory refuses one for a system table with the same message. An in-memory view serves rows
+    // of its own and never evaluates a predicate, so without this it answers with all of them.
+    if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
     return Status::OK();
 }
@@ -282,7 +295,7 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
         // The warehouse is the grandparent of the sys/<table> path
         context.warehouse = PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(path));
         context.catalog_options = dynamic_options;
-        // Note: context.catalog is intentionally left as nullptr here.
+        // Note: context.catalog is intentionally left empty here.
         // Global tables loaded from path do not have a Catalog reference and
         // cannot enumerate databases/tables. Only tables that don't require
         // catalog enumeration (e.g. catalog_options) will work in this path.

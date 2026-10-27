@@ -125,7 +125,7 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     const std::string& branch, const std::map<std::string, std::string>& options,
     const std::shared_ptr<SchemaManager>& schema_manager,
     const std::shared_ptr<TableSchema>& latest_schema, const std::optional<Identifier>& identifier,
-    const std::string& uuid = "", const std::map<std::string, std::string>& fs_scheme_map = {}) {
+    const std::string& uuid, const std::map<std::string, std::string>& fs_scheme_map) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
                            TryLoadFormatTable(file_system, path, branch, options, latest_schema));
     if (format_table != nullptr) {
@@ -146,10 +146,11 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
          !FileStore::FileSystemResolutionAgrees(latest_schema->Options(), options))) {
         manager = nullptr;
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> table,
-                           FileStoreTable::Create(explicit_file_system, path, latest_schema,
-                                                  table_identifier, uuid, branch, manager,
-                                                  /*snapshot_manager=*/nullptr, fs_scheme_map));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStoreTable> table,
+        FileStoreTable::Create(explicit_file_system, path, latest_schema, table_identifier, uuid,
+                               branch, manager, /*snapshot_manager=*/nullptr, fs_scheme_map,
+                               /*dynamic_options=*/{}));
     return WithContextOptions(table, latest_schema, options);
 }
 
@@ -167,7 +168,7 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
     const std::shared_ptr<FileSystem>& explicit_file_system, const std::string& path,
     const std::string& branch, const std::map<std::string, std::string>& options,
     const std::optional<std::string>& schema_json, const std::optional<Identifier>& identifier,
-    const std::string& uuid = "", const std::map<std::string, std::string>& fs_scheme_map = {}) {
+    const std::string& uuid, const std::map<std::string, std::string>& fs_scheme_map) {
     auto schema_manager = std::make_shared<SchemaManager>(file_system, path, branch);
     std::shared_ptr<TableSchema> latest_schema;
     if (branch == BranchManager::DEFAULT_MAIN_BRANCH && schema_json) {
@@ -230,7 +231,8 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ScanContext& 
     const std::string branch = BranchManager::NormalizeBranch(tmp_options.GetBranch());
     return ManagedTableOf(tmp_options.GetFileSystem(), ctx.GetSpecificFileSystem(), ctx.GetPath(),
                           branch, ctx.GetOptions(), ctx.GetSpecificTableSchema(),
-                          ctx.GetIdentifier());
+                          ctx.GetIdentifier(),
+                          /*uuid=*/"", /*fs_scheme_map=*/{});
 }
 
 /// The table a read context names: the format table the builder was handed, a system table behind
@@ -340,7 +342,7 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const CommitContext
     // not dispatch on different schemas.
     return ManagedTableOf(tmp_options.GetFileSystem(), specific_fs, root_path, branch,
                           ctx.GetOptions(), catalog_table_schema, ctx.GetIdentifier(),
-                          ctx.GetTableId().value_or(""));
+                          ctx.GetTableId().value_or(""), /*fs_scheme_map=*/{});
 }
 
 }  // namespace paimon

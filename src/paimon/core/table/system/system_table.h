@@ -50,21 +50,29 @@ struct SystemTablePath {
     bool is_global = false;
 };
 
-/// Base class for table-scoped system tables such as `T$options` and `T$snapshots`: the read-only
-/// view a `T$system` identifier names, which exposes a schema of its own and serves scans and
-/// reads from the data table it belongs to. `Name()` - which each kind answers for itself - is
-/// its full name as well: the identifier it is opened by belongs to the data table underneath.
+/// Base class for the table-scoped system tables such as `T$options` and `T$snapshots`. A
+/// `T$system` identifier names a read-only view that exposes a schema of its own and serves scans
+/// and reads from the data table it belongs to.
+///
+/// A system table of a data table answers `<data table name>$<kind>` for `Name()`. One of the `sys`
+/// database answers the bare kind name. `FullName()` returns the same as `Name()` in both cases,
+/// which is what Java Paimon's `Table.fullName()` defaults to.
 class SystemTable : public Table, public std::enable_shared_from_this<SystemTable> {
  public:
-    std::string FullName() const override {
-        return Name();
+    std::string Name() const override {
+        return name_;
     }
 
-    /// The read-only schema this system table exposes, which is not the data table's schema.
+    std::string FullName() const override {
+        return name_;
+    }
+
+    /// Returns the read-only schema this system table exposes. It is not the data table's schema.
     virtual Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const = 0;
 
-    /// A system table is read-only: copying it, writing it and committing for it are refused
-    /// rather than routed to the data table underneath, which its own `Table` serves.
+    /// A system table is read-only, so copying it, writing it and committing for it are refused
+    /// instead of routed to the data table underneath. That table serves them through its own
+    /// `Table`.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
@@ -77,19 +85,29 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
  protected:
     /// @param fs File system the data table underneath is read through.
     /// @param table_path Root path of the data table this system table belongs to.
-    SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path);
+    /// @param name The name this table answers with: `ComposeName(table_path, kind)` for a
+    ///        table-scoped system table, the bare kind name for one of the `sys` database.
+    SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
+                std::string name);
 
-    /// Refuses a read whose context asks for a search: each system table builds a context of its
-    /// own for the data table underneath, which carries no search, so answering one would return
-    /// plain rows and quietly drop the search and its top K.
+    /// Composes the name of a table-scoped system table. Java Paimon's `OptionsTable.name()`
+    /// composes it the same way: `location.getName() + SYSTEM_TABLE_SPLITTER + OPTIONS`.
+    static std::string ComposeName(const std::string& table_path, const std::string& kind);
+
+    /// Refuses a read whose context asks for a search: a root TopK request or a `FullTextMatch`
+    /// predicate. Neither is evaluated on the rows a system table serves, so answering one
+    /// would return plain rows and quietly drop the search and its top K.
     static Status CheckNoSearch(const std::shared_ptr<ReadContext>& context);
 
-    /// Loaders call this once the object exists, because `ArrowSchema()` is virtual and cannot run
-    /// from a constructor: it fills in this table's own read-only `SystemTableSchema`.
+    /// Fills in this table's own read-only `SystemTableSchema`. A loader calls it once the object
+    /// exists, because `ArrowSchema()` is virtual and cannot run from a constructor.
     Status AdoptOwnSchema();
 
     friend class SystemTableLoader;
     friend class GlobalSystemTableLoader;
+
+ private:
+    std::string name_;
 };
 
 /// Loads system table implementations from parsed table identifiers or table paths.

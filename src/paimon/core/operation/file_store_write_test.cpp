@@ -170,14 +170,13 @@ TEST(FileStoreWriteTest, TestCreateAppendTable) {
     ASSERT_OK(catalog->CreateTable(Identifier("foo", "bar"), &schema,
                                    /*partition_keys=*/{"f0", "f3"}, /*primary_keys=*/{},
                                    /*options=*/{}, /*ignore_if_exists=*/false));
-    std::shared_ptr<Catalog> shared_catalog(std::move(catalog));
-    ASSERT_FALSE(shared_catalog->SupportsVersionManagement());
+    ASSERT_FALSE(catalog->SupportsVersionManagement());
     for (bool use_catalog : {false, true}) {
         SCOPED_TRACE(use_catalog);
         WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
                                             "commit_user_1");
         if (use_catalog) {
-            context_builder.WithCatalog(shared_catalog, Identifier("foo", "bar"));
+            context_builder.WithCatalog(catalog, Identifier("foo", "bar"));
         }
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,

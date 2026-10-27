@@ -384,13 +384,15 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         if (!supported) {
             return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
         }
+        // Only the schema is read here and the table does not outlive the call, so it needs no
+        // catalog and this one hands over no ownership of itself.
         GlobalSystemTableContext context;
-        context.catalog = this;
         context.fs = fs_;
         context.warehouse = warehouse_;
         context.catalog_options = api_->GetMergedOptions();
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               GlobalSystemTableLoader::Load(identifier.GetObjectName(), context));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<SystemTable> system_table,
+            GlobalSystemTableLoader::LoadForSchema(identifier.GetObjectName(), context));
         return system_table->LatestSchema();
     }
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
@@ -445,18 +447,17 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
         if (!supported) {
             return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
         }
-        GlobalSystemTableContext context;
-        context.catalog = this;
-        // A global system table builds its rows lazily through the catalog above, so the table
-        // handed back has to keep it alive or the pointer dangles at the first `BuildRows`. A
-        // catalog not owned by a `std::shared_ptr` cannot be kept, so it is refused by name.
+        // A global system table builds its rows lazily through this catalog, so the table handed
+        // back has to keep it alive or the pointer dangles at the first `BuildRows`. A catalog
+        // not owned by a `std::shared_ptr` cannot be kept, so it is refused by name.
         std::shared_ptr<const RestCatalog> self = weak_from_this().lock();
         if (self == nullptr) {
             return Status::Invalid(
                 "a global system table retains its catalog, so the catalog must be owned by "
                 "a std::shared_ptr before it is asked for one");
         }
-        context.catalog_retainer = std::move(self);
+        GlobalSystemTableContext context;
+        context.catalog = std::move(self);
         context.fs = fs_;
         context.warehouse = warehouse_;
         context.catalog_options = api_->GetMergedOptions();
@@ -497,7 +498,9 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
     return FileStoreTable::Create(
         table_file_system, table_path, schema, identifier, uuid,
-        NormalizeBranch(std::move(branch)).value_or(Identifier::kDefaultMainBranch));
+        NormalizeBranch(std::move(branch)).value_or(Identifier::kDefaultMainBranch),
+        /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr, /*fs_scheme_map=*/{},
+        /*dynamic_options=*/{});
 }
 
 std::string RestCatalog::GetRootPath() const {

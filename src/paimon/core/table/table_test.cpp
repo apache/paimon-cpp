@@ -75,7 +75,8 @@ Result<std::shared_ptr<Table>> CreateManagedTable(
     return FileStoreTable::Create(
         file_system, path,
         checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))), identifier,
-        /*uuid=*/"", branch);
+        /*uuid=*/"", branch, /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
+        /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
 }
 
 /// Writes two rows through the table's own write and commit, so a scan below has data to find.
@@ -243,7 +244,8 @@ TEST(TableTest, TestACopyHandsItsDynamicOptionsToTheFallbackReader) {
         FileStoreTable::Create(
             fs, path,
             checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))),
-            identifier, /*uuid=*/"", /*branch=*/"main"));
+            identifier, /*uuid=*/"", /*branch=*/"main", /*schema_manager=*/nullptr,
+            /*snapshot_manager=*/nullptr, /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
 
     // The copy turns the sequence-number column on, and a read projects it through a context
     // that carries no options of its own. The main reader serves the copy's merged options, so
@@ -286,7 +288,8 @@ TEST(TableTest, TestACopyOfACopyServesTheLatestValueOfARepeatedDynamicOption) {
         FileStoreTable::Create(
             fs, path,
             checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))),
-            identifier, /*uuid=*/"", /*branch=*/"main"));
+            identifier, /*uuid=*/"", /*branch=*/"main", /*schema_manager=*/nullptr,
+            /*snapshot_manager=*/nullptr, /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
 
     // The option is turned off and then on again by the copy the read serves, so the copy's
     // schema carries the latest value. The fallback branch's schema does not carry the option
@@ -328,7 +331,8 @@ TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnSchema) {
         FileStoreTable::Create(
             fs, path,
             checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(main_created))),
-            identifier, /*uuid=*/"", /*branch=*/"main"));
+            identifier, /*uuid=*/"", /*branch=*/"main", /*schema_manager=*/nullptr,
+            /*snapshot_manager=*/nullptr, /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
 
     SchemaManager fallback_schema_manager(fs, path, "fb");
     ASSERT_OK_AND_ASSIGN(
@@ -341,7 +345,8 @@ TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnSchema) {
         FileStoreTable::Create(
             fs, path,
             checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(fallback_created))),
-            identifier, /*uuid=*/"", /*branch=*/"fb"));
+            identifier, /*uuid=*/"", /*branch=*/"fb", /*schema_manager=*/nullptr,
+            /*snapshot_manager=*/nullptr, /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
     WriteAndCommitRow(fallback, path, /*id=*/1, /*v=*/10);
     WriteAndCommitRow(fallback, path, /*id=*/1, /*v=*/20);
 
@@ -679,7 +684,11 @@ TEST(TableTest, TestMainBranchAliasResolvesToTheMainBranch) {
         ASSERT_OK_AND_ASSIGN(std::string branch, main_identifier.GetBranchNameOrDefault());
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStoreTable> table,
                              FileStoreTable::Create(fs, dir->Str(), schema, main_identifier,
-                                                    /*uuid=*/"", branch));
+                                                    /*uuid=*/"", branch,
+                                                    /*schema_manager=*/nullptr,
+                                                    /*snapshot_manager=*/nullptr,
+                                                    /*fs_scheme_map=*/{},
+                                                    /*dynamic_options=*/{}));
         EXPECT_EQ("main", table->CurrentBranch());
     }
 }
@@ -1112,7 +1121,10 @@ TEST(TableTest, TestCreateFailsWhenTheSchemaOptionsDoNotParse) {
             /*partition_keys=*/{}, /*primary_keys=*/{}, {{Options::TARGET_FILE_ROW_NUM, "0"}}));
     auto schema = checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created)));
     ASSERT_NOK_WITH_MSG(
-        FileStoreTable::Create(dir->GetFileSystem(), dir->Str(), schema, Identifier("db", "tbl")),
+        FileStoreTable::Create(dir->GetFileSystem(), dir->Str(), schema, Identifier("db", "tbl"),
+                               /*uuid=*/"", /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
+                               /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
+                               /*fs_scheme_map=*/{}, /*dynamic_options=*/{}),
         "target-file-row-num should be at least 1");
 }
 

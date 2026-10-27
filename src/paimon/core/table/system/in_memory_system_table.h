@@ -36,7 +36,8 @@ class FileSystem;
 /// It provides the common singleton split scan and one-shot batch reader.
 class InMemorySystemTable : public SystemTable {
  public:
-    InMemorySystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path);
+    InMemorySystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path,
+                        std::string name);
 
     Result<std::unique_ptr<TableScan>> NewScan(
         std::unique_ptr<ScanContext> /*context*/) const override;

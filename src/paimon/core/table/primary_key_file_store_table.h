@@ -43,7 +43,7 @@ class PrimaryKeyFileStoreTable : public FileStoreTable {
     /// The constructor `FileStoreTable::Create` builds a primary key table through: the store
     /// carries every state, and the base class holds it.
     PrimaryKeyFileStoreTable(const std::shared_ptr<FileStore>& store, const Identifier& identifier,
-                             const std::string& uuid = "");
+                             const std::string& uuid);
 
  private:
     Result<std::unique_ptr<FileStoreWrite>> CreateWrite(

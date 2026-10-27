@@ -45,10 +45,10 @@ class WriteContext;
 /// A table provides basic abstraction for table type.
 ///
 /// The state every kind of table carries - file system, root path, schema and identifier - lives
-/// here, and each kind fills the operations in. The `NewXxx` operators below are the table-first
-/// entry points: `TableScan::Create()` and friends load the table a context names and hand the
-/// context to them. What a context asks for that the table cannot honour is refused by name rather
-/// than silently dropped.
+/// here, and each kind fills in the operations. The `NewXxx` operators below are the table-first
+/// entry points: `TableScan::Create()` and its friends load the table a context names and hand the
+/// context to it. A table refuses by name whatever a context asks for that it cannot honour,
+/// rather than dropping it silently.
 class PAIMON_EXPORT Table {
  public:
     virtual ~Table() = default;
@@ -65,8 +65,8 @@ class PAIMON_EXPORT Table {
         return root_path_;
     }
 
-    /// A name to identify this table: a managed or format table answers its identifier's object
-    /// name, a system table its own kind.
+    /// A name to identify this table. A managed or format table answers the object name of its
+    /// identifier, a system table its own name.
     virtual std::string Name() const = 0;
 
     /// Full name of the table: `database.tableName` for a managed or format table, the same name
@@ -90,9 +90,9 @@ class PAIMON_EXPORT Table {
         return schema_;
     }
 
-    /// Copies this table with `dynamic_options` on top of the options it carries: an option given
+    /// Copies this table with `dynamic_options` on top of the options it carries. An option given
     /// at the call wins over the one the schema stored, the precedence every context builder
-    /// promises. `type` is not overridable - it is structural and read from the schema alone.
+    /// promises. `type` is not overridable: it is structural and read from the schema alone.
     ///
     /// @param dynamic_options Options given at the call.
     /// @return A result containing the copied table, or the error copying it reports.

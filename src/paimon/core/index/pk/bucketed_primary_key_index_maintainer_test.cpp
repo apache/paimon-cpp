@@ -298,7 +298,7 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<st
 
         ArrowSchema c_schema;
         ASSERT_TRUE(arrow::ExportSchema(*schema_, &c_schema).ok());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog,
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog,
                              Catalog::Create(directory_->Str(), {}));
         ASSERT_OK(catalog->CreateDatabase("db", {}, /*ignore_if_exists=*/false));
         ASSERT_OK(catalog->CreateTable(Identifier("db", "table"), &c_schema,
@@ -373,7 +373,7 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsIndexForColumnNamedLikeInter
     schema_ = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
                              arrow::field(kColumnName, arrow::utf8(), /*nullable=*/false)});
     options_[Options::PK_BTREE_INDEX_COLUMNS] = kColumnName;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(directory_->Str(), {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog, Catalog::Create(directory_->Str(), {}));
     for (bool spillable : {false, true}) {
         SCOPED_TRACE(spillable);
         const std::string table_name = spillable ? "row_id_spill" : "row_id_memory";

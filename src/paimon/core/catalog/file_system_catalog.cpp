@@ -287,16 +287,15 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
         if (!supported) {
             return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
         }
-        // The table built here is transient - its schema is read within this call and nothing
-        // outlives it - so its context keeps no shared ownership of the catalog. A catalog that
-        // hands a global system table back out (`RestCatalog::GetTable`) retains it instead.
+        // The table built here is transient: only its schema is read and nothing outlives the
+        // call. It builds no rows, so the context carries no catalog.
         GlobalSystemTableContext context;
-        context.catalog = this;
         context.fs = fs_;
         context.warehouse = warehouse_;
         context.catalog_options = catalog_options_;
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               GlobalSystemTableLoader::Load(identifier.GetObjectName(), context));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<SystemTable> system_table,
+            GlobalSystemTableLoader::LoadForSchema(identifier.GetObjectName(), context));
         return system_table->LatestSchema();
     }
     // The system table suffix is dropped when the data table identifier is rebuilt below, so the
@@ -351,7 +350,9 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
     // The branch the schema above was read on, so the table's managers read the same one.
     PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
     return FileStoreTable::Create(fs_, table_path, checked_pointer_cast<Schema>(*latest_schema),
-                                  identifier, /*uuid=*/"", branch);
+                                  identifier, /*uuid=*/"", branch, /*schema_manager=*/nullptr,
+                                  /*snapshot_manager=*/nullptr, /*fs_scheme_map=*/{},
+                                  /*dynamic_options=*/{});
 }
 
 Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(

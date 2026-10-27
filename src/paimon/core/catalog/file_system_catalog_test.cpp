@@ -231,11 +231,12 @@ TEST(FileSystemCatalogTest, TestOptionsSystemTableCatalog) {
 
     ASSERT_OK_AND_ASSIGN(auto system_table, catalog.GetTable(options_identifier));
     // A system table comes back as the `SystemTable` it is: it answers for itself with its own
-    // read-only schema and the root path of the data table it reads.
+    // read-only schema and the root path of the data table it reads. Its name carries the data
+    // table it belongs to.
     ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(system_table) != nullptr);
     ASSERT_TRUE(std::dynamic_pointer_cast<FormatTable>(system_table) == nullptr);
-    ASSERT_EQ("options", system_table->Name());
-    ASSERT_EQ("options", system_table->FullName());
+    ASSERT_EQ("tbl1$options", system_table->Name());
+    ASSERT_EQ("tbl1$options", system_table->FullName());
     ASSERT_EQ(system_table->GetRootPath(), table_path);
     ASSERT_EQ((std::vector<std::string>{"key", "value"}),
               system_table->LatestSchema()->FieldNames());
@@ -281,7 +282,7 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
 
     ASSERT_OK_AND_ASSIGN(auto system_table, catalog.GetTable(Identifier("db1", "tbl1$options")));
     ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(system_table) != nullptr);
-    ASSERT_EQ("options", system_table->Name());
+    ASSERT_EQ("tbl1$options", system_table->Name());
 
     // The scan and the read work from a context of the caller's, like every other table.
     ScanContextBuilder scan_builder(system_table->GetRootPath());
@@ -310,13 +311,14 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
     write_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(auto write_context, write_builder.Finish());
     ASSERT_NOK_WITH_MSG(system_table->NewWrite(std::move(write_context)),
-                        "options system table is read-only: writing is not supported");
+                        "tbl1$options system table is read-only: writing is not supported");
 
     CommitContextBuilder commit_builder(system_table->GetRootPath(), "commit_user");
     commit_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(auto commit_context, commit_builder.Finish());
-    ASSERT_NOK_WITH_MSG(system_table->NewCommit(std::move(commit_context)),
-                        "options system table is read-only: committing for it is not supported");
+    ASSERT_NOK_WITH_MSG(
+        system_table->NewCommit(std::move(commit_context)),
+        "tbl1$options system table is read-only: committing for it is not supported");
 }
 
 TEST(FileSystemCatalogTest, TestBranchTableLoadsBranchSchema) {

@@ -86,7 +86,7 @@ registered on the REST server. The catalog is configured through the
        {"token.provider", "bear"},
        {"token", "<token>"},
    };
-   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::Catalog> catalog,
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Catalog> catalog,
                           paimon::Catalog::Create(/*root_path=*/"my_instance", options));
 
 For DLF, configure one credential source. Static AK/SK credentials, an optional
@@ -127,15 +127,12 @@ without an atomic snapshot-file rename:
 
 .. code-block:: cpp
 
-   // Writers and committers share ownership of the catalog.
-   std::shared_ptr<paimon::Catalog> shared_catalog(std::move(catalog));
-
    // Load the table's identity before preparing changes.
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
-                          shared_catalog->GetTable(paimon::Identifier("db", "tbl")));
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
 
    paimon::CommitContextBuilder builder(table_path, "commit-user");
-   builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    // CatalogUuid() stays null when the server supplies no id.
    if (std::optional<std::string> table_uuid = table->CatalogUuid()) {
        builder.WithTableId(table_uuid.value());
@@ -152,7 +149,7 @@ offsets when a real-time writer is created:
 .. code-block:: cpp
 
    paimon::WriteContextBuilder write_builder(table_path, "commit-user");
-   write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   write_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
                           write_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
@@ -188,7 +185,7 @@ returns credentials that are still valid and reloads them before they expire.
                                                                  "oss://bucket/tbl", options));
    // MyFileSystem merges provider->GetCredentials() over its own options per access.
    auto my_fs = std::make_shared<MyFileSystem>(provider);
-   write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"))
+   write_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"))
        .WithFileSystem(my_fs);
 
 The snapshot being committed carries a uuid generated on the client, and the
@@ -319,18 +316,15 @@ for that table's file system and passing it in through ``WithFileSystem``:
 
 .. code-block:: cpp
 
-   // Readers and scanners share ownership of the catalog.
-   std::shared_ptr<paimon::Catalog> shared_catalog(std::move(catalog));
-
    paimon::ScanContextBuilder scan_builder(table_path);
-   scan_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   scan_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                           scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
                           paimon::TableScan::Create(std::move(scan_context)));
 
    paimon::ReadContextBuilder read_builder(table_path);
-   read_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   read_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
                           read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,

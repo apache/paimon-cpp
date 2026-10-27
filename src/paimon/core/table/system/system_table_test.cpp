@@ -38,6 +38,7 @@
 #include "paimon/core/table/system/audit_log_system_table.h"
 #include "paimon/core/table/system/binlog_system_table.h"
 #include "paimon/core/table/system/global_system_tables.h"
+#include "paimon/core/table/system/metadata_system_tables.h"
 #include "paimon/core/table/system/read_optimized_system_table.h"
 #include "paimon/core/table/system/system_table_scan.h"
 #include "paimon/defs.h"
@@ -45,6 +46,9 @@
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/predicate/full_text_match.h"
+#include "paimon/predicate/predicate.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
@@ -222,7 +226,9 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
                          SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
                                                  /*dynamic_options=*/{}));
-    ASSERT_EQ(system_table->Name(), ReadOptimizedSystemTable::kName);
+    // The name carries the data table it belongs to, the way Java Paimon's
+    // `ReadOptimizedTable.name()` does.
+    ASSERT_EQ(system_table->Name(), "table$ro");
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> arrow_schema, system_table->ArrowSchema());
     ASSERT_EQ(arrow_schema->field_names(), (std::vector<std::string>{"pk", "v"}));
@@ -360,6 +366,39 @@ TEST(SystemTableTest, TestNewReadRefusesASearch) {
                         "VectorSearch or FullTextSearch does not support system-table reads yet");
 }
 
+// `SetPredicate` carries a search too, as a `FullTextMatch` leaf. An in-memory view reads rows
+// of its own and never evaluates a predicate, so without the check it would answer with all of
+// them where `TableRead::Create` refuses the same request.
+TEST(SystemTableTest, TestNewReadRefusesAFullTextMatchPredicate) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> in_memory,
+                         SystemTableLoader::Load(OptionsSystemTable::kName, /*fs=*/nullptr,
+                                                 "/tmp/table", table_schema,
+                                                 /*dynamic_options=*/{}));
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+
+    auto match = std::make_shared<FullTextMatch>("pk", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::FullTextMatch(/*field_index=*/0, match));
+
+    auto make_context = [&predicate] {
+        ReadContextBuilder builder("/tmp/table");
+        builder.SetPredicate(predicate);
+        return builder.Finish();
+    };
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> in_memory_context, make_context());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_optimized_context, make_context());
+
+    ASSERT_NOK_WITH_MSG(in_memory->NewRead(std::move(in_memory_context)),
+                        "FullTextMatch predicate execution is not implemented yet");
+    ASSERT_NOK_WITH_MSG(read_optimized.NewRead(std::move(read_optimized_context)),
+                        "FullTextMatch predicate execution is not implemented yet");
+}
+
 namespace {
 
 /// A catalog that serves the files of every table through `GetTableFileSystem`, like one
@@ -392,21 +431,25 @@ TEST(SystemTableTest, TestGlobalPartitionsUsesTheFileSystemOfEachTable) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
 
-    PerTableFileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
-    ASSERT_OK(catalog.CreateDatabase("db1", options, /*ignore_if_exists=*/true));
+    // Held by a `shared_ptr` because a global system table keeps shared ownership of the catalog
+    // it reads its rows through.
+    std::shared_ptr<PerTableFileSystemCatalog> catalog =
+        std::make_shared<PerTableFileSystemCatalog>(core_options.GetFileSystem(), dir->Str(),
+                                                    options);
+    ASSERT_OK(catalog->CreateDatabase("db1", options, /*ignore_if_exists=*/true));
 
     arrow::Schema typed_schema(
         {arrow::field("dt", arrow::utf8()), arrow::field("v", arrow::int32(), /*nullable=*/true)});
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(typed_schema, &c_schema).ok());
-    Status created = catalog.CreateTable(Identifier("db1", "t1"), &c_schema,
-                                         /*partition_keys=*/{"dt"}, /*primary_keys=*/{}, options,
-                                         /*ignore_if_exists=*/false);
+    Status created = catalog->CreateTable(Identifier("db1", "t1"), &c_schema,
+                                          /*partition_keys=*/{"dt"}, /*primary_keys=*/{}, options,
+                                          /*ignore_if_exists=*/false);
     ArrowSchemaRelease(&c_schema);
     ASSERT_OK(created);
 
     GlobalSystemTableContext context;
-    context.catalog = &catalog;
+    context.catalog = catalog;
     context.fs = core_options.GetFileSystem();
     context.warehouse = dir->Str();
     context.catalog_options = options;
@@ -416,16 +459,16 @@ TEST(SystemTableTest, TestGlobalPartitionsUsesTheFileSystemOfEachTable) {
     // still the ones asked for before its files are listed.
     ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> rows, partitions.BuildRows());
     ASSERT_TRUE(rows.empty());
-    ASSERT_EQ((std::vector<std::string>{"db1.t1"}), catalog.requested);
+    ASSERT_EQ((std::vector<std::string>{"db1.t1"}), catalog->requested);
 
     // A table whose credentials cannot be issued fails the query, so that a partial result
     // is never mistaken for the whole one.
-    catalog.failure = Status::Invalid("no credentials for the table");
+    catalog->failure = Status::Invalid("no credentials for the table");
     ASSERT_NOK_WITH_MSG(partitions.BuildRows(), "no credentials for the table");
 
     // A table that went away between being listed and being read is skipped instead, like
     // one whose location has already been removed.
-    catalog.failure = Status::NotExist("table dropped");
+    catalog->failure = Status::NotExist("table dropped");
     ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> skipped, partitions.BuildRows());
     ASSERT_TRUE(skipped.empty());
 }

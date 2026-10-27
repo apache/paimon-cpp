@@ -61,7 +61,7 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
                                                   {paimon::Options::FILE_SYSTEM, "local"}};
 
     // create table
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::Catalog> catalog,
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Catalog> catalog,
                            paimon::Catalog::Create(root_path, options));
     PAIMON_RETURN_NOT_OK(catalog->CreateDatabase(db_name, options, /*ignore_if_exists=*/false));
     arrow::FieldVector fields = {

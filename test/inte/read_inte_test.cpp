@@ -4173,8 +4173,9 @@ TEST_P(ReadInteTest, TestSpecificFs) {
 namespace {
 
 Result<std::shared_ptr<arrow::ChunkedArray>> ReadGlobalSystemTable(
-    const std::string& table_name, Catalog* catalog, const std::shared_ptr<FileSystem>& fs,
-    const std::string& warehouse, const std::map<std::string, std::string>& options) {
+    const std::string& table_name, const std::shared_ptr<const Catalog>& catalog,
+    const std::shared_ptr<FileSystem>& fs, const std::string& warehouse,
+    const std::map<std::string, std::string>& options) {
     GlobalSystemTableContext ctx;
     ctx.catalog = catalog;
     ctx.fs = fs;
@@ -4229,8 +4230,8 @@ TEST(SystemTableReadInteTest, TestReadGlobalCatalogOptions) {
     std::string warehouse = PathUtil::JoinPath(dir->Str(), "warehouse");
     ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(warehouse, options));
     ASSERT_OK_AND_ASSIGN(auto result,
-                         ReadGlobalSystemTable("catalog_options", catalog.get(),
-                                               catalog->GetFileSystem(), warehouse, options));
+                         ReadGlobalSystemTable("catalog_options", catalog, catalog->GetFileSystem(),
+                                               warehouse, options));
     auto struct_array = SingleStructChunk(result);
     ASSERT_TRUE(struct_array);
     auto key_array = std::dynamic_pointer_cast<arrow::StringArray>(struct_array->field(0));
@@ -4301,7 +4302,7 @@ TEST(SystemTableReadInteTest, TestReadGlobalAllTableOptions) {
     // Directly test BuildRows
     {
         GlobalSystemTableContext ctx;
-        ctx.catalog = catalog.get();
+        ctx.catalog = catalog;
         ctx.fs = catalog->GetFileSystem();
         ctx.warehouse = warehouse;
         ctx.catalog_options = options;
@@ -4310,9 +4311,9 @@ TEST(SystemTableReadInteTest, TestReadGlobalAllTableOptions) {
         ASSERT_GT(rows.size(), 0) << "BuildRows returned empty, expected at least 1 row";
     }
 
-    ASSERT_OK_AND_ASSIGN(auto result,
-                         ReadGlobalSystemTable("all_table_options", catalog.get(),
-                                               catalog->GetFileSystem(), warehouse, options));
+    ASSERT_OK_AND_ASSIGN(
+        auto result, ReadGlobalSystemTable("all_table_options", catalog, catalog->GetFileSystem(),
+                                           warehouse, options));
     auto struct_array = SingleStructChunk(result);
     ASSERT_TRUE(struct_array);
     ASSERT_GE(struct_array->length(), 1) << "result has " << struct_array->length() << " rows";
@@ -4392,7 +4393,7 @@ TEST(SystemTableReadInteTest, TestReadGlobalTables) {
     ArrowSchemaRelease(&no_pk_schema);
 
     ASSERT_OK_AND_ASSIGN(auto result,
-                         ReadGlobalSystemTable("tables", catalog.get(), fs, warehouse, options));
+                         ReadGlobalSystemTable("tables", catalog, fs, warehouse, options));
     auto struct_array = SingleStructChunk(result);
     ASSERT_TRUE(struct_array);
     ASSERT_GE(struct_array->length(), 1);
@@ -4490,8 +4491,8 @@ TEST(SystemTableReadInteTest, TestReadGlobalPartitions) {
 
     ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(warehouse, options));
     auto fs = catalog->GetFileSystem();
-    ASSERT_OK_AND_ASSIGN(auto part_result, ReadGlobalSystemTable("partitions", catalog.get(), fs,
-                                                                 warehouse, options));
+    ASSERT_OK_AND_ASSIGN(auto part_result,
+                         ReadGlobalSystemTable("partitions", catalog, fs, warehouse, options));
     auto struct_array = SingleStructChunk(part_result);
     ASSERT_TRUE(struct_array);
     ASSERT_EQ(StructFieldNames(struct_array),
@@ -4542,7 +4543,7 @@ TEST(SystemTableReadInteTest, TestGlobalSystemTablesPropagateCorruptSchema) {
                             /*overwrite=*/true));
 
     for (const std::string system_table : {"all_table_options", "tables", "partitions"}) {
-        ASSERT_NOK(ReadGlobalSystemTable(system_table, catalog.get(), fs, warehouse, options));
+        ASSERT_NOK(ReadGlobalSystemTable(system_table, catalog, fs, warehouse, options));
     }
 }
 
@@ -4578,7 +4579,7 @@ TEST(SystemTableReadInteTest, TestPartitionsSystemTablePropagatesCorruptSnapshot
     ASSERT_OK(fs->WriteFile(PathUtil::JoinPath(table_path, "snapshot/snapshot-1"), "{invalid-json",
                             /*overwrite=*/true));
 
-    ASSERT_NOK(ReadGlobalSystemTable("partitions", catalog.get(), fs, warehouse, options));
+    ASSERT_NOK(ReadGlobalSystemTable("partitions", catalog, fs, warehouse, options));
 }
 
 TEST(SystemTableReadInteTest, TestPartitionsSystemTablePropagatesCorruptManifest) {
@@ -4617,7 +4618,7 @@ TEST(SystemTableReadInteTest, TestPartitionsSystemTablePropagatesCorruptManifest
         PathUtil::JoinPath(table_path, "manifest/" + snapshot->BaseManifestList()), "corrupt",
         /*overwrite=*/true));
 
-    ASSERT_NOK(ReadGlobalSystemTable("partitions", catalog.get(), fs, warehouse, options));
+    ASSERT_NOK(ReadGlobalSystemTable("partitions", catalog, fs, warehouse, options));
 }
 
 }  // namespace paimon::test

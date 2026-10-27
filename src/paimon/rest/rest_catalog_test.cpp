@@ -810,7 +810,7 @@ TEST_F(RestCatalogTest, RecreatedTableLoadsNewCredentialsBeforeOldTokenExpires) 
 }
 
 TEST_F(RestCatalogTest, CatalogFactoryMetastoreDispatch) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(kWarehouse, options_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog, Catalog::Create(kWarehouse, options_));
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> databases, catalog->ListDatabases());
     ASSERT_TRUE(databases.empty());
     options_[CatalogOptions::METASTORE] = "something-else";
@@ -1070,13 +1070,13 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
         requests_before = state_->get_table_requests;
     }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(system_identifier));
-    // A system table comes back as the read-only `SystemTable` it is, answering for itself
-    // with the kind it serves rather than the identifier it was opened by.
+    // A system table comes back as the read-only `SystemTable` it is, naming itself after the
+    // data table it belongs to.
     std::shared_ptr<SystemTable> system_table = std::dynamic_pointer_cast<SystemTable>(table);
     ASSERT_NE(nullptr, system_table);
-    ASSERT_EQ("options", system_table->Name());
+    ASSERT_EQ("t1$options", system_table->Name());
     ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->LatestSchema()->FieldNames());
-    ASSERT_EQ("options", table->Uuid());
+    ASSERT_EQ("t1$options", table->Uuid());
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_EQ(requests_before + 1, state_->get_table_requests);
@@ -1561,6 +1561,34 @@ TEST_F(RestCatalogTest, GlobalSystemTableRetainsItsCatalog) {
 
     // The rows are built through the retained catalog, so they still answer once the caller's
     // own reference is gone: the one table the catalog stands behind shows up in them.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                         ScanContextBuilder("sys/tables").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_EQ(plan->Splits().size(), 1);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder("sys/tables").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, table->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, batch_reader->NextBatch());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                         ReadResultCollector::GetArray(std::move(batch)));
+    ASSERT_TRUE(array);
+    ASSERT_GT(array->length(), 0);
+}
+
+TEST_F(RestCatalogTest, GlobalSystemTableWorksThroughThePublicCatalogFactory) {
+    // `Catalog::Create()` is the factory a caller outside paimon uses, and it hands back a
+    // `Catalog` rather than a `RestCatalog`. A global system table keeps its catalog alive
+    // through that pointer, so this path has to work too - a catalog whose shared ownership
+    // was not set up would fail here with the refusal naming the missing ownership.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog, Catalog::Create(kWarehouse, options_));
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+    ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         catalog->GetTable(Identifier("sys", "tables")));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                          ScanContextBuilder("sys/tables").Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_context)));

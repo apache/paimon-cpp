@@ -359,15 +359,18 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
 AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::shared_ptr<TableSchema> table_schema,
                                          std::map<std::string, std::string> options)
-    : SystemTable(fs, table_path),
+    : AuditLogSystemTable(std::move(fs), table_path, std::move(table_schema), std::move(options),
+                          ComposeName(table_path, kName)) {}
+
+AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
+                                         std::shared_ptr<TableSchema> table_schema,
+                                         std::map<std::string, std::string> options,
+                                         std::string name)
+    : SystemTable(fs, table_path, std::move(name)),
       fs_(std::move(fs)),
       table_path_(std::move(table_path)),
       table_schema_(std::move(table_schema)),
       options_(std::move(options)) {}
-
-std::string AuditLogSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ArrowSchema() const {
     std::shared_ptr<arrow::Field> row_kind_field =
@@ -398,6 +401,8 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
         // The view's own file system when the context names none, rather than the default backend.
+        // A `ScanContext` carries no scheme-to-identifier map, so unlike `CreateDataReadContext`
+        // below there is no map here to resolve through instead.
         .WithFileSystem(context->GetSpecificFileSystem() != nullptr
                             ? context->GetSpecificFileSystem()
                             : GetFileSystem())

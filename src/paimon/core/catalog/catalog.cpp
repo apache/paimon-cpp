@@ -40,7 +40,7 @@ const char Catalog::SYSTEM_TABLE_SPLITTER[] = "$";
 const char Catalog::DB_SUFFIX[] = ".db";
 const char Catalog::DB_LOCATION_PROP[] = "location";
 
-Result<std::unique_ptr<Catalog>> Catalog::Create(
+Result<std::shared_ptr<Catalog>> Catalog::Create(
     const std::string& root_path, const std::map<std::string, std::string>& options,
     const std::shared_ptr<FileSystem>& file_system,
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map) {
@@ -53,8 +53,14 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(
     }
     if (metastore == "rest") {
 #ifdef PAIMON_ENABLE_REST
-        return RestCatalog::Create(root_path, options, file_system, RestHttpClient::Config(),
-                                   fs_scheme_to_identifier_map);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<RestCatalog> rest_catalog,
+            RestCatalog::Create(root_path, options, file_system, RestHttpClient::Config(),
+                                fs_scheme_to_identifier_map));
+        // Built from the derived type so that the `enable_shared_from_this` base a
+        // `RestCatalog` carries is initialized: a `sys` table keeps its catalog alive through
+        // `weak_from_this()`, which stays empty when the pointer is widened first.
+        return std::shared_ptr<Catalog>(std::move(rest_catalog));
 #else
         return Status::NotImplemented(
             "the rest catalog requires building paimon with PAIMON_ENABLE_REST=ON");
@@ -65,7 +71,8 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, file_system, fs_scheme_to_identifier_map));
-    return std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options);
+    return std::shared_ptr<Catalog>(
+        std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options));
 }
 
 bool Catalog::SupportsVersionManagement() const {

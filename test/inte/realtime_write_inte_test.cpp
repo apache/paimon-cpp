@@ -504,7 +504,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
     void CreateTable(const std::vector<std::string>& partition_keys) const {
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*schema_, c_schema.get()).ok());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog,
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog,
                              Catalog::Create(dir_->Str(), options_));
         ASSERT_OK(catalog->CreateDatabase("foo", {}, /*ignore_if_exists=*/false));
         ASSERT_OK(catalog->CreateTable(Identifier("foo", "bar"), c_schema.get(), partition_keys,
@@ -516,7 +516,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
                        const std::vector<std::string>& primary_keys = {"id"}) const {
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*schema_, c_schema.get()).ok());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog,
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog,
                              Catalog::Create(dir_->Str(), options_));
         ASSERT_OK(catalog->CreateDatabase("foo", {}, /*ignore_if_exists=*/false));
         std::vector<std::string> table_primary_keys = partition_keys;

@@ -68,8 +68,11 @@ class PAIMON_EXPORT Catalog {
     ///                    schemes, including the file systems it builds from per-table data
     ///                    tokens, keeps routing each scheme to its backend. Ignored when
     ///                    `file_system` is supplied, which serves every scheme itself.
-    /// @return A result containing a unique pointer to a `Catalog` instance, or an error status.
-    static Result<std::unique_ptr<Catalog>> Create(
+    /// @return A result containing a shared pointer to a `Catalog` instance, or an error status.
+    /// @note Shared rather than unique ownership: a global system table of the `sys` database
+    ///       builds its rows lazily through the catalog it was handed, so the table keeps the
+    ///       catalog alive. A catalog built by this factory always satisfies that.
+    static Result<std::shared_ptr<Catalog>> Create(
         const std::string& root_path, const std::map<std::string, std::string>& options,
         const std::shared_ptr<FileSystem>& file_system = nullptr,
         const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
@@ -154,7 +157,9 @@ class PAIMON_EXPORT Catalog {
     /// `NewRead()` serve any of them, `NewWrite()` and `NewCommit()` the writable ones.
     ///
     /// A global system table of the "sys" database reads its rows lazily through the catalog it
-    /// came from, so a catalog that serves one must be owned by a `std::shared_ptr`.
+    /// came from, so the table keeps shared ownership of that catalog. `Catalog::Create()` hands
+    /// back a `std::shared_ptr`, which satisfies this. A catalog held some other way, such as
+    /// through a `std::unique_ptr`, cannot be kept and is refused by name.
     ///
     /// @param identifier Identifier of the table to get.
     /// @return A result containing the table, or an error status.

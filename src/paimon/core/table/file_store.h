@@ -46,51 +46,47 @@ class ManifestFile;
 class ManifestList;
 class TableSchema;
 
-/// The storage a managed table is served through: the file system, root path, schema, branch,
-/// options and managers it was loaded with - the state Java Paimon's `AbstractFileStore` carries,
-/// parsed once here rather than per operator. `FileStoreTable` hands the state it was loaded with
-/// to one of these and asks it back for the pieces every operator opens with.
+/// Holds the storage a managed table reads and writes through: the file system, root path,
+/// schema, branch, options and managers. Java Paimon carries the same state in `AbstractFileStore`.
+/// `FileStoreTable` builds one when it loads and asks it for the pieces each operator opens with.
 ///
-/// Every operator serves the options the table was loaded with, so the factories below take the
-/// options of the call: a cache is not part of the table's, `WithCache()` arms a copy an operator
-/// makes. They build a fresh instance on every call, never a cached one - a snapshot manager a
-/// write arms with a catalog loader is not one a scan should be served through afterwards.
+/// The factories below take the options of the call, so an operator can serve a cache of its own
+/// over the options the table was loaded with. Each call builds a fresh instance and never a
+/// cached one: a snapshot manager a write armed with a catalog loader must not serve a scan.
 class FileStore {
  public:
-    /// @param file_system The file system the caller opened the table through, which wins over
-    ///        the access configuration the schema's options may carry when it is not null. A null
-    ///        one hands the resolution to that configuration, and to the default local file system
-    ///        when the options name none.
+    /// Builds the store. It parses the schema's options and fails when they do not parse, so the
+    /// constructor is private and callers come here.
+    /// @param file_system The file system the caller opened the table through. It wins over the
+    ///        access configuration in the schema's options. Null leaves the resolution to that
+    ///        configuration, and to the default local file system when the options name none.
     /// @param root_path Root path of the table in the file system.
-    /// @param schema The schema the table was loaded with, whose partition keys name the partitions
-    ///        the paths below are built for and whose options `GetOptions()` parses. Null when the
+    /// @param schema The schema the table was loaded with. Its partition keys name the partitions
+    ///        the paths below are built for, and `GetOptions()` parses its options. Null when the
     ///        caller had none, which the operators then report.
     /// @param branch The branch the store serves, normalized here.
-    /// @param schema_manager A schema manager to carry instead of building one - the one a context
+    /// @param schema_manager A schema manager to carry instead of building one: the one a context
     ///        dispatch read the schema through, whose cache the operators then serve.
-    /// @param snapshot_manager A snapshot manager to carry instead of building one; a null one is
-    ///        built over `root_path` on `branch`.
+    /// @param snapshot_manager A snapshot manager to carry instead of building one. Null builds one
+    ///        over `root_path` on `branch`.
     /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
     ///        schemes through, kept so a copy resolves as this store does.
-    ///
-    /// Building the store parses the schema's options, so it fails when they do not parse - which
-    /// is why a store is built through this factory rather than the constructor.
     static Result<std::shared_ptr<FileStore>> Create(
         const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
         const std::shared_ptr<TableSchema>& schema, const std::string& branch,
-        const std::shared_ptr<SchemaManager>& schema_manager = nullptr,
-        const std::shared_ptr<SnapshotManager>& snapshot_manager = nullptr,
-        const std::map<std::string, std::string>& fs_scheme_map = {});
+        const std::shared_ptr<SchemaManager>& schema_manager,
+        const std::shared_ptr<SnapshotManager>& snapshot_manager,
+        const std::map<std::string, std::string>& fs_scheme_map);
 
-    /// Whether a copy's dynamic options change the file system its store resolves to. If they do,
-    /// the managers of the table it was copied from are not its to inherit: built over that
-    /// table's resolution, they would keep reading metadata through the backend the copy just
-    /// left.
+    /// Returns whether a copy's dynamic options change the file system its store resolves to. When
+    /// they do, the copy must not inherit the managers of the table it was copied from: they were
+    /// built over that table's resolution and would keep reading metadata through the backend the
+    /// copy left.
     static bool FileSystemResolutionMayChange(
         const TableSchema& schema, const std::map<std::string, std::string>& dynamic_options);
 
-    /// Whether two options maps resolve to the same file system: every resolution key has to
-    /// agree, a missing one on both sides included.
+    /// Returns whether two options maps resolve to the same file system. Every resolution key has
+    /// to agree, including a key missing on both sides.
     static bool FileSystemResolutionAgrees(const std::map<std::string, std::string>& left,
                                            const std::map<std::string, std::string>& right);
 
@@ -98,8 +94,8 @@ class FileStore {
         return branch_;
     }
 
-    /// The schema manager the operators read through, carrying the schema cache of `root_path` on
-    /// `CurrentBranch()`.
+    /// The schema manager the operators read through. It carries the schema cache of `root_path`
+    /// on `CurrentBranch()`.
     const std::shared_ptr<SchemaManager>& GetSchemaManager() const {
         return schema_manager_;
     }
@@ -115,20 +111,20 @@ class FileStore {
         return schema_;
     }
 
-    /// The file system the table's data is accessed through: the one the options resolve, which
-    /// the file system the caller opened the table through wins over.
+    /// The file system the table's data is accessed through: the one the options resolve, unless
+    /// the caller opened the table through one of its own.
     const std::shared_ptr<FileSystem>& GetFileSystem() const {
         return file_system_;
     }
 
-    /// The file system the caller opened the table through, as handed to `Create`: null when the
+    /// The file system the caller opened the table through, as handed to `Create`. Null when the
     /// call had none, so a copy resolves from its own options again.
     const std::shared_ptr<FileSystem>& GetSpecifiedFileSystem() const {
         return specified_file_system_;
     }
 
-    /// The scheme-to-identifier map the options were resolved with, kept for a copy to resolve
-    /// through again.
+    /// The scheme-to-identifier map the options were resolved with, kept so a copy can resolve
+    /// through it again.
     const std::map<std::string, std::string>& GetFsSchemeMap() const {
         return fs_scheme_map_;
     }
@@ -137,59 +133,59 @@ class FileStore {
         return root_path_;
     }
 
-    /// The options the schema was loaded with on `CurrentBranch()`. They exist only over a schema:
-    /// an operator reads them after reporting that none was found when there is not.
+    /// The options of the schema loaded on `CurrentBranch()`. They exist only over a schema, so an
+    /// operator reports that no schema was found before it ever reads them.
     const CoreOptions& GetOptions() const {
         assert(core_options_.has_value());
         return *core_options_;
     }
 
-    /// The path factory an operator builds its metadata paths through: over this store's root
-    /// path and the partition keys of its schema, which no schema change can alter, so an
-    /// operator serving a schema read after the table was loaded still names the same partitions.
-    /// The file format identifier is the caller's to name: a write names the format its level-0
-    /// files are written in, which the options may set per level, while a scan, a read and a
-    /// commit name the table's format.
+    /// Builds the path factory an operator names its metadata paths through, over this store's
+    /// root path and the partition keys of its schema. No schema change can alter the partition
+    /// keys, so an operator serving a schema read after the table was loaded still names the same
+    /// partitions. The caller names the file format identifier: a write names the format of its
+    /// level-0 files, which the options may set per level, while a scan, a read and a commit name
+    /// the table's format.
     Result<std::shared_ptr<FileStorePathFactory>> NewPathFactory(
         const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
         const std::string& file_format_identifier,
         const std::shared_ptr<MemoryPool>& memory_pool) const;
 
-    /// The snapshot manager a write or a commit reads snapshots through, over this store's root
-    /// path and branch. The file system is the caller's to name, from the options its operator
-    /// serves. A catalog that version-manages the table hands its snapshots out itself, so its
-    /// loader is attached and the catalog captured to keep it alive; such a catalog names the
-    /// table by an identifier, which the context must have supplied.
+    /// Builds the snapshot manager a write or a commit reads snapshots through, over this store's
+    /// root path and branch. The caller names the file system, from the options its operator
+    /// serves. A catalog that version-manages the table hands out its own snapshots, so its loader
+    /// is attached and the catalog is captured to keep it alive. Such a catalog names the table by
+    /// an identifier, which the context must have supplied.
     Result<std::shared_ptr<SnapshotManager>> NewSnapshotManager(
         const CoreOptions& options, const std::shared_ptr<Catalog>& catalog,
         const std::optional<Identifier>& catalog_identifier) const;
 
-    /// The manifest list a scan or a commit reads the table's manifest entries through.
+    /// Builds the manifest list a scan or a commit reads the table's manifest entries through.
     Result<std::shared_ptr<ManifestList>> NewManifestList(
         const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<MemoryPool>& memory_pool) const;
 
-    /// The manifest file a scan or a commit reads a single manifest's entries through, pruned by
-    /// `partition_schema`.
+    /// Builds the manifest file a scan or a commit reads a single manifest's entries through,
+    /// pruned by `partition_schema`.
     Result<std::shared_ptr<ManifestFile>> NewManifestFile(
         const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<arrow::Schema>& partition_schema,
         const std::shared_ptr<MemoryPool>& memory_pool) const;
 
-    /// The index manifest file a write, a scan or a commit reads the table's index manifest
-    /// through.
+    /// Builds the index manifest file a write, a scan or a commit reads the table's index
+    /// manifest through.
     Result<std::unique_ptr<IndexManifestFile>> NewIndexManifestFile(
         const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<MemoryPool>& memory_pool) const;
 
-    /// The index file handler a write maintains its deletion vectors and indexes through, or a
-    /// scan reads them through.
+    /// Builds the index file handler a write maintains its deletion vectors and indexes through,
+    /// or a scan reads them through.
     Result<std::unique_ptr<IndexFileHandler>> NewIndexFileHandler(
         const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<MemoryPool>& memory_pool) const;
 
-    /// The partition computer a commit names the partitions it writes with, over the partition
-    /// keys of this store's schema and the caller's arrow schema.
+    /// Builds the partition computer a commit names the partitions it writes with, over the
+    /// partition keys of this store's schema and the caller's arrow schema.
     Result<std::unique_ptr<BinaryRowPartitionComputer>> NewPartitionComputer(
         const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
         const std::shared_ptr<MemoryPool>& memory_pool) const;

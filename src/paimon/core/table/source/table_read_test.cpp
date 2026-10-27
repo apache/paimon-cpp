@@ -137,7 +137,10 @@ TEST(TableReadTest, TestFullTextMatchExecutionIsNotImplemented) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStoreTable> table,
-        FileStoreTable::Create(fs, table_path, schema, Identifier("append_09.db", "append_09")));
+        FileStoreTable::Create(fs, table_path, schema, Identifier("append_09.db", "append_09"),
+                               /*uuid=*/"", /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
+                               /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
+                               /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
     for (bool table_entry : {false, true}) {
         ReadContextBuilder builder(table_path);
         builder.SetReadFieldNames({"f0", "f1"}).SetPredicate(predicate);
@@ -164,7 +167,10 @@ TEST(TableReadTest, TestPerFieldScoreExecutionIsNotImplemented) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStoreTable> table,
-        FileStoreTable::Create(fs, path, schema, Identifier("append_09.db", "append_09")));
+        FileStoreTable::Create(fs, path, schema, Identifier("append_09.db", "append_09"),
+                               /*uuid=*/"", /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
+                               /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
+                               /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
     for (bool table_entry : {false, true}) {
         ReadContextBuilder builder(path);
         builder.SetFullTextSearch(search).SetReadFieldNames({"f1", "_f0_INDEX_SCORE"});

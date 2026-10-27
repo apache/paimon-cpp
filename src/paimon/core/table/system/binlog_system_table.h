@@ -40,7 +40,6 @@ class BinlogSystemTable : public AuditLogSystemTable {
                       std::shared_ptr<TableSchema> table_schema,
                       std::map<std::string, std::string> options);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
 };

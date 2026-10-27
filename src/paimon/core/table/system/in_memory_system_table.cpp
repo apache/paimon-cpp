@@ -107,8 +107,8 @@ class InMemorySystemTableRead : public TableRead {
 }  // namespace
 
 InMemorySystemTable::InMemorySystemTable(const std::shared_ptr<FileSystem>& fs,
-                                         std::string table_path)
-    : SystemTable(fs, table_path), table_path_(std::move(table_path)) {}
+                                         std::string table_path, std::string name)
+    : SystemTable(fs, table_path, std::move(name)), table_path_(std::move(table_path)) {}
 
 Result<std::unique_ptr<TableScan>> InMemorySystemTable::NewScan(
     std::unique_ptr<ScanContext> /*context*/) const {

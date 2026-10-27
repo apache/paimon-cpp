@@ -53,9 +53,9 @@ That path needs a schema under the table's own location, which is what every tab
 catalog serves has. A table loaded from a catalog that keeps the schema elsewhere, such as the
 REST catalog, has none: nothing under the location says that it is a format table, nor that
 ``schema`` and ``branch`` below it are data rather than metadata. Such a table is read and written
-by handing the loaded ``FormatTable`` to the context instead of a path - every context builder has
-a constructor taking one - which is what Java does through ``FormatTable.newReadBuilder()`` and
-``newBatchWriteBuilder()``:
+by handing the loaded ``FormatTable`` to the context builder instead of a path - every builder has
+a constructor taking one - and calling the table's own operator, which is what Java does through
+``FormatTable.newReadBuilder()`` and ``newBatchWriteBuilder()``:
 
 .. code-block:: cpp
 
@@ -68,7 +68,7 @@ a constructor taking one - which is what Java does through ``FormatTable.newRead
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                           scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
-                          paimon::TableScan::Create(std::move(scan_context)));
+                          table->NewScan(std::move(scan_context)));
 
 The table already carries its schema and the file system it was loaded through, so a context built
 from one refuses ``SetTableSchema()``, ``WithFileSystem()``,

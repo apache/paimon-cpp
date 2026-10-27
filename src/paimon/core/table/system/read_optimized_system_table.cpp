@@ -40,14 +40,10 @@ ReadOptimizedSystemTable::ReadOptimizedSystemTable(const std::shared_ptr<FileSys
                                                    std::string table_path,
                                                    std::shared_ptr<TableSchema> table_schema,
                                                    std::map<std::string, std::string> options)
-    : SystemTable(fs, table_path),
+    : SystemTable(fs, table_path, ComposeName(table_path, kName)),
       table_path_(std::move(table_path)),
       table_schema_(std::move(table_schema)),
       options_(std::move(options)) {}
-
-std::string ReadOptimizedSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> ReadOptimizedSystemTable::ArrowSchema() const {
     return DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields());
@@ -74,6 +70,8 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
         // The view's own file system when the context names none, rather than the default backend.
+        // A `ScanContext` carries no scheme-to-identifier map, so unlike `CreateDataReadContext`
+        // below there is no map here to resolve through instead.
         .WithFileSystem(context->GetSpecificFileSystem() != nullptr
                             ? context->GetSpecificFileSystem()
                             : GetFileSystem())

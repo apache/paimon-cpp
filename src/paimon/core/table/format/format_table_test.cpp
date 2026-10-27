@@ -2766,6 +2766,35 @@ TEST(FormatTableTest, TestTheGenericEntryPointsReachAFormatTable) {
     reader->Close();
 }
 
+TEST(FormatTableTest, TestACatalogInTheContextIsRefusedAlikeByWriteAndCommit) {
+    // `WithCatalog()` asks for a catalog-side version of the commit, which a format table has no
+    // way to produce. Both halves of the write path answer with the same code, so a caller reads
+    // one kind of failure out of them rather than "cannot be done" from one and "not yet" from
+    // the other.
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
+                         CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableSchema(table->LatestSchema());
+    Identifier identifier("db", "fmt");
+
+    WriteContextBuilder write_builder(dir->Str(), "test-user");
+    write_builder.WithCatalog(catalog, identifier);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    Result<std::unique_ptr<FileStoreWrite>> write = table->NewWrite(std::move(write_context));
+    ASSERT_FALSE(write.ok());
+    ASSERT_TRUE(write.status().IsInvalid());
+
+    CommitContextBuilder commit_builder(dir->Str(), "test-user");
+    commit_builder.WithCatalog(catalog, identifier);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
+    Result<std::unique_ptr<FileStoreCommit>> commit = table->NewCommit(std::move(commit_context));
+    ASSERT_FALSE(commit.ok());
+    ASSERT_TRUE(commit.status().IsInvalid());
+}
+
 TEST(FormatTableTest, TestTheGenericEntryPointsTakeALoadedFormatTable) {
     // A table a catalog keeps the schema for, the way a rest catalog does. Nothing under its
     // location says that it is a format table, nor that everything below the location is data, so
