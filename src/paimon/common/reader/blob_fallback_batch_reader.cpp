@@ -337,6 +337,9 @@ Result<BatchReader::ReadBatch> BlobFallbackBatchReader::NextBatch() {
         return Status::Invalid("blob fallback batch reader is closed");
     }
     std::vector<std::vector<Chunk>> group_chunks(groups_.size());
+    // TODO(xinyu.lxy): Older layers are materialized even when newer values cover them, adding
+    // unnecessary reads and potentially exposing stale payload errors. Add Java-like read/skip
+    // support to materialize older values only when fallback is needed.
     // the first (newest) group defines the window; the others must step in lockstep
     PAIMON_ASSIGN_OR_RAISE(int64_t row_count, FillWindow(0, read_batch_size_, &group_chunks[0]));
     for (size_t g = 1; g < groups_.size(); g++) {
