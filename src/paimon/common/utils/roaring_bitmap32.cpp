@@ -56,6 +56,11 @@ RoaringBitmap32::Iterator& RoaringBitmap32::Iterator::operator=(
     if (&other == this) {
         return *this;
     }
+    if (!other.iterator_) {
+        delete static_cast<roaring::Roaring::const_iterator*>(iterator_);
+        iterator_ = nullptr;
+        return *this;
+    }
     if (!iterator_) {
         iterator_ = new roaring::Roaring::const_iterator(GetIterator(other.iterator_));
     } else {
@@ -92,7 +97,11 @@ bool RoaringBitmap32::Iterator::operator==(const Iterator& other) const {
     if (&other == this) {
         return true;
     }
-    assert(iterator_ && other.iterator_);
+    bool is_end = !iterator_ || !GetIterator(iterator_).i.has_value;
+    bool other_is_end = !other.iterator_ || !GetIterator(other.iterator_).i.has_value;
+    if (is_end || other_is_end) {
+        return is_end == other_is_end;
+    }
     return GetIterator(iterator_) == GetIterator(other.iterator_);
 }
 bool RoaringBitmap32::Iterator::operator!=(const Iterator& other) const {
@@ -301,9 +310,7 @@ RoaringBitmap32::Iterator RoaringBitmap32::Begin() const {
 }
 
 RoaringBitmap32::Iterator RoaringBitmap32::End() const {
-    RoaringBitmap32::Iterator iter(*this);
-    GetIterator(iter.iterator_) = GetRoaringBitmap(roaring_bitmap_).end();
-    return iter;
+    return Iterator();
 }
 
 RoaringBitmap32::Iterator RoaringBitmap32::EqualOrLarger(int32_t key) const {

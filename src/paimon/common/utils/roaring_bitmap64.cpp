@@ -30,8 +30,19 @@
 
 namespace paimon {
 namespace {
-roaring::Roaring64Map::const_iterator& GetIterator(void* iter) {
-    return *(static_cast<roaring::Roaring64Map::const_iterator*>(iter));
+// Expose exhaustion without constructing another native iterator or modifying CRoaring.
+class Bitmap64Iterator : public roaring::Roaring64Map::const_iterator {
+ public:
+    explicit Bitmap64Iterator(const roaring::Roaring64Map& bitmap)
+        : roaring::Roaring64Map::const_iterator(bitmap) {}
+
+    bool IsEnd() const {
+        return map_iter == map_end;
+    }
+};
+
+Bitmap64Iterator& GetIterator(void* iter) {
+    return *(static_cast<Bitmap64Iterator*>(iter));
 }
 roaring::Roaring64Map& GetRoaringBitmap(void* bitmap) {
     return *(static_cast<roaring::Roaring64Map*>(bitmap));
@@ -39,13 +50,12 @@ roaring::Roaring64Map& GetRoaringBitmap(void* bitmap) {
 }  // namespace
 
 RoaringBitmap64::Iterator::Iterator(const RoaringBitmap64& bitmap) {
-    iterator_ =
-        new roaring::Roaring64Map::const_iterator(GetRoaringBitmap(bitmap.roaring_bitmap_).begin());
+    iterator_ = new Bitmap64Iterator(GetRoaringBitmap(bitmap.roaring_bitmap_));
 }
 
 RoaringBitmap64::Iterator::~Iterator() {
     if (iterator_) {
-        delete static_cast<roaring::Roaring64Map::const_iterator*>(iterator_);
+        delete static_cast<Bitmap64Iterator*>(iterator_);
     }
 }
 
@@ -57,8 +67,13 @@ RoaringBitmap64::Iterator& RoaringBitmap64::Iterator::operator=(
     if (&other == this) {
         return *this;
     }
+    if (!other.iterator_) {
+        delete static_cast<Bitmap64Iterator*>(iterator_);
+        iterator_ = nullptr;
+        return *this;
+    }
     if (!iterator_) {
-        iterator_ = new roaring::Roaring64Map::const_iterator(GetIterator(other.iterator_));
+        iterator_ = new Bitmap64Iterator(GetIterator(other.iterator_));
     } else {
         GetIterator(iterator_) = GetIterator(other.iterator_);
     }
@@ -75,7 +90,7 @@ RoaringBitmap64::Iterator& RoaringBitmap64::Iterator::operator=(
         return *this;
     }
     if (iterator_) {
-        delete static_cast<roaring::Roaring64Map::const_iterator*>(iterator_);
+        delete static_cast<Bitmap64Iterator*>(iterator_);
     }
     iterator_ = other.iterator_;
     other.iterator_ = nullptr;
@@ -93,7 +108,11 @@ bool RoaringBitmap64::Iterator::operator==(const Iterator& other) const {
     if (&other == this) {
         return true;
     }
-    assert(iterator_ && other.iterator_);
+    bool is_end = !iterator_ || GetIterator(iterator_).IsEnd();
+    bool other_is_end = !other.iterator_ || GetIterator(other.iterator_).IsEnd();
+    if (is_end || other_is_end) {
+        return is_end == other_is_end;
+    }
     return GetIterator(iterator_) == GetIterator(other.iterator_);
 }
 bool RoaringBitmap64::Iterator::operator!=(const Iterator& other) const {
@@ -101,6 +120,9 @@ bool RoaringBitmap64::Iterator::operator!=(const Iterator& other) const {
 }
 
 void RoaringBitmap64::Iterator::EqualOrLarger(int64_t value) {
+    if (!iterator_) {
+        return;
+    }
     [[maybe_unused]] bool _ = GetIterator(iterator_).move(value);
 }
 
@@ -372,17 +394,12 @@ RoaringBitmap64::Iterator RoaringBitmap64::Begin() const {
 }
 
 RoaringBitmap64::Iterator RoaringBitmap64::End() const {
-    RoaringBitmap64::Iterator iter(*this);
-    GetIterator(iter.iterator_) = GetRoaringBitmap(roaring_bitmap_).end();
-    return iter;
+    return Iterator();
 }
 
 RoaringBitmap64::Iterator RoaringBitmap64::EqualOrLarger(int64_t key) const {
     RoaringBitmap64::Iterator iter(*this);
-    bool not_end = GetIterator(iter.iterator_).move(key);
-    if (!not_end) {
-        return End();
-    }
+    iter.EqualOrLarger(key);
     return iter;
 }
 
