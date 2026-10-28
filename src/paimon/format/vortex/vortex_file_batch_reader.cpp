@@ -201,7 +201,7 @@ VortexFileBatchReader::~VortexFileBatchReader() {
 }
 
 Result<bool> VortexFileBatchReader::OpenNextPartitionStream() {
-    if (has_selection_ && selection_row_ids_.empty()) {
+    if (has_selection_ && selected_row_count_ == 0) {
         return false;
     }
     if (scan_ == nullptr) {
@@ -239,12 +239,13 @@ Result<bool> VortexFileBatchReader::OpenNextPartitionStream() {
                 options.projection = projection.get();
             }
         }
-        // VX_SELECTION_INCLUDE_RANGE maps to IncludeByIndex, not a contiguous range.
-        // The scan copies the individual indices from selection_row_ids_.
-        if (has_selection_) {
-            options.selection.idx = selection_row_ids_.data();
-            options.selection.idx_len = selection_row_ids_.size();
-            options.selection.include = VX_SELECTION_INCLUDE_RANGE;
+        // These FFI modes take individual indices. A dense bitmap sends only excluded rows;
+        // an all-selected bitmap needs no indices and uses the default INCLUDE_ALL mode.
+        if (has_selection_ && !selection_indices_.empty()) {
+            options.selection.idx = selection_indices_.data();
+            options.selection.idx_len = selection_indices_.size();
+            options.selection.include =
+                selection_excludes_ ? VX_SELECTION_EXCLUDE_RANGE : VX_SELECTION_INCLUDE_RANGE;
         }
         // Filtering drops rows; include_row_idx preserves their original physical positions.
         // The scan clones the filter, so it can be freed after scan creation.
@@ -414,17 +415,40 @@ Status VortexFileBatchReader::SetReadSchema(
     if (read_schema == nullptr) {
         return Status::Invalid("Vortex read schema is nullptr");
     }
-    // Keep selected physical row ids to map output positions after selection pushdown.
-    std::vector<uint64_t> selection_row_ids;
+    std::vector<uint64_t> selection_indices;
+    bool selection_excludes = false;
+    uint64_t selected_row_count = total_rows_;
     if (selection_bitmap) {
-        selection_row_ids.reserve(static_cast<size_t>(selection_bitmap->Cardinality()));
-        for (auto iter = selection_bitmap->Begin(); iter != selection_bitmap->End(); ++iter) {
+        const int32_t cardinality = selection_bitmap->Cardinality();
+        if (cardinality < 0 || static_cast<uint64_t>(cardinality) > total_rows_) {
+            return Status::Invalid("Vortex selection cardinality exceeds the file row count");
+        }
+        selected_row_count = static_cast<uint64_t>(cardinality);
+        selection_excludes = selected_row_count > total_rows_ / 2;
+        selection_indices.reserve(static_cast<size_t>(
+            selection_excludes ? total_rows_ - selected_row_count : selected_row_count));
+        uint64_t next_row = 0;
+        const auto end = selection_bitmap->End();
+        for (auto iter = selection_bitmap->Begin(); iter != end; ++iter) {
             const auto row_id = static_cast<uint64_t>(*iter);
             if (row_id >= total_rows_) {
                 return Status::Invalid(
                     fmt::format("Vortex selected row {} is out of range {}", row_id, total_rows_));
             }
-            selection_row_ids.push_back(row_id);
+            if (selection_excludes) {
+                // Enumerate gaps directly instead of first expanding all selected rows.
+                for (; next_row < row_id; ++next_row) {
+                    selection_indices.push_back(next_row);
+                }
+                next_row = row_id + 1;
+            } else {
+                selection_indices.push_back(row_id);
+            }
+        }
+        if (selection_excludes) {
+            for (; next_row < total_rows_; ++next_row) {
+                selection_indices.push_back(next_row);
+            }
         }
     }
     // Leave the active scan and its row mapping unchanged if validation or import fails.
@@ -434,7 +458,10 @@ Status VortexFileBatchReader::SetReadSchema(
     read_schema_ = std::move(imported_read_schema);
     predicate_filter_ = std::dynamic_pointer_cast<PredicateFilter>(predicate);
     has_selection_ = selection_bitmap.has_value();
-    selection_row_ids_ = std::move(selection_row_ids);
+    selection_excludes_ = selection_excludes;
+    selected_row_count_ = selected_row_count;
+    selection_indices_ = std::move(selection_indices);
+    metrics_->SetCounter("vortex.selection-index-count", selection_indices_.size());
     ReleaseStream();
     current_batch_.reset();
     current_batch_offset_ = 0;
@@ -468,13 +495,28 @@ Result<uint64_t> VortexFileBatchReader::GetPreviousBatchFileRowId(uint64_t batch
             .Value(static_cast<int64_t>(batch_row_id));
     }
     const uint64_t emitted_offset = previous_first_row_ + batch_row_id;
-    // An ordered selection emits rows in the same order as selection_row_ids_.
+    // Ordered scans emit selected rows in physical order, regardless of which side is stored.
     if (has_selection_) {
-        if (emitted_offset >= selection_row_ids_.size()) {
+        if (emitted_offset >= selected_row_count_) {
             return Status::Invalid(fmt::format("emitted row offset {} exceeds selection size {}",
-                                               emitted_offset, selection_row_ids_.size()));
+                                               emitted_offset, selected_row_count_));
         }
-        return selection_row_ids_[emitted_offset];
+        if (!selection_excludes_) {
+            return selection_indices_[emitted_offset];
+        }
+        // For excluded row i, excluded[i] - i is the number of selected rows before it.
+        // Count exclusions at or before this selected rank without expanding a row mapping.
+        size_t begin = 0;
+        size_t end = selection_indices_.size();
+        while (begin < end) {
+            const size_t middle = begin + (end - begin) / 2;
+            if (selection_indices_[middle] - middle <= emitted_offset) {
+                begin = middle + 1;
+            } else {
+                end = middle;
+            }
+        }
+        return emitted_offset + begin;
     }
     return emitted_offset;
 }

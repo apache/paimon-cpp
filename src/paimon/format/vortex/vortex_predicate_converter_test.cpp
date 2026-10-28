@@ -134,9 +134,40 @@ void AssertNativeRows(const NativeInCase& test_case, const std::shared_ptr<Predi
                      vx_array_free);
     ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
     ASSERT_NE(array, nullptr);
-    vx_file_write_array(session.get(), path.c_str(), array.get(), &error);
-    ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
     LocalFileSystem file_system;
+    {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                             file_system.Create(path, /*overwrite=*/false));
+        auto output_context = std::make_shared<VortexOutputContext>(output);
+        vx_callback_sink* sink = nullptr;
+        bool output_closed = false;
+        ScopeGuard release_sink([&sink, &output_context, &output, &output_closed]() {
+            if (!output_closed) {
+                output_context->MarkAborted();
+                if (sink != nullptr) {
+                    vx_callback_sink_abort(std::exchange(sink, nullptr));
+                }
+                output_context->WaitForIdleCallbacks();
+                [[maybe_unused]] Status close_status = output->Close();
+            }
+        });
+        // Use the production callback I/O path, keeping Rust's asynchronous filesystem adapter
+        // out of this predicate test. The array owns the borrowed dtype until the sink closes.
+        const vx_dtype* dtype = vx_array_dtype(array.get());
+        ASSERT_NE(dtype, nullptr);
+        sink = vx_callback_sink_open(
+            session.get(), VortexOutputContext::MakeCallbacks(output_context), dtype, &error);
+        ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+        ASSERT_NE(sink, nullptr);
+        vx_callback_sink_push(sink, array.get(), &error);
+        ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+        // Closing consumes the sink on both success and failure.
+        vx_callback_sink_close(std::exchange(sink, nullptr), &error);
+        ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+        ASSERT_OK(output_context->GetCallbackStatus());
+        output_closed = true;
+        ASSERT_OK(output->Close());
+    }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system.Open(path));
     ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
     auto input_context = std::make_shared<VortexInputContext>(input);

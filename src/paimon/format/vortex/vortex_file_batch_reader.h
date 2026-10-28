@@ -118,9 +118,12 @@ class VortexFileBatchReader : public FileBatchReader {
     uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
     uint64_t previous_batch_row_count_ = 0;
 
-    // Selected physical row ids in output order, used when selection is pushed without a filter.
+    // Keep the smaller side of the bitmap. Dense selections store excluded physical row ids,
+    // avoiding an O(file rows) index list both here and in the native scan's copy.
     bool has_selection_ = false;
-    std::vector<uint64_t> selection_row_ids_;
+    bool selection_excludes_ = false;
+    uint64_t selected_row_count_ = 0;
+    std::vector<uint64_t> selection_indices_;
 
     // A pushed filter returns physical row ids in a hidden _row_idx column. Retain the last
     // batch's column because emitted offsets no longer identify physical rows after filtering.

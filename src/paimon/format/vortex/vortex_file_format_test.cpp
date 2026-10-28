@@ -19,6 +19,7 @@
 
 // Round-trip unit tests for the Vortex file format: write, then read back via vortex-ffi.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -61,6 +62,7 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/metrics.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/reader/batch_reader.h"
@@ -1162,6 +1164,145 @@ TEST_F(VortexFileFormatTest, SelectionPushdownReturnsSelectedRowsAndPhysicalRowI
     }
     ASSERT_EQ(got_ids, (std::vector<int32_t>{10, 30, 50, 70}));
     ASSERT_EQ(got_row_ids, (std::vector<uint64_t>{1, 3, 5, 7}));
+}
+
+TEST_F(VortexFileFormatTest, DenseSelectionKeepsOnlyExcludedIndicesAndPreservesNullValues) {
+    constexpr int32_t kRows = 4096;
+    constexpr int32_t kDeletedRow = 2048;
+    arrow::Int32Builder id_builder;
+    arrow::Int32Builder value_builder;
+    for (int32_t row = 0; row < kRows; ++row) {
+        ASSERT_TRUE(id_builder.Append(row).ok());
+        if (row % 17 == 0) {
+            ASSERT_TRUE(value_builder.AppendNull().ok());
+        } else {
+            ASSERT_TRUE(value_builder.Append(row * 10).ok());
+        }
+    }
+    std::shared_ptr<arrow::Array> ids;
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(id_builder.Finish(&ids).ok());
+    ASSERT_TRUE(value_builder.Finish(&values).ok());
+    const auto schema = arrow::schema(
+        {arrow::field("id", arrow::int32(), false), arrow::field("value", arrow::int32())});
+    const auto data = arrow::StructArray::Make({ids, values}, schema->fields()).ValueOrDie();
+    const std::string path = PathUtil::JoinPath(directory_->Str(), "dense-selection.vortex");
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/1024));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
+                         CreateReader(path, /*batch_size=*/127));
+    RoaringBitmap32 selection;
+    selection.AddRange(0, kRows);
+    selection.RemoveRange(kDeletedRow, kDeletedRow + 1);
+    ASSERT_OK(ConfigureReader(reader.get(), schema, nullptr, selection));
+    ASSERT_OK_AND_ASSIGN(uint64_t index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    // Both the host and the native FFI copy contain one excluded index, not kRows - 1 indices.
+    ASSERT_EQ(index_count, uint64_t{1});
+    uint64_t emitted = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+        if (array == nullptr) {
+            break;
+        }
+        ASSERT_TRUE(array->ValidateFull().ok());
+        const auto& batch = checked_cast<const arrow::StructArray&>(*array);
+        const auto& batch_ids = checked_cast<const arrow::Int32Array&>(*batch.field(0));
+        const auto& batch_values = checked_cast<const arrow::Int32Array&>(*batch.field(1));
+        // Reverse requests also check that physical-id lookup does not depend on call order.
+        for (int64_t i = array->length(); i > 0; --i) {
+            const uint64_t output_row = emitted + static_cast<uint64_t>(i - 1);
+            const uint64_t expected_row = output_row + (output_row >= kDeletedRow ? 1 : 0);
+            ASSERT_OK_AND_ASSIGN(uint64_t physical_row,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i - 1)));
+            ASSERT_EQ(physical_row, expected_row);
+            ASSERT_EQ(batch_ids.Value(i - 1), static_cast<int32_t>(expected_row));
+            ASSERT_EQ(batch_values.IsNull(i - 1), expected_row % 17 == 0);
+            if (!batch_values.IsNull(i - 1)) {
+                ASSERT_EQ(batch_values.Value(i - 1), static_cast<int32_t>(expected_row * 10));
+            }
+        }
+        emitted += static_cast<uint64_t>(array->length());
+    }
+    ASSERT_EQ(emitted, uint64_t{kRows - 1});
+    ASSERT_FALSE(reader->GetPreviousBatchFileRowId(0).ok());
+    ASSERT_OK_AND_ASSIGN(index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    ASSERT_EQ(index_count, uint64_t{1});
+}
+
+TEST_F(VortexFileFormatTest, DenseSelectionMapsConsecutiveExcludedRowsAndSparseSelections) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    const std::vector<std::vector<int32_t>> selections = {
+        {1, 2, 3, 4, 5}, {0, 1, 2, 3, 4}, {0, 1, 4, 5}, {2, 3, 4, 5},
+        {0, 1, 2, 3},    {0, 2, 3, 5},    {0, 5}};
+    for (const auto& selected_rows : selections) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+        ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                                  RoaringBitmap32::From(selected_rows)));
+        ASSERT_OK_AND_ASSIGN(uint64_t index_count, reader->GetReaderMetrics()->GetCounter(
+                                                       "vortex.selection-index-count"));
+        ASSERT_EQ(index_count, std::min(selected_rows.size(), size_t{6} - selected_rows.size()));
+        std::vector<uint64_t> actual;
+        while (true) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+            if (array == nullptr) {
+                break;
+            }
+            const size_t offset = actual.size();
+            actual.resize(offset + static_cast<size_t>(array->length()));
+            for (int64_t i = array->length(); i > 0; --i) {
+                ASSERT_OK_AND_ASSIGN(
+                    uint64_t row, reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i - 1)));
+                actual[offset + static_cast<size_t>(i - 1)] = row;
+            }
+        }
+        ASSERT_EQ(actual, (std::vector<uint64_t>(selected_rows.begin(), selected_rows.end())));
+    }
+}
+
+TEST_F(VortexFileFormatTest, FullEmptyAndDenseSelectionsCanBeReconfiguredWithoutExpandedMapping) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    RoaringBitmap32 full;
+    full.AddRange(0, 6);
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, full));
+    ASSERT_OK_AND_ASSIGN(uint64_t index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    ASSERT_EQ(index_count, uint64_t{0});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first, ReadNextBatch(reader.get()));
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->length(), 2);
+    ASSERT_OK_AND_ASSIGN(uint64_t row, reader->GetPreviousBatchFileRowId(1));
+    ASSERT_EQ(row, uint64_t{1});
+
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, RoaringBitmap32()));
+    ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
+    ASSERT_EQ(first, nullptr);
+    ASSERT_FALSE(reader->GetPreviousBatchFileRowId(0).ok());
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                              RoaringBitmap32::From({1, 2, 3, 4, 5})));
+    ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
+    ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(row, uint64_t{1});
+    ASSERT_NOK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                               RoaringBitmap32::From({0, 1, 2, 3, 6})));
+    ASSERT_NOK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                               RoaringBitmap32::From({-1, 1, 2, 3, 4})));
+    ASSERT_OK_AND_ASSIGN(index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    ASSERT_EQ(index_count, uint64_t{1});
+    ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(1));
+    ASSERT_EQ(row, uint64_t{2});
+    ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
+    ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(row, uint64_t{3});
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema()));
+    ASSERT_OK_AND_ASSIGN(index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    ASSERT_EQ(index_count, uint64_t{0});
+    ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
+    ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(row, uint64_t{0});
 }
 
 TEST_F(VortexFileFormatTest, FilterPushdownReturnsMatchingRowsAndPhysicalRowIds) {
