@@ -34,10 +34,12 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/read_context.h"
 #include "paimon/result.h"
@@ -80,27 +82,40 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
     }
     Identifier table_identifier =
         identifier.value_or(CatalogUtils::IdentifierFromPath(path, branch));
+    // Fold the context options into the schema before the store resolves them: resolving the
+    // schema's own options first would fail on a format plugin the context overrides away,
+    // before the override has a chance to take effect. Only options that differ from the
+    // schema's own restyle the load, the way `Copy` decides; the rest leave the schema and the
+    // dynamic options as they are.
+    std::shared_ptr<Schema> loaded_schema = latest_schema;
+    std::map<std::string, std::string> dynamic_options;
+    if (latest_schema != nullptr && !options.empty()) {
+        const std::map<std::string, std::string>& schema_options = latest_schema->Options();
+        bool options_differ = false;
+        for (const auto& [key, value] : options) {
+            auto schema_option = schema_options.find(key);
+            if (schema_option == schema_options.end() || schema_option->second != value) {
+                options_differ = true;
+                break;
+            }
+        }
+        if (options_differ) {
+            dynamic_options = options;
+            dynamic_options.erase(Options::TYPE);
+            dynamic_options.erase(Options::BRANCH);
+            PAIMON_RETURN_NOT_OK(
+                SchemaValidation::CheckImmutableOptions(*latest_schema, dynamic_options));
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
+                                   latest_schema->MergeOptions(dynamic_options));
+            loaded_schema = std::shared_ptr<TableSchema>(std::move(merged_schema));
+        }
+    }
     // The schema was read through a file system the context's options resolved, while the table is
     // served through the one the schema's own options resolve: the store builds its managers over
     // that resolution rather than taking over the reader's.
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStoreTable> table,
-        FileStoreTable::Create(explicit_file_system, path, latest_schema, table_identifier, uuid,
-                               branch, /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
-                               fs_scheme_map, /*dynamic_options=*/{}));
-    // Fold in the context options, but only where one differs from the schema's own: a table is
-    // the product of its load, and `Copy` is the only way to restyle it.
-    if (table == nullptr || latest_schema == nullptr || options.empty()) {
-        return table;
-    }
-    const std::map<std::string, std::string>& schema_options = latest_schema->Options();
-    for (const auto& [key, value] : options) {
-        auto schema_option = schema_options.find(key);
-        if (schema_option == schema_options.end() || schema_option->second != value) {
-            return table->Copy(options);
-        }
-    }
-    return table;
+    return FileStoreTable::Create(explicit_file_system, path, loaded_schema, table_identifier, uuid,
+                                  branch, /*schema_manager=*/nullptr,
+                                  /*snapshot_manager=*/nullptr, fs_scheme_map, dynamic_options);
 }
 
 Result<std::optional<std::string>> CatalogMainBranchSchemaJson(

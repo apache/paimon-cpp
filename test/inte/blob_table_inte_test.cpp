@@ -216,6 +216,12 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         return fields;
     }
 
+    /// The identifier `WriteDanglingBlobViewRows` stamps on row 0: no table exists where the
+    /// catalog issues it, so the catalog the blob view lookup resolves the reference through
+    /// reports the identifier not exist, and every read that reaches the reference fails on it.
+    static constexpr const char* kDanglingUpstreamNotFound =
+        "Identifier{database='nonexistent_db', object='nonexistent_table'} not exist";
+
     /// Writes and commits the two rows the blob-view skip tests share: row 0 holds a blob view
     /// reference to an upstream table that does not exist, row 1 holds no blob view at all.
     /// Resolving row 0 fails the whole read, so any read the pre-read still reaches it from must
@@ -4589,10 +4595,11 @@ TEST_P(BlobTableInteTest, TestBlobViewFailsWhenUpstreamTableAbsent) {
 
     ASSERT_OK(WriteDanglingBlobViewRows(table_path));
 
-    // reading fails because the upstream table does not exist at the catalog-issued location
+    // reading fails because the upstream table does not exist at the catalog-issued location:
+    // the catalog the lookup resolves the reference through reports its identifier not exist
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "not found latest schema");
+                        kDanglingUpstreamNotFound);
 }
 
 TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
@@ -4611,7 +4618,7 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
     // without the deletion vector the dangling reference fails the read
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "not found latest schema");
+                        kDanglingUpstreamNotFound);
 
     ASSERT_OK_AND_ASSIGN(std::string anchor_file_name,
                          DeletionVectorTestHelper::RetrieveAnchorFileName(commit_msgs));
@@ -4655,7 +4662,7 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceInEveryRowRangeGroup
     // without deletion vectors both groups' dangling references fail the read
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "not found latest schema");
+                        kDanglingUpstreamNotFound);
 
     // each group's anchor gets a deletion vector dropping its row 0, the dangling one
     ASSERT_OK_AND_ASSIGN(std::string anchor_file_name0,
@@ -4692,7 +4699,7 @@ TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
     // reading the whole split fails on the dangling reference of row 0
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "not found latest schema");
+                        kDanglingUpstreamNotFound);
 
     // a predicate keeping only row 1 does not rescue the query: it is evaluated above the split
     // read, while the pre-read takes none, so row 0's reference is still collected and resolved
@@ -4700,7 +4707,7 @@ TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
                                               FieldType::INT, Literal(101));
     ASSERT_OK_AND_ASSIGN(auto filtered_plan, ScanTable(table_path, keep_row_1));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), filtered_plan, keep_row_1),
-                        "not found latest schema");
+                        kDanglingUpstreamNotFound);
 
     // dropping the same row through the row ranges does: the pre-read honors them the same way
     // the main read does, so row 0 is never resolved
