@@ -1632,6 +1632,47 @@ TEST_F(DataEvolutionSplitReadTest, TestExcludeDeletedRowIds) {
     ASSERT_TRUE(remaining.empty());
 }
 
+TEST_F(DataEvolutionSplitReadTest, TestExcludeDeletedRowIdsRestrictsDeletionsToSelectedGaps) {
+    for (bool bitmap64 : {false, true}) {
+        std::shared_ptr<DeletionVector> dv =
+            bitmap64 ? std::shared_ptr<DeletionVector>(std::make_shared<Bitmap64DeletionVector>())
+                     : MakeBitmapDv({});
+        for (int64_t position = 0; position < 200; position += 2) {
+            ASSERT_OK(dv->Delete(position));
+        }
+        DataEvolutionSplitRead::GroupDeletionVector group_dv{dv, Range(100, 599)};
+
+        // Selected gaps exceed the DV cardinality, but all deletions precede them.
+        ASSERT_OK_AND_ASSIGN(
+            std::vector<Range> remaining,
+            DataEvolutionSplitRead::ExcludeDeletedRowIds({Range(300, 499)}, group_dv));
+        ASSERT_EQ(remaining, (std::vector<Range>{Range(300, 499)}));
+
+        // Deletions between selected ranges and after them must also be ignored.
+        ASSERT_OK(dv->Delete(450));
+        ASSERT_OK_AND_ASSIGN(remaining, DataEvolutionSplitRead::ExcludeDeletedRowIds(
+                                            {Range(100, 110), Range(300, 499)}, group_dv));
+        ASSERT_EQ(remaining,
+                  (std::vector<Range>{Range(101, 101), Range(103, 103), Range(105, 105),
+                                      Range(107, 107), Range(109, 109), Range(300, 499)}));
+
+        // Deleting row id 450 (anchor position 350) splits the second selected gap.
+        ASSERT_OK(dv->Delete(350));
+        ASSERT_OK_AND_ASSIGN(remaining, DataEvolutionSplitRead::ExcludeDeletedRowIds(
+                                            {Range(100, 110), Range(400, 499)}, group_dv));
+        ASSERT_EQ(remaining, (std::vector<Range>{Range(101, 101), Range(103, 103), Range(105, 105),
+                                                 Range(107, 107), Range(109, 109), Range(400, 449),
+                                                 Range(451, 499)}));
+
+        // Keep both endpoints of a selected range subject to deletion filtering.
+        ASSERT_OK(dv->Delete(200));
+        ASSERT_OK(dv->Delete(399));
+        ASSERT_OK_AND_ASSIGN(
+            remaining, DataEvolutionSplitRead::ExcludeDeletedRowIds({Range(300, 499)}, group_dv));
+        ASSERT_EQ(remaining, (std::vector<Range>{Range(301, 449), Range(451, 498)}));
+    }
+}
+
 TEST_F(DataEvolutionSplitReadTest, Bitmap64GroupWindowWithHighOffset) {
     const int64_t offset = 1LL << 32;
     auto anchor = CreateNormalFile("anchor.parquet", 100, offset + 30, 10);

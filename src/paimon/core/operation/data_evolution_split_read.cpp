@@ -1521,6 +1521,14 @@ Result<std::vector<Range>> DataEvolutionSplitRead::ExcludeDeletedRowIds(
                         return;
                     }
                     int64_t row_id = group_dv.anchor_range.from + position;
+                    // The caller supplies sorted, disjoint selected gap ranges. Do not expand
+                    // deletions elsewhere in the anchor into temporary ranges.
+                    auto selected = std::lower_bound(
+                        ranges.begin(), ranges.end(), row_id,
+                        [](const Range& range, int64_t value) { return range.to < value; });
+                    if (selected == ranges.end() || selected->from > row_id) {
+                        return;
+                    }
                     if (!deleted.empty() && deleted.back().to < row_id &&
                         row_id - deleted.back().to == 1) {
                         deleted.back().to = row_id;
@@ -1528,6 +1536,9 @@ Result<std::vector<Range>> DataEvolutionSplitRead::ExcludeDeletedRowIds(
                         deleted.emplace_back(row_id, row_id);
                     }
                 }));
+            if (deleted.empty()) {
+                return ranges;
+            }
             return Range::And(ranges,
                               Range(ranges.front().from, ranges.back().to).Exclude(deleted));
         }
