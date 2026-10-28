@@ -167,9 +167,9 @@ current snapshot.
 Both builders use the file system of the table being written or committed for
 manifests and data, so a catalog that issues temporary credentials per table
 serves them through ``Catalog::GetTableFileSystem``. ``WithFileSystem`` overrides
-it; writers also allow ``WithFileSystemSchemeToIdentifierMap`` to override
-file-system selection. A format table is written through the table's own
-``NewWrite`` instead; see :doc:`format_table`.
+it; both also allow ``WithFileSystemSchemeToIdentifierMap`` to route by URI
+scheme instead, which the catalog is then not asked for. A format table is
+written through the table's own ``NewWrite`` instead; see :doc:`format_table`.
 
 A file system passed to ``WithFileSystem`` is used exactly as it is: neither the
 built-in file systems nor the table's own credentials are involved, so a custom

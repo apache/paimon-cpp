@@ -50,27 +50,23 @@ namespace paimon {
 
 namespace {
 
-Result<std::shared_ptr<Table>> WithContextOptions(
-    const std::shared_ptr<Table>& table, const std::shared_ptr<TableSchema>& schema,
-    const std::map<std::string, std::string>& options) {
-    if (table == nullptr || schema == nullptr || options.empty()) {
-        return table;
-    }
-    const std::map<std::string, std::string>& schema_options = schema->Options();
-    for (const auto& [key, value] : options) {
-        auto schema_option = schema_options.find(key);
-        if (schema_option == schema_options.end() || schema_option->second != value) {
-            return table->Copy(options);
-        }
-    }
-    return table;
-}
-
-Result<std::shared_ptr<Table>> TableOfLoadedSchema(
+Result<std::shared_ptr<Table>> ManagedTableOf(
+    const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<FileSystem>& explicit_file_system, const std::string& path,
     const std::string& branch, const std::map<std::string, std::string>& options,
-    const std::shared_ptr<TableSchema>& latest_schema, const std::optional<Identifier>& identifier,
+    const std::optional<std::string>& schema_json, const std::optional<Identifier>& identifier,
     const std::string& uuid, const std::map<std::string, std::string>& fs_scheme_map) {
+    SchemaManager schema_manager(file_system, path, branch);
+    std::shared_ptr<TableSchema> latest_schema;
+    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && schema_json) {
+        PAIMON_ASSIGN_OR_RAISE(latest_schema, TableSchema::CreateFromJson(schema_json.value()));
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               schema_manager.Latest());
+        if (latest) {
+            latest_schema = *latest;
+        }
+    }
     if (latest_schema != nullptr) {
         PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
                                TableTypeDefine::IsFormatTable(latest_schema->Options()));
@@ -92,28 +88,19 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
         FileStoreTable::Create(explicit_file_system, path, latest_schema, table_identifier, uuid,
                                branch, /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
                                fs_scheme_map, /*dynamic_options=*/{}));
-    return WithContextOptions(table, latest_schema, options);
-}
-
-Result<std::shared_ptr<Table>> ManagedTableOf(
-    const std::shared_ptr<FileSystem>& file_system,
-    const std::shared_ptr<FileSystem>& explicit_file_system, const std::string& path,
-    const std::string& branch, const std::map<std::string, std::string>& options,
-    const std::optional<std::string>& schema_json, const std::optional<Identifier>& identifier,
-    const std::string& uuid, const std::map<std::string, std::string>& fs_scheme_map) {
-    SchemaManager schema_manager(file_system, path, branch);
-    std::shared_ptr<TableSchema> latest_schema;
-    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && schema_json) {
-        PAIMON_ASSIGN_OR_RAISE(latest_schema, TableSchema::CreateFromJson(schema_json.value()));
-    } else {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
-                               schema_manager.Latest());
-        if (latest) {
-            latest_schema = *latest;
+    // Fold in the context options, but only where one differs from the schema's own: a table is
+    // the product of its load, and `Copy` is the only way to restyle it.
+    if (table == nullptr || latest_schema == nullptr || options.empty()) {
+        return table;
+    }
+    const std::map<std::string, std::string>& schema_options = latest_schema->Options();
+    for (const auto& [key, value] : options) {
+        auto schema_option = schema_options.find(key);
+        if (schema_option == schema_options.end() || schema_option->second != value) {
+            return table->Copy(options);
         }
     }
-    return TableOfLoadedSchema(explicit_file_system, path, branch, options, latest_schema,
-                               identifier, uuid, fs_scheme_map);
+    return table;
 }
 
 Result<std::optional<std::string>> CatalogMainBranchSchemaJson(
@@ -134,29 +121,10 @@ Result<std::optional<std::string>> CatalogMainBranchSchemaJson(
     return std::optional<std::string>();
 }
 
-}  // namespace
-
-Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ScanContext& ctx) {
+template <typename Context>
+Result<std::shared_ptr<Table>> ManagedTable(const Context& ctx, const char* kind) {
+    PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx.GetCatalog()));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
-                           CoreOptions::FromMap(ctx.GetOptions(), ctx.GetSpecificFileSystem(), {}));
-    PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
-                           SystemTableLoader::TryParsePath(ctx.GetPath()));
-    if (system_table_path) {
-        return Status::Invalid(fmt::format(
-            "the path {} names a system table, which is not loaded from a path: a catalog "
-            "hands the table back through GetTable, and its operators come from "
-            "table->NewScan/NewRead on it",
-            ctx.GetPath()));
-    }
-    const std::string branch = BranchManager::NormalizeBranch(tmp_options.GetBranch());
-    return ManagedTableOf(tmp_options.GetFileSystem(), ctx.GetSpecificFileSystem(), ctx.GetPath(),
-                          branch, ctx.GetOptions(), ctx.GetSpecificTableSchema(),
-                          ctx.GetIdentifier(),
-                          /*uuid=*/"", /*fs_scheme_map=*/{});
-}
-
-Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ReadContext& ctx) {
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_core_options,
                            CoreOptions::FromMap(ctx.GetOptions(), ctx.GetSpecificFileSystem(),
                                                 ctx.GetFileSystemSchemeToIdentifierMap()));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
@@ -165,66 +133,41 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ReadContext& 
         return Status::Invalid(fmt::format(
             "the path {} names a system table, which is not loaded from a path: a catalog "
             "hands the table back through GetTable, and its operators come from "
-            "table->NewScan/NewRead on it",
+            "table->NewScan/NewRead/NewWrite/NewCommit on it",
             ctx.GetPath()));
     }
-
-    const std::string branch = ctx.GetBranch();
-    return ManagedTableOf(tmp_core_options.GetFileSystem(), ctx.GetSpecificFileSystem(),
-                          ctx.GetPath(), branch, ctx.GetOptions(), ctx.GetSpecificTableSchema(),
-                          ctx.GetIdentifier(), /*uuid=*/"",
+    // A schema the caller gave replaces the catalog's; the caller answers for its correctness.
+    std::optional<std::string> catalog_table_schema = ctx.GetSpecificTableSchema();
+    if (!catalog_table_schema) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::optional<Identifier> catalog_identifier,
+            CatalogUtils::BranchIdentifier(ctx.GetIdentifier(), ctx.GetBranch()));
+        PAIMON_ASSIGN_OR_RAISE(catalog_table_schema,
+                               CatalogMainBranchSchemaJson(ctx.GetCatalog(), catalog_identifier,
+                                                           ctx.GetBranch(), kind));
+    }
+    return ManagedTableOf(tmp_options.GetFileSystem(), ctx.GetSpecificFileSystem(), ctx.GetPath(),
+                          ctx.GetBranch(), ctx.GetOptions(), catalog_table_schema,
+                          ctx.GetIdentifier(), ctx.GetTableId().value_or(""),
                           ctx.GetFileSystemSchemeToIdentifierMap());
+}
+
+}  // namespace
+
+Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ScanContext& ctx) {
+    return ManagedTable(ctx, "scan");
+}
+
+Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ReadContext& ctx) {
+    return ManagedTable(ctx, "read");
 }
 
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const WriteContext& ctx) {
-    PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx.GetCatalog()));
-    std::shared_ptr<FileSystem> specific_fs = ctx.GetSpecificFileSystem();
-    if (specific_fs == nullptr && ctx.GetFileSystemSchemeToIdentifierMap().empty() &&
-        ctx.GetCatalog() != nullptr) {
-        if (!ctx.GetIdentifier()) {
-            return Status::Invalid("a catalog write requires a table identifier");
-        }
-        PAIMON_ASSIGN_OR_RAISE(specific_fs,
-                               ctx.GetCatalog()->GetTableFileSystem(ctx.GetIdentifier().value()));
-    }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
-                           CoreOptions::FromMap(ctx.GetOptions(), specific_fs,
-                                                ctx.GetFileSystemSchemeToIdentifierMap()));
-    std::string branch = ctx.GetBranch();
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,
-                           CatalogUtils::BranchIdentifier(ctx.GetIdentifier(), branch));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::optional<std::string> catalog_table_schema,
-        CatalogMainBranchSchemaJson(ctx.GetCatalog(), catalog_identifier, branch, "write"));
-    return ManagedTableOf(tmp_options.GetFileSystem(), specific_fs, ctx.GetRootPath(), branch,
-                          ctx.GetOptions(), catalog_table_schema, ctx.GetIdentifier(), /*uuid=*/"",
-                          ctx.GetFileSystemSchemeToIdentifierMap());
+    return ManagedTable(ctx, "write");
 }
 
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const CommitContext& ctx) {
-    PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx.GetCatalog()));
-    std::shared_ptr<FileSystem> specific_fs = ctx.GetSpecificFileSystem();
-    if (specific_fs == nullptr && ctx.GetCatalog() != nullptr) {
-        if (!ctx.GetIdentifier()) {
-            return Status::Invalid("a catalog commit requires a table identifier");
-        }
-        PAIMON_ASSIGN_OR_RAISE(specific_fs,
-                               ctx.GetCatalog()->GetTableFileSystem(ctx.GetIdentifier().value()));
-    }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
-                           CoreOptions::FromMap(ctx.GetOptions(), specific_fs));
-    const std::string& root_path = ctx.GetRootPath();
-    PAIMON_ASSIGN_OR_RAISE(std::string branch, BranchManager::ResolveBranch(
-                                                   ctx.GetIdentifier(), ctx.GetOptions(),
-                                                   /*explicit_branch=*/std::nullopt, "commit"));
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,
-                           CatalogUtils::BranchIdentifier(ctx.GetIdentifier(), branch));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::optional<std::string> catalog_table_schema,
-        CatalogMainBranchSchemaJson(ctx.GetCatalog(), catalog_identifier, branch, "commit"));
-    return ManagedTableOf(tmp_options.GetFileSystem(), specific_fs, root_path, branch,
-                          ctx.GetOptions(), catalog_table_schema, ctx.GetIdentifier(),
-                          ctx.GetTableId().value_or(""), /*fs_scheme_map=*/{});
+    return ManagedTable(ctx, "commit");
 }
 
 }  // namespace paimon

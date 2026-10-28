@@ -70,16 +70,75 @@ TEST(ScanContextTest, TestWithFileSystemOverridesCatalog) {
     ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
 }
 
+TEST(ScanContextTest, TestFileSystemAndSchemeMapConflict) {
+    ScanContextBuilder builder("table_root_path");
+    auto fs = std::make_shared<MockFileSystem>();
+    builder.WithFileSystem(fs);
+    builder.WithFileSystemSchemeToIdentifierMap({{"file", "local"}});
+    ASSERT_NOK_WITH_MSG(
+        builder.Finish(),
+        "WithFileSystem() and WithFileSystemSchemeToIdentifierMap() cannot be used together");
+}
+
+TEST(ScanContextTest, TestSchemeMapWithoutFileSystem) {
+    ScanContextBuilder builder("table_root_path");
+    builder.WithFileSystemSchemeToIdentifierMap({{"file", "local"}});
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
+    std::map<std::string, std::string> expected_fs_map = {{"file", "local"}};
+    ASSERT_EQ(expected_fs_map, ctx->GetFileSystemSchemeToIdentifierMap());
+    ASSERT_FALSE(ctx->GetSpecificFileSystem());
+}
+
+TEST(ScanContextTest, TestSchemeMapOverridesCatalogFileSystem) {
+    // A scheme map routes by scheme instead of a per-table file system, so the catalog is not
+    // asked for one when a map is set.
+    auto table_fs = std::make_shared<MockFileSystem>();
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(table_fs);
+
+    ScanContextBuilder builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1"))
+                                       .WithFileSystemSchemeToIdentifierMap({{"file", "local"}})
+                                       .Finish());
+    ASSERT_FALSE(ctx->GetSpecificFileSystem());
+    std::map<std::string, std::string> expected_fs_map = {{"file", "local"}};
+    ASSERT_EQ(expected_fs_map, ctx->GetFileSystemSchemeToIdentifierMap());
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
+}
+
 TEST(ScanContextTest, TestWithCatalogNullRejected) {
     ScanContextBuilder builder("table_root_path");
     ASSERT_NOK_WITH_MSG(builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),
                         "cannot scan through a null catalog");
 }
 
+TEST(ScanContextTest, TestBranchResolution) {
+    // Finish() resolves the branch out of the identifier and the options and stores it, so the
+    // factory reads a resolved branch instead of resolving it on the spot.
+    ScanContextBuilder builder("table_root_path");
+    ASSERT_OK_AND_ASSIGN(auto option_ctx, builder.AddOption(Options::BRANCH, "dev").Finish());
+    ASSERT_EQ("dev", option_ctx->GetBranch());
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    ASSERT_OK_AND_ASSIGN(
+        auto identifier_ctx,
+        builder.WithCatalog(catalog, Identifier("db1", "t1$branch_data")).Finish());
+    ASSERT_EQ("data", identifier_ctx->GetBranch());
+
+    // Names which disagree are refused rather than silently chosen between.
+    ScanContextBuilder mismatch_builder("table_root_path");
+    ASSERT_NOK_WITH_MSG(mismatch_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_data"))
+                            .AddOption(Options::BRANCH, "rt")
+                            .Finish(),
+                        "a scan is aimed at one branch, but both 'data' and 'rt' were named");
+}
+
 TEST(ScanContextTest, TestDefaultValue) {
     ScanContextBuilder builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
     ASSERT_EQ(ctx->GetPath(), "table_root_path");
+    ASSERT_EQ("main", ctx->GetBranch());
+    ASSERT_FALSE(ctx->GetTableId());
     ASSERT_FALSE(ctx->IsStreamingMode());
     ASSERT_FALSE(ctx->GetLimit());
     ASSERT_TRUE(ctx->GetMemoryPool());
@@ -91,6 +150,7 @@ TEST(ScanContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetGlobalIndexResult());
     ASSERT_FALSE(ctx->GetSpecificFileSystem());
+    ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
 }
 
 TEST(ScanContextTest, TestSetContent) {

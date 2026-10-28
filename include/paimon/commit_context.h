@@ -57,11 +57,24 @@ class PAIMON_EXPORT CommitContext {
                   const std::shared_ptr<MemoryPool>& memory_pool,
                   const std::shared_ptr<Executor>& executor,
                   const std::shared_ptr<FileSystem>& specific_file_system,
-                  const std::map<std::string, std::string>& options);
+                  const std::map<std::string, std::string>& options, const std::string& branch,
+                  const std::optional<std::string>& table_schema = std::nullopt,
+                  const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
     ~CommitContext();
 
     const std::string& GetRootPath() const {
         return root_path_;
+    }
+
+    /// Returns the table root path. An alias of `GetRootPath()`, so that every context
+    /// exposes the table location under the same name.
+    const std::string& GetPath() const {
+        return GetRootPath();
+    }
+
+    /// Returns the branch the builder resolved out of the identifier and the options.
+    const std::string& GetBranch() const {
+        return branch_;
     }
 
     const std::string& GetCommitUser() const {
@@ -74,6 +87,11 @@ class PAIMON_EXPORT CommitContext {
 
     bool UseRESTCatalogCommit() const {
         return use_rest_catalog_commit_;
+    }
+
+    /// Returns the table schema the caller set, or nullopt when the commit loads it.
+    const std::optional<std::string>& GetSpecificTableSchema() const {
+        return table_schema_;
     }
 
     /// Returns the configured catalog, or null if unset.
@@ -107,12 +125,17 @@ class PAIMON_EXPORT CommitContext {
         return specific_file_system_;
     }
 
+    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
+        return fs_scheme_to_identifier_map_;
+    }
+
     const std::map<std::string, std::string>& GetOptions() const {
         return options_;
     }
 
  private:
     std::string root_path_;
+    std::string branch_;
     std::string commit_user_;
     bool ignore_empty_commit_;
     bool use_rest_catalog_commit_;
@@ -123,7 +146,9 @@ class PAIMON_EXPORT CommitContext {
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
+    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::map<std::string, std::string> options_;
+    std::optional<std::string> table_schema_;
 };
 
 /// `CommitContextBuilder` used to build a `CommitContext`, has input validation.
@@ -217,6 +242,34 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     CommitContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
+    /// identifiers. This allows selecting different pre-registered file system implementations
+    /// based on the URI scheme at runtime.
+    ///
+    /// @param fs_scheme_to_identifier_map Map from URI scheme (like "oss") to the corresponding
+    /// file system identifier.
+    /// @return Reference to this builder for method chaining.
+    /// @note
+    ///   - This method is intended for environments where multiple file systems are pre-registered.
+    ///   - The specified identifiers must correspond to file systems that have been registered at
+    ///   compile time or initialization.
+    ///   - Cannot be used together with `WithFileSystem()`.
+    ///   - If not set, use default file system (configured in `Options::FILE_SYSTEM`).
+    /// Example:
+    ///   builder.WithFileSystemSchemeToIdentifierMap({{"oss", "jindo"}, {"file", "local"}});
+    ///
+    CommitContextBuilder& WithFileSystemSchemeToIdentifierMap(
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
+
+    /// Set the table schema as a string to avoid schema loading I/O operations.
+    ///
+    /// @param table_schema String representation of the table schema.
+    /// @return Reference to this builder for method chaining.
+    /// @note The user must ensure that the schema string is valid and matches the table.
+    /// @note If not set, the schema is read from the catalog of `WithCatalog()` on the main
+    ///       branch, and loaded from the table path otherwise.
+    CommitContextBuilder& SetTableSchema(const std::string& table_schema);
 
     /// Build and return a `CommitContext` instance with input validation.
     /// @return Result containing the constructed `CommitContext` or an error status.

@@ -179,6 +179,13 @@ class PAIMON_EXPORT ReadContext {
         return identifier_;
     }
 
+    /// Returns the catalog table UUID, so that every context answers `GetTableId()` the way
+    /// `CommitContext` does; a read carries none.
+    const std::optional<std::string>& GetTableId() const {
+        static const std::optional<std::string> kNoTableId;
+        return kNoTableId;
+    }
+
     /// Whether a read schema (C ArrowSchema) for nested column pruning was provided.
     bool HasReadSchema() const {
         return read_schema_ != nullptr && read_schema_->release != nullptr;

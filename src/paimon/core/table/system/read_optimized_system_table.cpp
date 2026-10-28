@@ -65,13 +65,16 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     }
     auto options = ReadOptimizedOptions();
     ScanContextBuilder builder(table_path_);
+    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
+    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
+        data_table_fs = GetFileSystem();
+    }
     builder.SetOptions(options)
         .WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem() != nullptr
-                            ? context->GetSpecificFileSystem()
-                            : GetFileSystem())
+        .WithFileSystem(data_table_fs)
+        .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .WithCache(context->GetCache());
     if (context->GetLimit().has_value()) {
         builder.SetLimit(context->GetLimit().value());

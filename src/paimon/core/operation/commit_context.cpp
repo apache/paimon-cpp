@@ -46,19 +46,24 @@ CommitContext::CommitContext(const std::string& root_path, const std::string& co
     : CommitContext(root_path, commit_user, ignore_empty_commit, use_rest_catalog_commit,
                     /*catalog=*/nullptr, /*identifier=*/std::nullopt, /*table_id=*/std::nullopt,
                     append_commit_check_conflict, memory_pool, executor, specific_file_system,
-                    options) {}
+                    options,
+                    // Without an identifier the option is the only name a branch can have.
+                    BranchManager::NormalizeBranch(
+                        options.count(Options::BRANCH) ? options.at(Options::BRANCH) : ""),
+                    /*table_schema=*/std::nullopt, /*fs_scheme_to_identifier_map=*/{}) {}
 
-CommitContext::CommitContext(const std::string& root_path, const std::string& commit_user,
-                             bool ignore_empty_commit, bool use_rest_catalog_commit,
-                             const std::shared_ptr<Catalog>& catalog,
-                             const std::optional<Identifier>& identifier,
-                             const std::optional<std::string>& table_id,
-                             bool append_commit_check_conflict,
-                             const std::shared_ptr<MemoryPool>& memory_pool,
-                             const std::shared_ptr<Executor>& executor,
-                             const std::shared_ptr<FileSystem>& specific_file_system,
-                             const std::map<std::string, std::string>& options)
+CommitContext::CommitContext(
+    const std::string& root_path, const std::string& commit_user, bool ignore_empty_commit,
+    bool use_rest_catalog_commit, const std::shared_ptr<Catalog>& catalog,
+    const std::optional<Identifier>& identifier, const std::optional<std::string>& table_id,
+    bool append_commit_check_conflict, const std::shared_ptr<MemoryPool>& memory_pool,
+    const std::shared_ptr<Executor>& executor,
+    const std::shared_ptr<FileSystem>& specific_file_system,
+    const std::map<std::string, std::string>& options, const std::string& branch,
+    const std::optional<std::string>& table_schema,
+    const std::map<std::string, std::string>& fs_scheme_to_identifier_map)
     : root_path_(root_path),
+      branch_(branch),
       commit_user_(commit_user),
       ignore_empty_commit_(ignore_empty_commit),
       use_rest_catalog_commit_(use_rest_catalog_commit),
@@ -69,7 +74,9 @@ CommitContext::CommitContext(const std::string& root_path, const std::string& co
       memory_pool_(memory_pool),
       executor_(executor),
       specific_file_system_(specific_file_system),
-      options_(options) {}
+      fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
+      options_(options),
+      table_schema_(table_schema) {}
 
 CommitContext::~CommitContext() = default;
 
@@ -87,6 +94,8 @@ class CommitContextBuilder::Impl {
         memory_pool_ = GetDefaultPool();
         executor_ = CreateDefaultExecutor();
         specific_file_system_.reset();
+        fs_scheme_to_identifier_map_.clear();
+        table_schema_ = std::nullopt;
         options_.clear();
     }
 
@@ -102,6 +111,8 @@ class CommitContextBuilder::Impl {
     std::shared_ptr<MemoryPool> memory_pool_ = GetDefaultPool();
     std::shared_ptr<Executor> executor_ = CreateDefaultExecutor();
     std::shared_ptr<FileSystem> specific_file_system_;
+    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
+    std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
 };
 
@@ -172,9 +183,24 @@ CommitContextBuilder& CommitContextBuilder::WithFileSystem(
     return *this;
 }
 
+CommitContextBuilder& CommitContextBuilder::WithFileSystemSchemeToIdentifierMap(
+    const std::map<std::string, std::string>& fs_scheme_to_identifier_map) {
+    impl_->fs_scheme_to_identifier_map_ = fs_scheme_to_identifier_map;
+    return *this;
+}
+
+CommitContextBuilder& CommitContextBuilder::SetTableSchema(const std::string& table_schema) {
+    impl_->table_schema_ = table_schema;
+    return *this;
+}
+
 Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot commit through a null catalog");
+    }
+    if (impl_->specific_file_system_ && !impl_->fs_scheme_to_identifier_map_.empty()) {
+        return Status::Invalid(
+            "WithFileSystem() and WithFileSystemSchemeToIdentifierMap() cannot be used together");
     }
     if (impl_->identifier_) {
         // Before the branch is read out of the identifier: the branch of `tbl$branch_dev$options`
@@ -210,6 +236,14 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
             "a commit either goes to the catalog of WithCatalog() or is handed back as a request "
             "for the caller to send, which is what UseRESTCatalogCommit() asks for");
     }
+    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr &&
+        impl_->fs_scheme_to_identifier_map_.empty()) {
+        // A catalog issuing per-table temporary credentials only hands them out through
+        // GetTableFileSystem, so the commit uses the credentials of this table. A scheme map
+        // routes by scheme instead, so the catalog is not asked when one is set.
+        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
+                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
+    }
     PAIMON_ASSIGN_OR_RAISE(impl_->root_path_, PathUtil::NormalizePath(impl_->root_path_));
     if (impl_->root_path_.empty()) {
         return Status::Invalid("root path is empty");
@@ -218,7 +252,8 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
         impl_->root_path_, impl_->commit_user_, impl_->ignore_empty_commit_,
         impl_->use_rest_catalog_commit_, impl_->catalog_, impl_->identifier_, impl_->table_id_,
         impl_->append_commit_check_conflict_, impl_->memory_pool_, impl_->executor_,
-        impl_->specific_file_system_, impl_->options_);
+        impl_->specific_file_system_, impl_->options_, branch, impl_->table_schema_,
+        impl_->fs_scheme_to_identifier_map_);
     impl_->Reset();
     return ctx;
 }

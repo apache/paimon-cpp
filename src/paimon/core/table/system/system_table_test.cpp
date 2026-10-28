@@ -31,6 +31,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/data/generic_row.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/core_options.h"
@@ -42,6 +43,8 @@
 #include "paimon/core/table/system/read_optimized_system_table.h"
 #include "paimon/core/table/system/system_table_scan.h"
 #include "paimon/defs.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/memory_pool.h"
@@ -60,6 +63,7 @@
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/write_context.h"
 
 namespace paimon::test {
 namespace {
@@ -335,6 +339,14 @@ TEST(SystemTableTest, TestTheOperatorEntriesRefuseASystemTablePath) {
     ReadContextBuilder read_builder(system_table_path);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), "names a system table");
+
+    WriteContextBuilder write_builder(system_table_path, "commit_user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)), "names a system table");
+
+    CommitContextBuilder commit_builder(system_table_path, "commit_user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)), "names a system table");
 }
 
 TEST(SystemTableTest, TestNewReadRefusesASearch) {

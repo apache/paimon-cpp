@@ -1477,4 +1477,65 @@ TEST(TableTest, TestCreateBuildsTheOperator) {
                          FileStoreCommit::Create(std::move(commit_ctx)));
 }
 
+TEST(TableTest, TestCreateWithSpecificTableSchemaSkipsTheCatalogSchema) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+    catalog->SetTableSchema(table->LatestSchema());
+
+    // A schema the caller gave replaces the catalog's on the main branch, so neither the write
+    // nor the commit asks the catalog for one.
+    ASSERT_OK_AND_ASSIGN(std::string schema_json, table->LatestSchema()->GetJsonSchema());
+
+    WriteContextBuilder write_builder(dir->Str(), "commit-user");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> write_ctx,
+        write_builder.WithCatalog(catalog, identifier).SetTableSchema(schema_json).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreWrite> write,
+                         FileStoreWrite::Create(std::move(write_ctx)));
+
+    CommitContextBuilder commit_builder(dir->Str(), "commit-user");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<CommitContext> commit_ctx,
+        commit_builder.WithCatalog(catalog, identifier).SetTableSchema(schema_json).Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(commit_ctx)));
+
+    ASSERT_EQ(catalog->LoadTableSchemaCalls(), 0U);
+}
+
+TEST(TableTest, TestCreateWithCatalogReadsTheMainBranchSchemaFromIt) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+    catalog->SetTableSchema(table->LatestSchema());
+
+    // All four loads take the schema the catalog holds on the main branch when the caller did
+    // not set one, so each of them asks the catalog exactly once.
+    ScanContextBuilder scan_builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx,
+                         scan_builder.WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> scanned, FileStoreTableFactory::Create(*scan_ctx));
+    ASSERT_EQ(scanned->FullName(), "db.tbl");
+
+    ReadContextBuilder read_builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_ctx,
+                         read_builder.WithCatalog(catalog, identifier).Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> read_table,
+                         FileStoreTableFactory::Create(*read_ctx));
+    ASSERT_EQ(read_table->FullName(), "db.tbl");
+
+    ASSERT_EQ(catalog->LoadTableSchemaCalls(), 2U);
+}
+
 }  // namespace paimon::test

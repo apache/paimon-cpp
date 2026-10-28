@@ -52,6 +52,7 @@ class PAIMON_EXPORT WriteContext {
                  const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
                  const std::shared_ptr<RealtimeContext>& realtime_context,
                  const std::map<std::string, std::string>& options,
+                 const std::optional<std::string>& table_schema = std::nullopt,
                  const std::shared_ptr<Catalog>& catalog = nullptr,
                  const std::optional<Identifier>& identifier = std::nullopt);
 
@@ -59,6 +60,12 @@ class PAIMON_EXPORT WriteContext {
 
     const std::string& GetRootPath() const {
         return root_path_;
+    }
+
+    /// Returns the table root path. An alias of `GetRootPath()`, so that every context
+    /// exposes the table location under the same name.
+    const std::string& GetPath() const {
+        return GetRootPath();
     }
 
     const std::string& GetCommitUser() const {
@@ -122,6 +129,11 @@ class PAIMON_EXPORT WriteContext {
         return realtime_context_;
     }
 
+    /// Returns the table schema the caller set, or nullopt when the write loads it.
+    const std::optional<std::string>& GetSpecificTableSchema() const {
+        return table_schema_;
+    }
+
     /// Returns the catalog supplying table metadata, or null if unset.
     const std::shared_ptr<Catalog>& GetCatalog() const {
         return catalog_;
@@ -130,6 +142,13 @@ class PAIMON_EXPORT WriteContext {
     /// Returns the table identifier supplied with the catalog.
     const std::optional<Identifier>& GetIdentifier() const {
         return identifier_;
+    }
+
+    /// Returns the catalog table UUID, so that every context answers `GetTableId()` the way
+    /// `CommitContext` does; a write carries none.
+    const std::optional<std::string>& GetTableId() const {
+        static const std::optional<std::string> kNoTableId;
+        return kNoTableId;
     }
 
  private:
@@ -149,6 +168,7 @@ class PAIMON_EXPORT WriteContext {
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<RealtimeContext> realtime_context_;
     std::map<std::string, std::string> options_;
+    std::optional<std::string> table_schema_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
 };
@@ -280,6 +300,15 @@ class PAIMON_EXPORT WriteContextBuilder {
     ///
     WriteContextBuilder& WithFileSystemSchemeToIdentifierMap(
         const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
+
+    /// Set the table schema as a string to avoid schema loading I/O operations.
+    ///
+    /// @param table_schema String representation of the table schema.
+    /// @return Reference to this builder for method chaining.
+    /// @note The user must ensure that the schema string is valid and matches the table.
+    /// @note If not set, the schema is read from the catalog of `WithCatalog()` on the main
+    ///       branch, and loaded from the table path otherwise.
+    WriteContextBuilder& SetTableSchema(const std::string& table_schema);
 
     /// Set the thread number for write buffer spill operations. (default is 0)
     /// If <= 0, threading is disabled for spill IPC read/write.

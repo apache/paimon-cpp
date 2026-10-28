@@ -116,6 +116,7 @@ TEST(ReadContextTest, TestDefaultValue) {
     ReadContextBuilder builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
     ASSERT_EQ(ctx->GetPath(), "table_root_path");
+    ASSERT_FALSE(ctx->GetTableId());
     ASSERT_TRUE(ctx->GetMemoryPool());
     ASSERT_TRUE(ctx->GetExecutor());
     ASSERT_TRUE(ctx->GetReadFieldNames().empty());

@@ -43,10 +43,9 @@ Result<std::shared_ptr<SnapshotCommit>> SnapshotCommit::Create(
         if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<CommitLock> lock,
-            AsVersionManaged(catalog)
-                ->CreateCommitLock(catalog_identifier.value(), table_id, commit_user, options));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitLock> lock,
+                               AsVersionManaged(catalog)->CreateCommitLock(
+                                   catalog_identifier.value(), table_id, commit_user, options));
         // Reuse the caller's UUID so table recreation cannot redirect this commit.
         return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(
             catalog, catalog_identifier.value(), table_id, std::move(lock)));

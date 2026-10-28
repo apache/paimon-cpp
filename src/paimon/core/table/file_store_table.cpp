@@ -513,7 +513,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     }
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx->GetCatalog()));
     std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
-    if (specific_fs == nullptr && ctx->GetCatalog() != nullptr && !ctx->GetIdentifier()) {
+    if (specific_fs == nullptr && ctx->GetFileSystemSchemeToIdentifierMap().empty() &&
+        ctx->GetCatalog() != nullptr && !ctx->GetIdentifier()) {
         return Status::Invalid("a catalog commit requires a table identifier");
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,

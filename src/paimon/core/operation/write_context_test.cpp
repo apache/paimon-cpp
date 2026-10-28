@@ -51,8 +51,10 @@ TEST(WriteContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
     ASSERT_FALSE(ctx->GetSpecificFileSystem());
+    ASSERT_FALSE(ctx->GetSpecificTableSchema());
     ASSERT_FALSE(ctx->GetCatalog());
     ASSERT_FALSE(ctx->GetIdentifier());
+    ASSERT_FALSE(ctx->GetTableId());
 }
 
 TEST(WriteContextTest, TestWithCatalog) {
@@ -67,6 +69,28 @@ TEST(WriteContextTest, TestWithCatalog) {
 
     ASSERT_NOK_WITH_MSG(builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),
                         "cannot write through a null catalog");
+}
+
+TEST(WriteContextTest, TestWithCatalogResolvesTableFileSystem) {
+    // WithCatalog resolves the per-table file system when Finish() builds the context, which the
+    // factory then reads instead of asking the catalog again.
+    auto table_fs = std::make_shared<MockFileSystem>();
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(table_fs);
+
+    WriteContextBuilder builder("table_root_path", "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+    ASSERT_EQ(ctx->GetSpecificFileSystem(), table_fs);
+    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
+    ASSERT_EQ(catalog->TableFileSystemRequests().front(), Identifier("db1", "t1"));
+
+    // A scheme map routes by scheme instead, so the catalog is not asked for a file system.
+    WriteContextBuilder map_builder("table_root_path", "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(auto map_ctx, map_builder.WithCatalog(catalog, Identifier("db1", "t1"))
+                                           .WithFileSystemSchemeToIdentifierMap({{"file", "local"}})
+                                           .Finish());
+    ASSERT_FALSE(map_ctx->GetSpecificFileSystem());
+    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
 }
 
 TEST(WriteContextTest, TestCatalogAddressesBranchByIdentifier) {
@@ -172,6 +196,7 @@ TEST(WriteContextTest, TestSetContent) {
                              .WithWriteSchema(write_schema)
                              .WithFileSystemSchemeToIdentifierMap(fs_scheme_to_identifier_map)
                              .WithFileSystem(file_system)
+                             .SetTableSchema("table-schema-json")
                              .AddOption("key", "value")
                              .Finish());
 
@@ -187,6 +212,8 @@ TEST(WriteContextTest, TestSetContent) {
     ASSERT_EQ(ctx->GetWriteSchema(), write_schema);
     ASSERT_EQ(ctx->GetFileSystemSchemeToIdentifierMap(), fs_scheme_to_identifier_map);
     ASSERT_EQ(ctx->GetSpecificFileSystem(), file_system);
+    ASSERT_TRUE(ctx->GetSpecificTableSchema().has_value());
+    ASSERT_EQ("table-schema-json", ctx->GetSpecificTableSchema().value());
     std::map<std::string, std::string> expected_options = {{"key", "value"}};
     ASSERT_EQ(expected_options, ctx->GetOptions());
 }

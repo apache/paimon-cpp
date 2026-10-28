@@ -57,12 +57,18 @@ class PAIMON_EXPORT ScanContext {
                 const std::optional<std::string>& table_schema,
                 const std::map<std::string, std::string>& options,
                 const std::shared_ptr<Cache>& cache, const std::shared_ptr<Catalog>& catalog,
-                const std::optional<Identifier>& identifier);
+                const std::optional<Identifier>& identifier, const std::string& branch,
+                const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
 
     ~ScanContext();
 
     const std::string& GetPath() const {
         return path_;
+    }
+
+    /// Returns the branch the builder resolved out of the identifier and the options.
+    const std::string& GetBranch() const {
+        return branch_;
     }
 
     bool IsStreamingMode() const {
@@ -100,6 +106,10 @@ class PAIMON_EXPORT ScanContext {
         return specific_file_system_;
     }
 
+    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
+        return fs_scheme_to_identifier_map_;
+    }
+
     const std::optional<std::string>& GetSpecificTableSchema() const {
         return table_schema_;
     }
@@ -118,8 +128,16 @@ class PAIMON_EXPORT ScanContext {
         return identifier_;
     }
 
+    /// Returns the catalog table UUID, so that every context answers `GetTableId()` the way
+    /// `CommitContext` does; a scan carries none.
+    const std::optional<std::string>& GetTableId() const {
+        static const std::optional<std::string> kNoTableId;
+        return kNoTableId;
+    }
+
  private:
     std::string path_;
+    std::string branch_;
     bool is_streaming_mode_;
     std::optional<int32_t> limit_;
     std::shared_ptr<ScanFilter> scan_filters_;
@@ -128,6 +146,7 @@ class PAIMON_EXPORT ScanContext {
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
+    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
@@ -220,6 +239,25 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ScanContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
+    /// identifiers. This allows selecting different pre-registered file system implementations
+    /// based on the URI scheme at runtime.
+    ///
+    /// @param fs_scheme_to_identifier_map Map from URI scheme (like "oss") to the corresponding
+    /// file system identifier.
+    /// @return Reference to this builder for method chaining.
+    /// @note
+    ///   - This method is intended for environments where multiple file systems are pre-registered.
+    ///   - The specified identifiers must correspond to file systems that have been registered at
+    ///   compile time or initialization.
+    ///   - Cannot be used together with `WithFileSystem()`.
+    ///   - If not set, use default file system (configured in `Options::FILE_SYSTEM`).
+    /// Example:
+    ///   builder.WithFileSystemSchemeToIdentifierMap({{"oss", "jindo"}, {"file", "local"}});
+    ///
+    ScanContextBuilder& WithFileSystemSchemeToIdentifierMap(
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
 
     /// Plans a native table through its own file system - including the per-table temporary
     /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.

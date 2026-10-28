@@ -22,6 +22,7 @@
 
 #include "arrow/util/thread_pool.h"
 #include "fmt/format.h"
+#include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -42,7 +43,8 @@ WriteContext::WriteContext(
     const std::shared_ptr<FileSystem>& specific_file_system,
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
     const std::shared_ptr<RealtimeContext>& realtime_context,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<Catalog>& catalog,
+    const std::map<std::string, std::string>& options,
+    const std::optional<std::string>& table_schema, const std::shared_ptr<Catalog>& catalog,
     const std::optional<Identifier>& identifier)
     : root_path_(root_path),
       commit_user_(commit_user),
@@ -60,6 +62,7 @@ WriteContext::WriteContext(
       fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
       realtime_context_(realtime_context),
       options_(options),
+      table_schema_(table_schema),
       catalog_(catalog),
       identifier_(identifier) {}
 
@@ -85,6 +88,7 @@ class WriteContextBuilder::Impl {
         realtime_context_.reset();
         catalog_.reset();
         identifier_.reset();
+        table_schema_ = std::nullopt;
         options_.clear();
     }
 
@@ -108,6 +112,7 @@ class WriteContextBuilder::Impl {
     std::shared_ptr<RealtimeContext> realtime_context_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
+    std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
 };
 
@@ -190,6 +195,11 @@ WriteContextBuilder& WriteContextBuilder::SetWriteBufferSpillThreadNumber(int32_
     return *this;
 }
 
+WriteContextBuilder& WriteContextBuilder::SetTableSchema(const std::string& table_schema) {
+    impl_->table_schema_ = table_schema;
+    return *this;
+}
+
 WriteContextBuilder& WriteContextBuilder::WithFileSystem(
     const std::shared_ptr<FileSystem>& file_system) {
     impl_->specific_file_system_ = file_system;
@@ -239,6 +249,14 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
                 branch, table_name, branch));
         }
     }
+    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr &&
+        impl_->fs_scheme_to_identifier_map_.empty()) {
+        // A catalog issuing per-table temporary credentials only hands them out through
+        // GetTableFileSystem, so the write uses the credentials of this table. A scheme map
+        // routes by scheme instead, so the catalog is not asked when one is set.
+        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
+                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
+    }
     bool enable_multi_thread_spill = impl_->spill_thread_number_ > 0;
     if (enable_multi_thread_spill) {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
@@ -249,7 +267,8 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         impl_->ignore_num_bucket_check_, impl_->ignore_previous_files_, enable_multi_thread_spill,
         impl_->write_id_, branch, impl_->write_schema_, impl_->memory_pool_, impl_->executor_,
         impl_->temp_directory_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
-        impl_->realtime_context_, impl_->options_, impl_->catalog_, impl_->identifier_);
+        impl_->realtime_context_, impl_->options_, impl_->table_schema_, impl_->catalog_,
+        impl_->identifier_);
     impl_->Reset();
     return ctx;
 }
