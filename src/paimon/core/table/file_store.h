@@ -75,6 +75,11 @@ class FileStore {
     ///        builds one over `root_path` on `branch`.
     /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
     ///        schemes through, kept so a copy resolves as this store does.
+    // TODO(yonghao.fyh): Resolve the final CoreOptions before the table and the store are
+    // constructed, so this takes (root_path, core_options) and consumes the resolution: file
+    // system and branch from the options, both managers built inside, the schema left to
+    // FileStoreTable. CoreOptions retains FromMap's inputs - the specified file system and the
+    // scheme map - so a copy or a branch switch resolves through them again.
     static Result<std::shared_ptr<FileStore>> Create(
         const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
         const std::shared_ptr<TableSchema>& schema, const std::string& branch,
