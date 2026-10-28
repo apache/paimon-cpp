@@ -162,8 +162,15 @@ TEST(TableTest, TestTableCarriesManagersOfItsBranch) {
     auto file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(copy);
     ASSERT_TRUE(file_store_copy != nullptr);
     EXPECT_EQ(file_store_copy->CurrentBranch(), "dev");
-    EXPECT_EQ(file_store_copy->GetSchemaManager(), file_store_table->GetSchemaManager());
-    EXPECT_EQ(file_store_copy->GetSnapshotManager(), file_store_table->GetSnapshotManager());
+    // A copy builds its managers over its own resolution rather than taking this table's over, and
+    // so serves the same branch through managers of its own.
+    ASSERT_TRUE(file_store_copy->GetSchemaManager() != nullptr);
+    ASSERT_TRUE(file_store_copy->GetSnapshotManager() != nullptr);
+    EXPECT_NE(file_store_copy->GetSchemaManager(), file_store_table->GetSchemaManager());
+    EXPECT_NE(file_store_copy->GetSnapshotManager(), file_store_table->GetSnapshotManager());
+    EXPECT_EQ(file_store_copy->GetSnapshotManager()->Branch(), "dev");
+    EXPECT_EQ(file_store_copy->GetSnapshotManager()->RootPath(), path);
+    EXPECT_EQ(file_store_copy->GetSnapshotManager()->Fs(), fs);
 }
 
 TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
@@ -487,7 +494,7 @@ TEST(TableTest, TestAFallbackReaderIgnoresReadContextOptionsAbsentFromTheTable) 
     }
 }
 
-TEST(TableTest, TestACopyThatMovesAnS3OptionRebuildsItsManagers) {
+TEST(TableTest, TestACopyServesItsS3OptionThroughManagersOfItsOwn) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
@@ -501,18 +508,22 @@ TEST(TableTest, TestACopyThatMovesAnS3OptionRebuildsItsManagers) {
     auto file_store_table = std::dynamic_pointer_cast<FileStoreTable>(table);
     ASSERT_TRUE(file_store_table != nullptr);
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> moved,
-                         table->Copy({{"s3.endpoint", "http://new"}}));
-    auto moved_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(moved);
-    ASSERT_TRUE(moved_file_store_table != nullptr);
-    EXPECT_NE(moved_file_store_table->GetSchemaManager(), file_store_table->GetSchemaManager());
-    EXPECT_NE(moved_file_store_table->GetSnapshotManager(), file_store_table->GetSnapshotManager());
-
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> kept, table->Copy({{"s3.endpoint", "http://old"}}));
-    auto kept_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(kept);
-    ASSERT_TRUE(kept_file_store_table != nullptr);
-    EXPECT_EQ(kept_file_store_table->GetSchemaManager(), file_store_table->GetSchemaManager());
-    EXPECT_EQ(kept_file_store_table->GetSnapshotManager(), file_store_table->GetSnapshotManager());
+    // An option that moves the file system the schema named and one that leaves it where it was
+    // both come back as a copy of their own: a copy never reads metadata through the managers of
+    // the table it was copied from, whichever resolution it ends up serving.
+    for (const std::string& endpoint : {std::string("http://new"), std::string("http://old")}) {
+        SCOPED_TRACE(endpoint);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy, table->Copy({{"s3.endpoint", endpoint}}));
+        auto copy_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(copy);
+        ASSERT_TRUE(copy_file_store_table != nullptr);
+        EXPECT_NE(copy_file_store_table->GetSchemaManager(), file_store_table->GetSchemaManager());
+        EXPECT_NE(copy_file_store_table->GetSnapshotManager(),
+                  file_store_table->GetSnapshotManager());
+        EXPECT_EQ("main", copy_file_store_table->CurrentBranch());
+        auto copy_schema = std::dynamic_pointer_cast<TableSchema>(copy->LatestSchema());
+        ASSERT_TRUE(copy_schema != nullptr);
+        EXPECT_EQ(endpoint, copy_schema->Options().at("s3.endpoint"));
+    }
 }
 
 TEST(TableTest, TestSwitchToBranch) {
@@ -567,6 +578,37 @@ TEST(TableTest, TestSwitchToBranch) {
     EXPECT_EQ(0, main_again_schema->Options().count(Options::BRANCH));
 
     ASSERT_NOK_WITH_MSG(main_file_store_table->SwitchToBranch("missing"), "branch");
+}
+
+TEST(TableTest, TestSwitchToBranchFromATableThatHasNoSchemaOfItsOwn) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::string path = dir->Str() + "/tbl";
+    SchemaManager dev_schema_manager(dir->GetFileSystem(), path, "dev");
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> dev_schema,
+        dev_schema_manager.CreateTable(arrow::schema({arrow::field("c0", arrow::int32())}),
+                                       /*partition_keys=*/{}, /*primary_keys=*/{}, {}));
+
+    // A table opened over a path its own branch holds no schema under, and opened without a file
+    // system of its own: its operators report that no schema was found, while a branch that has one
+    // is read through the default file system the store falls back to and served on its own.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStoreTable> table,
+        FileStoreTable::Create(/*file_system=*/nullptr, path, /*schema=*/nullptr,
+                               Identifier("db", "tbl"), /*uuid=*/"",
+                               /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
+                               /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
+                               /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_table, table->SwitchToBranch("dev"));
+    auto dev_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(dev_table);
+    ASSERT_TRUE(dev_file_store_table != nullptr);
+    EXPECT_EQ("dev", dev_file_store_table->CurrentBranch());
+    EXPECT_EQ("tbl$branch_dev", dev_table->Name());
+    ASSERT_EQ((std::vector<std::string>{"c0"}), dev_table->LatestSchema()->FieldNames());
+    ASSERT_TRUE(dev_file_store_table->GetSchemaManager() != nullptr);
+    ASSERT_TRUE(dev_file_store_table->GetSnapshotManager() != nullptr);
+    EXPECT_EQ("dev", dev_file_store_table->GetSnapshotManager()->Branch());
 }
 
 TEST(TableTest, TestNewWriteServesTheBranchTheTableWasLoadedWith) {

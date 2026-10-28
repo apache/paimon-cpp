@@ -35,7 +35,6 @@
 #include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
-#include "paimon/core/table/file_store.h"
 #include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
@@ -68,10 +67,8 @@ Result<std::shared_ptr<Table>> WithContextOptions(
 }
 
 Result<std::shared_ptr<Table>> TableOfLoadedSchema(
-    const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<FileSystem>& explicit_file_system, const std::string& path,
     const std::string& branch, const std::map<std::string, std::string>& options,
-    const std::shared_ptr<SchemaManager>& schema_manager,
     const std::shared_ptr<TableSchema>& latest_schema, const std::optional<Identifier>& identifier,
     const std::string& uuid, const std::map<std::string, std::string>& fs_scheme_map) {
     if (latest_schema != nullptr) {
@@ -87,17 +84,14 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     }
     Identifier table_identifier =
         identifier.value_or(CatalogUtils::IdentifierFromPath(path, branch));
-    std::shared_ptr<SchemaManager> manager = schema_manager;
-    if (manager != nullptr && latest_schema != nullptr && explicit_file_system == nullptr &&
-        (!fs_scheme_map.empty() ||
-         !FileStore::FileSystemResolutionAgrees(latest_schema->Options(), options))) {
-        manager = nullptr;
-    }
+    // The schema was read through a file system the context's options resolved, while the table is
+    // served through the one the schema's own options resolve: the store builds its managers over
+    // that resolution rather than taking over the reader's.
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStoreTable> table,
         FileStoreTable::Create(explicit_file_system, path, latest_schema, table_identifier, uuid,
-                               branch, manager, /*snapshot_manager=*/nullptr, fs_scheme_map,
-                               /*dynamic_options=*/{}));
+                               branch, /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
+                               fs_scheme_map, /*dynamic_options=*/{}));
     return WithContextOptions(table, latest_schema, options);
 }
 
@@ -107,19 +101,19 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
     const std::string& branch, const std::map<std::string, std::string>& options,
     const std::optional<std::string>& schema_json, const std::optional<Identifier>& identifier,
     const std::string& uuid, const std::map<std::string, std::string>& fs_scheme_map) {
-    auto schema_manager = std::make_shared<SchemaManager>(file_system, path, branch);
+    SchemaManager schema_manager(file_system, path, branch);
     std::shared_ptr<TableSchema> latest_schema;
     if (branch == BranchManager::DEFAULT_MAIN_BRANCH && schema_json) {
         PAIMON_ASSIGN_OR_RAISE(latest_schema, TableSchema::CreateFromJson(schema_json.value()));
     } else {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
-                               schema_manager->Latest());
+                               schema_manager.Latest());
         if (latest) {
             latest_schema = *latest;
         }
     }
-    return TableOfLoadedSchema(file_system, explicit_file_system, path, branch, options,
-                               schema_manager, latest_schema, identifier, uuid, fs_scheme_map);
+    return TableOfLoadedSchema(explicit_file_system, path, branch, options, latest_schema,
+                               identifier, uuid, fs_scheme_map);
 }
 
 Result<std::optional<std::string>> CatalogMainBranchSchemaJson(

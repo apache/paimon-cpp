@@ -66,10 +66,13 @@ class FileStore {
     ///        the paths below are built for, and `GetOptions()` parses its options. Null when the
     ///        caller had none, which the operators then report.
     /// @param branch The branch the store serves, normalized here.
-    /// @param schema_manager A schema manager to carry instead of building one: the one a context
-    ///        dispatch read the schema through, whose cache the operators then serve.
-    /// @param snapshot_manager A snapshot manager to carry instead of building one. Null builds one
-    ///        over `root_path` on `branch`.
+    /// @param schema_manager A schema manager to carry instead of building one: the one a table
+    ///        asked for the branch it already serves hands over, whose resolution this store's
+    ///        options therefore name as well. Null - what a load, a copy and a branch switch pass,
+    ///        each resolving through a schema of its own - builds one over the resolved file
+    ///        system, so no manager is ever left reading through a backend its table moved off.
+    /// @param snapshot_manager A snapshot manager to carry instead of building one, as above. Null
+    ///        builds one over `root_path` on `branch`.
     /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
     ///        schemes through, kept so a copy resolves as this store does.
     static Result<std::shared_ptr<FileStore>> Create(
@@ -78,18 +81,6 @@ class FileStore {
         const std::shared_ptr<SchemaManager>& schema_manager,
         const std::shared_ptr<SnapshotManager>& snapshot_manager,
         const std::map<std::string, std::string>& fs_scheme_map);
-
-    /// Returns whether a copy's dynamic options change the file system its store resolves to. When
-    /// they do, the copy must not inherit the managers of the table it was copied from: they were
-    /// built over that table's resolution and would keep reading metadata through the backend the
-    /// copy left.
-    static bool FileSystemResolutionMayChange(
-        const TableSchema& schema, const std::map<std::string, std::string>& dynamic_options);
-
-    /// Returns whether two options maps resolve to the same file system. Every resolution key has
-    /// to agree, including a key missing on both sides.
-    static bool FileSystemResolutionAgrees(const std::map<std::string, std::string>& left,
-                                           const std::map<std::string, std::string>& right);
 
     const std::string& CurrentBranch() const {
         return branch_;

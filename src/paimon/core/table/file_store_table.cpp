@@ -143,17 +143,16 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     PAIMON_RETURN_NOT_OK(SchemaValidation::CheckImmutableOptions(*loaded_schema, overridable));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
                            loaded_schema->MergeOptions(overridable));
-    const bool fs_resolution_may_change =
-        FileStore::FileSystemResolutionMayChange(*loaded_schema, overridable);
     std::map<std::string, std::string> accumulated = dynamic_options_;
     for (const auto& [key, value] : overridable) {
         accumulated.insert_or_assign(key, value);
     }
+    // A copy resolves its file system from its own merged options, so it takes over no manager of
+    // the table it was copied from: the store builds both over the resolution the copy names.
     return FileStoreTable::Create(store_->GetSpecifiedFileSystem(), root_path_,
                                   std::shared_ptr<TableSchema>(std::move(merged_schema)),
                                   identifier_, CatalogUuid().value_or(""), CurrentBranch(),
-                                  fs_resolution_may_change ? nullptr : GetSchemaManager(),
-                                  fs_resolution_may_change ? nullptr : GetSnapshotManager(),
+                                  /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
                                   store_->GetFsSchemeMap(), accumulated);
 }
 
@@ -165,9 +164,12 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
                                       GetSchemaManager(), GetSnapshotManager(),
                                       store_->GetFsSchemeMap(), dynamic_options_);
     }
-    auto schema_manager = std::make_shared<SchemaManager>(file_system_, root_path_, target_branch);
+    // The branch is read through the file system this table serves, and then served through the
+    // one its own schema resolves: the store builds the managers over that resolution, so none of
+    // this table's is carried over.
+    SchemaManager schema_manager(file_system_, root_path_, target_branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
-                           schema_manager->Latest());
+                           schema_manager.Latest());
     if (!latest) {
         return Status::Invalid(fmt::format("branch {} does not exist", target_branch));
     }
@@ -177,19 +179,12 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> branch_schema,
                            (*latest)->MergeOptions(overridable));
-    const std::shared_ptr<SchemaManager> branch_schema_manager =
-        (store_->GetSpecifiedFileSystem() == nullptr &&
-         (!store_->GetFsSchemeMap().empty() ||
-          !FileStore::FileSystemResolutionAgrees(
-              branch_schema->Options(), std::static_pointer_cast<TableSchema>(schema_)->Options())))
-            ? nullptr
-            : schema_manager;
     PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
                            CatalogUtils::BranchIdentifier(identifier_, target_branch));
     return FileStoreTable::Create(store_->GetSpecifiedFileSystem(), root_path_,
                                   std::shared_ptr<TableSchema>(std::move(branch_schema)),
                                   branch_identifier, CatalogUuid().value_or(""), target_branch,
-                                  branch_schema_manager, /*snapshot_manager=*/nullptr,
+                                  /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
                                   store_->GetFsSchemeMap(), /*dynamic_options=*/{});
 }
 

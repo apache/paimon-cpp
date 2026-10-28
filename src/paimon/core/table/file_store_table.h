@@ -66,8 +66,8 @@ class FileStoreTable : public Table {
     /// @param branch The branch the table serves, which the managers below read and write on.
     /// @param schema_manager A schema manager to carry instead of building one. See
     ///        `FileStore::Create`.
-    /// @param snapshot_manager A snapshot manager to carry instead of building one. `Copy` hands
-    ///        its table's over so both share one. See `FileStore::Create`.
+    /// @param snapshot_manager A snapshot manager to carry instead of building one. See
+    ///        `FileStore::Create`.
     /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
     ///        schemes through, which the store's options resolve through as well. `Copy` hands its
     ///        table's map over.
@@ -102,14 +102,17 @@ class FileStoreTable : public Table {
         return identifier_.GetFullName();
     }
 
-    /// Returns a copy that serves `dynamic_options`. The file system, root path and identifier
-    /// stay as they are: they name this table, and an option does not rename it.
+    /// Returns a copy that serves `dynamic_options`. The root path and the identifier stay as they
+    /// are: they name this table, and an option does not rename it. The copy resolves the file
+    /// system the caller opened this table through, if any, together with its own merged options,
+    /// and builds its managers over that resolution rather than taking this table's over.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     /// Returns the table of `branch`, as Java Paimon's `switchToBranch` does. The branch switched
-    /// to is served as it is: its schema is read from its own directory, so this table's dynamic
-    /// options are not carried over. Switching to the branch this table already serves hands back a
+    /// to is served as it is: its schema is read from its own directory and its managers are built
+    /// over the file system that schema resolves, so neither this table's dynamic options nor its
+    /// managers are carried over. Switching to the branch this table already serves hands back a
     /// copy of it with the schema and the managers shared. A branch with no schema does not exist.
     Result<std::shared_ptr<Table>> SwitchToBranch(const std::string& branch) const;
 
