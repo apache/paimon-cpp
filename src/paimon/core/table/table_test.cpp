@@ -1447,10 +1447,10 @@ TEST(TableTest, TestALoadResolvesTheContextFormatOverTheSchemaOne) {
     // A schema whose stored format this process cannot resolve: resolving the schema's own
     // options at load would fail on it, so the load only serves the table when the context
     // overrides the format, and only when the override is merged before the resolution.
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> stored_schema,
-                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
-                                             /*primary_keys=*/{},
-                                             {{"file.format", "unavailable-format"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> stored_schema,
+        TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                            /*primary_keys=*/{}, {{"file.format", "unavailable-format"}}));
     ASSERT_OK_AND_ASSIGN(std::string schema_json, stored_schema->GetJsonSchema());
     {
         ScanContextBuilder builder(dir->Str());
@@ -1468,8 +1468,7 @@ TEST(TableTest, TestALoadResolvesTheContextFormatOverTheSchemaOne) {
         // only opens when the override, not the stored format, is what the table serves.
         ScanContextBuilder scan_builder(dir->Str());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx, scan_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
-                             table->NewScan(std::move(scan_ctx)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_ctx)));
         ASSERT_NE(scan, nullptr);
     }
 }
