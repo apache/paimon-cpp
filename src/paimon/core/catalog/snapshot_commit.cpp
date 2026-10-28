@@ -20,10 +20,14 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
+#include "fmt/format.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
 #include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
+#include "paimon/core/core_options.h"
+#include "paimon/defs.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 
@@ -31,17 +35,29 @@ namespace paimon {
 
 Result<std::shared_ptr<SnapshotCommit>> SnapshotCommit::Create(
     const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& catalog_identifier,
-    const std::optional<std::string>& table_id, bool use_rest_catalog_commit,
+    const CoreOptions& options, const std::optional<std::string>& table_id,
+    const std::string& commit_user, bool use_rest_catalog_commit,
     const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<SnapshotManager>& snapshot_manager) {
     if (AsVersionManaged(catalog) != nullptr) {
         if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
-        return std::shared_ptr<SnapshotCommit>(
-            std::make_shared<CatalogSnapshotCommit>(catalog, catalog_identifier.value(), table_id));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<CommitLock> lock,
+            AsVersionManaged(catalog)
+                ->CreateCommitLock(catalog_identifier.value(), table_id, commit_user, options));
+        // Reuse the caller's UUID so table recreation cannot redirect this commit.
+        return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(
+            catalog, catalog_identifier.value(), table_id, std::move(lock)));
     }
     if (use_rest_catalog_commit) {
+        if (options.RestCommitAcquireLock()) {
+            return Status::Invalid(fmt::format(
+                "'{}' needs a commit through a REST catalog with WithCatalog(); a commit table "
+                "request built for the caller to send cannot hold a commit lease",
+                Options::REST_COMMIT_ACQUIRE_LOCK));
+        }
         return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(table_id));
     }
     if (table_id && catalog == nullptr) {

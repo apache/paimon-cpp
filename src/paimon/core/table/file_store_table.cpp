@@ -37,8 +37,6 @@
 #include "paimon/common/utils/sensitive_config_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
-#include "paimon/core/catalog/commit_lock.h"
-#include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
@@ -505,56 +503,6 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
                                                std::move(fallback_table_read), arrow_pool);
 }
 
-Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext> ctx) {
-    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "read"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
-    return table->NewRead(std::move(ctx));
-}
-
-namespace {
-
-bool IsCatalogCommit(const CommitContext& ctx) {
-    return AsVersionManaged(ctx.GetCatalog()) != nullptr;
-}
-
-Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
-    const CommitContext& ctx, const std::optional<Identifier>& catalog_identifier,
-    const CoreOptions& options, const std::shared_ptr<SnapshotManager>& snapshot_manager) {
-    if (IsCatalogCommit(ctx)) {
-        if (!catalog_identifier) {
-            return Status::Invalid("a catalog commit requires a table identifier");
-        }
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitLock> lock,
-                               AsVersionManaged(ctx.GetCatalog())
-                                   ->CreateCommitLock(catalog_identifier.value(), ctx.GetTableId(),
-                                                      ctx.GetCommitUser(), options));
-        // Reuse the caller's UUID so table recreation cannot redirect this commit.
-        return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(
-            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId(), std::move(lock)));
-    }
-    if (ctx.UseRESTCatalogCommit()) {
-        if (options.RestCommitAcquireLock()) {
-            return Status::Invalid(fmt::format(
-                "'{}' needs a commit through a REST catalog with WithCatalog(); a commit table "
-                "request built for the caller to send cannot hold a commit lease",
-                Options::REST_COMMIT_ACQUIRE_LOCK));
-        }
-        return std::shared_ptr<SnapshotCommit>(
-            std::make_shared<CatalogSnapshotCommit>(ctx.GetTableId()));
-    }
-    // Catalogs without version management may still supply a table ID.
-    if (ctx.GetTableId() && ctx.GetCatalog() == nullptr) {
-        return Status::Invalid(
-            "a commit which publishes the snapshot by writing it to the table directory sends no "
-            "commit table request, so there is nowhere to put a table id; commit through a "
-            "catalog with WithCatalog() or ask for the request with UseRESTCatalogCommit()");
-    }
-    return std::shared_ptr<SnapshotCommit>(
-        std::make_shared<RenamingSnapshotCommit>(options.GetFileSystem(), snapshot_manager));
-}
-
-}  // namespace
-
 Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     std::unique_ptr<CommitContext> ctx) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "commit"));
@@ -642,10 +590,11 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
         NewCommitScanSupplier(snapshot_manager, manifest_list, manifest_file, arrow_schema, options,
                               ctx->GetExecutor(), ctx->GetMemoryPool());
 
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotCommit> snapshot_commit,
-                           SnapshotCommit::Create(ctx->GetCatalog(), catalog_identifier, options,
-                                                  ctx->GetTableId(), ctx->UseRESTCatalogCommit(),
-                                                  options.GetFileSystem(), snapshot_manager));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<SnapshotCommit> snapshot_commit,
+        SnapshotCommit::Create(ctx->GetCatalog(), catalog_identifier, options, ctx->GetTableId(),
+                               ctx->GetCommitUser(), ctx->UseRESTCatalogCommit(),
+                               options.GetFileSystem(), snapshot_manager));
 
     return std::make_unique<FileStoreCommitImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, root_path_, ctx->GetCommitUser(),
