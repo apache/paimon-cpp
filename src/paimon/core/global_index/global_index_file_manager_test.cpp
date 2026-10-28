@@ -460,7 +460,6 @@ TEST_F(GlobalIndexFileManagerTest, TestDeleteExternalTaskCheckpointFromSchemaAnd
     ASSERT_FALSE(exists);
 }
 
-
 TEST_F(GlobalIndexFileManagerTest, TestDeleteTaskCheckpointWithoutCustomFileSystem) {
     ASSERT_OK(CreateSchema());
     ASSERT_NOK_WITH_MSG(GlobalIndexWriteTask::DeleteCheckpoint(
