@@ -126,8 +126,6 @@ Result<bool> IsEnabled(const GlobalSystemTableRegistryEntry& entry,
                                                CatalogOptionsSystemTable::kEnabledOption, false);
 }
 
-// Whether a table reads its rows by enumerating what the catalog holds, and so cannot be built
-// without one.
 bool RequiresCatalog(const std::string& table_name) {
     std::string normalized = StringUtils::ToLowerCase(table_name);
     for (const auto& entry : GlobalSystemTableRegistry()) {
@@ -146,7 +144,6 @@ struct CatalogTableInfo {
 
 // Match Java CatalogUtils::listAllTables: tolerate databases or tables removed concurrently, but
 // propagate all other catalog and schema errors instead of returning incomplete system-table rows.
-// `table_name` names the table asking, for the refusal a missing catalog reports.
 Result<std::vector<CatalogTableInfo>> LoadAllDataTables(
     const std::shared_ptr<const Catalog>& catalog, const std::string& table_name) {
     if (catalog == nullptr) {
@@ -306,8 +303,6 @@ Result<bool> GlobalSystemTableLoader::IsSupported(
 
 Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::Load(
     const std::string& table_name, const GlobalSystemTableContext& context) {
-    // Refused here rather than at the first read: a table handed back to a caller that can never
-    // build its rows is a failure the caller finds out about late and far from its cause.
     if (context.catalog == nullptr && RequiresCatalog(table_name)) {
         return Status::NotImplemented("global system table requires catalog context: ", table_name);
     }
@@ -325,9 +320,6 @@ Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::LoadForSchema(
             }
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                    entry.factory(context));
-            // The table is handed out through the `Table` interface, which serves the schema
-            // the base holds, so its own read-only schema is adopted before it leaves the
-            // loader.
             PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
             return system_table;
         }

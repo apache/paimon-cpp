@@ -443,7 +443,6 @@ Status SchemaValidation::CheckImmutableOptions(
             return Status::Invalid(fmt::format("Change '{}' is not supported yet.", key));
         }
         if (key == Options::IGNORE_DELETE) {
-            // An unset option is one that never ignored deletes, the same default they parse to.
             PAIMON_ASSIGN_OR_RAISE(bool old_ignore_delete,
                                    OptionsUtils::GetValueFromMap<bool>(schema_options, key, false));
             PAIMON_ASSIGN_OR_RAISE(bool new_ignore_delete,

@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "paimon/catalog/identifier.h"
 #include "paimon/core/core_options.h"
@@ -141,13 +142,15 @@ class FileStore {
     }
 
     /// Builds the path factory an operator names its metadata paths through, over this store's
-    /// root path and the partition keys of its schema. No schema change can alter the partition
-    /// keys, so an operator serving a schema read after the table was loaded still names the same
-    /// partitions. The caller names the file format identifier: a write names the format of its
+    /// root path. The caller names the partition keys of the schema the arrow schema was converted
+    /// from: an operator serving the table's own schema names this store's partition keys, while
+    /// a read of a fallback branch names the keys of that branch's schema, which is not this
+    /// store's. The caller names the file format identifier: a write names the format of its
     /// level-0 files, which the options may set per level, while a scan, a read and a commit name
     /// the table's format.
     Result<std::shared_ptr<FileStorePathFactory>> NewPathFactory(
-        const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
+        const std::shared_ptr<arrow::Schema>& arrow_schema,
+        const std::vector<std::string>& partition_keys, const CoreOptions& options,
         const std::string& file_format_identifier,
         const std::shared_ptr<MemoryPool>& memory_pool) const;
 

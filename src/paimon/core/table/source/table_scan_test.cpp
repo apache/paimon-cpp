@@ -167,8 +167,6 @@ TEST(TableScanTest, TestPkSchemaEvolutionScan) {
 TEST(TableScanTest, TestReadOptimizedPrimaryKeyStreamingScanUnsupported) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/pk_table_with_alter_table.db/pk_table_with_alter_table$ro";
-    // A system table is not served by the entry point a path names any more: the loader hands
-    // the table back the way a catalog's `GetTable` would, and the table refuses the scan.
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"}};
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
     ASSERT_OK_AND_ASSIGN(

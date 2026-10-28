@@ -68,9 +68,6 @@ class MergeFunctionWrapper;
 
 namespace {
 
-/// Whether a schema older than `current_schema_id` carried a primary key b-tree index, which a
-/// write has to keep maintaining: the index files an earlier schema wrote are still there to be
-/// read, and dropping the definition now would leave them orphaned.
 Result<bool> HasHistoricalPrimaryKeyBTreeDefinition(
     const std::shared_ptr<SchemaManager>& schema_manager, int64_t current_schema_id) {
     if (current_schema_id <= TableSchema::FIRST_SCHEMA_ID) {
@@ -106,7 +103,6 @@ Result<std::unique_ptr<FileStoreWrite>> PrimaryKeyFileStoreTable::CreateWrite(
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const {
-    // pk table
     const std::shared_ptr<TableSchema>& schema = store_->GetSchema();
     if (ctx.GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *schema));
@@ -142,7 +138,6 @@ Result<std::unique_ptr<FileStoreWrite>> PrimaryKeyFileStoreTable::CreateWrite(
                            PrimaryKeyTableUtils::CreateMergeFunction(arrow_schema, primary_keys,
                                                                      options, ctx.GetMemoryPool()));
     if (options.NeedLookup() && options.GetMergeEngine() != MergeEngine::FIRST_ROW) {
-        // don't wrap first row, it is already OK
         merge_function = std::make_unique<LookupMergeFunction>(std::move(merge_function));
     }
     std::shared_ptr<MergeFunctionWrapper<KeyValue>> merge_function_wrapper =
@@ -261,8 +256,6 @@ CommitScanner::ScanSupplier PrimaryKeyFileStoreTable::NewCommitScanSupplier(
     const std::shared_ptr<ManifestFile>& manifest_file,
     const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) const {
-    // The schema manager the table carries, which the scans this supplier hands out read the
-    // schema through.
     const std::shared_ptr<SchemaManager>& schema_manager = GetSchemaManager();
     const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
     return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,

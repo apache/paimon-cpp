@@ -198,9 +198,6 @@ Status SystemTable::CheckNoSearch(const std::shared_ptr<ReadContext>& context) {
         return Status::NotImplemented(
             "VectorSearch or FullTextSearch does not support system-table reads yet");
     }
-    // A `FullTextMatch` predicate is not a TopK request, so the check above does not see it. The
-    // factory refuses one for a system table with the same message. An in-memory view serves rows
-    // of its own and never evaluates a predicate, so without this it answers with all of them.
     if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
         return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
@@ -241,8 +238,6 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
     if (factory) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                factory.value()(fs, table_path, table_schema, dynamic_options));
-        // The table is handed out through the `Table` interface, which serves the schema the
-        // base holds, so its own read-only schema is adopted before it leaves the loader.
         PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
         return system_table;
     }
@@ -295,7 +290,6 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
         // The warehouse is the grandparent of the sys/<table> path
         context.warehouse = PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(path));
         context.catalog_options = dynamic_options;
-        // Note: context.catalog is intentionally left empty here.
         // Global tables loaded from path do not have a Catalog reference and
         // cannot enumerate databases/tables. Only tables that don't require
         // catalog enumeration (e.g. catalog_options) will work in this path.

@@ -134,6 +134,21 @@ class FileStoreTable : public Table {
     static Status CheckOptionsAgreeWithTable(
         const TableSchema& table_schema, const std::map<std::string, std::string>& context_options);
 
+    /// Checks the identity a context carries - the path it names, the identifier it gives a
+    /// catalog, the table id it records - against this table's own. The store below serves this
+    /// table's files, so a context naming another table would write this table's metadata and
+    /// publish it as the other's; a field that contradicts the table is refused by name, the way
+    /// `CheckOptionsAgreeWithTable` refuses a contradicting option. A field the context does not
+    /// carry is no contradiction: a write or a commit from a bare path names no catalog object.
+    /// An identifier that names a branch this table does not serve names a branch of another
+    /// table, as the operator serves the branch the table was loaded with alone.
+    /// @param kind The operator the context was handed to, which the error names.
+    /// @param context_table_id The id `CommitContext` records for a catalog commit; a write
+    ///        context carries none, so `NewWrite` passes null.
+    Status CheckContextNamesThisTable(const std::string& kind, const std::string& context_root_path,
+                                      const std::optional<Identifier>& context_identifier,
+                                      const std::optional<std::string>& context_table_id) const;
+
     /// Builds the read `NewRead` hands back, from the internal context it read the schema into. The
     /// path factory comes from the store. The reader is picked by the schema the read serves - the
     /// primary keys it carries - not by the table's own kind.

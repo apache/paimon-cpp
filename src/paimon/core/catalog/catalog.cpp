@@ -57,9 +57,6 @@ Result<std::shared_ptr<Catalog>> Catalog::Create(
             std::unique_ptr<RestCatalog> rest_catalog,
             RestCatalog::Create(root_path, options, file_system, RestHttpClient::Config(),
                                 fs_scheme_to_identifier_map));
-        // Built from the derived type so that the `enable_shared_from_this` base a
-        // `RestCatalog` carries is initialized: a `sys` table keeps its catalog alive through
-        // `weak_from_this()`, which stays empty when the pointer is widened first.
         return std::shared_ptr<Catalog>(std::move(rest_catalog));
 #else
         return Status::NotImplemented(

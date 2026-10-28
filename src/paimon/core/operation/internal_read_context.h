@@ -79,8 +79,11 @@ class InternalReadContext {
     /// The read context of a fallback branch, whose schema is not the table's own: it is read
     /// through a manager of that branch, and the read serves the options that schema was loaded
     /// with, the branch it was read from among them. A branch the context carries is not honoured
-    /// here. The C++ reading of the Java `FileStoreTableFactory#createOtherBranchTable`, which
-    /// loads the other branch's table the same way for the fallback reader to serve.
+    /// here, and neither are options the context adds on its own: the fallback reader serves the
+    /// table the way the main reader does, and a load merges the context's options into the
+    /// dynamic options handed in here. The C++ reading of the Java
+    /// `FileStoreTableFactory#createOtherBranchTable`, which loads the other branch's table the
+    /// same way for the fallback reader to serve.
     /// @param file_system The file system the table was opened with, in place of one resolved from
     ///        the context.
     /// @param root_path The root path the table was opened with, in place of the one the context

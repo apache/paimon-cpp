@@ -224,17 +224,12 @@ Result<std::unique_ptr<::ArrowSchema>> FormatTable::GetArrowSchema() const {
     return schema_->GetArrowSchema();
 }
 
-// The refusals below use two codes. `Invalid` is a setting that clashes with what a format table
-// is, and will never work: no snapshots, no buckets, no real-time store, no manifests, no
-// catalog-side version. `NotImplemented` is a capability this code lacks today and could gain.
 Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
     std::shared_ptr<ScanContext> shared_context = std::move(context);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(shared_context, "scan"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
                            CopySelf(shared_context->GetOptions()));
-    // Anything a `ScanContext` carries that a format table cannot honour is refused rather than
-    // silently dropped.
     if (shared_context->IsStreamingMode()) {
         return Status::Invalid(
             "a format table has no snapshots, so there is nothing for a streaming scan to follow");
@@ -313,8 +308,6 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
             "a format table write takes the table's own columns; a write schema naming a "
             "subset of them is not supported yet");
     }
-    // A write id prefixes a postpone-bucket writer's files so that one compaction reader can
-    // put them back in order. A format table has no buckets, so it would identify nothing.
     if (context->GetWriteId().has_value()) {
         return Status::Invalid("a format table has no buckets, so a write id would name nothing");
     }

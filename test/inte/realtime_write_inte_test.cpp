@@ -2919,8 +2919,6 @@ TEST_F(RealtimeWriteInteTest, TestPkRealtimeReadOptimizedScanUnsupported) {
     ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
     ASSERT_EQ(rows, disk_rows);
 
-    // A system table is not served by the entry point a path names any more: the loader hands
-    // the table back, and the table refuses the scan itself.
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> table,
                          SystemTableLoader::LoadFromPath(core_options.GetFileSystem(),

@@ -295,10 +295,6 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromOpti
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
     const std::map<std::string, std::string>& options,
     const std::shared_ptr<FileSystem>& file_system, std::optional<std::string> path) {
-    // The file system the caller named, or null for the read context's own, which callers
-    // without a table hand over. The scheme map the context carries does not take part: a file
-    // system handed over wins and one missing falls to the resolving one, the same way a scan
-    // resolves its own.
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions core_options,
         CoreOptions::FromMap(
@@ -328,17 +324,7 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallb
     }
     assert(table_schema);
     auto options = table_schema->Options();
-    // The dynamic options the load merged into this table - and the ones its copies accumulated -
-    // speak for the read, and the fallback branch serves the same read: they are merged over the
-    // fallback's own schema options the way the load merged them over the table's, so the fallback
-    // reader recognises what the main one does. `type` stays the branch's own: neither a copy nor
-    // a fallback restyles the table.
     for (const auto& [key, value] : table_dynamic_options) {
-        if (key != Options::TYPE) {
-            options[key] = value;
-        }
-    }
-    for (const auto& [key, value] : context->GetOptions()) {
         if (key != Options::TYPE) {
             options[key] = value;
         }

@@ -69,9 +69,6 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
         .WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        // The view's own file system when the context names none, rather than the default backend.
-        // A `ScanContext` carries no scheme-to-identifier map, so unlike `CreateDataReadContext`
-        // below there is no map here to resolve through instead.
         .WithFileSystem(context->GetSpecificFileSystem() != nullptr
                             ? context->GetSpecificFileSystem()
                             : GetFileSystem())
@@ -106,8 +103,6 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         branch = branch_iter->second;
     }
     ReadContextBuilder builder(table_path_);
-    // The view's own file system, but only when the context names neither one of its own nor a
-    // scheme map to resolve through - a file system and a scheme map cannot both be named.
     std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
     if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
         data_table_fs = GetFileSystem();

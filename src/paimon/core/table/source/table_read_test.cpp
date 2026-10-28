@@ -262,9 +262,6 @@ TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
 TEST(TableReadTest, TestMergeOptions) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     {
-        // The options the schema carries stand in the table the load builds, and a setting the
-        // context adds on top - the table was loaded with neither of these keys - is served as
-        // given.
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
         context_builder.AddOption("read.batch-size", "2");
@@ -287,10 +284,6 @@ TEST(TableReadTest, TestMergeOptions) {
         ASSERT_EQ(expected_options, core_options.ToMap());
     }
     {
-        // An option the schema also carries speaks at the load: the table the context is
-        // handed back is built with the context's value over the schema's, and the read serves
-        // the merged options. A caller holding a table already - a load that is over - is the
-        // one that gets a refusal instead, which `TableTest` covers.
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
         context_builder.AddOption("bucket", "10");
@@ -334,9 +327,6 @@ TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {
         expected_options[read_via_option] = explicit_header ? "read-view" : "table-view";
         ASSERT_EQ(dependency_context->root_path, "warehouse");
         ASSERT_EQ(dependency_context->options, expected_options);
-        // The load merged the read options into the table it built - a table is the product of
-        // the load - so the schema the read serves carries the explicit header over the one the
-        // schema was written with, the same value the dependency context sees.
         ASSERT_EQ(internal_context->GetTableSchema()->Options(), expected_options);
     }
 }

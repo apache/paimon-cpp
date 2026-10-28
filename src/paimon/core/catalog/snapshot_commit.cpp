@@ -38,14 +38,12 @@ Result<std::shared_ptr<SnapshotCommit>> SnapshotCommit::Create(
         if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
-        // Reuse the caller's UUID so table recreation cannot redirect this commit.
         return std::shared_ptr<SnapshotCommit>(
             std::make_shared<CatalogSnapshotCommit>(catalog, catalog_identifier.value(), table_id));
     }
     if (use_rest_catalog_commit) {
         return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(table_id));
     }
-    // Catalogs without version management may still supply a table ID.
     if (table_id && catalog == nullptr) {
         return Status::Invalid(
             "a commit which publishes the snapshot by writing it to the table directory sends no "

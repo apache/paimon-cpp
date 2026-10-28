@@ -276,9 +276,6 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadSystemTable(
     const std::string& system_table_path, const std::map<std::string, std::string>& options,
     bool streaming_mode = false, const std::shared_ptr<Predicate>& predicate = nullptr,
     const std::vector<std::string>& read_field_names = {}, bool read_next_plan = false) {
-    // A system table is not served by the operator entry points a path names any more: the loader
-    // hands the table back, and the table serves the scan and the read itself, the way a catalog's
-    // `GetTable` would.
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<SystemTable> table,
@@ -659,8 +656,6 @@ TEST(SystemTableReadInteTest, TestReadOptionsSystemTable) {
     ArrowSchemaRelease(&schema);
 
     std::string system_table_path = PathUtil::JoinPath(dir->Str(), "warehouse/db1.db/tbl1$options");
-    // A system table comes from the catalog, and the operators from the table it hands back -
-    // the path alone no longer reaches it.
     ASSERT_OK_AND_ASSIGN(auto table, catalog->GetTable(Identifier("db1", "tbl1$options")));
     ScanContextBuilder scan_context_builder(system_table_path);
     scan_context_builder.SetOptions(options);
@@ -694,7 +689,6 @@ TEST(SystemTableReadInteTest, TestReadBranchOptionsSystemTable) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "parquet"}};
     std::string system_table_path = table_path + "$branch_rt$options";
-    // No catalog here: the loader is the path-side half of what a catalog's `GetTable` does.
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
     ASSERT_OK_AND_ASSIGN(auto table, SystemTableLoader::LoadFromPath(core_options.GetFileSystem(),
                                                                      system_table_path, options));
@@ -1018,8 +1012,6 @@ TEST(SystemTableReadInteTest, TestReadOptimizedPrimaryKeyProjectionAndPredicateP
     std::shared_ptr<Predicate> predicate =
         PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k", FieldType::INT, Literal(2));
 
-    // A system table is not served by the operator entry points a path names any more: the loader
-    // hands the table back, and the table serves the scan and the read itself.
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<SystemTable> table,
@@ -1084,8 +1076,6 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableNestedProjection) {
                                     /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(WriteAndFullCompact(std::move(batch), /*commit_identifier=*/0, helper.get()));
 
-    // A system table is not served by the operator entry points a path names any more: the loader
-    // hands the table back, and the table serves the scan and the read itself.
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<SystemTable> table,

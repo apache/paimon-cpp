@@ -203,16 +203,12 @@ Result<std::unique_ptr<TableSchema>> TableSchema::MergeOptions(
     auto merged = std::unique_ptr<TableSchema>(
         new TableSchema(version_, id_, fields_, highest_field_id_, partition_keys_, primary_keys_,
                         options, comment_, time_millis_));
-    // The derived members follow the merged options: a copy the options restyle must serve the
-    // bucket keys and the bucket count it carries, not the ones the base schema carried.
     PAIMON_RETURN_NOT_OK(merged->DeriveBucketInfo());
     return merged;
 }
 
 Status TableSchema::DeriveBucketInfo() {
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> keys, TrimmedPrimaryKeys());
-
-    // Try to validate bucket keys
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> bucket_keys, OriginalBucketKeys());
     if (bucket_keys.empty()) {
         bucket_keys = keys;

@@ -49,10 +49,6 @@ namespace paimon {
 
 namespace {
 
-/// Whether an option key takes part in file-system resolution: the backend `file-system` picks,
-/// an `fs.` access key carries, or a native S3 key names - `s3.` and its `s3a.` spelling, the
-/// prefixes the S3 file system consumes alongside `fs.s3.`/`fs.s3a.`. The scheme-map keys a
-/// context carries are the same set.
 bool IsFileSystemResolutionKey(const std::string& key) {
     return key == Options::FILE_SYSTEM || key.rfind("fs.", 0) == 0 || key.rfind("s3.", 0) == 0 ||
            key.rfind("s3a.", 0) == 0;
@@ -69,10 +65,6 @@ Result<std::shared_ptr<FileStore>> FileStore::Create(
     auto store = std::shared_ptr<FileStore>(new FileStore(
         file_system, root_path, schema, branch, schema_manager, snapshot_manager, fs_scheme_map));
     if (schema != nullptr) {
-        // The options the schema was loaded with, on the branch this store serves: what reads
-        // through them - whose cache keys are scoped by the branch - reads the same one the
-        // managers point at. The scheme map is the one the schema was read through, so a scheme
-        // it mapped resolves here the way it resolved there.
         std::map<std::string, std::string> options = schema->Options();
         if (BranchManager::IsMainBranch(store->branch_)) {
             options.erase(Options::BRANCH);
@@ -83,10 +75,6 @@ Result<std::shared_ptr<FileStore>> FileStore::Create(
                                CoreOptions::FromMap(options, file_system, fs_scheme_map));
         store->core_options_ = std::move(core_options);
     }
-    // The file system the table is served through: the one the options resolve - a schema
-    // carrying access configuration names its own, which the file system the caller opened the
-    // table through wins over - and without a schema, the one handed over, whose absence leaves
-    // the default local one.
     if (store->core_options_.has_value()) {
         store->file_system_ = store->core_options_->GetFileSystem();
     } else if (file_system != nullptr) {
@@ -95,10 +83,6 @@ Result<std::shared_ptr<FileStore>> FileStore::Create(
         PAIMON_ASSIGN_OR_RAISE(CoreOptions default_options, CoreOptions::FromMap({}));
         store->file_system_ = default_options.GetFileSystem();
     }
-    // The managers read through the same file system: the metadata belongs to the data, and
-    // both were written under the options the schema carries. A manager handed over already
-    // points at `root_path` on `branch`; a missing one is built here, so the operators always
-    // read through the managers the store carries.
     if (store->schema_manager_ == nullptr) {
         store->schema_manager_ =
             std::make_shared<SchemaManager>(store->file_system_, root_path, store->branch_);
@@ -161,14 +145,15 @@ FileStore::FileStore(const std::shared_ptr<FileSystem>& file_system, const std::
       snapshot_manager_(snapshot_manager) {}
 
 Result<std::shared_ptr<FileStorePathFactory>> FileStore::NewPathFactory(
-    const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
+    const std::shared_ptr<arrow::Schema>& arrow_schema,
+    const std::vector<std::string>& partition_keys, const CoreOptions& options,
     const std::string& file_format_identifier,
     const std::shared_ptr<MemoryPool>& memory_pool) const {
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
                            options.CreateGlobalIndexExternalPath());
     return FileStorePathFactory::Create(
-        root_path_, arrow_schema, schema_->PartitionKeys(), options.GetPartitionDefaultName(),
+        root_path_, arrow_schema, partition_keys, options.GetPartitionDefaultName(),
         file_format_identifier, options.DataFilePrefix(), options.LegacyPartitionNameEnabled(),
         external_paths, global_index_external_path, options.IndexFileInDataFileDir(), memory_pool);
 }

@@ -33,6 +33,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/sensitive_config_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -109,10 +110,6 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::map<std::string, std::string>& fs_scheme_map,
     const std::map<std::string, std::string>& dynamic_options) {
-    // The kind the schema's primary keys name, which no schema change can add or drop, so the kind
-    // the table is built as is the kind every schema its root path ever held describes. A caller
-    // without a schema gets the append-only kind, whose operators report that none was found; a
-    // schema that is not a table schema - a system table's read-only one - is refused, not cast.
     std::shared_ptr<TableSchema> table_schema;
     if (schema != nullptr) {
         table_schema = std::dynamic_pointer_cast<TableSchema>(schema);
@@ -121,7 +118,6 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
                 fmt::format("{} is not a managed table schema", identifier.ToString()));
         }
     }
-    // The store parses the schema's options, so one that does not parse is refused here.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStore> store,
                            FileStore::Create(file_system, root_path, table_schema, branch,
                                              schema_manager, snapshot_manager, fs_scheme_map));
@@ -141,29 +137,14 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     if (loaded_schema == nullptr) {
         return Status::Invalid(fmt::format("not found latest schema of {}", FullName()));
     }
-    // `type` is structural and read from the schema alone, the promise `Copy` makes: an option
-    // given at the call must not restyle the table. `branch` is the same promise - the copy serves
-    // the branch this table does, and a caller that means to move has `SwitchToBranch`. Both are
-    // dropped before the merge, so the copy's options never speak of a branch it does not serve.
     std::map<std::string, std::string> overridable = dynamic_options;
     overridable.erase(Options::TYPE);
     overridable.erase(Options::BRANCH);
-    // The physical layout the data on the path was written by is as immovable as the style or the
-    // branch: the copy serves the same data.
     PAIMON_RETURN_NOT_OK(SchemaValidation::CheckImmutableOptions(*loaded_schema, overridable));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
                            loaded_schema->MergeOptions(overridable));
-    // The managers are handed over, not rebuilt, when the copy resolves the same file system this
-    // table does: its operators then read the schema cache this table already warmed. The copy
-    // resolves from the file system the caller opened this table through, not the one it resolved
-    // to, so a file-system option it was given speaks; when one does change the resolution, fresh
-    // managers are built over it instead. The scheme map travels the same way.
     const bool fs_resolution_may_change =
         FileStore::FileSystemResolutionMayChange(*loaded_schema, overridable);
-    // The dynamic options the copy was given join the ones this table was loaded with - which a
-    // copy of a copy carries the same way - so a read's fallback reader serves what the copy's own
-    // reader does however many copies deep. The branch was dropped above, so none accumulates, and
-    // an option given again replaces the one carried, as the merge above does.
     std::map<std::string, std::string> accumulated = dynamic_options_;
     for (const auto& [key, value] : overridable) {
         accumulated.insert_or_assign(key, value);
@@ -179,31 +160,23 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
 Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string& branch) const {
     const std::string target_branch = BranchManager::NormalizeBranch(branch);
     if (target_branch == CurrentBranch()) {
-        // The table already serves this branch, so a copy of it is the same table to the caller.
         return FileStoreTable::Create(store_->GetSpecifiedFileSystem(), root_path_, schema_,
                                       identifier_, CatalogUuid().value_or(""), CurrentBranch(),
                                       GetSchemaManager(), GetSnapshotManager(),
                                       store_->GetFsSchemeMap(), dynamic_options_);
     }
-    // The schema of the branch switched to, read from its own directory.
     auto schema_manager = std::make_shared<SchemaManager>(file_system_, root_path_, target_branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
                            schema_manager->Latest());
     if (!latest) {
         return Status::Invalid(fmt::format("branch {} does not exist", target_branch));
     }
-    // A branch other than main is named in the options the schema carries - the way a read context
-    // names it - so what reads through them serves the branch the managers point at.
     std::map<std::string, std::string> overridable;
     if (target_branch != BranchManager::DEFAULT_MAIN_BRANCH) {
         overridable[Options::BRANCH] = target_branch;
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> branch_schema,
                            (*latest)->MergeOptions(overridable));
-    // The branch's schema may name another file system than this table's options resolved - a
-    // recreation that changed the access configuration - and a manager kept through that
-    // disagreement would read the branch's metadata through the backend this table left, so the
-    // branch builds its own. The schema is in hand already, so only the cache is lost.
     const std::shared_ptr<SchemaManager> branch_schema_manager =
         (store_->GetSpecifiedFileSystem() == nullptr &&
          (!store_->GetFsSchemeMap().empty() ||
@@ -211,8 +184,6 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
               branch_schema->Options(), std::static_pointer_cast<TableSchema>(schema_)->Options())))
             ? nullptr
             : schema_manager;
-    // The identifier names the branch switched to, as Java's `newCatalogEnvironment` rebuilds it,
-    // so `Name()` and `FullName()` answer for the table served rather than the one left behind.
     PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
                            CatalogUtils::BranchIdentifier(identifier_, target_branch));
     return FileStoreTable::Create(store_->GetSpecifiedFileSystem(), root_path_,
@@ -246,12 +217,64 @@ Status FileStoreTable::CheckOptionsAgreeWithTable(
     for (const auto& [key, value] : context_options) {
         auto table_option = table_options.find(key);
         if (table_option != table_options.end() && table_option->second != value) {
-            // A value may be a credential and the error travels into logs, so it is redacted.
             return Status::Invalid(
                 fmt::format("option '{}' is '{}' in the context but '{}' on the table", key,
                             SensitiveConfigUtils::RedactValue(key, value),
                             SensitiveConfigUtils::RedactValue(key, table_option->second)));
         }
+    }
+    return Status::OK();
+}
+
+Status FileStoreTable::CheckContextNamesThisTable(
+    const std::string& kind, const std::string& context_root_path,
+    const std::optional<Identifier>& context_identifier,
+    const std::optional<std::string>& context_table_id) const {
+    if (!root_path_.empty()) {
+        PAIMON_ASSIGN_OR_RAISE(std::string context_path,
+                               PathUtil::NormalizePath(context_root_path));
+        PAIMON_ASSIGN_OR_RAISE(std::string table_path, PathUtil::NormalizePath(root_path_));
+        if (context_path != table_path) {
+            return Status::Invalid(fmt::format(
+                "the {} context names root path '{}' but this table serves '{}': the store below "
+                "reads and writes this table's files, so a context naming another path would "
+                "leave this table's metadata there and publish it as the other's",
+                kind, context_root_path, root_path_));
+        }
+    }
+    if (context_identifier) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> context_branch,
+                               context_identifier.value().GetBranchName());
+        if (context_branch && context_branch.value() != CurrentBranch()) {
+            return Status::Invalid(fmt::format(
+                "the {} context names branch '{}' of '{}' but this table serves branch '{}', "
+                "which is the one a {} of this table writes and publishes",
+                kind, context_branch.value(), context_identifier.value().ToString(),
+                CurrentBranch(), kind));
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            Identifier context_table,
+            CatalogUtils::BranchIdentifier(context_identifier.value(), CurrentBranch()));
+        PAIMON_ASSIGN_OR_RAISE(Identifier served_table,
+                               CatalogUtils::BranchIdentifier(identifier_, CurrentBranch()));
+        const bool names_this_table =
+            (served_table.GetDatabaseName() == Identifier::kUnknownDatabase ||
+             context_table.GetDatabaseName() == served_table.GetDatabaseName()) &&
+            context_table.GetObjectName() == served_table.GetObjectName();
+        if (!names_this_table) {
+            return Status::Invalid(fmt::format(
+                "the {} context names table '{}' but this table is '{}': the store below serves "
+                "this table's files, so a context naming another table would write this table's "
+                "metadata and publish it as the other's",
+                kind, context_identifier.value().ToString(), identifier_.ToString()));
+        }
+    }
+    if (context_table_id && context_table_id != CatalogUuid()) {
+        return Status::Invalid(fmt::format(
+            "the {} context carries table id '{}' but this table's is '{}': the id tells a "
+            "recreated table from the one the changes were prepared for, so one this table does "
+            "not carry would publish this table's metadata as the recreation's",
+            kind, context_table_id.value(), CatalogUuid().value_or("none")));
     }
     return Status::OK();
 }
@@ -265,14 +288,18 @@ std::unique_ptr<FileStoreScan> FileStoreTable::WithTablePath(std::unique_ptr<Fil
 Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
     std::unique_ptr<WriteContext> ctx) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "write"));
+    PAIMON_RETURN_NOT_OK(CheckContextNamesThisTable("write", ctx->GetRootPath(),
+                                                    ctx->GetIdentifier(),
+                                                    /*context_table_id=*/std::nullopt));
+    if (AsVersionManaged(ctx->GetCatalog()) != nullptr) {
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(CurrentBranch()));
+    }
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx->GetCatalog()));
     std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
-    // A catalog write names its table; the file system comes from the table's own credentials.
     if (specific_fs == nullptr && ctx->GetFileSystemSchemeToIdentifierMap().empty() &&
         ctx->GetCatalog() != nullptr && !ctx->GetIdentifier()) {
         return Status::Invalid("a catalog write requires a table identifier");
     }
-    // The write goes to the branch the table serves, not the context's own.
     PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,
                            CatalogUtils::BranchIdentifier(ctx->GetIdentifier(), CurrentBranch()));
     const std::shared_ptr<TableSchema>& schema = store_->GetSchema();
@@ -294,7 +321,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
 
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> file_store_path_factory,
-        store_->NewPathFactory(arrow_schema, options,
+        store_->NewPathFactory(arrow_schema, schema->PartitionKeys(), options,
                                options.GetWriteFileFormat(/*level=*/0)->Identifier(),
                                ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
@@ -330,16 +357,13 @@ Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
     PAIMON_ASSIGN_OR_RAISE(bool read_optimized,
                            OptionsUtils::GetValueFromMap<bool>(context->GetOptions(),
                                                                kReadOptimizedScanOption, false));
-    // The branch in the store's options is the table's, so one the context carries is not honoured.
     CoreOptions core_options = store_->GetOptions();
-    // The cache is a runtime setting of this scan, not of the table.
     core_options.WithCache(context->GetCache());
 
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*table_schema, core_options));
 
     PAIMON_RETURN_NOT_OK(
         RealtimeTableScan::ValidateScan(*table_schema, core_options, *context, read_optimized));
-    // validate options
     if (core_options.GetBucket() == -1) {
         if (!table_schema->PrimaryKeys().empty()) {
             return Status::NotImplemented(fmt::format(
@@ -351,17 +375,17 @@ Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
             fmt::format("do not support bucket={} in scan process", core_options.GetBucket()));
     }
 
-    // validate schema and scan filter
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
             *arrow_schema, context->GetScanFilters()->GetPredicate(),
             /*validate_field_idx=*/false));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
-                           store_->NewPathFactory(arrow_schema, core_options,
-                                                  core_options.GetFileFormat()->Identifier(),
-                                                  context->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        store_->NewPathFactory(arrow_schema, table_schema->PartitionKeys(), core_options,
+                               core_options.GetFileFormat()->Identifier(),
+                               context->GetMemoryPool()));
 
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestList> manifest_list,
@@ -440,11 +464,8 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::CreateTableRead(
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
-        store_->NewPathFactory(arrow_schema, core_options,
+        store_->NewPathFactory(arrow_schema, table_schema->PartitionKeys(), core_options,
                                core_options.GetFileFormat()->Identifier(), memory_pool));
-    // The reader is selected by the schema the read serves, not by the table's kind: an
-    // append-only table can have a primary-key fallback branch and vice versa, so a reader typed
-    // after the main table would fail the fallback's splits.
     if (internal_context->GetPrimaryKeys().empty()) {
         return std::make_unique<AppendOnlyTableRead>(path_factory, internal_context, memory_pool,
                                                      executor);
@@ -461,7 +482,6 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
         return Status::Invalid("not found latest schema");
     }
     PAIMON_RETURN_NOT_OK(CheckOptionsAgreeWithTable(*loaded_schema, read_context->GetOptions()));
-    // The read reads through the branch the table serves, not the context's own.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
                            InternalReadContext::CreateForTable(read_context, loaded_schema,
                                                                store_->GetOptions(), root_path_));
@@ -477,7 +497,6 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
         return std::move(table_read);
     }
 
-    // The fallback branch is not the table's, so its schema is read through its own manager.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> fallback_context,
                            InternalReadContext::CreateForFallbackBranch(
                                read_context, /*branch=*/scan_fallback_branch.value(), file_system_,
@@ -544,17 +563,18 @@ Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
 Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     std::unique_ptr<CommitContext> ctx) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "commit"));
+    PAIMON_RETURN_NOT_OK(CheckContextNamesThisTable("commit", ctx->GetRootPath(),
+                                                    ctx->GetIdentifier(), ctx->GetTableId()));
+    if (ctx->GetCatalog() != nullptr || ctx->UseRESTCatalogCommit()) {
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(CurrentBranch()));
+    }
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx->GetCatalog()));
     std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
-    // A catalog commit names its table; the file system comes from the table's own credentials.
     if (specific_fs == nullptr && ctx->GetCatalog() != nullptr && !ctx->GetIdentifier()) {
         return Status::Invalid("a catalog commit requires a table identifier");
     }
-    // A commit commits to the root path and branch the table was loaded with, not the context's.
     PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,
                            CatalogUtils::BranchIdentifier(ctx->GetIdentifier(), CurrentBranch()));
-    // The id a snapshot records the catalog's current schema by, read through the loader below
-    // rather than trusted from a schema this commit will not re-read.
     FileStoreCommitImpl::SchemaIdLoader schema_id_loader;
     if (ctx->GetCatalog() != nullptr) {
         if (!catalog_identifier) {
@@ -588,8 +608,6 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     assert(options.GetFileFormat());
     PAIMON_RETURN_NOT_OK(FileStoreCommitImpl::ValidateCommitOptions(options));
     PAIMON_ASSIGN_OR_RAISE(bool is_object_store, FileSystem::IsObjectStore(root_path_));
-    // Catalog commits do not require atomic rename on the object store. The inte-test marker is
-    // not a table option, so it is read from the context the commit was handed.
     if (is_object_store && !ctx->UseRESTCatalogCommit() &&
         AsVersionManaged(ctx->GetCatalog()) == nullptr &&
         ctx->GetOptions().find("enable-object-store-commit-in-inte-test") ==
@@ -602,8 +620,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
         store_->NewPartitionComputer(arrow_schema, options, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
-        store_->NewPathFactory(arrow_schema, options, options.GetFileFormat()->Identifier(),
-                               ctx->GetMemoryPool()));
+        store_->NewPathFactory(arrow_schema, schema->PartitionKeys(), options,
+                               options.GetFileFormat()->Identifier(), ctx->GetMemoryPool()));
 
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<SnapshotManager> snapshot_manager,

@@ -39,7 +39,7 @@ class Identifier;
 class Logger;
 class SystemTable;
 
-class FileSystemCatalog : public Catalog {
+class FileSystemCatalog : public Catalog, public std::enable_shared_from_this<FileSystemCatalog> {
  public:
     FileSystemCatalog(const std::shared_ptr<FileSystem>& fs, const std::string& warehouse,
                       const std::map<std::string, std::string>& catalog_options);

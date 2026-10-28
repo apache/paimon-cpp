@@ -51,10 +51,6 @@ namespace paimon {
 
 namespace {
 
-/// The options a context carries, merged into the table the load hands back: a table is the
-/// product of the load, so the options speak there - the way `Copy` merges them - and `NewXxx` on
-/// the product serves them without merging again. A caller holding a table already changes it
-/// through `Copy` itself, and an option that contradicts the table that way is refused.
 Result<std::shared_ptr<Table>> WithContextOptions(
     const std::shared_ptr<Table>& table, const std::shared_ptr<TableSchema>& schema,
     const std::map<std::string, std::string>& options) {
@@ -64,7 +60,6 @@ Result<std::shared_ptr<Table>> WithContextOptions(
     const std::map<std::string, std::string>& schema_options = schema->Options();
     for (const auto& [key, value] : options) {
         auto schema_option = schema_options.find(key);
-        // A key the schema does not carry, or carries differently: the merge has something to do.
         if (schema_option == schema_options.end() || schema_option->second != value) {
             return table->Copy(options);
         }
@@ -72,17 +67,6 @@ Result<std::shared_ptr<Table>> WithContextOptions(
     return table;
 }
 
-/// The tail every `Create` ends with: the schema one of them read says what the path names, and
-/// only a data table is served by it - a format table is refused, the table a catalog hands back
-/// serves one through its own `NewXxx`, and everything else is handed back as the `FileStoreTable`
-/// a managed table is, carrying the schema for its `NewXxx` to build from. A null schema is handed
-/// over as it is, so the managed path below decides what to say about a table that is not there.
-///
-/// @param file_system The file system the schema above was read through.
-/// @param explicit_file_system The file system the context supplied, which a managed table is
-///        opened through when there is one. A null one leaves the table to resolve from its
-///        schema's own access configuration rather than being pinned to the file system this load
-///        happened to read the schema through.
 Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<FileSystem>& explicit_file_system, const std::string& path,
@@ -91,9 +75,6 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     const std::shared_ptr<TableSchema>& latest_schema, const std::optional<Identifier>& identifier,
     const std::string& uuid, const std::map<std::string, std::string>& fs_scheme_map) {
     if (latest_schema != nullptr) {
-        // The table type is read from the schema, never from `options`: `type` is structural, and
-        // one call's options must not decide what kind of table this is. See
-        // `FormatTable::Create()`.
         PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
                                TableTypeDefine::IsFormatTable(latest_schema->Options()));
         if (is_format_table) {
@@ -104,15 +85,8 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
                 path));
         }
     }
-    // The branch the schema was read on is folded into the object name.
     Identifier table_identifier =
         identifier.value_or(CatalogUtils::IdentifierFromPath(path, branch));
-    // The manager was built over the file system the context's own options resolve, while the
-    // store resolves the schema's: a schema carrying access configuration names a backend the
-    // context's options never did, and a manager kept through that disagreement would read the
-    // table's metadata through the wrong one. The schema is in hand already, so dropping the
-    // manager costs its cache alone. A context that supplied a file system wins on both sides and
-    // keeps it; a scheme map only the store's resolution takes part in is the same disagreement.
     std::shared_ptr<SchemaManager> manager = schema_manager;
     if (manager != nullptr && latest_schema != nullptr && explicit_file_system == nullptr &&
         (!fs_scheme_map.empty() ||
@@ -127,15 +101,6 @@ Result<std::shared_ptr<Table>> TableOfLoadedSchema(
     return WithContextOptions(table, latest_schema, options);
 }
 
-/// The managed table a context names behind a path: the schema is read through a manager of the
-/// context's branch - handed over instead when the caller already read it - and what the schema
-/// says is there decides the table `TableOfLoadedSchema` hands back.
-///
-/// @param schema_json The schema of the table, when the caller already read it, or null when it
-///        has to be read here. It is honoured on the main branch only; a branch publishes its own
-///        under `branch/branch-<name>`, which is where the read below goes.
-/// @param explicit_file_system The file system the context supplied, which the managed table the
-///        schema describes is opened through - see `TableOfLoadedSchema`.
 Result<std::shared_ptr<Table>> ManagedTableOf(
     const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<FileSystem>& explicit_file_system, const std::string& path,
@@ -145,8 +110,6 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
     auto schema_manager = std::make_shared<SchemaManager>(file_system, path, branch);
     std::shared_ptr<TableSchema> latest_schema;
     if (branch == BranchManager::DEFAULT_MAIN_BRANCH && schema_json) {
-        // Handing the schema over only saves reading it. A context always names a table path and
-        // this library writes the metadata under it, so `schema` and `branch` stay metadata.
         PAIMON_ASSIGN_OR_RAISE(latest_schema, TableSchema::CreateFromJson(schema_json.value()));
     } else {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
@@ -159,10 +122,6 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
                                schema_manager, latest_schema, identifier, uuid, fs_scheme_map);
 }
 
-/// The schema a catalog may hold for the table, read from it on the main branch only and null
-/// otherwise: a branch publishes its own under `branch/branch-<name>`, which is where
-/// `ManagedTableOf` reads instead, so a catalog answering for no branch schema does not fail the
-/// `kind` operation to one. `kind` also names the operator the messages speak of.
 Result<std::optional<std::string>> CatalogMainBranchSchemaJson(
     const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& catalog_identifier,
     const std::string& branch, const char* kind) {
@@ -183,9 +142,6 @@ Result<std::optional<std::string>> CatalogMainBranchSchemaJson(
 
 }  // namespace
 
-/// The data table a scan context names: only a data table is served by a load from the context's
-/// path - a system table behind a `T$system` path and a format table are refused, served by the
-/// table a catalog hands back through its own `NewXxx` instead.
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ScanContext& ctx) {
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx.GetOptions(), ctx.GetSpecificFileSystem(), {}));
@@ -205,9 +161,6 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ScanContext& 
                           /*uuid=*/"", /*fs_scheme_map=*/{});
 }
 
-/// The data table a read context names: only a data table is served by a load from the context's
-/// path - a system table behind a `T$system` path and a format table are refused, served by the
-/// table a catalog hands back through its own `NewXxx` instead.
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ReadContext& ctx) {
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_core_options,
                            CoreOptions::FromMap(ctx.GetOptions(), ctx.GetSpecificFileSystem(),
@@ -223,17 +176,12 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const ReadContext& 
     }
 
     const std::string branch = ctx.GetBranch();
-    // The scheme map the schema was read through, so the table's data resolves custom schemes the
-    // same way its metadata does.
     return ManagedTableOf(tmp_core_options.GetFileSystem(), ctx.GetSpecificFileSystem(),
                           ctx.GetPath(), branch, ctx.GetOptions(), ctx.GetSpecificTableSchema(),
                           ctx.GetIdentifier(), /*uuid=*/"",
                           ctx.GetFileSystemSchemeToIdentifierMap());
 }
 
-/// The data table a write context names: only a data table is served by a load from the context's
-/// root path - a format table is refused, served by the table a catalog hands back through its own
-/// `NewXxx` instead.
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const WriteContext& ctx) {
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx.GetCatalog()));
     std::shared_ptr<FileSystem> specific_fs = ctx.GetSpecificFileSystem();
@@ -242,8 +190,6 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const WriteContext&
         if (!ctx.GetIdentifier()) {
             return Status::Invalid("a catalog write requires a table identifier");
         }
-        // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the write uses this table's.
         PAIMON_ASSIGN_OR_RAISE(specific_fs,
                                ctx.GetCatalog()->GetTableFileSystem(ctx.GetIdentifier().value()));
     }
@@ -253,8 +199,6 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const WriteContext&
     std::string branch = ctx.GetBranch();
     PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,
                            CatalogUtils::BranchIdentifier(ctx.GetIdentifier(), branch));
-    // Only the main branch may have a current schema the catalog alone holds: a branch publishes
-    // its own under `branch/branch-<name>`, which is where the load below reads it instead.
     PAIMON_ASSIGN_OR_RAISE(
         std::optional<std::string> catalog_table_schema,
         CatalogMainBranchSchemaJson(ctx.GetCatalog(), catalog_identifier, branch, "write"));
@@ -263,13 +207,8 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const WriteContext&
                           ctx.GetFileSystemSchemeToIdentifierMap());
 }
 
-/// The data table a commit context names: only a data table is served by a load from the context's
-/// root path - a format table is refused, served by the table a catalog hands back through its own
-/// `NewXxx` instead.
 Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const CommitContext& ctx) {
     PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx.GetCatalog()));
-    // Use this table's catalog credentials unless the caller supplied a file system: a catalog
-    // issuing per-table temporary ones only hands them out through GetTableFileSystem.
     std::shared_ptr<FileSystem> specific_fs = ctx.GetSpecificFileSystem();
     if (specific_fs == nullptr && ctx.GetCatalog() != nullptr) {
         if (!ctx.GetIdentifier()) {
@@ -281,19 +220,14 @@ Result<std::shared_ptr<Table>> FileStoreTableFactory::Create(const CommitContext
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx.GetOptions(), specific_fs));
     const std::string& root_path = ctx.GetRootPath();
-    // The branch the context was built for, already validated by `CommitContextBuilder`.
     PAIMON_ASSIGN_OR_RAISE(std::string branch, BranchManager::ResolveBranch(
                                                    ctx.GetIdentifier(), ctx.GetOptions(),
                                                    /*explicit_branch=*/std::nullopt, "commit"));
     PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,
                            CatalogUtils::BranchIdentifier(ctx.GetIdentifier(), branch));
-    // Only the main branch may have a current schema the catalog alone holds: a branch publishes
-    // its own under `branch/branch-<name>`, which is where the load below reads it instead.
     PAIMON_ASSIGN_OR_RAISE(
         std::optional<std::string> catalog_table_schema,
         CatalogMainBranchSchemaJson(ctx.GetCatalog(), catalog_identifier, branch, "commit"));
-    // The managed path below reads the commit's branch, so this reads the same one: the two must
-    // not dispatch on different schemas.
     return ManagedTableOf(tmp_options.GetFileSystem(), specific_fs, root_path, branch,
                           ctx.GetOptions(), catalog_table_schema, ctx.GetIdentifier(),
                           ctx.GetTableId().value_or(""), /*fs_scheme_map=*/{});

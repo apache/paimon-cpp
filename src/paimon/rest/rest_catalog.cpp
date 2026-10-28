@@ -384,8 +384,6 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         if (!supported) {
             return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
         }
-        // Only the schema is read here and the table does not outlive the call, so it needs no
-        // catalog and this one hands over no ownership of itself.
         GlobalSystemTableContext context;
         context.fs = fs_;
         context.warehouse = warehouse_;
@@ -428,8 +426,6 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
     if (branch) {
         dynamic_options[Options::BRANCH] = branch.value();
     }
-    // The system table reads the data table's own files, so it is served by that table's own
-    // credentials - with data tokens the only file system that can open them.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
     return SystemTableLoader::Load(system_table_name.value(), table_file_system, data_table_path,
@@ -437,9 +433,6 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
 }
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
-    // The global system tables of the "sys" database expose the catalog itself rather than any
-    // table the server stands behind, so they are served locally and never reach the managed-table
-    // load below, whose schema cast a read-only system table schema would not survive.
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
         PAIMON_ASSIGN_OR_RAISE(bool supported,
                                GlobalSystemTableLoader::IsSupported(identifier.GetObjectName(),
@@ -447,9 +440,6 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
         if (!supported) {
             return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
         }
-        // A global system table builds its rows lazily through this catalog, so the table handed
-        // back has to keep it alive or the pointer dangles at the first `BuildRows`. A catalog
-        // not owned by a `std::shared_ptr` cannot be kept, so it is refused by name.
         std::shared_ptr<const RestCatalog> self = weak_from_this().lock();
         if (self == nullptr) {
             return Status::Invalid(
@@ -474,15 +464,11 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     std::string table_path;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
                            LoadTableSchema(identifier, &uuid, &table_path));
-    // The schema the same response carried says what the table is: a format table is handed back
-    // as the `FormatTable` it is rather than refused as the managed table it is not.
     std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
     if (data_schema != nullptr) {
         PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
                                TableTypeDefine::IsFormatTable(data_schema->Options()));
         if (is_format_table) {
-            // A rest catalog holds the schema itself, so everything below the location is data.
-            // The catalog-wide file system, as a format table reads no metadata of its own.
             return FormatTable::Create(fs_, table_path, identifier, data_schema,
                                        /*location_carries_paimon_metadata=*/false,
                                        /*dynamic_options=*/{});
@@ -494,7 +480,6 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     // tokens binds to this table.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
-    // The branch the schema and path above were read on, which the table's managers then serve.
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
     return FileStoreTable::Create(
         table_file_system, table_path, schema, identifier, uuid,

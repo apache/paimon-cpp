@@ -58,7 +58,6 @@ Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const {
-    // append table
     const std::shared_ptr<TableSchema>& schema = store_->GetSchema();
     const bool realtime_deduplicate = !options.GetRealtimeDeduplicateKeyFields().empty();
     bool need_dv_maintainer_factory = options.DeletionVectorsEnabled();
@@ -177,8 +176,6 @@ CommitScanner::ScanSupplier AppendOnlyFileStoreTable::NewCommitScanSupplier(
     const std::shared_ptr<ManifestFile>& manifest_file,
     const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) const {
-    // The schema manager the table carries, which the scans this supplier hands out read the
-    // schema through.
     const std::shared_ptr<SchemaManager>& schema_manager = GetSchemaManager();
     const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
     return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,

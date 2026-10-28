@@ -227,8 +227,6 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
                          SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
                                                  /*dynamic_options=*/{}));
-    // The name carries the data table it belongs to, the way Java Paimon's
-    // `ReadOptimizedTable.name()` does.
     ASSERT_EQ(system_table->Name(), "table$ro");
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> arrow_schema, system_table->ArrowSchema());
@@ -238,8 +236,6 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
 }
 
 TEST(SystemTableTest, TestCopyIsRefused) {
-    // A system table is a read-only view over the data table underneath it, and the schema it
-    // exposes is not one a copy reconfigures. The data table is copied through its own `Table`.
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
@@ -311,9 +307,6 @@ TEST(SystemTableTest, TestGlobalSystemTableWithoutCatalogReturnsNotImplemented) 
                         "global system table requires catalog context: tables");
 }
 
-// A system table reached through `NewXxx` directly - one a catalog handed out - is checked the
-// way the static factories check the contexts they take: a null context is refused rather than
-// dereferenced.
 TEST(SystemTableTest, TestOperatorEntriesRefuseANullContext) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};
@@ -332,9 +325,6 @@ TEST(SystemTableTest, TestOperatorEntriesRefuseANullContext) {
     ASSERT_NOK_WITH_MSG(read_optimized.NewRead(nullptr), "read context is null pointer");
 }
 
-// The scan and read entry points serve a data table only: a `T$system` path is refused with a
-// message pointing at the catalog that hands the table back, so a caller holding only the path is
-// not told the table does not exist.
 TEST(SystemTableTest, TestTheOperatorEntriesRefuseASystemTablePath) {
     const std::string system_table_path = "/tmp/warehouse/db.db/tbl$options";
 
@@ -347,9 +337,6 @@ TEST(SystemTableTest, TestTheOperatorEntriesRefuseASystemTablePath) {
     ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), "names a system table");
 }
 
-// The reads these views serve build a context of their own for the data table underneath, which
-// carries no search: a search the caller asked for is refused rather than quietly answered with
-// plain rows.
 TEST(SystemTableTest, TestNewReadRefusesASearch) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};
@@ -382,9 +369,6 @@ TEST(SystemTableTest, TestNewReadRefusesASearch) {
                         "VectorSearch or FullTextSearch does not support system-table reads yet");
 }
 
-// `SetPredicate` carries a search too, as a `FullTextMatch` leaf. An in-memory view reads rows
-// of its own and never evaluates a predicate, so without the check it would answer with all of
-// them where `TableRead::Create` refuses the same request.
 TEST(SystemTableTest, TestNewReadRefusesAFullTextMatchPredicate) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};
@@ -447,8 +431,6 @@ TEST(SystemTableTest, TestGlobalPartitionsUsesTheFileSystemOfEachTable) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
 
-    // Held by a `shared_ptr` because a global system table keeps shared ownership of the catalog
-    // it reads its rows through.
     std::shared_ptr<PerTableFileSystemCatalog> catalog =
         std::make_shared<PerTableFileSystemCatalog>(core_options.GetFileSystem(), dir->Str(),
                                                     options);

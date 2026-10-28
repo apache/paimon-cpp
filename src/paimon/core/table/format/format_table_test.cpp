@@ -764,10 +764,6 @@ TEST(FormatTableTest, TestCatalogManagedPartitionsAreRejected) {
 }
 
 TEST(FormatTableTest, TestTheTableOperatorsValidateOptionsGivenAtTheCall) {
-    // An option a format table refuses has to be refused wherever it comes from. Every operator
-    // merges what the call gave it over what the schema stored, so each runs the same checks over
-    // the merged result; otherwise a caller could set through a context what the schema would have
-    // rejected and have it silently dropped.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -2666,10 +2662,6 @@ TEST(FormatTableTest, TestScanRejectsUnknownPartitionField) {
 }
 
 TEST(FormatTableTest, TestAFormatTableIsWrittenCommittedAndReadBack) {
-    // A caller holding the table a catalog hands back drives it through the operators the table
-    // itself serves, with contexts built from its location the way they are for every other
-    // table - the C++ side of what Java serves through one `ReadBuilder` and one
-    // `BatchWriteBuilder` for both kinds of table.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -2764,10 +2756,6 @@ TEST(FormatTableTest, TestAFormatTableIsWrittenCommittedAndReadBack) {
 }
 
 TEST(FormatTableTest, TestACatalogInTheContextIsRefusedAlikeByWriteAndCommit) {
-    // `WithCatalog()` asks for a catalog-side version of the commit, which a format table has no
-    // way to produce. Both halves of the write path answer with the same code, so a caller reads
-    // one kind of failure out of them rather than "cannot be done" from one and "not yet" from
-    // the other.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -2793,11 +2781,6 @@ TEST(FormatTableTest, TestACatalogInTheContextIsRefusedAlikeByWriteAndCommit) {
 }
 
 TEST(FormatTableTest, TestALoadedFormatTableIsServedThroughItsOwnOperators) {
-    // A table a catalog keeps the schema for, the way a rest catalog does. Nothing under its
-    // location says that it is a format table, nor that everything below the location is data, so
-    // a path is not enough to reach it: the loaded table serves the operators itself, with a
-    // context built from its location, which is what `FormatTable.newReadBuilder()` and
-    // `newBatchWriteBuilder()` do in Java.
     std::unique_ptr<UniqueTestDirectory> schema_dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(schema_dir);
     SchemaManager schema_manager(schema_dir->GetFileSystem(), schema_dir->Str());
@@ -2873,11 +2856,6 @@ TEST(FormatTableTest, TestALoadedFormatTableIsServedThroughItsOwnOperators) {
 }
 
 TEST(FormatTableTest, TestATableServesAFormatTableThroughItsOwnEntryPoints) {
-    // `NewScan()` and its kin take the table they were called on as the one to serve, the way Java
-    // Paimon's `Table` serves both kinds through one `newReadBuilder()`, so a caller holding a
-    // format table as the `Table` a catalog hands out reaches it through them as well. The
-    // contexts name a path only and carry no format table, so it is the table itself that
-    // answers.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     std::shared_ptr<Table> table;
@@ -2918,8 +2896,6 @@ TEST(FormatTableTest, TestATableServesAFormatTableThroughItsOwnEntryPoints) {
         }
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> record_batch,
                              ImportBatch(read_batch));
-        // `_VALUE_KIND` first, then the table's own columns, exactly as the generic entry points
-        // give them.
         auto ids = checked_pointer_cast<arrow::Int32Array>(record_batch->column(1));
         auto names = checked_pointer_cast<arrow::StringArray>(record_batch->column(2));
         auto dts = checked_pointer_cast<arrow::StringArray>(record_batch->column(3));
@@ -2933,18 +2909,12 @@ TEST(FormatTableTest, TestATableServesAFormatTableThroughItsOwnEntryPoints) {
 }
 
 TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour) {
-    // A refusal is a promise about what was not done, so the table's own entry points must make
-    // the same promises the generic ones do: a generic entry point refuses the format table the
-    // schema under the path names outright, while the table's operators name the setting they
-    // cannot honour, so a caller who reaches the table finds out exactly what is missing.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> format_table,
                          CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
     std::shared_ptr<Table> table = format_table;
 
-    // A context that never was is refused first of all, and by name, exactly as the generic
-    // entry points refuse one.
     ASSERT_NOK_WITH_MSG(TableScan::Create(nullptr), "scan context is null pointer");
     ASSERT_NOK_WITH_MSG(table->NewScan(nullptr), "scan context is null pointer");
     ASSERT_NOK_WITH_MSG(TableRead::Create(nullptr), "read context is null pointer");
@@ -2954,7 +2924,6 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
     ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(nullptr), "commit context is null pointer");
     ASSERT_NOK_WITH_MSG(table->NewCommit(nullptr), "commit context is null pointer");
 
-    // A streaming scan follows snapshots, which a format table keeps none of.
     auto streaming_scan_context = [&dir]() -> Result<std::unique_ptr<ScanContext>> {
         ScanContextBuilder builder(dir->Str());
         builder.WithStreamingMode(true);
@@ -2967,7 +2936,6 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
     ASSERT_NOK_WITH_MSG(table->NewScan(std::move(streaming_context_again)),
                         "nothing for a streaming scan to follow");
 
-    // Vector search needs an index a format table never builds.
     auto vector_read_context = [&dir]() -> Result<std::unique_ptr<ReadContext>> {
         ReadContextBuilder builder(dir->Str());
         builder.SetVectorSearch(std::make_shared<VectorSearch>(
@@ -2982,7 +2950,6 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
     ASSERT_NOK_WITH_MSG(table->NewRead(std::move(vector_context_again)),
                         "not supported for format tables");
 
-    // A catalog takes the snapshot a native table commits, and a format table has none to give.
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetTableSchema(format_table->LatestSchema());
 
@@ -3008,7 +2975,6 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
     ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(catalog_commit_again)),
                         "keeps no snapshot for a catalog to take");
 
-    // A write id prefixes a postpone-bucket writer's files; a format table has no buckets.
     auto write_id_context = [&dir]() -> Result<std::unique_ptr<WriteContext>> {
         WriteContextBuilder builder(dir->Str(), "test-user");
         builder.WithWriteId(3);
@@ -3022,9 +2988,6 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
 }
 
 TEST(FormatTableTest, TestTheGenericEntryPointsRefuseAFormatTablePath) {
-    // A load from a path is the data table's way in, so every generic entry point refuses the
-    // format table the schema under the path names rather than dispatching to it - and says where
-    // the table does come from, so a caller holding only the path is pointed at the catalog.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -3046,8 +3009,6 @@ TEST(FormatTableTest, TestTheGenericEntryPointsRefuseAFormatTablePath) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
     ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)), "names a format table");
 
-    // The refusal points at the table's own operators, and those serve the same path-built
-    // contexts: this is the caller the message sends to `GetTable` and `NewXxx`.
     ScanContextBuilder served_builder(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> served_context, served_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> served_scan,
@@ -3057,10 +3018,6 @@ TEST(FormatTableTest, TestTheGenericEntryPointsRefuseAFormatTablePath) {
 }
 
 TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedByTheTableOperators) {
-    // The `branch` option names a branch a format table keeps no metadata for, and a read or a
-    // write would go to its one location whatever the option named. Refusing it is the only
-    // answer that is not silently the wrong one - an overwrite would delete the main branch's
-    // data while claiming to replace another branch's.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -3117,8 +3074,6 @@ TEST(FormatTableTest, TestATableCopiesItselfWithTheOptionsGivenAtTheCall) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
                          CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
 
-    // The copy overlays what the call gives on the options the schema stored, the precedence
-    // `Copy()` promises: a probe option lands, `type` - structural - does not.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
                          table->Copy({{Options::TYPE, "table"}, {"probe", "on-top"}}));
     std::shared_ptr<FormatTable> copied_table = std::static_pointer_cast<FormatTable>(copied);
@@ -3128,17 +3083,10 @@ TEST(FormatTableTest, TestATableCopiesItselfWithTheOptionsGivenAtTheCall) {
     EXPECT_EQ(copied_table->Location(), table->Location());
     EXPECT_EQ(copied_table->GetFileSystem(), table->GetFileSystem());
 
-    // The refusal `Copy(table, ...)` reports is the one the table itself reports: the copy goes
-    // through the same entry point, not a shortcut around its checks.
     ASSERT_NOK_WITH_MSG(table->Copy({{Options::BRANCH, "dev"}}), "has no branches");
 }
 
 TEST(FormatTableTest, TestAFormatTableSchemaOnABranchIsRefusedRatherThanServedFromTheTableRoot) {
-    // A context that names a path takes its branch from `WithBranch()`, and the schema of that
-    // branch decides what the entry point refuses. A format table's data is the files under the
-    // table path whichever branch named it, so the format table the branch's schema names is
-    // refused rather than served from there under another branch's name - the branch's table
-    // comes from the catalog, and its rows from that table's own operators.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -3166,8 +3114,6 @@ TEST(FormatTableTest, TestAFormatTableSchemaOnABranchIsRefusedRatherThanServedFr
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
     ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)), "names a format table");
 
-    // The main branch is untouched by any of it: the table the catalog hands back for it serves
-    // the scan from its own operators.
     ScanContextBuilder main_builder(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> main_context, main_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> main_scan,
@@ -3178,9 +3124,6 @@ TEST(FormatTableTest, TestAFormatTableSchemaOnABranchIsRefusedRatherThanServedFr
 }
 
 TEST(FormatTableTest, TestTheTableOperatorsCarryTheContextThrough) {
-    // A context promises that options given at the call win over the ones the schema stored, and
-    // that a branch is honoured. Serving the operators off the table itself must not quietly drop
-    // any of that.
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -3202,8 +3145,6 @@ TEST(FormatTableTest, TestTheTableOperatorsCarryTheContextThrough) {
                          write->PrepareCommit());
     ASSERT_EQ(messages.size(), 3u) << "target-file-row-num given at the call was ignored";
 
-    // Published through the table's own commit, or nothing below would see the rows: until the
-    // commit renames them the files sit in the hidden `_temporary` directory a scan skips.
     CommitContextBuilder generic_commit_builder(dir->Str(), "test-user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> generic_commit_context,
                          generic_commit_builder.Finish());
@@ -3212,8 +3153,6 @@ TEST(FormatTableTest, TestTheTableOperatorsCarryTheContextThrough) {
     ASSERT_OK(generic_commit->Commit(messages));
     ASSERT_OK(write->Close());
 
-    // A branch this table has no schema on names no table at all as far as the generic entry
-    // points are concerned, so the format branch must not answer for it.
     ReadContextBuilder branch_builder(dir->Str());
     branch_builder.WithBranch("nosuchbranch");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> branch_context, branch_builder.Finish());

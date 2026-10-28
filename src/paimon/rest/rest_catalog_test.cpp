@@ -1070,8 +1070,6 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
         requests_before = state_->get_table_requests;
     }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(system_identifier));
-    // A system table comes back as the read-only `SystemTable` it is, naming itself after the
-    // data table it belongs to.
     std::shared_ptr<SystemTable> system_table = std::dynamic_pointer_cast<SystemTable>(table);
     ASSERT_NE(nullptr, system_table);
     ASSERT_EQ("t1$options", system_table->Name());
@@ -1293,7 +1291,6 @@ TEST_F(RestCatalogTest, FormatTableIsLoadedInOneRequest) {
     // directory named "schema" there is a partition value, not metadata to skip.
     ASSERT_FALSE(table->LocationCarriesPaimonMetadata());
 
-    // A managed table comes back through the same call, as the managed table it is.
     ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> managed,
                          catalog->GetTable(Identifier("db1", "t1")));
@@ -1545,9 +1542,6 @@ TEST_F(RestCatalogTest, SystemDatabase) {
 }
 
 TEST_F(RestCatalogTest, GlobalSystemTableRetainsItsCatalog) {
-    // A global system table builds its rows lazily through the catalog that served it, so the
-    // table handed back keeps that catalog alive: reading it after the caller let its own
-    // reference go still answers, rather than reading through a catalog already destroyed.
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> created, CreateRestCatalog());
     std::shared_ptr<RestCatalog> catalog = std::move(created);
     ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
@@ -1559,8 +1553,6 @@ TEST_F(RestCatalogTest, GlobalSystemTableRetainsItsCatalog) {
     catalog.reset();
     ASSERT_FALSE(weak.expired()) << "the global system table does not retain its catalog";
 
-    // The rows are built through the retained catalog, so they still answer once the caller's
-    // own reference is gone: the one table the catalog stands behind shows up in them.
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                          ScanContextBuilder("sys/tables").Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_context)));
@@ -1579,10 +1571,6 @@ TEST_F(RestCatalogTest, GlobalSystemTableRetainsItsCatalog) {
 }
 
 TEST_F(RestCatalogTest, GlobalSystemTableWorksThroughThePublicCatalogFactory) {
-    // `Catalog::Create()` is the factory a caller outside paimon uses, and it hands back a
-    // `Catalog` rather than a `RestCatalog`. A global system table keeps its catalog alive
-    // through that pointer, so this path has to work too - a catalog whose shared ownership
-    // was not set up would fail here with the refusal naming the missing ownership.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog, Catalog::Create(kWarehouse, options_));
     ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
     ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));

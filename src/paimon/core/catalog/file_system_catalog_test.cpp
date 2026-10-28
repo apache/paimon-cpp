@@ -230,9 +230,6 @@ TEST(FileSystemCatalogTest, TestOptionsSystemTableCatalog) {
     ASSERT_FALSE(loaded_schema->field(1)->nullable());
 
     ASSERT_OK_AND_ASSIGN(auto system_table, catalog.GetTable(options_identifier));
-    // A system table comes back as the `SystemTable` it is: it answers for itself with its own
-    // read-only schema and the root path of the data table it reads. Its name carries the data
-    // table it belongs to.
     ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(system_table) != nullptr);
     ASSERT_TRUE(std::dynamic_pointer_cast<FormatTable>(system_table) == nullptr);
     ASSERT_EQ("tbl1$options", system_table->Name());
@@ -255,9 +252,6 @@ TEST(FileSystemCatalogTest, TestOptionsSystemTableCatalog) {
                         "Cannot 'renameTable' for system table");
 }
 
-// A `T$system` identifier opens the read-only view it names, which serves scans and reads of
-// the data table it belongs to through the same `Table` interface, and refuses the operations
-// that would modify the data table.
 TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
@@ -276,7 +270,6 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
                                   /*primary_keys=*/{}, options, /*ignore_if_exists=*/false));
     ArrowSchemaRelease(&schema);
 
-    // A managed table with no `type` option still opens, as the managed table it is.
     ASSERT_OK_AND_ASSIGN(auto managed, catalog.GetTable(Identifier("db1", "tbl1")));
     ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(managed) == nullptr);
 
@@ -284,7 +277,6 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
     ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(system_table) != nullptr);
     ASSERT_EQ("tbl1$options", system_table->Name());
 
-    // The scan and the read work from a context of the caller's, like every other table.
     ScanContextBuilder scan_builder(system_table->GetRootPath());
     scan_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
@@ -298,7 +290,6 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
     ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto table_result, reader->NextBatch());
 
-    // The options the table was created with come back, one row per key.
     auto& [c_array, c_schema] = table_result;
     std::shared_ptr<arrow::RecordBatch> batch;
     auto maybe_batch = arrow::ImportRecordBatch(c_array.get(), c_schema.get());
@@ -306,7 +297,6 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
     batch = std::move(maybe_batch).ValueUnsafe();
     ASSERT_GE(batch->num_rows(), 2);
 
-    // The operations that would modify the data table underneath are refused by name.
     WriteContextBuilder write_builder(system_table->GetRootPath(), "commit_user");
     write_builder.SetOptions(options);
     ASSERT_OK_AND_ASSIGN(auto write_context, write_builder.Finish());
@@ -319,6 +309,70 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
     ASSERT_NOK_WITH_MSG(
         system_table->NewCommit(std::move(commit_context)),
         "tbl1$options system table is read-only: committing for it is not supported");
+}
+
+TEST(FileSystemCatalogTest, TestGetTableServesTheSysDatabase) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    options[CatalogOptionsSystemTable::kEnabledOption] = "true";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto catalog =
+        std::make_shared<FileSystemCatalog>(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK(catalog->CreateDatabase("db1", options, /*ignore_if_exists=*/false));
+
+    auto typed_schema = arrow::schema({arrow::field("f0", arrow::int32(), /*nullable=*/false)});
+    ::ArrowSchema schema;
+    ASSERT_TRUE(arrow::ExportSchema(*typed_schema, &schema).ok());
+    ASSERT_OK(catalog->CreateTable(Identifier("db1", "tbl1"), &schema, /*partition_keys=*/{},
+                                   /*primary_keys=*/{}, options, /*ignore_if_exists=*/false));
+    ArrowSchemaRelease(&schema);
+
+    {
+        std::map<std::string, std::string> disabled = options;
+        disabled.erase(CatalogOptionsSystemTable::kEnabledOption);
+        auto disabled_catalog =
+            std::make_shared<FileSystemCatalog>(core_options.GetFileSystem(), dir->Str(), disabled);
+        ASSERT_NOK_WITH_MSG(disabled_catalog->GetTable(Identifier("sys", "catalog_options")),
+                            "not exist");
+    }
+    ASSERT_OK_AND_ASSIGN(auto catalog_options,
+                         catalog->GetTable(Identifier("sys", "catalog_options")));
+    ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(catalog_options) != nullptr);
+
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("sys", "nope")), "not exist");
+
+    ASSERT_OK_AND_ASSIGN(auto tables, catalog->GetTable(Identifier("sys", "tables")));
+    ScanContextBuilder scan_builder("sys/tables");
+    scan_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto scan, tables->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+    ASSERT_EQ(plan->Splits().size(), 1);
+
+    ReadContextBuilder read_builder("sys/tables");
+    read_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto read, tables->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(auto table_result, reader->NextBatch());
+
+    auto& [c_array, c_schema] = table_result;
+    std::shared_ptr<arrow::RecordBatch> batch;
+    auto maybe_batch = arrow::ImportRecordBatch(c_array.get(), c_schema.get());
+    ASSERT_TRUE(maybe_batch.ok()) << maybe_batch.status().ToString();
+    batch = std::move(maybe_batch).ValueUnsafe();
+    ASSERT_GE(batch->num_rows(), 1);
+
+    std::weak_ptr<const FileSystemCatalog> weak = catalog;
+    catalog.reset();
+    ASSERT_FALSE(weak.expired()) << "the global system table does not retain its catalog";
+
+    FileSystemCatalog stack_catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_NOK_WITH_MSG(stack_catalog.GetTable(Identifier("sys", "tables")),
+                        "must be owned by a std::shared_ptr");
 }
 
 TEST(FileSystemCatalogTest, TestBranchTableLoadsBranchSchema) {
@@ -729,8 +783,6 @@ TEST(FileSystemCatalogTest, TestGetTableServesAFormatTable) {
                                   /*ignore_if_exists=*/false));
     ArrowSchemaRelease(&schema);
 
-    // The table's `type` says what it is, so the one call that opens a table hands a format
-    // table back as the `FormatTable` it is, through the `Table` interface the two share.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(Identifier("db1", "fmt")));
     std::shared_ptr<FormatTable> format_table = std::dynamic_pointer_cast<FormatTable>(table);
     ASSERT_NE(nullptr, format_table);
