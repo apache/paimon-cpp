@@ -139,7 +139,6 @@ TEST(TableReadTest, TestFullTextMatchExecutionIsNotImplemented) {
         std::shared_ptr<FileStoreTable> table,
         FileStoreTable::Create(fs, table_path, schema, Identifier("append_09.db", "append_09"),
                                /*uuid=*/"", /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
-                               /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
                                /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
     for (bool table_entry : {false, true}) {
         ReadContextBuilder builder(table_path);
@@ -169,7 +168,6 @@ TEST(TableReadTest, TestPerFieldScoreExecutionIsNotImplemented) {
         std::shared_ptr<FileStoreTable> table,
         FileStoreTable::Create(fs, path, schema, Identifier("append_09.db", "append_09"),
                                /*uuid=*/"", /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
-                               /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
                                /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
     for (bool table_entry : {false, true}) {
         ReadContextBuilder builder(path);

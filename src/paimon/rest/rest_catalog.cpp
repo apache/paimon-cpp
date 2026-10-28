@@ -484,8 +484,7 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     return FileStoreTable::Create(
         table_file_system, table_path, schema, identifier, uuid,
         NormalizeBranch(std::move(branch)).value_or(Identifier::kDefaultMainBranch),
-        /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr, /*fs_scheme_map=*/{},
-        /*dynamic_options=*/{});
+        /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
 }
 
 std::string RestCatalog::GetRootPath() const {

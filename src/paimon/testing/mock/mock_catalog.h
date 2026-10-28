@@ -119,8 +119,8 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
         return FileStoreTable::Create(
             table_file_system_ != nullptr ? table_file_system_ : file_system_,
             /*root_path=*/"", table_schema_, identifier, table_uuid_,
-            /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH, /*schema_manager=*/nullptr,
-            /*snapshot_manager=*/nullptr, /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
+            /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH, /*fs_scheme_map=*/{},
+            /*dynamic_options=*/{});
     }
 
     void SetTableSchema(const std::shared_ptr<Schema>& table_schema) {

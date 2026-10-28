@@ -19,7 +19,6 @@
 
 #pragma once
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -45,10 +44,9 @@ class IndexFileHandler;
 class IndexManifestFile;
 class ManifestFile;
 class ManifestList;
-class TableSchema;
 
 /// Holds the storage a managed table reads and writes through: the file system, root path,
-/// schema, branch, options and managers. Java Paimon carries the same state in `AbstractFileStore`.
+/// branch, options and managers. Java Paimon carries the same state in `AbstractFileStore`.
 /// `FileStoreTable` builds one when it loads and asks it for the pieces each operator opens with.
 ///
 /// The factories below take the options of the call, so an operator can serve a cache of its own
@@ -56,36 +54,15 @@ class TableSchema;
 /// cached one: a snapshot manager a write armed with a catalog loader must not serve a scan.
 class FileStore {
  public:
-    /// Builds the store. It parses the schema's options and fails when they do not parse, so the
-    /// constructor is private and callers come here.
-    /// @param file_system The file system the caller opened the table through. It wins over the
-    ///        access configuration in the schema's options. Null leaves the resolution to that
-    ///        configuration, and to the default local file system when the options name none.
+    /// Builds the store over options resolved before the call - `FileStoreTable::Create` resolves
+    /// them once - so the store consumes the resolution and parses nothing itself.
     /// @param root_path Root path of the table in the file system.
-    /// @param schema The schema the table was loaded with. Its partition keys name the partitions
-    ///        the paths below are built for, and `GetOptions()` parses its options. Null when the
-    ///        caller had none, which the operators then report.
-    /// @param branch The branch the store serves, normalized here.
-    /// @param schema_manager A schema manager to carry instead of building one: the one a table
-    ///        asked for the branch it already serves hands over, whose resolution this store's
-    ///        options therefore name as well. Null - what a load, a copy and a branch switch pass,
-    ///        each resolving through a schema of its own - builds one over the resolved file
-    ///        system, so no manager is ever left reading through a backend its table moved off.
-    /// @param snapshot_manager A snapshot manager to carry instead of building one, as above. Null
-    ///        builds one over `root_path` on `branch`.
-    /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
-    ///        schemes through, kept so a copy resolves as this store does.
-    // TODO(yonghao.fyh): Resolve the final CoreOptions before the table and the store are
-    // constructed, so this takes (root_path, core_options) and consumes the resolution: file
-    // system and branch from the options, both managers built inside, the schema left to
-    // FileStoreTable. CoreOptions retains FromMap's inputs - the specified file system and the
-    // scheme map - so a copy or a branch switch resolves through them again.
-    static Result<std::shared_ptr<FileStore>> Create(
-        const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-        const std::shared_ptr<TableSchema>& schema, const std::string& branch,
-        const std::shared_ptr<SchemaManager>& schema_manager,
-        const std::shared_ptr<SnapshotManager>& snapshot_manager,
-        const std::map<std::string, std::string>& fs_scheme_map);
+    /// @param core_options The final options the table serves. The store reads and writes through
+    ///        their file system and serves their branch, normalized here; both managers are built
+    ///        over the two, so no manager is ever left reading through a backend its table moved
+    ///        off.
+    static std::shared_ptr<FileStore> Create(const std::string& root_path,
+                                             CoreOptions core_options);
 
     const std::string& CurrentBranch() const {
         return branch_;
@@ -103,38 +80,20 @@ class FileStore {
         return snapshot_manager_;
     }
 
-    /// The schema the table was loaded with, null when the caller had none.
-    const std::shared_ptr<TableSchema>& GetSchema() const {
-        return schema_;
-    }
-
-    /// The file system the table's data is accessed through: the one the options resolve, unless
-    /// the caller opened the table through one of its own.
+    /// The file system the table's data is accessed through: the one the options resolved, which
+    /// is the one the caller opened the table through when it opened it through one of its own.
     const std::shared_ptr<FileSystem>& GetFileSystem() const {
         return file_system_;
-    }
-
-    /// The file system the caller opened the table through, as handed to `Create`. Null when the
-    /// call had none, so a copy resolves from its own options again.
-    const std::shared_ptr<FileSystem>& GetSpecifiedFileSystem() const {
-        return specified_file_system_;
-    }
-
-    /// The scheme-to-identifier map the options were resolved with, kept so a copy can resolve
-    /// through it again.
-    const std::map<std::string, std::string>& GetFsSchemeMap() const {
-        return fs_scheme_map_;
     }
 
     const std::string& GetRootPath() const {
         return root_path_;
     }
 
-    /// The options of the schema loaded on `CurrentBranch()`. They exist only over a schema, so an
-    /// operator reports that no schema was found before it ever reads them.
+    /// The final options the table serves, as `Create` took them. Every operator reads them; a
+    /// copy or a branch switch resolves its own, from the inputs the table keeps.
     const CoreOptions& GetOptions() const {
-        assert(core_options_.has_value());
-        return *core_options_;
+        return core_options_;
     }
 
     /// Builds the path factory an operator names its metadata paths through, over this store's
@@ -184,28 +143,22 @@ class FileStore {
         const std::shared_ptr<MemoryPool>& memory_pool) const;
 
     /// Builds the partition computer a commit names the partitions it writes with, over the
-    /// partition keys of this store's schema and the caller's arrow schema.
+    /// caller's partition keys and arrow schema.
     Result<std::unique_ptr<BinaryRowPartitionComputer>> NewPartitionComputer(
-        const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
+        const std::shared_ptr<arrow::Schema>& arrow_schema,
+        const std::vector<std::string>& partition_keys, const CoreOptions& options,
         const std::shared_ptr<MemoryPool>& memory_pool) const;
 
  private:
-    FileStore(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-              const std::shared_ptr<TableSchema>& schema, const std::string& branch,
-              const std::shared_ptr<SchemaManager>& schema_manager,
-              const std::shared_ptr<SnapshotManager>& snapshot_manager,
-              const std::map<std::string, std::string>& fs_scheme_map);
+    FileStore(const std::string& root_path, CoreOptions core_options);
 
     std::shared_ptr<FileSystem> file_system_;
-    std::shared_ptr<FileSystem> specified_file_system_;
-    std::map<std::string, std::string> fs_scheme_map_;
     std::string root_path_;
-    std::shared_ptr<TableSchema> schema_;
     std::string branch_;
     std::shared_ptr<SchemaManager> schema_manager_;
     std::shared_ptr<SnapshotManager> snapshot_manager_;
-    /// The options of `schema_` on `branch_`, unset when there is no schema.
-    std::optional<CoreOptions> core_options_;
+    /// The final options the table serves, as `Create` took them.
+    CoreOptions core_options_;
 };
 
 }  // namespace paimon

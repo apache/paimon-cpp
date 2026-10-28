@@ -59,26 +59,28 @@ class FileStoreTable : public Table {
     /// `AppendOnlyFileStoreTable` when there are none, a `PrimaryKeyFileStoreTable` when there are.
     /// Java Paimon's `FileStoreTableFactory` picks the kind the same way. A schema change can
     /// neither add nor drop primary keys, so every schema the root path ever held names one kind.
+    /// The final options are resolved here once, before the store is built: the schema's own
+    /// options as `branch` restyles them - the main branch carries no `branch` option, another
+    /// branch names itself - are parsed, and a parse failure is this call's error. Every operator
+    /// and both managers are built over that one resolution.
+    /// @param file_system The file system the caller opened the table through. It wins over the
+    ///        access configuration in the schema's options. Null leaves the resolution to that
+    ///        configuration, and to the default local file system when the options name none. Kept
+    ///        so `Copy` and `SwitchToBranch` resolve through it again.
     /// @param schema The schema the table was loaded with. Its primary keys name the kind and its
     ///        options are what the operators serve. Null when the caller had none, in which case
     ///        the table is built as the append-only kind and its operators report that none was
     ///        found.
     /// @param branch The branch the table serves, which the managers below read and write on.
-    /// @param schema_manager A schema manager to carry instead of building one. See
-    ///        `FileStore::Create`.
-    /// @param snapshot_manager A snapshot manager to carry instead of building one. See
-    ///        `FileStore::Create`.
     /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
-    ///        schemes through, which the store's options resolve through as well. `Copy` hands its
-    ///        table's map over.
+    ///        schemes through, which the options resolve through as well. Kept so `Copy` and
+    ///        `SwitchToBranch` resolve through it again.
     /// @param dynamic_options The options a copy was given over the ones its schema stored, which
     ///        `Copy` accumulates. See the member of the same name.
     static Result<std::shared_ptr<FileStoreTable>> Create(
         const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
         const std::shared_ptr<Schema>& schema, const Identifier& identifier,
         const std::string& uuid, const std::string& branch,
-        const std::shared_ptr<SchemaManager>& schema_manager,
-        const std::shared_ptr<SnapshotManager>& snapshot_manager,
         const std::map<std::string, std::string>& fs_scheme_map,
         const std::map<std::string, std::string>& dynamic_options);
 
@@ -113,7 +115,8 @@ class FileStoreTable : public Table {
     /// to is served as it is: its schema is read from its own directory and its managers are built
     /// over the file system that schema resolves, so neither this table's dynamic options nor its
     /// managers are carried over. Switching to the branch this table already serves hands back a
-    /// copy of it with the schema and the managers shared. A branch with no schema does not exist.
+    /// copy of it with the schema shared and the managers built over the same resolution again. A
+    /// branch with no schema does not exist.
     Result<std::shared_ptr<Table>> SwitchToBranch(const std::string& branch) const;
 
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
@@ -161,9 +164,12 @@ class FileStoreTable : public Table {
         const std::shared_ptr<Executor>& executor) const;
 
  protected:
-    /// The base constructor the kinds of managed table build through. The store carries every state
-    /// they hand down; see `Create` for what each piece of it is.
-    FileStoreTable(const std::shared_ptr<FileStore>& store, const Identifier& identifier,
+    /// The base constructor the kinds of managed table build through. The store carries the
+    /// storage they hand down; `schema` is the schema the table was loaded with, which the `Table`
+    /// base holds and the operators read - null when the caller had none. See `Create` for what
+    /// each piece is.
+    FileStoreTable(const std::shared_ptr<FileStore>& store,
+                   const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
                    const std::string& uuid);
 
     /// Restores the committed progress of a real-time write from the latest snapshot the snapshot
@@ -221,6 +227,16 @@ class FileStoreTable : public Table {
     /// merged into because a fallback reader needs them on their own: it serves another branch's
     /// schema and merges the same options over it again.
     std::map<std::string, std::string> dynamic_options_;
+
+    /// The file system the caller opened this table through, as the options were resolved with -
+    /// null when the load had none. A copy and a branch switch resolve their own options, and the
+    /// resolution that built this table's store is one-way: neither the file system it produced
+    /// nor the options hand the inputs back, so they are kept here for the next resolution.
+    std::shared_ptr<FileSystem> specified_file_system_;
+
+    /// The scheme-to-identifier map the options were resolved with, kept for the same next
+    /// resolution `specified_file_system_` is kept for.
+    std::map<std::string, std::string> fs_scheme_map_;
 };
 
 }  // namespace paimon

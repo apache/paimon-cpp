@@ -19,7 +19,6 @@
 
 #include "paimon/core/table/file_store.h"
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -36,68 +35,27 @@
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/schema/schema_manager.h"
-#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/snapshot_manager.h"
-#include "paimon/defs.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 
 namespace paimon {
 
-Result<std::shared_ptr<FileStore>> FileStore::Create(
-    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-    const std::shared_ptr<TableSchema>& schema, const std::string& branch,
-    const std::shared_ptr<SchemaManager>& schema_manager,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager,
-    const std::map<std::string, std::string>& fs_scheme_map) {
-    auto store = std::shared_ptr<FileStore>(new FileStore(
-        file_system, root_path, schema, branch, schema_manager, snapshot_manager, fs_scheme_map));
-    if (schema != nullptr) {
-        std::map<std::string, std::string> options = schema->Options();
-        if (BranchManager::IsMainBranch(store->branch_)) {
-            options.erase(Options::BRANCH);
-        } else {
-            options[Options::BRANCH] = store->branch_;
-        }
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                               CoreOptions::FromMap(options, file_system, fs_scheme_map));
-        store->core_options_ = std::move(core_options);
-    }
-    if (store->core_options_.has_value()) {
-        store->file_system_ = store->core_options_->GetFileSystem();
-    } else if (file_system != nullptr) {
-        store->file_system_ = file_system;
-    } else {
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions default_options, CoreOptions::FromMap({}));
-        store->file_system_ = default_options.GetFileSystem();
-    }
-    if (store->schema_manager_ == nullptr) {
-        store->schema_manager_ =
-            std::make_shared<SchemaManager>(store->file_system_, root_path, store->branch_);
-    }
-    if (store->snapshot_manager_ == nullptr) {
-        store->snapshot_manager_ =
-            std::make_shared<SnapshotManager>(store->file_system_, root_path, store->branch_);
-    }
-    return store;
+std::shared_ptr<FileStore> FileStore::Create(const std::string& root_path,
+                                             CoreOptions core_options) {
+    return std::shared_ptr<FileStore>(new FileStore(root_path, std::move(core_options)));
 }
 
-FileStore::FileStore(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-                     const std::shared_ptr<TableSchema>& schema, const std::string& branch,
-                     const std::shared_ptr<SchemaManager>& schema_manager,
-                     const std::shared_ptr<SnapshotManager>& snapshot_manager,
-                     const std::map<std::string, std::string>& fs_scheme_map)
-    : file_system_(file_system),
-      specified_file_system_(file_system),
-      fs_scheme_map_(fs_scheme_map),
+FileStore::FileStore(const std::string& root_path, CoreOptions core_options)
+    : file_system_(core_options.GetFileSystem()),
       root_path_(root_path),
-      schema_(schema),
-      branch_(BranchManager::NormalizeBranch(branch)),
-      schema_manager_(schema_manager),
-      snapshot_manager_(snapshot_manager) {}
+      branch_(BranchManager::NormalizeBranch(core_options.GetBranch())),
+      schema_manager_(std::make_shared<SchemaManager>(file_system_, root_path_, branch_)),
+      snapshot_manager_(std::make_shared<SnapshotManager>(file_system_, root_path_, branch_)),
+      core_options_(std::move(core_options)) {}
 
 Result<std::shared_ptr<FileStorePathFactory>> FileStore::NewPathFactory(
     const std::shared_ptr<arrow::Schema>& arrow_schema,
@@ -175,9 +133,10 @@ Result<std::unique_ptr<IndexFileHandler>> FileStore::NewIndexFileHandler(
 }
 
 Result<std::unique_ptr<BinaryRowPartitionComputer>> FileStore::NewPartitionComputer(
-    const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
+    const std::shared_ptr<arrow::Schema>& arrow_schema,
+    const std::vector<std::string>& partition_keys, const CoreOptions& options,
     const std::shared_ptr<MemoryPool>& memory_pool) const {
-    return BinaryRowPartitionComputer::Create(schema_->PartitionKeys(), arrow_schema,
+    return BinaryRowPartitionComputer::Create(partition_keys, arrow_schema,
                                               options.GetPartitionDefaultName(),
                                               options.LegacyPartitionNameEnabled(), memory_pool);
 }

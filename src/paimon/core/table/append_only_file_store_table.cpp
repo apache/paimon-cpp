@@ -34,6 +34,7 @@
 #include "paimon/core/operation/data_evolution_file_store_scan.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/realtime/realtime_schema_layout.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/file_store.h"
@@ -48,9 +49,10 @@
 namespace paimon {
 
 AppendOnlyFileStoreTable::AppendOnlyFileStoreTable(const std::shared_ptr<FileStore>& store,
+                                                   const std::shared_ptr<TableSchema>& schema,
                                                    const Identifier& identifier,
                                                    const std::string& uuid)
-    : FileStoreTable(store, identifier, uuid) {}
+    : FileStoreTable(store, schema, identifier, uuid) {}
 
 Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
     const WriteContext& ctx, const std::shared_ptr<arrow::Schema>& arrow_schema,
@@ -58,8 +60,8 @@ Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const {
-    const std::shared_ptr<TableSchema>& schema = store_->GetSchema();
     const bool realtime_deduplicate = !options.GetRealtimeDeduplicateKeyFields().empty();
+    std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
     bool need_dv_maintainer_factory = options.DeletionVectorsEnabled();
     if (options.GetBucket() == -1) {
         need_dv_maintainer_factory = false;
@@ -137,7 +139,7 @@ Result<std::unique_ptr<FileStoreScan>> AppendOnlyFileStoreTable::NewFileStoreSca
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
     const ScanContext* context) const {
     // TODO(liancheng.lsz): support fallback branch in scan
-    const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
+    std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
     std::unique_ptr<FileStoreScan> scan;
     if (core_options.DataEvolutionEnabled()) {
         PAIMON_ASSIGN_OR_RAISE(
@@ -177,7 +179,7 @@ CommitScanner::ScanSupplier AppendOnlyFileStoreTable::NewCommitScanSupplier(
     const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) const {
     const std::shared_ptr<SchemaManager>& schema_manager = GetSchemaManager();
-    const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
+    std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
     return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
             arrow_schema, options, executor, pool](const std::shared_ptr<ScanFilter>& scan_filter)
                -> Result<std::unique_ptr<FileStoreScan>> {

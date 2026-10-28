@@ -320,6 +320,9 @@ Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::LoadForSchema(
             }
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                    entry.factory(context));
+            // TODO(yonghao.fyh): the loader-driven AdoptOwnSchema() is an init-style coupling;
+            // consider overriding LatestSchema() on SystemTable, as FormatTable does, to serve
+            // its own read-only schema and drop this call from every loader.
             PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
             return system_table;
         }

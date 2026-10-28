@@ -41,9 +41,11 @@ class TableSchema;
 class AppendOnlyFileStoreTable : public FileStoreTable {
  public:
     /// The constructor `FileStoreTable::Create` builds an append-only table through: the store
-    /// carries every state, and the base class holds it.
-    AppendOnlyFileStoreTable(const std::shared_ptr<FileStore>& store, const Identifier& identifier,
-                             const std::string& uuid);
+    /// carries the storage state, `schema` is the schema the table was loaded with, and the base
+    /// class holds both.
+    AppendOnlyFileStoreTable(const std::shared_ptr<FileStore>& store,
+                             const std::shared_ptr<TableSchema>& schema,
+                             const Identifier& identifier, const std::string& uuid);
 
  private:
     Result<std::unique_ptr<FileStoreWrite>> CreateWrite(

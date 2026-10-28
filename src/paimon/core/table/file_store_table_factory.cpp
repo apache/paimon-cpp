@@ -114,8 +114,7 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
     // served through the one the schema's own options resolve: the store builds its managers over
     // that resolution rather than taking over the reader's.
     return FileStoreTable::Create(explicit_file_system, path, loaded_schema, table_identifier, uuid,
-                                  branch, /*schema_manager=*/nullptr,
-                                  /*snapshot_manager=*/nullptr, fs_scheme_map, dynamic_options);
+                                  branch, fs_scheme_map, dynamic_options);
 }
 
 Result<std::optional<std::string>> CatalogMainBranchSchemaJson(

@@ -97,16 +97,15 @@ class Executor;
 class MemoryPool;
 
 FileStoreTable::FileStoreTable(const std::shared_ptr<FileStore>& store,
+                               const std::shared_ptr<TableSchema>& schema,
                                const Identifier& identifier, const std::string& uuid)
-    : Table(store->GetFileSystem(), store->GetRootPath(), store->GetSchema(), identifier, uuid),
+    : Table(store->GetFileSystem(), store->GetRootPath(), schema, identifier, uuid),
       store_(store) {}
 
 Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
     const std::shared_ptr<Schema>& schema, const Identifier& identifier, const std::string& uuid,
-    const std::string& branch, const std::shared_ptr<SchemaManager>& schema_manager,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager,
-    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::string& branch, const std::map<std::string, std::string>& fs_scheme_map,
     const std::map<std::string, std::string>& dynamic_options) {
     std::shared_ptr<TableSchema> table_schema;
     if (schema != nullptr) {
@@ -116,16 +115,30 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
                 fmt::format("{} is not a managed table schema", identifier.ToString()));
         }
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStore> store,
-                           FileStore::Create(file_system, root_path, table_schema, branch,
-                                             schema_manager, snapshot_manager, fs_scheme_map));
+    // Resolve the final options once, before the store is built: the schema's own options as the
+    // branch restyles them - the main branch carries no `branch` option, another branch names
+    // itself. A caller with no schema resolves the defaults over its branch, and the operators
+    // report the missing schema before they ever serve its options.
+    std::map<std::string, std::string> options =
+        table_schema != nullptr ? table_schema->Options() : std::map<std::string, std::string>{};
+    const std::string normalized_branch = BranchManager::NormalizeBranch(branch);
+    if (BranchManager::IsMainBranch(normalized_branch)) {
+        options.erase(Options::BRANCH);
+    } else {
+        options[Options::BRANCH] = normalized_branch;
+    }
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
+                           CoreOptions::FromMap(options, file_system, fs_scheme_map));
+    std::shared_ptr<FileStore> store = FileStore::Create(root_path, std::move(core_options));
     std::shared_ptr<FileStoreTable> table;
     if (table_schema != nullptr && !table_schema->PrimaryKeys().empty()) {
-        table = std::make_shared<PrimaryKeyFileStoreTable>(store, identifier, uuid);
+        table = std::make_shared<PrimaryKeyFileStoreTable>(store, table_schema, identifier, uuid);
     } else {
-        table = std::make_shared<AppendOnlyFileStoreTable>(store, identifier, uuid);
+        table = std::make_shared<AppendOnlyFileStoreTable>(store, table_schema, identifier, uuid);
     }
     table->dynamic_options_ = dynamic_options;
+    table->specified_file_system_ = file_system;
+    table->fs_scheme_map_ = fs_scheme_map;
     return table;
 }
 
@@ -147,20 +160,17 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     }
     // A copy resolves its file system from its own merged options, so it takes over no manager of
     // the table it was copied from: the store builds both over the resolution the copy names.
-    return FileStoreTable::Create(store_->GetSpecifiedFileSystem(), root_path_,
-                                  std::shared_ptr<TableSchema>(std::move(merged_schema)),
-                                  identifier_, CatalogUuid().value_or(""), CurrentBranch(),
-                                  /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
-                                  store_->GetFsSchemeMap(), accumulated);
+    return FileStoreTable::Create(
+        specified_file_system_, root_path_, std::shared_ptr<TableSchema>(std::move(merged_schema)),
+        identifier_, CatalogUuid().value_or(""), CurrentBranch(), fs_scheme_map_, accumulated);
 }
 
 Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string& branch) const {
     const std::string target_branch = BranchManager::NormalizeBranch(branch);
     if (target_branch == CurrentBranch()) {
-        return FileStoreTable::Create(store_->GetSpecifiedFileSystem(), root_path_, schema_,
-                                      identifier_, CatalogUuid().value_or(""), CurrentBranch(),
-                                      GetSchemaManager(), GetSnapshotManager(),
-                                      store_->GetFsSchemeMap(), dynamic_options_);
+        return FileStoreTable::Create(specified_file_system_, root_path_, schema_, identifier_,
+                                      CatalogUuid().value_or(""), CurrentBranch(), fs_scheme_map_,
+                                      dynamic_options_);
     }
     // The branch is read through the file system this table serves, and then served through the
     // one its own schema resolves: the store builds the managers over that resolution, so none of
@@ -179,11 +189,10 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
                            (*latest)->MergeOptions(overridable));
     PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
                            CatalogUtils::BranchIdentifier(identifier_, target_branch));
-    return FileStoreTable::Create(store_->GetSpecifiedFileSystem(), root_path_,
+    return FileStoreTable::Create(specified_file_system_, root_path_,
                                   std::shared_ptr<TableSchema>(std::move(branch_schema)),
                                   branch_identifier, CatalogUuid().value_or(""), target_branch,
-                                  /*schema_manager=*/nullptr, /*snapshot_manager=*/nullptr,
-                                  store_->GetFsSchemeMap(), /*dynamic_options=*/{});
+                                  fs_scheme_map_, /*dynamic_options=*/{});
 }
 
 Status FileStoreTable::RestoreRealtimeCommittedProgress(
@@ -295,7 +304,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,
                            CatalogUtils::BranchIdentifier(ctx->GetIdentifier(), CurrentBranch()));
-    const std::shared_ptr<TableSchema>& schema = store_->GetSchema();
+    std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
     if (schema == nullptr) {
         return Status::Invalid(
             fmt::format("not found latest schema in branch {}", CurrentBranch()));
@@ -342,7 +351,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
 Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
-    const std::shared_ptr<TableSchema>& table_schema = store_->GetSchema();
+    std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
     if (table_schema == nullptr) {
         return Status::Invalid("not found latest schema");
     }
@@ -470,7 +479,7 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     std::unique_ptr<ReadContext> context) const {
     std::shared_ptr<ReadContext> read_context = std::move(context);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(read_context, "read"));
-    const std::shared_ptr<TableSchema>& loaded_schema = store_->GetSchema();
+    std::shared_ptr<TableSchema> loaded_schema = std::static_pointer_cast<TableSchema>(schema_);
     if (loaded_schema == nullptr) {
         return Status::Invalid("not found latest schema");
     }
@@ -538,7 +547,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
             return data_schema->Id();
         };
     }
-    const std::shared_ptr<TableSchema>& schema = store_->GetSchema();
+    std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
     if (schema == nullptr) {
         return Status::Invalid(
             fmt::format("not found latest schema in branch {}", CurrentBranch()));
@@ -559,9 +568,9 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
         return Status::NotImplemented(
             "commit operation does not support object store file system for now");
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
-        store_->NewPartitionComputer(arrow_schema, options, ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
+                           store_->NewPartitionComputer(arrow_schema, schema->PartitionKeys(),
+                                                        options, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         store_->NewPathFactory(arrow_schema, schema->PartitionKeys(), options,
