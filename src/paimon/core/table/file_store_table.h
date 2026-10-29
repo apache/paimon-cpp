@@ -27,6 +27,7 @@
 #include "paimon/catalog/table.h"
 #include "paimon/core/operation/commit/commit_scanner.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/file_store.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -40,7 +41,6 @@ class IOManager;
 class ManifestFile;
 class ManifestList;
 class RealtimeContext;
-class Schema;
 class SplitGenerator;
 
 /// The managed table a catalog hands out: one with snapshots and manifests, described by the
@@ -63,14 +63,14 @@ class FileStoreTable : public Table {
     /// options as `branch` restyles them - the main branch carries no `branch` option, another
     /// branch names itself - are parsed, and a parse failure is this call's error. Every operator
     /// and both managers are built over that one resolution.
-    /// @param file_system The file system the caller opened the table through. It wins over the
-    ///        access configuration in the schema's options. Null leaves the resolution to that
-    ///        configuration, and to the default local file system when the options name none. Kept
-    ///        so `Copy` and `SwitchToBranch` resolve through it again.
-    /// @param schema The schema the table was loaded with. Its primary keys name the kind and its
-    ///        options are what the operators serve. Null when the caller had none, in which case
-    ///        the table is built as the append-only kind and its operators report that none was
-    ///        found.
+    /// @param specified_file_system The file system the caller opened the table through. It
+    ///        wins over the access configuration in the schema's options. Null leaves the
+    ///        resolution to that configuration, and to the default local file system when the
+    ///        options name none. Kept so `Copy` and `SwitchToBranch` resolve through it again.
+    /// @param schema The schema the table was loaded with, a `TableSchema` as every managed
+    ///        table's is. Its primary keys name the kind and its options are what the operators
+    ///        serve. Null is refused: a path a load found no schema under hands back no table,
+    ///        and the failure belongs to the call that opens one.
     /// @param branch The branch the table serves, which the managers below read and write on.
     /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
     ///        schemes through, which the options resolve through as well. Kept so `Copy` and
@@ -78,8 +78,8 @@ class FileStoreTable : public Table {
     /// @param dynamic_options The options a copy was given over the ones its schema stored, which
     ///        `Copy` accumulates. See the member of the same name.
     static Result<std::shared_ptr<FileStoreTable>> Create(
-        const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-        const std::shared_ptr<Schema>& schema, const Identifier& identifier,
+        const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
+        const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
         const std::string& uuid, const std::string& branch,
         const std::map<std::string, std::string>& fs_scheme_map,
         const std::map<std::string, std::string>& dynamic_options);
@@ -104,10 +104,16 @@ class FileStoreTable : public Table {
         return identifier_.GetFullName();
     }
 
-    /// Returns a copy that serves `dynamic_options`. The root path and the identifier stay as they
-    /// are: they name this table, and an option does not rename it. The copy resolves the file
-    /// system the caller opened this table through, if any, together with its own merged options,
-    /// and builds its managers over that resolution rather than taking this table's over.
+    /// Returns a copy that serves `dynamic_options`. The root path stays as it is: it names this
+    /// table, and an option does not rename it. The `type` option is immutable the way Java
+    /// Paimon's is - a value naming the type the schema's primary keys already name, whatever its
+    /// case, is dropped, and any other value is refused - and the `branch` option names the branch
+    /// the copy serves: one on the branch this table serves keeps this table's schema, while one
+    /// on another branch reads that branch's own latest schema, carries the identifier of that
+    /// branch the way a load's routing does, and refuses a branch holding no schema. The copy
+    /// resolves the file system the caller opened this table through, if any, together with its
+    /// own merged options, and builds its managers over that resolution rather than taking this
+    /// table's over.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
@@ -130,15 +136,20 @@ class FileStoreTable : public Table {
         std::unique_ptr<CommitContext> context) const override;
 
  private:
-    /// Checks the options a context carries against the ones the table was loaded with. A table
-    /// serves the options it was loaded with, so an option the context contradicts is refused: a
-    /// caller that means to change them copies the table. A table a load hands back carries the
-    /// context's own options merged in - `FileStoreTableFactory` merges them - so it agrees by
-    /// construction. The refusal belongs to a table the caller already held, whose load is over. A
-    /// key the table was not loaded with is no contradiction: it names a runtime setting, a scan
-    /// mode or a batch size, which is none of the table's business and is served as given.
-    static Status CheckOptionsAgreeWithTable(
-        const TableSchema& table_schema, const std::map<std::string, std::string>& context_options);
+    /// Checks the options a context carries against the configuration the table serves: its
+    /// schema's options with its dynamic options on top. A table serves that configuration and
+    /// nothing else - the operators read it and add no context option to it - so an option the
+    /// context contradicts is refused, and so is one the table was not loaded with: serving it
+    /// would drop the context value in silence behind the table's own configuration. A caller
+    /// that means to change the configuration copies the table. A table a load hands back carries
+    /// the context's own options merged in - `FileStoreTableFactory` merges them, whatever the
+    /// key, as it merges a `header.` key the transport reads - so it agrees by construction; the
+    /// refusal belongs to a table the caller already held, whose load is over. The keys a load
+    /// routes with (`branch`, `type`) are folded into the table there - by the load or by `Copy` -
+    /// and checked against the identifier and the schema instead.
+    Status CheckOptionsAgreeWithTable(
+        const TableSchema& table_schema,
+        const std::map<std::string, std::string>& context_options) const;
 
     /// Checks the identity a context carries - the path it names, the identifier it gives a
     /// catalog, the table id it records - against this table's own. The store below serves this
@@ -166,8 +177,7 @@ class FileStoreTable : public Table {
  protected:
     /// The base constructor the kinds of managed table build through. The store carries the
     /// storage they hand down; `schema` is the schema the table was loaded with, which the `Table`
-    /// base holds and the operators read - null when the caller had none. See `Create` for what
-    /// each piece is.
+    /// base holds and the operators read. See `Create` for what each piece is.
     FileStoreTable(const std::shared_ptr<FileStore>& store,
                    const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
                    const std::string& uuid);

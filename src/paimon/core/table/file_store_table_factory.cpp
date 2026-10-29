@@ -69,52 +69,33 @@ Result<std::shared_ptr<Table>> ManagedTableOf(
             latest_schema = *latest;
         }
     }
-    if (latest_schema != nullptr) {
-        PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
-                               TableTypeDefine::IsFormatTable(latest_schema->Options()));
-        if (is_format_table) {
-            return Status::Invalid(fmt::format(
-                "the schema under {} names a format table, which is not loaded from a path: a "
-                "catalog hands the table back through GetTable, and its operators come from "
-                "table->NewScan/NewRead/NewWrite/NewCommit on it",
-                path));
-        }
+    // A path no schema was found under names no table: the failure belongs to the call that
+    // opens one, rather than to the first operator a handle without a schema would reach.
+    if (latest_schema == nullptr) {
+        return Status::Invalid(fmt::format("not found latest schema in branch {}",
+                                           BranchManager::NormalizeBranch(branch)));
+    }
+    PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
+                           TableTypeDefine::IsFormatTable(latest_schema->Options()));
+    if (is_format_table) {
+        return Status::Invalid(fmt::format(
+            "the schema under {} names a format table, which is not loaded from a path: a "
+            "catalog hands the table back through GetTable, and its operators come from "
+            "table->NewScan/NewRead/NewWrite/NewCommit on it",
+            path));
     }
     Identifier table_identifier =
         identifier.value_or(CatalogUtils::IdentifierFromPath(path, branch));
-    // Fold the context options into the schema before the store resolves them: resolving the
-    // schema's own options first would fail on a format plugin the context overrides away,
-    // before the override has a chance to take effect. Only options that differ from the
-    // schema's own restyle the load, the way `Copy` decides; the rest leave the schema and the
-    // dynamic options as they are.
-    std::shared_ptr<Schema> loaded_schema = latest_schema;
-    std::map<std::string, std::string> dynamic_options;
-    if (latest_schema != nullptr && !options.empty()) {
-        const std::map<std::string, std::string>& schema_options = latest_schema->Options();
-        bool options_differ = false;
-        for (const auto& [key, value] : options) {
-            auto schema_option = schema_options.find(key);
-            if (schema_option == schema_options.end() || schema_option->second != value) {
-                options_differ = true;
-                break;
-            }
-        }
-        if (options_differ) {
-            dynamic_options = options;
-            dynamic_options.erase(Options::TYPE);
-            dynamic_options.erase(Options::BRANCH);
-            PAIMON_RETURN_NOT_OK(
-                SchemaValidation::CheckImmutableOptions(*latest_schema, dynamic_options));
-            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
-                                   latest_schema->MergeOptions(dynamic_options));
-            loaded_schema = std::shared_ptr<TableSchema>(std::move(merged_schema));
-        }
-    }
-    // The schema was read through a file system the context's options resolved, while the table is
-    // served through the one the schema's own options resolve: the store builds its managers over
-    // that resolution rather than taking over the reader's.
-    return FileStoreTable::Create(explicit_file_system, path, loaded_schema, table_identifier, uuid,
-                                  branch, fs_scheme_map, dynamic_options);
+
+    std::map<std::string, std::string> dynamic_options = options;
+    dynamic_options.erase(Options::TYPE);
+    dynamic_options.erase(Options::BRANCH);
+    PAIMON_RETURN_NOT_OK(SchemaValidation::CheckImmutableOptions(*latest_schema, dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
+                           latest_schema->MergeOptions(dynamic_options));
+    return FileStoreTable::Create(explicit_file_system, path,
+                                  std::shared_ptr<TableSchema>(std::move(merged_schema)),
+                                  table_identifier, uuid, branch, fs_scheme_map, dynamic_options);
 }
 
 Result<std::optional<std::string>> CatalogMainBranchSchemaJson(

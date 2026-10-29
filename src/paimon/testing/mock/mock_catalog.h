@@ -34,6 +34,7 @@
 #include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/partition/partition_statistics.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/file_store_table.h"
 #include "paimon/result.h"
@@ -113,16 +114,26 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override {
         ++get_table_calls_;
+        // A managed table's schema is a `TableSchema`, while the one this mock was set may be a
+        // format table's `DataSchema` - served by `LoadTableSchema` alone - or none at all;
+        // `GetTable`, the managed kind's door, lets `FileStoreTable::Create` refuse both.
+        std::shared_ptr<TableSchema> managed_schema =
+            std::dynamic_pointer_cast<TableSchema>(table_schema_);
+        if (table_schema_ != nullptr && managed_schema == nullptr) {
+            return Status::Invalid(identifier.ToString() + " is not a managed table schema");
+        }
         // Serves the per-table file system when one was set, matching `GetTableFileSystem`
         // without recording the request, so a test can still tell the two apart. No location:
         // this mock's `GetTableLocation` is the unsupported stub.
         return FileStoreTable::Create(
             table_file_system_ != nullptr ? table_file_system_ : file_system_,
-            /*root_path=*/"", table_schema_, identifier, table_uuid_,
+            /*root_path=*/"", managed_schema, identifier, table_uuid_,
             /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH, /*fs_scheme_map=*/{},
             /*dynamic_options=*/{});
     }
 
+    /// Sets the table's schema, which `LoadTableSchema` serves either kind of: a managed table's
+    /// `TableSchema` - the one a load hands the table is - or a format table's `DataSchema`.
     void SetTableSchema(const std::shared_ptr<Schema>& table_schema) {
         table_schema_ = table_schema;
     }

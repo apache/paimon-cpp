@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/macros.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
@@ -190,6 +191,12 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
+    /// @deprecated These options reach an operator only through the deprecated
+    /// `FileStoreWrite::Create()`-style entry points, which merge them into the table they load.
+    /// An operator created from a `Table` serves that table's own configuration, so pass dynamic
+    /// options through `Table::Copy()` instead. A key no table serves, such as a `header.` key,
+    /// is still read from the context.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     WriteContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 
     /// Add a single configuration option, served the way `SetOptions()` describes.
@@ -199,6 +206,9 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @param key The option key.
     /// @param value The option value.
     /// @return Reference to this builder for method chaining.
+    /// @deprecated Use `Table::Copy()` to pass dynamic options, for the reason `SetOptions()`
+    /// gives.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     WriteContextBuilder& AddOption(const std::string& key, const std::string& value);
 
     /// Set whether to enable streaming mode (default is false)

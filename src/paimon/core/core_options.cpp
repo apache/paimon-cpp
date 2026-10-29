@@ -23,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "fmt/format.h"

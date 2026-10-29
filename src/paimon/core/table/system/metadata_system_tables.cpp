@@ -507,7 +507,7 @@ Result<std::shared_ptr<InternalArray>> WriteColsValue(
 OptionsSystemTable::OptionsSystemTable(const std::shared_ptr<FileSystem>& fs,
                                        std::string table_path,
                                        std::shared_ptr<TableSchema> table_schema)
-    : InMemorySystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
       table_schema_(std::move(table_schema)) {}
 
 Result<std::shared_ptr<arrow::Schema>> OptionsSystemTable::ArrowSchema() const {
@@ -530,7 +530,7 @@ Result<std::vector<GenericRow>> OptionsSystemTable::BuildRows() const {
 
 SnapshotsSystemTable::SnapshotsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                            std::string branch)
-    : InMemorySystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
 
 Result<std::shared_ptr<arrow::Schema>> SnapshotsSystemTable::ArrowSchema() const {
@@ -588,7 +588,7 @@ Result<std::vector<GenericRow>> SnapshotsSystemTable::BuildRows() const {
 
 SchemasSystemTable::SchemasSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                        std::string branch)
-    : InMemorySystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
 
 Result<std::shared_ptr<arrow::Schema>> SchemasSystemTable::ArrowSchema() const {
@@ -640,7 +640,7 @@ Result<std::vector<GenericRow>> SchemasSystemTable::BuildRows() const {
 
 TagsSystemTable::TagsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                  std::string branch)
-    : InMemorySystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
 
 Result<std::shared_ptr<arrow::Schema>> TagsSystemTable::ArrowSchema() const {
@@ -686,7 +686,7 @@ Result<std::vector<GenericRow>> TagsSystemTable::BuildRows() const {
 
 BranchesSystemTable::BranchesSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::string branch)
-    : InMemorySystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
 
 Result<std::shared_ptr<arrow::Schema>> BranchesSystemTable::ArrowSchema() const {
@@ -721,7 +721,7 @@ Result<std::vector<GenericRow>> BranchesSystemTable::BuildRows() const {
 
 ConsumersSystemTable::ConsumersSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                            std::string branch)
-    : InMemorySystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
 
 Result<std::shared_ptr<arrow::Schema>> ConsumersSystemTable::ArrowSchema() const {
@@ -752,7 +752,7 @@ ManifestsSystemTable::ManifestsSystemTable(std::shared_ptr<FileSystem> fs, std::
                                            std::string branch,
                                            std::shared_ptr<TableSchema> table_schema,
                                            std::map<std::string, std::string> options)
-    : InMemorySystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch),
                                      std::move(table_schema), std::move(options))) {}
 
@@ -817,7 +817,7 @@ Result<std::vector<GenericRow>> ManifestsSystemTable::BuildRows() const {
 FilesSystemTable::FilesSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                    std::string branch, std::shared_ptr<TableSchema> table_schema,
                                    std::map<std::string, std::string> options)
-    : InMemorySystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch),
                                      std::move(table_schema), std::move(options))) {}
 

@@ -46,9 +46,9 @@ class WriteContext;
 ///
 /// The state every kind of table carries - file system, root path, schema and identifier - lives
 /// here, and each kind fills in the operations. The `NewXxx` operators below are the table-first
-/// entry points: `TableScan::Create()` and its friends load the table a context names and hand the
-/// context to it. A table refuses by name whatever a context asks for that it cannot honour,
-/// rather than dropping it silently.
+/// entry points: the deprecated `TableScan::Create()` and its friends load the table a context
+/// names and hand the context to it. A table refuses by name whatever a context asks for that it
+/// cannot honour, rather than dropping it silently.
 class PAIMON_EXPORT Table {
  public:
     virtual ~Table() = default;
@@ -129,7 +129,7 @@ class PAIMON_EXPORT Table {
     /// @param uuid Metastore UUID, or empty if unavailable.
     Table(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
           const std::shared_ptr<Schema>& schema, const Identifier& identifier,
-          const std::string& uuid = "");
+          const std::string& uuid);
 
     std::shared_ptr<FileSystem> file_system_;
     std::string root_path_;

@@ -28,6 +28,7 @@
 
 #include "paimon/defs.h"
 #include "paimon/executor.h"
+#include "paimon/macros.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
 #include "paimon/realtime/realtime_commit_progress.h"
@@ -57,6 +58,8 @@ class PAIMON_EXPORT FileStoreCommit {
     /// @param context A unique pointer to the `CommitContext` used for commit operations.
     ///
     /// @return A Result containing a unique pointer to the `FileStoreCommit` instance.
+    /// @deprecated Use `Table::NewCommit()` on the table a catalog hands back instead.
+    PAIMON_DEPRECATED("Use Table::NewCommit() instead")
     static Result<std::unique_ptr<FileStoreCommit>> Create(std::unique_ptr<CommitContext> context);
 
     virtual ~FileStoreCommit() = default;

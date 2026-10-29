@@ -437,6 +437,11 @@ TEST(FileSystemCatalogTest, TestBranchTableLoadsBranchSchema) {
     ASSERT_TRUE(exists);
     ASSERT_OK_AND_ASSIGN(loaded_schema, catalog.LoadTableSchema(audit_log_identifier));
     ASSERT_EQ((std::vector<std::string>{"rowkind", "b1_c0"}), loaded_schema->FieldNames());
+    // A view of a branch answers with the name the branch is addressed by, so reloading that
+    // name lands on the same branch rather than on the main one.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> branch_view,
+                         catalog.GetTable(audit_log_identifier));
+    ASSERT_EQ(branch_view->Name(), "tbl1$branch_b1$audit_log");
 
     for (const auto& missing_identifier : {Identifier("db1", "tbl1$branch_missing"),
                                            Identifier("db1", "tbl1$branch_missing$options")}) {

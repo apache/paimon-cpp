@@ -31,10 +31,10 @@ class Table;
 class WriteContext;
 
 /// Loads the data table a context names, as Java Paimon's `FileStoreTableFactory` does: the schema
-/// under the context's path describes it. A system table behind a `T$system` path and a format
-/// table are refused - a catalog hands those back through `GetTable`, and their operators come from
-/// the table itself - so the static `Create` of all four operators answers the one question this
-/// place asks and they cannot disagree.
+/// under the context's path describes it, and a path holding none is refused. A system table
+/// behind a `T$system` path and a format table are refused - a catalog hands those back through
+/// `GetTable`, and their operators come from the table itself - so the static `Create` of all four
+/// operators answers the one question this place asks and they cannot disagree.
 class FileStoreTableFactory {
  public:
     FileStoreTableFactory() = delete;

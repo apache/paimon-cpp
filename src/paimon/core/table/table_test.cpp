@@ -72,8 +72,7 @@ Result<std::shared_ptr<Table>> CreateManagedTable(
                            schema_manager.CreateTable(schema, /*partition_keys=*/{},
                                                       /*primary_keys=*/{}, options));
     return FileStoreTable::Create(
-        file_system, path,
-        checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))), identifier,
+        file_system, path, std::shared_ptr<TableSchema>(std::move(created)), identifier,
         /*uuid=*/"", branch, /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
 }
 
@@ -181,10 +180,17 @@ TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier, /*branch=*/"main",
                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy, table->Copy({{Options::BRANCH, "dev"}}));
+    // A copy whose `branch` option names the branch the table serves stays on it, the option
+    // folded away, and still takes the other dynamic options.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy,
+                         table->Copy({{Options::BRANCH, "main"}, {Options::BUCKET, "2"}}));
     auto file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(copy);
     ASSERT_TRUE(file_store_copy != nullptr);
     EXPECT_EQ(file_store_copy->CurrentBranch(), "main");
+    std::shared_ptr<DataSchema> copied_schema =
+        std::dynamic_pointer_cast<DataSchema>(copy->LatestSchema());
+    ASSERT_TRUE(copied_schema != nullptr);
+    EXPECT_EQ(copied_schema->Options().at(Options::BUCKET), "2");
     {
         ScanContextBuilder scan_builder(dir->Str());
         scan_builder.AddOption(Options::BRANCH, "main");
@@ -198,7 +204,7 @@ TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
                                             identifier, /*branch=*/"dev",
                                             {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> branch_copy,
-                         branch_table->Copy({{Options::BRANCH, "main"}}));
+                         branch_table->Copy({{Options::BRANCH, "dev"}}));
     auto branch_file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(branch_copy);
     ASSERT_TRUE(branch_file_store_copy != nullptr);
     EXPECT_EQ(branch_file_store_copy->CurrentBranch(), "dev");
@@ -209,6 +215,50 @@ TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
         ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
                              branch_file_store_copy->NewScan(std::move(ctx)));
     }
+}
+
+TEST(TableTest, TestCopySwitchesToTheBranchItNames) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    const std::string path = dir->Str();
+    const Identifier identifier("db", "tbl");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(fs, path, identifier, /*branch=*/"main",
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    // The dev branch holds its own schema, told apart from the main branch's by its bucket.
+    SchemaManager dev_schema_manager(fs, path, "dev");
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> dev_schema,
+        dev_schema_manager.CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{},
+                                       {{Options::BUCKET, "4"}, {Options::BUCKET_KEY, "id"}}));
+
+    // A copy on another branch serves that branch's own latest schema, addressed as its table.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_copy, table->Copy({{Options::BRANCH, "dev"}}));
+    auto dev_file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(dev_copy);
+    ASSERT_TRUE(dev_file_store_copy != nullptr);
+    EXPECT_EQ("dev", dev_file_store_copy->CurrentBranch());
+    EXPECT_EQ("tbl$branch_dev", dev_copy->Name());
+    std::shared_ptr<DataSchema> dev_copied_schema =
+        std::dynamic_pointer_cast<DataSchema>(dev_copy->LatestSchema());
+    ASSERT_TRUE(dev_copied_schema != nullptr);
+    EXPECT_EQ(dev_copied_schema->Options().at(Options::BUCKET), "4");
+    EXPECT_EQ(dev_copied_schema->Options().at(Options::BRANCH), "dev");
+    EXPECT_EQ("dev", dev_file_store_copy->GetSnapshotManager()->Branch());
+
+    // The copy's other dynamic options land on the branch's schema on top.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_copy_restyled,
+                         table->Copy({{Options::BRANCH, "dev"}, {Options::BUCKET, "2"}}));
+    std::shared_ptr<DataSchema> restyled_schema =
+        std::dynamic_pointer_cast<DataSchema>(dev_copy_restyled->LatestSchema());
+    ASSERT_TRUE(restyled_schema != nullptr);
+    EXPECT_EQ(restyled_schema->Options().at(Options::BUCKET), "2");
+    EXPECT_EQ(restyled_schema->Options().at(Options::BUCKET_KEY), "id");
+
+    // A branch holding no schema does not exist.
+    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BRANCH, "missing"}}),
+                        "branch missing does not exist");
 }
 
 TEST(TableTest, TestACopyHandsItsDynamicOptionsToTheFallbackReader) {
@@ -232,13 +282,11 @@ TEST(TableTest, TestACopyHandsItsDynamicOptionsToTheFallbackReader) {
         fallback_schema_manager.CreateTable(schema, /*partition_keys=*/{},
                                             /*primary_keys=*/{"id"},
                                             {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Table> table,
-        FileStoreTable::Create(
-            fs, path,
-            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))),
-            identifier, /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
-            /*dynamic_options=*/{}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         FileStoreTable::Create(
+                             fs, path, std::shared_ptr<TableSchema>(std::move(created)), identifier,
+                             /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
+                             /*dynamic_options=*/{}));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy,
                          table->Copy({{Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"}}));
@@ -247,6 +295,39 @@ TEST(TableTest, TestACopyHandsItsDynamicOptionsToTheFallbackReader) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
                          copy->NewRead(std::move(read_context)));
+}
+
+TEST(TableTest, TestAReadContextMatchingTheSchemaKeepsItsOptionsForTheFallbackReader) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/tbl";
+
+    // The main schema already carries the sequence-number setting, so a read context repeating
+    // it with the same value does not restyle the load; the setting still has to reach the
+    // fallback branch, whose schema omits it, or that reader refuses the sequence number.
+    SchemaManager schema_manager(fs, path, "main");
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> created,
+        schema_manager.CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                                   {{Options::BUCKET, "1"},
+                                    {Options::BUCKET_KEY, "id"},
+                                    {Options::SCAN_FALLBACK_BRANCH, "fb"},
+                                    {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"}}));
+    SchemaManager fallback_schema_manager(fs, path, "fb");
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> fallback_schema,
+        fallback_schema_manager.CreateTable(schema, /*partition_keys=*/{},
+                                            /*primary_keys=*/{"id"},
+                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+
+    ReadContextBuilder read_builder(path);
+    read_builder.AddOption(Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true");
+    read_builder.SetReadFieldNames({"id", "_SEQUENCE_NUMBER"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
+                         TableRead::Create(std::move(read_context)));
 }
 
 TEST(TableTest, TestACopyOfACopyServesTheLatestValueOfARepeatedDynamicOption) {
@@ -270,13 +351,11 @@ TEST(TableTest, TestACopyOfACopyServesTheLatestValueOfARepeatedDynamicOption) {
         fallback_schema_manager.CreateTable(schema, /*partition_keys=*/{},
                                             /*primary_keys=*/{"id"},
                                             {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Table> table,
-        FileStoreTable::Create(
-            fs, path,
-            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))),
-            identifier, /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
-            /*dynamic_options=*/{}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         FileStoreTable::Create(
+                             fs, path, std::shared_ptr<TableSchema>(std::move(created)), identifier,
+                             /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
+                             /*dynamic_options=*/{}));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> off,
                          table->Copy({{Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "false"}}));
@@ -307,11 +386,10 @@ TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnSchema) {
                                                           {Options::SCAN_FALLBACK_BRANCH, "fb"}}));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Table> main,
-        FileStoreTable::Create(
-            fs, path,
-            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(main_created))),
-            identifier, /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
-            /*dynamic_options=*/{}));
+        FileStoreTable::Create(fs, path, std::shared_ptr<TableSchema>(std::move(main_created)),
+                               identifier,
+                               /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
+                               /*dynamic_options=*/{}));
 
     SchemaManager fallback_schema_manager(fs, path, "fb");
     ASSERT_OK_AND_ASSIGN(
@@ -321,11 +399,10 @@ TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnSchema) {
                                             {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Table> fallback,
-        FileStoreTable::Create(
-            fs, path,
-            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(fallback_created))),
-            identifier, /*uuid=*/"", /*branch=*/"fb", /*fs_scheme_map=*/{},
-            /*dynamic_options=*/{}));
+        FileStoreTable::Create(fs, path, std::shared_ptr<TableSchema>(std::move(fallback_created)),
+                               identifier,
+                               /*uuid=*/"", /*branch=*/"fb", /*fs_scheme_map=*/{},
+                               /*dynamic_options=*/{}));
     WriteAndCommitRow(fallback, path, /*id=*/1, /*v=*/10);
     WriteAndCommitRow(fallback, path, /*id=*/1, /*v=*/20);
 
@@ -388,11 +465,10 @@ TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnPartitionKeys) {
                                                          {{Options::SCAN_FALLBACK_BRANCH, "fb"}}));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Table> main,
-        FileStoreTable::Create(
-            fs, path,
-            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(main_created))),
-            identifier, /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
-            /*dynamic_options=*/{}));
+        FileStoreTable::Create(fs, path, std::shared_ptr<TableSchema>(std::move(main_created)),
+                               identifier,
+                               /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
+                               /*dynamic_options=*/{}));
 
     SchemaManager fallback_schema_manager(fs, path, "fb");
     auto row_schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
@@ -404,11 +480,10 @@ TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnPartitionKeys) {
                                             {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Table> fallback,
-        FileStoreTable::Create(
-            fs, path,
-            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(fallback_created))),
-            identifier, /*uuid=*/"", /*branch=*/"fb", /*fs_scheme_map=*/{},
-            /*dynamic_options=*/{}));
+        FileStoreTable::Create(fs, path, std::shared_ptr<TableSchema>(std::move(fallback_created)),
+                               identifier,
+                               /*uuid=*/"", /*branch=*/"fb", /*fs_scheme_map=*/{},
+                               /*dynamic_options=*/{}));
     WriteAndCommitRow(fallback, path, /*id=*/1, /*v=*/20);
 
     ReadContextBuilder read_builder(path);
@@ -452,7 +527,7 @@ TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnPartitionKeys) {
     EXPECT_TRUE(BatchReader::IsEofBatch(eof_batch));
 }
 
-TEST(TableTest, TestAFallbackReaderIgnoresReadContextOptionsAbsentFromTheTable) {
+TEST(TableTest, TestAFallbackReaderRefusesReadContextOptionsAbsentFromTheTable) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
@@ -472,11 +547,10 @@ TEST(TableTest, TestAFallbackReaderIgnoresReadContextOptionsAbsentFromTheTable) 
                 fallback_schema_manager.CreateTable(schema, /*partition_keys=*/{},
                                                     /*primary_keys=*/{}, {}));
         }
-        return FileStoreTable::Create(
-            fs, path,
-            checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created))),
-            Identifier("db", "tbl"), /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
-            /*dynamic_options=*/{});
+        return FileStoreTable::Create(fs, path, std::shared_ptr<TableSchema>(std::move(created)),
+                                      Identifier("db", "tbl"),
+                                      /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
+                                      /*dynamic_options=*/{});
     };
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> plain, make_table(dir->Str() + "/plain", {}));
     ASSERT_OK_AND_ASSIGN(
@@ -488,8 +562,11 @@ TEST(TableTest, TestAFallbackReaderIgnoresReadContextOptionsAbsentFromTheTable) 
         ReadContextBuilder read_builder(table->GetRootPath());
         read_builder.AddOption(Options::FILE_FORMAT, "bogus");
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
-                             table->NewRead(std::move(read_context)));
+        // `file.format` is a key `CoreOptions` knows, so neither the plain reader nor the
+        // fallback one may drop it in silence: both refuse it rather than read the table's own
+        // format behind the caller's back.
+        ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_context)),
+                            "the table was not loaded with it");
     }
 }
 
@@ -585,7 +662,7 @@ TEST(TableTest, TestSwitchToBranch) {
     ASSERT_NOK_WITH_MSG(main_file_store_table->SwitchToBranch("missing"), "branch");
 }
 
-TEST(TableTest, TestSwitchToBranchFromATableThatHasNoSchemaOfItsOwn) {
+TEST(TableTest, TestCreateRefusesATableWithoutASchema) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     const std::string path = dir->Str() + "/tbl";
@@ -595,24 +672,13 @@ TEST(TableTest, TestSwitchToBranchFromATableThatHasNoSchemaOfItsOwn) {
         dev_schema_manager.CreateTable(arrow::schema({arrow::field("c0", arrow::int32())}),
                                        /*partition_keys=*/{}, /*primary_keys=*/{}, {}));
 
-    // A table opened over a path its own branch holds no schema under, and opened without a file
-    // system of its own: its operators report that no schema was found, while a branch that has one
-    // is read through the default file system the store falls back to and served on its own.
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<FileStoreTable> table,
-        FileStoreTable::Create(/*file_system=*/nullptr, path, /*schema=*/nullptr,
-                               Identifier("db", "tbl"), /*uuid=*/"",
-                               /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH, /*fs_scheme_map=*/{},
-                               /*dynamic_options=*/{}));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_table, table->SwitchToBranch("dev"));
-    auto dev_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(dev_table);
-    ASSERT_TRUE(dev_file_store_table != nullptr);
-    EXPECT_EQ("dev", dev_file_store_table->CurrentBranch());
-    EXPECT_EQ("tbl$branch_dev", dev_table->Name());
-    ASSERT_EQ((std::vector<std::string>{"c0"}), dev_table->LatestSchema()->FieldNames());
-    ASSERT_TRUE(dev_file_store_table->GetSchemaManager() != nullptr);
-    ASSERT_TRUE(dev_file_store_table->GetSnapshotManager() != nullptr);
-    EXPECT_EQ("dev", dev_file_store_table->GetSnapshotManager()->Branch());
+    // A path its own branch holds no schema under names no table: the call that opens one is
+    // refused, whatever another branch of it holds.
+    ASSERT_NOK_WITH_MSG(FileStoreTable::Create(/*file_system=*/nullptr, path, /*schema=*/nullptr,
+                                               Identifier("db", "tbl"), /*uuid=*/"",
+                                               /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
+                                               /*fs_scheme_map=*/{}, /*dynamic_options=*/{}),
+                        "not found latest schema of db.tbl");
 }
 
 TEST(TableTest, TestNewWriteServesTheBranchTheTableWasLoadedWith) {
@@ -790,7 +856,7 @@ TEST(TableTest, TestMainBranchAliasResolvesToTheMainBranch) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> created,
                          schema_manager.CreateTable(
                              arrow::schema({arrow::field("c0", arrow::int32())}), {}, {}, {}));
-    auto schema = checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created)));
+    auto schema = std::shared_ptr<TableSchema>(std::move(created));
 
     for (const auto& main_identifier :
          {Identifier("db", "tbl"), Identifier("db", "tbl$branch_main"),
@@ -833,7 +899,7 @@ TEST(TableTest, TestCatalogOpenedTableServesThePerTableFileSystem) {
                          CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier));
 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> opened, catalog->GetTable(identifier));
     EXPECT_NE(opened->GetFileSystem(), nullptr);
@@ -1057,7 +1123,7 @@ TEST(TableTest, TestNewWriteCreatesAFileStoreWrite) {
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetFileSystem(dir->GetFileSystem());
     // A catalog write reads the current schema from the catalog on the main branch.
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<WriteContext> ctx,
@@ -1076,7 +1142,7 @@ TEST(TableTest, TestNewCommitCreatesAFileStoreCommit) {
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetFileSystem(dir->GetFileSystem());
     // Like a write, a catalog commit reads the current schema from the catalog.
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<CommitContext> ctx,
@@ -1108,7 +1174,7 @@ TEST(TableTest, TestNewWriteAndCommitRefuseAContextThatNamesAnotherTable) {
 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetFileSystem(fs);
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
     {
         WriteContextBuilder write_builder(dir->Str(), "commit-user");
         write_builder.WithCatalog(catalog, Identifier("db", "other"));
@@ -1161,7 +1227,7 @@ TEST(TableTest, TestNewCommitRefusesABranchACatalogCannotAddress) {
 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetFileSystem(fs);
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
     WriteContextBuilder write_builder(dir->Str(), "commit-user");
     write_builder.WithCatalog(catalog, identifier);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_ctx, write_builder.Finish());
@@ -1229,7 +1295,7 @@ TEST(TableTest, TestOperatorsRefuseAnOptionThatContradictsTheTable) {
                          copied->NewScan(std::move(ctx)));
 }
 
-TEST(TableTest, TestOperatorsIgnoreARuntimeKeyTheTableWasNotLoadedWith) {
+TEST(TableTest, TestOperatorsRefuseAnOptionTheTableWasNotLoadedWith) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     const Identifier identifier("db", "tbl");
@@ -1239,22 +1305,51 @@ TEST(TableTest, TestOperatorsIgnoreARuntimeKeyTheTableWasNotLoadedWith) {
                                             {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
     WriteAndCommitTwoRows(table, dir->Str());
 
-    ScanContextBuilder scan_builder(dir->Str());
-    scan_builder.AddOption(Options::SCAN_MODE, "from-snapshot")
-        .AddOption(Options::SCAN_SNAPSHOT_ID, "999");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx, scan_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_ctx)));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
-    ASSERT_FALSE(plan->Splits().empty());
-    ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(1));
+    // The operators serve the configuration the table was loaded with and nothing else, so a
+    // context option that configuration does not carry - a `CoreOptions` key the schema never
+    // saved, or a key no one reads - is dropped in silence if it is not refused: refused on every
+    // side, whatever the key.
+    const std::string dropped_in_silence = "the table was not loaded with it";
+    {
+        ScanContextBuilder scan_builder(dir->Str());
+        scan_builder.AddOption(Options::SCAN_MODE, "from-snapshot")
+            .AddOption(Options::SCAN_SNAPSHOT_ID, "999");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx, scan_builder.Finish());
+        ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan_ctx)), dropped_in_silence);
+    }
+    {
+        ReadContextBuilder read_builder(dir->Str());
+        read_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "999");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_ctx, read_builder.Finish());
+        ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_ctx)), dropped_in_silence);
+    }
+    {
+        // The commit-lease switch a writer sets on a table whose schema does not carry it is the
+        // same case: refused rather than committed without the lease.
+        CommitContextBuilder commit_builder(dir->Str(), "commit-user");
+        commit_builder.AddOption(Options::REST_COMMIT_ACQUIRE_LOCK, "true");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_ctx, commit_builder.Finish());
+        ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit_ctx)), dropped_in_silence);
+    }
+    {
+        // A key no `CoreOptions` reads is refused the same way: whether it names a setting the
+        // table would drop or one the caller only mistyped, the table was not loaded with it.
+        ReadContextBuilder unknown_builder(dir->Str());
+        unknown_builder.AddOption("some.option-nothing-reads", "value");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> unknown_ctx, unknown_builder.Finish());
+        ASSERT_NOK_WITH_MSG(table->NewRead(std::move(unknown_ctx)), dropped_in_silence);
+    }
 
-    ReadContextBuilder read_builder(dir->Str());
-    read_builder.AddOption(Options::SCAN_MODE, "from-snapshot")
-        .AddOption(Options::SCAN_SNAPSHOT_ID, "999");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_ctx, read_builder.Finish());
-    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
-                         table->NewRead(std::move(read_ctx)));
+    // A `header.` key a one-step load folds into the table is the same case held against a table
+    // that was not loaded with it: the table was not, whatever the key names downstream.
+    ReadContextBuilder header_builder(dir->Str());
+    header_builder.AddOption("header.X-Paimon-Read-Via", "table-view");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> header_ctx, header_builder.Finish());
+    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(header_ctx)), dropped_in_silence);
 
+    // The way to serve an option is a table loaded with it: `Copy()` merges it into the schema,
+    // and the copy applies it - which then fails on the snapshot it names, proving the option
+    // reached the scan instead of being dropped.
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Table> copied,
         table->Copy({{Options::SCAN_MODE, "from-snapshot"}, {Options::SCAN_SNAPSHOT_ID, "999"}}));
@@ -1275,7 +1370,7 @@ TEST(TableTest, TestCreateFailsWhenTheSchemaOptionsDoNotParse) {
             arrow::schema({arrow::field("id", arrow::int32(),
                                         /*nullable=*/false)}),
             /*partition_keys=*/{}, /*primary_keys=*/{}, {{Options::TARGET_FILE_ROW_NUM, "0"}}));
-    auto schema = checked_pointer_cast<Schema>(std::shared_ptr<TableSchema>(std::move(created)));
+    auto schema = std::shared_ptr<TableSchema>(std::move(created));
     ASSERT_NOK_WITH_MSG(
         FileStoreTable::Create(dir->GetFileSystem(), dir->Str(), schema, Identifier("db", "tbl"),
                                /*uuid=*/"", /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
@@ -1340,8 +1435,13 @@ TEST(TableTest, TestCopyServesTheTableWithTheGivenOptionsOnTop) {
     ASSERT_OK(commit->Commit(messages));
     ASSERT_OK(write->Close());
 
+    // The `type` option is immutable: a value naming another type is refused, the way Java
+    // Paimon's copy refuses it, and one naming the type the table already serves - whatever its
+    // case - is dropped.
+    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET, "2"}, {Options::TYPE, "format-table"}}),
+                        "Change 'type' is not supported yet.");
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
-                         table->Copy({{Options::BUCKET, "2"}, {Options::TYPE, "format-table"}}));
+                         table->Copy({{Options::BUCKET, "2"}, {Options::TYPE, "TABLE"}}));
     std::shared_ptr<DataSchema> copied_schema =
         std::dynamic_pointer_cast<DataSchema>(copied->LatestSchema());
     ASSERT_TRUE(copied_schema != nullptr);
@@ -1483,7 +1583,7 @@ TEST(TableTest, TestCreateBuildsTheOperator) {
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetFileSystem(dir->GetFileSystem());
     // A catalog write and commit read the current schema from the catalog on the main branch.
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
 
     // `TableScan::Create()` and friends build the operator straight from the context, which
     // carries the catalog and identifier it resolves the table through.
@@ -1519,7 +1619,7 @@ TEST(TableTest, TestCreateWithSpecificTableSchemaSkipsTheCatalogSchema) {
 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetFileSystem(dir->GetFileSystem());
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
 
     // A schema the caller gave replaces the catalog's on the main branch, so neither the write
     // nor the commit asks the catalog for one.
@@ -1551,7 +1651,7 @@ TEST(TableTest, TestCreateWithCatalogReadsTheMainBranchSchemaFromIt) {
 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetFileSystem(dir->GetFileSystem());
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
 
     // All four loads take the schema the catalog holds on the main branch when the caller did
     // not set one, so each of them asks the catalog exactly once.

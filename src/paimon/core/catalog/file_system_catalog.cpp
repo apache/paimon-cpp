@@ -360,9 +360,8 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckManagedTableType(identifier, *latest_schema,
                                                              "FileSystemCatalog::GetTable"));
     PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
-    return FileStoreTable::Create(fs_, table_path, checked_pointer_cast<Schema>(*latest_schema),
-                                  identifier, /*uuid=*/"", branch, /*fs_scheme_map=*/{},
-                                  /*dynamic_options=*/{});
+    return FileStoreTable::Create(fs_, table_path, *latest_schema, identifier, /*uuid=*/"", branch,
+                                  /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
 }
 
 Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(
@@ -386,8 +385,11 @@ Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(
         dynamic_options[Options::BRANCH] = branch.value();
     }
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
+    // The data table's logical name, branch included, so that a view of a branch answers with the
+    // name the branch is addressed by rather than the bare directory name.
     return SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
-                                   latest_schema.value(), dynamic_options);
+                                   latest_schema.value(), dynamic_options,
+                                   data_identifier.GetObjectName());
 }
 
 Status FileSystemCatalog::DropDatabase(const std::string& name, bool ignore_if_not_exists,

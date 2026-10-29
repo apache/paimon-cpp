@@ -358,9 +358,10 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
 
 AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::shared_ptr<TableSchema> table_schema,
+                                         std::string data_table_name,
                                          std::map<std::string, std::string> options)
-    : AuditLogSystemTable(std::move(fs), table_path, std::move(table_schema), std::move(options),
-                          ComposeName(table_path, kName)) {}
+    : AuditLogSystemTable(std::move(fs), std::move(table_path), std::move(table_schema),
+                          std::move(options), ComposeName(data_table_name, kName)) {}
 
 AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::shared_ptr<TableSchema> table_schema,

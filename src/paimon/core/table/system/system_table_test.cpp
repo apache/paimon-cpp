@@ -89,11 +89,11 @@ TEST(SystemTableTest, TestChangelogArrowSchemaReturnsInvalidOptions) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_NOK_WITH_MSG(audit_log.ArrowSchema(),
                         "Invalid Config [table-read.sequence-number.enabled: invalid]");
 
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_NOK_WITH_MSG(binlog.ArrowSchema(),
                         "Invalid Config [table-read.sequence-number.enabled: invalid]");
 }
@@ -104,7 +104,7 @@ TEST(SystemTableTest, TestBinlogArrowSchemaWithSequenceNumber) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> schema, binlog.ArrowSchema());
 
     ASSERT_EQ(schema->field_names(),
@@ -233,6 +233,14 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
                                                  /*dynamic_options=*/{}));
     ASSERT_EQ(system_table->Name(), "table$ro");
 
+    // A view loaded with the logical name of its data table answers with it, branch included:
+    // reloading the name a branch view answers with addresses the same branch again.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> branch_view,
+                         SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
+                                                 "/tmp/uuid-dir", table_schema,
+                                                 /*dynamic_options=*/{}, "tbl$branch_dev"));
+    ASSERT_EQ(branch_view->Name(), "tbl$branch_dev$ro");
+
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> arrow_schema, system_table->ArrowSchema());
     ASSERT_EQ(arrow_schema->field_names(), (std::vector<std::string>{"pk", "v"}));
     ASSERT_EQ(arrow_schema->field(0)->type()->id(), arrow::Type::STRING);
@@ -271,9 +279,10 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
         ReadContextBuilder builder("/tmp/table");
@@ -317,9 +326,10 @@ TEST(SystemTableTest, TestOperatorEntriesRefuseANullContext) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
 
     ASSERT_NOK_WITH_MSG(audit_log.NewScan(nullptr), "scan context is null pointer");
     ASSERT_NOK_WITH_MSG(binlog.NewScan(nullptr), "scan context is null pointer");
@@ -355,9 +365,10 @@ TEST(SystemTableTest, TestNewReadRefusesASearch) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
 
     auto make_context = [] {
         auto vector_search = std::make_shared<VectorSearch>(
@@ -390,7 +401,8 @@ TEST(SystemTableTest, TestNewReadRefusesAFullTextMatchPredicate) {
                          SystemTableLoader::Load(OptionsSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
                                                  /*dynamic_options=*/{}));
-    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
 
     auto match = std::make_shared<FullTextMatch>("pk", R"({"match":{"query":"apple"}})");
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,

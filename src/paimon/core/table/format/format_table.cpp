@@ -65,7 +65,7 @@ FormatTable::FormatTable(const std::shared_ptr<FileSystem>& file_system,
                          const std::string& file_compression,
                          const std::string& partition_default_name,
                          bool partition_only_value_in_path, bool location_carries_paimon_metadata)
-    : Table(file_system, location, schema, identifier),
+    : Table(file_system, location, schema, identifier, /*uuid=*/""),
       options_(options),
       format_(format),
       file_compression_(file_compression),

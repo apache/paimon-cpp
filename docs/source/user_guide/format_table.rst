@@ -45,9 +45,11 @@ its ``type`` option says what it is, and the call hands back the ``FormatTable``
 through the ``Table`` interface the two kinds of table share.
 
 Reading and writing go through the table itself: a caller holding one calls ``NewScan()``,
-``NewRead()``, ``NewWrite()`` or ``NewCommit()`` on it, with a context its usual builder builds from
-the table's location. This is what Java serves through ``FormatTable.newReadBuilder()`` and
-``newBatchWriteBuilder()``:
+``NewRead()``, ``NewWrite()`` or ``NewCommit()`` on it, with a context its usual builder builds:
+``ScanContextBuilder(path)`` and ``ReadContextBuilder(path)`` take the table's location, while
+``WriteContextBuilder(root_path, commit_user)`` and ``CommitContextBuilder(root_path, commit_user)``
+also take the commit user that identifies the writer. This is what Java serves through
+``FormatTable.newReadBuilder()`` and ``newBatchWriteBuilder()``:
 
 .. code-block:: cpp
 
@@ -68,9 +70,10 @@ the file system it was loaded through, so nothing under the location has to answ
 given at the call still win over the ones the schema stored, as they do everywhere else.
 
 The generic entry points - ``TableScan::Create``, ``TableRead::Create``, ``FileStoreWrite::Create``
-and ``FileStoreCommit::Create`` - serve a data table only: a load from a path is the data table's
-way in, and a format table the schema under the path names is refused with a message pointing at
-the catalog and the table's own operators above.
+and ``FileStoreCommit::Create`` - are deprecated in favour of the table's own operators above and
+serve a data table only: a load from a path is the data table's way in, and a format table the
+schema under the path names is refused with a message pointing at the catalog and the table's own
+operators above.
 
 ``FormatTable`` is a derived class of ``Table``, so a caller holding one through a
 ``std::shared_ptr<paimon::Table>`` calls the same operators on it without the cast: they come back

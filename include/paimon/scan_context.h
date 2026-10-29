@@ -28,6 +28,7 @@
 #include "paimon/cache/cache.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/global_index/global_index_result.h"
+#include "paimon/macros.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
@@ -210,6 +211,9 @@ class PAIMON_EXPORT ScanContextBuilder {
         const std::shared_ptr<RealtimeContext>& realtime_context);
 
     /// Add a single configuration option, served the way `SetOptions()` describes.
+    /// @deprecated Use `Table::Copy()` to pass dynamic options, for the reason `SetOptions()`
+    /// gives.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     ScanContextBuilder& AddOption(const std::string& key, const std::string& value);
     /// Set a configuration options map to set some option entries which are not defined in the
     /// table schema or whose values you want to overwrite. A load merges them into the table it
@@ -218,6 +222,12 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
+    /// @deprecated These options reach an operator only through the deprecated
+    /// `TableScan::Create()`-style entry points, which merge them into the table they load. An
+    /// operator created from a `Table` serves that table's own configuration, so pass dynamic
+    /// options through `Table::Copy()` instead. A key no table serves, such as a `header.` key,
+    /// is still read from the context.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     ScanContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 
     /// Set whether the scan is in streaming mode.

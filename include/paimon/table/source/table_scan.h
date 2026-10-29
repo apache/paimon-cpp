@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/macros.h"
 #include "paimon/result.h"
 #include "paimon/table/source/plan.h"
 #include "paimon/table/source/scan_metrics.h"
@@ -42,6 +43,8 @@ class PAIMON_EXPORT TableScan {
     ///
     /// @param context A unique pointer to the `ScanContext` used for scan operations.
     /// @return A Result containing a unique pointer to the `TableScan` instance.
+    /// @deprecated Use `Table::NewScan()` on the table a catalog hands back instead.
+    PAIMON_DEPRECATED("Use Table::NewScan() instead")
     static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context);
 
     virtual ~TableScan() = default;

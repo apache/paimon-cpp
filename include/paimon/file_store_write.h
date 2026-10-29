@@ -27,6 +27,7 @@
 #include "paimon/commit_message.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
+#include "paimon/macros.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
 #include "paimon/realtime/realtime_commit_progress.h"
@@ -49,6 +50,8 @@ class PAIMON_EXPORT FileStoreWrite {
     /// @param context A unique pointer to the `WriteContext` used for write operations.
     ///
     /// @return A Result containing a unique pointer to the `FileStoreWrite` instance.
+    /// @deprecated Use `Table::NewWrite()` on the table a catalog hands back instead.
+    PAIMON_DEPRECATED("Use Table::NewWrite() instead")
     static Result<std::unique_ptr<FileStoreWrite>> Create(std::unique_ptr<WriteContext> context);
 
     virtual ~FileStoreWrite() = default;

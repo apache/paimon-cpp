@@ -85,14 +85,18 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
  protected:
     /// @param fs File system the data table underneath is read through.
     /// @param table_path Root path of the data table this system table belongs to.
-    /// @param name The name this table answers with: `ComposeName(table_path, kind)` for a
+    /// @param name The name this table answers with: `ComposeName(data_table_name, kind)` for a
     ///        table-scoped system table, the bare kind name for one of the `sys` database.
     SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
                 std::string name);
 
-    /// Composes the name of a table-scoped system table. Java Paimon's `OptionsTable.name()`
-    /// composes it the same way: `location.getName() + SYSTEM_TABLE_SPLITTER + OPTIONS`.
-    static std::string ComposeName(const std::string& table_path, const std::string& kind);
+    /// Composes the name of a table-scoped system table out of the logical name of the data table
+    /// underneath - the object name a catalog knows it by, branch included - and the kind. Java
+    /// Paimon's `OptionsTable.name()` composes it the same way, from `location.getName()`; the
+    /// metadata tables answer with the directory name, while the views that serve the data table
+    /// answer with its logical name, the way Java's `ReadOptimizedTable` answers with the name of
+    /// the table it wraps.
+    static std::string ComposeName(const std::string& data_table_name, const std::string& kind);
 
     /// Refuses a read whose context asks for a search: a root TopK request or a `FullTextMatch`
     /// predicate. Neither is evaluated on the rows a system table serves, so answering one
@@ -120,7 +124,8 @@ class SystemTableLoader {
     static Result<std::shared_ptr<SystemTable>> Load(
         const std::string& system_table_name, const std::shared_ptr<FileSystem>& fs,
         const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& dynamic_options);
+        const std::map<std::string, std::string>& dynamic_options,
+        const std::string& data_table_name = "");
 
     static Result<std::optional<SystemTablePath>> TryParsePath(const std::string& path);
 

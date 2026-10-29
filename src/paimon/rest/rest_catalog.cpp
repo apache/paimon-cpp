@@ -428,8 +428,13 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
+    // The data table's logical name, branch included, so that a view of a table the REST store
+    // keeps under a UUID directory still answers with the name the catalog knows it by.
+    PAIMON_ASSIGN_OR_RAISE(
+        Identifier data_identifier,
+        CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
     return SystemTableLoader::Load(system_table_name.value(), table_file_system, data_table_path,
-                                   latest_schema, dynamic_options);
+                                   latest_schema, dynamic_options, data_identifier.GetObjectName());
 }
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
@@ -460,10 +465,16 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
         return LoadSystemTable(identifier, load_identifier, NormalizeBranch(std::move(branch)));
     }
     // Read UUID, path and schema together to avoid mixing table generations after recreation.
+    // The schema is read through the data-table path `LoadTableSchema` takes for one, so it
+    // arrives as the `TableSchema` the table below is built with, over the branch the identifier
+    // names - the same derivation that load makes.
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+    branch = NormalizeBranch(std::move(branch));
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
     std::string uuid;
     std::string table_path;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
-                           LoadTableSchema(identifier, &uuid, &table_path));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
+                           LoadDataTableSchema(load_identifier, branch, &table_path, &uuid));
     std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
     if (data_schema != nullptr) {
         PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
@@ -480,11 +491,9 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     // tokens binds to this table.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
-    return FileStoreTable::Create(
-        table_file_system, table_path, schema, identifier, uuid,
-        NormalizeBranch(std::move(branch)).value_or(Identifier::kDefaultMainBranch),
-        /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
+    return FileStoreTable::Create(table_file_system, table_path, schema, identifier, uuid,
+                                  branch.value_or(Identifier::kDefaultMainBranch),
+                                  /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
 }
 
 std::string RestCatalog::GetRootPath() const {

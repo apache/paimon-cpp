@@ -39,8 +39,9 @@ namespace paimon {
 ReadOptimizedSystemTable::ReadOptimizedSystemTable(const std::shared_ptr<FileSystem>& fs,
                                                    std::string table_path,
                                                    std::shared_ptr<TableSchema> table_schema,
+                                                   std::string data_table_name,
                                                    std::map<std::string, std::string> options)
-    : SystemTable(fs, table_path, ComposeName(table_path, kName)),
+    : SystemTable(fs, table_path, ComposeName(data_table_name, kName)),
       table_path_(std::move(table_path)),
       table_schema_(std::move(table_schema)),
       options_(std::move(options)) {}

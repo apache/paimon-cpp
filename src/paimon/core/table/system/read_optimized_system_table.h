@@ -34,8 +34,11 @@ class ReadOptimizedSystemTable : public SystemTable {
  public:
     static constexpr const char* kName = "ro";
 
+    /// @param data_table_name Logical object name of the data table underneath, branch included,
+    ///        which this view answers `<data_table_name>$ro` with - the name a catalog knows the
+    ///        data table by, not the name of the directory it lives in.
     ReadOptimizedSystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path,
-                             std::shared_ptr<TableSchema> table_schema,
+                             std::shared_ptr<TableSchema> table_schema, std::string data_table_name,
                              std::map<std::string, std::string> options);
 
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;

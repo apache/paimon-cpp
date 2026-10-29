@@ -152,8 +152,10 @@ offsets when a real-time writer is created:
    write_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
                           write_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
-                          paimon::FileStoreWrite::Create(std::move(write_context)));
+                          table->NewWrite(std::move(write_context)));
 
 For real-time writes, also set ``WithStreamingMode(true)`` and
 ``WithRealtimeContext(...)`` with ``realtime.enabled=true``. After
@@ -209,13 +211,13 @@ keep it across recovery.
 .. code-block:: cpp
 
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
-                          shared_catalog->GetTable(paimon::Identifier("db", "tbl")));
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
    std::optional<std::string> table_uuid = table->CatalogUuid();
    if (!table_uuid) {
        return paimon::Status::Invalid("a commit lease needs the table UUID");
    }
    paimon::CommitContextBuilder builder(table_path, "writer-1");
-   builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"))
+   builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"))
        .WithTableId(table_uuid.value())
        .AddOption(paimon::Options::REST_COMMIT_ACQUIRE_LOCK, "true");
 
@@ -320,15 +322,17 @@ for that table's file system and passing it in through ``WithFileSystem``:
    scan_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                           scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
-                          paimon::TableScan::Create(std::move(scan_context)));
+                          table->NewScan(std::move(scan_context)));
 
    paimon::ReadContextBuilder read_builder(table_path);
    read_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
                           read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
-                          paimon::TableRead::Create(std::move(read_context)));
+                          table->NewRead(std::move(read_context)));
 
 When ``Finish()`` builds the context, it asks the catalog for the table's file
 system through ``Catalog::GetTableFileSystem`` and uses it as-is for the schema,
