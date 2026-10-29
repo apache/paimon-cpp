@@ -68,6 +68,7 @@
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_result.h"
+#include "paimon/format/blob/blob_read_context.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/file_system.h"
@@ -134,11 +135,11 @@ AbstractSplitRead::CreateRawFileReadersWithMeta(
     if (parallel_num <= 1) {
         for (const auto& file : data_files) {
             PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<FileBatchReader> file_reader,
+                RawFileReaderWithMeta file_reader,
                 CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
                                     row_ranges, data_file_path_factory, extra_format_options));
-            if (file_reader) {
-                raw_file_readers.push_back({file, std::move(file_reader)});
+            if (file_reader.reader) {
+                raw_file_readers.push_back(std::move(file_reader));
             }
         }
         return std::move(raw_file_readers);
@@ -148,7 +149,7 @@ AbstractSplitRead::CreateRawFileReadersWithMeta(
     // I/O, so files are built concurrently. The tasks only reference locals of this frame,
     // which stay alive because CollectAll below drains every future before returning.
     std::shared_ptr<Executor> build_executor = GetReaderBuildExecutor();
-    std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
+    std::vector<std::future<Result<RawFileReaderWithMeta>>> futures;
     futures.reserve(data_files.size());
     for (const auto& file : data_files) {
         futures.push_back(Via(
@@ -161,18 +162,16 @@ AbstractSplitRead::CreateRawFileReadersWithMeta(
     }
     // Readers keep the file order of the split, and CollectAll preserves the submit order.
     Status first_error;
-    size_t file_index = 0;
     for (auto& built : CollectAll(futures)) {
-        const std::shared_ptr<DataFileMeta>& file = data_files[file_index++];
         if (!built.ok()) {
             if (first_error.ok()) {
                 first_error = built.status();
             }
             continue;
         }
-        std::unique_ptr<FileBatchReader> file_reader = std::move(built).value();
-        if (file_reader) {
-            raw_file_readers.push_back({file, std::move(file_reader)});
+        RawFileReaderWithMeta file_reader = std::move(built).value();
+        if (file_reader.reader) {
+            raw_file_readers.push_back(std::move(file_reader));
         }
     }
     PAIMON_RETURN_NOT_OK(first_error);
@@ -277,7 +276,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyBitmapSelection
     return std::move(file_reader);
 }
 
-Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateRawFileReader(
+Result<AbstractSplitRead::RawFileReaderWithMeta> AbstractSplitRead::CreateRawFileReader(
     const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
     const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
     const std::optional<std::vector<Range>>& row_ranges,
@@ -287,9 +286,19 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateRawFileReader(
     PAIMON_ASSIGN_OR_RAISE(std::string data_file_identifier, file->FileFormat());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> reader_builder,
                            PrepareReaderBuilder(data_file_identifier, extra_format_options));
-    return CreateFieldMappingReader(data_file_path, file, partition, std::move(reader_builder),
-                                    field_mapping_builder, dv_factory, row_ranges,
-                                    data_file_path_factory);
+    // Capture the per-file blob context before late materialization or other readers wrap the
+    // format. The builder passes it directly to the bottom blob reader.
+    std::shared_ptr<BlobReadContext> blob_context;
+    if (auto* blob_builder = dynamic_cast<BlobReadContextAwareBuilder*>(reader_builder.get())) {
+        blob_context = std::make_shared<BlobReadContext>();
+        blob_builder->SetBlobReadContext(blob_context);
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<FileBatchReader> reader,
+        CreateFieldMappingReader(data_file_path, file, partition, std::move(reader_builder),
+                                 field_mapping_builder, dv_factory, row_ranges,
+                                 data_file_path_factory));
+    return RawFileReaderWithMeta{file, std::move(reader), std::move(blob_context)};
 }
 
 bool AbstractSplitRead::NeedCompleteRowTrackingFields(

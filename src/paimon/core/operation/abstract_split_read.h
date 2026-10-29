@@ -59,6 +59,7 @@ class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
 class Predicate;
+struct BlobReadContext;
 struct DataFileMeta;
 class TableSchema;
 
@@ -81,6 +82,7 @@ class AbstractSplitRead : public SplitRead {
     struct RawFileReaderWithMeta {
         std::shared_ptr<DataFileMeta> file;
         std::unique_ptr<FileBatchReader> reader;
+        std::shared_ptr<BlobReadContext> blob_context = nullptr;
     };
 
     AbstractSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
@@ -131,8 +133,8 @@ class AbstractSplitRead : public SplitRead {
     /// that the reader builder and the file reader cannot be built from different answers.
     DataFileReadOptions BuildDataFileReadOptions() const;
 
-    // return nullptr if data file is skipped by index or dv
-    Result<std::unique_ptr<FileBatchReader>> CreateRawFileReader(
+    // Return metadata with a null reader if the data file is skipped by index or dv.
+    Result<RawFileReaderWithMeta> CreateRawFileReader(
         const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,

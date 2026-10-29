@@ -1279,16 +1279,18 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobFallbackR
             if (!SelectedRangesInRange(first_row_id, first_row_id + file->row_count - 1,
                                        file_ranges)
                      .empty()) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    std::vector<std::unique_ptr<FileBatchReader>> file_readers,
-                    CreateRawFileReaders(partition, {file}, file_read_schema,
-                                         /*predicate=*/nullptr, group_dv_factory, file_ranges,
-                                         data_file_path_factory, blob_format_options));
+                PAIMON_ASSIGN_OR_RAISE(std::vector<RawFileReaderWithMeta> file_readers,
+                                       CreateRawFileReadersWithMeta(
+                                           partition, {file}, file_read_schema,
+                                           /*predicate=*/nullptr, group_dv_factory, file_ranges,
+                                           data_file_path_factory, blob_format_options));
                 if (file_readers.size() != 1) {
                     return Status::Invalid("Unexpected: blob fallback file reader was skipped.");
                 }
                 segments.push_back(
-                    BlobFallbackBatchReader::Segment{std::move(file_readers[0]), {}});
+                    BlobFallbackBatchReader::Segment{std::move(file_readers[0].reader),
+                                                     {},
+                                                     std::move(file_readers[0].blob_context)});
             }
             next_row_id = std::max(next_row_id, first_row_id + file->row_count);
         }
