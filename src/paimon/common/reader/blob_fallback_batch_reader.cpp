@@ -196,6 +196,9 @@ Result<int64_t> BlobFallbackBatchReader::FillWindow(size_t group_idx, int64_t wa
             if (!selected_array || selected_array->type_id() != arrow::Type::STRUCT) {
                 return Status::Invalid("Blob fallback expects file readers to emit struct arrays.");
             }
+            if (selected_array->length() == 0) {
+                continue;
+            }
             const int64_t count = selected_array->length();
             auto struct_array = checked_pointer_cast<arrow::StructArray>(selected_array);
             chunks->push_back(Chunk{materialize ? struct_array : nullptr, count, {}});

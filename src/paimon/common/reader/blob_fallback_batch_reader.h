@@ -137,7 +137,7 @@ class BlobFallbackBatchReader : public BatchReader {
                                const std::vector<int32_t>* group_choice,
                                std::vector<Chunk>* chunks);
 
-    /// Applies a blob-only request for the complete outer call, including retries by filters.
+    /// Applies a blob-only request for the complete outer call.
     static Result<ReadBatchWithBitmap> ReadSegmentBatch(const Segment& segment, int32_t max_rows,
                                                         bool read_payload);
 
