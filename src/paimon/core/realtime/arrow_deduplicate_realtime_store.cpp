@@ -283,7 +283,7 @@ ArrowDeduplicateRealtimeStore::AcquireKeyOffsetLookup() {
 }
 
 Status ArrowDeduplicateRealtimeStore::EnsureMutableDeletionBitmap() {
-    if (!pending_offset_deletions_.unique()) {
+    if (pending_offset_deletions_.use_count() != 1) {
         pending_offset_deletions_ = std::make_shared<RoaringBitmap64>(*pending_offset_deletions_);
     }
     return Status::OK();
