@@ -245,6 +245,12 @@ TEST_F(BlobFallbackBatchReaderTest, TestBasicFallback) {
         {"b0", "u1", "b2"});
 }
 
+TEST_F(BlobFallbackBatchReaderTest, TestAlternatingUpdates) {
+    CheckFallback({{SegmentSpec::File({"u0", "PH", "u2", "PH", "u4", "PH", "u6", "PH"})},
+                   {SegmentSpec::File({"b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7"})}},
+                  {"u0", "b1", "u2", "b3", "u4", "b5", "u6", "b7"});
+}
+
 TEST_F(BlobFallbackBatchReaderTest, TestSkipsFullyCoveredLayersIncludingNull) {
     const BlobRows newest = {"u0", std::nullopt, "u2"};
     for (int32_t batch_size : {1, 2, 1024}) {
@@ -488,24 +494,36 @@ TEST_F(BlobFallbackBatchReaderTest, TestRowTrackingFieldsPreserved) {
                 return array;
             };
 
-            for (auto batch_size : arrow::internal::Iota(1, 5)) {
-                for (auto file_batch_size : {1, 1024}) {
+            for (auto batch_size : arrow::internal::Iota(1, 9)) {
+                for (auto file_batch_size : {1, 3, 1024}) {
                     auto new_context = std::make_shared<BlobReadContext>();
                     auto old_context = std::make_shared<BlobReadContext>();
-                    // newest layer (seq 20) covers only row 2; rows 0-1 are a gap
+                    // Rows 0-1 are a gap. Inside one file chunk, alternate newest-layer values
+                    // with placeholders so normal and all-placeholder row-id runs share it.
                     std::vector<BlobFallbackBatchReader::Segment> newest;
                     newest.push_back(BlobFallbackBatchReader::Segment{nullptr, {Range(0, 1)}});
                     newest.push_back(BlobFallbackBatchReader::Segment{
-                        std::make_unique<ReadSkipBlobReader>(
-                            make_rows({{"u2", 2, 20}}), struct_type, file_batch_size, new_context),
+                        std::make_unique<ReadSkipBlobReader>(make_rows({{"u2", 2, 20},
+                                                                        {"PH", 3, 20},
+                                                                        {"u4", 4, 20},
+                                                                        {"PH", 5, 20},
+                                                                        {"u6", 6, 20}}),
+                                                             struct_type, file_batch_size,
+                                                             new_context),
                         {},
                         new_context});
-                    // oldest layer (seq 10) covers rows 0-2, row 1 is a placeholder there too
+                    // Rows 1 and 3 are placeholders in both layers; row 5 falls back.
                     std::vector<BlobFallbackBatchReader::Segment> oldest;
                     oldest.push_back(BlobFallbackBatchReader::Segment{
-                        std::make_unique<ReadSkipBlobReader>(
-                            make_rows({{"b0", 0, 10}, {"PH", 1, 10}, {"PH", 2, 10}}), struct_type,
-                            file_batch_size, old_context),
+                        std::make_unique<ReadSkipBlobReader>(make_rows({{"b0", 0, 10},
+                                                                        {"PH", 1, 10},
+                                                                        {"PH", 2, 10},
+                                                                        {"PH", 3, 10},
+                                                                        {"PH", 4, 10},
+                                                                        {"b5", 5, 10},
+                                                                        {"PH", 6, 10}}),
+                                                             struct_type, file_batch_size,
+                                                             old_context),
                         {},
                         old_context});
                     std::vector<std::vector<BlobFallbackBatchReader::Segment>> groups;
@@ -519,10 +537,13 @@ TEST_F(BlobFallbackBatchReaderTest, TestRowTrackingFieldsPreserved) {
                         auto result,
                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
 
-                    // row 0 falls back to seq 10, row 1 is all-placeholder (null blob, row id
-                    // kept, seq -1), row 2 takes seq 20
-                    auto expected_array =
-                        make_rows({{"b0", 0, 10}, {std::nullopt, 1, -1}, {"u2", 2, 20}});
+                    auto expected_array = make_rows({{"b0", 0, 10},
+                                                     {std::nullopt, 1, -1},
+                                                     {"u2", 2, 20},
+                                                     {std::nullopt, 3, -1},
+                                                     {"u4", 4, 20},
+                                                     {"b5", 5, 10},
+                                                     {"u6", 6, 20}});
                     auto expected_chunk_array =
                         std::make_shared<arrow::ChunkedArray>(expected_array);
                     ASSERT_TRUE(result->Equals(expected_chunk_array))

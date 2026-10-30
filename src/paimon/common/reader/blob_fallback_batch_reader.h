@@ -106,6 +106,12 @@ class BlobFallbackBatchReader : public BatchReader {
         std::vector<int64_t> gap_row_ids;
     };
 
+    /// Forward-only position in one group's chunks during assembly of a single output column.
+    struct ChunkCursor {
+        size_t chunk_idx = 0;
+        int64_t chunk_start = 0;
+    };
+
     /// Read progress of one sequence group. Move-only, matching Segment's unique_ptr member.
     struct GroupCursor {
         GroupCursor() = default;
@@ -153,10 +159,11 @@ class BlobFallbackBatchReader : public BatchReader {
         const std::vector<std::vector<Chunk>>& group_chunks) const;
 
     /// Assembles the _ROW_ID values of rows [run_start, run_end) from the given group's chunks;
-    /// gap chunks contribute their synthesized row ids.
+    /// gap chunks contribute their synthesized row ids. Shares the newest group's assembly
+    /// cursor with runs that explicitly choose that group.
     Result<std::shared_ptr<arrow::Array>> AssembleRowIdRun(const std::vector<Chunk>& chunks,
-                                                           int64_t run_start,
-                                                           int64_t run_end) const;
+                                                           int64_t run_start, int64_t run_end,
+                                                           ChunkCursor* cursor) const;
 
     std::vector<GroupCursor> groups_;
     std::shared_ptr<arrow::Schema> read_schema_;

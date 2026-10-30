@@ -260,10 +260,12 @@ Result<std::vector<bool>> BlobFallbackBatchReader::ComputePlaceholderFlags(
 }
 
 Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleRowIdRun(
-    const std::vector<Chunk>& chunks, int64_t run_start, int64_t run_end) const {
+    const std::vector<Chunk>& chunks, int64_t run_start, int64_t run_end,
+    ChunkCursor* cursor) const {
     arrow::ArrayVector pieces;
-    int64_t pos = 0;
-    for (const auto& chunk : chunks) {
+    while (cursor->chunk_idx < chunks.size() && cursor->chunk_start < run_end) {
+        const auto& chunk = chunks[cursor->chunk_idx];
+        const int64_t pos = cursor->chunk_start;
         int64_t overlap_start = std::max(run_start, pos);
         int64_t overlap_end = std::min(run_end, pos + chunk.length);
         if (overlap_start < overlap_end) {
@@ -280,10 +282,11 @@ Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleRowIdRun(
                 pieces.push_back(std::move(piece));
             }
         }
-        pos += chunk.length;
-        if (pos >= run_end) {
+        if (pos + chunk.length > run_end) {
             break;
         }
+        cursor->chunk_start += chunk.length;
+        cursor->chunk_idx++;
     }
     if (pieces.size() == 1) {
         return pieces[0];
@@ -298,6 +301,7 @@ Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleColumn(
     const std::vector<std::vector<Chunk>>& group_chunks) const {
     const auto row_count = static_cast<int64_t>(group_choice.size());
     arrow::ArrayVector pieces;
+    std::vector<ChunkCursor> cursors(group_chunks.size());
     int64_t run_start = 0;
     while (run_start < row_count) {
         const int32_t group = group_choice[run_start];
@@ -310,8 +314,9 @@ Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleColumn(
             // (taken from the newest group, which steps in lockstep), reports -1 as its
             // sequence number, and returns null for every other field
             if (field_idx == row_id_field_idx_) {
-                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> row_id_piece,
-                                       AssembleRowIdRun(group_chunks[0], run_start, run_end));
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::shared_ptr<arrow::Array> row_id_piece,
+                    AssembleRowIdRun(group_chunks[0], run_start, run_end, &cursors[0]));
                 pieces.push_back(std::move(row_id_piece));
             } else if (field_idx == seq_num_field_idx_) {
                 arrow::Int64Scalar seq_scalar(-1);
@@ -327,8 +332,11 @@ Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleColumn(
                 pieces.push_back(std::move(null_piece));
             }
         } else {
-            int64_t pos = 0;
-            for (const auto& chunk : group_chunks[group]) {
+            ChunkCursor& cursor = cursors[group];
+            const auto& chunks = group_chunks[group];
+            while (cursor.chunk_idx < chunks.size() && cursor.chunk_start < run_end) {
+                const auto& chunk = chunks[cursor.chunk_idx];
+                const int64_t pos = cursor.chunk_start;
                 int64_t overlap_start = std::max(run_start, pos);
                 int64_t overlap_end = std::min(run_end, pos + chunk.length);
                 if (overlap_start < overlap_end) {
@@ -340,10 +348,12 @@ Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleColumn(
                     pieces.push_back(
                         column->Slice(overlap_start - pos, overlap_end - overlap_start));
                 }
-                pos += chunk.length;
-                if (pos >= run_end) {
+                // Keep a partially consumed chunk for a later run choosing the same group.
+                if (pos + chunk.length > run_end) {
                     break;
                 }
+                cursor.chunk_start += chunk.length;
+                cursor.chunk_idx++;
             }
         }
         run_start = run_end;
