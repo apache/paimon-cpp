@@ -18,11 +18,13 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "paimon/memory/memory_segment.h"
 #include "paimon/result.h"
@@ -36,6 +38,7 @@ enum class CacheKind {
     MANIFEST,
     DATA_FILE_FOOTER,
     SNAPSHOT_LIVE_MANIFEST,
+    INDEX_READER,
 };
 
 class PAIMON_EXPORT CacheKey {
@@ -44,6 +47,8 @@ class PAIMON_EXPORT CacheKey {
                                                  int32_t length, bool is_index);
     static std::shared_ptr<CacheKey> ForKind(const std::string& file_path, int64_t position,
                                              int32_t length, CacheKind kind);
+    static std::shared_ptr<CacheKey> ForIndexReader(const std::string& uri,
+                                                    const std::string& column_name);
 
  public:
     virtual ~CacheKey() = default;
@@ -88,28 +93,84 @@ class PAIMON_EXPORT Cache {
 
 class PAIMON_EXPORT CacheValue {
  public:
-    /// Charge the segment's logical size when no separate allocation size is supplied.
-    CacheValue(const MemorySegment& segment, CacheCallback callback);
+    virtual ~CacheValue();
 
-    /// @param memory_usage Retained allocation size in bytes, including unused capacity.
-    ///                     The charge is at least the segment's logical size.
-    CacheValue(const MemorySegment& segment, CacheCallback callback, int64_t memory_usage);
+    /// Returns the typed payload, retaining its owner; null for a null value or type mismatch.
+    template <typename T>
+    static std::shared_ptr<T> Get(const std::shared_ptr<CacheValue>& value);
 
-    ~CacheValue();
-
-    const MemorySegment& GetSegment() const;
-
-    /// Bytes to charge against the cache budget. May exceed GetSegment().Size().
+    /// Bytes charged against the cache budget.
     int64_t GetMemoryUsage() const;
 
     void OnEvict(const std::shared_ptr<CacheKey>& key) const;
 
-    bool operator==(const CacheValue& other) const;
+    virtual bool operator==(const CacheValue& other) const = 0;
+
+ protected:
+    CacheValue(CacheCallback callback, int64_t memory_usage);
 
  private:
-    MemorySegment segment_;
     CacheCallback callback_;
     int64_t memory_usage_;
+};
+
+template <typename T>
+class PAIMON_EXPORT TypedCacheValue : public CacheValue {
+ protected:
+    using CacheValue::CacheValue;
+
+ private:
+    friend class CacheValue;
+    virtual T* GetValuePointer() = 0;
+};
+
+template <typename T>
+std::shared_ptr<T> CacheValue::Get(const std::shared_ptr<CacheValue>& value) {
+    auto* typed_value = dynamic_cast<TypedCacheValue<T>*>(value.get());
+    if (typed_value) {
+        if (T* payload = typed_value->GetValuePointer()) {
+            return std::shared_ptr<T>(value, payload);
+        }
+    }
+    return nullptr;
+}
+
+class PAIMON_EXPORT MemorySegmentCacheValue final : public TypedCacheValue<const MemorySegment> {
+ public:
+    MemorySegmentCacheValue(const MemorySegment& segment, CacheCallback callback);
+
+    /// Charges retained allocation size, at least the segment's logical size.
+    MemorySegmentCacheValue(const MemorySegment& segment, CacheCallback callback,
+                            int64_t memory_usage);
+
+    bool operator==(const CacheValue& other) const override;
+
+ private:
+    const MemorySegment* GetValuePointer() override {
+        return &segment_;
+    }
+
+    MemorySegment segment_;
+};
+
+template <typename T>
+class PAIMON_EXPORT ObjectCacheValue final : public TypedCacheValue<T> {
+ public:
+    ObjectCacheValue(std::shared_ptr<T> value, CacheCallback callback, int64_t memory_usage)
+        : TypedCacheValue<T>(std::move(callback), std::max<int64_t>(1, memory_usage)),
+          value_(std::move(value)) {}
+
+    bool operator==(const CacheValue& other) const override {
+        const auto* rhs = dynamic_cast<const ObjectCacheValue<T>*>(&other);
+        return rhs && value_ == rhs->value_;
+    }
+
+ private:
+    T* GetValuePointer() override {
+        return value_.get();
+    }
+
+    std::shared_ptr<T> value_;
 };
 
 }  // namespace paimon

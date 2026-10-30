@@ -35,6 +35,7 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon {
+class Cache;
 class LeafPredicate;
 class CompoundPredicate;
 class DataFilePathFactory;
@@ -75,7 +76,8 @@ class FileIndexEvaluator {
         const std::shared_ptr<VectorSearch>& vector_search,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::shared_ptr<DataFileMeta>& file_meta,
-        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<Cache>& cache);
 
     static Result<std::shared_ptr<FileIndexResult>> EvaluateFullTextSearch(
         const std::shared_ptr<arrow::Schema>& data_schema,

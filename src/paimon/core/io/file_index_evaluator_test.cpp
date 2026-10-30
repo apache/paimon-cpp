@@ -40,6 +40,7 @@
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
+#include "paimon/factories/factory_creator.h"
 #include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/scored_file_index_result.h"
@@ -52,6 +53,7 @@
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/testing/mock/mock_search_file_index.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
@@ -488,7 +490,7 @@ class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
         if (index_type == SearchIndexType::VECTOR) {
             ASSERT_NOK_WITH_MSG(FileIndexEvaluator::EvaluateVectorSearch(
                                     data_schema_, core_options_.ToMap(), MakeVectorSearch(field),
-                                    path_factory_, meta, fs_, pool_),
+                                    path_factory_, meta, fs_, pool_, /*cache=*/nullptr),
                                 message);
         } else {
             ASSERT_NOK_WITH_MSG(FileIndexEvaluator::EvaluateFullTextSearch(
@@ -544,7 +546,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestVectorSearchReadsIndexWithScores) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
                          FileIndexEvaluator::EvaluateVectorSearch(
                              data_schema_, core_options_.ToMap(), MakeVectorSearch("embedding"),
-                             path_factory_, meta, fs_, pool_));
+                             path_factory_, meta, fs_, pool_, /*cache=*/nullptr));
     ASSERT_TRUE(result);
     EXPECT_EQ(RoaringBitmap32::From({1, 3}), result->GetRowPositions());
     EXPECT_EQ(std::vector<float>({0.25f, 0.75f}), result->GetScores());
@@ -572,7 +574,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyVectorSearchIndex) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> vector_result,
                          FileIndexEvaluator::EvaluateVectorSearch(
                              data_schema_, core_options_.ToMap(), MakeVectorSearch("embedding"),
-                             path_factory_, meta, fs_, pool_));
+                             path_factory_, meta, fs_, pool_, /*cache=*/nullptr));
     ASSERT_TRUE(vector_result);
     EXPECT_TRUE(vector_result->IsEmpty());
     EXPECT_TRUE(vector_result->GetScores().empty());
@@ -598,6 +600,292 @@ TEST_P(FileIndexSearchEvaluatorTest, TestInvalidVectorSearchIndexes) {
 TEST_P(FileIndexSearchEvaluatorTest, TestInvalidFullTextSearchIndexes) {
     CheckInvalidSearchIndexes(SearchIndexType::FULL_TEXT);
 }
+
+namespace {
+
+struct SearchReaderOpenState {
+    int32_t count = 0;
+    bool fail = false;
+};
+
+class CacheableSearchReader final : public FileIndexReader {
+ public:
+    explicit CacheableSearchReader(std::shared_ptr<FileIndexReader> delegate)
+        : delegate_(std::move(delegate)) {}
+
+    Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& search) override {
+        if (search->query.empty()) {
+            return Status::Invalid("Mock vector query cannot be empty");
+        }
+        return delegate_->VisitVectorSearch(search);
+    }
+
+ private:
+    std::shared_ptr<FileIndexReader> delegate_;
+};
+
+class CacheableSearchIndexer final : public FileIndexer {
+ public:
+    explicit CacheableSearchIndexer(std::shared_ptr<SearchReaderOpenState> state)
+        : state_(std::move(state)), delegate_(SearchIndexType::VECTOR) {}
+
+    Result<std::shared_ptr<FileIndexReader>> CreateReader(
+        ::ArrowSchema* schema, int64_t start, int64_t length,
+        const std::shared_ptr<InputStream>& input,
+        const std::shared_ptr<MemoryPool>& pool) const override {
+        ++state_->count;
+        if (state_->fail) {
+            return Status::IOError("Cannot open mock vector index");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexReader> reader,
+                               delegate_.CreateReader(schema, start, length, input, pool));
+        return std::make_shared<CacheableSearchReader>(std::move(reader));
+    }
+
+    Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
+        ::ArrowSchema* schema, const std::shared_ptr<MemoryPool>& pool) const override {
+        return delegate_.CreateWriter(schema, pool);
+    }
+
+ private:
+    std::shared_ptr<SearchReaderOpenState> state_;
+    MockSearchFileIndexer delegate_;
+};
+
+class CacheableSearchFactory final : public FileIndexerFactory {
+ public:
+    explicit CacheableSearchFactory(std::shared_ptr<SearchReaderOpenState> state)
+        : state_(std::move(state)) {}
+
+    const char* Identifier() const override {
+        return "mock-cacheable-vector";
+    }
+
+    Result<std::unique_ptr<FileIndexer>> Create(
+        const std::map<std::string, std::string>&) const override {
+        return std::make_unique<CacheableSearchIndexer>(state_);
+    }
+
+ private:
+    std::shared_ptr<SearchReaderOpenState> state_;
+};
+
+class InvalidSearchReaderCache final : public CountingRoutingCache {
+ public:
+    InvalidSearchReaderCache() : CountingRoutingCache(CacheKind::INDEX_READER, 4096) {}
+
+    Result<std::shared_ptr<CacheValue>> Get(
+        const std::shared_ptr<CacheKey>&,
+        std::function<Result<std::shared_ptr<CacheValue>>(const std::shared_ptr<CacheKey>&)>)
+        override {
+        return std::make_shared<ObjectCacheValue<int32_t>>(std::make_shared<int32_t>(7), nullptr,
+                                                           sizeof(int32_t));
+    }
+};
+
+}  // namespace
+
+class FileIndexCacheEvaluatorTest : public FileIndexSearchEvaluatorTest {
+ protected:
+    void SetUp() override {
+        FileIndexSearchEvaluatorTest::SetUp();
+        open_state_ = std::make_shared<SearchReaderOpenState>();
+        auto factory = std::make_unique<CacheableSearchFactory>(open_state_);
+        identifier_ = factory->Identifier();
+        auto* factories = FactoryCreator::GetInstance();
+        factories->Register(identifier_, factory.release());
+        cache_ = std::make_shared<CountingRoutingCache>(CacheKind::INDEX_READER, 1024 * 1024);
+    }
+
+    void TearDown() override {
+        auto* factories = FactoryCreator::GetInstance();
+        factories->TEST_Unregister(identifier_);
+        FileIndexSearchEvaluatorTest::TearDown();
+    }
+
+    Result<std::shared_ptr<DataFileMeta>> MakeCacheableIndex() const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes,
+                               MockSearchFileIndex::MakeIndex("embedding", identifier_,
+                                                              {{3, 0.75f}, {1, 0.25f}}, pool_));
+        return MakeIndex(bytes);
+    }
+
+    Result<std::shared_ptr<ScoredFileIndexResult>> Search(
+        const std::shared_ptr<DataFileMeta>& meta,
+        const std::shared_ptr<VectorSearch>& search) const {
+        return FileIndexEvaluator::EvaluateVectorSearch(data_schema_, core_options_.ToMap(), search,
+                                                        path_factory_, meta, fs_, pool_, cache_);
+    }
+
+    std::shared_ptr<SearchReaderOpenState> open_state_;
+    std::string identifier_;
+    std::shared_ptr<CountingRoutingCache> cache_;
+};
+
+TEST_P(FileIndexCacheEvaluatorTest, ReusesReaderWithIndependentQueries) {
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeCacheableIndex());
+    ASSERT_OK_AND_ASSIGN(auto first, Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(first->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+    ASSERT_EQ(first->GetScores(), std::vector<float>({0.25f, 0.75f}));
+
+    auto filtered = MakeVectorSearch("embedding");
+    filtered->limit = 1;
+    filtered->query = {5.0f, 6.0f};
+    filtered->pre_filter = [](int64_t row_id) { return row_id != 3; };
+    ASSERT_OK_AND_ASSIGN(auto second, Search(meta, filtered));
+    ASSERT_EQ(second->GetRowPositions(), RoaringBitmap32::From({1}));
+    ASSERT_EQ(second->GetScores(), std::vector<float>({0.25f}));
+
+    auto invalid = MakeVectorSearch("embedding");
+    invalid->query.clear();
+    ASSERT_NOK_WITH_MSG(Search(meta, invalid), "Mock vector query cannot be empty");
+    ASSERT_OK_AND_ASSIGN(auto last, Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(last->GetRowPositions(), first->GetRowPositions());
+    ASSERT_EQ(last->GetScores(), first->GetScores());
+    ASSERT_EQ(open_state_->count, GetParam() ? 4 : 1);
+    ASSERT_EQ(cache_->GetCount(), GetParam() ? 0 : 4);
+    ASSERT_EQ(cache_->SupplierCallCount(), GetParam() ? 0 : 1);
+    ASSERT_EQ(cache_->Size(), GetParam() ? 0 : 1);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, DisablesCache) {
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeCacheableIndex());
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             FileIndexEvaluator::EvaluateVectorSearch(
+                                 data_schema_, core_options_.ToMap(), MakeVectorSearch("embedding"),
+                                 path_factory_, meta, fs_, pool_, /*cache=*/nullptr));
+        ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+    }
+    ASSERT_EQ(open_state_->count, 2);
+    ASSERT_EQ(cache_->GetCount(), 0);
+    ASSERT_EQ(cache_->Size(), 0);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, CachesEmptyIndex) {
+    FileIndexFormat::ColumnIndexes indexes = {{"embedding", {{identifier_, nullptr}}}};
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto result, Search(meta, MakeVectorSearch("embedding")));
+        ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32());
+        ASSERT_EQ(result->GetScores(), std::vector<float>());
+    }
+    ASSERT_EQ(open_state_->count, 0);
+    ASSERT_EQ(cache_->Size(), GetParam() ? 0 : 1);
+    ASSERT_EQ(cache_->SupplierCallCount(), GetParam() ? 0 : 1);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, CachesReaderAlongsideUnregisteredIndex) {
+    ASSERT_OK_AND_ASSIGN(auto payload, MockSearchFileIndex::MakePayload({{1, 0.25f}}, pool_));
+    FileIndexFormat::ColumnIndexes indexes = {
+        {"embedding", {{identifier_, payload}, {"unregistered-index", payload}}}};
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto result, Search(meta, MakeVectorSearch("embedding")));
+        ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1}));
+        ASSERT_EQ(result->GetScores(), std::vector<float>({0.25f}));
+    }
+    ASSERT_EQ(open_state_->count, GetParam() ? 2 : 1);
+    ASSERT_EQ(cache_->Size(), GetParam() ? 0 : 1);
+    ASSERT_EQ(cache_->SupplierCallCount(), GetParam() ? 0 : 1);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, RejectsMultipleReaders) {
+    ASSERT_OK_AND_ASSIGN(auto payload, MockSearchFileIndex::MakePayload({{1, 0.25f}}, pool_));
+    FileIndexFormat::ColumnIndexes indexes = {
+        {"embedding", {{identifier_, payload}, {"another-empty-index", nullptr}}}};
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    ASSERT_NOK_WITH_MSG(Search(meta, MakeVectorSearch("embedding")),
+                        "Multiple File Index readers exist for vector search field 'embedding'");
+    ASSERT_EQ(cache_->Size(), 0);
+    ASSERT_EQ(cache_->SupplierCallCount(), GetParam() ? 0 : 1);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, ReloadsAfterEvictionAndDoesNotCacheOpenFailures) {
+    ASSERT_OK_AND_ASSIGN(
+        auto bytes,
+        MockSearchFileIndex::MakeIndex("embedding", identifier_, {{3, 0.75f}, {1, 0.25f}}, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    cache_ = std::make_shared<CountingRoutingCache>(CacheKind::INDEX_READER, bytes->size() - 1);
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto result, Search(meta, MakeVectorSearch("embedding")));
+        ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+    }
+    ASSERT_EQ(open_state_->count, 2);
+    ASSERT_EQ(cache_->Size(), 0);
+
+    cache_ = std::make_shared<CountingRoutingCache>(CacheKind::INDEX_READER, bytes->size());
+    open_state_->fail = true;
+    ASSERT_NOK_WITH_MSG(Search(meta, MakeVectorSearch("embedding")),
+                        "Cannot open mock vector index");
+    ASSERT_EQ(cache_->Size(), 0);
+    open_state_->fail = false;
+    ASSERT_OK_AND_ASSIGN(auto result, Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+    ASSERT_EQ(open_state_->count, 4);
+    ASSERT_EQ(cache_->Size(), GetParam() ? 0 : 1);
+    cache_->InvalidateAll();
+    ASSERT_OK_AND_ASSIGN(result, Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+    ASSERT_EQ(open_state_->count, 5);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, KeysReadersByFileAndField) {
+    ASSERT_OK_AND_ASSIGN(auto payload, MockSearchFileIndex::MakePayload({{1, 0.25f}}, pool_));
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["embedding"][identifier_] = payload;
+    indexes["title"][identifier_] = payload;
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    ASSERT_OK(Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_OK(Search(meta, MakeVectorSearch("title")));
+    ASSERT_EQ(open_state_->count, 2);
+    auto options = core_options_.ToMap();
+    options["file-index." + identifier_ + ".columns"] = "embedding";
+    options["file-index." + identifier_ + ".embedding.variant"] = "second";
+    ASSERT_OK(FileIndexEvaluator::EvaluateVectorSearch(data_schema_, options,
+                                                       MakeVectorSearch("embedding"), path_factory_,
+                                                       meta, fs_, pool_, cache_));
+    ASSERT_EQ(open_state_->count, GetParam() ? 3 : 2);
+    auto schema = arrow::schema({arrow::field("embedding", arrow::list(arrow::float64()))});
+    ASSERT_OK(FileIndexEvaluator::EvaluateVectorSearch(schema, core_options_.ToMap(),
+                                                       MakeVectorSearch("embedding"), path_factory_,
+                                                       meta, fs_, pool_, cache_));
+    ASSERT_EQ(open_state_->count, GetParam() ? 4 : 2);
+    if (!GetParam()) {
+        const std::string copy_name = "another-data.orc.index";
+        ASSERT_OK(fs_->WriteFile(path_factory_->ToAlignedPath(copy_name, meta),
+                                 std::string(bytes->data(), bytes->size()), /*overwrite=*/true));
+        meta->extra_files = {copy_name};
+    }
+    ASSERT_OK(Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(open_state_->count, GetParam() ? 5 : 3);
+    ASSERT_EQ(cache_->Size(), GetParam() ? 0 : 3);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, RejectsWrongCacheValue) {
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeCacheableIndex());
+    cache_ = std::make_shared<InvalidSearchReaderCache>();
+    auto result = Search(meta, MakeVectorSearch("embedding"));
+    if (GetParam()) {
+        ASSERT_OK(result);
+        ASSERT_EQ(result.value()->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+        ASSERT_EQ(open_state_->count, 1);
+    } else {
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsInvalid());
+        ASSERT_EQ(open_state_->count, 0);
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(IndexStorage, FileIndexCacheEvaluatorTest, ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                             return info.param ? "Embedded" : "External";
+                         });
 
 INSTANTIATE_TEST_SUITE_P(IndexStorage, FileIndexSearchEvaluatorTest, ::testing::Bool(),
                          [](const ::testing::TestParamInfo<bool>& info) {
