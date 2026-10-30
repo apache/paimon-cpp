@@ -404,6 +404,11 @@ Before writing new helper code, check whether the project already provides what 
 | `UniqueTestDirectory` | RAII helper that creates a unique temp directory and cleans it up on destruction |
 | `TimezoneGuard` | RAII guard that sets `TZ` environment variable and restores it on destruction |
 | `IOExceptionHelper` | Inject I/O errors via `IOHook` for fault-injection testing |
+| `CountingRoutingCache` | `Cache` routing by `CacheKind` to a per-kind `LruCache`, counting gets and supplier calls overall and per kind |
+| `DeletionVectorTestHelper` | Express row-level deletes the way an external engine does: write a deletion vector index file and commit it as an index-only commit message |
+| `GatedAsyncInputStream` | `InputStream` wrapper holding `ReadAsync` callbacks until `ReleaseAll()`, so a test can observe a cache while its fetches are in flight |
+| `BuildTestSnapshot()` | Build a `Snapshot` from an id and optional uuid, filling in every other field |
+| `VariantTestData` | Build variant test data, including an Arrow `StructArray` batch |
 | `testharness.h` | Test macros: `ASSERT_OK`, `ASSERT_NOK`, `ASSERT_NOK_WITH_MSG`, `ASSERT_RAISES` |
 
 ### Mock Objects (`src/paimon/testing/mock/`)
@@ -417,6 +422,13 @@ Before writing new helper code, check whether the project already provides what 
 | `MockIndexPathFactory` | Mock index path factory |
 | `MockKeyValueDataFileRecordReader` | Mock key-value data file reader holding in-memory data |
 | `MockStatsExtractor` | Mock statistics extractor |
+| `MockInputStream` / `MockOutputStream` | No-op I/O doubles: reads and writes report zero bytes and `ReadAsync` completes inline |
+| `MockVersionManagedCatalog` | Mock `Catalog` that also implements `VersionManagedCatalog` and records every commit call |
+| `MockGlobalIndexReader` | Mock `GlobalIndexReader`, constructed with or without search support |
+| `MockSearchFileIndex` | File index backend with configured matches in search order; applies pre-filters before limits and returns vector scores aligned with ascending file-local row positions |
+| `MockSearchFileIndexer` / `MockSearchFileIndexReader` | Mock `FileIndexer` and `FileIndexReader` serving those configured scored rows |
+| `MockFullTextSearchFileIndexFactory` / `MockVectorSearchFileIndexFactory` | Mock `FileIndexerFactory` for the full-text and vector search index types |
+| `OptionsCheckingMockSearchFileIndexFactory` | Reuses the mock search backend while requiring the exact options supplied to its factory |
 
 ---
 
@@ -453,6 +465,8 @@ This installs Git hooks that automatically run on every commit:
 | `trailing-whitespace` | Trailing whitespace |
 | `end-of-file-fixer` | Missing newline at end of file |
 | `check-added-large-files` | Files > 5 MB |
+| `check-yaml` | YAML syntax |
+| `sphinx-lint` (alias `docs`) | reStructuredText syntax under `docs/source/` |
 
 To run all hooks on all files manually:
 
@@ -464,10 +478,12 @@ pre-commit run --all-files
 
 Static analysis is configured in `.clang-tidy`. Key enabled check groups:
 
-- `bugprone-*` — Common bug patterns
-- `google-*` — Google style checks
-- `modernize-*` — C++ modernization suggestions
-- `clang-analyzer-*` — Clang static analyzer
+- `bugprone-*` — Common bug patterns. These are listed one check at a time rather than enabled as a wildcard, so a new upstream `bugprone` check never turns itself on.
+- `misc-misleading-identifier`, `misc-homoglyph` — The only two `misc` checks enabled; the rest of `misc-*` is off.
+- `google-*` — Google style checks, except `google-default-arguments`.
+- `modernize-*` — C++ modernization suggestions, except `modernize-return-braced-init-list`, `modernize-avoid-c-arrays`, `modernize-use-trailing-return-type`, `modernize-use-nodiscard` and `modernize-pass-by-value`.
+- `clang-analyzer-*` — Clang static analyzer, except the `clang-analyzer-alpha*` checkers and `clang-analyzer-cplusplus.NewDeleteLeaks`.
+- `clang-diagnostic-*` — Compiler diagnostics, except `clang-diagnostic-global-constructors` and `clang-diagnostic-sign-compare`.
 
 ### Building & Testing
 

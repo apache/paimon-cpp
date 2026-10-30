@@ -311,7 +311,10 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// });
     ///
     /// auto c_schema = std::make_unique<ArrowSchema>();
-    /// arrow::ExportSchema(*projected_schema, c_schema.get());
+    /// arrow::Status export_status = arrow::ExportSchema(*projected_schema, c_schema.get());
+    /// if (!export_status.ok()) {
+    ///     return paimon::Status::Invalid(export_status.message());
+    /// }
     ///
     /// ReadContextBuilder builder("/path/to/table");
     /// builder.SetReadSchema(std::move(c_schema));

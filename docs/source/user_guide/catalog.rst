@@ -158,6 +158,13 @@ offsets when a real-time writer is created:
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
                           paimon::FileStoreWrite::Create(std::move(write_context)));
 
+The ``Table`` handle is an equivalent entry point: ``table->NewCommit()``,
+``table->NewWrite()``, ``table->NewRead()`` and ``table->NewScan()`` each take the
+same finished context and return the same operator as ``FileStoreCommit::Create()``,
+``FileStoreWrite::Create()``, ``TableRead::Create()`` and ``TableScan::Create()``.
+Pick whichever reads better; the context still carries the catalog when one is
+needed. See the :ref:`Table API <cpp-api-catalog>`.
+
 For real-time writes, also set ``WithStreamingMode(true)`` and
 ``WithRealtimeContext(...)`` with ``realtime.enabled=true``. After
 ``CommitWithProgress`` succeeds, pass its returned snapshot id to
@@ -431,12 +438,22 @@ file system of your own when the credentials expire.
 
    class MyCredentialProvider : public paimon::CredentialProvider {
     public:
+       // The factory hands over the path and the file system options of the accesses to
+       // authenticate, which is where you read your own configuration from.
+       MyCredentialProvider(std::string path, std::map<std::string, std::string> options)
+           : path_(std::move(path)), options_(std::move(options)) {}
+
        // Called as each access is signed; reload the credentials before they expire.
        paimon::Result<std::map<std::string, std::string>> GetCredentials() const override {
+           // Request fresh credentials for path_ from the token service in options_.
            return std::map<std::string, std::string>{
                {"fs.oss.accessKeyId", ...}, {"fs.oss.accessKeySecret", ...},
                {"fs.oss.securityToken", ...}};
        }
+
+    private:
+       std::string path_;
+       std::map<std::string, std::string> options_;
    };
 
    class MyCredentialProviderFactory : public paimon::CredentialProviderFactory {

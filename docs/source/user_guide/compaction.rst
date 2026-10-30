@@ -78,8 +78,8 @@ Full Compaction
 Full compaction rewrites all eligible files in the bucket. During full
 compaction:
 
-- Files whose size is already at or above ``compaction.file-size`` (and have no
-  associated deletion vectors) are skipped to avoid unnecessary rewrites.
+- Files whose size is already at or above the compaction file-size threshold (and
+  have no associated deletion vectors) are skipped to avoid unnecessary rewrites.
 - When deletion vectors are enabled, all files are always eligible for
   compaction regardless of size, because deletion vectors must be applied.
 - When ``compaction.force-rewrite-all-files`` is ``true``, all files are
@@ -88,9 +88,16 @@ compaction:
   small files exceeds the number of large files and the total file count is at
   least 3.
 
-After compaction, if the last output file is still smaller than
-``compaction.file-size``, it is placed back into the compaction queue for future
+After compaction, if the last output file is still smaller than the compaction
+file-size threshold, it is placed back into the compaction queue for future
 merging.
+
+The compaction file-size threshold is not a separate option. It is derived from
+``target-file-size`` as ``target-file-size / 10 * 7``, that is 70% of the target
+size, so that a file already close to the target is not compacted twice.
+``target-file-size`` defaults to 256 MiB for append-only tables and 128 MiB for
+primary-key tables, which makes the derived threshold about 179 MiB and 89 MiB
+respectively. Adjust ``target-file-size`` to move the threshold.
 
 Dictionary Passthrough
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -126,7 +133,7 @@ dictionary-encodes it the same way; this option only selects ``STRING`` columns.
 A file with a serialized Arrow dictionary schema can independently produce a
 ``BINARY`` dictionary, which the value accessors also support. The rewrite also
 overrides the option back to ``false`` when the table writes a format other than Parquet, when
-``parquet.enable-dictionary`` is ``false`` because the writer would only expand
+``parquet.enable.dictionary`` is ``false`` because the writer would only expand
 the values again, or when variant/map shredding is configured because those
 writers reshape each batch against a fixed physical schema. Setting the option
 therefore never makes a rewrite fail; at worst it has no effect.
