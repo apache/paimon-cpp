@@ -30,6 +30,7 @@
 
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/commit/commit_changes_provider.h"
+#include "paimon/core/realtime/realtime_offset_file_index_lookup.h"
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
@@ -44,14 +45,12 @@ class TableSchema;
 /// Shared, attempt-local DV processing for realtime deduplicate writes and compaction.
 class RealtimeDeduplicateDvMaterializer {
  public:
-    using DeletionVectors = std::map<std::string, std::shared_ptr<DeletionVector>>;
-    using FilePositions = std::map<std::string, RoaringBitmap32>;
-
     struct BucketSnapshot {
         std::vector<ManifestEntry> files;
         std::vector<std::shared_ptr<IndexFileMeta>> dv_index_files;
     };
 
+    // Outer key: partition values encoded as a BinaryRow. Inner key: bucket ID.
     using SnapshotBuckets = std::unordered_map<BinaryRow, std::map<int32_t, BucketSnapshot>>;
 
     // Compaction F1/F2 -> F3 with F5 retained: lookup_files={F3}, final_file_names={F3, F5},
@@ -71,18 +70,21 @@ class RealtimeDeduplicateDvMaterializer {
     Result<SnapshotBuckets> LoadSnapshot(const std::optional<Snapshot>& snapshot,
                                          const std::vector<BinaryRow>& partitions) const;
 
-    Result<DeletionVectors> ReadDeletionVectors(const BinaryRow& partition, int32_t bucket,
-                                                const BucketSnapshot& snapshot) const;
+    Result<std::map<std::string, std::shared_ptr<DeletionVector>>> ReadDeletionVectors(
+        const BinaryRow& partition, int32_t bucket, const BucketSnapshot& snapshot) const;
 
-    Result<FilePositions> LookupFilePositions(const BinaryRow& partition, int32_t bucket,
-                                              const BucketUpdate& update) const;
+    Result<RealtimeOffsetFileIndexLookup::FilePositions> LookupFilePositions(
+        const BinaryRow& partition, int32_t bucket, const BucketUpdate& update) const;
 
     Status MaterializeBucket(const BinaryRow& partition, int32_t bucket,
-                             const BucketSnapshot& snapshot, DeletionVectors baseline,
-                             const BucketUpdate& update, const FilePositions& positions,
+                             const BucketSnapshot& snapshot,
+                             std::map<std::string, std::shared_ptr<DeletionVector>> baseline,
+                             const BucketUpdate& update,
+                             const RealtimeOffsetFileIndexLookup::FilePositions& positions,
                              CommitChanges* changes) const;
 
     /// Only for files whose provider has not yet returned successfully.
+    /// Deletes the files listed in changes.temporary_files without modifying changes itself.
     void CleanUpUnpublishedFiles(const CommitChanges& changes) const;
 
  private:

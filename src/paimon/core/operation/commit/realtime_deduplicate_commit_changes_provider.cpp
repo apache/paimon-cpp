@@ -98,7 +98,7 @@ Result<std::shared_ptr<CommitChanges>> RealtimeDeduplicateCommitChangesProvider:
             }
             update.deleted_offsets = *offsets;
             // 4. Map logical deleted offsets to physical row positions in the active files.
-            PAIMON_ASSIGN_OR_RAISE(RealtimeDeduplicateDvMaterializer::FilePositions positions,
+            PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetFileIndexLookup::FilePositions positions,
                                    materializer_.LookupFilePositions(partition, bucket, update));
             // Preserve the write-side no-hit fast path: do not read, prune or rewrite baseline
             // DVs when none of the logical deletions maps to a current physical row.
@@ -106,7 +106,8 @@ Result<std::shared_ptr<CommitChanges>> RealtimeDeduplicateCommitChangesProvider:
                 continue;
             }
             // 5. Load latest baseline DVs, merge deletions and emit index changes.
-            PAIMON_ASSIGN_OR_RAISE(RealtimeDeduplicateDvMaterializer::DeletionVectors baseline,
+            std::map<std::string, std::shared_ptr<DeletionVector>> baseline;
+            PAIMON_ASSIGN_OR_RAISE(baseline,
                                    materializer_.ReadDeletionVectors(partition, bucket, snapshot));
             PAIMON_RETURN_NOT_OK(materializer_.MaterializeBucket(
                 partition, bucket, snapshot, std::move(baseline), update, positions, result.get()));

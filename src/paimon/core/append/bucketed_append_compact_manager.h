@@ -214,7 +214,8 @@ class BucketedAppendCompactManager : public CompactFutureManager {
     std::optional<std::vector<std::shared_ptr<DataFileMeta>>> compacting_;
     DataFileMetaPriorityQueue to_compact_;
     std::shared_ptr<CancellationController> cancellation_controller_;
-    // Realtime deduplicate commits rebuild the bucket DV against their publication snapshot.
+    // If true, compaction leaves DV file generation to commit using the latest snapshot;
+    // otherwise, compaction generates its DV files before commit.
     bool materialize_dv_on_commit_;
 };
 

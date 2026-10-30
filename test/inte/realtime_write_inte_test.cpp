@@ -1692,6 +1692,7 @@ class RealtimeDeduplicateCompactionInteTest
 TEST_P(RealtimeDeduplicateCompactionInteTest, TestCommitTransfersLatestDvToCompactedFiles) {
     const auto [force_retry, prepare_between_rounds] = GetParam();
     options_[Options::COMPACTION_FORCE_REWRITE_ALL_FILES] = "true";
+    options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
     ConfigureRealtimeDeduplicateTable();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
@@ -1800,6 +1801,32 @@ TEST_P(RealtimeDeduplicateCompactionInteTest, TestCommitTransfersLatestDvToCompa
                          FileStoreCommit::Create(std::move(commit_context)));
     ASSERT_OK(commit->Commit(messages, /*commit_identifier=*/0));
     ASSERT_TRUE(interleaved);
+    // Only unpublished intermediate outputs and their sidecars are reclaimed after publication.
+    const std::string bucket_path = PathUtil::JoinPath(table_path_, "bucket-0");
+    const auto& intermediate = compact_plan.intermediate_files[0].File();
+    ASSERT_EQ(2, intermediate->extra_files.size());
+    std::vector<std::pair<std::shared_ptr<DataFileMeta>, bool>> expected_files = {
+        {intermediate, /*exists_after_commit=*/false},
+        {final_output, /*exists_after_commit=*/true}};
+    // Original inputs and their sidecars are still referenced by historical snapshots.
+    for (const ManifestEntry& entry : compact_plan.delta_files) {
+        if (entry.Kind() == FileKind::Delete()) {
+            ASSERT_EQ(2, entry.File()->extra_files.size());
+            expected_files.emplace_back(entry.File(), /*exists_after_commit=*/true);
+        }
+    }
+    ASSERT_EQ(4, expected_files.size());
+    for (const auto& [file, expected_exists] : expected_files) {
+        ASSERT_OK_AND_ASSIGN(bool exists, dir_->GetFileSystem()->Exists(
+                                              PathUtil::JoinPath(bucket_path, file->file_name)));
+        ASSERT_EQ(expected_exists, exists);
+        for (const auto& extra : file->extra_files) {
+            ASSERT_TRUE(extra);
+            ASSERT_OK_AND_ASSIGN(
+                exists, dir_->GetFileSystem()->Exists(PathUtil::JoinPath(bucket_path, *extra)));
+            ASSERT_EQ(expected_exists, exists);
+        }
+    }
     ASSERT_OK_AND_ASSIGN(uint64_t attempts, commit->GetCommitMetrics()->GetCounter(
                                                 CommitMetrics::LAST_COMMIT_ATTEMPTS));
     ASSERT_EQ(force_retry ? 2 : 1, attempts);

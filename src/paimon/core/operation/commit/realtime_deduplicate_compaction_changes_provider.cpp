@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -34,6 +35,7 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
+#include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/schema/table_schema.h"
@@ -238,6 +240,8 @@ Result<std::shared_ptr<CommitChanges>> RealtimeDeduplicateCompactionChangesProvi
             }
         }
     }
+    PAIMON_ASSIGN_OR_RAISE(result->files_to_delete_after_commit,
+                           CollectIntermediateFilesToDelete(snapshot_buckets));
     ReadContextBuilder builder(path_factory_->RootPath());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
                            builder.SetOptions(options_.ToMap())
@@ -251,67 +255,116 @@ Result<std::shared_ptr<CommitChanges>> RealtimeDeduplicateCompactionChangesProvi
     const auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields());
     const auto offset_schema =
         arrow::schema({schema->GetFieldByName(SpecialFields::RealtimeOffset().Name())});
+    // 3. Remap latest deletions independently for each partition and bucket.
     for (const auto& [partition, bucket_files] : buckets) {
         for (const auto& [bucket, files] : bucket_files) {
-            std::vector<ManifestEntry> inputs;
-            const auto& snapshot = snapshot_buckets[partition][bucket];
-            std::unordered_map<FileEntry::Identifier, ManifestEntry> active_files;
-            RealtimeDeduplicateDvMaterializer::BucketUpdate update;
-            for (const ManifestEntry& entry : snapshot.files) {
-                active_files.emplace(entry.CreateIdentifier(), entry);
-                update.final_file_names.insert(entry.FileName());
-            }
-            // 3. Validate inputs and build the final file set; only final outputs need lookup.
-            for (const ManifestEntry& entry : files) {
-                if (entry.Kind() == FileKind::Delete()) {
-                    const auto iter = active_files.find(entry.CreateIdentifier());
-                    if (iter == active_files.end()) {
-                        return Status::Invalid("realtime compaction input is no longer active: ",
-                                               entry.FileName());
-                    }
-                    // DELETE entries may omit stats; use the snapshot's complete metadata.
-                    inputs.push_back(iter->second);
-                    update.final_file_names.erase(entry.FileName());
-                } else {
-                    if (active_files.count(entry.CreateIdentifier()) != 0) {
-                        return Status::Invalid("realtime compaction output is already active: ",
-                                               entry.FileName());
-                    }
-                    update.lookup_files.push_back(entry.File());
-                    update.final_file_names.insert(entry.FileName());
-                }
-            }
-            // TODO(lxy): Align FileEntry::Identifier with Java by including extra_files and
-            // embedded_index to support file-index rebuild commits through normal DELETE/ADD
-            // entries. For unchanged physical files and row positions, preserve the latest DV
-            // and skip redundant offset reads, lookups, and DV writes as a performance
-            // optimization.
-            // 4. Load latest bucket DVs and collect deleted offsets from the original inputs.
-            PAIMON_ASSIGN_OR_RAISE(RealtimeDeduplicateDvMaterializer::DeletionVectors baseline,
-                                   materializer_.ReadDeletionVectors(partition, bucket, snapshot));
-            if (!update.lookup_files.empty()) {
-                // Collect from the complete baseline before the common materializer retires
-                // input DVs. All inputs contribute to one bucket-level offset lookup.
-                for (const ManifestEntry& input : inputs) {
-                    const auto iter = baseline.find(input.FileName());
-                    if (iter != baseline.end()) {
-                        PAIMON_RETURN_NOT_OK(CollectDeletedOffsets(input, iter->second,
-                                                                   offset_schema, pool_, &read,
-                                                                   &update.deleted_offsets));
-                    }
-                }
-            }
-            // 5. Map the aggregated deleted offsets to physical positions in the final outputs.
-            PAIMON_ASSIGN_OR_RAISE(RealtimeDeduplicateDvMaterializer::FilePositions positions,
-                                   materializer_.LookupFilePositions(partition, bucket, update));
-            // 6. Retire input DVs and merge output deletions, preserving other active files' DVs.
-            // Run even with no output hits, e.g. only offset 10 was deleted before the rewrite.
-            PAIMON_RETURN_NOT_OK(materializer_.MaterializeBucket(
-                partition, bucket, snapshot, std::move(baseline), update, positions, result.get()));
+            PAIMON_RETURN_NOT_OK(MaterializeBucketDeletions(partition, bucket, files,
+                                                            snapshot_buckets[partition][bucket],
+                                                            offset_schema, &read, result.get()));
         }
     }
     cleanup.Release();
     return result;
+}
+
+Result<std::vector<std::string>>
+RealtimeDeduplicateCompactionChangesProvider::CollectIntermediateFilesToDelete(
+    const RealtimeDeduplicateDvMaterializer::SnapshotBuckets& snapshot_buckets) const {
+    std::set<std::string> paths_to_delete;
+    const auto collect_files =
+        [this](const ManifestEntry& entry) -> Result<std::vector<std::string>> {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<DataFilePathFactory> paths,
+            path_factory_->CreateDataFilePathFactory(entry.Partition(), entry.Bucket()));
+        return paths->CollectFiles(entry.File());
+    };
+    for (const ManifestEntry& entry : plan_.intermediate_files) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> paths, collect_files(entry));
+        paths_to_delete.insert(paths.begin(), paths.end());
+    }
+    if (paths_to_delete.empty()) {
+        return std::vector<std::string>();
+    }
+    // Keep paths referenced by current files or this commit, even if metadata identities differ.
+    // This also protects original inputs retained by older snapshots and shared sidecars.
+    const auto preserve_files = [&](const std::vector<ManifestEntry>& entries) -> Status {
+        for (const ManifestEntry& entry : entries) {
+            PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> paths, collect_files(entry));
+            for (const std::string& path : paths) {
+                paths_to_delete.erase(path);
+            }
+        }
+        return Status::OK();
+    };
+    PAIMON_RETURN_NOT_OK(preserve_files(plan_.delta_files));
+    PAIMON_RETURN_NOT_OK(preserve_files(changelog_files_));
+    for (const auto& [partition, buckets] : snapshot_buckets) {
+        for (const auto& [bucket, snapshot] : buckets) {
+            PAIMON_RETURN_NOT_OK(preserve_files(snapshot.files));
+        }
+    }
+    return std::vector<std::string>(paths_to_delete.begin(), paths_to_delete.end());
+}
+
+Status RealtimeDeduplicateCompactionChangesProvider::MaterializeBucketDeletions(
+    const BinaryRow& partition, int32_t bucket, const std::vector<ManifestEntry>& files,
+    const RealtimeDeduplicateDvMaterializer::BucketSnapshot& snapshot,
+    const std::shared_ptr<arrow::Schema>& offset_schema, RawFileSplitRead* read,
+    CommitChanges* changes) const {
+    std::vector<ManifestEntry> inputs;
+    std::unordered_map<FileEntry::Identifier, ManifestEntry> active_files;
+    RealtimeDeduplicateDvMaterializer::BucketUpdate update;
+    for (const ManifestEntry& entry : snapshot.files) {
+        active_files.emplace(entry.CreateIdentifier(), entry);
+        update.final_file_names.insert(entry.FileName());
+    }
+    // Validate inputs and build the final file set; only final outputs need lookup.
+    for (const ManifestEntry& entry : files) {
+        if (entry.Kind() == FileKind::Delete()) {
+            const auto iter = active_files.find(entry.CreateIdentifier());
+            if (iter == active_files.end()) {
+                return Status::Invalid("realtime compaction input is no longer active: ",
+                                       entry.FileName());
+            }
+            // DELETE entries may omit stats; use the snapshot's complete metadata.
+            inputs.push_back(iter->second);
+            update.final_file_names.erase(entry.FileName());
+        } else {
+            if (active_files.count(entry.CreateIdentifier()) != 0) {
+                return Status::Invalid("realtime compaction output is already active: ",
+                                       entry.FileName());
+            }
+            update.lookup_files.push_back(entry.File());
+            update.final_file_names.insert(entry.FileName());
+        }
+    }
+    // TODO(lxy): Align FileEntry::Identifier with Java by including extra_files and
+    // embedded_index to support file-index rebuild commits through normal DELETE/ADD
+    // entries. For unchanged physical files and row positions, preserve the latest DV
+    // and skip redundant offset reads, lookups, and DV writes as a performance
+    // optimization.
+    // Load latest bucket DVs and collect deleted offsets from the original inputs.
+    std::map<std::string, std::shared_ptr<DeletionVector>> baseline;
+    PAIMON_ASSIGN_OR_RAISE(baseline,
+                           materializer_.ReadDeletionVectors(partition, bucket, snapshot));
+    if (!update.lookup_files.empty()) {
+        // Collect from the complete baseline before the common materializer retires
+        // input DVs. All inputs contribute to one bucket-level offset lookup.
+        for (const ManifestEntry& input : inputs) {
+            const auto iter = baseline.find(input.FileName());
+            if (iter != baseline.end()) {
+                PAIMON_RETURN_NOT_OK(CollectDeletedOffsets(input, iter->second, offset_schema,
+                                                           pool_, read, &update.deleted_offsets));
+            }
+        }
+    }
+    // Map the aggregated deleted offsets to physical positions in the final outputs.
+    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetFileIndexLookup::FilePositions positions,
+                           materializer_.LookupFilePositions(partition, bucket, update));
+    // Retire input DVs and merge output deletions, preserving other active files' DVs.
+    // Run even with no output hits, e.g. only offset 10 was deleted before the rewrite.
+    return materializer_.MaterializeBucket(partition, bucket, snapshot, std::move(baseline), update,
+                                           positions, changes);
 }
 
 }  // namespace paimon

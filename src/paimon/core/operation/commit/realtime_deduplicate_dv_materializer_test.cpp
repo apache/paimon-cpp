@@ -104,7 +104,7 @@ TEST_F(RealtimeDeduplicateDvMaterializerTest, TestUnchangedBaselineDoesNotRewrit
     snapshot.dv_index_files = {index};
     Materializer::BucketUpdate update;
     update.final_file_names = {"kept"};
-    ASSERT_OK_AND_ASSIGN(Materializer::DeletionVectors baseline,
+    ASSERT_OK_AND_ASSIGN(auto baseline,
                          materializer_->ReadDeletionVectors(BinaryRow(0), 0, snapshot));
     CommitChanges changes;
     ASSERT_OK(materializer_->MaterializeBucket(BinaryRow(0), 0, snapshot, std::move(baseline),
@@ -124,7 +124,7 @@ TEST_F(RealtimeDeduplicateDvMaterializerTest, TestPruneRetiredFilesAndCleanUpAtt
     snapshot.dv_index_files = {index};
     Materializer::BucketUpdate update;
     update.final_file_names = {"kept"};
-    ASSERT_OK_AND_ASSIGN(Materializer::DeletionVectors baseline,
+    ASSERT_OK_AND_ASSIGN(auto baseline,
                          materializer_->ReadDeletionVectors(BinaryRow(0), 0, snapshot));
     CommitChanges changes;
     ASSERT_OK(materializer_->MaterializeBucket(BinaryRow(0), 0, snapshot, std::move(baseline),
@@ -132,7 +132,7 @@ TEST_F(RealtimeDeduplicateDvMaterializerTest, TestPruneRetiredFilesAndCleanUpAtt
     ASSERT_EQ(1, changes.index_entries.size());
     ASSERT_EQ(FileKind::Add(), changes.index_entries[0].kind);
     ASSERT_EQ(1, changes.temporary_files.size());
-    ASSERT_OK_AND_ASSIGN(Materializer::DeletionVectors written,
+    ASSERT_OK_AND_ASSIGN(auto written,
                          file->ReadAllDeletionVectors(changes.index_entries[0].index_file));
     ASSERT_EQ(1, written.size());
     ASSERT_EQ(1, written.count("kept"));
@@ -146,7 +146,7 @@ TEST_F(RealtimeDeduplicateDvMaterializerTest, TestPruneRetiredFilesAndCleanUpAtt
     ASSERT_OK_AND_ASSIGN(bool baseline_exists, file->Exists(index));
     ASSERT_TRUE(baseline_exists);
     // A retry reloads the original snapshot; cleanup and pruning never modify its DV file.
-    ASSERT_OK_AND_ASSIGN(Materializer::DeletionVectors reloaded,
+    ASSERT_OK_AND_ASSIGN(auto reloaded,
                          materializer_->ReadDeletionVectors(BinaryRow(0), 0, snapshot));
     ASSERT_EQ(2, reloaded.size());
     ASSERT_EQ(1, reloaded.count("retired"));
@@ -159,7 +159,7 @@ TEST_F(RealtimeDeduplicateDvMaterializerTest, TestEmptyFinalDvRemovesOldIndexRef
     Materializer::BucketSnapshot snapshot;
     snapshot.dv_index_files = {index};
     Materializer::BucketUpdate update;
-    ASSERT_OK_AND_ASSIGN(Materializer::DeletionVectors baseline,
+    ASSERT_OK_AND_ASSIGN(auto baseline,
                          materializer_->ReadDeletionVectors(BinaryRow(0), 0, snapshot));
     CommitChanges changes;
     ASSERT_OK(materializer_->MaterializeBucket(BinaryRow(0), 0, snapshot, std::move(baseline),
@@ -187,7 +187,7 @@ TEST_F(RealtimeDeduplicateDvMaterializerTest, TestSameFileNameInDifferentBuckets
         if (bucket == 1) {
             update.final_file_names = {"same-name"};
         }
-        ASSERT_OK_AND_ASSIGN(Materializer::DeletionVectors baseline,
+        ASSERT_OK_AND_ASSIGN(auto baseline,
                              materializer_->ReadDeletionVectors(BinaryRow(0), bucket, snapshot));
         CommitChanges changes;
         ASSERT_OK(materializer_->MaterializeBucket(BinaryRow(0), bucket, snapshot,
@@ -198,8 +198,7 @@ TEST_F(RealtimeDeduplicateDvMaterializerTest, TestSameFileNameInDifferentBuckets
             ASSERT_EQ(index0, changes.index_entries[0].index_file);
         }
     }
-    ASSERT_OK_AND_ASSIGN(Materializer::DeletionVectors untouched,
-                         file1->ReadAllDeletionVectors(index1));
+    ASSERT_OK_AND_ASSIGN(auto untouched, file1->ReadAllDeletionVectors(index1));
     ASSERT_OK_AND_ASSIGN(int64_t count, untouched.at("same-name")->GetCardinality());
     ASSERT_EQ(2, count);
 }

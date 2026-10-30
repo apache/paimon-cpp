@@ -85,9 +85,9 @@ RealtimeOffsetFileIndexLookup::RealtimeOffsetFileIndexLookup(
       cache_page_size_(cache_page_size),
       cache_manager_(std::move(cache_manager)) {}
 
-Result<std::map<std::string, RoaringBitmap32>> RealtimeOffsetFileIndexLookup::LookupFilePositions(
-    const RoaringBitmap64& offsets) const {
-    std::map<std::string, RoaringBitmap32> result;
+Result<RealtimeOffsetFileIndexLookup::FilePositions>
+RealtimeOffsetFileIndexLookup::LookupFilePositions(const RoaringBitmap64& offsets) const {
+    FilePositions result;
     if (offsets.IsEmpty()) {
         return result;
     }

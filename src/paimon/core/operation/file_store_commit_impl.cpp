@@ -1114,6 +1114,18 @@ Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
                           commit_changes->index_entries, identifier, watermark, snapshot_properties,
                           commit_kind, latest_snapshot, detect_conflicts));
         if (commit_success) {
+            // Request-only commits have not published a snapshot yet. Never clean these files
+            // on a lost race or an uncertain publication outcome, so the commit can be retried.
+            if (!snapshot_commit_->IsRequestOnly()) {
+                for (const std::string& path : commit_changes->files_to_delete_after_commit) {
+                    Status cleanup_status = fs_->Delete(path, /*recursive=*/false);
+                    if (!cleanup_status.ok()) {
+                        // The snapshot is already published; cleanup failure must not fail commit.
+                        PAIMON_LOG_WARN(logger_, "Failed to delete intermediate file %s: %s",
+                                        path.c_str(), cleanup_status.ToString().c_str());
+                    }
+                }
+            }
             break;
         }
         for (const std::string& temporary_file : commit_changes->temporary_files) {

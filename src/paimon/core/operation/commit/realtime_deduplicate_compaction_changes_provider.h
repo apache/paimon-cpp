@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -28,12 +29,17 @@
 #include "paimon/core/operation/commit/commit_changes_provider.h"
 #include "paimon/core/operation/commit/realtime_deduplicate_dv_materializer.h"
 
+namespace arrow {
+class Schema;
+}  // namespace arrow
+
 namespace paimon {
 
 class CommitScanner;
 class Executor;
 class FileStorePathFactory;
 class MemoryPool;
+class RawFileSplitRead;
 class TableSchema;
 
 /// Net changes of any number of rewrites included in a single compaction commit.
@@ -59,6 +65,15 @@ class RealtimeDeduplicateCompactionChangesProvider final : public CommitChangesP
         const std::optional<Snapshot>& latest_snapshot) const override;
 
  private:
+    Result<std::vector<std::string>> CollectIntermediateFilesToDelete(
+        const RealtimeDeduplicateDvMaterializer::SnapshotBuckets& snapshot_buckets) const;
+
+    Status MaterializeBucketDeletions(
+        const BinaryRow& partition, int32_t bucket, const std::vector<ManifestEntry>& files,
+        const RealtimeDeduplicateDvMaterializer::BucketSnapshot& snapshot,
+        const std::shared_ptr<arrow::Schema>& offset_schema, RawFileSplitRead* read,
+        CommitChanges* changes) const;
+
     RealtimeCompactionPlan plan_;
     std::vector<ManifestEntry> changelog_files_;
     std::vector<IndexManifestEntry> index_entries_;

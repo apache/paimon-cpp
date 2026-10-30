@@ -80,21 +80,21 @@ Result<std::shared_ptr<DeletionVectorsIndexFile>> RealtimeDeduplicateDvMateriali
                                                       /*bitmap64=*/false, pool_);
 }
 
-Result<RealtimeDeduplicateDvMaterializer::DeletionVectors>
+Result<std::map<std::string, std::shared_ptr<DeletionVector>>>
 RealtimeDeduplicateDvMaterializer::ReadDeletionVectors(const BinaryRow& partition, int32_t bucket,
                                                        const BucketSnapshot& snapshot) const {
     if (snapshot.dv_index_files.empty()) {
-        return DeletionVectors();
+        return std::map<std::string, std::shared_ptr<DeletionVector>>();
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DeletionVectorsIndexFile> file,
                            CreateDvFile(partition, bucket));
     return file->ReadAllDeletionVectors(snapshot.dv_index_files);
 }
 
-Result<RealtimeDeduplicateDvMaterializer::FilePositions>
+Result<RealtimeOffsetFileIndexLookup::FilePositions>
 RealtimeDeduplicateDvMaterializer::LookupFilePositions(const BinaryRow& partition, int32_t bucket,
                                                        const BucketUpdate& update) const {
-    FilePositions positions;
+    RealtimeOffsetFileIndexLookup::FilePositions positions;
     if (!update.deleted_offsets.IsEmpty() && !update.lookup_files.empty()) {
         const auto key_fields = options_.GetRealtimeDeduplicateKeyFields();
         if (key_fields.empty()) {
@@ -116,8 +116,8 @@ RealtimeDeduplicateDvMaterializer::LookupFilePositions(const BinaryRow& partitio
 
 Status RealtimeDeduplicateDvMaterializer::MaterializeBucket(
     const BinaryRow& partition, int32_t bucket, const BucketSnapshot& snapshot,
-    DeletionVectors baseline, const BucketUpdate& update, const FilePositions& positions,
-    CommitChanges* changes) const {
+    std::map<std::string, std::shared_ptr<DeletionVector>> baseline, const BucketUpdate& update,
+    const RealtimeOffsetFileIndexLookup::FilePositions& positions, CommitChanges* changes) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DeletionVectorsIndexFile> file,
                            CreateDvFile(partition, bucket));
     // baseline is freshly read for this Provide call. Never mutate a cached or writer-owned DV.
