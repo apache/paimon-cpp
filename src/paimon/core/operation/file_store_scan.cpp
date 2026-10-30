@@ -411,9 +411,10 @@ Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
         [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
             return std::shared_ptr<CacheValue>();
         });
-    if (value.ok() && value.value()) {
+    auto segment = value.ok() ? CacheValue::Get<const MemorySegment>(value.value()) : nullptr;
+    if (segment) {
         Result<std::optional<SnapshotLiveManifestEntries::Selection>> selected =
-            SnapshotLiveManifestEntries::ReadSnapshot(value.value()->GetSegment(), snapshot.Id(),
+            SnapshotLiveManifestEntries::ReadSnapshot(*segment, snapshot.Id(),
                                                       max_snapshots, row_filter, pool_);
         if (predicate_failed) {
             return selected.status();
@@ -428,7 +429,7 @@ Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
             // Reuse the same cache value to retain complete historical snapshots on a miss.
             // Query-filtered entries must never be written back into the cache.
             Result<SnapshotLiveManifestEntries> deserialized =
-                SnapshotLiveManifestEntries::Deserialize(value.value()->GetSegment(), max_snapshots,
+                SnapshotLiveManifestEntries::Deserialize(*segment, max_snapshots,
                                                          pool_);
             if (deserialized.ok()) {
                 cached_entries = std::move(deserialized.value());
@@ -499,7 +500,7 @@ Status FileStoreScan::StoreSnapshotLiveManifestEntries(
         return Status::OK();
     }
     auto cache_value =
-        std::make_shared<CacheValue>(MemorySegment::Wrap(bytes_result.value()), CacheCallback());
+        std::make_shared<MemorySegmentCacheValue>(MemorySegment::Wrap(bytes_result.value()), CacheCallback());
     Status status = core_options_.GetCache()->Put(CreateSnapshotLiveManifestEntriesCacheKey(bucket),
                                                   cache_value);
     return status.ok() ? status : Status::OK();

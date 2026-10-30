@@ -49,7 +49,7 @@ class LruCacheTest : public ::testing::Test {
                                           CacheCallback callback = {}) const {
         auto segment = MemorySegment::AllocateHeapMemory(size, pool_.get());
         std::memset(segment.MutableData(), fill_byte, size);
-        return std::make_shared<CacheValue>(segment, std::move(callback));
+        return std::make_shared<MemorySegmentCacheValue>(segment, std::move(callback));
     }
 
     auto MakeSupplier(int32_t size, char fill_byte = 0, CacheCallback callback = {}) const {
@@ -77,14 +77,16 @@ TEST_F(LruCacheTest, TestGetCacheHitAndMiss) {
     // First Get: cache miss, supplier should be called
     ASSERT_OK_AND_ASSIGN(auto value1, cache.Get(key, supplier));
     ASSERT_EQ(supplier_call_count, 1);
-    ASSERT_EQ(value1->GetSegment().Size(), 64);
-    ASSERT_EQ(value1->GetSegment().Get(0), 'A');
+    auto first_segment = CacheValue::Get<const MemorySegment>(value1);
+    ASSERT_TRUE(first_segment);
+    ASSERT_EQ(first_segment->Size(), 64);
+    ASSERT_EQ(first_segment->Get(0), 'A');
     ASSERT_EQ(cache.Size(), 1);
 
     // Second Get with same key: cache hit, supplier should NOT be called
     ASSERT_OK_AND_ASSIGN(auto value2, cache.Get(key, supplier));
     ASSERT_EQ(supplier_call_count, 1);
-    ASSERT_EQ(value2->GetSegment().Get(0), 'A');
+    ASSERT_EQ(CacheValue::Get<const MemorySegment>(value2)->Get(0), 'A');
     ASSERT_EQ(cache.Size(), 1);
     ASSERT_EQ(cache.GetMaxWeight(), 1024);
 }
@@ -109,21 +111,24 @@ TEST_F(LruCacheTest, TestPutInsertAndUpdate) {
 
     // Verify the updated value is returned
     ASSERT_OK_AND_ASSIGN(auto result, cache.Get(key, MakeSupplier(0)));
-    ASSERT_EQ(result->GetSegment().Size(), 128);
-    ASSERT_EQ(result->GetSegment().Get(0), 'B');
+    auto segment = CacheValue::Get<const MemorySegment>(result);
+    ASSERT_TRUE(segment);
+    ASSERT_EQ(segment->Size(), 128);
+    ASSERT_EQ(segment->Get(0), 'B');
 }
 
 TEST_F(LruCacheTest, TestRetainedMemoryAccounting) {
     LruCache cache(192);
     auto segment = MemorySegment::AllocateHeapMemory(64, pool_.get());
-    auto value = std::make_shared<CacheValue>(segment, CacheCallback(), 128);
-    ASSERT_EQ(64, value->GetSegment().Size());
+    auto value = std::make_shared<MemorySegmentCacheValue>(segment, CacheCallback(), 128);
+    ASSERT_EQ(64, CacheValue::Get<const MemorySegment>(value)->Size());
     ASSERT_EQ(128, value->GetMemoryUsage());
-    ASSERT_EQ(64, CacheValue(segment, CacheCallback()).GetMemoryUsage());
-    ASSERT_EQ(64, CacheValue(segment, CacheCallback(), 32).GetMemoryUsage());
+    ASSERT_EQ(64, MemorySegmentCacheValue(segment, CacheCallback()).GetMemoryUsage());
+    ASSERT_EQ(64, MemorySegmentCacheValue(segment, CacheCallback(), 32).GetMemoryUsage());
+    ASSERT_EQ(0, MemorySegmentCacheValue(MemorySegment(), CacheCallback()).GetMemoryUsage());
 
     std::vector<std::shared_ptr<CacheKey>> evicted;
-    auto first = std::make_shared<CacheValue>(
+    auto first = std::make_shared<MemorySegmentCacheValue>(
         segment, [&](const std::shared_ptr<CacheKey>& key) { evicted.push_back(key); }, 128);
     auto first_key = MakeKey(0);
     ASSERT_OK(cache.Put(first_key, first));
@@ -139,12 +144,218 @@ TEST_F(LruCacheTest, TestRetainedMemoryAccounting) {
     LruCache small_cache(100);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<CacheValue> loaded,
-        small_cache.Get(MakeKey(0),
-                        [&](const std::shared_ptr<CacheKey>&)
-                            -> Result<std::shared_ptr<CacheValue>> { return value; }));
+        small_cache.Get(
+            MakeKey(0),
+            [&](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                return std::shared_ptr<CacheValue>(value);
+            }));
     ASSERT_EQ(value, loaded);
     ASSERT_EQ(0, small_cache.Size());
     ASSERT_EQ(0, small_cache.GetCurrentWeight());
+}
+
+TEST_F(LruCacheTest, TestObjectCacheReuseAndLifetime) {
+    LruCache cache(128);
+    auto key = CacheKey::ForKind("test_file", 0, 64, CacheKind::INDEX_READER);
+    int32_t loads = 0;
+    std::weak_ptr<std::string> weak_object;
+    std::vector<std::shared_ptr<CacheKey>> evicted;
+    auto supplier = [&](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+        ++loads;
+        auto object = std::make_shared<std::string>("loaded metadata");
+        weak_object = object;
+        return std::make_shared<ObjectCacheValue<std::string>>(
+            object, [&](const std::shared_ptr<CacheKey>& removed) { evicted.push_back(removed); },
+            128);
+    };
+    ASSERT_OK_AND_ASSIGN(auto first, cache.Get(key, supplier));
+    ASSERT_OK_AND_ASSIGN(auto second, cache.Get(key, supplier));
+    auto object = CacheValue::Get<std::string>(first);
+    ASSERT_TRUE(object);
+    std::weak_ptr<CacheValue> weak_value = first;
+    ASSERT_EQ(first, second);
+    ASSERT_EQ(object, CacheValue::Get<std::string>(second));
+    ASSERT_EQ(1, loads);
+    ASSERT_EQ(128, cache.GetCurrentWeight());
+    first.reset();
+    second.reset();
+
+    // Weight-based eviction releases the cache's ownership, but not an active reader's.
+    ASSERT_OK(cache.Put(MakeKey(1), MakeValue(128)));
+    ASSERT_EQ((std::vector<std::shared_ptr<CacheKey>>{key}), evicted);
+    ASSERT_FALSE(weak_object.expired());
+    ASSERT_FALSE(weak_value.expired());
+    ASSERT_EQ("loaded metadata", *object);
+    object.reset();
+    ASSERT_TRUE(weak_object.expired());
+    ASSERT_TRUE(weak_value.expired());
+
+    ASSERT_OK_AND_ASSIGN(auto reloaded, cache.Get(key, supplier));
+    ASSERT_EQ(2, loads);
+    ASSERT_EQ("loaded metadata", *CacheValue::Get<std::string>(reloaded));
+    cache.InvalidateAll();
+}
+
+TEST_F(LruCacheTest, TestTypedPayloadAccess) {
+    ASSERT_EQ(nullptr, CacheValue::Get<const MemorySegment>(nullptr));
+    ASSERT_EQ(nullptr, CacheValue::Get<std::string>(nullptr));
+
+    auto bytes = MakeValue(16, 'A');
+    ASSERT_EQ(nullptr, CacheValue::Get<MemorySegment>(bytes));
+    auto object = std::make_shared<ObjectCacheValue<std::string>>(
+        std::make_shared<std::string>("metadata"), CacheCallback(), 16);
+    ASSERT_EQ(nullptr, CacheValue::Get<std::string>(bytes));
+    ASSERT_EQ(nullptr, CacheValue::Get<const MemorySegment>(object));
+    ASSERT_EQ(nullptr, CacheValue::Get<int32_t>(object));
+
+    auto null_object = std::make_shared<ObjectCacheValue<std::string>>(nullptr, CacheCallback(), 1);
+    ASSERT_EQ(nullptr, CacheValue::Get<std::string>(null_object));
+    auto empty = std::make_shared<MemorySegmentCacheValue>(MemorySegment(), CacheCallback());
+    auto segment = CacheValue::Get<const MemorySegment>(empty);
+    ASSERT_TRUE(segment);
+    ASSERT_EQ(0, segment->Size());
+    ASSERT_EQ(nullptr, segment->Data());
+}
+
+TEST_F(LruCacheTest, TestSegmentViewRetainsAliasedOwnerAfterEviction) {
+    struct OwnedBuffer {
+        OwnedBuffer()
+            : value(MemorySegment::WrapView(data.data(), static_cast<int32_t>(data.size())),
+                    CacheCallback()) {}
+
+        std::string data = "borrowed bytes";
+        MemorySegmentCacheValue value;
+    };
+    LruCache cache(64);
+    auto owner = std::make_shared<OwnedBuffer>();
+    std::weak_ptr<OwnedBuffer> weak_owner = owner;
+    auto value = std::shared_ptr<CacheValue>(owner, &owner->value);
+    ASSERT_OK(cache.Put(MakeKey(0), value));
+    auto segment = CacheValue::Get<const MemorySegment>(value);
+    ASSERT_TRUE(segment);
+    owner.reset();
+    value.reset();
+
+    ASSERT_OK(cache.Put(MakeKey(1), MakeValue(64)));
+    ASSERT_EQ(1, cache.Size());
+    ASSERT_EQ(64, cache.GetCurrentWeight());
+    ASSERT_FALSE(weak_owner.expired());
+    ASSERT_EQ(14, segment->Size());
+    ASSERT_EQ("borrowed bytes", std::string(segment->Data(), segment->Size()));
+    segment.reset();
+    ASSERT_TRUE(weak_owner.expired());
+}
+
+TEST_F(LruCacheTest, TestObjectCacheKindsDoNotCollideWithSegments) {
+    LruCache cache(1024);
+    const std::vector<CacheKind> kinds = {CacheKind::DATA_FILE_FOOTER, CacheKind::INDEX_READER};
+    ASSERT_OK(cache.Put(CacheKey::ForKind("file", 0, 64, kinds[0]), MakeValue(64, 'A')));
+    for (size_t i = 1; i < kinds.size(); ++i) {
+        ASSERT_OK(cache.Put(CacheKey::ForKind("file", 0, 64, kinds[i]),
+                            std::make_shared<ObjectCacheValue<size_t>>(
+                                std::make_shared<size_t>(i), CacheCallback(), sizeof(size_t))));
+    }
+    ASSERT_EQ(kinds.size(), cache.Size());
+    for (size_t i = 0; i < kinds.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(
+            auto value,
+            cache.Get(CacheKey::ForKind("file", 0, 64, kinds[i]),
+                      [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                          return Status::Invalid("unexpected cache miss");
+                      }));
+        if (i == 0) {
+            ASSERT_EQ('A', CacheValue::Get<const MemorySegment>(value)->Get(0));
+        } else {
+            ASSERT_EQ(i, *CacheValue::Get<size_t>(value));
+        }
+    }
+}
+
+TEST_F(LruCacheTest, TestObjectMemoryAccounting) {
+    LruCache cache(64);
+    auto object = std::make_shared<std::string>("metadata");
+    auto value = std::make_shared<ObjectCacheValue<std::string>>(object, CacheCallback(), 128);
+    ASSERT_OK_AND_ASSIGN(
+        auto loaded,
+        cache.Get(MakeKey(0),
+                  [&](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                      return std::shared_ptr<CacheValue>(value);
+                  }));
+    ASSERT_EQ(object, CacheValue::Get<std::string>(loaded));
+    ASSERT_EQ(128, loaded->GetMemoryUsage());
+    ASSERT_EQ(0, cache.Size());
+    ASSERT_EQ(0, cache.GetCurrentWeight());
+    ASSERT_EQ(1, ObjectCacheValue<std::string>(object, CacheCallback(), 0).GetMemoryUsage());
+    ASSERT_EQ(1, ObjectCacheValue<std::string>(object, CacheCallback(), -1).GetMemoryUsage());
+    auto replacement = std::make_shared<std::string>(*object);
+    ASSERT_OK(cache.Put(
+        MakeKey(1), std::make_shared<ObjectCacheValue<std::string>>(object, CacheCallback(), 32)));
+    ASSERT_OK(cache.Put(MakeKey(1), std::make_shared<ObjectCacheValue<std::string>>(
+                                        replacement, CacheCallback(), 64)));
+    ASSERT_OK_AND_ASSIGN(auto replaced, cache.Get(MakeKey(1), MakeSupplier(0)));
+    ASSERT_EQ(replacement, CacheValue::Get<std::string>(replaced));
+    ASSERT_EQ(64, cache.GetCurrentWeight());
+}
+
+TEST_F(LruCacheTest, TestPolymorphicValueEquality) {
+    auto bytes = MakeValue(16, 'A');
+    auto equal_bytes = MakeValue(16, 'A');
+    auto object = std::make_shared<std::string>("A");
+    std::shared_ptr<CacheValue> first =
+        std::make_shared<ObjectCacheValue<std::string>>(object, CacheCallback(), 16);
+    std::shared_ptr<CacheValue> same =
+        std::make_shared<ObjectCacheValue<std::string>>(object, CacheCallback(), 16);
+    std::shared_ptr<CacheValue> different = std::make_shared<ObjectCacheValue<std::string>>(
+        std::make_shared<std::string>(*object), CacheCallback(), 16);
+    std::shared_ptr<CacheValue> other_type = std::make_shared<ObjectCacheValue<int32_t>>(
+        std::make_shared<int32_t>(1), CacheCallback(), 16);
+
+    ASSERT_TRUE(*bytes == *equal_bytes);
+    ASSERT_TRUE(*first == *same);
+    ASSERT_FALSE(*first == *different);
+    ASSERT_FALSE(*first == *other_type);
+    ASSERT_FALSE(*other_type == *first);
+    ASSERT_FALSE(*bytes == *first);
+    ASSERT_FALSE(*first == *bytes);
+}
+
+TEST_F(LruCacheTest, TestReplaceDifferentValueTypes) {
+    LruCache cache(128);
+    auto key = MakeKey(0);
+    std::vector<int32_t> evicted;
+    auto bytes = MakeValue(64, 'A', [&](const std::shared_ptr<CacheKey>& removed) {
+        ASSERT_EQ(key, removed);
+        evicted.push_back(1);
+    });
+    auto object = std::make_shared<ObjectCacheValue<std::string>>(
+        std::make_shared<std::string>("reader"),
+        [&](const std::shared_ptr<CacheKey>& removed) {
+            ASSERT_EQ(key, removed);
+            evicted.push_back(2);
+        },
+        32);
+    auto other_type = std::make_shared<ObjectCacheValue<int32_t>>(
+        std::make_shared<int32_t>(7),
+        [&](const std::shared_ptr<CacheKey>& removed) {
+            ASSERT_EQ(key, removed);
+            evicted.push_back(3);
+        },
+        16);
+
+    ASSERT_OK(cache.Put(key, bytes));
+    ASSERT_EQ(64, cache.GetCurrentWeight());
+    ASSERT_OK(cache.Put(key, object));
+    ASSERT_EQ(32, cache.GetCurrentWeight());
+    ASSERT_EQ(std::vector<int32_t>{1}, evicted);
+    ASSERT_OK(cache.Put(key, other_type));
+    ASSERT_EQ(16, cache.GetCurrentWeight());
+    ASSERT_EQ(1, cache.Size());
+    ASSERT_EQ((std::vector<int32_t>{1, 2}), evicted);
+    ASSERT_OK_AND_ASSIGN(auto cached, cache.Get(key, MakeSupplier(0)));
+    ASSERT_EQ(other_type, cached);
+    cache.InvalidateAll();
+    ASSERT_EQ(0, cache.GetCurrentWeight());
+    ASSERT_EQ((std::vector<int32_t>{1, 2, 3}), evicted);
 }
 
 /// Verifies weight-based eviction: when total weight exceeds max, LRU entries are evicted.
@@ -175,7 +386,7 @@ TEST_F(LruCacheTest, TestWeightBasedEviction) {
     };
     ASSERT_OK_AND_ASSIGN(auto result, cache.Get(key0, supplier));
     ASSERT_EQ(supplier_called, 1);
-    ASSERT_EQ(result->GetSegment().Get(0), 'X');
+    ASSERT_EQ(CacheValue::Get<const MemorySegment>(result)->Get(0), 'X');
 }
 
 /// Verifies that eviction invokes the CacheCallback on evicted entries.
@@ -216,7 +427,7 @@ TEST_F(LruCacheTest, TestLruOrdering) {
 
     // Access key0 via Get to move it to front (most recently used)
     ASSERT_OK_AND_ASSIGN(auto val, cache.Get(key0, MakeSupplier(0)));
-    ASSERT_EQ(val->GetSegment().Get(0), 'A');
+    ASSERT_EQ(CacheValue::Get<const MemorySegment>(val)->Get(0), 'A');
 
     // Insert key2: should evict key1 (now LRU), NOT key0
     std::vector<int64_t> evicted;
@@ -410,11 +621,26 @@ TEST_F(LruCacheTest, TestForKindSetsKeyKind) {
     ASSERT_OK_AND_ASSIGN(auto value, cache.Get(key, supplier));
     ASSERT_TRUE(supplier_seen_kind);
     ASSERT_EQ(CacheKind::MANIFEST, key->GetKind());
-    ASSERT_EQ('M', value->GetSegment().Get(0));
+    ASSERT_EQ('M', CacheValue::Get<const MemorySegment>(value)->Get(0));
 
     auto put_key = CacheKey::ForKind("test_file", 1, 64, CacheKind::MANIFEST);
     ASSERT_OK(cache.Put(put_key, MakeValue(64, 'P')));
     ASSERT_EQ(CacheKind::MANIFEST, put_key->GetKind());
+}
+
+TEST_F(LruCacheTest, TestIndexReaderKeys) {
+    auto key = CacheKey::ForIndexReader("file.index", "embedding");
+    auto same = CacheKey::ForIndexReader("file.index", "embedding");
+    ASSERT_EQ(CacheKind::INDEX_READER, key->GetKind());
+    ASSERT_TRUE(key->Equals(*same));
+    ASSERT_TRUE(same->Equals(*key));
+    ASSERT_EQ(key->HashCode(), same->HashCode());
+    ASSERT_FALSE(key->Equals(*CacheKey::ForIndexReader("other.index", "embedding")));
+    ASSERT_FALSE(key->Equals(*CacheKey::ForIndexReader("file.index", "other")));
+
+    auto uri_with_separator = CacheKey::ForIndexReader("file:index", "column");
+    auto column_with_separator = CacheKey::ForIndexReader("file", "index:column");
+    ASSERT_FALSE(uri_with_separator->Equals(*column_with_separator));
 }
 
 TEST_F(LruCacheTest, InferredManifestCacheKeysIncludeBucketCountAndSchema) {

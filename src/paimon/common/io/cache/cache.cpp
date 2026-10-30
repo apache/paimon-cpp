@@ -24,19 +24,10 @@
 
 namespace paimon {
 
-CacheValue::CacheValue(const MemorySegment& segment, CacheCallback callback)
-    : CacheValue(segment, std::move(callback), segment.Size()) {}
-
-CacheValue::CacheValue(const MemorySegment& segment, CacheCallback callback, int64_t memory_usage)
-    : segment_(segment),
-      callback_(std::move(callback)),
-      memory_usage_(std::max<int64_t>(segment.Size(), memory_usage)) {}
+CacheValue::CacheValue(CacheCallback callback, int64_t memory_usage)
+    : callback_(std::move(callback)), memory_usage_(memory_usage) {}
 
 CacheValue::~CacheValue() = default;
-
-const MemorySegment& CacheValue::GetSegment() const {
-    return segment_;
-}
 
 int64_t CacheValue::GetMemoryUsage() const {
     return memory_usage_;
@@ -48,11 +39,19 @@ void CacheValue::OnEvict(const std::shared_ptr<CacheKey>& key) const {
     }
 }
 
-bool CacheValue::operator==(const CacheValue& other) const {
-    if (this == &other) {
-        return true;
-    }
-    return segment_ == other.segment_;
+MemorySegmentCacheValue::MemorySegmentCacheValue(const MemorySegment& segment,
+                                                 CacheCallback callback)
+    : MemorySegmentCacheValue(segment, std::move(callback), segment.Size()) {}
+
+MemorySegmentCacheValue::MemorySegmentCacheValue(const MemorySegment& segment,
+                                                 CacheCallback callback, int64_t memory_usage)
+    : TypedCacheValue<const MemorySegment>(std::move(callback),
+                                           std::max<int64_t>(segment.Size(), memory_usage)),
+      segment_(segment) {}
+
+bool MemorySegmentCacheValue::operator==(const CacheValue& other) const {
+    const auto* rhs = dynamic_cast<const MemorySegmentCacheValue*>(&other);
+    return rhs && segment_ == rhs->segment_;
 }
 
 }  // namespace paimon

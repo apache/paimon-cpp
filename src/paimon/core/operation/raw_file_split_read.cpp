@@ -314,7 +314,8 @@ Result<std::shared_ptr<ScoredFileIndexResult>> RawFileSplitRead::EvaluateVectorS
     }
     return FileIndexEvaluator::EvaluateVectorSearch(data_schema, file_index_options, search_with_dv,
                                                     data_file_path_factory, file,
-                                                    options_.GetFileSystem(), pool_);
+                                                    options_.GetFileSystem(), pool_,
+                                                    options_.GetCache());
 }
 
 Result<std::optional<RoaringBitmap32>> RawFileSplitRead::EvaluateFullTextSearchWithDv(

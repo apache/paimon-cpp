@@ -1052,7 +1052,7 @@ TEST(AppendOnlyFileStoreScanTest, SnapshotCacheRebuildsCorruptValues) {
             auto scan = BuildScan(table_path, cache, /*bucket=*/0, predicate, lazy_decode);
             scan->WithSnapshot(snapshot);
             ASSERT_OK(cache->Put(scan->CreateSnapshotLiveManifestEntriesCacheKey(0),
-                                 std::make_shared<CacheValue>(segment, CacheCallback())));
+                                 std::make_shared<MemorySegmentCacheValue>(segment, CacheCallback())));
             for (int32_t attempt = 0; attempt < 2; ++attempt) {
                 ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
                 ASSERT_EQ(SortedFileNames(plan->Files()), expected_names);

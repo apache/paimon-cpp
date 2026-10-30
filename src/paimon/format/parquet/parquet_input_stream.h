@@ -105,15 +105,16 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
                 if (size != nbytes) {
                     return Status::IOError("Short read of Parquet page index");
                 }
-                return std::make_shared<CacheValue>(segment, CacheCallback());
+                return std::make_shared<MemorySegmentCacheValue>(segment, CacheCallback());
             });
         if (!value.ok()) {
             return ToArrowStatus(value.status());
         }
-        if (!value.value() || value.value()->GetSegment().Size() != nbytes) {
+        auto segment = CacheValue::Get<const MemorySegment>(value.value());
+        if (!segment || segment->Size() != nbytes) {
             return arrow::Status::IOError("Invalid Parquet page-index cache value");
         }
-        std::memcpy(out, value.value()->GetSegment().Data(), nbytes);
+        std::memcpy(out, segment->Data(), nbytes);
         return nbytes;
     }
 
