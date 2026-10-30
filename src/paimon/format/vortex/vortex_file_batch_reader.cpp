@@ -168,68 +168,6 @@ Result<std::shared_ptr<arrow::Array>> NormalizeViewArray(const std::shared_ptr<a
     }
 }
 
-// Vortex reports the file's zone and paimon asks for the reader's; the instants are the same.
-std::shared_ptr<arrow::ArrayData> AlignTimestampTimezones(
-    const std::shared_ptr<arrow::ArrayData>& data,
-    const std::shared_ptr<arrow::DataType>& read_type) {
-    const std::shared_ptr<arrow::DataType>& type = data->type;
-    if (type->id() == arrow::Type::TIMESTAMP && read_type->id() == arrow::Type::TIMESTAMP) {
-        const auto& stored = checked_cast<const arrow::TimestampType&>(*type);
-        const auto& wanted = checked_cast<const arrow::TimestampType&>(*read_type);
-        if (stored.unit() != wanted.unit() || stored.timezone().empty() ||
-            wanted.timezone().empty() || stored.timezone() == wanted.timezone()) {
-            return data;
-        }
-        std::shared_ptr<arrow::ArrayData> retyped = data->Copy();
-        retyped->type = arrow::timestamp(wanted.unit(), wanted.timezone());
-        return retyped;
-    }
-    if (type->id() == arrow::Type::STRUCT && read_type->id() == arrow::Type::STRUCT) {
-        const auto& wanted_struct = checked_cast<const arrow::StructType&>(*read_type);
-        arrow::FieldVector fields = type->fields();
-        std::shared_ptr<arrow::ArrayData> retyped;
-        for (int32_t i = 0; i < static_cast<int32_t>(data->child_data.size()); ++i) {
-            const int32_t index = wanted_struct.GetFieldIndex(fields[i]->name());
-            if (index < 0) {
-                continue;
-            }
-            std::shared_ptr<arrow::ArrayData> child =
-                AlignTimestampTimezones(data->child_data[i], wanted_struct.field(index)->type());
-            if (child == data->child_data[i]) {
-                continue;
-            }
-            if (retyped == nullptr) {
-                retyped = data->Copy();
-            }
-            retyped->child_data[i] = child;
-            fields[i] = fields[i]->WithType(child->type);
-        }
-        if (retyped == nullptr) {
-            return data;
-        }
-        retyped->type = arrow::struct_(fields);
-        return retyped;
-    }
-    if ((type->id() == arrow::Type::LIST || type->id() == arrow::Type::FIXED_SIZE_LIST) &&
-        type->id() == read_type->id() && !data->child_data.empty()) {
-        std::shared_ptr<arrow::ArrayData> values =
-            AlignTimestampTimezones(data->child_data[0], read_type->field(0)->type());
-        if (values == data->child_data[0]) {
-            return data;
-        }
-        std::shared_ptr<arrow::ArrayData> retyped = data->Copy();
-        retyped->child_data[0] = values;
-        const std::shared_ptr<arrow::Field> value_field = type->field(0)->WithType(values->type);
-        retyped->type = type->id() == arrow::Type::LIST
-                            ? arrow::list(value_field)
-                            : arrow::fixed_size_list(
-                                  value_field,
-                                  checked_cast<const arrow::FixedSizeListType&>(*type).list_size());
-        return retyped;
-    }
-    return data;
-}
-
 }  // namespace
 
 VortexFileBatchReader::VortexFileBatchReader(
@@ -395,8 +333,9 @@ Result<std::shared_ptr<arrow::Array>> VortexFileBatchReader::AlignToReadSchema(
     }
     // TODO(zhouyc-ali): push top-level column pruning into the Vortex scan
     std::shared_ptr<arrow::DataType> read_type = arrow::struct_(read_schema_->fields());
+    // Vortex reports the file's zone and paimon asks for the reader's; the instants are the same.
     return NestedProjectionUtils::AlignArrayToReadType(
-        arrow::MakeArray(AlignTimestampTimezones(array->data(), read_type)), read_type,
+        NestedProjectionUtils::AlignTimestampTimezones(array, read_type), read_type,
         arrow_pool_.get());
 }
 

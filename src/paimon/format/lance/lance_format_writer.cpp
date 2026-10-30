@@ -26,6 +26,7 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "arrow/type.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -64,12 +65,44 @@ Status ValidateRowValues(const std::shared_ptr<arrow::Array>& array) {
     return Status::OK();
 }
 
+// Lance 0.39 stores a zoned timestamp as `timestamp:<unit>:<zone>` and cannot parse a zone id
+// containing ':' (e.g. GMT-10:00), so store every zone as UTC, as Paimon Java does. The values
+// are instants since the epoch whatever the zone, so only the type changes.
+std::shared_ptr<arrow::DataType> ToLanceType(const std::shared_ptr<arrow::DataType>& type) {
+    switch (type->id()) {
+        case arrow::Type::TIMESTAMP: {
+            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*type);
+            if (timestamp_type.timezone().empty()) {
+                return type;
+            }
+            return arrow::timestamp(timestamp_type.unit(), "UTC");
+        }
+        case arrow::Type::LIST:
+            return arrow::list(type->field(0)->WithType(ToLanceType(type->field(0)->type())));
+        case arrow::Type::STRUCT: {
+            arrow::FieldVector fields;
+            fields.reserve(type->num_fields());
+            for (const std::shared_ptr<arrow::Field>& field : type->fields()) {
+                fields.push_back(field->WithType(ToLanceType(field->type())));
+            }
+            return arrow::struct_(fields);
+        }
+        default:
+            return type;
+    }
+}
+
+std::shared_ptr<arrow::Schema> ToLanceSchema(const std::shared_ptr<arrow::Schema>& schema) {
+    return arrow::schema(ToLanceType(arrow::struct_(schema->fields()))->fields(),
+                         schema->metadata());
+}
+
 }  // namespace
 
 LanceFormatWriter::LanceFormatWriter(const std::shared_ptr<arrow::Schema>& schema,
                                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                                      PaimonLanceWriter* writer)
-    : schema_(schema),
+    : schema_(ToLanceSchema(schema)),
       arrow_pool_(arrow_pool),
       writer_(writer),
       metrics_(std::make_shared<MetricsImpl>()) {}

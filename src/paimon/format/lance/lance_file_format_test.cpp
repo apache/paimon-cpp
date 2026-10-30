@@ -182,6 +182,19 @@ TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
             name, arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/true,
             arrow::key_value_metadata({DataType::kTimePrecision}, {std::to_string(precision)}));
     };
+    auto ltz_fields = [](const std::string& zone) {
+        return arrow::FieldVector{
+            arrow::field("ltz_0_col", arrow::timestamp(arrow::TimeUnit::SECOND, zone)),
+            arrow::field("ltz_3_col", arrow::timestamp(arrow::TimeUnit::MILLI, zone)),
+            arrow::field("ltz_6_col", arrow::timestamp(arrow::TimeUnit::MICRO, zone)),
+            arrow::field("ltz_9_col", arrow::timestamp(arrow::TimeUnit::NANO, zone)),
+            arrow::field("ltz_array_col",
+                         arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, zone))),
+            arrow::field("ltz_row_col",
+                         arrow::struct_({arrow::field(
+                             "value", arrow::timestamp(arrow::TimeUnit::MILLI, zone))})),
+        };
+    };
     arrow::FieldVector fields = {
         arrow::field("bool_col", arrow::boolean()),
         arrow::field("i8_col", arrow::int8()),
@@ -206,17 +219,21 @@ TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
         arrow::field("time_row_array_col",
                      arrow::struct_({arrow::field("values", arrow::list(time_field("item", 9)))})),
     };
+    arrow::FieldVector local_ltz_fields = ltz_fields("GMT-10:00");
+    fields.insert(fields.end(), local_ltz_fields.begin(), local_ltz_fields.end());
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::shared_ptr<arrow::Array> expected =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
           [true,-1,-2,-3,-4,1.5,2.5,"one","abc",1,0,
            "1970-01-01 00:00:00.000001","12.34",[1.0,2.0],[7],[3.0,4.0],
-           [0,null,45296000],[45296123],[[3723123,null]]],
+           [0,null,45296000],[45296123],[[3723123,null]],
+           1700000000,1700000000123,1700000000123456,1700000000123456789,
+           [1700000000123456,null,-1],[1700000000123]],
           [false,1,2,3,4,3.5,4.5,"two","xyz",2,86399999,
            "2030-12-31 23:59:59.999999","-12.34",[],[8],[5.0,6.0],
-           [],[86399999],[[]]],
+           [],[86399999],[[]],-1,-1,-1,-1,[],[-1]],
           [null,null,null,null,null,null,null,null,null,null,null,null,null,null,[null],null,
-           null,[null],[null]]
+           null,[null],[null],null,null,null,null,null,[null]]
         ])")
             .ValueOrDie();
     std::string path = PathUtil::JoinPath(directory_->Str(), "supported-types.lance");
@@ -246,6 +263,17 @@ TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
     std::shared_ptr<arrow::Array> batch_array = std::move(batch_result).MoveValueUnsafe();
     ASSERT_TRUE(batch_array->type()->Equals(arrow::struct_(fields), /*check_metadata=*/true))
         << batch_array->type()->ToString(/*show_metadata=*/true);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<::ArrowSchema> c_file_schema, reader->GetFileSchema());
+    arrow::Result<std::shared_ptr<arrow::Schema>> file_schema =
+        arrow::ImportSchema(c_file_schema.get());
+    ASSERT_TRUE(file_schema.ok()) << file_schema.status().ToString();
+    for (const std::shared_ptr<arrow::Field>& utc_field : ltz_fields("UTC")) {
+        std::shared_ptr<arrow::Field> file_field =
+            file_schema.ValueUnsafe()->GetFieldByName(utc_field->name());
+        ASSERT_NE(file_field, nullptr) << utc_field->name();
+        ASSERT_TRUE(file_field->type()->Equals(utc_field->type())) << file_field->ToString();
+    }
 }
 
 TEST_F(LanceFileFormatTest, RejectsNullTopLevelRows) {

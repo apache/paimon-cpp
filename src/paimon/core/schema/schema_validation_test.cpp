@@ -439,6 +439,14 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
         arrow::field("date", arrow::date32()),
         arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI)),
         arrow::field("timestamp", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("ltz_0", arrow::timestamp(arrow::TimeUnit::SECOND, "UTC")),
+        arrow::field("ltz_3", arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai")),
+        arrow::field("ltz_6", arrow::timestamp(arrow::TimeUnit::MICRO, "GMT-10:00")),
+        arrow::field("ltz_9", arrow::timestamp(arrow::TimeUnit::NANO, "+08:00")),
+        arrow::field("ltz_array", arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"))),
+        arrow::field("nested_ltz",
+                     arrow::struct_({arrow::field(
+                         "values", arrow::list(arrow::timestamp(arrow::TimeUnit::MILLI, "UTC")))})),
         arrow::field("decimal", arrow::decimal128(38, 2)),
         arrow::field("array", arrow::list(arrow::float32())),
         arrow::field("nested_time",
@@ -474,11 +482,9 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
 
     arrow::FieldVector unsupported_fields = {
         arrow::field("map", arrow::map(arrow::int32(), arrow::utf8())),
-        arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")),
         VariantTypeUtils::ToArrowField("variant"),
     };
-    std::vector<std::string> expected_errors = {"type MAP", "LOCAL_ZONED_TIMESTAMP",
-                                                "type VARIANT"};
+    std::vector<std::string> expected_errors = {"type MAP", "type VARIANT"};
     for (size_t i = 0; i < unsupported_fields.size(); ++i) {
         ASSERT_OK_AND_ASSIGN(
             table_schema,
@@ -504,6 +510,14 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
              {Options::CHANGELOG_FILE_FORMAT, "lance"}}) {
         std::map<std::string, std::string> alternate_format_options = {
             {Options::BUCKET, "-1"}, {Options::FILE_FORMAT, "parquet"}, {option_key, option_value}};
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(
+                /*schema_id=*/0,
+                arrow::schema({arrow::field(
+                    "ltz", arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, "GMT-10:00")))}),
+                /*partition_keys=*/{}, /*primary_keys=*/{}, alternate_format_options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
         ASSERT_OK_AND_ASSIGN(
             table_schema,
             TableSchema::Create(

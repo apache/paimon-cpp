@@ -520,6 +520,94 @@ TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeKeepsNestedLargeBinaryBlob) 
     ASSERT_TRUE(blob_out->Equals(*blob));
 }
 
+TEST(NestedProjectionUtilsTest, AlignTimestampTimezonesRelabelsZonedLeavesOfSameUnit) {
+    auto make_type = [](const std::string& zone, arrow::TimeUnit::type other_unit) {
+        return arrow::struct_({
+            arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, zone)),
+            arrow::field("row", arrow::struct_({arrow::field(
+                                    "ltz", arrow::timestamp(arrow::TimeUnit::MILLI, zone))})),
+            arrow::field("list", arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, zone))),
+            arrow::field("fixed_list",
+                         arrow::fixed_size_list(arrow::timestamp(arrow::TimeUnit::MICRO, zone), 2)),
+            arrow::field("map", arrow::map(arrow::timestamp(arrow::TimeUnit::MILLI, zone),
+                                           arrow::timestamp(arrow::TimeUnit::MICRO, zone))),
+            arrow::field("other_unit", arrow::timestamp(other_unit, zone)),
+            arrow::field("ntz", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        });
+    };
+    const std::string json = R"([[1, [2], [3, null], [16, null], [[11, 12], [13, null]], 4, 5],
+                                 [null, [null], null, null, null, null, null],
+                                 [6, [7], [8], [17, 18], [[14, 15]], 9, 10]])";
+    std::shared_ptr<arrow::DataType> data_type = make_type("UTC", arrow::TimeUnit::MICRO);
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, json).ValueOrDie();
+    ASSERT_EQ(NestedProjectionUtils::AlignTimestampTimezones(array, array->type()).get(),
+              array.get());
+
+    std::shared_ptr<arrow::DataType> read_type = make_type("Asia/Shanghai", arrow::TimeUnit::MILLI);
+    std::shared_ptr<arrow::Array> aligned =
+        NestedProjectionUtils::AlignTimestampTimezones(array, read_type);
+    auto expected_type = arrow::struct_({
+        arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai")),
+        arrow::field("row",
+                     arrow::struct_({arrow::field(
+                         "ltz", arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai"))})),
+        arrow::field("list",
+                     arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai"))),
+        arrow::field(
+            "fixed_list",
+            arrow::fixed_size_list(arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai"), 2)),
+        arrow::field("map", arrow::map(arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai"),
+                                       arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai"))),
+        arrow::field("other_unit", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")),
+        arrow::field("ntz", arrow::timestamp(arrow::TimeUnit::MICRO)),
+    });
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type, json).ValueOrDie();
+    ASSERT_TRUE(aligned->type()->Equals(expected_type)) << aligned->type()->ToString();
+    ASSERT_TRUE(aligned->Equals(*expected));
+    ASSERT_TRUE(array->type()->Equals(data_type)) << array->type()->ToString();
+
+    std::shared_ptr<arrow::Array> aligned_slice =
+        NestedProjectionUtils::AlignTimestampTimezones(array->Slice(1), read_type);
+    ASSERT_TRUE(aligned_slice->Equals(*expected->Slice(1)));
+
+    std::shared_ptr<arrow::Array> zoned =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"),
+                                                  "[1, null]")
+            .ValueOrDie();
+    ASSERT_EQ(NestedProjectionUtils::AlignTimestampTimezones(
+                  zoned, arrow::timestamp(arrow::TimeUnit::MICRO))
+                  .get(),
+              zoned.get());
+    std::shared_ptr<arrow::Array> unzoned =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MICRO),
+                                                  "[1, null]")
+            .ValueOrDie();
+    ASSERT_EQ(NestedProjectionUtils::AlignTimestampTimezones(
+                  unzoned, arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"))
+                  .get(),
+              unzoned.get());
+}
+
+TEST(NestedProjectionUtilsTest, AlignTimestampTimezonesMatchesStructChildrenByName) {
+    auto utc = arrow::timestamp(arrow::TimeUnit::MICRO, "UTC");
+    auto shanghai = arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai");
+    const std::string json = "[[1, 2], [null, null]]";
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({arrow::field("unread", utc), arrow::field("read", utc)}), json)
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> aligned = NestedProjectionUtils::AlignTimestampTimezones(
+        array, arrow::struct_({arrow::field("read", shanghai)}));
+    auto expected_type =
+        arrow::struct_({arrow::field("unread", utc), arrow::field("read", shanghai)});
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type, json).ValueOrDie();
+    ASSERT_TRUE(aligned->type()->Equals(expected_type)) << aligned->type()->ToString();
+    ASSERT_TRUE(aligned->Equals(*expected));
+}
+
 TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionNoProjection) {
     auto file_schema = arrow::schema({
         MakeField("f0", arrow::int32(), 1),

@@ -3637,6 +3637,73 @@ TEST_F(ScanAndReadInteTest, TestLancePythonCompatibility) {
     check(1, {"f_struct", "id", "f_vector", "f_array_int"}, projected->Slice(0, 2));
     check(2, {"f_struct", "id", "f_vector", "f_array_int"}, projected);
 }
+
+TEST_F(ScanAndReadInteTest, TestLanceLtzCompatibility) {
+    TimezoneGuard timezone_guard("Asia/Shanghai");
+    const std::string zone = DateTimeUtils::GetLocalTimezoneName();
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        arrow::field("f_ltz_0", arrow::timestamp(arrow::TimeUnit::SECOND, zone)),
+        arrow::field("f_ltz_3", arrow::timestamp(arrow::TimeUnit::MILLI, zone)),
+        arrow::field("f_ltz_6", arrow::timestamp(arrow::TimeUnit::MICRO, zone)),
+        arrow::field("f_ltz_9", arrow::timestamp(arrow::TimeUnit::NANO, zone)),
+        arrow::field("f_ltz_array", arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, zone))),
+        arrow::field(
+            "f_ltz_struct",
+            arrow::struct_({arrow::field("number", arrow::int32()),
+                            arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MILLI, zone))})),
+    };
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[0, 1, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", ["1970-01-01 00:00:01.123456", null, "1969-12-31 23:59:59.999999"], [1, "1970-01-01 00:00:01.123"]],
+[0, 2, null, null, null, null, null, [null, null]],
+[0, 10, "1969-12-31 00:00:00", "1969-12-31 23:59:59.999", "1969-12-31 23:59:59.999999", "1969-12-31 23:59:59.999999999", [], [10, "1969-12-31 23:59:59.999"]],
+[0, 11, "2024-10-04 12:34:56", "2024-10-04 12:34:56.123", "2024-10-04 12:34:56.123456", "2024-10-04 12:34:56.123456789", ["2024-10-04 12:34:56.123456"], [11, "2024-10-04 12:34:56.123"]]
+])")
+            .ValueOrDie());
+    auto projected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields[0], fields[7], fields[1], fields[5], fields[6]}), R"([
+[0, [1, "1970-01-01 00:00:01.123"], 1, "1970-01-01 00:00:01.123456789", ["1970-01-01 00:00:01.123456", null, "1969-12-31 23:59:59.999999"]],
+[0, [null, null], 2, null, null],
+[0, [10, "1969-12-31 23:59:59.999"], 10, "1969-12-31 23:59:59.999999999", []],
+[0, [11, "2024-10-04 12:34:56.123"], 11, "2024-10-04 12:34:56.123456789", ["2024-10-04 12:34:56.123456"]]
+])")
+            .ValueOrDie());
+    auto check = [&](const std::string& table_path, int64_t snapshot_id,
+                     const std::vector<std::string>& projection,
+                     const std::shared_ptr<arrow::ChunkedArray>& expected_result) {
+        SCOPED_TRACE("snapshot " + std::to_string(snapshot_id));
+        ScanContextBuilder scan_builder(table_path);
+        scan_builder.AddOption(Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id));
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+        ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(snapshot_id));
+        ASSERT_FALSE(plan->Splits().empty());
+
+        ReadContextBuilder read_builder(table_path);
+        read_builder.AddOption("read.batch-size", "1");
+        if (!projection.empty()) {
+            read_builder.SetReadFieldNames(projection);
+        }
+        ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(expected_result->Equals(actual))
+            << "actual: " << actual->ToString() << "\nexpected: " << expected_result->ToString();
+    };
+    for (const std::string table_name : {"append_ltz_java_compat", "append_ltz_python_compat"}) {
+        SCOPED_TRACE(table_name);
+        std::string table_path = GetDataDir() + "/lance/" + table_name + ".db/" + table_name;
+        check(table_path, 1, /*projection=*/{}, expected->Slice(0, 2));
+        check(table_path, 2, /*projection=*/{}, expected);
+        check(table_path, 2, {"f_ltz_struct", "id", "f_ltz_9", "f_ltz_array"}, projected);
+    }
+}
 #endif
 
 #ifdef PAIMON_ENABLE_MOSAIC

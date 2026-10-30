@@ -1,0 +1,56 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "id",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "f_ltz_0",
+    "type" : "TIMESTAMP(0) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 2,
+    "name" : "f_ltz_3",
+    "type" : "TIMESTAMP(3) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 3,
+    "name" : "f_ltz_6",
+    "type" : "TIMESTAMP(6) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 4,
+    "name" : "f_ltz_9",
+    "type" : "TIMESTAMP(9) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 5,
+    "name" : "f_ltz_array",
+    "type" : {
+      "type" : "ARRAY",
+      "element" : "TIMESTAMP(6) WITH LOCAL TIME ZONE"
+    }
+  }, {
+    "id" : 6,
+    "name" : "f_ltz_struct",
+    "type" : {
+      "type" : "ROW",
+      "fields" : [ {
+        "id" : 7,
+        "name" : "number",
+        "type" : "INT"
+      }, {
+        "id" : 8,
+        "name" : "ts",
+        "type" : "TIMESTAMP(3) WITH LOCAL TIME ZONE"
+      } ]
+    }
+  } ],
+  "highestFieldId" : 8,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "file.format" : "lance",
+    "metadata.stats-mode" : "none"
+  },
+  "timeMillis" : 1793201358194
+}

@@ -194,6 +194,11 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        Paimon C++ supports precision values 0 (seconds), 3 (milliseconds), 6
        (microseconds), and 9 (nanoseconds).
 
+       As in Paimon Java, Lance data files store this type as an Arrow
+       timestamp with the ``UTC`` time zone whatever the local time zone is,
+       and reads return it in the local time zone. Only the time zone of the
+       Arrow type changes; the values since the epoch are kept as they are.
+
    * - ``ARRAY<t>``
      - List
      - Data type of an array of elements with same subtype.

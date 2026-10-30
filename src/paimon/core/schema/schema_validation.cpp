@@ -1002,19 +1002,14 @@ Status SchemaValidation::ValidateLanceDataField(const std::shared_ptr<arrow::Fie
         case arrow::Type::DOUBLE:
         case arrow::Type::DATE32:
         case arrow::Type::TIME32:
+        // Lance cannot parse a time zone id containing ':', but LanceFormatWriter, like Paimon
+        // Java, writes every zoned timestamp with the "UTC" time zone.
+        case arrow::Type::TIMESTAMP:
         case arrow::Type::STRING:
         case arrow::Type::BINARY:
         case arrow::Type::DECIMAL128:
         case arrow::Type::FIXED_SIZE_LIST:
             return Status::OK();
-        case arrow::Type::TIMESTAMP: {
-            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*type);
-            if (!timestamp_type.timezone().empty()) {
-                return Status::Invalid(
-                    "Lance file format does not support type LOCAL_ZONED_TIMESTAMP");
-            }
-            return Status::OK();
-        }
         case arrow::Type::LIST:
             return ValidateLanceDataField(type->field(0));
         case arrow::Type::STRUCT:
