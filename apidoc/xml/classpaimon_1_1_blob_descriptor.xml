@@ -1,0 +1,378 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_blob_descriptor" kind="class" language="C++" prot="public">
+    <compoundname>paimon::BlobDescriptor</compoundname>
+    <includes refid="blob__descriptor_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h</includes>
+    <sectiondef kind="private-static-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_blob_descriptor_1abb3691e37cb2c7bc018890d74861e7da" prot="private" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int8_t</ref></type>
+        <definition>constexpr int8_t paimon::BlobDescriptor::kCurrentVersion</definition>
+        <argsstring></argsstring>
+        <name>kCurrentVersion</name>
+        <qualifiedname>paimon::BlobDescriptor::kCurrentVersion</qualifiedname>
+        <initializer>= 2</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="82" column="29" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="82" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_blob_descriptor_1addd8c2cecc9989cc5c15f9369fa97e87" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int8_t</ref></type>
+        <definition>const int8_t paimon::BlobDescriptor::version_</definition>
+        <argsstring></argsstring>
+        <name>version_</name>
+        <qualifiedname>paimon::BlobDescriptor::version_</qualifiedname>
+        <initializer>= <ref refid="classpaimon_1_1_blob_descriptor_1abb3691e37cb2c7bc018890d74861e7da" kindref="member">kCurrentVersion</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="84" column="18" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="84" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_blob_descriptor_1ad6c0e227475d29b7b9ea32255421b41d" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::BlobDescriptor::uri_</definition>
+        <argsstring></argsstring>
+        <name>uri_</name>
+        <qualifiedname>paimon::BlobDescriptor::uri_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="85" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="85" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_blob_descriptor_1ab6f2f54c0f519f20b75222e0f5885297" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::BlobDescriptor::offset_</definition>
+        <argsstring></argsstring>
+        <name>offset_</name>
+        <qualifiedname>paimon::BlobDescriptor::offset_</qualifiedname>
+        <initializer>= 0</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="86" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="86" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_blob_descriptor_1af2aa941e5979b3d205ee487fa2ba1ced" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::BlobDescriptor::length_</definition>
+        <argsstring></argsstring>
+        <name>length_</name>
+        <qualifiedname>paimon::BlobDescriptor::length_</qualifiedname>
+        <initializer>= -1</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="87" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="87" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1a8c4a95d2e56c6131c632ba7afc2e2aa1" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_blob_descriptor" kindref="compound">BlobDescriptor</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::unique_ptr&lt; BlobDescriptor &gt; &gt; paimon::BlobDescriptor::Create</definition>
+        <argsstring>(const std::string &amp;uri, int64_t offset, int64_t length)</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::BlobDescriptor::Create</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>uri</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>offset</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>length</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="47" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1a37ce210f026bb2d434a2b630fcd3440f" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_blob_descriptor" kindref="compound">BlobDescriptor</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::unique_ptr&lt; BlobDescriptor &gt; &gt; paimon::BlobDescriptor::Create</definition>
+        <argsstring>(int8_t version, const std::string &amp;uri, int64_t offset, int64_t length)</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::BlobDescriptor::Create</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int8_t</ref></type>
+          <declname>version</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>uri</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>offset</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>length</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="50" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1add5c1836107e6c577d918888b0a0b2a9" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_blob_descriptor" kindref="compound">BlobDescriptor</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::unique_ptr&lt; BlobDescriptor &gt; &gt; paimon::BlobDescriptor::Deserialize</definition>
+        <argsstring>(const char *buffer, uint64_t size)</argsstring>
+        <name>Deserialize</name>
+        <qualifiedname>paimon::BlobDescriptor::Deserialize</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref> *</type>
+          <declname>buffer</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+          <declname>size</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="53" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1a45672e2190f9aeacb490e3a08cf12b8f" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref> &gt;</type>
+        <definition>static Result&lt; bool &gt; paimon::BlobDescriptor::IsBlobDescriptor</definition>
+        <argsstring>(const char *buffer, uint64_t size)</argsstring>
+        <name>IsBlobDescriptor</name>
+        <qualifiedname>paimon::BlobDescriptor::IsBlobDescriptor</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref> *</type>
+          <declname>buffer</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+          <declname>size</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="55" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1ac7a7344441b538eedbd42bc863bbb37c" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_UNIQUE_PTR</ref>&lt; <ref refid="classpaimon_1_1_bytes" kindref="compound">Bytes</ref> &gt;</type>
+        <definition>PAIMON_UNIQUE_PTR&lt; Bytes &gt; paimon::BlobDescriptor::Serialize</definition>
+        <argsstring>(const std::shared_ptr&lt; MemoryPool &gt; &amp;pool) const</argsstring>
+        <name>Serialize</name>
+        <qualifiedname>paimon::BlobDescriptor::Serialize</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="57" column="23"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1a89150818f1a5101e86171bc83ba10f9e" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string paimon::BlobDescriptor::ToString</definition>
+        <argsstring>() const</argsstring>
+        <name>ToString</name>
+        <qualifiedname>paimon::BlobDescriptor::ToString</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="59" column="17"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1ac3378476bbd766f026263f672953b5f0" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int8_t</ref></type>
+        <definition>int8_t paimon::BlobDescriptor::Version</definition>
+        <argsstring>() const</argsstring>
+        <name>Version</name>
+        <qualifiedname>paimon::BlobDescriptor::Version</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="61" column="12" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="61" bodyend="63"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1abab4133e3a6f7b9556725b7d204ee400" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+        <definition>const std::string &amp; paimon::BlobDescriptor::Uri</definition>
+        <argsstring>() const</argsstring>
+        <name>Uri</name>
+        <qualifiedname>paimon::BlobDescriptor::Uri</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="65" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="65" bodyend="67"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1a8805ba193f04be3401742c1cc02c245b" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::BlobDescriptor::Offset</definition>
+        <argsstring>() const</argsstring>
+        <name>Offset</name>
+        <qualifiedname>paimon::BlobDescriptor::Offset</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="69" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="69" bodyend="71"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1a6a00ff8d369a27388094925fee18f954" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::BlobDescriptor::Length</definition>
+        <argsstring>() const</argsstring>
+        <name>Length</name>
+        <qualifiedname>paimon::BlobDescriptor::Length</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="73" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="73" bodyend="75"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-func">
+      <memberdef kind="function" id="classpaimon_1_1_blob_descriptor_1a26bfd6b3243b942e71623ee16752dce0" prot="private" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>paimon::BlobDescriptor::BlobDescriptor</definition>
+        <argsstring>(int8_t version, const std::string &amp;uri, int64_t offset, int64_t length)</argsstring>
+        <name>BlobDescriptor</name>
+        <qualifiedname>paimon::BlobDescriptor::BlobDescriptor</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int8_t</ref></type>
+          <declname>version</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>uri</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>offset</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>length</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="78" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="78" bodyend="79"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para><ref refid="classpaimon_1_1_blob" kindref="compound">Blob</ref> descriptor to describe a blob reference. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Memory Layout Description: All multi-byte numerical values (int/long) are stored using Little Endian byte order.</para>
+<para><table rows="7" cols="4"><row>
+<entry thead="yes"><para>Offset   </para>
+</entry><entry thead="yes"><para>Field Name   </para>
+</entry><entry thead="yes"><para>Type   </para>
+</entry><entry thead="yes"><para>Size    </para>
+</entry></row>
+<row>
+<entry thead="no"><para>0   </para>
+</entry><entry thead="no"><para>version   </para>
+</entry><entry thead="no"><para>byte   </para>
+</entry><entry thead="no"><para>1    </para>
+</entry></row>
+<row>
+<entry thead="no"><para>1   </para>
+</entry><entry thead="no"><para>magic_number   </para>
+</entry><entry thead="no"><para>long   </para>
+</entry><entry thead="no"><para>8    </para>
+</entry></row>
+<row>
+<entry thead="no"><para>9   </para>
+</entry><entry thead="no"><para>uri_length   </para>
+</entry><entry thead="no"><para>int   </para>
+</entry><entry thead="no"><para>4    </para>
+</entry></row>
+<row>
+<entry thead="no"><para>13   </para>
+</entry><entry thead="no"><para>uri_bytes   </para>
+</entry><entry thead="no"><para>byte[N]   </para>
+</entry><entry thead="no"><para>N    </para>
+</entry></row>
+<row>
+<entry thead="no"><para>13 + N   </para>
+</entry><entry thead="no"><para>offset   </para>
+</entry><entry thead="no"><para>long   </para>
+</entry><entry thead="no"><para>8    </para>
+</entry></row>
+<row>
+<entry thead="no"><para>21 + N   </para>
+</entry><entry thead="no"><para>length   </para>
+</entry><entry thead="no"><para>long   </para>
+</entry><entry thead="no"><para>8   </para>
+</entry></row>
+</table>
+</para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" line="45" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/data/blob_descriptor.h" bodystart="45" bodyend="88"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_blob_descriptor_1a26bfd6b3243b942e71623ee16752dce0" prot="private" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>BlobDescriptor</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1a8c4a95d2e56c6131c632ba7afc2e2aa1" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1a37ce210f026bb2d434a2b630fcd3440f" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1add5c1836107e6c577d918888b0a0b2a9" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>Deserialize</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1a45672e2190f9aeacb490e3a08cf12b8f" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>IsBlobDescriptor</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1abb3691e37cb2c7bc018890d74861e7da" prot="private" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>kCurrentVersion</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1a6a00ff8d369a27388094925fee18f954" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>Length</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1af2aa941e5979b3d205ee487fa2ba1ced" prot="private" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>length_</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1a8805ba193f04be3401742c1cc02c245b" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>Offset</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1ab6f2f54c0f519f20b75222e0f5885297" prot="private" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>offset_</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1ac7a7344441b538eedbd42bc863bbb37c" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>Serialize</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1a89150818f1a5101e86171bc83ba10f9e" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>ToString</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1abab4133e3a6f7b9556725b7d204ee400" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>Uri</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1ad6c0e227475d29b7b9ea32255421b41d" prot="private" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>uri_</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1ac3378476bbd766f026263f672953b5f0" prot="public" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>Version</name></member>
+      <member refid="classpaimon_1_1_blob_descriptor_1addd8c2cecc9989cc5c15f9369fa97e87" prot="private" virt="non-virtual"><scope>paimon::BlobDescriptor</scope><name>version_</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

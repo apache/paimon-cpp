@@ -1,0 +1,400 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="full__text__search__builder_8h" kind="file" language="C++">
+    <compoundname>full_text_search_builder.h</compoundname>
+    <includes local="no">cstdint</includes>
+    <includes local="no">map</includes>
+    <includes local="no">memory</includes>
+    <includes local="no">string</includes>
+    <includes local="no">vector</includes>
+    <includes refid="global__index__result_8h" local="yes">paimon/global_index/global_index_result.h</includes>
+    <includes refid="result_8h" local="yes">paimon/result.h</includes>
+    <includes refid="full__text__read_8h" local="yes">paimon/table/source/full_text_read.h</includes>
+    <includes refid="full__text__scan_8h" local="yes">paimon/table/source/full_text_scan.h</includes>
+    <includes refid="type__fwd_8h" local="yes">paimon/type_fwd.h</includes>
+    <includes refid="visibility_8h" local="yes">paimon/visibility.h</includes>
+    <incdepgraph>
+      <node id="34">
+        <label>paimon/defs.h</label>
+        <link refid="defs_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="33" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="7">
+        <label>paimon/global_index/global_index_result.h</label>
+        <link refid="global__index__result_8h"/>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="9" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="27" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="9">
+        <label>paimon/memory/bytes.h</label>
+        <link refid="bytes_8h"/>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="11">
+        <label>paimon/memory/memory_pool.h</label>
+        <link refid="memory__pool_8h"/>
+        <childnode refid="12" relation="include">
+        </childnode>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="14" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="15" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="17">
+        <label>paimon/result.h</label>
+        <link refid="result_8h"/>
+        <childnode refid="12" relation="include">
+        </childnode>
+        <childnode refid="18" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="19" relation="include">
+        </childnode>
+        <childnode refid="26" relation="include">
+        </childnode>
+      </node>
+      <node id="19">
+        <label>paimon/status.h</label>
+        <link refid="status_8h"/>
+        <childnode refid="20" relation="include">
+        </childnode>
+        <childnode refid="21" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="22" relation="include">
+        </childnode>
+        <childnode refid="15" relation="include">
+        </childnode>
+        <childnode refid="23" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="23">
+        <label>paimon/string_builder.h</label>
+        <link refid="string__builder_8h"/>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="24" relation="include">
+        </childnode>
+        <childnode refid="25" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="29">
+        <label>paimon/table/source/full_text_read.h</label>
+        <link refid="full__text__read_8h"/>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="30" relation="include">
+        </childnode>
+        <childnode refid="31" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="30">
+        <label>paimon/table/source/full_text_scan.h</label>
+        <link refid="full__text__scan_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="28" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="31" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_builder.h</label>
+        <link refid="full__text__search__builder_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="29" relation="include">
+        </childnode>
+        <childnode refid="30" relation="include">
+        </childnode>
+        <childnode refid="32" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="31">
+        <label>paimon/table/source/full_text_search_split.h</label>
+        <link refid="full__text__search__split_8h"/>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="27" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="32">
+        <label>paimon/type_fwd.h</label>
+        <link refid="type__fwd_8h"/>
+        <childnode refid="33" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="34" relation="include">
+        </childnode>
+        <childnode refid="15" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="27">
+        <label>paimon/utils/range.h</label>
+        <link refid="range_8h"/>
+        <childnode refid="28" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+      </node>
+      <node id="16">
+        <label>paimon/visibility.h</label>
+        <link refid="visibility_8h"/>
+      </node>
+      <node id="12">
+        <label>cassert</label>
+      </node>
+      <node id="10">
+        <label>cstddef</label>
+      </node>
+      <node id="2">
+        <label>cstdint</label>
+      </node>
+      <node id="20">
+        <label>cstring</label>
+      </node>
+      <node id="13">
+        <label>functional</label>
+      </node>
+      <node id="21">
+        <label>iosfwd</label>
+      </node>
+      <node id="33">
+        <label>limits</label>
+      </node>
+      <node id="3">
+        <label>map</label>
+      </node>
+      <node id="4">
+        <label>memory</label>
+      </node>
+      <node id="14">
+        <label>new</label>
+      </node>
+      <node id="28">
+        <label>optional</label>
+      </node>
+      <node id="24">
+        <label>ostream</label>
+      </node>
+      <node id="22">
+        <label>paimon/compare.h</label>
+      </node>
+      <node id="15">
+        <label>paimon/macros.h</label>
+      </node>
+      <node id="26">
+        <label>paimon/traits.h</label>
+      </node>
+      <node id="25">
+        <label>sstream</label>
+      </node>
+      <node id="5">
+        <label>string</label>
+      </node>
+      <node id="18">
+        <label>type_traits</label>
+      </node>
+      <node id="8">
+        <label>utility</label>
+      </node>
+      <node id="6">
+        <label>vector</label>
+      </node>
+    </incdepgraph>
+    <innerclass refid="classpaimon_1_1_full_text_search_builder" prot="public">paimon::FullTextSearchBuilder</innerclass>
+    <innernamespace refid="namespacepaimon">paimon</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="comment">/*</highlight></codeline>
+<codeline lineno="2"><highlight class="comment"><sp/>*<sp/>Licensed<sp/>to<sp/>the<sp/>Apache<sp/>Software<sp/>Foundation<sp/>(ASF)<sp/>under<sp/>one</highlight></codeline>
+<codeline lineno="3"><highlight class="comment"><sp/>*<sp/>or<sp/>more<sp/>contributor<sp/>license<sp/>agreements.<sp/><sp/>See<sp/>the<sp/>NOTICE<sp/>file</highlight></codeline>
+<codeline lineno="4"><highlight class="comment"><sp/>*<sp/>distributed<sp/>with<sp/>this<sp/>work<sp/>for<sp/>additional<sp/>information</highlight></codeline>
+<codeline lineno="5"><highlight class="comment"><sp/>*<sp/>regarding<sp/>copyright<sp/>ownership.<sp/><sp/>The<sp/>ASF<sp/>licenses<sp/>this<sp/>file</highlight></codeline>
+<codeline lineno="6"><highlight class="comment"><sp/>*<sp/>to<sp/>you<sp/>under<sp/>the<sp/>Apache<sp/>License,<sp/>Version<sp/>2.0<sp/>(the</highlight></codeline>
+<codeline lineno="7"><highlight class="comment"><sp/>*<sp/>&quot;License&quot;);<sp/>you<sp/>may<sp/>not<sp/>use<sp/>this<sp/>file<sp/>except<sp/>in<sp/>compliance</highlight></codeline>
+<codeline lineno="8"><highlight class="comment"><sp/>*<sp/>with<sp/>the<sp/>License.<sp/><sp/>You<sp/>may<sp/>obtain<sp/>a<sp/>copy<sp/>of<sp/>the<sp/>License<sp/>at</highlight></codeline>
+<codeline lineno="9"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="10"><highlight class="comment"><sp/>*<sp/><sp/><sp/><sp/><sp/>http://www.apache.org/licenses/LICENSE-2.0</highlight></codeline>
+<codeline lineno="11"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="12"><highlight class="comment"><sp/>*<sp/>Unless<sp/>required<sp/>by<sp/>applicable<sp/>law<sp/>or<sp/>agreed<sp/>to<sp/>in<sp/>writing,<sp/>software</highlight></codeline>
+<codeline lineno="13"><highlight class="comment"><sp/>*<sp/>distributed<sp/>under<sp/>the<sp/>License<sp/>is<sp/>distributed<sp/>on<sp/>an<sp/>&quot;AS<sp/>IS&quot;<sp/>BASIS,</highlight></codeline>
+<codeline lineno="14"><highlight class="comment"><sp/>*<sp/>WITHOUT<sp/>WARRANTIES<sp/>OR<sp/>CONDITIONS<sp/>OF<sp/>ANY<sp/>KIND,<sp/>either<sp/>express<sp/>or<sp/>implied.</highlight></codeline>
+<codeline lineno="15"><highlight class="comment"><sp/>*<sp/>See<sp/>the<sp/>License<sp/>for<sp/>the<sp/>specific<sp/>language<sp/>governing<sp/>permissions<sp/>and</highlight></codeline>
+<codeline lineno="16"><highlight class="comment"><sp/>*<sp/>limitations<sp/>under<sp/>the<sp/>License.</highlight></codeline>
+<codeline lineno="17"><highlight class="comment"><sp/>*/</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="18"><highlight class="normal"></highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight><highlight class="preprocessor">#pragma<sp/>once</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;cstdint&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;map&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="23"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;memory&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="24"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;string&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="25"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;vector&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="26"><highlight class="normal"></highlight></codeline>
+<codeline lineno="27"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="global__index__result_8h" kindref="compound">paimon/global_index/global_index_result.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="28"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="result_8h" kindref="compound">paimon/result.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="29"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="full__text__read_8h" kindref="compound">paimon/table/source/full_text_read.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="30"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="full__text__scan_8h" kindref="compound">paimon/table/source/full_text_scan.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="31"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="type__fwd_8h" kindref="compound">paimon/type_fwd.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="32"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="visibility_8h" kindref="compound">paimon/visibility.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="33"><highlight class="normal"></highlight></codeline>
+<codeline lineno="34"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal"><ref refid="namespacepaimon" kindref="compound">paimon</ref><sp/>{</highlight></codeline>
+<codeline lineno="35"><highlight class="normal"></highlight><highlight class="keyword">class<sp/></highlight><highlight class="normal">Executor;</highlight></codeline>
+<codeline lineno="36"><highlight class="normal"></highlight></codeline>
+<codeline lineno="58" refid="classpaimon_1_1_full_text_search_builder" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref><sp/>{</highlight></codeline>
+<codeline lineno="59"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="61" refid="classpaimon_1_1_full_text_search_builder_1a628c8528a99d8c22089023dea37866a0" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">explicit</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a628c8528a99d8c22089023dea37866a0" kindref="member">FullTextSearchBuilder</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">table_path</ref>);</highlight></codeline>
+<codeline lineno="62"><highlight class="normal"></highlight></codeline>
+<codeline lineno="63" refid="classpaimon_1_1_full_text_search_builder_1a7ef358d8c9c0d1a7314c48464bc67c67" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a7ef358d8c9c0d1a7314c48464bc67c67" kindref="member">~FullTextSearchBuilder</ref>();</highlight></codeline>
+<codeline lineno="64"><highlight class="normal"></highlight></codeline>
+<codeline lineno="68" refid="classpaimon_1_1_full_text_search_builder_1a5bf2920c8f18af3d2b122066d6540387" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref>&amp;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a5bf2920c8f18af3d2b122066d6540387" kindref="member">SetPartitionFilter</ref>(</highlight></codeline>
+<codeline lineno="69"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::vector&lt;std::map&lt;std::string,<sp/>std::string&gt;&gt;&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">partition_filters</ref>);</highlight></codeline>
+<codeline lineno="70"><highlight class="normal"></highlight></codeline>
+<codeline lineno="72" refid="classpaimon_1_1_full_text_search_builder_1a9862116c919f6823b1ba1abba4896b42" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref>&amp;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a9862116c919f6823b1ba1abba4896b42" kindref="member">SetLimit</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/>limit);</highlight></codeline>
+<codeline lineno="73"><highlight class="normal"></highlight></codeline>
+<codeline lineno="76" refid="classpaimon_1_1_full_text_search_builder_1a97b16d10e6917d7f477653a031313f89" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref>&amp;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a97b16d10e6917d7f477653a031313f89" kindref="member">SetQuery</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/>field_name,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/>query);</highlight></codeline>
+<codeline lineno="77"><highlight class="normal"></highlight></codeline>
+<codeline lineno="82" refid="classpaimon_1_1_full_text_search_builder_1a9f8f1fdb6a84ea30a704d4fff8090bf9" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref>&amp;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a9f8f1fdb6a84ea30a704d4fff8090bf9" kindref="member">AddOption</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">key</ref>,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/>value);</highlight></codeline>
+<codeline lineno="83"><highlight class="normal"></highlight></codeline>
+<codeline lineno="86" refid="classpaimon_1_1_full_text_search_builder_1a6b1ab8566337e3a5d1a712560a308245" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref>&amp;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a6b1ab8566337e3a5d1a712560a308245" kindref="member">SetOptions</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::map&lt;std::string,<sp/>std::string&gt;&amp;<sp/>options);</highlight></codeline>
+<codeline lineno="87"><highlight class="normal"></highlight></codeline>
+<codeline lineno="89" refid="classpaimon_1_1_full_text_search_builder_1ae9b460fb6177359f5d1b55c2884bc7cd" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref>&amp;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1ae9b460fb6177359f5d1b55c2884bc7cd" kindref="member">WithMemoryPool</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;MemoryPool&gt;&amp;<sp/>memory_pool);</highlight></codeline>
+<codeline lineno="90"><highlight class="normal"></highlight></codeline>
+<codeline lineno="94" refid="classpaimon_1_1_full_text_search_builder_1a9c0bda875207b2860ebb1d367bb1dcc0" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref>&amp;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a9c0bda875207b2860ebb1d367bb1dcc0" kindref="member">WithExecutor</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;Executor&gt;&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">executor</ref>);</highlight></codeline>
+<codeline lineno="95"><highlight class="normal"></highlight></codeline>
+<codeline lineno="98" refid="classpaimon_1_1_full_text_search_builder_1a70b2e2080849341f7292ff27a5a1b18d" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_full_text_search_builder" kindref="compound">FullTextSearchBuilder</ref>&amp;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a70b2e2080849341f7292ff27a5a1b18d" kindref="member">WithFileSystem</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;FileSystem&gt;&amp;<sp/>file_system);</highlight></codeline>
+<codeline lineno="99"><highlight class="normal"></highlight></codeline>
+<codeline lineno="106" refid="classpaimon_1_1_full_text_search_builder_1a448d4e471f5d985bcc829f5d3287521a" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::unique_ptr&lt;FullTextScan&gt;</ref>&gt;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a448d4e471f5d985bcc829f5d3287521a" kindref="member">NewFullTextScan</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="107"><highlight class="normal"></highlight></codeline>
+<codeline lineno="111" refid="classpaimon_1_1_full_text_search_builder_1a744cc19cf588435300bb8b32235f6cd3" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::unique_ptr&lt;FullTextRead&gt;</ref>&gt;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a744cc19cf588435300bb8b32235f6cd3" kindref="member">NewFullTextRead</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="112"><highlight class="normal"></highlight></codeline>
+<codeline lineno="115" refid="classpaimon_1_1_full_text_search_builder_1a8bf72a0dee624cde37ddeec42e7fd6d0" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::shared_ptr&lt;ScoredGlobalIndexResult&gt;</ref>&gt;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a8bf72a0dee624cde37ddeec42e7fd6d0" kindref="member">ExecuteLocal</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="116"><highlight class="normal"></highlight></codeline>
+<codeline lineno="117"><highlight class="normal"><sp/></highlight><highlight class="keyword">private</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="118"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">Impl</ref>;</highlight></codeline>
+<codeline lineno="119"><highlight class="normal"></highlight></codeline>
+<codeline lineno="120" refid="classpaimon_1_1_full_text_search_builder_1a283adee4707e54ee78ef34d5e9a24377" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::unique_ptr&lt;Impl&gt;<sp/><ref refid="classpaimon_1_1_full_text_search_builder_1a283adee4707e54ee78ef34d5e9a24377" kindref="member">impl_</ref>;</highlight></codeline>
+<codeline lineno="121"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="122"><highlight class="normal"></highlight></codeline>
+<codeline lineno="123"><highlight class="normal">}<sp/><sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>paimon</highlight><highlight class="normal"></highlight></codeline>
+    </programlisting>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_builder.h"/>
+  </compounddef>
+</doxygen>

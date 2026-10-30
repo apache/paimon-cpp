@@ -1,0 +1,226 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_scored_file_index_result" kind="class" language="C++" prot="public">
+    <compoundname>paimon::ScoredFileIndexResult</compoundname>
+    <basecompoundref refid="classpaimon_1_1_file_index_result" prot="public" virt="non-virtual">paimon::FileIndexResult</basecompoundref>
+    <includes refid="scored__file__index__result_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h</includes>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_scored_file_index_result_1ad6873b3c7ddb983f6417300e12be6d4e" prot="private" static="no" mutable="no">
+        <type><ref refid="classpaimon_1_1_roaring_bitmap32" kindref="compound">RoaringBitmap32</ref></type>
+        <definition>RoaringBitmap32 paimon::ScoredFileIndexResult::row_positions_</definition>
+        <argsstring></argsstring>
+        <name>row_positions_</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::row_positions_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="57" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" bodystart="57" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scored_file_index_result_1a85b581632fe73fe784a67af911d26cd3" prot="private" static="no" mutable="no">
+        <type>std::vector&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">float</ref> &gt;</type>
+        <definition>std::vector&lt;float&gt; paimon::ScoredFileIndexResult::scores_</definition>
+        <argsstring></argsstring>
+        <name>scores_</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::scores_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="58" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" bodystart="58" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_scored_file_index_result_1aeb1a6e3256a95e3d99963023c203a292" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_scored_file_index_result" kindref="compound">ScoredFileIndexResult</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::shared_ptr&lt; ScoredFileIndexResult &gt; &gt; paimon::ScoredFileIndexResult::Create</definition>
+        <argsstring>(RoaringBitmap32 &amp;&amp;row_positions, std::vector&lt; float &gt; &amp;&amp;scores)</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::Create</qualifiedname>
+        <param>
+          <type><ref refid="classpaimon_1_1_roaring_bitmap32" kindref="compound">RoaringBitmap32</ref> &amp;&amp;</type>
+          <declname>row_positions</declname>
+        </param>
+        <param>
+          <type>std::vector&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">float</ref> &gt; &amp;&amp;</type>
+          <declname>scores</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="35" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_scored_file_index_result_1a9acaeb5def25923203bc060a553ac9b3" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::ScoredFileIndexResult::IsEmpty</definition>
+        <argsstring>() const</argsstring>
+        <name>IsEmpty</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::IsEmpty</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="38" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" bodystart="38" bodyend="40"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_scored_file_index_result_1a356f2b0a357a06193986570a62a51ce0" prot="public" static="no" const="yes" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref> &gt;</type>
+        <definition>Result&lt; bool &gt; paimon::ScoredFileIndexResult::IsRemain</definition>
+        <argsstring>() const override</argsstring>
+        <name>IsRemain</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::IsRemain</qualifiedname>
+        <reimplements refid="classpaimon_1_1_file_index_result_1a09dd9fb3c6aaf92dca100bf62e6d684b">IsRemain</reimplements>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>Whether the file is remained. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="42" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_scored_file_index_result_1ae9b5bf8fbaad88226ba5381d986c8267" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_roaring_bitmap32" kindref="compound">RoaringBitmap32</ref> &amp;</type>
+        <definition>const RoaringBitmap32 &amp; paimon::ScoredFileIndexResult::GetRowPositions</definition>
+        <argsstring>() const</argsstring>
+        <name>GetRowPositions</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::GetRowPositions</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="44" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" bodystart="44" bodyend="46"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_scored_file_index_result_1a5cee3583c271c1e36e41b42b8d3a0f88" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::vector&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">float</ref> &gt; &amp;</type>
+        <definition>const std::vector&lt; float &gt; &amp; paimon::ScoredFileIndexResult::GetScores</definition>
+        <argsstring>() const</argsstring>
+        <name>GetScores</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::GetScores</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="48" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" bodystart="48" bodyend="50"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_scored_file_index_result_1a870fef02e787edfcd5cb68e36d772274" prot="public" static="no" const="yes" explicit="no" inline="no" virt="virtual">
+        <type>std::string</type>
+        <definition>std::string paimon::ScoredFileIndexResult::ToString</definition>
+        <argsstring>() const override</argsstring>
+        <name>ToString</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::ToString</qualifiedname>
+        <reimplements refid="classpaimon_1_1_file_index_result_1a8141fe8daef18f552b0bd01a1b6ad6d5">ToString</reimplements>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="52" column="17"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-func">
+      <memberdef kind="function" id="classpaimon_1_1_scored_file_index_result_1ac36f512ad323dd78bfe7d634e13740df" prot="private" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::ScoredFileIndexResult::ScoredFileIndexResult</definition>
+        <argsstring>(RoaringBitmap32 &amp;&amp;row_positions, std::vector&lt; float &gt; &amp;&amp;scores)</argsstring>
+        <name>ScoredFileIndexResult</name>
+        <qualifiedname>paimon::ScoredFileIndexResult::ScoredFileIndexResult</qualifiedname>
+        <param>
+          <type><ref refid="classpaimon_1_1_roaring_bitmap32" kindref="compound">RoaringBitmap32</ref> &amp;&amp;</type>
+          <declname>row_positions</declname>
+        </param>
+        <param>
+          <type>std::vector&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">float</ref> &gt; &amp;&amp;</type>
+          <declname>scores</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="55" column="5"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>File-local vector search result. Scores correspond to row positions in ascending order. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>paimon::FileIndexResult</label>
+        <link refid="classpaimon_1_1_file_index_result"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>paimon::ScoredFileIndexResult</label>
+        <link refid="classpaimon_1_1_scored_file_index_result"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>std::enable_shared_from_this&lt; FileIndexResult &gt;</label>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="2">
+        <label>paimon::FileIndexResult</label>
+        <link refid="classpaimon_1_1_file_index_result"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="4">
+        <label>paimon::RoaringBitmap32</label>
+        <link refid="classpaimon_1_1_roaring_bitmap32"/>
+      </node>
+      <node id="1">
+        <label>paimon::ScoredFileIndexResult</label>
+        <link refid="classpaimon_1_1_scored_file_index_result"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+        <childnode refid="4" relation="usage">
+          <edgelabel>row_positions_</edgelabel>
+        </childnode>
+      </node>
+      <node id="3">
+        <label>std::enable_shared_from_this&lt; FileIndexResult &gt;</label>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" line="33" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/scored_file_index_result.h" bodystart="33" bodyend="59"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_file_index_result_1aad183054045c2000e120921278ec81de" prot="public" virt="virtual"><scope>paimon::ScoredFileIndexResult</scope><name>And</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1aeb1a6e3256a95e3d99963023c203a292" prot="public" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1ae9b5bf8fbaad88226ba5381d986c8267" prot="public" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>GetRowPositions</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1a5cee3583c271c1e36e41b42b8d3a0f88" prot="public" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>GetScores</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1a9acaeb5def25923203bc060a553ac9b3" prot="public" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>IsEmpty</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1a356f2b0a357a06193986570a62a51ce0" prot="public" virt="virtual"><scope>paimon::ScoredFileIndexResult</scope><name>IsRemain</name></member>
+      <member refid="classpaimon_1_1_file_index_result_1a0c7e7d61e45bc4e4abe66f926d8561f1" prot="public" virt="virtual"><scope>paimon::ScoredFileIndexResult</scope><name>Or</name></member>
+      <member refid="classpaimon_1_1_file_index_result_1a6f56e0bf2501247a97f9d68456eb6e3e" prot="public" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>Remain</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1ad6873b3c7ddb983f6417300e12be6d4e" prot="private" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>row_positions_</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1ac36f512ad323dd78bfe7d634e13740df" prot="private" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>ScoredFileIndexResult</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1a85b581632fe73fe784a67af911d26cd3" prot="private" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>scores_</name></member>
+      <member refid="classpaimon_1_1_file_index_result_1aa3f2676efb24a9a9ef200fbed194c45a" prot="public" virt="non-virtual"><scope>paimon::ScoredFileIndexResult</scope><name>Skip</name></member>
+      <member refid="classpaimon_1_1_scored_file_index_result_1a870fef02e787edfcd5cb68e36d772274" prot="public" virt="virtual"><scope>paimon::ScoredFileIndexResult</scope><name>ToString</name></member>
+      <member refid="classpaimon_1_1_file_index_result_1a606652e02127a4ff25ceb16523b3a219" prot="public" virt="virtual"><scope>paimon::ScoredFileIndexResult</scope><name>~FileIndexResult</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

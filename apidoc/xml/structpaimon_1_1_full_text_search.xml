@@ -1,0 +1,153 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_full_text_search" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::FullTextSearch</compoundname>
+    <includes refid="full__text__search_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_full_text_search_1a183afd735252137dd2804bdba3066cd2" prot="public" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FullTextSearch::field_name</definition>
+        <argsstring></argsstring>
+        <name>field_name</name>
+        <qualifiedname>paimon::FullTextSearch::field_name</qualifiedname>
+        <briefdescription>
+<para>Name of the field to search within (must be a full-text indexed field). </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" line="75" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" bodystart="75" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_full_text_search_1ae1182ec479b2c34eeace57ddf98b183e" prot="public" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FullTextSearch::query</definition>
+        <argsstring></argsstring>
+        <name>query</name>
+        <qualifiedname>paimon::FullTextSearch::query</qualifiedname>
+        <briefdescription>
+<para>The JSON DSL query defined by the <computeroutput>paimon-full-text</computeroutput> engine (<computeroutput>core/src/query.rs</computeroutput> in apache/paimon-full-text). </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The root object holds exactly one query:</para>
+<para><itemizedlist>
+<listitem><para><computeroutput>match</computeroutput>: <computeroutput>query</computeroutput> (alias <computeroutput>terms</computeroutput>), optional <computeroutput>column</computeroutput>, <computeroutput>operator</computeroutput> (<computeroutput>Or</computeroutput> by default, or <computeroutput>And</computeroutput>), <computeroutput>boost</computeroutput> (1.0), <computeroutput>fuzziness</computeroutput> (0, a number, or <computeroutput>&quot;auto&quot;</computeroutput> or <computeroutput>null</computeroutput> for automatic), <computeroutput>max_expansions</computeroutput> (50) and <computeroutput>prefix_length</computeroutput> (0). The text is analyzed with the analyzer used at indexing time.</para>
+</listitem><listitem><para><computeroutput>multi_match</computeroutput>: <computeroutput>query</computeroutput>, <computeroutput>columns</computeroutput>, <computeroutput>boosts</computeroutput>, <computeroutput>operator</computeroutput>, <computeroutput>fuzziness</computeroutput>, <computeroutput>max_expansions</computeroutput> and <computeroutput>prefix_length</computeroutput>.</para>
+</listitem><listitem><para><computeroutput>match_phrase</computeroutput> (alias <computeroutput>phrase</computeroutput>): <computeroutput>query</computeroutput>, optional <computeroutput>column</computeroutput> and <computeroutput>slop</computeroutput> (0).</para>
+</listitem><listitem><para><computeroutput>boolean</computeroutput>: <computeroutput>must</computeroutput>, <computeroutput>should</computeroutput> and <computeroutput>must_not</computeroutput> lists of queries, and <computeroutput>queries</computeroutput> as <computeroutput>[occur, query]</computeroutput> pairs.</para>
+</listitem><listitem><para><computeroutput>boost</computeroutput>: <computeroutput>positive</computeroutput>, <computeroutput>negative</computeroutput> and <computeroutput>negative_boost</computeroutput> (0.5).</para>
+</listitem></itemizedlist>
+</para>
+<para>Examples: <computeroutput>{&quot;match&quot;:{&quot;query&quot;:&quot;paimon lake&quot;,&quot;operator&quot;:&quot;And&quot;}}</computeroutput> and <computeroutput>{&quot;match_phrase&quot;:{&quot;query&quot;:&quot;paimon lake&quot;,&quot;slop&quot;:1}}</computeroutput>.</para>
+<para><computeroutput>field_name</computeroutput> selects the table column. DSL column names refer to fields inside the index: the <computeroutput>full-text</computeroutput> backend defaults to <computeroutput>text</computeroutput>, while <computeroutput>lucene-fts</computeroutput> uses <computeroutput>field_name</computeroutput>.</para>
+<para>The <computeroutput>full-text</computeroutput> index passes the query to the native engine unchanged. The <computeroutput>lucene-fts</computeroutput> index translates <computeroutput>match</computeroutput>, <computeroutput>multi_match</computeroutput>, <computeroutput>match_phrase</computeroutput> and <computeroutput>boolean</computeroutput> into Lucene queries and rejects <computeroutput>boost</computeroutput> queries and a <computeroutput>fuzziness</computeroutput> other than 0. An invalid query is reported as an error <computeroutput><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></computeroutput>. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" line="100" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" bodystart="100" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_full_text_search_1a9874d1cd4093ffc4d0faaab27240eab2" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>int32_t paimon::FullTextSearch::limit</definition>
+        <argsstring></argsstring>
+        <name>limit</name>
+        <qualifiedname>paimon::FullTextSearch::limit</qualifiedname>
+        <briefdescription>
+<para>Maximum number of highest-scoring rows to return; must be positive. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Each index shard is asked for this many rows before the shard results are merged. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" line="103" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" bodystart="103" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_full_text_search_1a4da0f3b27a8fb6106fc651a67810fe2a" prot="public" static="no" mutable="no">
+        <type>std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt;</type>
+        <definition>std::optional&lt;RoaringBitmap64&gt; paimon::FullTextSearch::include_row_ids</definition>
+        <argsstring></argsstring>
+        <name>include_row_ids</name>
+        <qualifiedname>paimon::FullTextSearch::include_row_ids</qualifiedname>
+        <briefdescription>
+<para>The row ids to search within, aligned with Java <computeroutput>includeRowIds</computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The row id domain is determined by the reader: global row ids for <ref refid="classpaimon_1_1_global_index_reader" kindref="compound">GlobalIndexReader</ref> and physical file-local row ids for <ref refid="classpaimon_1_1_file_index_reader" kindref="compound">FileIndexReader</ref>. Only these rows are ranked, so an empty set matches no rows. If not set, all rows are searched. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" line="108" column="19" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" bodystart="108" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="structpaimon_1_1_full_text_search_1aa8d2160567bd79eecbc9390d3fea82b6" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>paimon::FullTextSearch::FullTextSearch</definition>
+        <argsstring>(const std::string &amp;_field_name, const std::string &amp;_query, int32_t _limit, std::optional&lt; RoaringBitmap64 &gt; _include_row_ids=std::nullopt)</argsstring>
+        <name>FullTextSearch</name>
+        <qualifiedname>paimon::FullTextSearch::FullTextSearch</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>_field_name</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>_query</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+          <declname>_limit</declname>
+        </param>
+        <param>
+          <type>std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt;</type>
+          <declname>_include_row_ids</declname>
+          <defval>std::nullopt</defval>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" line="37" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" bodystart="37" bodyend="42"/>
+      </memberdef>
+      <memberdef kind="function" id="structpaimon_1_1_full_text_search_1a5577bd897a339f34b020e673a10d4645" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type>std::shared_ptr&lt; <ref refid="structpaimon_1_1_full_text_search" kindref="compound">FullTextSearch</ref> &gt;</type>
+        <definition>std::shared_ptr&lt; FullTextSearch &gt; paimon::FullTextSearch::OffsetRange</definition>
+        <argsstring>(int64_t from, int64_t to) const</argsstring>
+        <name>OffsetRange</name>
+        <qualifiedname>paimon::FullTextSearch::OffsetRange</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>from</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>to</declname>
+        </param>
+        <briefdescription>
+<para>Returns a copy of this search for an index shard covering the global row ids [<computeroutput>from</computeroutput>, <computeroutput>to</computeroutput>] (both inclusive), as Java <computeroutput><ref refid="structpaimon_1_1_full_text_search" kindref="compound">FullTextSearch</ref>#offsetRange</computeroutput> does: <computeroutput>include_row_ids</computeroutput> is clipped to the range and shifted to shard-local row ids by subtracting <computeroutput>from</computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" line="47" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" bodystart="47" bodyend="72"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>A full-text search on a full-text indexed field, aligned with Java <computeroutput>org.apache.paimon.predicate.FullTextSearch</computeroutput>. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" line="36" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_search.h" bodystart="36" bodyend="109"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_full_text_search_1a183afd735252137dd2804bdba3066cd2" prot="public" virt="non-virtual"><scope>paimon::FullTextSearch</scope><name>field_name</name></member>
+      <member refid="structpaimon_1_1_full_text_search_1aa8d2160567bd79eecbc9390d3fea82b6" prot="public" virt="non-virtual"><scope>paimon::FullTextSearch</scope><name>FullTextSearch</name></member>
+      <member refid="structpaimon_1_1_full_text_search_1a4da0f3b27a8fb6106fc651a67810fe2a" prot="public" virt="non-virtual"><scope>paimon::FullTextSearch</scope><name>include_row_ids</name></member>
+      <member refid="structpaimon_1_1_full_text_search_1a9874d1cd4093ffc4d0faaab27240eab2" prot="public" virt="non-virtual"><scope>paimon::FullTextSearch</scope><name>limit</name></member>
+      <member refid="structpaimon_1_1_full_text_search_1a5577bd897a339f34b020e673a10d4645" prot="public" virt="non-virtual"><scope>paimon::FullTextSearch</scope><name>OffsetRange</name></member>
+      <member refid="structpaimon_1_1_full_text_search_1ae1182ec479b2c34eeace57ddf98b183e" prot="public" virt="non-virtual"><scope>paimon::FullTextSearch</scope><name>query</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

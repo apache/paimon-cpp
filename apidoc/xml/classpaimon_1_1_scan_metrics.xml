@@ -1,0 +1,305 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_scan_metrics" kind="class" language="C++" prot="public">
+    <compoundname>paimon::ScanMetrics</compoundname>
+    <includes refid="scan__metrics_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h</includes>
+    <sectiondef kind="public-static-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a39f3255bbd8f6ce819e60b94f42adbc4" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SCAN_DURATION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SCAN_DURATION</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SCAN_DURATION</qualifiedname>
+        <initializer>= &quot;lastScanDuration&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="28" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="28" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a52b042de94a3f8a723b1cc137f93cce2" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::SCAN_DURATION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>SCAN_DURATION</name>
+        <qualifiedname>paimon::ScanMetrics::SCAN_DURATION</qualifiedname>
+        <initializer>= &quot;scanDuration&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="30" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="30" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1abaaaf04d2cc1bd7b504a340c9edebb98" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SCANNED_SNAPSHOT_ID[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SCANNED_SNAPSHOT_ID</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SCANNED_SNAPSHOT_ID</qualifiedname>
+        <initializer>= &quot;lastScannedSnapshotId&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="31" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="31" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a072f3f13f66ad7c72bfee741824fdc79" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SCANNED_MANIFESTS[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SCANNED_MANIFESTS</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SCANNED_MANIFESTS</qualifiedname>
+        <initializer>= &quot;lastScannedManifests&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="32" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="32" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a643ecc462dfe996f8492f83f0e9e9e86" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SCAN_SKIPPED_TABLE_FILES[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SCAN_SKIPPED_TABLE_FILES</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SCAN_SKIPPED_TABLE_FILES</qualifiedname>
+        <initializer>= &quot;lastScanSkippedTableFiles&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="33" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="33" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a29ce3aae64a5738da9189d1cf1c17ce0" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SCAN_RESULTED_TABLE_FILES[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SCAN_RESULTED_TABLE_FILES</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SCAN_RESULTED_TABLE_FILES</qualifiedname>
+        <initializer>= &quot;lastScanResultedTableFiles&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="34" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="34" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1adb24961ab2f3fdea1dbe24e84d70c0f3" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_MANIFEST_READ_DURATION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_MANIFEST_READ_DURATION</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_MANIFEST_READ_DURATION</qualifiedname>
+        <initializer>= &quot;lastManifestReadDuration&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="37" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="37" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a0b04affdc8e7bd995388096b03aa200f" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::MANIFEST_READ_DURATION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>MANIFEST_READ_DURATION</name>
+        <qualifiedname>paimon::ScanMetrics::MANIFEST_READ_DURATION</qualifiedname>
+        <initializer>= &quot;manifestReadDuration&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="39" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="39" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1ae86e7647c0490bb4eb44b33b8a282fb8" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SNAPSHOT_CACHE_ENABLED</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED</qualifiedname>
+        <initializer>= &quot;lastSnapshotCacheEnabled&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="40" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="40" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a0a35cd5741766904632d0904b5ddead3" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SNAPSHOT_CACHE_HIT[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SNAPSHOT_CACHE_HIT</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SNAPSHOT_CACHE_HIT</qualifiedname>
+        <initializer>= &quot;lastSnapshotCacheHit&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="41" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="41" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a04e924b679d3523122e2172c0c926c20" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::SNAPSHOT_CACHE_HITS[]</definition>
+        <argsstring>[]</argsstring>
+        <name>SNAPSHOT_CACHE_HITS</name>
+        <qualifiedname>paimon::ScanMetrics::SNAPSHOT_CACHE_HITS</qualifiedname>
+        <initializer>= &quot;snapshotCacheHits&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="42" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="42" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a7c9249df7e6c6cfa910141130942d2ab" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::SNAPSHOT_CACHE_MISSES[]</definition>
+        <argsstring>[]</argsstring>
+        <name>SNAPSHOT_CACHE_MISSES</name>
+        <qualifiedname>paimon::ScanMetrics::SNAPSHOT_CACHE_MISSES</qualifiedname>
+        <initializer>= &quot;snapshotCacheMisses&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="43" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="43" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a6ed9f8d52e063581dd8204e60cf9f6bb" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SNAPSHOT_CACHE_LOAD_DURATION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SNAPSHOT_CACHE_LOAD_DURATION</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SNAPSHOT_CACHE_LOAD_DURATION</qualifiedname>
+        <initializer>= &quot;lastSnapshotCacheLoadDuration&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="44" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="44" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1aa32731273e3d505b9551dfff0c8ef85e" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>SNAPSHOT_CACHE_LOAD_DURATION</name>
+        <qualifiedname>paimon::ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION</qualifiedname>
+        <initializer>= &quot;snapshotCacheLoadDuration&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="45" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="45" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1ab352268a795d0c5c322825bce3d62aee" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_SNAPSHOT_CACHE_STORE_DURATION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_SNAPSHOT_CACHE_STORE_DURATION</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_SNAPSHOT_CACHE_STORE_DURATION</qualifiedname>
+        <initializer>= &quot;lastSnapshotCacheStoreDuration&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="46" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="46" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1abea6189c5cd557442b0707b145cb0484" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::SNAPSHOT_CACHE_STORE_DURATION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>SNAPSHOT_CACHE_STORE_DURATION</name>
+        <qualifiedname>paimon::ScanMetrics::SNAPSHOT_CACHE_STORE_DURATION</qualifiedname>
+        <initializer>= &quot;snapshotCacheStoreDuration&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="47" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="47" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1a24f31a14fd3d6aa97f9d32c3d1cdd629" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_LAZY_DECODE_SCANNED_ROWS[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_LAZY_DECODE_SCANNED_ROWS</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_LAZY_DECODE_SCANNED_ROWS</qualifiedname>
+        <initializer>= &quot;lastLazyDecodeScannedRows&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="49" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="49" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_scan_metrics_1ae5641d69b32a3d0729e799d507f98399" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::ScanMetrics::LAST_LAZY_DECODE_MATERIALIZED_ROWS[]</definition>
+        <argsstring>[]</argsstring>
+        <name>LAST_LAZY_DECODE_MATERIALIZED_ROWS</name>
+        <qualifiedname>paimon::ScanMetrics::LAST_LAZY_DECODE_MATERIALIZED_ROWS</qualifiedname>
+        <initializer>= &quot;lastLazyDecodeMaterializedRows&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="51" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="51" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Metric names for scan planning operations. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" line="26" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h" bodystart="26" bodyend="52"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_scan_metrics_1ae5641d69b32a3d0729e799d507f98399" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_LAZY_DECODE_MATERIALIZED_ROWS</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a24f31a14fd3d6aa97f9d32c3d1cdd629" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_LAZY_DECODE_SCANNED_ROWS</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1adb24961ab2f3fdea1dbe24e84d70c0f3" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_MANIFEST_READ_DURATION</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a39f3255bbd8f6ce819e60b94f42adbc4" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SCAN_DURATION</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a29ce3aae64a5738da9189d1cf1c17ce0" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SCAN_RESULTED_TABLE_FILES</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a643ecc462dfe996f8492f83f0e9e9e86" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SCAN_SKIPPED_TABLE_FILES</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a072f3f13f66ad7c72bfee741824fdc79" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SCANNED_MANIFESTS</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1abaaaf04d2cc1bd7b504a340c9edebb98" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SCANNED_SNAPSHOT_ID</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1ae86e7647c0490bb4eb44b33b8a282fb8" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SNAPSHOT_CACHE_ENABLED</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a0a35cd5741766904632d0904b5ddead3" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SNAPSHOT_CACHE_HIT</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a6ed9f8d52e063581dd8204e60cf9f6bb" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SNAPSHOT_CACHE_LOAD_DURATION</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1ab352268a795d0c5c322825bce3d62aee" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>LAST_SNAPSHOT_CACHE_STORE_DURATION</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a0b04affdc8e7bd995388096b03aa200f" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>MANIFEST_READ_DURATION</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a52b042de94a3f8a723b1cc137f93cce2" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>SCAN_DURATION</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a04e924b679d3523122e2172c0c926c20" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>SNAPSHOT_CACHE_HITS</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1aa32731273e3d505b9551dfff0c8ef85e" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>SNAPSHOT_CACHE_LOAD_DURATION</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1a7c9249df7e6c6cfa910141130942d2ab" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>SNAPSHOT_CACHE_MISSES</name></member>
+      <member refid="classpaimon_1_1_scan_metrics_1abea6189c5cd557442b0707b145cb0484" prot="public" virt="non-virtual"><scope>paimon::ScanMetrics</scope><name>SNAPSHOT_CACHE_STORE_DURATION</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
