@@ -59,6 +59,7 @@ class PAIMON_EXPORT CommitContext {
                   const std::shared_ptr<Executor>& executor,
                   const std::shared_ptr<FileSystem>& specific_file_system,
                   const std::map<std::string, std::string>& options, const std::string& branch,
+                  const std::optional<std::string>& named_branch,
                   const std::optional<std::string>& table_schema = std::nullopt,
                   const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
     ~CommitContext();
@@ -76,6 +77,14 @@ class PAIMON_EXPORT CommitContext {
     /// Returns the branch the builder resolved out of the identifier and the options.
     const std::string& GetBranch() const {
         return branch_;
+    }
+
+    /// Returns the branch the identifier of `WithCatalog()` or the `branch` option named, or
+    /// nullopt when neither did. An operator serves the branch the table it belongs to was loaded
+    /// with, so a table refuses a context naming a branch it does not serve - dropping the name
+    /// in silence would publish the changes on its own branch.
+    const std::optional<std::string>& GetNamedBranch() const {
+        return named_branch_;
     }
 
     const std::string& GetCommitUser() const {
@@ -134,9 +143,18 @@ class PAIMON_EXPORT CommitContext {
         return options_;
     }
 
+    /// Empties the options this context carries. A one-step `FileStoreCommit::Create()`-style
+    /// entry point folds them into the table it loads and clears them before handing the context
+    /// to `NewCommit`, which serves that table's own configuration alone; a caller holding a
+    /// table calls `NewCommit` with no options at all.
+    void ClearOptions() {
+        options_.clear();
+    }
+
  private:
     std::string root_path_;
     std::string branch_;
+    std::optional<std::string> named_branch_;
     std::string commit_user_;
     bool ignore_empty_commit_;
     bool use_rest_catalog_commit_;
@@ -171,9 +189,9 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @deprecated These options reach an operator only through the deprecated
     /// `FileStoreCommit::Create()`-style entry points, which merge them into the table they
-    /// load. An operator created from a `Table` serves that table's own configuration, so pass
-    /// dynamic options through `Table::Copy()` instead. A key no table serves, such as a
-    /// `header.` key, is still read from the context.
+    /// load and then hand that table a context carrying none. An operator created from a `Table`
+    /// serves that table's own configuration alone and refuses a context carrying any option at
+    /// all, so pass dynamic options through `Table::Copy()` instead.
     PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     CommitContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 

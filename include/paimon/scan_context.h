@@ -87,6 +87,14 @@ class PAIMON_EXPORT ScanContext {
         return options_;
     }
 
+    /// Empties the options this context carries. A one-step `TableScan::Create()`-style entry point
+    /// folds them into the table it loads and clears them before handing the context to `NewScan`,
+    /// which serves that table's own configuration alone; a caller holding a table calls
+    /// `NewScan` with no options at all.
+    void ClearOptions() {
+        options_.clear();
+    }
+
     std::shared_ptr<MemoryPool> GetMemoryPool() const {
         return memory_pool_;
     }
@@ -223,10 +231,10 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
     /// @deprecated These options reach an operator only through the deprecated
-    /// `TableScan::Create()`-style entry points, which merge them into the table they load. An
-    /// operator created from a `Table` serves that table's own configuration, so pass dynamic
-    /// options through `Table::Copy()` instead. A key no table serves, such as a `header.` key,
-    /// is still read from the context.
+    /// `TableScan::Create()`-style entry points, which merge them into the table they load and
+    /// then hand that table a context carrying none. An operator created from a `Table` serves
+    /// that table's own configuration alone and refuses a context carrying any option at all, so
+    /// pass dynamic options through `Table::Copy()` instead.
     PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     ScanContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 

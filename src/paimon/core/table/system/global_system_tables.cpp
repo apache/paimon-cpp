@@ -306,7 +306,16 @@ Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::Load(
     if (context.catalog == nullptr && RequiresCatalog(table_name)) {
         return Status::NotImplemented("global system table requires catalog context: ", table_name);
     }
-    return LoadForSchema(table_name, context);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                           LoadForSchema(table_name, context));
+    // The inputs this table was built from are recorded for `Copy`, which re-enters this loader
+    // with the context unchanged: Java Paimon's global system tables copy over the options they
+    // already carry and ignore the dynamic ones a copy is given.
+    SystemTable::Origin origin;
+    origin.kind = StringUtils::ToLowerCase(table_name);
+    origin.context = std::make_shared<GlobalSystemTableContext>(context);
+    system_table->origin_.emplace(std::move(origin));
+    return system_table;
 }
 
 Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::LoadForSchema(

@@ -40,8 +40,8 @@ location, through the builder's usual constructor:
 
 * :cpp:class:`paimon::ScanContextBuilder`\ ``(const std::string&)``
 * :cpp:class:`paimon::ReadContextBuilder`\ ``(const std::string&)``
-* :cpp:class:`paimon::WriteContextBuilder`\ ``(const std::string&)``
-* :cpp:class:`paimon::CommitContextBuilder`\ ``(const std::string&)``
+* :cpp:class:`paimon::WriteContextBuilder`\ ``(const std::string& root_path, const std::string& commit_user)``
+* :cpp:class:`paimon::CommitContextBuilder`\ ``(const std::string& root_path, const std::string& commit_user)``
 
 The context then goes to the table's own operator - ``NewScan()``, ``NewRead()``, ``NewWrite()`` or
 ``NewCommit()`` - which serves a table whose schema does not live under its own location as well,

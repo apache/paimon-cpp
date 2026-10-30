@@ -90,6 +90,14 @@ class PAIMON_EXPORT ReadContext {
         return options_;
     }
 
+    /// Empties the options this context carries. A one-step `TableRead::Create()`-style entry point
+    /// folds them into the table it loads and clears them before handing the context to `NewRead`,
+    /// which serves that table's own configuration alone; a caller holding a table calls
+    /// `NewRead` with no options at all.
+    void ClearOptions() {
+        options_.clear();
+    }
+
     const std::vector<std::string>& GetReadFieldNames() const {
         return read_field_names_;
     }
@@ -325,10 +333,10 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
     /// @deprecated These options reach an operator only through the deprecated
-    /// `TableRead::Create()`-style entry points, which merge them into the table they load. An
-    /// operator created from a `Table` serves that table's own configuration, so pass dynamic
-    /// options through `Table::Copy()` instead. A key no table serves, such as a `header.` key,
-    /// is still read from the context.
+    /// `TableRead::Create()`-style entry points, which merge them into the table they load and
+    /// then hand that table a context carrying none. An operator created from a `Table` serves
+    /// that table's own configuration alone and refuses a context carrying any option at all, so
+    /// pass dynamic options through `Table::Copy()` instead.
     PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     ReadContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 

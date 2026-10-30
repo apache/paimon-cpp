@@ -30,6 +30,9 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     std::unique_ptr<CommitContext> ctx) {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "commit"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+    // The load folded the context's options into the table, so the operator below serves them
+    // from there and the context carries none of its own.
+    ctx->ClearOptions();
     return table->NewCommit(std::move(ctx));
 }
 

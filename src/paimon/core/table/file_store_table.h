@@ -136,29 +136,14 @@ class FileStoreTable : public Table {
         std::unique_ptr<CommitContext> context) const override;
 
  private:
-    /// Checks the options a context carries against the configuration the table serves: its
-    /// schema's options with its dynamic options on top. A table serves that configuration and
-    /// nothing else - the operators read it and add no context option to it - so an option the
-    /// context contradicts is refused, and so is one the table was not loaded with: serving it
-    /// would drop the context value in silence behind the table's own configuration. A caller
-    /// that means to change the configuration copies the table. A table a load hands back carries
-    /// the context's own options merged in - `FileStoreTableFactory` merges them, whatever the
-    /// key, as it merges a `header.` key the transport reads - so it agrees by construction; the
-    /// refusal belongs to a table the caller already held, whose load is over. The keys a load
-    /// routes with (`branch`, `type`) are folded into the table there - by the load or by `Copy` -
-    /// and checked against the identifier and the schema instead.
-    Status CheckOptionsAgreeWithTable(
-        const TableSchema& table_schema,
-        const std::map<std::string, std::string>& context_options) const;
-
     /// Checks the identity a context carries - the path it names, the identifier it gives a
     /// catalog, the table id it records - against this table's own. The store below serves this
     /// table's files, so a context naming another table would write this table's metadata and
     /// publish it as the other's; a field that contradicts the table is refused by name, the way
-    /// `CheckOptionsAgreeWithTable` refuses a contradicting option. A field the context does not
-    /// carry is no contradiction: a write or a commit from a bare path names no catalog object.
-    /// An identifier that names a branch this table does not serve names a branch of another
-    /// table, as the operator serves the branch the table was loaded with alone.
+    /// `CheckContextCarriesNoOptions` refuses an option a context carries. A field the context
+    /// does not carry is no contradiction: a write or a commit from a bare path names no catalog
+    /// object. An identifier that names a branch this table does not serve names a branch of
+    /// another table, as the operator serves the branch the table was loaded with alone.
     /// @param kind The operator the context was handed to, which the error names.
     /// @param context_table_id The id `CommitContext` records for a catalog commit; a write
     ///        context carries none, so `NewWrite` passes null.

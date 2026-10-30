@@ -26,12 +26,15 @@
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/system/audit_log_system_table.h"
 #include "paimon/core/table/system/binlog_system_table.h"
@@ -214,8 +217,80 @@ Status SystemTable::AdoptOwnSchema() {
 }
 
 Result<std::shared_ptr<Table>> SystemTable::Copy(
-    const std::map<std::string, std::string>& /*dynamic_options*/) const {
-    return Status::NotImplemented(Name(), " system table is read-only: copying is not supported");
+    const std::map<std::string, std::string>& dynamic_options) const {
+    if (!origin_) {
+        // A table no loader built - one of the schema-only handles `LoadForSchema` hands out - has
+        // no recorded inputs to rebuild from, the same defensive case the refused write and
+        // commit below guard.
+        return Status::Invalid(Name(),
+                               " was not loaded by a system table loader: copying it is "
+                               "not supported");
+    }
+    if (origin_->context) {
+        // Java Paimon's global system tables copy over the options they already carry and ignore
+        // the dynamic ones (`CatalogOptionsTable#copy`), so the copy re-enters the same loader.
+        return GlobalSystemTableLoader::Load(origin_->kind, *origin_->context);
+    }
+    const std::shared_ptr<TableSchema>& loaded_schema = origin_->table_schema;
+    // `type` is immutable the way `FileStoreTable::Copy` holds it: the kind of a copy is named by
+    // the primary keys of the schema it serves, never by this option. A value naming another
+    // type is refused, and one naming the same type is dropped.
+    auto type_option = dynamic_options.find(Options::TYPE);
+    if (type_option != dynamic_options.end()) {
+        PAIMON_ASSIGN_OR_RAISE(TableType schema_type,
+                               TableTypeDefine::FromOptions(loaded_schema->Options()));
+        std::map<std::string, std::string> named{{Options::TYPE, type_option->second}};
+        PAIMON_ASSIGN_OR_RAISE(TableType named_type, TableTypeDefine::FromOptions(named));
+        if (named_type != schema_type) {
+            return Status::Invalid(fmt::format("Change '{}' is not supported yet.", Options::TYPE));
+        }
+    }
+    // `branch` names the branch the copy serves, the way it routes a load: a copy on the branch
+    // this view serves keeps the data table's schema, while one on another branch reads that
+    // branch's own latest schema and refuses a branch that holds none.
+    std::string current_branch = LoadBranch(MergeOptions(loaded_schema, origin_->dynamic_options));
+    std::string target_branch = current_branch;
+    auto branch_option = dynamic_options.find(Options::BRANCH);
+    if (branch_option != dynamic_options.end()) {
+        target_branch = BranchManager::NormalizeBranch(branch_option->second);
+    }
+    std::map<std::string, std::string> accumulated = origin_->dynamic_options;
+    accumulated.erase(Options::TYPE);
+    accumulated.erase(Options::BRANCH);
+    for (const auto& [key, value] : dynamic_options) {
+        if (key != Options::TYPE && key != Options::BRANCH) {
+            accumulated.insert_or_assign(key, value);
+        }
+    }
+    std::shared_ptr<TableSchema> base_schema = loaded_schema;
+    std::string data_table_name = origin_->data_table_name;
+    if (target_branch != current_branch) {
+        // The branch is read through the file system this table serves, and then served through
+        // the schema that branch holds, the same read `FileStoreTable::Copy` makes.
+        SchemaManager schema_manager(GetFileSystem(), GetRootPath(), target_branch);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               schema_manager.Latest());
+        if (!latest) {
+            return Status::Invalid(fmt::format("branch {} does not exist", target_branch));
+        }
+        base_schema = *latest;
+        // The copy answers with the logical name of the branch it now serves, composed the way
+        // `LoadFromPath` composes one: the data table's name with the branch it addresses.
+        const std::string& recorded_name =
+            data_table_name.empty() ? PathUtil::GetName(GetRootPath()) : data_table_name;
+        PAIMON_ASSIGN_OR_RAISE(
+            std::string data_table_base,
+            Identifier(Identifier::kUnknownDatabase, recorded_name).GetDataTableName());
+        data_table_name = Identifier(Identifier::kUnknownDatabase, data_table_base, target_branch)
+                              .GetObjectName();
+    }
+    std::map<std::string, std::string> schema_overridable = accumulated;
+    if (target_branch != BranchManager::DEFAULT_MAIN_BRANCH) {
+        schema_overridable[Options::BRANCH] = target_branch;
+    }
+    PAIMON_RETURN_NOT_OK(SchemaValidation::CheckImmutableOptions(*base_schema, accumulated));
+    return SystemTableLoader::Load(origin_->kind, GetFileSystem(), GetRootPath(), base_schema,
+                                   schema_overridable, data_table_name);
 }
 
 Result<std::unique_ptr<FileStoreWrite>> SystemTable::NewWrite(
@@ -246,6 +321,15 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             factory.value()(fs, table_path, table_schema, dynamic_options, effective_name));
+        // The inputs this table was built from are recorded for `Copy`, which merges new dynamic
+        // options into them and rebuilds through this same loader, the way Java Paimon's system
+        // tables re-wrap `dataTable.copy(dynamicOptions)`.
+        SystemTable::Origin origin;
+        origin.kind = StringUtils::ToLowerCase(system_table_name);
+        origin.table_schema = table_schema;
+        origin.dynamic_options = dynamic_options;
+        origin.data_table_name = data_table_name;
+        system_table->origin_.emplace(std::move(origin));
         PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
         return system_table;
     }

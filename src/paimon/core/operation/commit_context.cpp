@@ -50,6 +50,12 @@ CommitContext::CommitContext(const std::string& root_path, const std::string& co
                     // Without an identifier the option is the only name a branch can have.
                     BranchManager::NormalizeBranch(
                         options.count(Options::BRANCH) ? options.at(Options::BRANCH) : ""),
+                    // The option names the branch, and nothing else can when there is no
+                    // identifier.
+                    options.count(Options::BRANCH)
+                        ? std::optional<std::string>(BranchManager::NormalizeBranch(
+                              options.at(Options::BRANCH)))
+                        : std::nullopt,
                     /*table_schema=*/std::nullopt, /*fs_scheme_to_identifier_map=*/{}) {}
 
 CommitContext::CommitContext(
@@ -60,10 +66,12 @@ CommitContext::CommitContext(
     const std::shared_ptr<Executor>& executor,
     const std::shared_ptr<FileSystem>& specific_file_system,
     const std::map<std::string, std::string>& options, const std::string& branch,
+    const std::optional<std::string>& named_branch,
     const std::optional<std::string>& table_schema,
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map)
     : root_path_(root_path),
       branch_(branch),
+      named_branch_(named_branch),
       commit_user_(commit_user),
       ignore_empty_commit_(ignore_empty_commit),
       use_rest_catalog_commit_(use_rest_catalog_commit),
@@ -208,6 +216,10 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
         PAIMON_RETURN_NOT_OK(
             CatalogUtils::CheckNotSystemTable(impl_->identifier_.value(), "commit"));
     }
+    std::optional<std::string> identifier_branch;
+    if (impl_->identifier_) {
+        PAIMON_ASSIGN_OR_RAISE(identifier_branch, impl_->identifier_->GetBranchName());
+    }
     PAIMON_ASSIGN_OR_RAISE(std::string branch, BranchManager::ResolveBranch(
                                                    impl_->identifier_, impl_->options_,
                                                    /*explicit_branch=*/std::nullopt, "commit"));
@@ -219,8 +231,6 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
             PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
         }
         if (impl_->catalog_ != nullptr) {
-            PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
-                                   impl_->identifier_.value().GetBranchName());
             if (!identifier_branch) {
                 PAIMON_ASSIGN_OR_RAISE(std::string table_name,
                                        impl_->identifier_.value().GetDataTableName());
@@ -248,12 +258,18 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
     if (impl_->root_path_.empty()) {
         return Status::Invalid("root path is empty");
     }
+    // The branch the naming settings named, kept beside the resolved one so that a table can
+    // tell a context naming no branch - which it serves on its own - from one naming another.
+    std::optional<std::string> named_branch;
+    if (identifier_branch || impl_->options_.find(Options::BRANCH) != impl_->options_.end()) {
+        named_branch = branch;
+    }
     auto ctx = std::make_unique<CommitContext>(
         impl_->root_path_, impl_->commit_user_, impl_->ignore_empty_commit_,
         impl_->use_rest_catalog_commit_, impl_->catalog_, impl_->identifier_, impl_->table_id_,
         impl_->append_commit_check_conflict_, impl_->memory_pool_, impl_->executor_,
-        impl_->specific_file_system_, impl_->options_, branch, impl_->table_schema_,
-        impl_->fs_scheme_to_identifier_map_);
+        impl_->specific_file_system_, impl_->options_, branch, named_branch,
+        impl_->table_schema_, impl_->fs_scheme_to_identifier_map_);
     impl_->Reset();
     return ctx;
 }

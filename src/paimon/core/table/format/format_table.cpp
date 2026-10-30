@@ -228,8 +228,9 @@ Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
     std::shared_ptr<ScanContext> shared_context = std::move(context);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(shared_context, "scan"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
-                           CopySelf(shared_context->GetOptions()));
+    PAIMON_RETURN_NOT_OK(
+        ContextUtils::CheckContextCarriesNoOptions("scan", shared_context->GetOptions()));
+    std::shared_ptr<FormatTable> table = SharedSelf();
     if (shared_context->IsStreamingMode()) {
         return Status::Invalid(
             "a format table has no snapshots, so there is nothing for a streaming scan to follow");
@@ -272,6 +273,8 @@ Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
     std::unique_ptr<ReadContext> context) const {
     std::shared_ptr<ReadContext> read_context = std::move(context);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(read_context, "read"));
+    PAIMON_RETURN_NOT_OK(
+        ContextUtils::CheckContextCarriesNoOptions("read", read_context->GetOptions()));
     if (read_context->HasVectorOrFullTextSearch()) {
         return Status::NotImplemented(
             "VectorSearch or FullTextSearch is not supported for format tables");
@@ -279,17 +282,17 @@ Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
     if (PredicateUtils::ContainsFullTextMatch(read_context->GetPredicate())) {
         return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
-                           CopySelf(read_context->GetOptions()));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
-                           FormatTableRead::Create(table, read_context));
+                           FormatTableRead::Create(SharedSelf(), read_context));
     return std::unique_ptr<TableRead>(std::move(read));
 }
 
 Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
     std::unique_ptr<WriteContext> context) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "write"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, CopySelf(context->GetOptions()));
+    PAIMON_RETURN_NOT_OK(
+        ContextUtils::CheckContextCarriesNoOptions("write", context->GetOptions()));
+    std::shared_ptr<FormatTable> table = SharedSelf();
     if (context->GetCatalog() != nullptr) {
         return Status::Invalid(
             "WithCatalog() requires a native table; a format table takes a WriteContextBuilder "
@@ -319,8 +322,9 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
 Result<std::unique_ptr<FileStoreCommit>> FormatTable::NewCommit(
     std::unique_ptr<CommitContext> context) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "commit"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
-                           CopySelf(context->GetOptions()));
+    PAIMON_RETURN_NOT_OK(
+        ContextUtils::CheckContextCarriesNoOptions("commit", context->GetOptions()));
+    std::shared_ptr<FormatTable> given_table = SharedSelf();
     if (!context->IgnoreEmptyCommit()) {
         return Status::Invalid(
             "a format table cannot record an empty commit: keeping one means writing a "

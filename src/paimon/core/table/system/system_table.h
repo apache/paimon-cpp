@@ -37,6 +37,7 @@ class ReadContext;
 class ScanContext;
 class TableSchema;
 class SystemTableSchema;
+struct GlobalSystemTableContext;
 
 /// Parsed information for a table-scoped system table path.
 struct SystemTablePath {
@@ -70,9 +71,12 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     /// Returns the read-only schema this system table exposes. It is not the data table's schema.
     virtual Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const = 0;
 
-    /// A system table is read-only, so copying it, writing it and committing for it are refused
-    /// instead of routed to the data table underneath. That table serves them through its own
-    /// `Table`.
+    /// Copies this system table with `dynamic_options` on top of the ones it was loaded with,
+    /// rebuilding it through the loader that created it - the way Java Paimon's system tables
+    /// re-wrap `dataTable.copy(dynamicOptions)`. A global system table of the `sys` database
+    /// copies over the options it already carries and ignores the dynamic ones, as Java's do.
+    /// Writing and committing stay refused: this view is read-only, and the data table
+    /// underneath serves them through its own `Table`.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
@@ -111,7 +115,25 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     friend class GlobalSystemTableLoader;
 
  private:
+    /// The inputs the loader that created this table used, recorded so `Copy` rebuilds through
+    /// the same loader. A table-scoped system table records the `SystemTableLoader::Load`
+    /// arguments; a global one records the `GlobalSystemTableLoader::Load` ones instead.
+    struct Origin {
+        /// System table kind, lower-case, the way the registry knows it.
+        std::string kind;
+        /// Data table schema the view was loaded with. Null for a global system table.
+        std::shared_ptr<TableSchema> table_schema;
+        /// Dynamic options the table was loaded with, on top of the schema's own.
+        std::map<std::string, std::string> dynamic_options;
+        /// Logical name of the data table underneath, branch included. May be empty for a
+        /// table-scoped table, whose loader then falls back to the directory name.
+        std::string data_table_name;
+        /// Context a global system table was loaded with. Null for a table-scoped table.
+        std::shared_ptr<const GlobalSystemTableContext> context;
+    };
+
     std::string name_;
+    std::optional<Origin> origin_;
 };
 
 /// Loads system table implementations from parsed table identifiers or table paths.
@@ -125,7 +147,7 @@ class SystemTableLoader {
         const std::string& system_table_name, const std::shared_ptr<FileSystem>& fs,
         const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
         const std::map<std::string, std::string>& dynamic_options,
-        const std::string& data_table_name = "");
+        const std::string& data_table_name);
 
     static Result<std::optional<SystemTablePath>> TryParsePath(const std::string& path);
 

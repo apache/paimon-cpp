@@ -27,6 +27,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
+#include "paimon/commit_message.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
@@ -42,11 +43,15 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/read_context.h"
+#include "paimon/reader/batch_reader.h"
+#include "paimon/record_batch.h"
 #include "paimon/scan_context.h"
 #include "paimon/snapshot/snapshot_info.h"
 #include "paimon/table/format/format_table.h"
+#include "paimon/table/source/plan.h"
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/write_context.h"
 
@@ -311,6 +316,128 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
         "tbl1$options system table is read-only: committing for it is not supported");
 }
 
+// A system table a catalog hands out is copied the way a data table is. The dynamic options the
+// copy is given are served by it - a `tbl$ro` view that selected a snapshot through `Copy` reads
+// that snapshot's rows - and a `branch` option routes the copy to the branch it names, the way
+// Java Paimon's system tables re-wrap `dataTable.copy(dynamicOptions)`.
+TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK(catalog.CreateDatabase("db1", options, /*ignore_if_exists=*/true));
+
+    auto typed_schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
+    ::ArrowSchema schema;
+    ASSERT_TRUE(arrow::ExportSchema(*typed_schema, &schema).ok());
+    const Identifier identifier("db1", "tbl1");
+    ASSERT_OK(catalog.CreateTable(identifier, &schema, /*partition_keys=*/{},
+                                  /*primary_keys=*/{}, options, /*ignore_if_exists=*/false));
+    ArrowSchemaRelease(&schema);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> managed, catalog.GetTable(identifier));
+    auto write_and_commit_two_rows = [](const std::shared_ptr<Table>& table) {
+        WriteContextBuilder write_builder(table->GetRootPath(), "commit-user");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
+                             table->NewWrite(std::move(write_context)));
+        arrow::Int32Builder ids_builder;
+        ASSERT_TRUE(ids_builder.AppendValues({1, 2}).ok());
+        std::shared_ptr<arrow::Array> ids_array;
+        ASSERT_TRUE(ids_builder.Finish(&ids_array).ok());
+        auto struct_array =
+            arrow::StructArray::Make({ids_array},
+                                     {arrow::field("id", arrow::int32(), /*nullable=*/false)})
+                .ValueOrDie();
+        ::ArrowArray arrow_array;
+        ASSERT_TRUE(arrow::ExportArray(*struct_array, &arrow_array).ok());
+        RecordBatchBuilder batch_builder(&arrow_array);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             batch_builder.SetBucket(0).Finish());
+        ASSERT_OK(write->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                             write->PrepareCommit());
+        CommitContextBuilder commit_builder(table->GetRootPath(), "commit-user");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             commit_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                             table->NewCommit(std::move(commit_context)));
+        ASSERT_OK(commit->Commit(messages));
+        ASSERT_OK(write->Close());
+    };
+    // Two commits, so snapshot 1 holds the first two rows and snapshot 2 all four.
+    write_and_commit_two_rows(managed);
+    write_and_commit_two_rows(managed);
+
+    auto count_rows = [](const std::shared_ptr<Table>& table) -> Result<int64_t> {
+        ScanContextBuilder scan_builder(table->GetRootPath());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
+                               table->NewScan(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
+        ReadContextBuilder read_builder(table->GetRootPath());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
+                               table->NewRead(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
+                               read->CreateReader(plan->Splits()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> rows,
+                               ReadResultCollector::CollectResult(std::move(reader)));
+        return rows ? rows->length() : 0;
+    };
+
+    // A copy of `tbl$ro` selects the snapshot its options name: the view reads every row, the
+    // copy on snapshot 1 reads the two rows that commit wrote.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> ro, catalog.GetTable(Identifier("db1", "tbl1$ro")));
+    ASSERT_OK_AND_ASSIGN(int64_t all_rows, count_rows(ro));
+    EXPECT_EQ(all_rows, 4);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> selected,
+        ro->Copy({{Options::SCAN_MODE, "from-snapshot"}, {Options::SCAN_SNAPSHOT_ID, "1"}}));
+    ASSERT_OK_AND_ASSIGN(int64_t selected_rows, count_rows(selected));
+    EXPECT_EQ(selected_rows, 2);
+
+    // The dev branch holds its own schema and one commit of two rows of its own.
+    SchemaManager dev_schema_manager(core_options.GetFileSystem(), managed->GetRootPath(), "dev");
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> dev_schema,
+                         dev_schema_manager.CreateTable(typed_schema, /*partition_keys=*/{},
+                                                        /*primary_keys=*/{}, options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_managed,
+                         catalog.GetTable(Identifier("db1", "tbl1$branch_dev")));
+    write_and_commit_two_rows(dev_managed);
+
+    // A `branch` option routes the copy to the branch it names: the copy answers with the branch
+    // view's name and reads the rows that branch holds.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_selected, ro->Copy({{Options::BRANCH, "dev"}}));
+    EXPECT_EQ(dev_selected->Name(), "tbl1$branch_dev$ro");
+    ASSERT_OK_AND_ASSIGN(int64_t dev_rows, count_rows(dev_selected));
+    EXPECT_EQ(dev_rows, 2);
+
+    // A view of a branch keeps serving that branch through a copy.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_ro,
+                         catalog.GetTable(Identifier("db1", "tbl1$branch_dev$ro")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_ro_copy, dev_ro->Copy({}));
+    EXPECT_EQ(dev_ro_copy->Name(), "tbl1$branch_dev$ro");
+    ASSERT_OK_AND_ASSIGN(int64_t dev_ro_rows, count_rows(dev_ro_copy));
+    EXPECT_EQ(dev_ro_rows, 2);
+
+    // The metadata tables copy the same way: the snapshots view serves the branch its copy names,
+    // and a branch holding no schema does not exist.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> snapshots,
+                         catalog.GetTable(Identifier("db1", "tbl1$snapshots")));
+    ASSERT_OK_AND_ASSIGN(int64_t main_snapshot_rows, count_rows(snapshots));
+    EXPECT_EQ(main_snapshot_rows, 2);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_snapshots,
+                         snapshots->Copy({{Options::BRANCH, "dev"}}));
+    ASSERT_OK_AND_ASSIGN(int64_t dev_snapshot_rows, count_rows(dev_snapshots));
+    EXPECT_EQ(dev_snapshot_rows, 1);
+    ASSERT_NOK_WITH_MSG(snapshots->Copy({{Options::BRANCH, "missing"}}),
+                        "branch missing does not exist");
+}
+
 TEST(FileSystemCatalogTest, TestGetTableServesTheSysDatabase) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
@@ -341,6 +468,33 @@ TEST(FileSystemCatalogTest, TestGetTableServesTheSysDatabase) {
     ASSERT_OK_AND_ASSIGN(auto catalog_options,
                          catalog->GetTable(Identifier("sys", "catalog_options")));
     ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(catalog_options) != nullptr);
+
+    // A global system table copies over the options it already carries and ignores the dynamic
+    // ones, as Java Paimon's `CatalogOptionsTable#copy` does, so its copy reads the same rows.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied_catalog_options,
+                         catalog_options->Copy({{"ignored", "on-top"}}));
+    EXPECT_NE(copied_catalog_options, catalog_options);
+    ScanContextBuilder copied_scan_builder(copied_catalog_options->GetRootPath());
+    copied_scan_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> copied_scan_context,
+                         copied_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> copied_scan,
+                         copied_catalog_options->NewScan(std::move(copied_scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> copied_plan, copied_scan->CreatePlan());
+    ReadContextBuilder copied_read_builder(copied_catalog_options->GetRootPath());
+    copied_read_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> copied_read_context,
+                         copied_read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> copied_read,
+                         copied_catalog_options->NewRead(std::move(copied_read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> copied_reader,
+                         copied_read->CreateReader(copied_plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch copied_result, copied_reader->NextBatch());
+    auto& [copied_array, copied_c_schema] = copied_result;
+    auto maybe_copied_batch = arrow::ImportRecordBatch(copied_array.get(), copied_c_schema.get());
+    ASSERT_TRUE(maybe_copied_batch.ok()) << maybe_copied_batch.status().ToString();
+    auto copied_batch = std::move(maybe_copied_batch).ValueUnsafe();
+    ASSERT_GE(copied_batch->num_rows(), 1);
 
     ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("sys", "nope")), "not exist");
 

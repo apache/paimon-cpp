@@ -190,22 +190,19 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
                                CatalogUtils::BranchIdentifier(identifier_, target_branch));
         branch_identifier.emplace(std::move(branch_named));
     }
-    // The schema options name the branch the copy serves, the way `SwitchToBranch` styles them:
-    // another branch names itself in them, the main branch carries no `branch` option. The key is
-    // folded into the schema alone, not into the dynamic options the copy accumulates.
-    std::map<std::string, std::string> schema_overridable = overridable;
-    if (target_branch != CurrentBranch() && target_branch != BranchManager::DEFAULT_MAIN_BRANCH) {
-        schema_overridable[Options::BRANCH] = target_branch;
-    }
-    PAIMON_RETURN_NOT_OK(SchemaValidation::CheckImmutableOptions(*base_schema, overridable));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
-                           base_schema->MergeOptions(schema_overridable));
     std::map<std::string, std::string> accumulated = dynamic_options_;
     accumulated.erase(Options::TYPE);
     accumulated.erase(Options::BRANCH);
     for (const auto& [key, value] : overridable) {
         accumulated.insert_or_assign(key, value);
     }
+    std::map<std::string, std::string> schema_overridable = accumulated;
+    if (target_branch != CurrentBranch() && target_branch != BranchManager::DEFAULT_MAIN_BRANCH) {
+        schema_overridable[Options::BRANCH] = target_branch;
+    }
+    PAIMON_RETURN_NOT_OK(SchemaValidation::CheckImmutableOptions(*base_schema, accumulated));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
+                           base_schema->MergeOptions(schema_overridable));
     // A copy resolves its file system from its own merged options, so it takes over no manager of
     // the table it was copied from: the store builds both over the resolution the copy names.
     return FileStoreTable::Create(
@@ -266,10 +263,6 @@ Status FileStoreTable::RestoreRealtimeCommittedProgress(
 Status FileStoreTable::CheckOptionsAgreeWithTable(
     const TableSchema& table_schema,
     const std::map<std::string, std::string>& context_options) const {
-    // The configuration the operators serve: the schema's own options as the load styled them,
-    // with the dynamic options of the load on top. `NewXxx` reads it through `store_->GetOptions()`
-    // and adds nothing from a context, so a context option that is not among these keys is one the
-    // operators cannot apply.
     std::map<std::string, std::string> table_options = table_schema.Options();
     for (const auto& [key, value] : dynamic_options_) {
         table_options.insert_or_assign(key, value);

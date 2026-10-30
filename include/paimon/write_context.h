@@ -46,7 +46,8 @@ class PAIMON_EXPORT WriteContext {
     WriteContext(const std::string& root_path, const std::string& commit_user,
                  bool is_streaming_mode, bool ignore_num_bucket_check, bool ignore_previous_files,
                  bool enable_multi_thread_spill, const std::optional<int32_t>& write_id,
-                 const std::string& branch, const std::vector<std::string>& write_schema,
+                 const std::string& branch, const std::optional<std::string>& named_branch,
+                 const std::vector<std::string>& write_schema,
                  const std::shared_ptr<MemoryPool>& memory_pool,
                  const std::shared_ptr<Executor>& executor, const std::string& temp_directory,
                  const std::shared_ptr<FileSystem>& specific_file_system,
@@ -81,6 +82,14 @@ class PAIMON_EXPORT WriteContext {
         return options_;
     }
 
+    /// Empties the options this context carries. A one-step `FileStoreWrite::Create()`-style entry
+    /// point folds them into the table it loads and clears them before handing the context to
+    /// `NewWrite`, which serves that table's own configuration alone; a caller holding a table
+    /// calls `NewWrite` with no options at all.
+    void ClearOptions() {
+        options_.clear();
+    }
+
     bool IsStreamingMode() const {
         return is_streaming_mode_;
     }
@@ -99,6 +108,14 @@ class PAIMON_EXPORT WriteContext {
 
     const std::string& GetBranch() const {
         return branch_;
+    }
+
+    /// Returns the branch the identifier of `WithCatalog()`, the `branch` option or
+    /// `WithBranch()` named, or nullopt when none of them did. An operator serves the branch the
+    /// table it belongs to was loaded with, so a table refuses a context naming a branch it does
+    /// not serve - dropping the name in silence would publish the changes on its own branch.
+    const std::optional<std::string>& GetNamedBranch() const {
+        return named_branch_;
     }
 
     const std::vector<std::string>& GetWriteSchema() const {
@@ -156,6 +173,7 @@ class PAIMON_EXPORT WriteContext {
     std::string root_path_;
     std::string commit_user_;
     std::string branch_;
+    std::optional<std::string> named_branch_;
     bool is_streaming_mode_;
     bool ignore_num_bucket_check_;
     bool ignore_previous_files_;
@@ -192,10 +210,10 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
     /// @deprecated These options reach an operator only through the deprecated
-    /// `FileStoreWrite::Create()`-style entry points, which merge them into the table they load.
-    /// An operator created from a `Table` serves that table's own configuration, so pass dynamic
-    /// options through `Table::Copy()` instead. A key no table serves, such as a `header.` key,
-    /// is still read from the context.
+    /// `FileStoreWrite::Create()`-style entry points, which merge them into the table they load
+    /// and then hand that table a context carrying none. An operator created from a `Table`
+    /// serves that table's own configuration alone and refuses a context carrying any option at
+    /// all, so pass dynamic options through `Table::Copy()` instead.
     PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     WriteContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 

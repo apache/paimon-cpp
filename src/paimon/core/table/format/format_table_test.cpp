@@ -763,7 +763,7 @@ TEST(FormatTableTest, TestCatalogManagedPartitionsAreRejected) {
     ASSERT_TRUE(dynamic_table.status().IsNotImplemented()) << dynamic_table.status().ToString();
 }
 
-TEST(FormatTableTest, TestTheTableOperatorsValidateOptionsGivenAtTheCall) {
+TEST(FormatTableTest, TestTheTableOperatorsRefuseAContextOption) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -774,22 +774,26 @@ TEST(FormatTableTest, TestTheTableOperatorsValidateOptionsGivenAtTheCall) {
     ScanContextBuilder scan_builder(dir->Str());
     scan_builder.SetOptions(refused);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan_context)), "metastore.partitioned-table");
+    ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan_context)),
+                        "the scan context carries option 'metastore.partitioned-table'");
 
     ReadContextBuilder read_builder(dir->Str());
     read_builder.SetOptions(refused);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_context)), "metastore.partitioned-table");
+    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_context)),
+                        "the read context carries option 'metastore.partitioned-table'");
 
     WriteContextBuilder write_builder(dir->Str(), "test-user");
     write_builder.SetOptions(refused);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write_context)), "metastore.partitioned-table");
+    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write_context)),
+                        "the write context carries option 'metastore.partitioned-table'");
 
     CommitContextBuilder commit_builder(dir->Str(), "test-user");
     commit_builder.SetOptions(refused);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit_context)), "metastore.partitioned-table");
+    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit_context)),
+                        "the commit context carries option 'metastore.partitioned-table'");
 }
 
 TEST(FormatTableTest, TestValueOnlyPartitionCannotBeNamedAfterThisTablesMetadata) {
@@ -2805,13 +2809,14 @@ TEST(FormatTableTest, TestALoadedFormatTableIsServedThroughItsOwnOperators) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> path_context, path_builder.Finish());
     ASSERT_NOK(TableScan::Create(std::move(path_context)));
 
-    // Options given at the call still win over the ones the schema stored, so a file is rolled
-    // per row rather than one file holding all three.
+    // The way to serve a different value is a copy that carries it, so a file is rolled per
+    // row rather than one file holding all three.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> rolled,
+                         external->Copy({{Options::TARGET_FILE_ROW_NUM, "1"}}));
     WriteContextBuilder write_builder(external->Location(), "test-user");
-    write_builder.SetOptions({{Options::TARGET_FILE_ROW_NUM, "1"}});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
-                         external->NewWrite(std::move(write_context)));
+                         rolled->NewWrite(std::move(write_context)));
     for (int32_t i = 1; i <= 3; i++) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
                              MakeBatch({i}, {"name"}, "20240101", {{"dt", "20240101"}}));
@@ -3035,24 +3040,28 @@ TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedByTheTableOperators
     ScanContextBuilder scan_builder(dir->Str());
     scan_builder.SetOptions(branch);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan_context)), "has no branches");
+    ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan_context)),
+                        "the scan context carries option 'branch'");
 
     ReadContextBuilder read_builder(dir->Str());
     read_builder.SetOptions(branch);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_context)), "has no branches");
+    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_context)),
+                        "the read context carries option 'branch'");
 
     WriteContextBuilder write_builder(dir->Str(), "test-user");
     write_builder.SetOptions(branch);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write_context)), "has no branches");
+    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write_context)),
+                        "the write context carries option 'branch'");
 
     // The commit is the one that matters most: an overwrite clears what it replaces before it
     // publishes anything, so the refusal has to come before the deleting does.
     CommitContextBuilder commit_builder(dir->Str(), "test-user");
     commit_builder.SetOptions(branch);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit_context)), "has no branches");
+    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit_context)),
+                        "the commit context carries option 'branch'");
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<FormatTableScan> scan,

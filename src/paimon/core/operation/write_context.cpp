@@ -38,6 +38,7 @@ WriteContext::WriteContext(
     const std::string& root_path, const std::string& commit_user, bool is_streaming_mode,
     bool ignore_num_bucket_check, bool ignore_previous_files, bool enable_multi_thread_spill,
     const std::optional<int32_t>& write_id, const std::string& branch,
+    const std::optional<std::string>& named_branch,
     const std::vector<std::string>& write_schema, const std::shared_ptr<MemoryPool>& memory_pool,
     const std::shared_ptr<Executor>& executor, const std::string& temp_directory,
     const std::shared_ptr<FileSystem>& specific_file_system,
@@ -49,6 +50,7 @@ WriteContext::WriteContext(
     : root_path_(root_path),
       commit_user_(commit_user),
       branch_(branch),
+      named_branch_(named_branch),
       is_streaming_mode_(is_streaming_mode),
       ignore_num_bucket_check_(ignore_num_bucket_check),
       ignore_previous_files_(ignore_previous_files),
@@ -233,14 +235,16 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         PAIMON_RETURN_NOT_OK(
             CatalogUtils::CheckNotSystemTable(impl_->identifier_.value(), "write"));
     }
+    std::optional<std::string> identifier_branch;
+    if (impl_->identifier_) {
+        PAIMON_ASSIGN_OR_RAISE(identifier_branch, impl_->identifier_->GetBranchName());
+    }
     PAIMON_ASSIGN_OR_RAISE(
         std::string branch,
         BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "write"));
     if (impl_->catalog_ != nullptr && !BranchManager::IsMainBranch(branch)) {
         // Refused here rather than at the commit of what is written to the branch.
         PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
-                               impl_->identifier_->GetBranchName());
         if (!identifier_branch) {
             PAIMON_ASSIGN_OR_RAISE(std::string table_name, impl_->identifier_->GetDataTableName());
             return Status::Invalid(fmt::format(
@@ -262,13 +266,20 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
             arrow::SetCpuThreadPoolCapacity(impl_->spill_thread_number_));
     }
+    // The branch the naming settings named, kept beside the resolved one so that a table can
+    // tell a context naming no branch - which it serves on its own - from one naming another.
+    std::optional<std::string> named_branch;
+    if (impl_->branch_ || identifier_branch ||
+        impl_->options_.find(Options::BRANCH) != impl_->options_.end()) {
+        named_branch = branch;
+    }
     auto ctx = std::make_unique<WriteContext>(
         impl_->root_path_, impl_->commit_user_, impl_->is_streaming_mode_,
         impl_->ignore_num_bucket_check_, impl_->ignore_previous_files_, enable_multi_thread_spill,
-        impl_->write_id_, branch, impl_->write_schema_, impl_->memory_pool_, impl_->executor_,
-        impl_->temp_directory_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
-        impl_->realtime_context_, impl_->options_, impl_->table_schema_, impl_->catalog_,
-        impl_->identifier_);
+        impl_->write_id_, branch, named_branch, impl_->write_schema_, impl_->memory_pool_,
+        impl_->executor_, impl_->temp_directory_, impl_->specific_file_system_,
+        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
+        impl_->table_schema_, impl_->catalog_, impl_->identifier_);
     impl_->Reset();
     return ctx;
 }

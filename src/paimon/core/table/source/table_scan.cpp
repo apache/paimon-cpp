@@ -30,6 +30,9 @@ namespace paimon {
 Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context) {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*context));
+    // The load folded the context's options into the table, so the operator below serves them
+    // from there and the context carries none of its own.
+    context->ClearOptions();
     return table->NewScan(std::move(context));
 }
 

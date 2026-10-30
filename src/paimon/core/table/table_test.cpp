@@ -368,6 +368,62 @@ TEST(TableTest, TestACopyOfACopyServesTheLatestValueOfARepeatedDynamicOption) {
                          copy->NewRead(std::move(read_context)));
 }
 
+TEST(TableTest, TestACopySwitchingBranchesKeepsItsAccumulatedDynamicOptions) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/tbl";
+    const Identifier identifier("db", "tbl");
+
+    SchemaManager schema_manager(fs, path, "main");
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> created,
+        schema_manager.CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                                   {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    // The dev branch holds its own schema, one the sequence-number switch never reached.
+    SchemaManager dev_schema_manager(fs, path, "dev");
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> dev_schema,
+        dev_schema_manager.CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
+                                       {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         FileStoreTable::Create(
+                             fs, path, std::shared_ptr<TableSchema>(std::move(created)), identifier,
+                             /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
+                             /*dynamic_options=*/{}));
+
+    // A copy onto another branch still applies the options a previous copy accumulated - the dev
+    // schema omits the sequence-number switch, yet the copy serves it enabled, or a read of
+    // _SEQUENCE_NUMBER through it fails while the record names the switch as effective.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> with_sequence,
+                         table->Copy({{Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_copy,
+                         with_sequence->Copy({{Options::BRANCH, "dev"}}));
+    auto dev_file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(dev_copy);
+    ASSERT_TRUE(dev_file_store_copy != nullptr);
+    EXPECT_EQ("dev", dev_file_store_copy->CurrentBranch());
+    std::shared_ptr<DataSchema> dev_copied_schema =
+        std::dynamic_pointer_cast<DataSchema>(dev_copy->LatestSchema());
+    ASSERT_TRUE(dev_copied_schema != nullptr);
+    EXPECT_EQ("true", dev_copied_schema->Options().at(Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED));
+    ReadContextBuilder read_builder(path);
+    read_builder.SetReadFieldNames({"id", "_SEQUENCE_NUMBER"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
+                         dev_copy->NewRead(std::move(read_context)));
+
+    // A key both the accumulated options and this call name takes this call's value.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> off,
+        with_sequence->Copy(
+            {{Options::BRANCH, "dev"}, {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "false"}}));
+    std::shared_ptr<DataSchema> off_schema =
+        std::dynamic_pointer_cast<DataSchema>(off->LatestSchema());
+    ASSERT_TRUE(off_schema != nullptr);
+    EXPECT_EQ("false", off_schema->Options().at(Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED));
+}
+
 TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnSchema) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);

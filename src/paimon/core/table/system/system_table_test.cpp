@@ -230,7 +230,7 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> system_table,
                          SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
-                                                 /*dynamic_options=*/{}));
+                                                 /*dynamic_options=*/{}, /*data_table_name=*/""));
     ASSERT_EQ(system_table->Name(), "table$ro");
 
     // A view loaded with the logical name of its data table answers with it, branch included:
@@ -247,7 +247,11 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
     ASSERT_EQ(arrow_schema->field(1)->type()->id(), arrow::Type::INT32);
 }
 
-TEST(SystemTableTest, TestCopyIsRefused) {
+// A copy of a system table merges the dynamic options into the ones it was loaded with and
+// rebuilds through the same loader, the way Java Paimon's system tables re-wrap
+// `dataTable.copy(dynamicOptions)`: the copy keeps the view's identity while being a table of
+// its own, and an option the data table's own `Copy` would refuse is refused here too.
+TEST(SystemTableTest, TestCopyRebuildsThroughTheLoader) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
@@ -255,8 +259,19 @@ TEST(SystemTableTest, TestCopyIsRefused) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> system_table,
                          SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
-                                                 /*dynamic_options=*/{}));
-    ASSERT_NOK_WITH_MSG(system_table->Copy({{"probe", "on-top"}}), "copying is not supported");
+                                                 /*dynamic_options=*/{}, /*data_table_name=*/""));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy, system_table->Copy({}));
+    EXPECT_EQ(copy->Name(), system_table->Name());
+    EXPECT_NE(copy, system_table);
+    EXPECT_TRUE(std::dynamic_pointer_cast<ReadOptimizedSystemTable>(copy) != nullptr);
+
+    // The dynamic options a copy is given reach the data table underneath it, so an immutable one
+    // is refused the way the data table's own `Copy` refuses it, and `type` names the kind of that
+    // table, which no copy changes.
+    ASSERT_NOK_WITH_MSG(system_table->Copy({{Options::BUCKET_KEY, "other"}}),
+                        "Change 'bucket-key' is not supported yet.");
+    ASSERT_NOK_WITH_MSG(system_table->Copy({{Options::TYPE, "format-table"}}),
+                        "Change 'type' is not supported yet.");
 }
 
 TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
@@ -400,7 +415,7 @@ TEST(SystemTableTest, TestNewReadRefusesAFullTextMatchPredicate) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> in_memory,
                          SystemTableLoader::Load(OptionsSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
-                                                 /*dynamic_options=*/{}));
+                                                 /*dynamic_options=*/{}, /*data_table_name=*/""));
     ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
                                             options);
 
