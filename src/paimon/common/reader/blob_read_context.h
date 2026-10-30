@@ -27,10 +27,13 @@
 
 namespace paimon {
 
+/// Bounds one blob batch and controls whether its values need to be materialized.
 struct BlobBatchRequest {
-    /// Upper bound on selected rows before outer deletion-vector filtering.
-    int32_t max_rows;
-    bool read_payload;
+    /// Upper bound on selected rows before outer deletion-vector filtering. Must be positive
+    /// when the request is issued.
+    int32_t max_rows = 0;
+    /// False advances rows without reading their payloads.
+    bool read_payload = true;
 };
 
 /// Shared by one file's blob reader and its fallback segment. A request stays active for the
@@ -46,6 +49,7 @@ class PAIMON_EXPORT BlobReadContextAwareBuilder {
  public:
     virtual ~BlobReadContextAwareBuilder() = default;
 
+    /// Shares a file's request context with the blob reader created by this builder.
     virtual void SetBlobReadContext(const std::shared_ptr<BlobReadContext>& context) = 0;
 };
 

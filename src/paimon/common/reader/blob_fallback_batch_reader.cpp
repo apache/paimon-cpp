@@ -153,7 +153,7 @@ Result<int64_t> BlobFallbackBatchReader::FillWindow(size_t group_idx, int64_t wa
             int64_t remaining = range.Count() - cursor.gap_range_pos;
             int64_t take = std::min(remaining, run_end - collected);
             Chunk chunk{nullptr, take, {}};
-            if (row_id_field_idx_ >= 0) {
+            if (group_idx == 0 && row_id_field_idx_ >= 0) {
                 chunk.gap_row_ids.reserve(take);
                 for (int64_t k = 0; k < take; k++) {
                     chunk.gap_row_ids.push_back(range.from + cursor.gap_range_pos + k);

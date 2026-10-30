@@ -591,6 +591,14 @@ TEST_F(BlobFallbackBatchReaderTest, TestCreateValidation) {
                                                         1024, GetArrowPool(pool_)),
                         "should not be empty");
 
+    // File segments must share a context so their readers honor the read/skip row limits.
+    std::vector<std::vector<BlobFallbackBatchReader::Segment>> without_context;
+    without_context.push_back(MakeGroup({SegmentSpec::File({"b0"})}, 1024));
+    without_context[0][0].blob_context.reset();
+    ASSERT_NOK_WITH_MSG(BlobFallbackBatchReader::Create(std::move(without_context), read_schema_,
+                                                        1024, GetArrowPool(pool_)),
+                        "file segment needs a blob read context");
+
     // a gap segment must cover at least one selected row id
     std::vector<std::vector<BlobFallbackBatchReader::Segment>> with_empty_gap;
     with_empty_gap.push_back(MakeGroup({SegmentSpec::File({"b0"})}, 1024));

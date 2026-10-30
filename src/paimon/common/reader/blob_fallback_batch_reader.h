@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "arrow/type.h"
-#include "paimon/format/blob/blob_read_context.h"
+#include "paimon/common/reader/blob_read_context.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/reader/file_batch_reader.h"

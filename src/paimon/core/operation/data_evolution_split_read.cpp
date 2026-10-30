@@ -1283,7 +1283,8 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobFallbackR
                                        CreateRawFileReadersWithMeta(
                                            partition, {file}, file_read_schema,
                                            /*predicate=*/nullptr, group_dv_factory, file_ranges,
-                                           data_file_path_factory, blob_format_options));
+                                           data_file_path_factory, blob_format_options,
+                                           /*attach_blob_context=*/true));
                 if (file_readers.size() != 1) {
                     return Status::Invalid("Unexpected: blob fallback file reader was skipped.");
                 }

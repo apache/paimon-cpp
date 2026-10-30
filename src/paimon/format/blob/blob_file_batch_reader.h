@@ -28,7 +28,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_defs.h"
-#include "paimon/format/blob/blob_read_context.h"
+#include "paimon/common/reader/blob_read_context.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/predicate/predicate.h"
@@ -100,6 +100,9 @@ namespace paimon::blob {
 ///
 /// Note:
 /// - Current version is 1.
+///
+/// Batch prefetching is not supported. If added, it must honor BlobReadContext's row limit
+/// and read/skip mode for each call. Skip results must not be reused for payload reads.
 class BlobFileBatchReader : public FileBatchReader {
  public:
     /// `emit_placeholder_sentinel` controls how placeholder entries (bin_length ==

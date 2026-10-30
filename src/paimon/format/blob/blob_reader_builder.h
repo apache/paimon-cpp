@@ -22,10 +22,10 @@
 #include <memory>
 #include <string>
 
+#include "paimon/common/reader/blob_read_context.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/format/blob/blob_file_batch_reader.h"
-#include "paimon/format/blob/blob_read_context.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
