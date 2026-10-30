@@ -342,7 +342,8 @@ Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleColumn(
                 if (overlap_start < overlap_end) {
                     if (chunk.array == nullptr) {
                         return Status::Invalid(
-                            "Unexpected: a gap row was chosen as a blob fallback result.");
+                            "Unexpected: a gap or skipped row was chosen as a blob fallback "
+                            "result.");
                     }
                     std::shared_ptr<arrow::Array> column = chunk.array->field(field_idx);
                     pieces.push_back(

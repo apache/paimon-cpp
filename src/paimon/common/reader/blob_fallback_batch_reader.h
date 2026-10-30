@@ -101,8 +101,8 @@ class BlobFallbackBatchReader : public BatchReader {
     struct Chunk {
         std::shared_ptr<arrow::StructArray> array;
         int64_t length = 0;
-        /// Gap chunk only: the row id of each of the `length` rows, filled when the read
-        /// schema contains _ROW_ID so all-placeholder rows can keep their row id.
+        /// Newest-group gap chunks only: one row id per row, filled when _ROW_ID is requested.
+        /// Empty for older groups and skipped runs.
         std::vector<int64_t> gap_row_ids;
     };
 
@@ -158,9 +158,9 @@ class BlobFallbackBatchReader : public BatchReader {
         int32_t field_idx, const std::vector<int32_t>& group_choice,
         const std::vector<std::vector<Chunk>>& group_chunks) const;
 
-    /// Assembles the _ROW_ID values of rows [run_start, run_end) from the given group's chunks;
-    /// gap chunks contribute their synthesized row ids. Shares the newest group's assembly
-    /// cursor with runs that explicitly choose that group.
+    /// Assembles _ROW_ID values of rows [run_start, run_end) from the newest group's chunks.
+    /// Requires _ROW_ID in the read schema. This group has no skipped runs, so every null-array
+    /// chunk is a gap with complete gap_row_ids. Shares its cursor with runs choosing group 0.
     Result<std::shared_ptr<arrow::Array>> AssembleRowIdRun(const std::vector<Chunk>& chunks,
                                                            int64_t run_start, int64_t run_end,
                                                            ChunkCursor* cursor) const;
