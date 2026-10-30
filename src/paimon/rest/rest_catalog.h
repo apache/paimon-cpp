@@ -36,12 +36,15 @@ struct ArrowSchema;
 
 namespace paimon {
 class FileSystem;
+class SystemTable;
 class TableSchema;
 
 /// A catalog backed by a REST catalog server. Metadata operations are delegated to
 /// `RestApi`; table data is accessed through the file system configured by the
 /// server-merged options.
-class RestCatalog : public Catalog, public VersionManagedCatalog {
+class RestCatalog : public Catalog,
+                    public VersionManagedCatalog,
+                    public std::enable_shared_from_this<RestCatalog> {
  public:
     /// Creates the catalog: fetches and merges "/v1/config" from the server configured
     /// by `CatalogOptions::URI`, then builds the file system from the merged options.
@@ -117,12 +120,6 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     /// Options merged with the server side config.
     const std::map<std::string, std::string>& GetOptions() const override;
 
- protected:
-    /// Loads the location and the schema from one `GetTable` response, so the table cannot be
-    /// built from a location and a schema that two requests disagreed on.
-    Result<std::shared_ptr<FormatTable>> LoadFormatTable(
-        const Identifier& identifier) const override;
-
  private:
     RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
                 const std::string& warehouse, bool data_token_enabled, bool fs_explicitly_supplied,
@@ -139,6 +136,12 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     Result<std::shared_ptr<TableSchema>> LoadDataTableSchema(
         const Identifier& data_identifier, const std::optional<std::string>& branch,
         std::string* table_path, std::string* table_id) const;
+
+    /// Loads the system table a `T$system` identifier names, on the branch the identifier
+    /// carries, from the same response that carries the data table's schema and path.
+    Result<std::shared_ptr<SystemTable>> LoadSystemTable(
+        const Identifier& identifier, const Identifier& load_identifier,
+        const std::optional<std::string>& branch) const;
 
     /// Converts a `GetTableResponse` into a `TableSchema`, applying the table path, audit
     /// and branch options.

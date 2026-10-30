@@ -27,17 +27,21 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/plan_impl.h"
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/realtime/realtime_store.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/source/startup_mode.h"
 
 namespace paimon {
 
@@ -201,6 +205,49 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
     }
     ticket_guard.Release();
     return result;
+}
+
+Status RealtimeTableScan::ValidateScan(const TableSchema& table_schema,
+                                       const CoreOptions& core_options, const ScanContext& context,
+                                       bool read_optimized) {
+    if (!context.GetRealtimeContext()) {
+        return Status::OK();
+    }
+    if (!core_options.RealtimeEnabled()) {
+        return Status::Invalid("real-time scan requires realtime.enabled=true");
+    }
+    if (core_options.GetBucket() <= 0) {
+        return Status::Invalid("real-time union read requires fixed bucket mode");
+    }
+    if (core_options.DataEvolutionEnabled()) {
+        return Status::Invalid("real-time union read does not support data evolution");
+    }
+    if (!table_schema.PrimaryKeys().empty()) {
+        if (read_optimized) {
+            return Status::NotImplemented(
+                "PK real-time union read does not support read-optimized scans");
+        }
+        PAIMON_RETURN_NOT_OK(
+            PrimaryKeyTableUtils::ValidateRealtimeOptions(core_options, table_schema));
+    }
+    if (context.IsStreamingMode()) {
+        return Status::Invalid("real-time union read currently supports batch scans only");
+    }
+    if (context.GetLimit()) {
+        return Status::Invalid("real-time union read does not support scan limit pushdown");
+    }
+    if (context.GetGlobalIndexResult()) {
+        return Status::Invalid("real-time union read does not support global index splits");
+    }
+    StartupMode startup_mode = core_options.GetStartupMode();
+    const bool specified_snapshot =
+        startup_mode == StartupMode::FromSnapshot() && core_options.GetScanSnapshotId().has_value();
+    if (!(startup_mode == StartupMode::LatestFull() || startup_mode == StartupMode::Latest() ||
+          specified_snapshot)) {
+        return Status::Invalid(
+            "real-time union read requires the latest snapshot or an explicit snapshot id");
+    }
+    return Status::OK();
 }
 
 RealtimeTableScan::RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan, bool pk_table,

@@ -19,7 +19,17 @@
 
 #include "paimon/table/source/table_read.h"
 
+#include "paimon/catalog/table.h"
+#include "paimon/core/table/file_store_table_factory.h"
+#include "paimon/core/utils/context_utils.h"
+
 namespace paimon {
+
+Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext> ctx) {
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "read"));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+    return table->NewRead(std::move(ctx));
+}
 
 Result<std::unique_ptr<CountReader>> TableRead::CreateCountReader(
     const std::vector<std::shared_ptr<Split>>& splits) {

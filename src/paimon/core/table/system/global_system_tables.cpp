@@ -126,6 +126,16 @@ Result<bool> IsEnabled(const GlobalSystemTableRegistryEntry& entry,
                                                CatalogOptionsSystemTable::kEnabledOption, false);
 }
 
+bool RequiresCatalog(const std::string& table_name) {
+    std::string normalized = StringUtils::ToLowerCase(table_name);
+    for (const auto& entry : GlobalSystemTableRegistry()) {
+        if (entry.name == normalized) {
+            return entry.requires_catalog;
+        }
+    }
+    return false;
+}
+
 struct CatalogTableInfo {
     std::string database_name;
     std::string table_name;
@@ -134,11 +144,15 @@ struct CatalogTableInfo {
 
 // Match Java CatalogUtils::listAllTables: tolerate databases or tables removed concurrently, but
 // propagate all other catalog and schema errors instead of returning incomplete system-table rows.
-Result<std::vector<CatalogTableInfo>> LoadAllDataTables(const Catalog& catalog) {
+Result<std::vector<CatalogTableInfo>> LoadAllDataTables(
+    const std::shared_ptr<const Catalog>& catalog, const std::string& table_name) {
+    if (catalog == nullptr) {
+        return Status::NotImplemented("global system table requires catalog context: ", table_name);
+    }
     std::vector<CatalogTableInfo> result;
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> databases, catalog.ListDatabases());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> databases, catalog->ListDatabases());
     for (const std::string& database : databases) {
-        Result<std::vector<std::string>> tables_result = catalog.ListTables(database);
+        Result<std::vector<std::string>> tables_result = catalog->ListTables(database);
         if (!tables_result.ok()) {
             if (tables_result.status().IsNotExist()) {
                 continue;
@@ -147,7 +161,7 @@ Result<std::vector<CatalogTableInfo>> LoadAllDataTables(const Catalog& catalog) 
         }
         for (const std::string& table : tables_result.value()) {
             Identifier identifier(database, table);
-            Result<std::shared_ptr<Schema>> schema_result = catalog.LoadTableSchema(identifier);
+            Result<std::shared_ptr<Schema>> schema_result = catalog->LoadTableSchema(identifier);
             if (!schema_result.ok()) {
                 if (schema_result.status().IsNotExist()) {
                     continue;
@@ -289,6 +303,14 @@ Result<bool> GlobalSystemTableLoader::IsSupported(
 
 Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::Load(
     const std::string& table_name, const GlobalSystemTableContext& context) {
+    if (context.catalog == nullptr && RequiresCatalog(table_name)) {
+        return Status::NotImplemented("global system table requires catalog context: ", table_name);
+    }
+    return LoadForSchema(table_name, context);
+}
+
+Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::LoadForSchema(
+    const std::string& table_name, const GlobalSystemTableContext& context) {
     std::string normalized = StringUtils::ToLowerCase(table_name);
     for (const auto& entry : GlobalSystemTableRegistry()) {
         if (entry.name == normalized) {
@@ -296,11 +318,13 @@ Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::Load(
             if (!enabled) {
                 return Status::NotExist("global system table is disabled: ", table_name);
             }
-            if (entry.requires_catalog && context.catalog == nullptr) {
-                return Status::NotImplemented("global system table requires catalog context: ",
-                                              table_name);
-            }
-            return entry.factory(context);
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                                   entry.factory(context));
+            // TODO(yonghao.fyh): the loader-driven AdoptOwnSchema() is an init-style coupling;
+            // consider overriding LatestSchema() on SystemTable, as FormatTable does, to serve
+            // its own read-only schema and drop this call from every loader.
+            PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
+            return system_table;
         }
     }
     return Status::NotImplemented("unsupported global system table: ", table_name);
@@ -324,11 +348,7 @@ Result<std::vector<std::string>> GlobalSystemTableLoader::GetSupportedTableNames
 // =============================================================================
 
 CatalogOptionsSystemTable::CatalogOptionsSystemTable(GlobalSystemTableContext context)
-    : InMemorySystemTable("sys/catalog_options"), context_(std::move(context)) {}
-
-std::string CatalogOptionsSystemTable::Name() const {
-    return kName;
-}
+    : InMemorySystemTable(context.fs, "sys/catalog_options", kName), context_(std::move(context)) {}
 
 Result<std::shared_ptr<arrow::Schema>> CatalogOptionsSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -360,11 +380,8 @@ Result<std::vector<GenericRow>> CatalogOptionsSystemTable::BuildRows() const {
 // =============================================================================
 
 AllTableOptionsSystemTable::AllTableOptionsSystemTable(GlobalSystemTableContext context)
-    : InMemorySystemTable("sys/all_table_options"), context_(std::move(context)) {}
-
-std::string AllTableOptionsSystemTable::Name() const {
-    return kName;
-}
+    : InMemorySystemTable(context.fs, "sys/all_table_options", kName),
+      context_(std::move(context)) {}
 
 Result<std::shared_ptr<arrow::Schema>> AllTableOptionsSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -380,7 +397,7 @@ Result<std::vector<GenericRow>> AllTableOptionsSystemTable::BuildRows() const {
     std::vector<GenericRow> rows;
 
     PAIMON_ASSIGN_OR_RAISE(std::vector<CatalogTableInfo> tables,
-                           LoadAllDataTables(*context_.catalog));
+                           LoadAllDataTables(context_.catalog, kName));
     for (const CatalogTableInfo& table : tables) {
         for (const auto& [key, value] : table.schema->Options()) {
             GenericRow row(schema->num_fields());
@@ -399,11 +416,7 @@ Result<std::vector<GenericRow>> AllTableOptionsSystemTable::BuildRows() const {
 // =============================================================================
 
 TablesSystemTable::TablesSystemTable(GlobalSystemTableContext context)
-    : InMemorySystemTable("sys/tables"), context_(std::move(context)) {}
-
-std::string TablesSystemTable::Name() const {
-    return kName;
-}
+    : InMemorySystemTable(context.fs, "sys/tables", kName), context_(std::move(context)) {}
 
 Result<std::shared_ptr<arrow::Schema>> TablesSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -429,7 +442,7 @@ Result<std::vector<GenericRow>> TablesSystemTable::BuildRows() const {
     std::vector<GenericRow> rows;
 
     PAIMON_ASSIGN_OR_RAISE(std::vector<CatalogTableInfo> tables,
-                           LoadAllDataTables(*context_.catalog));
+                           LoadAllDataTables(context_.catalog, kName));
     for (const CatalogTableInfo& table : tables) {
         const std::shared_ptr<DataSchema>& data_schema = table.schema;
 
@@ -471,11 +484,7 @@ Result<std::vector<GenericRow>> TablesSystemTable::BuildRows() const {
 // =============================================================================
 
 PartitionsSystemTable::PartitionsSystemTable(GlobalSystemTableContext context)
-    : InMemorySystemTable("sys/partitions"), context_(std::move(context)) {}
-
-std::string PartitionsSystemTable::Name() const {
-    return kName;
-}
+    : InMemorySystemTable(context.fs, "sys/partitions", kName), context_(std::move(context)) {}
 
 Result<std::shared_ptr<arrow::Schema>> PartitionsSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -495,7 +504,7 @@ Result<std::vector<GenericRow>> PartitionsSystemTable::BuildRows() const {
     std::vector<GenericRow> rows;
 
     PAIMON_ASSIGN_OR_RAISE(std::vector<CatalogTableInfo> tables,
-                           LoadAllDataTables(*context_.catalog));
+                           LoadAllDataTables(context_.catalog, kName));
     for (const CatalogTableInfo& table : tables) {
         const std::shared_ptr<DataSchema>& data_schema = table.schema;
         Identifier id(table.database_name, table.table_name);

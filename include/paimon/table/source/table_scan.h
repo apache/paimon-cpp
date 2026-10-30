@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/macros.h"
 #include "paimon/result.h"
 #include "paimon/table/source/plan.h"
 #include "paimon/table/source/scan_metrics.h"
@@ -36,10 +37,14 @@ class ScanContext;
 /// A scanner interface for reading table's meta and create a plan.
 class PAIMON_EXPORT TableScan {
  public:
-    /// Create an instance of `TableScan`.
+    /// Create an instance of `TableScan`. The data table the context names is loaded from its path
+    /// - a system table behind a `T$system` path and a format table are refused, served by the
+    /// table a catalog hands back through its own `NewScan` instead.
     ///
     /// @param context A unique pointer to the `ScanContext` used for scan operations.
     /// @return A Result containing a unique pointer to the `TableScan` instance.
+    /// @deprecated Use `Table::NewScan()` on the table a catalog hands back instead.
+    PAIMON_DEPRECATED("Use Table::NewScan() instead")
     static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context);
 
     virtual ~TableScan() = default;

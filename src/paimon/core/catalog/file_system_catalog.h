@@ -37,8 +37,9 @@ class TableSchema;
 class FileSystem;
 class Identifier;
 class Logger;
+class SystemTable;
 
-class FileSystemCatalog : public Catalog {
+class FileSystemCatalog : public Catalog, public std::enable_shared_from_this<FileSystemCatalog> {
  public:
     FileSystemCatalog(const std::shared_ptr<FileSystem>& fs, const std::string& warehouse,
                       const std::map<std::string, std::string>& catalog_options);
@@ -71,13 +72,6 @@ class FileSystemCatalog : public Catalog {
     Result<std::optional<SnapshotInfo>> GetLatestSnapshot(const Identifier& identifier,
                                                           const std::string& branch) const override;
 
- protected:
-    /// This catalog keeps a table's schema under the table's own path, so the `schema` and
-    /// `branch` directories there are metadata rather than table content. Nothing else differs,
-    /// so the location and the schema are still read separately.
-    Result<std::shared_ptr<FormatTable>> LoadFormatTable(
-        const Identifier& identifier) const override;
-
  private:
     /// Fails when `db_name` cannot be used as a single path component, so that the returned
     /// path always stays under `warehouse`.
@@ -91,6 +85,10 @@ class FileSystemCatalog : public Catalog {
     static Result<bool> IsSystemTable(const Identifier& identifier);
     Result<std::optional<std::shared_ptr<TableSchema>>> TableSchemaExists(
         const Identifier& identifier) const;
+
+    /// Loads the system table a `T$system` identifier names, on the branch the identifier
+    /// carries. The base table it belongs to must exist and carry a schema.
+    Result<std::shared_ptr<SystemTable>> LoadSystemTable(const Identifier& identifier) const;
 
     Status CreateDatabaseImpl(const std::string& db_name,
                               const std::map<std::string, std::string>& options);

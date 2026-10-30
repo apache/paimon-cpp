@@ -31,6 +31,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/data/generic_row.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/core_options.h"
@@ -38,20 +39,31 @@
 #include "paimon/core/table/system/audit_log_system_table.h"
 #include "paimon/core/table/system/binlog_system_table.h"
 #include "paimon/core/table/system/global_system_tables.h"
+#include "paimon/core/table/system/metadata_system_tables.h"
 #include "paimon/core/table/system/read_optimized_system_table.h"
 #include "paimon/core/table/system/system_table_scan.h"
 #include "paimon/defs.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/predicate/full_text_match.h"
+#include "paimon/predicate/predicate.h"
+#include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
+#include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/write_context.h"
 
 namespace paimon::test {
 namespace {
@@ -77,11 +89,11 @@ TEST(SystemTableTest, TestChangelogArrowSchemaReturnsInvalidOptions) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_NOK_WITH_MSG(audit_log.ArrowSchema(),
                         "Invalid Config [table-read.sequence-number.enabled: invalid]");
 
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_NOK_WITH_MSG(binlog.ArrowSchema(),
                         "Invalid Config [table-read.sequence-number.enabled: invalid]");
 }
@@ -92,7 +104,7 @@ TEST(SystemTableTest, TestBinlogArrowSchemaWithSequenceNumber) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> schema, binlog.ArrowSchema());
 
     ASSERT_EQ(schema->field_names(),
@@ -219,12 +231,32 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
                          SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
                                                  /*dynamic_options=*/{}));
-    ASSERT_EQ(system_table->Name(), ReadOptimizedSystemTable::kName);
+    ASSERT_EQ(system_table->Name(), "table$ro");
+
+    // A view loaded with the logical name of its data table answers with it, branch included:
+    // reloading the name a branch view answers with addresses the same branch again.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> branch_view,
+                         SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
+                                                 "/tmp/uuid-dir", table_schema,
+                                                 /*dynamic_options=*/{}, "tbl$branch_dev"));
+    ASSERT_EQ(branch_view->Name(), "tbl$branch_dev$ro");
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> arrow_schema, system_table->ArrowSchema());
     ASSERT_EQ(arrow_schema->field_names(), (std::vector<std::string>{"pk", "v"}));
     ASSERT_EQ(arrow_schema->field(0)->type()->id(), arrow::Type::STRING);
     ASSERT_EQ(arrow_schema->field(1)->type()->id(), arrow::Type::INT32);
+}
+
+TEST(SystemTableTest, TestCopyIsRefused) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> system_table,
+                         SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
+                                                 "/tmp/table", table_schema,
+                                                 /*dynamic_options=*/{}));
+    ASSERT_NOK_WITH_MSG(system_table->Copy({{"probe", "on-top"}}), "copying is not supported");
 }
 
 TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
@@ -247,9 +279,10 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
         ReadContextBuilder builder("/tmp/table");
@@ -287,6 +320,109 @@ TEST(SystemTableTest, TestGlobalSystemTableWithoutCatalogReturnsNotImplemented) 
                         "global system table requires catalog context: tables");
 }
 
+TEST(SystemTableTest, TestOperatorEntriesRefuseANullContext) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
+
+    ASSERT_NOK_WITH_MSG(audit_log.NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(binlog.NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(read_optimized.NewScan(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(audit_log.NewRead(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(binlog.NewRead(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(read_optimized.NewRead(nullptr), "read context is null pointer");
+}
+
+TEST(SystemTableTest, TestTheOperatorEntriesRefuseASystemTablePath) {
+    const std::string system_table_path = "/tmp/warehouse/db.db/tbl$options";
+
+    ScanContextBuilder scan_builder(system_table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)), "names a system table");
+
+    ReadContextBuilder read_builder(system_table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), "names a system table");
+
+    WriteContextBuilder write_builder(system_table_path, "commit_user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)), "names a system table");
+
+    CommitContextBuilder commit_builder(system_table_path, "commit_user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)), "names a system table");
+}
+
+TEST(SystemTableTest, TestNewReadRefusesASearch) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
+
+    auto make_context = [] {
+        auto vector_search = std::make_shared<VectorSearch>(
+            "v", /*limit=*/3, std::vector<float>{1.0f}, /*pre_filter=*/nullptr,
+            /*predicate=*/nullptr, VectorSearch::DistanceType::COSINE,
+            std::map<std::string, std::string>{});
+        ReadContextBuilder builder("/tmp/table");
+        builder.SetVectorSearch(vector_search);
+        return builder.Finish();
+    };
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_log_context, make_context());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context, make_context());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_optimized_context, make_context());
+
+    ASSERT_NOK_WITH_MSG(audit_log.NewRead(std::move(audit_log_context)),
+                        "VectorSearch or FullTextSearch does not support system-table reads yet");
+    ASSERT_NOK_WITH_MSG(binlog.NewRead(std::move(binlog_context)),
+                        "VectorSearch or FullTextSearch does not support system-table reads yet");
+    ASSERT_NOK_WITH_MSG(read_optimized.NewRead(std::move(read_optimized_context)),
+                        "VectorSearch or FullTextSearch does not support system-table reads yet");
+}
+
+TEST(SystemTableTest, TestNewReadRefusesAFullTextMatchPredicate) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> in_memory,
+                         SystemTableLoader::Load(OptionsSystemTable::kName, /*fs=*/nullptr,
+                                                 "/tmp/table", table_schema,
+                                                 /*dynamic_options=*/{}));
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
+
+    auto match = std::make_shared<FullTextMatch>("pk", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::FullTextMatch(/*field_index=*/0, match));
+
+    auto make_context = [&predicate] {
+        ReadContextBuilder builder("/tmp/table");
+        builder.SetPredicate(predicate);
+        return builder.Finish();
+    };
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> in_memory_context, make_context());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_optimized_context, make_context());
+
+    ASSERT_NOK_WITH_MSG(in_memory->NewRead(std::move(in_memory_context)),
+                        "FullTextMatch predicate execution is not implemented yet");
+    ASSERT_NOK_WITH_MSG(read_optimized.NewRead(std::move(read_optimized_context)),
+                        "FullTextMatch predicate execution is not implemented yet");
+}
+
 namespace {
 
 /// A catalog that serves the files of every table through `GetTableFileSystem`, like one
@@ -319,21 +455,23 @@ TEST(SystemTableTest, TestGlobalPartitionsUsesTheFileSystemOfEachTable) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
 
-    PerTableFileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
-    ASSERT_OK(catalog.CreateDatabase("db1", options, /*ignore_if_exists=*/true));
+    std::shared_ptr<PerTableFileSystemCatalog> catalog =
+        std::make_shared<PerTableFileSystemCatalog>(core_options.GetFileSystem(), dir->Str(),
+                                                    options);
+    ASSERT_OK(catalog->CreateDatabase("db1", options, /*ignore_if_exists=*/true));
 
     arrow::Schema typed_schema(
         {arrow::field("dt", arrow::utf8()), arrow::field("v", arrow::int32(), /*nullable=*/true)});
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(typed_schema, &c_schema).ok());
-    Status created = catalog.CreateTable(Identifier("db1", "t1"), &c_schema,
-                                         /*partition_keys=*/{"dt"}, /*primary_keys=*/{}, options,
-                                         /*ignore_if_exists=*/false);
+    Status created = catalog->CreateTable(Identifier("db1", "t1"), &c_schema,
+                                          /*partition_keys=*/{"dt"}, /*primary_keys=*/{}, options,
+                                          /*ignore_if_exists=*/false);
     ArrowSchemaRelease(&c_schema);
     ASSERT_OK(created);
 
     GlobalSystemTableContext context;
-    context.catalog = &catalog;
+    context.catalog = catalog;
     context.fs = core_options.GetFileSystem();
     context.warehouse = dir->Str();
     context.catalog_options = options;
@@ -343,16 +481,16 @@ TEST(SystemTableTest, TestGlobalPartitionsUsesTheFileSystemOfEachTable) {
     // still the ones asked for before its files are listed.
     ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> rows, partitions.BuildRows());
     ASSERT_TRUE(rows.empty());
-    ASSERT_EQ((std::vector<std::string>{"db1.t1"}), catalog.requested);
+    ASSERT_EQ((std::vector<std::string>{"db1.t1"}), catalog->requested);
 
     // A table whose credentials cannot be issued fails the query, so that a partial result
     // is never mistaken for the whole one.
-    catalog.failure = Status::Invalid("no credentials for the table");
+    catalog->failure = Status::Invalid("no credentials for the table");
     ASSERT_NOK_WITH_MSG(partitions.BuildRows(), "no credentials for the table");
 
     // A table that went away between being listed and being read is skipped instead, like
     // one whose location has already been removed.
-    catalog.failure = Status::NotExist("table dropped");
+    catalog->failure = Status::NotExist("table dropped");
     ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> skipped, partitions.BuildRows());
     ASSERT_TRUE(skipped.empty());
 }

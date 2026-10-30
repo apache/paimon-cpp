@@ -368,7 +368,7 @@ Status EnsureTable(const std::string& root_path, const std::string& db_name,
                    const std::shared_ptr<arrow::Schema>& schema,
                    const std::vector<std::string>& primary_keys = {}) {
     PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<paimon::Catalog> catalog,
+        std::shared_ptr<paimon::Catalog> catalog,
         AddContext(paimon::Catalog::Create(root_path, options), "create catalog"));
     PAIMON_RETURN_NOT_OK(
         AddContext(catalog->CreateDatabase(db_name, options, true), "create database"));

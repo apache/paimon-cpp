@@ -19,12 +19,15 @@
 
 #include "paimon/table/source/table_scan.h"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/core/core_options.h"
+#include "paimon/core/table/system/system_table.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/metrics.h"
@@ -164,12 +167,17 @@ TEST(TableScanTest, TestPkSchemaEvolutionScan) {
 TEST(TableScanTest, TestReadOptimizedPrimaryKeyStreamingScanUnsupported) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/pk_table_with_alter_table.db/pk_table_with_alter_table$ro";
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<SystemTable> table,
+        SystemTableLoader::LoadFromPath(core_options.GetFileSystem(), path, options));
     ScanContextBuilder builder(path);
     builder.AddOption(Options::FILE_FORMAT, "orc");
     builder.WithStreamingMode(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
 
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(context)),
+    ASSERT_NOK_WITH_MSG(table->NewScan(std::move(context)),
                         "read-optimized system table does not support streaming scan for primary "
                         "key table");
 }

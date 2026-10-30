@@ -36,6 +36,7 @@
 #include "paimon/core/operation/split_read.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
@@ -134,20 +135,24 @@ TEST(TableReadTest, TestFullTextMatchExecutionIsNotImplemented) {
     auto fs = std::make_shared<LocalFileSystem>();
     SchemaManager schema_manager(fs, table_path);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, schema_manager.ReadSchema(0));
-    Table table(fs, table_path, schema, Identifier("append_09.db", "append_09"));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStoreTable> table,
+        FileStoreTable::Create(fs, table_path, schema, Identifier("append_09.db", "append_09"),
+                               /*uuid=*/"", /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
+                               /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
     for (bool table_entry : {false, true}) {
         ReadContextBuilder builder(table_path);
         builder.SetReadFieldNames({"f0", "f1"}).SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-        auto result =
-            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        auto result = table_entry ? table->NewRead(std::move(context))
+                                  : TableRead::Create(std::move(context));
         ASSERT_NOK_WITH_MSG(result, "FullTextMatch predicate execution is not implemented yet");
         ASSERT_TRUE(result.status().IsNotImplemented());
 
         builder.SetReadFieldNames({"f0", "f1", "_f0_INDEX_SCORE"}).SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(context, builder.Finish());
-        result =
-            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        result = table_entry ? table->NewRead(std::move(context))
+                             : TableRead::Create(std::move(context));
         ASSERT_NOK_WITH_MSG(result, "Score-producing FullTextMatch cannot appear under OR");
     }
 }
@@ -159,13 +164,17 @@ TEST(TableReadTest, TestPerFieldScoreExecutionIsNotImplemented) {
     auto fs = std::make_shared<LocalFileSystem>();
     SchemaManager schema_manager(fs, path);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, schema_manager.ReadSchema(0));
-    Table table(fs, path, schema, Identifier("append_09.db", "append_09"));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStoreTable> table,
+        FileStoreTable::Create(fs, path, schema, Identifier("append_09.db", "append_09"),
+                               /*uuid=*/"", /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
+                               /*fs_scheme_map=*/{}, /*dynamic_options=*/{}));
     for (bool table_entry : {false, true}) {
         ReadContextBuilder builder(path);
         builder.SetFullTextSearch(search).SetReadFieldNames({"f1", "_f0_INDEX_SCORE"});
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-        auto result =
-            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
+        auto result = table_entry ? table->NewRead(std::move(context))
+                                  : TableRead::Create(std::move(context));
         ASSERT_NOK_WITH_MSG(result, "Per-field index score output is not implemented yet");
         ASSERT_TRUE(result.status().IsNotImplemented());
     }
@@ -250,25 +259,41 @@ TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
 
 TEST(TableReadTest, TestMergeOptions) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    ReadContextBuilder context_builder(path);
-    context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-    context_builder.AddOption("read.batch-size", "2");
-    context_builder.AddOption("orc.read.enable-lazy-decoding", "true");
-    context_builder.AddOption("bucket", "10");
-    context_builder.AddOption("bucket-key", "f3");
-    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-    auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
-    ASSERT_TRUE(append_only_table_read);
-    auto* typed_split_read =
-        dynamic_cast<AbstractSplitRead*>(append_only_table_read->split_reads_[0].get());
-    ASSERT_TRUE(typed_split_read);
-    const auto& core_options = typed_split_read->options_;
-    std::map<std::string, std::string> expected_options = {
-        {"read.batch-size", "2"},   {"orc.read.enable-lazy-decoding", "true"},
-        {"bucket", "10"},           {"bucket-key", "f3"},
-        {"manifest.format", "orc"}, {"file.format", "orc"}};
-    ASSERT_EQ(expected_options, core_options.ToMap());
+    {
+        ReadContextBuilder context_builder(path);
+        context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
+        context_builder.AddOption("read.batch-size", "2");
+        context_builder.AddOption("orc.read.enable-lazy-decoding", "true");
+        ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
+        ASSERT_TRUE(append_only_table_read);
+        auto* typed_split_read =
+            dynamic_cast<AbstractSplitRead*>(append_only_table_read->split_reads_[0].get());
+        ASSERT_TRUE(typed_split_read);
+        const auto& core_options = typed_split_read->options_;
+        std::map<std::string, std::string> expected_options = {
+            {"read.batch-size", "2"},
+            {"orc.read.enable-lazy-decoding", "true"},
+            {"bucket", "2"},
+            {"bucket-key", "f2"},
+            {"manifest.format", "orc"},
+            {"file.format", "orc"}};
+        ASSERT_EQ(expected_options, core_options.ToMap());
+    }
+    {
+        ReadContextBuilder context_builder(path);
+        context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
+        context_builder.AddOption("bucket", "10");
+        ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
+        ASSERT_TRUE(append_only_table_read);
+        auto* typed_split_read =
+            dynamic_cast<AbstractSplitRead*>(append_only_table_read->split_reads_[0].get());
+        ASSERT_TRUE(typed_split_read);
+        ASSERT_EQ(10, typed_split_read->options_.GetBucket());
+    }
 }
 
 TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {
@@ -300,7 +325,7 @@ TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {
         expected_options[read_via_option] = explicit_header ? "read-view" : "table-view";
         ASSERT_EQ(dependency_context->root_path, "warehouse");
         ASSERT_EQ(dependency_context->options, expected_options);
-        ASSERT_EQ(internal_context->GetTableSchema()->Options(), table_options);
+        ASSERT_EQ(internal_context->GetTableSchema()->Options(), expected_options);
     }
 }
 

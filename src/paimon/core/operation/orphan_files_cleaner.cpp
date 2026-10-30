@@ -33,6 +33,7 @@
 #include "paimon/core/operation/orphan_files_cleaner_impl.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -150,15 +151,7 @@ Result<std::unique_ptr<CleanContext>> CleanContextBuilder::Finish() {
 
 Result<std::unique_ptr<OrphanFilesCleaner>> OrphanFilesCleaner::Create(
     std::unique_ptr<CleanContext>&& ctx) {
-    if (ctx == nullptr) {
-        return Status::Invalid("clean context is null pointer");
-    }
-    if (ctx->GetMemoryPool() == nullptr) {
-        return Status::Invalid("memory pool is null pointer");
-    }
-    if (ctx->GetExecutor() == nullptr) {
-        return Status::Invalid("executor is null pointer");
-    }
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "clean"));
     if (ctx->GetOlderThanMs() < 0) {
         return Status::Invalid("older than time needs to be greater than or equal to 0.");
     }

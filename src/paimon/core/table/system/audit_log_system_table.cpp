@@ -44,6 +44,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
 #include "paimon/read_context.h"
 #include "paimon/scan_context.h"
@@ -357,15 +358,20 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
 
 AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::shared_ptr<TableSchema> table_schema,
+                                         std::string data_table_name,
                                          std::map<std::string, std::string> options)
-    : fs_(std::move(fs)),
+    : AuditLogSystemTable(std::move(fs), std::move(table_path), std::move(table_schema),
+                          std::move(options), ComposeName(data_table_name, kName)) {}
+
+AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
+                                         std::shared_ptr<TableSchema> table_schema,
+                                         std::map<std::string, std::string> options,
+                                         std::string name)
+    : SystemTable(fs, table_path, std::move(name)),
+      fs_(std::move(fs)),
       table_path_(std::move(table_path)),
       table_schema_(std::move(table_schema)),
       options_(std::move(options)) {}
-
-std::string AuditLogSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ArrowSchema() const {
     std::shared_ptr<arrow::Field> row_kind_field =
@@ -383,17 +389,24 @@ Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ArrowSchema() const 
 }
 
 Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
-    const std::shared_ptr<ScanContext>& context) const {
+    std::unique_ptr<ScanContext> ctx) const {
+    const std::shared_ptr<ScanContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
         return Status::NotImplemented("audit_log system table predicate pushdown is not supported");
     }
     std::shared_ptr<ScanFilter> scan_filter = context->GetScanFilters();
     ScanContextBuilder builder(table_path_);
+    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
+    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
+        data_table_fs = GetFileSystem();
+    }
     builder.SetOptions(options_)
         .WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        .WithFileSystem(data_table_fs)
+        .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .WithCache(context->GetCache());
     if (scan_filter) {
         if (scan_filter->GetBucketFilter()) {
@@ -411,7 +424,10 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
 }
 
 Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
+    PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     return NewChangelogRead(context, std::make_shared<AuditLogBatchConverter>());
 }
 
@@ -450,12 +466,16 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema, BaseReadSchema());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     ReadContextBuilder builder(table_path_);
+    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
+    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
+        data_table_fs = GetFileSystem();
+    }
     builder.SetOptions(read_options)
         .SetReadFieldNames(base_read_schema->field_names())
         .WithBranch(core_options.GetBranch())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        .WithFileSystem(data_table_fs)
         .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .EnablePrefetch(context->EnablePrefetch())
         .SetPrefetchBatchCount(context->GetPrefetchBatchCount())

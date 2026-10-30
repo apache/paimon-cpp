@@ -22,26 +22,30 @@
 
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
-#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 class Predicate;
 
-ScanContext::ScanContext(
-    const std::string& path, bool is_streaming_mode, std::optional<int32_t> limit,
-    const std::shared_ptr<ScanFilter>& scan_filter,
-    const std::shared_ptr<GlobalIndexResult>& global_index_result,
-    const std::shared_ptr<RealtimeContext>& realtime_context,
-    const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
-    const std::shared_ptr<FileSystem>& specific_file_system,
-    const std::optional<std::string>& table_schema,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<Cache>& cache,
-    const std::shared_ptr<FormatTable>& format_table, const std::shared_ptr<Catalog>& catalog,
-    const std::optional<Identifier>& identifier)
+ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
+                         std::optional<int32_t> limit,
+                         const std::shared_ptr<ScanFilter>& scan_filter,
+                         const std::shared_ptr<GlobalIndexResult>& global_index_result,
+                         const std::shared_ptr<RealtimeContext>& realtime_context,
+                         const std::shared_ptr<MemoryPool>& memory_pool,
+                         const std::shared_ptr<Executor>& executor,
+                         const std::shared_ptr<FileSystem>& specific_file_system,
+                         const std::optional<std::string>& table_schema,
+                         const std::map<std::string, std::string>& options,
+                         const std::shared_ptr<Cache>& cache,
+                         const std::shared_ptr<Catalog>& catalog,
+                         const std::optional<Identifier>& identifier, const std::string& branch,
+                         const std::map<std::string, std::string>& fs_scheme_to_identifier_map)
     : path_(path),
+      branch_(branch),
       is_streaming_mode_(is_streaming_mode),
       limit_(limit),
       scan_filters_(scan_filter),
@@ -50,10 +54,10 @@ ScanContext::ScanContext(
       memory_pool_(memory_pool),
       executor_(executor),
       specific_file_system_(specific_file_system),
+      fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
       table_schema_(table_schema),
       options_(options),
       cache_(cache),
-      format_table_(format_table),
       catalog_(catalog),
       identifier_(identifier) {}
 
@@ -74,6 +78,7 @@ class ScanContextBuilder::Impl {
         memory_pool_ = GetDefaultPool();
         executor_.reset();
         specific_file_system_.reset();
+        fs_scheme_to_identifier_map_.clear();
         table_schema_ = std::nullopt;
         options_.clear();
         cache_.reset();
@@ -83,10 +88,6 @@ class ScanContextBuilder::Impl {
 
  private:
     std::string path_;
-    /// Kept across `Reset()`, as `path_` is: both name the table this builder builds for, rather
-    /// than a setting of one scan of it.
-    std::shared_ptr<FormatTable> format_table_;
-    bool built_from_format_table_ = false;
     bool is_streaming_mode_ = false;
     std::optional<int32_t> limit_;
     std::optional<int32_t> bucket_filter_;
@@ -98,6 +99,7 @@ class ScanContextBuilder::Impl {
     // Resolved in Finish(); a builder never owns an executor of its own.
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
+    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
@@ -108,15 +110,6 @@ class ScanContextBuilder::Impl {
 ScanContextBuilder::ScanContextBuilder(const std::string& path)
     : impl_(std::make_unique<ScanContextBuilder::Impl>()) {
     impl_->path_ = path;
-}
-
-ScanContextBuilder::ScanContextBuilder(const std::shared_ptr<FormatTable>& table)
-    : impl_(std::make_unique<ScanContextBuilder::Impl>()) {
-    impl_->format_table_ = table;
-    impl_->built_from_format_table_ = true;
-    if (table != nullptr) {
-        impl_->path_ = table->Location();
-    }
 }
 
 ScanContextBuilder::~ScanContextBuilder() = default;
@@ -187,6 +180,12 @@ ScanContextBuilder& ScanContextBuilder::WithFileSystem(
     return *this;
 }
 
+ScanContextBuilder& ScanContextBuilder::WithFileSystemSchemeToIdentifierMap(
+    const std::map<std::string, std::string>& fs_scheme_to_identifier_map) {
+    impl_->fs_scheme_to_identifier_map_ = fs_scheme_to_identifier_map;
+    return *this;
+}
+
 ScanContextBuilder& ScanContextBuilder::WithCatalog(const std::shared_ptr<Catalog>& catalog,
                                                     const Identifier& identifier) {
     impl_->catalog_ = catalog;
@@ -205,28 +204,6 @@ ScanContextBuilder& ScanContextBuilder::WithCache(const std::shared_ptr<Cache>& 
 }
 
 Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
-    if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
-        return Status::Invalid("cannot scan with null format table");
-    }
-    if (impl_->format_table_ != nullptr) {
-        // The table already answers both, and from a source this cannot see behind, so a second
-        // answer is refused rather than silently dropped.
-        if (impl_->catalog_ != nullptr) {
-            return Status::Invalid(
-                "a format table carries the file system it was loaded through, so WithCatalog() "
-                "cannot be used with one");
-        }
-        if (impl_->table_schema_) {
-            return Status::Invalid(
-                "a format table carries its own schema, so SetTableSchema() cannot be used with "
-                "one");
-        }
-        if (impl_->specific_file_system_ != nullptr) {
-            return Status::Invalid(
-                "a format table carries the file system it was loaded through, so WithFileSystem() "
-                "cannot be used with one");
-        }
-    }
     PAIMON_ASSIGN_OR_RAISE(impl_->path_, PathUtil::NormalizePath(impl_->path_));
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot scan with empty table path");
@@ -234,12 +211,21 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot scan through a null catalog");
     }
-    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
+    if (impl_->specific_file_system_ && !impl_->fs_scheme_to_identifier_map_.empty()) {
+        return Status::Invalid(
+            "WithFileSystem() and WithFileSystemSchemeToIdentifierMap() cannot be used together");
+    }
+    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr &&
+        impl_->fs_scheme_to_identifier_map_.empty()) {
         // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the scan uses the credentials of this table.
+        // GetTableFileSystem, so the scan uses the credentials of this table. A scheme map
+        // routes by scheme instead, so the catalog is not asked when one is set.
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
+    PAIMON_ASSIGN_OR_RAISE(std::string branch,
+                           BranchManager::ResolveBranch(impl_->identifier_, impl_->options_,
+                                                        /*explicit_branch=*/std::nullopt, "scan"));
     std::shared_ptr<Executor> executor =
         impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
     auto ctx = std::make_unique<ScanContext>(
@@ -248,7 +234,7 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
         impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
-        impl_->format_table_, impl_->catalog_, impl_->identifier_);
+        impl_->catalog_, impl_->identifier_, branch, impl_->fs_scheme_to_identifier_map_);
     impl_->Reset();
     return ctx;
 }

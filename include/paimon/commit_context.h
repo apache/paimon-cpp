@@ -25,6 +25,7 @@
 #include <string>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/macros.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
@@ -32,7 +33,6 @@
 namespace paimon {
 class Catalog;
 class Executor;
-class FormatTable;
 class MemoryPool;
 
 /// `CommitContext` is some configuration for commit operations.
@@ -48,8 +48,7 @@ class PAIMON_EXPORT CommitContext {
                   bool append_commit_check_conflict, const std::shared_ptr<MemoryPool>& memory_pool,
                   const std::shared_ptr<Executor>& executor,
                   const std::shared_ptr<FileSystem>& specific_file_system,
-                  const std::map<std::string, std::string>& options,
-                  const std::shared_ptr<FormatTable>& format_table);
+                  const std::map<std::string, std::string>& options);
 
     CommitContext(const std::string& root_path, const std::string& commit_user,
                   bool ignore_empty_commit, bool use_rest_catalog_commit,
@@ -59,12 +58,24 @@ class PAIMON_EXPORT CommitContext {
                   const std::shared_ptr<MemoryPool>& memory_pool,
                   const std::shared_ptr<Executor>& executor,
                   const std::shared_ptr<FileSystem>& specific_file_system,
-                  const std::map<std::string, std::string>& options,
-                  const std::shared_ptr<FormatTable>& format_table);
+                  const std::map<std::string, std::string>& options, const std::string& branch,
+                  const std::optional<std::string>& table_schema = std::nullopt,
+                  const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
     ~CommitContext();
 
     const std::string& GetRootPath() const {
         return root_path_;
+    }
+
+    /// Returns the table root path. An alias of `GetRootPath()`, so that every context
+    /// exposes the table location under the same name.
+    const std::string& GetPath() const {
+        return GetRootPath();
+    }
+
+    /// Returns the branch the builder resolved out of the identifier and the options.
+    const std::string& GetBranch() const {
+        return branch_;
     }
 
     const std::string& GetCommitUser() const {
@@ -77,6 +88,11 @@ class PAIMON_EXPORT CommitContext {
 
     bool UseRESTCatalogCommit() const {
         return use_rest_catalog_commit_;
+    }
+
+    /// Returns the table schema the caller set, or nullopt when the commit loads it.
+    const std::optional<std::string>& GetSpecificTableSchema() const {
+        return table_schema_;
     }
 
     /// Returns the configured catalog, or null if unset.
@@ -110,18 +126,17 @@ class PAIMON_EXPORT CommitContext {
         return specific_file_system_;
     }
 
+    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
+        return fs_scheme_to_identifier_map_;
+    }
+
     const std::map<std::string, std::string>& GetOptions() const {
         return options_;
     }
 
-    /// The format table this context was built from, or null when it names a table path and the
-    /// schema under that path says what kind of table it is.
-    const std::shared_ptr<FormatTable>& GetFormatTable() const {
-        return format_table_;
-    }
-
  private:
     std::string root_path_;
+    std::string branch_;
     std::string commit_user_;
     bool ignore_empty_commit_;
     bool use_rest_catalog_commit_;
@@ -132,8 +147,9 @@ class PAIMON_EXPORT CommitContext {
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
+    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::map<std::string, std::string> options_;
-    std::shared_ptr<FormatTable> format_table_;
+    std::optional<std::string> table_schema_;
 };
 
 /// `CommitContextBuilder` used to build a `CommitContext`, has input validation.
@@ -144,33 +160,33 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// @param commit_user The user identifier for the commit operation.
     CommitContextBuilder(const std::string& root_path, const std::string& commit_user);
 
-    /// Constructs a `CommitContextBuilder` for a format table that is already loaded: the only way
-    /// to commit to one whose schema lives in a metastore rather than under its location, such as
-    /// a table a REST catalog serves. The table carries what such a location does not say, so
-    /// `WithFileSystem()` is refused here rather than ignored.
-    ///
-    /// There is no commit user: a format table keeps no snapshot to record one in.
-    ///
-    /// @param table The format table to commit to, as `Catalog::GetFormatTable()` hands it back.
-    explicit CommitContextBuilder(const std::shared_ptr<FormatTable>& table);
-
     ~CommitContextBuilder();
 
     /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite.
+    /// table schema or whose values you want to overwrite. A load merges them into the table it
+    /// hands back; an option contradicting a table you loaded already is refused, so change that
+    /// one through `Table::Copy()`.
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
+    /// @deprecated These options reach an operator only through the deprecated
+    /// `FileStoreCommit::Create()`-style entry points, which merge them into the table they
+    /// load. An operator created from a `Table` serves that table's own configuration, so pass
+    /// dynamic options through `Table::Copy()` instead. A key no table serves, such as a
+    /// `header.` key, is still read from the context.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     CommitContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 
-    /// Add a single configuration option which is not defined in the table schema or whose value
-    /// you want to overwrite.
+    /// Add a single configuration option, served the way `SetOptions()` describes.
     ///
     /// If you want to add multiple options, call `AddOption()` multiple times or use `SetOptions()`
     /// instead.
     /// @param key The option key.
     /// @param value The option value.
     /// @return Reference to this builder for method chaining.
+    /// @deprecated Use `Table::Copy()` to pass dynamic options, for the reason `SetOptions()`
+    /// gives.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     CommitContextBuilder& AddOption(const std::string& key, const std::string& value);
 
     /// Sets whether to ignore empty commits (default is true).
@@ -236,6 +252,34 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     CommitContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
+    /// identifiers. This allows selecting different pre-registered file system implementations
+    /// based on the URI scheme at runtime.
+    ///
+    /// @param fs_scheme_to_identifier_map Map from URI scheme (like "oss") to the corresponding
+    /// file system identifier.
+    /// @return Reference to this builder for method chaining.
+    /// @note
+    ///   - This method is intended for environments where multiple file systems are pre-registered.
+    ///   - The specified identifiers must correspond to file systems that have been registered at
+    ///   compile time or initialization.
+    ///   - Cannot be used together with `WithFileSystem()`.
+    ///   - If not set, use default file system (configured in `Options::FILE_SYSTEM`).
+    /// Example:
+    ///   builder.WithFileSystemSchemeToIdentifierMap({{"oss", "jindo"}, {"file", "local"}});
+    ///
+    CommitContextBuilder& WithFileSystemSchemeToIdentifierMap(
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
+
+    /// Set the table schema as a string to avoid schema loading I/O operations.
+    ///
+    /// @param table_schema String representation of the table schema.
+    /// @return Reference to this builder for method chaining.
+    /// @note The user must ensure that the schema string is valid and matches the table.
+    /// @note If not set, the schema is read from the catalog of `WithCatalog()` on the main
+    ///       branch, and loaded from the table path otherwise.
+    CommitContextBuilder& SetTableSchema(const std::string& table_schema);
 
     /// Build and return a `CommitContext` instance with input validation.
     /// @return Result containing the constructed `CommitContext` or an error status.

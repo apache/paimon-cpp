@@ -19,9 +19,19 @@
 
 #include "paimon/table/source/table_scan.h"
 
+#include "paimon/catalog/table.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/core/table/file_store_table_factory.h"
+#include "paimon/core/utils/context_utils.h"
+#include "paimon/scan_context.h"
 
 namespace paimon {
+
+Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context) {
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*context));
+    return table->NewScan(std::move(context));
+}
 
 std::shared_ptr<Metrics> TableScan::GetMetrics() const {
     return std::make_shared<MetricsImpl>();

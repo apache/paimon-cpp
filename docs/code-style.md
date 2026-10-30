@@ -168,10 +168,10 @@ All fallible functions return `Status` (no value) or `Result<T>` (with value). *
 ```cpp
 // ✅ Good — explicit type
 PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
-                       TableScan::Create(std::move(ctx)));
+                       table->NewScan(std::move(ctx)));
 
 // ❌ Bad — auto
-PAIMON_ASSIGN_OR_RAISE(auto scan, TableScan::Create(std::move(ctx)));
+PAIMON_ASSIGN_OR_RAISE(auto scan, table->NewScan(std::move(ctx)));
 ```
 
 If you need a `shared_ptr` from a function returning `unique_ptr`, write the target type directly — the macro already moves:

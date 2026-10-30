@@ -22,16 +22,17 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/options/table_type.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/result.h"
 #include "paimon/schema/schema.h"
-#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 
@@ -43,6 +44,21 @@ Status SystemTableError(const Identifier& identifier, const std::string& action)
 }
 
 }  // namespace
+
+Identifier CatalogUtils::IdentifierFromPath(const std::string& table_path,
+                                            const std::string& branch) {
+    const std::vector<std::string> paths = StringUtils::Split(table_path, "/");
+    if (paths.size() < 2) {
+        return Identifier(Identifier::kUnknownDatabase,
+                          paths.empty() ? std::string() : paths.front());
+    }
+    const std::string& database = paths[paths.size() - 2];
+    const std::string::size_type index = database.rfind(Catalog::DB_SUFFIX);
+    if (index == std::string::npos) {
+        return Identifier(Identifier::kUnknownDatabase, paths.back(), branch);
+    }
+    return Identifier(database.substr(0, index), paths.back(), branch);
+}
 
 bool CatalogUtils::IsSystemDatabase(const std::string& db_name) {
     return db_name == Catalog::SYSTEM_DATABASE_NAME;
@@ -73,6 +89,16 @@ Result<Identifier> CatalogUtils::BranchIdentifier(const Identifier& identifier,
                                                   const std::string& branch) {
     PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
     return Identifier(identifier.GetDatabaseName(), data_table_name, branch);
+}
+
+Result<std::optional<Identifier>> CatalogUtils::BranchIdentifier(
+    const std::optional<Identifier>& identifier, const std::string& branch) {
+    if (!identifier) {
+        return std::optional<Identifier>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
+                           BranchIdentifier(identifier.value(), branch));
+    return std::optional<Identifier>(std::move(branch_identifier));
 }
 
 Status CatalogUtils::CheckNotBranch(const Identifier& identifier, const std::string& action) {
@@ -117,12 +143,6 @@ Status CatalogUtils::CheckManagedTableType(const Identifier& identifier,
     }
     PAIMON_ASSIGN_OR_RAISE(TableType table_type,
                            TableTypeDefine::FromOptions(data_schema->Options()));
-    if (table_type == TableType::FORMAT_TABLE) {
-        return Status::Invalid(
-            fmt::format("Cannot open format table '{}' as a Table in '{}', please use "
-                        "'Catalog::GetFormatTable' or 'FormatTable::Create'.",
-                        identifier.ToString(), action));
-    }
     // A materialized table is a managed table that also carries the SQL it materializes.
     if (table_type != TableType::TABLE && table_type != TableType::MATERIALIZED_TABLE) {
         const std::map<std::string, std::string>& options = data_schema->Options();
@@ -134,19 +154,6 @@ Status CatalogUtils::CheckManagedTableType(const Identifier& identifier,
             type_iter == options.end() ? std::string() : type_iter->second));
     }
     return Status::OK();
-}
-
-Result<std::shared_ptr<FormatTable>> CatalogUtils::LoadFormatTableInTwoRequests(
-    const Catalog& catalog, const Identifier& identifier, bool location_carries_paimon_metadata) {
-    PAIMON_ASSIGN_OR_RAISE(std::string location, catalog.GetTableLocation(identifier));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, catalog.LoadTableSchema(identifier));
-    std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
-    if (data_schema == nullptr) {
-        return Status::Invalid(fmt::format("{} is not a data table, so it cannot be a format table",
-                                           identifier.GetFullName()));
-    }
-    return FormatTable::Create(catalog.GetFileSystem(), location, identifier, data_schema,
-                               location_carries_paimon_metadata, /*dynamic_options=*/{});
 }
 
 }  // namespace paimon

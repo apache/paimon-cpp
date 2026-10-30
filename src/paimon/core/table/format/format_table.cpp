@@ -18,9 +18,15 @@
 
 #include "paimon/table/format/format_table.h"
 
+#include <map>
+#include <memory>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "fmt/format.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/string_utils.h"
@@ -29,8 +35,22 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/format/format_table_file_store_commit.h"
+#include "paimon/core/table/format/format_table_file_store_write.h"
+#include "paimon/core/table/format/format_table_read.h"
+#include "paimon/core/table/format/format_table_scan.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/predicate/predicate_utils.h"
+#include "paimon/read_context.h"
+#include "paimon/scan_context.h"
+#include "paimon/status.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
+#include "paimon/write_context.h"
 
 namespace paimon {
 
@@ -45,10 +65,7 @@ FormatTable::FormatTable(const std::shared_ptr<FileSystem>& file_system,
                          const std::string& file_compression,
                          const std::string& partition_default_name,
                          bool partition_only_value_in_path, bool location_carries_paimon_metadata)
-    : file_system_(file_system),
-      location_(location),
-      identifier_(identifier),
-      schema_(schema),
+    : Table(file_system, location, schema, identifier, /*uuid=*/""),
       options_(options),
       format_(format),
       file_compression_(file_compression),
@@ -177,35 +194,159 @@ Result<std::shared_ptr<FormatTable>> FormatTable::Create(
         core_options.FormatTablePartitionOnlyValueInPath(), location_carries_paimon_metadata));
 }
 
-Result<std::shared_ptr<FormatTable>> FormatTable::Copy(
-    const std::shared_ptr<FormatTable>& table,
-    const std::map<std::string, std::string>& dynamic_options) {
-    if (table == nullptr) {
-        return Status::Invalid("format table requires a table to copy");
-    }
+Result<std::shared_ptr<FormatTable>> FormatTable::CopySelf(
+    const std::map<std::string, std::string>& dynamic_options) const {
     if (dynamic_options.empty()) {
-        return table;
+        return SharedSelf();
     }
     // The options this table already carries go back in as dynamic ones, so an option an earlier
     // call set is not lost to the schema's own value underneath it.
-    std::map<std::string, std::string> options = table->options_;
+    std::map<std::string, std::string> options = options_;
     for (const auto& [key, value] : dynamic_options) {
         options[key] = value;
     }
-    return Create(table->file_system_, table->location_, table->identifier_, table->schema_,
-                  table->location_carries_paimon_metadata_, options);
+    return Create(file_system_, root_path_, identifier_,
+                  std::static_pointer_cast<DataSchema>(schema_), location_carries_paimon_metadata_,
+                  options);
+}
+
+Result<std::shared_ptr<Table>> FormatTable::Copy(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> copied, CopySelf(dynamic_options));
+    return std::shared_ptr<Table>(std::move(copied));
 }
 
 const std::vector<std::string>& FormatTable::PartitionKeys() const {
-    return schema_->PartitionKeys();
-}
-
-std::string FormatTable::FullName() const {
-    return identifier_.GetFullName();
+    return LatestSchema()->PartitionKeys();
 }
 
 Result<std::unique_ptr<::ArrowSchema>> FormatTable::GetArrowSchema() const {
     return schema_->GetArrowSchema();
+}
+
+Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
+    std::unique_ptr<ScanContext> context) const {
+    std::shared_ptr<ScanContext> shared_context = std::move(context);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(shared_context, "scan"));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
+                           CopySelf(shared_context->GetOptions()));
+    if (shared_context->IsStreamingMode()) {
+        return Status::Invalid(
+            "a format table has no snapshots, so there is nothing for a streaming scan to follow");
+    }
+    if (shared_context->GetRealtimeContext() != nullptr) {
+        return Status::Invalid(
+            "a format table has no real-time store to union with what is on disk");
+    }
+    if (shared_context->GetGlobalIndexResult() != nullptr) {
+        return Status::Invalid("a format table carries no global index");
+    }
+    std::map<std::string, std::string> partition_filter;
+    std::shared_ptr<ScanFilter> filters = shared_context->GetScanFilters();
+    if (filters != nullptr) {
+        if (filters->GetPredicate() != nullptr) {
+            return Status::NotImplemented(
+                "a format table scan does not take a predicate: its files carry no statistics to "
+                "skip by, and pruning by the partition columns a predicate names is not "
+                "implemented yet; give the partition values as a partition filter instead");
+        }
+        if (filters->GetBucketFilter()) {
+            return Status::Invalid("a format table has no buckets to filter by");
+        }
+        const std::vector<std::map<std::string, std::string>>& partition_filters =
+            filters->GetPartitionFilters();
+        if (partition_filters.size() > 1) {
+            return Status::Invalid("a format table scan takes at most one partition filter");
+        }
+        if (partition_filters.size() == 1) {
+            partition_filter = partition_filters.front();
+        }
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<FormatTableScan> scan,
+        FormatTableScan::Create(table, partition_filter, shared_context->GetLimit()));
+    return std::unique_ptr<TableScan>(std::move(scan));
+}
+
+Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
+    std::unique_ptr<ReadContext> context) const {
+    std::shared_ptr<ReadContext> read_context = std::move(context);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(read_context, "read"));
+    if (read_context->HasVectorOrFullTextSearch()) {
+        return Status::NotImplemented(
+            "VectorSearch or FullTextSearch is not supported for format tables");
+    }
+    if (PredicateUtils::ContainsFullTextMatch(read_context->GetPredicate())) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
+                           CopySelf(read_context->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
+                           FormatTableRead::Create(table, read_context));
+    return std::unique_ptr<TableRead>(std::move(read));
+}
+
+Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
+    std::unique_ptr<WriteContext> context) const {
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "write"));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, CopySelf(context->GetOptions()));
+    if (context->GetCatalog() != nullptr) {
+        return Status::Invalid(
+            "WithCatalog() requires a native table; a format table takes a WriteContextBuilder "
+            "built from its location instead");
+    }
+    if (context->IsStreamingMode()) {
+        return Status::Invalid(
+            "a format table has no snapshots, so there is nothing a streaming write could "
+            "commit against");
+    }
+    if (context->GetRealtimeContext() != nullptr) {
+        return Status::Invalid("a format table has no real-time store to write into");
+    }
+    if (!context->GetWriteSchema().empty()) {
+        return Status::NotImplemented(
+            "a format table write takes the table's own columns; a write schema naming a "
+            "subset of them is not supported yet");
+    }
+    if (context->GetWriteId().has_value()) {
+        return Status::Invalid("a format table has no buckets, so a write id would name nothing");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableFileStoreWrite> format_write,
+                           FormatTableFileStoreWrite::Create(table, context->GetMemoryPool()));
+    return std::unique_ptr<FileStoreWrite>(std::move(format_write));
+}
+
+Result<std::unique_ptr<FileStoreCommit>> FormatTable::NewCommit(
+    std::unique_ptr<CommitContext> context) const {
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "commit"));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
+                           CopySelf(context->GetOptions()));
+    if (!context->IgnoreEmptyCommit()) {
+        return Status::Invalid(
+            "a format table cannot record an empty commit: keeping one means writing a "
+            "snapshot that adds no files, and there are no snapshots here");
+    }
+    if (context->UseRESTCatalogCommit()) {
+        return Status::Invalid(
+            "a format table commits by renaming files into place, not by sending a snapshot "
+            "to a rest catalog");
+    }
+    if (context->GetTableId()) {
+        return Status::Invalid(
+            "a format table sends no commit table request, so there is nowhere to put a table id");
+    }
+    if (context->GetCatalog() != nullptr) {
+        return Status::Invalid(
+            "a format table keeps no snapshot for a catalog to take, so it commits by renaming "
+            "files into place rather than through the catalog it was loaded from");
+    }
+    if (context->AppendCommitCheckConflict()) {
+        return Status::Invalid(
+            "a format table has no manifests to check a concurrent commit against");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableFileStoreCommit> format_commit,
+                           FormatTableFileStoreCommit::Create(given_table));
+    return std::unique_ptr<FileStoreCommit>(std::move(format_commit));
 }
 
 }  // namespace paimon

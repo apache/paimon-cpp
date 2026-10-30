@@ -40,8 +40,10 @@ TEST(CommitContextTest, TestLegacyConstructor) {
     auto fs = std::make_shared<MockFileSystem>();
     const std::map<std::string, std::string> options = {{"key", "value"}};
     CommitContext context("table_root_path", "commit_user_1", false, true, true, pool, executor, fs,
-                          options, nullptr);
+                          options);
     ASSERT_EQ(context.GetRootPath(), "table_root_path");
+    // Without an identifier the option is the only name a branch can have.
+    ASSERT_EQ(context.GetBranch(), "main");
     ASSERT_EQ(context.GetCommitUser(), "commit_user_1");
     ASSERT_FALSE(context.IgnoreEmptyCommit());
     ASSERT_TRUE(context.UseRESTCatalogCommit());
@@ -53,6 +55,7 @@ TEST(CommitContextTest, TestLegacyConstructor) {
     ASSERT_EQ(context.GetCatalog(), nullptr);
     ASSERT_FALSE(context.GetIdentifier());
     ASSERT_FALSE(context.GetTableId());
+    ASSERT_TRUE(context.GetFileSystemSchemeToIdentifierMap().empty());
 }
 
 TEST(CommitContextTest, TestDefaultValue) {
@@ -62,6 +65,7 @@ TEST(CommitContextTest, TestDefaultValue) {
     ASSERT_OK_AND_ASSIGN(auto expected_root_path, PathUtil::NormalizePath("table_root_path"));
 
     ASSERT_EQ(ctx->GetRootPath(), expected_root_path);
+    ASSERT_EQ(ctx->GetBranch(), "main");
     ASSERT_EQ(ctx->GetCommitUser(), "commit_user_1");
     ASSERT_TRUE(ctx->IgnoreEmptyCommit());
     ASSERT_FALSE(ctx->UseRESTCatalogCommit());
@@ -73,6 +77,28 @@ TEST(CommitContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetExecutor());
     ASSERT_FALSE(ctx->GetSpecificFileSystem());
     ASSERT_TRUE(ctx->GetOptions().empty());
+    ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
+    ASSERT_FALSE(ctx->GetSpecificTableSchema());
+    ASSERT_FALSE(ctx->GetTableId());
+}
+
+TEST(CommitContextTest, TestFileSystemAndSchemeMapConflict) {
+    CommitContextBuilder builder("table_root_path", "commit_user_1");
+    auto fs = std::make_shared<MockFileSystem>();
+    builder.WithFileSystem(fs);
+    builder.WithFileSystemSchemeToIdentifierMap({{"file", "local"}});
+    ASSERT_NOK_WITH_MSG(
+        builder.Finish(),
+        "WithFileSystem() and WithFileSystemSchemeToIdentifierMap() cannot be used together");
+}
+
+TEST(CommitContextTest, TestSchemeMapWithoutFileSystem) {
+    CommitContextBuilder builder("table_root_path", "commit_user_1");
+    builder.WithFileSystemSchemeToIdentifierMap({{"file", "local"}});
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
+    std::map<std::string, std::string> expected_fs_map = {{"file", "local"}};
+    ASSERT_EQ(expected_fs_map, ctx->GetFileSystemSchemeToIdentifierMap());
+    ASSERT_FALSE(ctx->GetSpecificFileSystem());
 }
 
 TEST(CommitContextTest, TestSetContent) {
@@ -89,6 +115,7 @@ TEST(CommitContextTest, TestSetContent) {
                                        .WithMemoryPool(memory_pool)
                                        .WithExecutor(executor)
                                        .WithFileSystem(fs)
+                                       .SetTableSchema("table-schema-json")
                                        .AddOption("key", "value")
                                        .Finish());
 
@@ -102,6 +129,8 @@ TEST(CommitContextTest, TestSetContent) {
     ASSERT_EQ(ctx->GetMemoryPool(), memory_pool);
     ASSERT_EQ(ctx->GetExecutor(), executor);
     ASSERT_EQ(ctx->GetSpecificFileSystem(), fs);
+    ASSERT_TRUE(ctx->GetSpecificTableSchema().has_value());
+    ASSERT_EQ("table-schema-json", ctx->GetSpecificTableSchema().value());
 
     std::map<std::string, std::string> expected_options = {{"key", "value"}};
     ASSERT_EQ(ctx->GetOptions(), expected_options);
@@ -142,6 +171,8 @@ TEST(CommitContextTest, TestCatalogAddressesBranchByIdentifier) {
         auto branch_ctx,
         branch_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_dev")).Finish());
     ASSERT_EQ(branch_ctx->GetIdentifier().value(), Identifier("db1", "t1$branch_dev"));
+    // Finish() stores the resolved branch, so the factory reads it instead of resolving again.
+    ASSERT_EQ(branch_ctx->GetBranch(), "dev");
     CommitContextBuilder agreeing_builder("table_root_path", "commit_user_1");
     ASSERT_OK(agreeing_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_dev"))
                   .AddOption(Options::BRANCH, "dev")
@@ -151,6 +182,7 @@ TEST(CommitContextTest, TestCatalogAddressesBranchByIdentifier) {
         auto constructed_ctx,
         constructed_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).Finish());
     ASSERT_EQ(constructed_ctx->GetIdentifier().value(), Identifier("db1", "t1$branch_dev"));
+    ASSERT_EQ(constructed_ctx->GetBranch(), "dev");
     CommitContextBuilder main_builder("table_root_path", "commit_user_1");
     ASSERT_OK(main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_main"))
                   .AddOption(Options::BRANCH, "main")
@@ -193,7 +225,9 @@ TEST(CommitContextTest, TestCatalogAddressesBranchByIdentifier) {
 
 TEST(CommitContextTest, TestBranch) {
     CommitContextBuilder file_system_builder("table_root_path", "commit_user_1");
-    ASSERT_OK(file_system_builder.AddOption(Options::BRANCH, "dev").Finish());
+    ASSERT_OK_AND_ASSIGN(auto fs_branch_ctx,
+                         file_system_builder.AddOption(Options::BRANCH, "dev").Finish());
+    ASSERT_EQ(fs_branch_ctx->GetBranch(), "dev");
 
     CommitContextBuilder upper_main_builder("table_root_path", "commit_user_1");
     ASSERT_OK_AND_ASSIGN(auto upper_main_ctx,
@@ -207,6 +241,7 @@ TEST(CommitContextTest, TestBranch) {
         auto rest_ctx,
         rest_builder.UseRESTCatalogCommit(true).AddOption(Options::BRANCH, "dev").Finish());
     ASSERT_TRUE(rest_ctx->UseRESTCatalogCommit());
+    ASSERT_EQ(rest_ctx->GetBranch(), "dev");
     ASSERT_EQ(rest_ctx->GetOptions().at(Options::BRANCH), "dev");
     CommitContextBuilder rest_upper_main_builder("table_root_path", "commit_user_1");
     ASSERT_NOK_WITH_MSG(rest_upper_main_builder.UseRESTCatalogCommit(true)

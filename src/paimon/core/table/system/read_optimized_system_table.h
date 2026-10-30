@@ -26,6 +26,7 @@
 #include "paimon/core/table/system/system_table.h"
 
 namespace paimon {
+class FileSystem;
 class TableSchema;
 
 /// System table for `T$ro`, exposing read-optimized data.
@@ -33,15 +34,16 @@ class ReadOptimizedSystemTable : public SystemTable {
  public:
     static constexpr const char* kName = "ro";
 
-    ReadOptimizedSystemTable(std::string table_path, std::shared_ptr<TableSchema> table_schema,
+    /// @param data_table_name Logical object name of the data table underneath, branch included,
+    ///        which this view answers `<data_table_name>$ro` with - the name a catalog knows the
+    ///        data table by, not the name of the directory it lives in.
+    ReadOptimizedSystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path,
+                             std::shared_ptr<TableSchema> table_schema, std::string data_table_name,
                              std::map<std::string, std::string> options);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
-    Result<std::unique_ptr<TableScan>> NewScan(
-        const std::shared_ptr<ScanContext>& context) const override;
-    Result<std::unique_ptr<TableRead>> NewRead(
-        const std::shared_ptr<ReadContext>& context) const override;
+    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
 
  private:
     /// Build the context for the data table underneath this read-optimized view.

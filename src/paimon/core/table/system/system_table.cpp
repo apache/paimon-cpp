@@ -28,6 +28,7 @@
 
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -37,15 +38,21 @@
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/metadata_system_tables.h"
 #include "paimon/core/table/system/read_optimized_system_table.h"
+#include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
+#include "paimon/predicate/predicate_utils.h"
+#include "paimon/read_context.h"
 #include "paimon/status.h"
+#include "paimon/write_context.h"
 
 namespace paimon {
 namespace {
 
 using SystemTableFactory = std::function<Result<std::shared_ptr<SystemTable>>(
     const std::shared_ptr<FileSystem>&, const std::string&, const std::shared_ptr<TableSchema>&,
-    const std::map<std::string, std::string>&)>;
+    const std::map<std::string, std::string>&, const std::string&)>;
 
 struct SystemTableRegistryEntry {
     std::string name;
@@ -70,81 +77,84 @@ std::string LoadBranch(const std::map<std::string, std::string>& options) {
 const std::vector<SystemTableRegistryEntry>& SystemTableRegistry() {
     static const std::vector<SystemTableRegistryEntry> registry = {
         {OptionsSystemTable::kName,
-         [](const std::shared_ptr<FileSystem>& /*fs*/, const std::string& table_path,
+         [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& /*dynamic_options*/)
-             -> Result<std::shared_ptr<SystemTable>> {
-             return std::make_shared<OptionsSystemTable>(table_path, table_schema);
+            const std::map<std::string, std::string>& /*dynamic_options*/,
+            const std::string& /*data_table_name*/) -> Result<std::shared_ptr<SystemTable>> {
+             return std::make_shared<OptionsSystemTable>(fs, table_path, table_schema);
          }},
         {AuditLogSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& data_table_name) -> Result<std::shared_ptr<SystemTable>> {
              return std::make_shared<AuditLogSystemTable>(
-                 fs, table_path, table_schema, MergeOptions(table_schema, dynamic_options));
+                 fs, table_path, table_schema, data_table_name,
+                 MergeOptions(table_schema, dynamic_options));
          }},
         {BinlogSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& data_table_name) -> Result<std::shared_ptr<SystemTable>> {
              return std::make_shared<BinlogSystemTable>(
-                 fs, table_path, table_schema, MergeOptions(table_schema, dynamic_options));
+                 fs, table_path, table_schema, data_table_name,
+                 MergeOptions(table_schema, dynamic_options));
          }},
         {ReadOptimizedSystemTable::kName,
-         [](const std::shared_ptr<FileSystem>& /*fs*/, const std::string& table_path,
+         [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& data_table_name) -> Result<std::shared_ptr<SystemTable>> {
              return std::make_shared<ReadOptimizedSystemTable>(
-                 table_path, table_schema, MergeOptions(table_schema, dynamic_options));
+                 fs, table_path, table_schema, data_table_name,
+                 MergeOptions(table_schema, dynamic_options));
          }},
         {SnapshotsSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& /*data_table_name*/) -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
              return std::make_shared<SnapshotsSystemTable>(fs, table_path, LoadBranch(options));
          }},
         {SchemasSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& /*data_table_name*/) -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
              return std::make_shared<SchemasSystemTable>(fs, table_path, LoadBranch(options));
          }},
         {TagsSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& /*data_table_name*/) -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
              return std::make_shared<TagsSystemTable>(fs, table_path, LoadBranch(options));
          }},
         {BranchesSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& /*data_table_name*/) -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
              return std::make_shared<BranchesSystemTable>(fs, table_path, LoadBranch(options));
          }},
         {ConsumersSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& /*data_table_name*/) -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
              return std::make_shared<ConsumersSystemTable>(fs, table_path, LoadBranch(options));
          }},
         {ManifestsSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& /*data_table_name*/) -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
              auto branch = LoadBranch(options);
              return std::make_shared<ManifestsSystemTable>(fs, table_path, std::move(branch),
@@ -153,8 +163,8 @@ const std::vector<SystemTableRegistryEntry>& SystemTableRegistry() {
         {FilesSystemTable::kName,
          [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
             const std::shared_ptr<TableSchema>& table_schema,
-            const std::map<std::string, std::string>& dynamic_options)
-             -> Result<std::shared_ptr<SystemTable>> {
+            const std::map<std::string, std::string>& dynamic_options,
+            const std::string& /*data_table_name*/) -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
              auto branch = LoadBranch(options);
              return std::make_shared<FilesSystemTable>(fs, table_path, std::move(branch),
@@ -176,6 +186,49 @@ std::optional<SystemTableFactory> FindSystemTableFactory(const std::string& syst
 
 }  // namespace
 
+SystemTable::SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
+                         std::string name)
+    : Table(fs, table_path, /*schema=*/nullptr,
+            Identifier(Identifier::kUnknownDatabase, "system_table"), /*uuid=*/""),
+      name_(std::move(name)) {}
+
+std::string SystemTable::ComposeName(const std::string& data_table_name, const std::string& kind) {
+    return data_table_name + Catalog::SYSTEM_TABLE_SPLITTER + kind;
+}
+
+Status SystemTable::CheckNoSearch(const std::shared_ptr<ReadContext>& context) {
+    if (context->HasVectorOrFullTextSearch()) {
+        return Status::NotImplemented(
+            "VectorSearch or FullTextSearch does not support system-table reads yet");
+    }
+    if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    }
+    return Status::OK();
+}
+
+Status SystemTable::AdoptOwnSchema() {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema, ArrowSchema());
+    schema_ = std::make_shared<SystemTableSchema>(std::move(arrow_schema));
+    return Status::OK();
+}
+
+Result<std::shared_ptr<Table>> SystemTable::Copy(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    return Status::NotImplemented(Name(), " system table is read-only: copying is not supported");
+}
+
+Result<std::unique_ptr<FileStoreWrite>> SystemTable::NewWrite(
+    std::unique_ptr<WriteContext> /*context*/) const {
+    return Status::NotImplemented(Name(), " system table is read-only: writing is not supported");
+}
+
+Result<std::unique_ptr<FileStoreCommit>> SystemTable::NewCommit(
+    std::unique_ptr<CommitContext> /*context*/) const {
+    return Status::NotImplemented(Name(),
+                                  " system table is read-only: committing for it is not supported");
+}
+
 bool SystemTableLoader::IsSupported(const std::string& system_table_name) {
     return FindSystemTableFactory(system_table_name).has_value();
 }
@@ -183,10 +236,18 @@ bool SystemTableLoader::IsSupported(const std::string& system_table_name) {
 Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
     const std::string& system_table_name, const std::shared_ptr<FileSystem>& fs,
     const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& dynamic_options) {
+    const std::map<std::string, std::string>& dynamic_options, const std::string& data_table_name) {
     std::optional<SystemTableFactory> factory = FindSystemTableFactory(system_table_name);
     if (factory) {
-        return factory.value()(fs, table_path, table_schema, dynamic_options);
+        // A caller that knows no logical name for the data table - a load from a bare path with no
+        // branch - leaves the views to answer with the directory name, as before.
+        const std::string effective_name =
+            data_table_name.empty() ? PathUtil::GetName(table_path) : data_table_name;
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<SystemTable> system_table,
+            factory.value()(fs, table_path, table_schema, dynamic_options, effective_name));
+        PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
+        return system_table;
     }
     return Status::NotImplemented("unsupported system table: ", system_table_name);
 }
@@ -237,7 +298,6 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
         // The warehouse is the grandparent of the sys/<table> path
         context.warehouse = PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(path));
         context.catalog_options = dynamic_options;
-        // Note: context.catalog is intentionally left as nullptr here.
         // Global tables loaded from path do not have a Catalog reference and
         // cannot enumerate databases/tables. Only tables that don't require
         // catalog enumeration (e.g. catalog_options) will work in this path.
@@ -255,7 +315,14 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
     if (parsed.branch) {
         options[Options::BRANCH] = parsed.branch.value();
     }
-    return Load(parsed.system_table_name, fs, parsed.table_path, latest_schema.value(), options);
+    // The logical name of the data table this path addresses, branch included: a `T$branch_dev$ro`
+    // path names the view `T$branch_dev$ro`, not the `T$ro` the bare directory name would give
+    // it. The branch constructor folds a spelling of the main branch into the bare name.
+    const Identifier data_identifier(Identifier::kUnknownDatabase,
+                                     PathUtil::GetName(parsed.table_path),
+                                     parsed.branch.value_or(std::string()));
+    return Load(parsed.system_table_name, fs, parsed.table_path, latest_schema.value(), options,
+                data_identifier.GetObjectName());
 }
 
 }  // namespace paimon

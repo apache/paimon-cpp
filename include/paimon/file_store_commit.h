@@ -28,6 +28,7 @@
 
 #include "paimon/defs.h"
 #include "paimon/executor.h"
+#include "paimon/macros.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
 #include "paimon/realtime/realtime_commit_progress.h"
@@ -50,11 +51,15 @@ class CommitMessage;
 /// manages versions. `UseRESTCatalogCommit()` only prepares a request for the caller to send.
 class PAIMON_EXPORT FileStoreCommit {
  public:
-    /// Create an instance of `FileStoreCommit`.
+    /// Create an instance of `FileStoreCommit`. The data table the context names is loaded from its
+    /// root path - a format table is refused, served by the table a catalog hands back through its
+    /// own `NewCommit` instead.
     ///
     /// @param context A unique pointer to the `CommitContext` used for commit operations.
     ///
     /// @return A Result containing a unique pointer to the `FileStoreCommit` instance.
+    /// @deprecated Use `Table::NewCommit()` on the table a catalog hands back instead.
+    PAIMON_DEPRECATED("Use Table::NewCommit() instead")
     static Result<std::unique_ptr<FileStoreCommit>> Create(std::unique_ptr<CommitContext> context);
 
     virtual ~FileStoreCommit() = default;

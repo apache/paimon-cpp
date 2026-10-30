@@ -86,7 +86,7 @@ registered on the REST server. The catalog is configured through the
        {"token.provider", "bear"},
        {"token", "<token>"},
    };
-   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::Catalog> catalog,
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Catalog> catalog,
                           paimon::Catalog::Create(/*root_path=*/"my_instance", options));
 
 For DLF, configure one credential source. Static AK/SK credentials, an optional
@@ -127,22 +127,19 @@ without an atomic snapshot-file rename:
 
 .. code-block:: cpp
 
-   // Writers and committers share ownership of the catalog.
-   std::shared_ptr<paimon::Catalog> shared_catalog(std::move(catalog));
-
    // Load the table's identity before preparing changes.
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
-                          shared_catalog->GetTable(paimon::Identifier("db", "tbl")));
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
 
    paimon::CommitContextBuilder builder(table_path, "commit-user");
-   builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    // CatalogUuid() stays null when the server supplies no id.
    if (std::optional<std::string> table_uuid = table->CatalogUuid()) {
        builder.WithTableId(table_uuid.value());
    }
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context, builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
-                          paimon::FileStoreCommit::Create(std::move(context)));
+                          table->NewCommit(std::move(context)));
    PAIMON_RETURN_NOT_OK(commit->Commit(commit_messages));
 
 Configure native writers with the same catalog and identifier. They load the
@@ -152,11 +149,13 @@ offsets when a real-time writer is created:
 .. code-block:: cpp
 
    paimon::WriteContextBuilder write_builder(table_path, "commit-user");
-   write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   write_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
                           write_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
-                          paimon::FileStoreWrite::Create(std::move(write_context)));
+                          table->NewWrite(std::move(write_context)));
 
 For real-time writes, also set ``WithStreamingMode(true)`` and
 ``WithRealtimeContext(...)`` with ``realtime.enabled=true``. After
@@ -170,9 +169,9 @@ current snapshot.
 Both builders use the file system of the table being written or committed for
 manifests and data, so a catalog that issues temporary credentials per table
 serves them through ``Catalog::GetTableFileSystem``. ``WithFileSystem`` overrides
-it; writers also allow ``WithFileSystemSchemeToIdentifierMap`` to override
-file-system selection. For format tables, use ``WriteContextBuilder(FormatTable)``
-instead.
+it; both also allow ``WithFileSystemSchemeToIdentifierMap`` to route by URI
+scheme instead, which the catalog is then not asked for. A format table is
+written through the table's own ``NewWrite`` instead; see :doc:`format_table`.
 
 A file system passed to ``WithFileSystem`` is used exactly as it is: neither the
 built-in file systems nor the table's own credentials are involved, so a custom
@@ -188,7 +187,7 @@ returns credentials that are still valid and reloads them before they expire.
                                                                  "oss://bucket/tbl", options));
    // MyFileSystem merges provider->GetCredentials() over its own options per access.
    auto my_fs = std::make_shared<MyFileSystem>(provider);
-   write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"))
+   write_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"))
        .WithFileSystem(my_fs);
 
 The snapshot being committed carries a uuid generated on the client, and the
@@ -212,13 +211,13 @@ keep it across recovery.
 .. code-block:: cpp
 
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
-                          shared_catalog->GetTable(paimon::Identifier("db", "tbl")));
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
    std::optional<std::string> table_uuid = table->CatalogUuid();
    if (!table_uuid) {
        return paimon::Status::Invalid("a commit lease needs the table UUID");
    }
    paimon::CommitContextBuilder builder(table_path, "writer-1");
-   builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"))
+   builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"))
        .WithTableId(table_uuid.value())
        .AddOption(paimon::Options::REST_COMMIT_ACQUIRE_LOCK, "true");
 
@@ -319,22 +318,21 @@ for that table's file system and passing it in through ``WithFileSystem``:
 
 .. code-block:: cpp
 
-   // Readers and scanners share ownership of the catalog.
-   std::shared_ptr<paimon::Catalog> shared_catalog(std::move(catalog));
-
    paimon::ScanContextBuilder scan_builder(table_path);
-   scan_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   scan_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                           scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
+                          catalog->GetTable(paimon::Identifier("db", "tbl")));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
-                          paimon::TableScan::Create(std::move(scan_context)));
+                          table->NewScan(std::move(scan_context)));
 
    paimon::ReadContextBuilder read_builder(table_path);
-   read_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   read_builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
                           read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
-                          paimon::TableRead::Create(std::move(read_context)));
+                          table->NewRead(std::move(read_context)));
 
 When ``Finish()`` builds the context, it asks the catalog for the table's file
 system through ``Catalog::GetTableFileSystem`` and uses it as-is for the schema,
@@ -342,10 +340,9 @@ snapshots, manifests and data under the table path, so it signs every access wit
 the table's credentials and reloads them as they expire. An explicit
 ``WithFileSystem`` takes precedence, so the catalog is not asked. A catalog that
 issues no per-table credentials returns its catalog-level file system, so this is
-also how you read with the catalog's own object-store credentials. For a format
-table, use ``ReadContextBuilder(FormatTable)`` or ``ScanContextBuilder(FormatTable)``
-instead; ``WithCatalog`` is rejected because the table already carries the file
-system it was loaded through.
+also how you read with the catalog's own object-store credentials. A format table
+is read through the table's own ``NewRead`` or ``NewScan`` instead; see
+:doc:`format_table`.
 
 The C++ REST catalog covers the database, table, snapshot and commit operations
 of the ``Catalog`` API. The parts of the Java REST catalog that have no C++

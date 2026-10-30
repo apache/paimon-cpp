@@ -35,9 +35,9 @@ class OptionsSystemTable : public InMemorySystemTable {
  public:
     static constexpr const char* kName = "options";
 
-    OptionsSystemTable(std::string table_path, std::shared_ptr<TableSchema> table_schema);
+    OptionsSystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path,
+                       std::shared_ptr<TableSchema> table_schema);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -62,7 +62,6 @@ class SnapshotsSystemTable : public InMemorySystemTable {
     SnapshotsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                          std::string branch);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -77,7 +76,6 @@ class SchemasSystemTable : public InMemorySystemTable {
 
     SchemasSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -92,7 +90,6 @@ class TagsSystemTable : public InMemorySystemTable {
 
     TagsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -107,7 +104,6 @@ class BranchesSystemTable : public InMemorySystemTable {
 
     BranchesSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -123,7 +119,6 @@ class ConsumersSystemTable : public InMemorySystemTable {
     ConsumersSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                          std::string branch);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -140,7 +135,6 @@ class ManifestsSystemTable : public InMemorySystemTable {
                          std::shared_ptr<TableSchema> table_schema,
                          std::map<std::string, std::string> options);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -157,7 +151,6 @@ class FilesSystemTable : public InMemorySystemTable {
                      std::shared_ptr<TableSchema> table_schema,
                      std::map<std::string, std::string> options);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 

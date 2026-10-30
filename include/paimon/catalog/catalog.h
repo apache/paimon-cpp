@@ -40,7 +40,6 @@ namespace paimon {
 using Instant = std::variant<std::string, int64_t>;
 
 class Database;
-class FormatTable;
 class Table;
 class View;
 class Schema;
@@ -69,8 +68,11 @@ class PAIMON_EXPORT Catalog {
     ///                    schemes, including the file systems it builds from per-table data
     ///                    tokens, keeps routing each scheme to its backend. Ignored when
     ///                    `file_system` is supplied, which serves every scheme itself.
-    /// @return A result containing a unique pointer to a `Catalog` instance, or an error status.
-    static Result<std::unique_ptr<Catalog>> Create(
+    /// @return A result containing a shared pointer to a `Catalog` instance, or an error status.
+    /// @note Shared rather than unique ownership: a global system table of the `sys` database
+    ///       builds its rows lazily through the catalog it was handed, so the table keeps the
+    ///       catalog alive. A catalog built by this factory always satisfies that.
+    static Result<std::shared_ptr<Catalog>> Create(
         const std::string& root_path, const std::map<std::string, std::string>& options,
         const std::shared_ptr<FileSystem>& file_system = nullptr,
         const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
@@ -147,6 +149,17 @@ class PAIMON_EXPORT Catalog {
                                bool ignore_if_not_exists) = 0;
 
     /// Gets a table.
+    ///
+    /// The table's `type` option decides what is handed back: a `format-table` comes back as the
+    /// `FormatTable` it is - a directory of data files, with no snapshot and no manifest - and
+    /// every other implemented type as the managed table it is, while a `T$system` identifier names
+    /// a read-only `SystemTable`. All go through this one `Table` interface: `NewScan()` and
+    /// `NewRead()` serve any of them, `NewWrite()` and `NewCommit()` the writable ones.
+    ///
+    /// A global system table of the "sys" database reads its rows lazily through the catalog it
+    /// came from, so the table keeps shared ownership of that catalog. `Catalog::Create()` hands
+    /// back a `std::shared_ptr`, which satisfies this. A catalog held some other way, such as
+    /// through a `std::unique_ptr`, cannot be kept and is refused by name.
     ///
     /// @param identifier Identifier of the table to get.
     /// @return A result containing the table, or an error status.
@@ -246,33 +259,6 @@ class PAIMON_EXPORT Catalog {
     /// @note Implementations returning true must also implement the internal
     /// `VersionManagedCatalog`.
     virtual bool SupportsVersionManagement() const;
-
-    /// Gets a format table: a directory of data files laid out like a standard Hive table.
-    ///
-    /// A format table carries no snapshots and no manifests, so it is loaded through its own
-    /// method rather than `GetTable()`. Reading and writing it go through the same `TableScan`,
-    /// `TableRead`, `FileStoreWrite` and `FileStoreCommit` entry points every other table uses:
-    /// hand the table back to `ScanContextBuilder`, `ReadContextBuilder`, `WriteContextBuilder` or
-    /// `CommitContextBuilder`, each of which takes one.
-    ///
-    /// @param identifier Identifier of the table to get.
-    /// @return A result containing the format table, or an error status if the table does not
-    /// exist or its `type` option is not `format-table`.
-    Result<std::shared_ptr<FormatTable>> GetFormatTable(const Identifier& identifier) const;
-
- protected:
-    /// Loads `identifier` as a format table, which is what `GetFormatTable()` hands back.
-    ///
-    /// The default reads the location and the schema through the virtuals above - two requests
-    /// that can disagree - and treats every directory below the location as table content. An
-    /// override answers both questions directly: whether location and schema come back in one
-    /// round trip, and whether this catalog keeps the table's metadata under the table path.
-    ///
-    /// @param identifier Identifier of the table to load.
-    /// @return A result containing the format table, or an error status if the table does not
-    /// exist or its `type` option is not `format-table`.
-    virtual Result<std::shared_ptr<FormatTable>> LoadFormatTable(
-        const Identifier& identifier) const;
 };
 
 }  // namespace paimon

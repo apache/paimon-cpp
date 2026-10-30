@@ -35,18 +35,16 @@ and :cpp:class:`paimon::FileStoreCommit`. See :doc:`../user_guide/format_table`.
 Contexts
 ========
 
-Each of those entry points builds its context from a table path, and the schema under that path
-says what kind of table it is. A caller that already holds a ``FormatTable`` hands it over instead,
-through the constructor each context builder has for one:
+Each of those entry points builds its context the way it does for a data table: from the table's
+location, through the builder's usual constructor:
 
-* :cpp:class:`paimon::ScanContextBuilder`\ ``(const std::shared_ptr<FormatTable>&)``
-* :cpp:class:`paimon::ReadContextBuilder`\ ``(const std::shared_ptr<FormatTable>&)``
-* :cpp:class:`paimon::WriteContextBuilder`\ ``(const std::shared_ptr<FormatTable>&)``
-* :cpp:class:`paimon::CommitContextBuilder`\ ``(const std::shared_ptr<FormatTable>&)``
+* :cpp:class:`paimon::ScanContextBuilder`\ ``(const std::string&)``
+* :cpp:class:`paimon::ReadContextBuilder`\ ``(const std::string&)``
+* :cpp:class:`paimon::WriteContextBuilder`\ ``(const std::string&)``
+* :cpp:class:`paimon::CommitContextBuilder`\ ``(const std::string&)``
 
-This is the only way to reach a format table whose schema does not live under its own location,
-such as one a REST catalog serves: nothing under the location says that it is a format table, nor
-that what sits below it is data rather than metadata. The table knows both, so a setting that would
-answer either question again - ``SetTableSchema()``, ``WithFileSystem()`` and a branch among them -
-is refused by these builders rather than quietly ignored. Options given at the call still win over
-the ones the table carries, as they do everywhere else.
+The context then goes to the table's own operator - ``NewScan()``, ``NewRead()``, ``NewWrite()`` or
+``NewCommit()`` - which serves a table whose schema does not live under its own location as well,
+such as one a REST catalog serves: the table carries its schema and the file system it was loaded
+through, so nothing under the location has to answer for them. Options given at the call still win
+over the ones the table carries, as they do everywhere else.

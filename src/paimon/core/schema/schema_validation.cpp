@@ -76,6 +76,34 @@ namespace {
 
 constexpr char kDeletionVectorsMergeOnRead[] = "deletion-vectors.merge-on-read";
 
+/// The options a copy is refused to change, mirroring the Java `SchemaManagerUtils#
+/// checkAlterTableOption` over the immutable options the C++ side has constants for. They name
+/// the physical layout the data on the table's path was written by: a `bucket-key` the options
+/// rename, say, re-hashes the bucket pruning while the files stay hashed by the old key, so the
+/// scans a copy serves would filter out the buckets its rows are actually in. The check runs over
+/// every option the call gives, before the merge, so it holds on every path that merges options
+/// into a table. Unlike the Java set, `merge-engine`, `bucket`, `row-tracking.enabled` and
+/// `data-evolution.enabled` stay servable as dynamic options here, and `type`/`branch` are dropped
+/// by `Copy` before this point.
+// TODO(yonghao.fyh): refuse the rest of Java's immutable set, which this list does not cover yet:
+// `blob-descriptor-field` (only its deprecated `blob.stored-descriptor-fields` fallback is above),
+// `data-file.path-directory`, `sequence.snapshot-ordering`, `rowkind.field`, `primary-key`,
+// `primary-key.nullable`, `partition`, `dynamic-bucket.initial-buckets`, `video-frame-field`, and
+// the four servable keys named above, should the C++ side stop serving them as dynamic options.
+const char* const kImmutableOptions[] = {
+    Options::BUCKET_KEY,
+    Options::BUCKET_FUNCTION_TYPE,
+    Options::AGGREGATION_REMOVE_RECORD_ON_DELETE,
+    Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE,
+    Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_SEQUENCE_GROUP,
+    Options::FORCE_LOOKUP,
+    Options::INDEX_FILE_IN_DATA_FILE_DIR,
+    Options::BLOB_FIELD,
+    Options::FALLBACK_BLOB_DESCRIPTOR_FIELD,
+    Options::BLOB_VIEW_FIELD,
+    Options::PK_CLUSTERING_OVERRIDE,
+};
+
 bool ContainsBlobField(const std::shared_ptr<arrow::Field>& field) {
     if (BlobUtils::IsBlobField(field)) {
         return true;
@@ -399,6 +427,31 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorStore(schema, options));
+    return Status::OK();
+}
+
+Status SchemaValidation::CheckImmutableOptions(
+    const TableSchema& schema, const std::map<std::string, std::string>& dynamic_options) {
+    const std::map<std::string, std::string>& schema_options = schema.Options();
+    for (const auto& [key, value] : dynamic_options) {
+        auto schema_option = schema_options.find(key);
+        if (schema_option != schema_options.end() && schema_option->second == value) {
+            continue;
+        }
+        if (std::find(std::begin(kImmutableOptions), std::end(kImmutableOptions), key) !=
+            std::end(kImmutableOptions)) {
+            return Status::Invalid(fmt::format("Change '{}' is not supported yet.", key));
+        }
+        if (key == Options::IGNORE_DELETE) {
+            PAIMON_ASSIGN_OR_RAISE(bool old_ignore_delete,
+                                   OptionsUtils::GetValueFromMap<bool>(schema_options, key, false));
+            PAIMON_ASSIGN_OR_RAISE(bool new_ignore_delete,
+                                   OptionsUtils::GetValueFromMap<bool>(dynamic_options, key));
+            if (old_ignore_delete && !new_ignore_delete) {
+                return Status::Invalid("Cannot change ignore-delete from true to false.");
+            }
+        }
+    }
     return Status::OK();
 }
 

@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/macros.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
@@ -33,7 +34,6 @@
 namespace paimon {
 class Catalog;
 class Executor;
-class FormatTable;
 class MemoryPool;
 
 /// `WriteContext` is some configuration for write operations.
@@ -53,7 +53,7 @@ class PAIMON_EXPORT WriteContext {
                  const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
                  const std::shared_ptr<RealtimeContext>& realtime_context,
                  const std::map<std::string, std::string>& options,
-                 const std::shared_ptr<FormatTable>& format_table,
+                 const std::optional<std::string>& table_schema = std::nullopt,
                  const std::shared_ptr<Catalog>& catalog = nullptr,
                  const std::optional<Identifier>& identifier = std::nullopt);
 
@@ -61,6 +61,12 @@ class PAIMON_EXPORT WriteContext {
 
     const std::string& GetRootPath() const {
         return root_path_;
+    }
+
+    /// Returns the table root path. An alias of `GetRootPath()`, so that every context
+    /// exposes the table location under the same name.
+    const std::string& GetPath() const {
+        return GetRootPath();
     }
 
     const std::string& GetCommitUser() const {
@@ -124,10 +130,9 @@ class PAIMON_EXPORT WriteContext {
         return realtime_context_;
     }
 
-    /// The format table this context was built from, or null when it names a table path and the
-    /// schema under that path says what kind of table it is.
-    const std::shared_ptr<FormatTable>& GetFormatTable() const {
-        return format_table_;
+    /// Returns the table schema the caller set, or nullopt when the write loads it.
+    const std::optional<std::string>& GetSpecificTableSchema() const {
+        return table_schema_;
     }
 
     /// Returns the catalog supplying table metadata, or null if unset.
@@ -138,6 +143,13 @@ class PAIMON_EXPORT WriteContext {
     /// Returns the table identifier supplied with the catalog.
     const std::optional<Identifier>& GetIdentifier() const {
         return identifier_;
+    }
+
+    /// Returns the catalog table UUID, so that every context answers `GetTableId()` the way
+    /// `CommitContext` does; a write carries none.
+    const std::optional<std::string>& GetTableId() const {
+        static const std::optional<std::string> kNoTableId;
+        return kNoTableId;
     }
 
  private:
@@ -157,7 +169,7 @@ class PAIMON_EXPORT WriteContext {
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<RealtimeContext> realtime_context_;
     std::map<std::string, std::string> options_;
-    std::shared_ptr<FormatTable> format_table_;
+    std::optional<std::string> table_schema_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
 };
@@ -170,34 +182,33 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @param commit_user The user identifier for commit operations.
     WriteContextBuilder(const std::string& root_path, const std::string& commit_user);
 
-    /// Constructs a `WriteContextBuilder` for a format table that is already loaded: the only way
-    /// to write one whose schema lives in a metastore rather than under its location, such as a
-    /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()`, `WithCatalog()` and a branch
-    /// are refused here rather than ignored.
-    ///
-    /// There is no commit user: a format table keeps no snapshot to record one in.
-    ///
-    /// @param table The format table to write to, as `Catalog::GetFormatTable()` hands it back.
-    explicit WriteContextBuilder(const std::shared_ptr<FormatTable>& table);
-
     ~WriteContextBuilder();
 
     /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite.
+    /// table schema or whose values you want to overwrite. A load merges them into the table it
+    /// hands back; an option contradicting a table you loaded already is refused, so change that
+    /// one through `Table::Copy()`.
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
+    /// @deprecated These options reach an operator only through the deprecated
+    /// `FileStoreWrite::Create()`-style entry points, which merge them into the table they load.
+    /// An operator created from a `Table` serves that table's own configuration, so pass dynamic
+    /// options through `Table::Copy()` instead. A key no table serves, such as a `header.` key,
+    /// is still read from the context.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     WriteContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 
-    /// Add a single configuration option which is not defined in the table schema or whose value
-    /// you want to overwrite.
+    /// Add a single configuration option, served the way `SetOptions()` describes.
     ///
     /// If you want to add multiple options, call `AddOption()` multiple times or use `SetOptions()`
     /// instead.
     /// @param key The option key.
     /// @param value The option value.
     /// @return Reference to this builder for method chaining.
+    /// @deprecated Use `Table::Copy()` to pass dynamic options, for the reason `SetOptions()`
+    /// gives.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     WriteContextBuilder& AddOption(const std::string& key, const std::string& value);
 
     /// Set whether to enable streaming mode (default is false)
@@ -299,6 +310,15 @@ class PAIMON_EXPORT WriteContextBuilder {
     ///
     WriteContextBuilder& WithFileSystemSchemeToIdentifierMap(
         const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
+
+    /// Set the table schema as a string to avoid schema loading I/O operations.
+    ///
+    /// @param table_schema String representation of the table schema.
+    /// @return Reference to this builder for method chaining.
+    /// @note The user must ensure that the schema string is valid and matches the table.
+    /// @note If not set, the schema is read from the catalog of `WithCatalog()` on the main
+    ///       branch, and loaded from the table path otherwise.
+    WriteContextBuilder& SetTableSchema(const std::string& table_schema);
 
     /// Set the thread number for write buffer spill operations. (default is 0)
     /// If <= 0, threading is disabled for spill IPC read/write.

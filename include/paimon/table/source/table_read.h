@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "paimon/executor.h"
+#include "paimon/macros.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/reader/count_reader.h"
@@ -42,10 +43,14 @@ class PAIMON_EXPORT TableRead {
  public:
     virtual ~TableRead() = default;
 
-    /// Create an instance of `TableRead`.
+    /// Create an instance of `TableRead`. The data table the context names is loaded from its path
+    /// - a system table behind a `T$system` path and a format table are refused, served by the
+    /// table a catalog hands back through its own `NewRead` instead.
     ///
     /// @param context A unique pointer to the `ReadContext` used for read operations.
     /// @return A Result containing a unique pointer to the `TableRead` instance.
+    /// @deprecated Use `Table::NewRead()` on the table a catalog hands back instead.
+    PAIMON_DEPRECATED("Use Table::NewRead() instead")
     static Result<std::unique_ptr<TableRead>> Create(std::unique_ptr<ReadContext> context);
 
     /// Creates a `BatchReader` instance for reading data.

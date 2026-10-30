@@ -33,7 +33,11 @@ class FileSystem;
 /// Context passed to global system table constructors, providing catalog-level
 /// access for enumerating databases, tables, and reading metadata.
 struct GlobalSystemTableContext {
-    const Catalog* catalog = nullptr;  // non-owning pointer
+    /// The catalog this table reads its rows through. Rows are built lazily, so a table handed back
+    /// to a caller keeps shared ownership of it. Empty when the table is transient and only its
+    /// schema is read. `GlobalSystemTableLoader::Load` refuses a table that enumerates data tables
+    /// when this is empty.
+    std::shared_ptr<const Catalog> catalog;
     std::shared_ptr<FileSystem> fs;
     std::string warehouse;
     std::map<std::string, std::string> catalog_options;
@@ -48,7 +52,6 @@ class CatalogOptionsSystemTable : public InMemorySystemTable {
 
     explicit CatalogOptionsSystemTable(GlobalSystemTableContext context);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -64,7 +67,6 @@ class AllTableOptionsSystemTable : public InMemorySystemTable {
 
     explicit AllTableOptionsSystemTable(GlobalSystemTableContext context);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -80,7 +82,6 @@ class TablesSystemTable : public InMemorySystemTable {
 
     explicit TablesSystemTable(GlobalSystemTableContext context);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -96,7 +97,6 @@ class PartitionsSystemTable : public InMemorySystemTable {
 
     explicit PartitionsSystemTable(GlobalSystemTableContext context);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -113,8 +113,16 @@ class GlobalSystemTableLoader {
     static Result<bool> IsSupported(const std::string& table_name,
                                     const std::map<std::string, std::string>& catalog_options);
 
+    /// Loads a global system table for a caller to read. A table that enumerates data tables needs
+    /// the catalog in the context, so it is refused here when the context carries none.
     static Result<std::shared_ptr<SystemTable>> Load(const std::string& table_name,
                                                      const GlobalSystemTableContext& context);
+
+    /// Loads a global system table for the schema it exposes alone, the way
+    /// `Catalog::LoadTableSchema` does. No rows are built, so a context that carries no catalog is
+    /// accepted here and refused by `Load` instead.
+    static Result<std::shared_ptr<SystemTable>> LoadForSchema(
+        const std::string& table_name, const GlobalSystemTableContext& context);
 
     static Result<std::vector<std::string>> GetSupportedTableNames(
         const std::map<std::string, std::string>& catalog_options);

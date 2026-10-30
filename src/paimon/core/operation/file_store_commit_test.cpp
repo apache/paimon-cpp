@@ -41,6 +41,7 @@
 #include "paimon/core/operation/file_store_commit_impl.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -100,7 +101,7 @@ TEST(FileStoreCommitTest, TestCreateWithCatalogRequiresIdentifier) {
         /*use_rest_catalog_commit=*/false, catalog, /*identifier=*/std::nullopt,
         /*table_id=*/std::nullopt, /*append_commit_check_conflict=*/false, GetDefaultPool(),
         CreateDefaultExecutor(), /*specific_file_system=*/nullptr, options,
-        /*format_table=*/nullptr);
+        BranchManager::DEFAULT_MAIN_BRANCH);
     ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)),
                         "a catalog commit requires a table identifier");
 }

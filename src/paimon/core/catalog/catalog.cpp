@@ -26,11 +26,9 @@
 #include "fmt/format.h"
 #include "paimon/catalog_options.h"
 #include "paimon/common/utils/string_utils.h"
-#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/core_options.h"
 #include "paimon/schema/schema.h"
-#include "paimon/table/format/format_table.h"
 #ifdef PAIMON_ENABLE_REST
 #include "paimon/rest/rest_catalog.h"
 #endif
@@ -42,7 +40,7 @@ const char Catalog::SYSTEM_TABLE_SPLITTER[] = "$";
 const char Catalog::DB_SUFFIX[] = ".db";
 const char Catalog::DB_LOCATION_PROP[] = "location";
 
-Result<std::unique_ptr<Catalog>> Catalog::Create(
+Result<std::shared_ptr<Catalog>> Catalog::Create(
     const std::string& root_path, const std::map<std::string, std::string>& options,
     const std::shared_ptr<FileSystem>& file_system,
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map) {
@@ -55,8 +53,11 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(
     }
     if (metastore == "rest") {
 #ifdef PAIMON_ENABLE_REST
-        return RestCatalog::Create(root_path, options, file_system, RestHttpClient::Config(),
-                                   fs_scheme_to_identifier_map);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<RestCatalog> rest_catalog,
+            RestCatalog::Create(root_path, options, file_system, RestHttpClient::Config(),
+                                fs_scheme_to_identifier_map));
+        return std::shared_ptr<Catalog>(std::move(rest_catalog));
 #else
         return Status::NotImplemented(
             "the rest catalog requires building paimon with PAIMON_ENABLE_REST=ON");
@@ -67,26 +68,12 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, file_system, fs_scheme_to_identifier_map));
-    return std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options);
+    return std::shared_ptr<Catalog>(
+        std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options));
 }
 
 bool Catalog::SupportsVersionManagement() const {
     return false;
-}
-
-Result<std::shared_ptr<FormatTable>> Catalog::GetFormatTable(const Identifier& identifier) const {
-    // Refused here rather than in each override, so every catalog rejects a system table the same
-    // way and in the same order: the database first, so that an identifier of "sys" is rejected
-    // without being parsed as a table name.
-    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "getFormatTable"));
-    return LoadFormatTable(identifier);
-}
-
-Result<std::shared_ptr<FormatTable>> Catalog::LoadFormatTable(const Identifier& identifier) const {
-    // The location and the schema are read separately, and every directory below the location is
-    // table content: a catalog that knows better overrides this and says so.
-    return CatalogUtils::LoadFormatTableInTwoRequests(*this, identifier,
-                                                      /*location_carries_paimon_metadata=*/false);
 }
 
 }  // namespace paimon

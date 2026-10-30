@@ -18,7 +18,18 @@
 
 #include "paimon/file_store_write.h"
 
+#include "paimon/catalog/table.h"
+#include "paimon/core/table/file_store_table_factory.h"
+#include "paimon/core/utils/context_utils.h"
+#include "paimon/write_context.h"
+
 namespace paimon {
+
+Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<WriteContext> ctx) {
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "write"));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+    return table->NewWrite(std::move(ctx));
+}
 
 Result<std::vector<RealtimeCommitProgress>> FileStoreWrite::PrepareCommitWithProgress(int64_t) {
     return Status::Invalid("prepare commit with progress requires a real-time writer");

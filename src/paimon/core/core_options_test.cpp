@@ -19,6 +19,7 @@
 #include "paimon/core/core_options.h"
 
 #include <limits>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>

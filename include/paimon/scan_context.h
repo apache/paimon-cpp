@@ -28,6 +28,7 @@
 #include "paimon/cache/cache.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/global_index/global_index_result.h"
+#include "paimon/macros.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
@@ -37,7 +38,6 @@ class ScanContextBuilder;
 class ScanFilter;
 class Catalog;
 class Executor;
-class FormatTable;
 class MemoryPool;
 class Predicate;
 
@@ -57,15 +57,19 @@ class PAIMON_EXPORT ScanContext {
                 const std::shared_ptr<FileSystem>& specific_file_system,
                 const std::optional<std::string>& table_schema,
                 const std::map<std::string, std::string>& options,
-                const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table,
-                const std::shared_ptr<Catalog>& catalog,
-                const std::optional<Identifier>& identifier);
+                const std::shared_ptr<Cache>& cache, const std::shared_ptr<Catalog>& catalog,
+                const std::optional<Identifier>& identifier, const std::string& branch,
+                const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
 
     ~ScanContext();
 
     const std::string& GetPath() const {
         return path_;
+    }
+
+    /// Returns the branch the builder resolved out of the identifier and the options.
+    const std::string& GetBranch() const {
+        return branch_;
     }
 
     bool IsStreamingMode() const {
@@ -103,18 +107,16 @@ class PAIMON_EXPORT ScanContext {
         return specific_file_system_;
     }
 
+    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
+        return fs_scheme_to_identifier_map_;
+    }
+
     const std::optional<std::string>& GetSpecificTableSchema() const {
         return table_schema_;
     }
 
     std::shared_ptr<Cache> GetCache() const {
         return cache_;
-    }
-
-    /// The format table this context was built from, or null when it names a table path and the
-    /// schema under that path says what kind of table it is.
-    const std::shared_ptr<FormatTable>& GetFormatTable() const {
-        return format_table_;
     }
 
     /// Returns the catalog supplying table metadata, or null if unset.
@@ -127,8 +129,16 @@ class PAIMON_EXPORT ScanContext {
         return identifier_;
     }
 
+    /// Returns the catalog table UUID, so that every context answers `GetTableId()` the way
+    /// `CommitContext` does; a scan carries none.
+    const std::optional<std::string>& GetTableId() const {
+        static const std::optional<std::string> kNoTableId;
+        return kNoTableId;
+    }
+
  private:
     std::string path_;
+    std::string branch_;
     bool is_streaming_mode_;
     std::optional<int32_t> limit_;
     std::shared_ptr<ScanFilter> scan_filters_;
@@ -137,10 +147,10 @@ class PAIMON_EXPORT ScanContext {
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
+    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
-    std::shared_ptr<FormatTable> format_table_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
 };
@@ -178,14 +188,6 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @param path The root path of the table.
     explicit ScanContextBuilder(const std::string& path);
 
-    /// Constructs a `ScanContextBuilder` for a format table that is already loaded: the only way
-    /// to scan one whose schema lives in a metastore rather than under its location, such as a
-    /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `SetTableSchema()` and `WithFileSystem()` are refused here rather than ignored.
-    ///
-    /// @param table The format table to scan, as `Catalog::GetFormatTable()` hands it back.
-    explicit ScanContextBuilder(const std::shared_ptr<FormatTable>& table);
-
     ~ScanContextBuilder();
     /// If limit is not set, it defaults to unlimited.
     ScanContextBuilder& SetLimit(int32_t limit);
@@ -208,14 +210,24 @@ class PAIMON_EXPORT ScanContextBuilder {
     ScanContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);
 
-    /// The options added or set in `ScanContextBuilder` have high priority and will be merged with
-    /// the options in table schema.
+    /// Add a single configuration option, served the way `SetOptions()` describes.
+    /// @deprecated Use `Table::Copy()` to pass dynamic options, for the reason `SetOptions()`
+    /// gives.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     ScanContextBuilder& AddOption(const std::string& key, const std::string& value);
     /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite.
+    /// table schema or whose values you want to overwrite. A load merges them into the table it
+    /// hands back; an option contradicting a table you loaded already is refused, so change that
+    /// one through `Table::Copy()`.
     /// @note The options map will clear the options added by `AddOption()` before.
     /// @param options The configuration options map.
     /// @return Reference to this builder for method chaining.
+    /// @deprecated These options reach an operator only through the deprecated
+    /// `TableScan::Create()`-style entry points, which merge them into the table they load. An
+    /// operator created from a `Table` serves that table's own configuration, so pass dynamic
+    /// options through `Table::Copy()` instead. A key no table serves, such as a `header.` key,
+    /// is still read from the context.
+    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
     ScanContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
 
     /// Set whether the scan is in streaming mode.
@@ -237,6 +249,25 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ScanContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
+
+    /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
+    /// identifiers. This allows selecting different pre-registered file system implementations
+    /// based on the URI scheme at runtime.
+    ///
+    /// @param fs_scheme_to_identifier_map Map from URI scheme (like "oss") to the corresponding
+    /// file system identifier.
+    /// @return Reference to this builder for method chaining.
+    /// @note
+    ///   - This method is intended for environments where multiple file systems are pre-registered.
+    ///   - The specified identifiers must correspond to file systems that have been registered at
+    ///   compile time or initialization.
+    ///   - Cannot be used together with `WithFileSystem()`.
+    ///   - If not set, use default file system (configured in `Options::FILE_SYSTEM`).
+    /// Example:
+    ///   builder.WithFileSystemSchemeToIdentifierMap({{"oss", "jindo"}, {"file", "local"}});
+    ///
+    ScanContextBuilder& WithFileSystemSchemeToIdentifierMap(
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
 
     /// Plans a native table through its own file system - including the per-table temporary
     /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.
