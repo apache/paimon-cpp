@@ -110,6 +110,7 @@ set(PAIMON_COMMON_SRCS
     common/lookup/lookup_store_factory.cpp
     common/memory/bytes.cpp
     common/memory/memory_pool.cpp
+    common/memory/planning_budget.cpp
     common/memory/memory_segment.cpp
     common/memory/memory_segment_utils.cpp
     common/memory/memory_slice.cpp
@@ -478,6 +479,7 @@ set(PAIMON_CORE_SRCS
     core/table/source/startup_mode.cpp
     core/table/source/table_read.cpp
     core/table/source/table_scan.cpp
+    core/table/source/bounded_table_scan.cpp
     core/table/source/data_evolution_batch_scan.cpp
     core/table/source/data_evolution_full_text_read.cpp
     core/table/source/data_evolution_full_text_scan.cpp
@@ -526,6 +528,46 @@ if(PAIMON_ENABLE_REST)
          rest/rest_util.cpp)
 endif()
 
+# The bounded decoder uses Zstd's static-only workspace API. Ordinary scans also
+# support shared Zstd, so disable only the bounded entry point for that build.
+set(PAIMON_BOUNDED_PLANNING_ZSTD OFF)
+set(_bounded_zstd_target zstd)
+get_target_property(_bounded_zstd_type ${_bounded_zstd_target} TYPE)
+if(_bounded_zstd_type STREQUAL "INTERFACE_LIBRARY")
+    get_target_property(_bounded_zstd_links zstd INTERFACE_LINK_LIBRARIES)
+    list(LENGTH _bounded_zstd_links _bounded_zstd_link_count)
+    if(_bounded_zstd_link_count EQUAL 1 AND TARGET "${_bounded_zstd_links}")
+        set(_bounded_zstd_target ${_bounded_zstd_links})
+        get_target_property(_bounded_zstd_type ${_bounded_zstd_target} TYPE)
+    endif()
+endif()
+get_target_property(_bounded_zstd_location ${_bounded_zstd_target} IMPORTED_LOCATION)
+if(_bounded_zstd_type STREQUAL "STATIC_LIBRARY"
+   OR (_bounded_zstd_type STREQUAL "UNKNOWN_LIBRARY" AND _bounded_zstd_location MATCHES
+                                                         "\\.a$"))
+    if(TARGET zstd_ep)
+        # The pinned bundled static library is built after configuration.
+        set(PAIMON_BOUNDED_PLANNING_ZSTD ON)
+    else()
+        include(CMakePushCheckState)
+        include(CheckCXXSourceCompiles)
+        cmake_push_check_state(RESET)
+        set(CMAKE_REQUIRED_LIBRARIES zstd)
+        # Reconfiguration may select a different system library in the same build.
+        unset(PAIMON_BOUNDED_ZSTD_STATIC_API CACHE)
+        check_cxx_source_compiles("#define ZSTD_STATIC_LINKING_ONLY
+#include <zstd.h>
+int main() {
+    auto volatile estimate = &ZSTD_estimateDStreamSize_fromFrame;
+    auto volatile initialize = &ZSTD_initStaticDStream;
+    return !estimate || !initialize;
+}"
+                                  PAIMON_BOUNDED_ZSTD_STATIC_API)
+        cmake_pop_check_state()
+        set(PAIMON_BOUNDED_PLANNING_ZSTD ${PAIMON_BOUNDED_ZSTD_STATIC_API})
+    endif()
+endif()
+
 add_paimon_lib(paimon
                SOURCES
                ${PAIMON_COMMON_SRCS}
@@ -535,6 +577,7 @@ add_paimon_lib(paimon
                tbb
                glog
                fmt
+               zstd
                roaring_bitmap
                xxhash
                Threads::Threads
@@ -547,6 +590,7 @@ add_paimon_lib(paimon
                tbb
                glog
                fmt
+               zstd
                roaring_bitmap
                xxhash
                Threads::Threads
@@ -556,6 +600,11 @@ add_paimon_lib(paimon
                ${PAIMON_REST_LINK_LIBS}
                SHARED_LINK_FLAGS
                ${PAIMON_VERSION_SCRIPT_FLAGS})
+set_property(SOURCE core/table/source/bounded_table_scan.cpp
+             APPEND
+             PROPERTY COMPILE_DEFINITIONS
+                      PAIMON_BOUNDED_PLANNING_ZSTD=$<BOOL:${PAIMON_BOUNDED_PLANNING_ZSTD}>
+)
 
 add_subdirectory(common/file_index)
 add_subdirectory(common/global_index)
@@ -575,6 +624,44 @@ if(PAIMON_BUILD_TESTS)
         target_link_options(paimon-executor-submission-test PRIVATE "LINKER:--wrap=_Znwm")
         set_tests_properties(paimon-executor-submission-test PROPERTIES TIMEOUT 30)
     endif()
+
+    set(PAIMON_BOUNDED_TEST_LIB paimon_shared)
+    if(PAIMON_BUILD_STATIC)
+        set(PAIMON_BOUNDED_TEST_LIB paimon_static)
+    endif()
+    add_paimon_test(bounded_table_scan_test
+                    SOURCES
+                    core/table/source/bounded_table_scan_test.cpp
+                    STATIC_LINK_LIBS
+                    ${PAIMON_BOUNDED_TEST_LIB}
+                    test_utils_static
+                    zstd
+                    ${PAIMON_LOCAL_FILE_SYSTEM_STATIC_LINK_LIBS}
+                    ${PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS}
+                    ${PAIMON_ORC_FILE_FORMAT_STATIC_LINK_LIBS}
+                    ${PAIMON_AVRO_FILE_FORMAT_STATIC_LINK_LIBS}
+                    ${GTEST_LINK_TOOLCHAIN})
+    target_compile_definitions(paimon-bounded-table-scan-test
+                               PRIVATE PAIMON_BOUNDED_PLANNING_ZSTD=$<BOOL:${PAIMON_BOUNDED_PLANNING_ZSTD}>
+    )
+    include(CheckCXXSourceCompiles)
+    check_cxx_source_compiles("#include <string>
+#if !defined(__GLIBCXX__) || !_GLIBCXX_USE_CXX11_ABI || _GLIBCXX_RELEASE < 9
+#error Unsupported allocation observation ABI
+#endif
+int main() { return 0; }"
+                              PAIMON_PLANNING_TEST_GNU_ABI)
+    if(PAIMON_BUILD_STATIC
+       AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+       AND CMAKE_SIZEOF_VOID_P EQUAL 8
+       AND PAIMON_PLANNING_TEST_GNU_ABI)
+        target_compile_definitions(paimon-bounded-table-scan-test
+                                   PRIVATE PAIMON_TEST_PLANNING_ALLOCATIONS)
+        # Include out-of-line basic_string constructors in the allocation hook.
+        target_link_options(paimon-bounded-table-scan-test PRIVATE "-static-libstdc++"
+                            "LINKER:--wrap=_Znwm")
+    endif()
+    set_tests_properties(paimon-bounded-table-scan-test PROPERTIES TIMEOUT 120)
 
     # The shared HTTP client is compiled only for the components that need libcurl,
     # so its test follows the same gate.
