@@ -58,6 +58,13 @@ class SchemaValidation {
     /// Checks the deliberately limited dedicated-vector write path, including runtime overrides.
     static Status ValidateVectorStore(const TableSchema& schema, const CoreOptions& options);
 
+    /// Checks the options that select the snapshot a scan starts from against `scan.mode`, as Java
+    /// `SchemaValidation#validateStartupMode` does, after operation-specific options have been
+    /// merged with the table schema options: `from-snapshot`, `from-snapshot-full` and
+    /// `from-timestamp` need exactly one of their own options and take none of the others, and
+    /// any other mode takes none of them.
+    static Status ValidateStartupMode(const CoreOptions& options);
+
     /// Validates a schema a table is about to be created from, whichever catalog is creating it.
     ///
     /// It picks the rules by the schema's `type` option: a format table owns no bucket, manifest
@@ -120,9 +127,6 @@ class SchemaValidation {
     static Status ValidateBucket(const TableSchema& schema, const CoreOptions& options);
     static Status ValidateDefaultValues(const TableSchema& schema) {
         return Status::NotImplemented("validate default values not implemented");
-    }
-    static Status ValidateStartupMode(const CoreOptions& options) {
-        return Status::NotImplemented("validate startup mode not implemented");
     }
     static Status ValidateFieldsPrefix(const TableSchema& schema, const CoreOptions& options);
     static Status ValidateSequenceField(const TableSchema& schema, const CoreOptions& options);

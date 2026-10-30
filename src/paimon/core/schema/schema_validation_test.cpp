@@ -29,6 +29,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
@@ -213,6 +214,55 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
     ASSERT_NOK_WITH_MSG(
         CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, disabled_file_index_read_options),
         "requires 'file-index.read.enabled=true'");
+}
+
+TEST(SchemaValidationTest, TestStartupMode) {
+    auto validate = [](const std::map<std::string, std::string>& options) -> Status {
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
+        return SchemaValidation::ValidateStartupMode(core_options);
+    };
+    ASSERT_OK(validate({}));
+    ASSERT_OK(validate({{Options::SCAN_MODE, "latest"}}));
+    ASSERT_OK(validate({{Options::SCAN_SNAPSHOT_ID, "1"}}));
+    ASSERT_OK(validate({{Options::SCAN_MODE, "from-snapshot"}, {Options::SCAN_TAG_NAME, "tag"}}));
+    ASSERT_OK(
+        validate({{Options::SCAN_MODE, "from-snapshot-full"}, {Options::SCAN_SNAPSHOT_ID, "1"}}));
+    ASSERT_OK(validate({{Options::SCAN_TIMESTAMP, "2023-06-01 00:00:00"}}));
+    ASSERT_OK(
+        validate({{Options::SCAN_MODE, "from-timestamp"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}}));
+
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_MODE, "latest-full"}, {Options::SCAN_SNAPSHOT_ID, "1"}}),
+        "scan.snapshot-id must be null when you use latest-full for scan.mode");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_MODE, "latest"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}}),
+        "scan.timestamp-millis must be null when you use latest for scan.mode");
+    ASSERT_NOK_WITH_MSG(validate({{Options::SCAN_MODE, "from-snapshot"}}),
+                        "must set only one key in [scan.snapshot-id,scan.tag-name] when you use "
+                        "from-snapshot for scan.mode");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_SNAPSHOT_ID, "1"}, {Options::SCAN_TAG_NAME, "tag"}}),
+        "must set only one key in [scan.snapshot-id,scan.tag-name] when you use from-snapshot for "
+        "scan.mode");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_TAG_NAME, "tag"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}}),
+        "[scan.timestamp-millis] must be null when you set [scan.snapshot-id,scan.tag-name]");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_MODE, "from-snapshot-full"}, {Options::SCAN_TAG_NAME, "tag"}}),
+        "scan.snapshot-id can not be null when you use from-snapshot-full for scan.mode");
+    ASSERT_NOK_WITH_MSG(validate({{Options::SCAN_MODE, "from-snapshot-full"},
+                                  {Options::SCAN_SNAPSHOT_ID, "1"},
+                                  {Options::SCAN_TAG_NAME, "tag"}}),
+                        "[scan.tag-name] must be null when you set [scan.snapshot-id]");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_MODE, "from-timestamp"}, {Options::SCAN_SNAPSHOT_ID, "1"}}),
+        "must set only one key in [scan.timestamp-millis,scan.timestamp] when you use "
+        "from-timestamp for scan.mode");
+    ASSERT_NOK_WITH_MSG(validate({{Options::SCAN_MODE, "from-timestamp"},
+                                  {Options::SCAN_TIMESTAMP_MILLIS, "1"},
+                                  {Options::SCAN_TAG_NAME, "tag"}}),
+                        "[scan.tag-name] must be null when you set "
+                        "[scan.timestamp-millis,scan.timestamp]");
 }
 
 TEST(SchemaValidationTest, TestVectorType) {
