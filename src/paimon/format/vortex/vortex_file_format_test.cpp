@@ -19,13 +19,17 @@
 
 // Round-trip unit tests for the Vortex file format: write, then read back via vortex-ffi.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -35,13 +39,18 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
+#include "arrow/util/key_value_metadata.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
+#include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/data/timestamp.h"
+#include "paimon/defs.h"
 #include "paimon/format/column_stats.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
@@ -53,11 +62,15 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/metrics.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon::vortex::test {
 
@@ -155,6 +168,105 @@ class VortexFileFormatTest : public ::testing::Test {
             ASSERT_TRUE(actual->Equals(expected)) << actual->ToString() << "\nvs\n"
                                                   << expected->ToString();
         }
+    }
+
+    Result<std::unique_ptr<FileBatchReader>> CreatePredicateReader(
+        const std::string& path, const std::shared_ptr<arrow::Schema>& schema,
+        const std::shared_ptr<Predicate>& predicate, const std::string& mode,
+        const std::string& io_coalesce_mode = "") const {
+        std::map<std::string, std::string> options = {{"file.format", "vortex"}};
+        if (!mode.empty()) {
+            options.emplace("vortex.read.membership-pushdown", mode);
+        }
+        if (!io_coalesce_mode.empty()) {
+            options.emplace("vortex.read.io-coalesce", io_coalesce_mode);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> format,
+                               FileFormatFactory::Get("vortex", options));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> builder,
+                               format->CreateReaderBuilder(/*batch_size=*/2));
+        builder->WithMemoryPool(pool_);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input, file_system_->Open(path));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader, builder->Build(input));
+        ::ArrowSchema ffi_schema = {};
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &ffi_schema));
+        PAIMON_RETURN_NOT_OK(
+            reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
+        return reader;
+    }
+
+    // This is the native file reader, before the SDK residual predicate. A declined membership
+    // predicate intentionally returns a superset, including null rows, for the caller to filter.
+    Result<std::vector<uint64_t>> CollectNativeRowIds(
+        std::unique_ptr<FileBatchReader> reader) const {
+        std::vector<uint64_t> row_ids;
+        while (true) {
+            PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader->NextBatch());
+            if (BatchReader::IsEofBatch(batch)) {
+                break;
+            }
+            PAIMON_RETURN_NOT_OK(paimon::test::ReadResultCollector::CheckBatchOffset(batch));
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                std::shared_ptr<arrow::Array> array,
+                arrow::ImportArray(batch.first.get(), batch.second.get()));
+            for (int64_t i = 0; i < array->length(); ++i) {
+                PAIMON_ASSIGN_OR_RAISE(uint64_t row_id,
+                                       reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+                row_ids.push_back(row_id);
+            }
+        }
+        return row_ids;
+    }
+
+    static std::shared_ptr<arrow::Schema> ReaderTestSchema() {
+        return arrow::schema(
+            {arrow::field("id", arrow::int32(), false), arrow::field("name", arrow::utf8())});
+    }
+
+    Result<std::string> WriteReaderTestFile() const {
+        const std::shared_ptr<arrow::Schema> schema = ReaderTestSchema();
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> data,
+            arrow::ipc::internal::json::ArrayFromJSON(
+                arrow::struct_(schema->fields()),
+                R"([[0,"zero"],[1,null],[2,"two"],[3,"three"],[4,null],[5,"five"]])"));
+        const std::string path = PathUtil::JoinPath(directory_->Str(), "reader.vortex");
+        PAIMON_RETURN_NOT_OK(WriteFile(path, schema, data, /*batch_size=*/2));
+        return path;
+    }
+
+    Result<std::unique_ptr<FileBatchReader>> CreateReader(const std::string& path,
+                                                          int32_t batch_size = 2) const {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> builder,
+                               format_->CreateReaderBuilder(batch_size));
+        builder->WithMemoryPool(pool_);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input, file_system_->Open(path));
+        return builder->Build(input);
+    }
+
+    Status ConfigureReader(FileBatchReader* reader, const std::shared_ptr<arrow::Schema>& schema,
+                           const std::shared_ptr<Predicate>& predicate = nullptr,
+                           const std::optional<RoaringBitmap32>& selection = std::nullopt) const {
+        ::ArrowSchema ffi_schema = {};
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &ffi_schema));
+        ScopeGuard release_schema([&ffi_schema]() {
+            if (ffi_schema.release != nullptr) {
+                ffi_schema.release(&ffi_schema);
+            }
+        });
+        return reader->SetReadSchema(&ffi_schema, predicate, selection);
+    }
+
+    Result<std::shared_ptr<arrow::Array>> ReadNextBatch(FileBatchReader* reader) const {
+        PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            return std::shared_ptr<arrow::Array>();
+        }
+        PAIMON_RETURN_NOT_OK(paimon::test::ReadResultCollector::CheckBatchOffset(batch));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> array,
+            arrow::ImportArray(batch.first.get(), batch.second.get()));
+        return array;
     }
 
  protected:
@@ -995,6 +1107,833 @@ TEST_F(VortexFileFormatTest, WriteSurfacesInjectedIOError) {
         break;
     }
     ASSERT_TRUE(run_complete);
+}
+
+// Selection pushdown must preserve physical row ids across output batches.
+TEST_F(VortexFileFormatTest, SelectionPushdownReturnsSelectedRowsAndPhysicalRowIds) {
+    constexpr int64_t kRows = 10;
+    arrow::Int32Builder id_builder;
+    arrow::StringBuilder name_builder;
+    for (int64_t i = 0; i < kRows; ++i) {
+        ASSERT_TRUE(id_builder.Append(static_cast<int32_t>(i * 10)).ok());
+        ASSERT_TRUE(name_builder.Append(fmt::format("row_{}", i)).ok());
+    }
+    std::shared_ptr<arrow::Array> id_array;
+    std::shared_ptr<arrow::Array> name_array;
+    ASSERT_TRUE(id_builder.Finish(&id_array).ok());
+    ASSERT_TRUE(name_builder.Finish(&name_array).ok());
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),
+                                 arrow::field("name", arrow::utf8())};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::StructArray::Make({id_array, name_array}, fields).ValueOrDie();
+
+    std::string path = PathUtil::JoinPath(directory_->Str(), "selection.vortex");
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/4));
+
+    // Select physical rows {1, 3, 5, 7}; their id values are {10, 30, 50, 70}.
+    RoaringBitmap32 selection = RoaringBitmap32::From({1, 3, 5, 7});
+
+    // batch_size=2 spreads the 4 selected rows over two batches, exercising the cross-batch row id.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         format_->CreateReaderBuilder(/*batch_size=*/2));
+    reader_builder->WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, reader_builder->Build(input));
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, /*predicate=*/nullptr, selection));
+
+    std::vector<int32_t> got_ids;
+    std::vector<uint64_t> got_row_ids;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        std::shared_ptr<arrow::Array> arr =
+            arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+        std::shared_ptr<arrow::Int32Array> id_col = checked_pointer_cast<arrow::Int32Array>(
+            checked_pointer_cast<arrow::StructArray>(arr)->GetFieldByName("id"));
+        for (int64_t i = 0; i < arr->length(); ++i) {
+            got_ids.push_back(id_col->Value(i));
+            ASSERT_OK_AND_ASSIGN(uint64_t row_id,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+            got_row_ids.push_back(row_id);
+        }
+    }
+    ASSERT_EQ(got_ids, (std::vector<int32_t>{10, 30, 50, 70}));
+    ASSERT_EQ(got_row_ids, (std::vector<uint64_t>{1, 3, 5, 7}));
+}
+
+TEST_F(VortexFileFormatTest, DenseSelectionKeepsOnlyExcludedIndicesAndPreservesNullValues) {
+    constexpr int32_t kRows = 4096;
+    constexpr int32_t kDeletedRow = 2048;
+    arrow::Int32Builder id_builder;
+    arrow::Int32Builder value_builder;
+    for (int32_t row = 0; row < kRows; ++row) {
+        ASSERT_TRUE(id_builder.Append(row).ok());
+        if (row % 17 == 0) {
+            ASSERT_TRUE(value_builder.AppendNull().ok());
+        } else {
+            ASSERT_TRUE(value_builder.Append(row * 10).ok());
+        }
+    }
+    std::shared_ptr<arrow::Array> ids;
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(id_builder.Finish(&ids).ok());
+    ASSERT_TRUE(value_builder.Finish(&values).ok());
+    const auto schema = arrow::schema(
+        {arrow::field("id", arrow::int32(), false), arrow::field("value", arrow::int32())});
+    const auto data = arrow::StructArray::Make({ids, values}, schema->fields()).ValueOrDie();
+    const std::string path = PathUtil::JoinPath(directory_->Str(), "dense-selection.vortex");
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/1024));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
+                         CreateReader(path, /*batch_size=*/127));
+    RoaringBitmap32 selection;
+    selection.AddRange(0, kRows);
+    selection.RemoveRange(kDeletedRow, kDeletedRow + 1);
+    ASSERT_OK(ConfigureReader(reader.get(), schema, nullptr, selection));
+    ASSERT_OK_AND_ASSIGN(uint64_t index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    // Both the host and the native FFI copy contain one excluded index, not kRows - 1 indices.
+    ASSERT_EQ(index_count, uint64_t{1});
+    uint64_t emitted = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+        if (array == nullptr) {
+            break;
+        }
+        ASSERT_TRUE(array->ValidateFull().ok());
+        const auto& batch = checked_cast<const arrow::StructArray&>(*array);
+        const auto& batch_ids = checked_cast<const arrow::Int32Array&>(*batch.field(0));
+        const auto& batch_values = checked_cast<const arrow::Int32Array&>(*batch.field(1));
+        // Reverse requests also check that physical-id lookup does not depend on call order.
+        for (int64_t i = array->length(); i > 0; --i) {
+            const uint64_t output_row = emitted + static_cast<uint64_t>(i - 1);
+            const uint64_t expected_row = output_row + (output_row >= kDeletedRow ? 1 : 0);
+            ASSERT_OK_AND_ASSIGN(uint64_t physical_row,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i - 1)));
+            ASSERT_EQ(physical_row, expected_row);
+            ASSERT_EQ(batch_ids.Value(i - 1), static_cast<int32_t>(expected_row));
+            ASSERT_EQ(batch_values.IsNull(i - 1), expected_row % 17 == 0);
+            if (!batch_values.IsNull(i - 1)) {
+                ASSERT_EQ(batch_values.Value(i - 1), static_cast<int32_t>(expected_row * 10));
+            }
+        }
+        emitted += static_cast<uint64_t>(array->length());
+    }
+    ASSERT_EQ(emitted, uint64_t{kRows - 1});
+    ASSERT_FALSE(reader->GetPreviousBatchFileRowId(0).ok());
+    ASSERT_OK_AND_ASSIGN(index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    ASSERT_EQ(index_count, uint64_t{1});
+}
+
+TEST_F(VortexFileFormatTest, DenseSelectionMapsConsecutiveExcludedRowsAndSparseSelections) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    const std::vector<std::vector<int32_t>> selections = {
+        {1, 2, 3, 4, 5}, {0, 1, 2, 3, 4}, {0, 1, 4, 5}, {2, 3, 4, 5},
+        {0, 1, 2, 3},    {0, 2, 3, 5},    {0, 5}};
+    for (const auto& selected_rows : selections) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+        ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                                  RoaringBitmap32::From(selected_rows)));
+        ASSERT_OK_AND_ASSIGN(uint64_t index_count, reader->GetReaderMetrics()->GetCounter(
+                                                       "vortex.selection-index-count"));
+        ASSERT_EQ(index_count, std::min(selected_rows.size(), size_t{6} - selected_rows.size()));
+        std::vector<uint64_t> actual;
+        while (true) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+            if (array == nullptr) {
+                break;
+            }
+            const size_t offset = actual.size();
+            actual.resize(offset + static_cast<size_t>(array->length()));
+            for (int64_t i = array->length(); i > 0; --i) {
+                ASSERT_OK_AND_ASSIGN(
+                    uint64_t row, reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i - 1)));
+                actual[offset + static_cast<size_t>(i - 1)] = row;
+            }
+        }
+        ASSERT_EQ(actual, (std::vector<uint64_t>(selected_rows.begin(), selected_rows.end())));
+    }
+}
+
+TEST_F(VortexFileFormatTest, FullEmptyAndDenseSelectionsCanBeReconfiguredWithoutExpandedMapping) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    RoaringBitmap32 full;
+    full.AddRange(0, 6);
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, full));
+    ASSERT_OK_AND_ASSIGN(uint64_t index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    ASSERT_EQ(index_count, uint64_t{0});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first, ReadNextBatch(reader.get()));
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->length(), 2);
+    ASSERT_OK_AND_ASSIGN(uint64_t row, reader->GetPreviousBatchFileRowId(1));
+    ASSERT_EQ(row, uint64_t{1});
+
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, RoaringBitmap32()));
+    ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
+    ASSERT_EQ(first, nullptr);
+    ASSERT_FALSE(reader->GetPreviousBatchFileRowId(0).ok());
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                              RoaringBitmap32::From({1, 2, 3, 4, 5})));
+    ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
+    ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(row, uint64_t{1});
+    ASSERT_NOK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                               RoaringBitmap32::From({0, 1, 2, 3, 6})));
+    ASSERT_NOK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                               RoaringBitmap32::From({-1, 1, 2, 3, 4})));
+    ASSERT_OK_AND_ASSIGN(index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    ASSERT_EQ(index_count, uint64_t{1});
+    ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(1));
+    ASSERT_EQ(row, uint64_t{2});
+    ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
+    ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(row, uint64_t{3});
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema()));
+    ASSERT_OK_AND_ASSIGN(index_count,
+                         reader->GetReaderMetrics()->GetCounter("vortex.selection-index-count"));
+    ASSERT_EQ(index_count, uint64_t{0});
+    ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
+    ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(row, uint64_t{0});
+}
+
+TEST_F(VortexFileFormatTest, FilterPushdownReturnsMatchingRowsAndPhysicalRowIds) {
+    constexpr int64_t kRows = 10;
+    arrow::Int32Builder id_builder;
+    arrow::StringBuilder name_builder;
+    for (int64_t i = 0; i < kRows; ++i) {
+        ASSERT_TRUE(id_builder.Append(static_cast<int32_t>(i * 10)).ok());
+        ASSERT_TRUE(name_builder.Append(fmt::format("row_{}", i)).ok());
+    }
+    std::shared_ptr<arrow::Array> id_array;
+    std::shared_ptr<arrow::Array> name_array;
+    ASSERT_TRUE(id_builder.Finish(&id_array).ok());
+    ASSERT_TRUE(name_builder.Finish(&name_array).ok());
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),
+                                 arrow::field("name", arrow::utf8())};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::StructArray::Make({id_array, name_array}, fields).ValueOrDie();
+
+    std::string path = PathUtil::JoinPath(directory_->Str(), "filter.vortex");
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/4));
+
+    // Push down `id > 30`: rows 4..9 (ids 40..90) survive and rows 0..3 are dropped by the scan.
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, "id", FieldType::INT, Literal(static_cast<int32_t>(30)));
+
+    // batch_size=2 spreads the 6 surviving rows over three batches, exercising cross-batch row ids.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         format_->CreateReaderBuilder(/*batch_size=*/2));
+    reader_builder->WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, reader_builder->Build(input));
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
+
+    std::vector<int32_t> got_ids;
+    std::vector<uint64_t> got_row_ids;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        std::shared_ptr<arrow::Array> arr =
+            arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+        std::shared_ptr<arrow::Int32Array> id_col = checked_pointer_cast<arrow::Int32Array>(
+            checked_pointer_cast<arrow::StructArray>(arr)->GetFieldByName("id"));
+        for (int64_t i = 0; i < arr->length(); ++i) {
+            got_ids.push_back(id_col->Value(i));
+            ASSERT_OK_AND_ASSIGN(uint64_t row_id,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+            got_row_ids.push_back(row_id);
+        }
+    }
+    // Filtered rows retain their physical positions rather than output offsets.
+    ASSERT_EQ(got_ids, (std::vector<int32_t>{40, 50, 60, 70, 80, 90}));
+    ASSERT_EQ(got_row_ids, (std::vector<uint64_t>{4, 5, 6, 7, 8, 9}));
+}
+
+TEST_F(VortexFileFormatTest, RejectsInvalidMembershipPushdownMode) {
+    for (const std::string mode : {"", "AUTO", "enabled"}) {
+        SCOPED_TRACE(fmt::format("mode={}", mode));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<FileFormat> format,
+            FileFormatFactory::Get(
+                "vortex", {{"file.format", "vortex"}, {"vortex.read.membership-pushdown", mode}}));
+        Result<std::unique_ptr<ReaderBuilder>> result = format->CreateReaderBuilder(2);
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsInvalid()) << result.status().ToString();
+        ASSERT_NE(result.status().ToString().find("vortex.read.membership-pushdown"),
+                  std::string::npos);
+    }
+}
+
+TEST_F(VortexFileFormatTest, RejectsInvalidIoCoalesceMode) {
+    for (const std::string mode : {"", "LOCAL", "auto", "none", "local "}) {
+        SCOPED_TRACE(fmt::format("mode={}", mode));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> format,
+                             FileFormatFactory::Get("vortex", {{"file.format", "vortex"},
+                                                               {"vortex.read.io-coalesce", mode}}));
+        Result<std::unique_ptr<ReaderBuilder>> result = format->CreateReaderBuilder(2);
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsInvalid()) << result.status().ToString();
+        ASSERT_NE(result.status().ToString().find("vortex.read.io-coalesce"), std::string::npos);
+    }
+}
+
+TEST_F(VortexFileFormatTest, IoCoalesceModesPreserveDataPredicatesAndRowIds) {
+    const std::string path = PathUtil::JoinPath(directory_->Str(), "io-coalesce-modes.vortex");
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    const std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(fields),
+            R"([[null,"zero"],[10,null],[20,"twenty"],[30,"thirty"],[40,"forty"]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2));
+    const std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/0, "id", FieldType::INT, Literal(static_cast<int32_t>(30)));
+
+    for (const std::string mode : {"object-storage", "local"}) {
+        SCOPED_TRACE(fmt::format("mode={}", mode));
+        ASSERT_OK_AND_ASSIGN(
+            format_, FileFormatFactory::Get(
+                         "vortex", {{"file.format", "vortex"}, {"vortex.read.io-coalesce", mode}}));
+        AssertReadWithBatchSizes(path, schema, data, {1, 2, 8});
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
+                             CreatePredicateReader(path, schema, predicate, "auto", mode));
+        ASSERT_OK_AND_ASSIGN(std::vector<uint64_t> row_ids, CollectNativeRowIds(std::move(reader)));
+        ASSERT_EQ(row_ids, (std::vector<uint64_t>{3}));
+    }
+}
+
+TEST_F(VortexFileFormatTest, MembershipPushdownModesStayLocalToEachReader) {
+    const std::string path = PathUtil::JoinPath(directory_->Str(), "membership-modes.vortex");
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32())};
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    const std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[null],[0],[1],[2],[3],[4],[5],[1000]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/4));
+
+    std::vector<Literal> sparse;
+    for (int32_t i = 0; i < 64; ++i) {
+        sparse.emplace_back(i * 2);
+    }
+    const std::vector<std::shared_ptr<Predicate>> predicates = {
+        PredicateBuilder::In(0, "id", FieldType::INT, sparse),
+        PredicateBuilder::NotIn(0, "id", FieldType::INT, sparse),
+        PredicateBuilder::Equal(0, "id", FieldType::INT, Literal(static_cast<int32_t>(3)))};
+    const std::vector<std::vector<uint64_t>> filtered_rows = {{1, 3, 5}, {2, 4, 6, 7}, {4}};
+    const std::vector<uint64_t> all_rows = {0, 1, 2, 3, 4, 5, 6, 7};
+    // Empty mode means the option is omitted, exercising the default auto policy. Configure all
+    // readers before consuming any, so later force/off readers cannot alter an earlier reader.
+    const std::vector<std::string> modes = {"force", "off", "", "auto", "force", "off"};
+    std::vector<std::unique_ptr<FileBatchReader>> readers;
+    std::vector<std::vector<uint64_t>> expected;
+    for (size_t predicate_idx = 0; predicate_idx < predicates.size(); ++predicate_idx) {
+        for (const std::string& mode : modes) {
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<FileBatchReader> reader,
+                CreatePredicateReader(path, schema, predicates[predicate_idx], mode));
+            readers.push_back(std::move(reader));
+            expected.push_back(predicate_idx == 2 || mode == "force" ? filtered_rows[predicate_idx]
+                                                                     : all_rows);
+        }
+    }
+    for (size_t i = 0; i < readers.size(); ++i) {
+        SCOPED_TRACE(
+            fmt::format("predicate={}, mode={}", i / modes.size(), modes[i % modes.size()]));
+        ASSERT_OK_AND_ASSIGN(std::vector<uint64_t> rows,
+                             CollectNativeRowIds(std::move(readers[i])));
+        ASSERT_EQ(rows, expected[i]);
+    }
+}
+
+TEST_F(VortexFileFormatTest, AutoPushesCompactLargeMembershipPredicates) {
+    const std::string path = PathUtil::JoinPath(directory_->Str(), "membership-ranges.vortex");
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32())};
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    const std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[null],[0],[1],[2],[3],[4],[5],[1000]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/4));
+
+    std::vector<Literal> contiguous;
+    for (int32_t i = 0; i < 64; ++i) {
+        contiguous.emplace_back(i);
+    }
+    const std::vector<std::shared_ptr<Predicate>> predicates = {
+        PredicateBuilder::In(0, "id", FieldType::INT, contiguous),
+        PredicateBuilder::NotIn(0, "id", FieldType::INT, contiguous)};
+    const std::vector<std::vector<uint64_t>> filtered_rows = {{1, 2, 3, 4, 5, 6}, {7}};
+    const std::vector<uint64_t> all_rows = {0, 1, 2, 3, 4, 5, 6, 7};
+    for (size_t predicate_idx = 0; predicate_idx < predicates.size(); ++predicate_idx) {
+        for (const std::string mode : {"", "auto", "force", "off"}) {
+            SCOPED_TRACE(fmt::format("predicate={}, mode={}", predicate_idx, mode));
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<FileBatchReader> reader,
+                CreatePredicateReader(path, schema, predicates[predicate_idx], mode));
+            ASSERT_OK_AND_ASSIGN(std::vector<uint64_t> rows,
+                                 CollectNativeRowIds(std::move(reader)));
+            ASSERT_EQ(rows, mode == "off" ? all_rows : filtered_rows[predicate_idx]);
+        }
+    }
+}
+
+TEST_F(VortexFileFormatTest, FilterPushdownOnDateColumn) {
+    constexpr int64_t kRows = 10;
+    arrow::Date32Builder date_builder;
+    for (int64_t i = 0; i < kRows; ++i) {
+        ASSERT_TRUE(date_builder.Append(static_cast<int32_t>(18000 + i)).ok());
+    }
+    std::shared_ptr<arrow::Array> date_array;
+    ASSERT_TRUE(date_builder.Finish(&date_array).ok());
+    arrow::FieldVector fields = {arrow::field("d", arrow::date32(), false)};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::StructArray::Make({date_array}, fields).ValueOrDie();
+
+    std::string path = PathUtil::JoinPath(directory_->Str(), "filter_date.vortex");
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/4));
+
+    // DATE literals use epoch days; d > 18005 keeps physical rows 6..9.
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, "d", FieldType::DATE, Literal(FieldType::DATE, 18005));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         format_->CreateReaderBuilder(/*batch_size=*/3));
+    reader_builder->WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, reader_builder->Build(input));
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
+
+    std::vector<int32_t> got_days;
+    std::vector<uint64_t> got_row_ids;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        std::shared_ptr<arrow::Array> arr =
+            arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+        std::shared_ptr<arrow::Date32Array> date_column = checked_pointer_cast<arrow::Date32Array>(
+            checked_pointer_cast<arrow::StructArray>(arr)->GetFieldByName("d"));
+        for (int64_t i = 0; i < arr->length(); ++i) {
+            got_days.push_back(date_column->Value(i));
+            ASSERT_OK_AND_ASSIGN(uint64_t row_id,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+            got_row_ids.push_back(row_id);
+        }
+    }
+    ASSERT_EQ(got_days, (std::vector<int32_t>{18006, 18007, 18008, 18009}));
+    ASSERT_EQ(got_row_ids, (std::vector<uint64_t>{6, 7, 8, 9}));
+}
+
+TEST_F(VortexFileFormatTest, FilterPushdownOnTimestampColumn) {
+    constexpr int64_t kRows = 10;
+    arrow::TimestampBuilder timestamp_builder(arrow::timestamp(arrow::TimeUnit::MILLI),
+                                              arrow::default_memory_pool());
+    for (int64_t i = 0; i < kRows; ++i) {
+        ASSERT_TRUE(timestamp_builder.Append(i * 1000).ok());
+    }
+    std::shared_ptr<arrow::Array> timestamp_array;
+    ASSERT_TRUE(timestamp_builder.Finish(&timestamp_array).ok());
+    arrow::FieldVector fields = {arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MILLI))};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::StructArray::Make({timestamp_array}, fields).ValueOrDie();
+
+    std::string path = PathUtil::JoinPath(directory_->Str(), "filter_ts.vortex");
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/4));
+
+    // Timestamp literals use the stored column's unit (milliseconds here).
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, "ts", FieldType::TIMESTAMP, Literal(Timestamp::FromEpochMillis(5000)));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         format_->CreateReaderBuilder(/*batch_size=*/3));
+    reader_builder->WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, reader_builder->Build(input));
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
+
+    std::vector<int64_t> got_ts;
+    std::vector<uint64_t> got_row_ids;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        std::shared_ptr<arrow::Array> arr =
+            arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+        std::shared_ptr<arrow::TimestampArray> timestamp_column =
+            checked_pointer_cast<arrow::TimestampArray>(
+                checked_pointer_cast<arrow::StructArray>(arr)->GetFieldByName("ts"));
+        for (int64_t i = 0; i < arr->length(); ++i) {
+            got_ts.push_back(timestamp_column->Value(i));
+            ASSERT_OK_AND_ASSIGN(uint64_t row_id,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+            got_row_ids.push_back(row_id);
+        }
+    }
+    ASSERT_EQ(got_ts, (std::vector<int64_t>{6000, 7000, 8000, 9000}));
+    ASSERT_EQ(got_row_ids, (std::vector<uint64_t>{6, 7, 8, 9}));
+}
+
+TEST_F(VortexFileFormatTest, ReaderWithoutReadSchemaReturnsFullDataAndChecksRowIdBounds) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    ASSERT_FALSE(reader->GetPreviousBatchFileRowId(0).ok());
+    ASSERT_OK_AND_ASSIGN(uint64_t total_rows, reader->GetNumberOfRows());
+    ASSERT_EQ(total_rows, uint64_t{6});
+    uint64_t rows = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+        if (array == nullptr) {
+            break;
+        }
+        ASSERT_TRUE(array->ValidateFull().ok());
+        ASSERT_TRUE(array->type()->Equals(arrow::struct_(ReaderTestSchema()->fields())));
+        const auto& data = checked_cast<const arrow::StructArray&>(*array);
+        const auto& ids = checked_cast<const arrow::Int32Array&>(*data.field(0));
+        for (int64_t i = 0; i < array->length(); ++i) {
+            ASSERT_OK_AND_ASSIGN(uint64_t physical_row,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+            ASSERT_EQ(physical_row, rows);
+            ASSERT_EQ(static_cast<uint64_t>(ids.Value(i)), rows++);
+        }
+        ASSERT_FALSE(reader->GetPreviousBatchFileRowId(array->length()).ok());
+        ASSERT_FALSE(reader->GetPreviousBatchFileRowId(std::numeric_limits<uint64_t>::max()).ok());
+    }
+    ASSERT_EQ(rows, total_rows);
+    ASSERT_FALSE(reader->GetPreviousBatchFileRowId(0).ok());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> repeated_eof, ReadNextBatch(reader.get()));
+    ASSERT_EQ(repeated_eof, nullptr);
+}
+
+TEST_F(VortexFileFormatTest, CombinedSelectionAndFilterPreservePhysicalRowsAfterProjection) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    const auto projection = arrow::schema({arrow::field("name", arrow::utf8())});
+    const auto predicate =
+        PredicateBuilder::GreaterOrEqual(0, "id", FieldType::INT, Literal(static_cast<int32_t>(2)));
+    ASSERT_OK(
+        ConfigureReader(reader.get(), projection, predicate, RoaringBitmap32::From({0, 2, 3, 5})));
+    std::vector<uint64_t> physical_rows;
+    std::vector<std::shared_ptr<arrow::Array>> batches;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+        if (array == nullptr) {
+            break;
+        }
+        ASSERT_TRUE(array->ValidateFull().ok());
+        ASSERT_TRUE(array->type()->Equals(arrow::struct_(projection->fields())));
+        for (int64_t i = 0; i < array->length(); ++i) {
+            ASSERT_OK_AND_ASSIGN(uint64_t physical_row,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+            physical_rows.push_back(physical_row);
+        }
+        batches.push_back(std::move(array));
+    }
+    ASSERT_EQ(physical_rows, (std::vector<uint64_t>{2, 3, 5}));
+    auto actual = arrow::Concatenate(batches, arrow_pool_.get()).ValueOrDie();
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(projection->fields()),
+                                                              R"([["two"],["three"],["five"]])")
+                        .ValueOrDie();
+    ASSERT_TRUE(actual->Equals(expected));
+}
+
+TEST_F(VortexFileFormatTest, ResetReadSchemaRestartsAndClearsSelectionAndFilter) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    const auto predicate =
+        PredicateBuilder::GreaterThan(0, "id", FieldType::INT, Literal(static_cast<int32_t>(2)));
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), predicate,
+                              RoaringBitmap32::From({1, 3, 5})));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first, ReadNextBatch(reader.get()));
+    ASSERT_EQ(first->length(), 2);
+    ASSERT_OK_AND_ASSIGN(uint64_t first_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(first_row, uint64_t{3});
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema()));
+    ASSERT_FALSE(reader->GetPreviousBatchFileRowId(0).ok());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> restarted, ReadNextBatch(reader.get()));
+    ASSERT_EQ(restarted->length(), 2);
+    ASSERT_OK_AND_ASSIGN(first_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(first_row, uint64_t{0});
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, RoaringBitmap32()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> empty, ReadNextBatch(reader.get()));
+    ASSERT_EQ(empty, nullptr);
+    ASSERT_OK(
+        ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, RoaringBitmap32::From({0, 5})));
+    ASSERT_OK_AND_ASSIGN(std::vector<uint64_t> rows, CollectNativeRowIds(std::move(reader)));
+    ASSERT_EQ(rows, (std::vector<uint64_t>{0, 5}));
+}
+
+TEST_F(VortexFileFormatTest, EmptyAndMissingProjectionsPreserveRowCountsAndPhysicalIds) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    const std::vector<std::shared_ptr<arrow::Schema>> projections = {
+        arrow::schema({}), arrow::schema({arrow::field("missing", arrow::utf8())}),
+        arrow::schema({arrow::field("_row_idx", arrow::int64())}),
+        arrow::schema(
+            {arrow::field("_row_idx", arrow::int64()), arrow::field("_row_idx", arrow::int64())}),
+        arrow::schema(
+            {arrow::field("missing", arrow::struct_({arrow::field("x", arrow::int32())}))})};
+    for (const auto& projection : projections) {
+        SCOPED_TRACE(projection->ToString());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+        ASSERT_OK(ConfigureReader(reader.get(), projection));
+        uint64_t rows = 0;
+        while (true) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+            if (array == nullptr) {
+                break;
+            }
+            ASSERT_TRUE(array->ValidateFull().ok());
+            ASSERT_TRUE(array->type()->Equals(arrow::struct_(projection->fields())));
+            const auto& values = checked_cast<const arrow::StructArray&>(*array);
+            for (const auto& child : values.fields()) {
+                ASSERT_EQ(child->null_count(), array->length());
+            }
+            for (int64_t i = 0; i < array->length(); ++i) {
+                ASSERT_OK_AND_ASSIGN(uint64_t physical_row,
+                                     reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+                ASSERT_EQ(physical_row, rows++);
+            }
+        }
+        ASSERT_EQ(rows, uint64_t{6});
+        const auto predicate = PredicateBuilder::GreaterThan(0, "id", FieldType::INT,
+                                                             Literal(static_cast<int32_t>(2)));
+        ASSERT_OK(ConfigureReader(reader.get(), projection, predicate,
+                                  RoaringBitmap32::From({0, 1, 3, 5})));
+        std::vector<uint64_t> selected;
+        while (true) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+            if (array == nullptr) {
+                break;
+            }
+            const auto& values = checked_cast<const arrow::StructArray&>(*array);
+            for (const auto& child : values.fields()) {
+                ASSERT_EQ(child->null_count(), array->length());
+            }
+            for (int64_t i = 0; i < array->length(); ++i) {
+                ASSERT_OK_AND_ASSIGN(uint64_t row,
+                                     reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+                // File readers may return candidates; the caller applies the complete predicate.
+                if (row > 2) {
+                    selected.push_back(row);
+                }
+            }
+        }
+        ASSERT_EQ(selected, (std::vector<uint64_t>{3, 5}));
+    }
+}
+
+TEST_F(VortexFileFormatTest, RepeatedProjectionFieldsKeepBothValues) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    const auto projection = arrow::schema(
+        {arrow::field("id", arrow::int32(), false), arrow::field("id", arrow::int32(), false)});
+    for (const bool filtered : {false, true}) {
+        SCOPED_TRACE(filtered);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+        const std::shared_ptr<Predicate> predicate =
+            filtered ? PredicateBuilder::GreaterThan(0, "id", FieldType::INT,
+                                                     Literal(static_cast<int32_t>(2)))
+                     : nullptr;
+        ASSERT_OK(ConfigureReader(reader.get(), projection, predicate));
+        uint64_t rows = 0;
+        while (true) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+            if (array == nullptr) {
+                break;
+            }
+            ASSERT_TRUE(array->ValidateFull().ok());
+            ASSERT_TRUE(array->type()->Equals(arrow::struct_(projection->fields())));
+            const auto& values = checked_cast<const arrow::StructArray&>(*array);
+            ASSERT_TRUE(values.field(0)->Equals(values.field(1)));
+            rows += array->length();
+        }
+        ASSERT_EQ(rows, filtered ? uint64_t{3} : uint64_t{6});
+        if (filtered) {
+            ASSERT_OK(ConfigureReader(reader.get(), projection, predicate,
+                                      RoaringBitmap32::From({1, 3, 5})));
+            ASSERT_OK_AND_ASSIGN(std::vector<uint64_t> selected,
+                                 CollectNativeRowIds(std::move(reader)));
+            ASSERT_EQ(selected, (std::vector<uint64_t>{3, 5}));
+        }
+    }
+}
+
+TEST_F(VortexFileFormatTest, FilterDoesNotOverwriteAFileColumnNamedRowIdx) {
+    const auto schema = arrow::schema({arrow::field("id", arrow::int32(), false),
+                                       arrow::field("_row_idx", arrow::int64(), false)});
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema->fields()),
+                                                          R"([[0,100],[1,101],[2,102],[3,103]])")
+                    .ValueOrDie();
+    const std::string path = PathUtil::JoinPath(directory_->Str(), "row-idx-column.vortex");
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    const auto predicate =
+        PredicateBuilder::Equal(0, "id", FieldType::INT, Literal(static_cast<int32_t>(3)));
+    ASSERT_OK(ConfigureReader(reader.get(), schema, predicate, RoaringBitmap32::From({1, 3})));
+    const auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+    ASSERT_NE(filter, nullptr);
+    std::vector<uint64_t> matched_rows;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+        if (array == nullptr) {
+            break;
+        }
+        ASSERT_TRUE(array->ValidateFull().ok());
+        const auto& values = checked_cast<const arrow::StructArray&>(*array);
+        const auto& original_column = checked_cast<const arrow::Int64Array&>(*values.field(1));
+        ASSERT_OK_AND_ASSIGN(std::vector<char> mask, filter->Test(*array, arrow_pool_.get()));
+        for (int64_t i = 0; i < array->length(); ++i) {
+            ASSERT_OK_AND_ASSIGN(uint64_t physical_row,
+                                 reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+            ASSERT_EQ(original_column.Value(i), 100 + static_cast<int64_t>(physical_row));
+            if (mask[i] != 0) {
+                matched_rows.push_back(physical_row);
+            }
+        }
+    }
+    ASSERT_EQ(matched_rows, (std::vector<uint64_t>{3}));
+}
+
+TEST_F(VortexFileFormatTest, InvalidSelectionResetDoesNotChangeTheActiveReader) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                              RoaringBitmap32::From({0, 2, 4})));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first, ReadNextBatch(reader.get()));
+    ASSERT_EQ(first->length(), 2);
+    ASSERT_NOK(
+        ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, RoaringBitmap32::From({1, 6})));
+    ASSERT_OK_AND_ASSIGN(uint64_t physical_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(physical_row, uint64_t{0});
+    ASSERT_OK_AND_ASSIGN(physical_row, reader->GetPreviousBatchFileRowId(1));
+    ASSERT_EQ(physical_row, uint64_t{2});
+    ASSERT_OK_AND_ASSIGN(std::vector<uint64_t> remaining, CollectNativeRowIds(std::move(reader)));
+    ASSERT_EQ(remaining, (std::vector<uint64_t>{4}));
+}
+
+TEST_F(VortexFileFormatTest, InvalidArrowSchemaResetDoesNotChangeTheActiveReader) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
+                              RoaringBitmap32::From({0, 2, 4})));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first, ReadNextBatch(reader.get()));
+    ASSERT_EQ(first->length(), 2);
+    ::ArrowSchema invalid_schema{};
+    ASSERT_NOK(reader->SetReadSchema(&invalid_schema, nullptr, RoaringBitmap32::From({1, 3})));
+    ASSERT_OK_AND_ASSIGN(uint64_t physical_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(physical_row, uint64_t{0});
+    ASSERT_OK_AND_ASSIGN(std::vector<uint64_t> remaining, CollectNativeRowIds(std::move(reader)));
+    ASSERT_EQ(remaining, (std::vector<uint64_t>{4}));
+}
+
+TEST_F(VortexFileFormatTest, ReturnedBatchOutlivesClosedReaderAndClosedReaderRejectsReset) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> batch, ReadNextBatch(reader.get()));
+    reader->Close();
+    reader->Close();
+    ASSERT_NOK(ConfigureReader(reader.get(), ReaderTestSchema()));
+    ASSERT_FALSE(reader->NextBatch().ok());
+    reader.reset();
+    ASSERT_TRUE(batch->ValidateFull().ok());
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(
+                        arrow::struct_(ReaderTestSchema()->fields()), R"([[0,"zero"],[1,null]])")
+                        .ValueOrDie();
+    ASSERT_TRUE(batch->Equals(expected));
+}
+
+TEST_F(VortexFileFormatTest, RawBatchOutlivesScanResetAndReaderDestruction) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema()));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch retained, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(retained));
+    const auto projection = arrow::schema({arrow::field("name", arrow::utf8())});
+    const auto predicate =
+        PredicateBuilder::GreaterThan(0, "id", FieldType::INT, Literal(static_cast<int32_t>(2)));
+    ASSERT_OK(
+        ConfigureReader(reader.get(), projection, predicate, RoaringBitmap32::From({1, 3, 5})));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> projected, ReadNextBatch(reader.get()));
+    reader.reset();
+    ASSERT_OK(paimon::test::ReadResultCollector::CheckBatchOffset(retained));
+    auto original = arrow::ImportArray(retained.first.get(), retained.second.get()).ValueOrDie();
+    ASSERT_TRUE(original->ValidateFull().ok());
+    ASSERT_TRUE(projected->ValidateFull().ok());
+    auto expected_original =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(ReaderTestSchema()->fields()),
+                                                  R"([[0,"zero"],[1,null]])")
+            .ValueOrDie();
+    auto expected_projected = arrow::ipc::internal::json::ArrayFromJSON(
+                                  arrow::struct_(projection->fields()), R"([["three"],["five"]])")
+                                  .ValueOrDie();
+    ASSERT_TRUE(original->Equals(expected_original));
+    ASSERT_TRUE(projected->Equals(expected_projected));
+}
+
+TEST_F(VortexFileFormatTest, ProjectionPreservesRequestedFieldMetadataAndNullability) {
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    const auto metadata = arrow::key_value_metadata({"projection-tag"}, {"retained"});
+    const auto projection = arrow::schema({arrow::field("name", arrow::utf8(), false, metadata),
+                                           arrow::field("id", arrow::int32(), true, metadata)});
+    ASSERT_OK(ConfigureReader(reader.get(), projection, nullptr, RoaringBitmap32::From({0, 2})));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<::ArrowSchema> file_schema, reader->GetFileSchema());
+    auto imported_file_schema = arrow::ImportSchema(file_schema.get()).ValueOrDie();
+    ASSERT_TRUE(imported_file_schema->Equals(*ReaderTestSchema()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
+    ASSERT_TRUE(array->ValidateFull().ok());
+    ASSERT_TRUE(
+        array->type()->Equals(arrow::struct_(projection->fields()), /*check_metadata=*/true));
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(projection->fields()),
+                                                              R"([["zero",0],["two",2]])")
+                        .ValueOrDie();
+    ASSERT_TRUE(array->Equals(expected));
+}
+
+TEST_F(VortexFileFormatTest, EmptyFileAndZeroMatchFilterReturnEof) {
+    const auto schema = ReaderTestSchema();
+    auto empty = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema->fields()), "[]")
+                     .ValueOrDie();
+    const std::string empty_path = PathUtil::JoinPath(directory_->Str(), "empty.vortex");
+    ASSERT_OK(WriteFile(empty_path, schema, empty, /*batch_size=*/2));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> empty_reader, CreateReader(empty_path));
+    ASSERT_OK_AND_ASSIGN(uint64_t count, empty_reader->GetNumberOfRows());
+    ASSERT_EQ(count, uint64_t{0});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> batch, ReadNextBatch(empty_reader.get()));
+    ASSERT_EQ(batch, nullptr);
+    ASSERT_FALSE(empty_reader->GetPreviousBatchFileRowId(0).ok());
+    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    const auto predicate =
+        PredicateBuilder::Equal(0, "id", FieldType::INT, Literal(static_cast<int32_t>(100)));
+    ASSERT_OK(ConfigureReader(reader.get(), schema, predicate));
+    ASSERT_OK_AND_ASSIGN(batch, ReadNextBatch(reader.get()));
+    ASSERT_EQ(batch, nullptr);
+    ASSERT_FALSE(reader->GetPreviousBatchFileRowId(0).ok());
 }
 
 }  // namespace paimon::vortex::test

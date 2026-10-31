@@ -46,6 +46,8 @@
 //! `#[repr(C)]` struct, a callback `type`, or a `#[no_mangle]` entry point here MUST be mirrored in
 //! that header in the same change.
 
+use std::ffi::CStr;
+use std::ffi::c_char;
 use std::ffi::c_void;
 use std::io;
 use std::sync::Arc;
@@ -62,10 +64,14 @@ use vortex::array::stream::ArrayStreamAdapter;
 use vortex::buffer::Alignment;
 use vortex::buffer::ByteBufferMut;
 use vortex::dtype::DType;
+use vortex::dtype::Nullability;
 use vortex::error::VortexResult;
 use vortex::error::vortex_bail;
 use vortex::error::vortex_ensure;
 use vortex::error::vortex_err;
+use vortex::extension::datetime::Date;
+use vortex::extension::datetime::TimeUnit;
+use vortex::extension::datetime::Timestamp;
 use vortex::file::OpenOptionsSessionExt;
 use vortex::file::WriteOptionsSessionExt;
 use vortex::file::WriteStrategyBuilder;
@@ -78,6 +84,9 @@ use vortex::io::runtime::BlockingRuntime;
 use vortex::io::runtime::Handle;
 use vortex::io::runtime::Task;
 use vortex::io::session::RuntimeSessionExt;
+use vortex::scalar::PValue;
+use vortex::scalar::Scalar;
+use vortex::scalar::ScalarValue;
 
 use crate::RUNTIME;
 use crate::array::vx_array;
@@ -86,6 +95,7 @@ use crate::dtype::vx_dtype;
 use crate::error::try_or;
 use crate::error::try_or_default;
 use crate::error::vx_error;
+use crate::scalar::vx_scalar;
 use crate::session::vx_session;
 
 /// Fill `length` bytes starting at `offset` into `dst`.
@@ -175,6 +185,7 @@ struct CallbackReadAt {
     len: u64,
     handle: Handle,
     concurrency: usize,
+    coalesce_config: CoalesceConfig,
 }
 
 /// Number of concurrent host read callbacks Vortex may have in flight for one file.
@@ -185,9 +196,7 @@ const DEFAULT_CONCURRENCY: usize = 16;
 
 impl VortexReadAt for CallbackReadAt {
     fn coalesce_config(&self) -> Option<CoalesceConfig> {
-        // Each read costs an FFI hop plus a blocking-pool hand-off, and the host filesystem may be
-        // remote, so favor fewer and larger reads.
-        Some(CoalesceConfig::object_storage())
+        Some(self.coalesce_config)
     }
 
     fn concurrency(&self) -> usize {
@@ -254,6 +263,7 @@ unsafe fn data_source_new_callback(
     session: *const vx_session,
     callbacks: vx_input_callbacks,
     size: u64,
+    coalesce_config: CoalesceConfig,
 ) -> VortexResult<*const vx_data_source> {
     // Take ownership of the host context before anything else, so an early error below still
     // releases it exactly once when this `Arc` is dropped.
@@ -263,6 +273,14 @@ unsafe fn data_source_new_callback(
     });
 
     vortex_ensure!(!session.is_null());
+    vortex_ensure!(
+        coalesce_config.max_size > 0,
+        "coalesced max_size must be positive"
+    );
+    vortex_ensure!(
+        coalesce_config.distance <= coalesce_config.max_size,
+        "coalesced max_gap must not exceed max_size"
+    );
     let read_at_fn = callbacks
         .read_at_fn
         .ok_or_else(|| vortex_err!("vx_input_callbacks.read_at_fn is required"))?;
@@ -274,6 +292,7 @@ unsafe fn data_source_new_callback(
         len: size,
         handle: session.handle(),
         concurrency: DEFAULT_CONCURRENCY,
+        coalesce_config,
     });
 
     let file = RUNTIME.block_on(async { session.open_options().open(reader).await })?;
@@ -302,7 +321,36 @@ pub unsafe extern "C-unwind" fn vx_data_source_new_callback(
     err: *mut *mut vx_error,
 ) -> *const vx_data_source {
     try_or(err, std::ptr::null(), || unsafe {
-        data_source_new_callback(session, callbacks, size)
+        data_source_new_callback(session, callbacks, size, CoalesceConfig::object_storage())
+    })
+}
+
+/// Create a callback data source with an explicit I/O coalescing policy.
+///
+/// The original entry point retains its object-storage defaults. Low-latency hosts can choose a
+/// smaller gap to avoid reading unrelated bytes between sparse requests. `max_size` must be
+/// positive and `max_gap` must not exceed it. The callbacks are consumed even on invalid options.
+///
+/// # Safety
+///
+/// Same requirements as [`vx_data_source_new_callback`]. `err` must be null or point to a null
+/// `*mut vx_error`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn vx_data_source_new_callback_with_coalesce(
+    session: *const vx_session,
+    callbacks: vx_input_callbacks,
+    size: u64,
+    max_gap: u64,
+    max_size: u64,
+    err: *mut *mut vx_error,
+) -> *const vx_data_source {
+    try_or(err, std::ptr::null(), || unsafe {
+        data_source_new_callback(
+            session,
+            callbacks,
+            size,
+            CoalesceConfig::new(max_gap, max_size),
+        )
     })
 }
 
@@ -523,6 +571,124 @@ pub unsafe extern "C-unwind" fn vx_callback_sink_abort(sink: *mut vx_callback_si
     drop(unsafe { Box::from_raw(sink) });
 }
 
+/// Export standard Arrow string/binary types recursively so the declared schema matches the
+/// buffer layout expected by Paimon's C++ reader.
+pub(crate) fn normalize_arrow_schema_views(schema: arrow_schema::Schema) -> arrow_schema::Schema {
+    let fields = schema
+        .fields()
+        .iter()
+        .cloned()
+        .map(normalize_field_views)
+        .collect::<arrow_schema::Fields>();
+    arrow_schema::Schema::new_with_metadata(fields, schema.metadata.clone())
+}
+
+fn normalize_field_views(field: arrow_schema::FieldRef) -> arrow_schema::FieldRef {
+    Arc::new(
+        field
+            .as_ref()
+            .clone()
+            .with_data_type(normalize_dtype_views(field.data_type())),
+    )
+}
+
+fn normalize_dtype_views(dtype: &arrow_schema::DataType) -> arrow_schema::DataType {
+    use arrow_schema::DataType;
+    match dtype {
+        DataType::Utf8View => DataType::Utf8,
+        DataType::BinaryView => DataType::Binary,
+        DataType::Struct(fields) => {
+            DataType::Struct(fields.iter().cloned().map(normalize_field_views).collect())
+        }
+        DataType::List(field) => DataType::List(normalize_field_views(field.clone())),
+        DataType::LargeList(field) => DataType::LargeList(normalize_field_views(field.clone())),
+        DataType::FixedSizeList(field, size) => {
+            DataType::FixedSizeList(normalize_field_views(field.clone()), *size)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Time unit of a timestamp scalar literal. Mirrored in `vortex_ffi.h`; the discriminants are an
+/// ABI contract, so do not reorder or renumber them.
+#[repr(C)]
+#[allow(non_camel_case_types, dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum vx_time_unit {
+    /// Seconds since the Unix epoch.
+    VX_TIME_UNIT_SECOND = 0,
+    /// Milliseconds since the Unix epoch.
+    VX_TIME_UNIT_MILLISECOND = 1,
+    /// Microseconds since the Unix epoch.
+    VX_TIME_UNIT_MICROSECOND = 2,
+    /// Nanoseconds since the Unix epoch.
+    VX_TIME_UNIT_NANOSECOND = 3,
+}
+
+/// Create a timestamp scalar literal: `value` units since the Unix epoch under `unit`.
+///
+/// `timezone` is a null-terminated UTF-8 IANA time-zone name, or null for a local (wall-clock)
+/// timestamp. Vortex's own C ABI has no timestamp/date scalar constructor, so paimon-cpp adds these
+/// two here to push down temporal predicates.
+///
+/// # Safety
+///
+/// `timezone`, when not null, must point to a valid null-terminated UTF-8 string that outlives this
+/// call. `err` must be null or point to a null `*mut vx_error`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn vx_scalar_new_timestamp(
+    value: i64,
+    unit: vx_time_unit,
+    timezone: *const c_char,
+    is_nullable: bool,
+    err: *mut *mut vx_error,
+) -> *mut vx_scalar {
+    try_or(err, std::ptr::null_mut(), || {
+        let time_unit = match unit {
+            vx_time_unit::VX_TIME_UNIT_SECOND => TimeUnit::Seconds,
+            vx_time_unit::VX_TIME_UNIT_MILLISECOND => TimeUnit::Milliseconds,
+            vx_time_unit::VX_TIME_UNIT_MICROSECOND => TimeUnit::Microseconds,
+            vx_time_unit::VX_TIME_UNIT_NANOSECOND => TimeUnit::Nanoseconds,
+        };
+        let tz = if timezone.is_null() {
+            None
+        } else {
+            let name = unsafe { CStr::from_ptr(timezone) }
+                .to_str()
+                .map_err(|e| vortex_err!("timezone is not valid utf8: {e}"))?;
+            Some(Arc::from(name))
+        };
+        let dtype = DType::Extension(
+            Timestamp::new_with_tz(time_unit, tz, Nullability::from(is_nullable)).erased(),
+        );
+        Ok(vx_scalar::new(Scalar::try_new(
+            dtype,
+            Some(ScalarValue::Primitive(PValue::I64(value))),
+        )?))
+    })
+}
+
+/// Create a date scalar literal: `days` days since the Unix epoch (1970-01-01).
+///
+/// # Safety
+///
+/// `err` must be null or point to a null `*mut vx_error`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn vx_scalar_new_date(
+    days: i32,
+    is_nullable: bool,
+    err: *mut *mut vx_error,
+) -> *mut vx_scalar {
+    try_or(err, std::ptr::null_mut(), || {
+        let dtype =
+            DType::Extension(Date::new(TimeUnit::Days, Nullability::from(is_nullable)).erased());
+        Ok(vx_scalar::new(Scalar::try_new(
+            dtype,
+            Some(ScalarValue::Primitive(PValue::I32(days))),
+        )?))
+    })
+}
+
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
@@ -531,6 +697,7 @@ mod tests {
     use std::ptr;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
     use tempfile::NamedTempFile;
@@ -556,6 +723,144 @@ mod tests {
     use crate::sink::vx_array_sink_close;
     use crate::sink::vx_array_sink_open_file;
     use crate::sink::vx_array_sink_push;
+
+    #[test]
+    fn scalar_new_timestamp_and_date_build_extension_scalars() {
+        use crate::scalar::vx_scalar_free;
+
+        unsafe {
+            let mut error = ptr::null_mut();
+            let ts = vx_scalar_new_timestamp(
+                1_700_000_000_123,
+                vx_time_unit::VX_TIME_UNIT_MILLISECOND,
+                ptr::null(),
+                false,
+                &raw mut error,
+            );
+            assert!(error.is_null());
+            assert!(!ts.is_null());
+            let DType::Extension(ext) = vx_scalar::as_ref(ts).dtype() else {
+                panic!("timestamp scalar must carry an extension dtype");
+            };
+            assert!(ext.is::<Timestamp>());
+            vx_scalar_free(ts);
+
+            let tz = std::ffi::CString::new("America/New_York").unwrap();
+            let ts_tz = vx_scalar_new_timestamp(
+                0,
+                vx_time_unit::VX_TIME_UNIT_SECOND,
+                tz.as_ptr(),
+                true,
+                &raw mut error,
+            );
+            assert!(error.is_null());
+            assert!(!ts_tz.is_null());
+            vx_scalar_free(ts_tz);
+
+            let date = vx_scalar_new_date(19_000, false, &raw mut error);
+            assert!(error.is_null());
+            assert!(!date.is_null());
+            let DType::Extension(ext) = vx_scalar::as_ref(date).dtype() else {
+                panic!("date scalar must carry an extension dtype");
+            };
+            assert!(ext.is::<Date>());
+            vx_scalar_free(date);
+        }
+    }
+
+    #[test]
+    fn normalize_arrow_schema_views_rewrites_view_types_recursively() {
+        use arrow_schema::DataType;
+        use arrow_schema::Field;
+        use arrow_schema::Schema;
+        use std::sync::Arc;
+
+        let schema = Schema::new(vec![
+            Field::new("plain_utf8", DataType::Utf8, false),
+            Field::new("utf8_view", DataType::Utf8View, true),
+            Field::new("binary_view", DataType::BinaryView, true),
+            Field::new(
+                "struct_col",
+                DataType::Struct(
+                    vec![
+                        Field::new("inner_view", DataType::Utf8View, true),
+                        Field::new("inner_int", DataType::Int32, false),
+                    ]
+                    .into(),
+                ),
+                true,
+            ),
+            Field::new(
+                "list_view",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8View, true))),
+                true,
+            ),
+            Field::new(
+                "fsl_view",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::BinaryView, true)),
+                    3,
+                ),
+                true,
+            ),
+        ]);
+
+        let normalized = normalize_arrow_schema_views(schema);
+
+        assert_eq!(
+            normalized
+                .field_with_name("plain_utf8")
+                .unwrap()
+                .data_type(),
+            &DataType::Utf8
+        );
+        assert_eq!(
+            normalized.field_with_name("utf8_view").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        assert_eq!(
+            normalized
+                .field_with_name("binary_view")
+                .unwrap()
+                .data_type(),
+            &DataType::Binary
+        );
+        match normalized
+            .field_with_name("struct_col")
+            .unwrap()
+            .data_type()
+        {
+            DataType::Struct(fields) => {
+                assert_eq!(fields[0].data_type(), &DataType::Utf8);
+                assert_eq!(fields[1].data_type(), &DataType::Int32);
+            }
+            other => panic!("expected Struct, got {:?}", other),
+        }
+        match normalized.field_with_name("list_view").unwrap().data_type() {
+            DataType::List(field) => assert_eq!(field.data_type(), &DataType::Utf8),
+            other => panic!("expected List, got {:?}", other),
+        }
+        match normalized.field_with_name("fsl_view").unwrap().data_type() {
+            DataType::FixedSizeList(field, size) => {
+                assert_eq!(field.data_type(), &DataType::Binary);
+                assert_eq!(*size, 3);
+            }
+            other => panic!("expected FixedSizeList, got {:?}", other),
+        }
+        assert_eq!(normalized.fields().len(), 6);
+        assert!(
+            normalized
+                .field_with_name("utf8_view")
+                .unwrap()
+                .is_nullable()
+        );
+        assert!(
+            !normalized
+                .field_with_name("plain_utf8")
+                .unwrap()
+                .is_nullable()
+        );
+    }
 
     /// Host context standing in for paimon's `InputStream`: positional reads against a file.
     struct FileContext {
@@ -599,12 +904,8 @@ mod tests {
             let mut error = ptr::null_mut();
 
             let c_path = std::ffi::CString::new(path.clone()).unwrap();
-            let sink = vx_array_sink_open_file(
-                session,
-                c_path.as_ptr(),
-                vx_dtype_ptr,
-                &raw mut error,
-            );
+            let sink =
+                vx_array_sink_open_file(session, c_path.as_ptr(), vx_dtype_ptr, &raw mut error);
             assert!(error.is_null());
             let array = PrimitiveArray::new(buffer![1i32, 2i32, 3i32], Validity::NonNullable);
             let vx_array_ptr = vx_array::new(Arc::new(array.into_array()));
@@ -615,25 +916,296 @@ mod tests {
             vx_array_free(vx_array_ptr);
             vx_dtype_free(vx_dtype_ptr);
 
-            let file = File::open(&path).unwrap();
-            let size = file.metadata().unwrap().len();
-            let context = Box::into_raw(Box::new(FileContext { file }));
-            let callbacks = vx_input_callbacks {
-                ctx: context.cast::<c_void>(),
-                read_at_fn: Some(file_read_at),
-                release_fn: Some(file_release),
+            for local in [false, true] {
+                let file = File::open(&path).unwrap();
+                let size = file.metadata().unwrap().len();
+                let context = Box::into_raw(Box::new(FileContext { file }));
+                let callbacks = vx_input_callbacks {
+                    ctx: context.cast::<c_void>(),
+                    read_at_fn: Some(file_read_at),
+                    release_fn: Some(file_release),
+                };
+
+                let data_source = if local {
+                    vx_data_source_new_callback_with_coalesce(
+                        session,
+                        callbacks,
+                        size,
+                        64 << 10,
+                        4 << 20,
+                        &raw mut error,
+                    )
+                } else {
+                    vx_data_source_new_callback(session, callbacks, size, &raw mut error)
+                };
+                assert!(error.is_null());
+                assert!(!data_source.is_null());
+
+                let mut row_count = vx_estimate::default();
+                vx_data_source_get_row_count(data_source, &raw mut row_count);
+                assert_eq!(row_count.r#type, vx_estimate_type::VX_ESTIMATE_EXACT);
+                assert_eq!(row_count.estimate, 3);
+
+                vx_data_source_free(data_source);
+            }
+            vx_session_free(session);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn callback_coalesce_preserves_bytes_bounds_and_context_lifetime() {
+        struct MemoryContext {
+            bytes: Vec<u8>,
+            reads: AtomicUsize,
+            releases: AtomicUsize,
+        }
+
+        unsafe extern "C" fn read_memory(
+            ctx: *mut c_void,
+            offset: u64,
+            dst: *mut u8,
+            length: usize,
+        ) -> i32 {
+            // SAFETY: target owns the boxed Arc, and CallbackReadAt validates the range first.
+            let context = unsafe { &*ctx.cast::<Arc<MemoryContext>>() };
+            context.reads.fetch_add(1, Ordering::SeqCst);
+            let bytes = &context.bytes[offset as usize..offset as usize + length];
+            unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), dst, length) };
+            0
+        }
+
+        unsafe extern "C" fn release_memory(ctx: *mut c_void) {
+            // SAFETY: CallbackTarget releases this boxed Arc exactly once after all readers.
+            let context = unsafe { Box::from_raw(ctx.cast::<Arc<MemoryContext>>()) };
+            context.releases.fetch_add(1, Ordering::SeqCst);
+        }
+
+        for config in [
+            CoalesceConfig::object_storage(),
+            CoalesceConfig::new(64 << 10, 4 << 20),
+        ] {
+            let context = Arc::new(MemoryContext {
+                bytes: (0..200_000).map(|i| (i % 251) as u8).collect(),
+                reads: AtomicUsize::new(0),
+                releases: AtomicUsize::new(0),
+            });
+            let reader = Arc::new(CallbackReadAt {
+                target: Arc::new(CallbackTarget {
+                    ctx: Box::into_raw(Box::new(Arc::clone(&context))).cast::<c_void>(),
+                    release_fn: Some(release_memory),
+                }),
+                read_at_fn: read_memory,
+                len: context.bytes.len() as u64,
+                handle: RUNTIME.handle(),
+                concurrency: DEFAULT_CONCURRENCY,
+                coalesce_config: config,
+            });
+            let actual_config = reader.coalesce_config().unwrap();
+            assert_eq!(actual_config.distance, config.distance);
+            assert_eq!(actual_config.max_size, config.max_size);
+            RUNTIME.block_on(async {
+                for (offset, length) in [(0, 1), (63_999, 4097), (200_000, 0)] {
+                    let buffer = reader
+                        .read_at(offset, length, Alignment::none())
+                        .await
+                        .unwrap()
+                        .to_host()
+                        .await;
+                    assert_eq!(
+                        buffer.as_ref(),
+                        &context.bytes[offset as usize..offset as usize + length]
+                    );
+                }
+                assert!(reader.read_at(199_999, 2, Alignment::none()).await.is_err());
+                assert!(
+                    reader
+                        .read_at(u64::MAX, 1, Alignment::none())
+                        .await
+                        .is_err()
+                );
+            });
+            assert_eq!(context.reads.load(Ordering::SeqCst), 2);
+            assert_eq!(context.releases.load(Ordering::SeqCst), 0);
+            drop(reader);
+            assert_eq!(context.releases.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn cancelled_in_flight_read_releases_context_after_callback_returns() {
+        use std::sync::Condvar;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use futures::channel::oneshot;
+
+        struct BlockingContext {
+            entered: Mutex<Option<oneshot::Sender<()>>>,
+            released: mpsc::Sender<()>,
+            proceed: Mutex<bool>,
+            wake: Condvar,
+            completed: AtomicBool,
+            released_while_active: AtomicBool,
+            releases: AtomicUsize,
+            status: i32,
+        }
+
+        unsafe extern "C" fn read_blocking(
+            ctx: *mut c_void,
+            _offset: u64,
+            dst: *mut u8,
+            length: usize,
+        ) -> i32 {
+            let context = unsafe { &*ctx.cast::<Arc<BlockingContext>>() };
+            if let Some(entered) = context.entered.lock().unwrap().take() {
+                let _ = entered.send(());
+            }
+            let (_proceed, timeout) = context
+                .wake
+                .wait_timeout_while(
+                    context.proceed.lock().unwrap(),
+                    Duration::from_secs(20),
+                    |go| !*go,
+                )
+                .unwrap();
+            if !timeout.timed_out() && context.status == 0 {
+                unsafe { ptr::write_bytes(dst, 0x5a, length) };
+            }
+            context.completed.store(true, Ordering::SeqCst);
+            if timeout.timed_out() {
+                -99
+            } else {
+                context.status
+            }
+        }
+
+        unsafe extern "C" fn release_blocking(ctx: *mut c_void) {
+            let context = unsafe { Box::from_raw(ctx.cast::<Arc<BlockingContext>>()) };
+            context
+                .released_while_active
+                .store(!context.completed.load(Ordering::SeqCst), Ordering::SeqCst);
+            context.releases.fetch_add(1, Ordering::SeqCst);
+            let _ = context.released.send(());
+        }
+
+        for status in [0, -17] {
+            let (entered_tx, entered_rx) = oneshot::channel();
+            let (released_tx, released_rx) = mpsc::channel();
+            let context = Arc::new(BlockingContext {
+                entered: Mutex::new(Some(entered_tx)),
+                released: released_tx,
+                proceed: Mutex::new(false),
+                wake: Condvar::new(),
+                completed: AtomicBool::new(false),
+                released_while_active: AtomicBool::new(false),
+                releases: AtomicUsize::new(0),
+                status,
+            });
+            let reader = CallbackReadAt {
+                target: Arc::new(CallbackTarget {
+                    ctx: Box::into_raw(Box::new(Arc::clone(&context))).cast::<c_void>(),
+                    release_fn: Some(release_blocking),
+                }),
+                read_at_fn: read_blocking,
+                len: 16,
+                handle: RUNTIME.handle(),
+                concurrency: DEFAULT_CONCURRENCY,
+                coalesce_config: CoalesceConfig::object_storage(),
             };
+            RUNTIME.block_on(async {
+                let future = reader.read_at(0, 16, Alignment::none());
+                let pending = RUNTIME.handle().spawn(future);
+                entered_rx.await.unwrap();
+                drop(pending);
+                drop(reader);
+                assert_eq!(context.releases.load(Ordering::SeqCst), 0);
+                assert!(!context.completed.load(Ordering::SeqCst));
+                *context.proceed.lock().unwrap() = true;
+                context.wake.notify_all();
+                RUNTIME
+                    .handle()
+                    .spawn_blocking(move || released_rx.recv_timeout(Duration::from_secs(20)))
+                    .await
+                    .unwrap();
+            });
+            assert!(context.completed.load(Ordering::SeqCst));
+            assert!(!context.released_while_active.load(Ordering::SeqCst));
+            assert_eq!(context.releases.load(Ordering::SeqCst), 1);
+        }
+    }
 
-            let data_source = vx_data_source_new_callback(session, callbacks, size, &raw mut error);
-            assert!(error.is_null());
-            assert!(!data_source.is_null());
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn callback_read_error_is_propagated_and_context_released_once() {
+        unsafe extern "C" fn fail_read(
+            _ctx: *mut c_void,
+            _offset: u64,
+            _dst: *mut u8,
+            _length: usize,
+        ) -> i32 {
+            -31
+        }
 
-            let mut row_count = vx_estimate::default();
-            vx_data_source_get_row_count(data_source, &raw mut row_count);
-            assert_eq!(row_count.r#type, vx_estimate_type::VX_ESTIMATE_EXACT);
-            assert_eq!(row_count.estimate, 3);
+        unsafe extern "C" fn release_counter(ctx: *mut c_void) {
+            let released = unsafe { Box::from_raw(ctx.cast::<Arc<AtomicUsize>>()) };
+            released.fetch_add(1, Ordering::SeqCst);
+        }
 
-            vx_data_source_free(data_source);
+        let released = Arc::new(AtomicUsize::new(0));
+        let reader = CallbackReadAt {
+            target: Arc::new(CallbackTarget {
+                ctx: Box::into_raw(Box::new(Arc::clone(&released))).cast::<c_void>(),
+                release_fn: Some(release_counter),
+            }),
+            read_at_fn: fail_read,
+            len: 16,
+            handle: RUNTIME.handle(),
+            concurrency: DEFAULT_CONCURRENCY,
+            coalesce_config: CoalesceConfig::object_storage(),
+        };
+        let error = RUNTIME
+            .block_on(reader.read_at(0, 16, Alignment::none()))
+            .unwrap_err();
+        assert!(error.to_string().contains("status -31"));
+        assert_eq!(released.load(Ordering::SeqCst), 0);
+        drop(reader);
+        assert_eq!(released.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn invalid_coalesce_releases_callback_context() {
+        static RELEASED: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn mark_released(_ctx: *mut c_void) {
+            RELEASED.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe {
+            let session = vx_session_new();
+            for (max_gap, max_size) in [(0, 0), (1025, 1024)] {
+                let mut error = ptr::null_mut();
+                let previous_releases = RELEASED.load(Ordering::SeqCst);
+                let callbacks = vx_input_callbacks {
+                    ctx: ptr::null_mut(),
+                    read_at_fn: Some(file_read_at),
+                    release_fn: Some(mark_released),
+                };
+                let data_source = vx_data_source_new_callback_with_coalesce(
+                    session,
+                    callbacks,
+                    0,
+                    max_gap,
+                    max_size,
+                    &raw mut error,
+                );
+                assert!(data_source.is_null());
+                assert!(!error.is_null());
+                vx_error_free(error);
+                assert_eq!(RELEASED.load(Ordering::SeqCst), previous_releases + 1);
+            }
             vx_session_free(session);
         }
     }

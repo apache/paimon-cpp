@@ -213,6 +213,13 @@ bool IsFileFormatSupported(const std::string& format) {
         return false;
 #endif
     }
+    if (format == "vortex") {
+#ifdef PAIMON_ENABLE_VORTEX
+        return true;
+#else
+        return false;
+#endif
+    }
     return false;
 }
 
