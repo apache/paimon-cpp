@@ -69,6 +69,7 @@
 #include "paimon/core/postpone/postpone_bucket_file_store_write.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_schema_layout.h"
+#include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
@@ -267,6 +268,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs,
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
     std::string branch = ctx->GetBranch();
+    if (ctx->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
+    }
     std::optional<Identifier> catalog_identifier;
     if (ctx->GetIdentifier()) {
         PAIMON_ASSIGN_OR_RAISE(
@@ -755,6 +759,9 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(shared_context->GetOptions(),
                                                 shared_context->GetSpecificFileSystem(), {}));
+    if (shared_context->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(tmp_options.GetBranch()));
+    }
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(shared_context->GetPath()));
     if (system_table_path) {
@@ -957,6 +964,9 @@ namespace {
 Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
     const std::shared_ptr<ReadContext>& context, const std::string& branch,
     const std::shared_ptr<TableSchema>& loaded_schema) {
+    if (context->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
+    }
     std::map<std::string, std::string> tmp_options = context->GetOptions();
     std::shared_ptr<TableSchema> table_schema;
     const auto& specific_table_schema = context->GetSpecificTableSchema();
@@ -1083,6 +1093,9 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     }
     if (context->GetExecutor() == nullptr) {
         return Status::Invalid("executor is null pointer");
+    }
+    if (context->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(context->GetBranch()));
     }
     // A table the caller already loaded says what it is, so nothing is read to find out.
     if (context->GetFormatTable() != nullptr) {

@@ -85,12 +85,23 @@ class RawFileSplitRead : public AbstractSplitRead {
         const std::vector<std::shared_ptr<DataFileMeta>>& files, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& local_row_ranges);
 
+    /// Uses the supplied predicate for pushdown and optional residual filtering.
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const BinaryRow& partition, int32_t bucket,
         const std::vector<std::shared_ptr<DataFileMeta>>& files, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& local_row_ranges,
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::shared_ptr<Predicate>& predicate);
+
+    /// Uses file-specific predicates for pushdown and the supplied residual predicate for
+    /// optional filtering after concatenation.
+    Result<std::unique_ptr<BatchReader>> CreateReaderWithPredicateProvider(
+        const BinaryRow& partition, int32_t bucket,
+        const std::vector<std::shared_ptr<DataFileMeta>>& files, DeletionVector::Factory dv_factory,
+        const std::optional<std::vector<Range>>& local_row_ranges,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const std::shared_ptr<Predicate>& residual_predicate,
+        const PredicateProvider& predicate_provider);
 
     Result<bool> Match(const std::shared_ptr<Split>& split, bool force_keep_delete) const override;
     Result<std::unique_ptr<FileBatchReader>> ApplyIndexAndDvReaderIfNeeded(

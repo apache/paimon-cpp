@@ -72,6 +72,9 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
 
     Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> SealForCommit() override;
 
+    /// Freezes data, key indexes, and the DV checkpoint for prepare.
+    Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> FreezeBuildingSegment();
+
     Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
         const std::shared_ptr<RealtimeSegmentHandle>& segment) override;
 
@@ -85,7 +88,8 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
     /// Calling the base notification would create a query/write cutover with mismatched state.
     Status AdvanceCommittedOffset(int64_t committed_end_offset) override;
 
-    Status AdvanceCommittedOffsetAndLookup(
+    /// Advances committed state and returns retired resources for release by the caller.
+    Result<std::shared_ptr<RealtimeReadView>> RetireCommittedOffsetAndLookup(
         int64_t committed_end_offset,
         const std::shared_ptr<const KeyOffsetLookup>& committed_lookup);
 
@@ -103,12 +107,13 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
  private:
     struct SealedState {
         OffsetRange offset_range;
-        std::shared_ptr<const KeyOffsetLookup> key_lookup;
+        std::shared_ptr<const MutableKeyOffsetIndex> key_lookup;
         std::shared_ptr<const RoaringBitmap64> offset_deletions;
     };
 
     class SegmentHandle;
     class ReadView;
+    class RetiredReadView;
     class OffsetFilteringBatchReader;
 
     ArrowDeduplicateRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema,
@@ -122,6 +127,7 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
     Result<std::shared_ptr<arrow::StructArray>> ExtractKeys(
         const std::shared_ptr<arrow::StructArray>& data) const;
     Status EnsureMutableDeletionBitmap();
+    Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> SealCurrentSegment(bool spill);
 
     std::shared_ptr<arrow::Schema> write_schema_;
     int32_t key_field_position_;
@@ -130,6 +136,8 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 
+    // Serializes seal attempts only; writes never acquire this mutex during spill I/O.
+    std::mutex seal_mutex_;
     mutable std::mutex mutex_;
     std::shared_ptr<MutableKeyOffsetIndex> building_key_index_;
     std::shared_ptr<const KeyOffsetLookup> committed_key_lookup_;

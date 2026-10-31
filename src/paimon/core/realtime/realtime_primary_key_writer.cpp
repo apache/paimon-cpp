@@ -206,9 +206,12 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return Status::OK();
 }
 
-Status RealtimePrimaryKeyWriter::SealCurrentSegment() {
+Status RealtimePrimaryKeyWriter::SealCurrentSegment(bool spill) {
+    RealtimeStoreTwoPhaseSeal* two_phase =
+        dynamic_cast<RealtimeStoreTwoPhaseSeal*>(realtime_store_.get());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
-                           realtime_store_->SealForCommit());
+                           !spill && two_phase ? two_phase->FreezeBuildingSegment()
+                                               : realtime_store_->SealForCommit());
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
     if (!segment) {
         return Status::OK();
@@ -223,12 +226,12 @@ Status RealtimePrimaryKeyWriter::SealCurrentSegment() {
 
 Status RealtimePrimaryKeyWriter::Seal() {
     std::lock_guard<std::mutex> lock(prepare_mutex_);
-    return SealCurrentSegment();
+    return SealCurrentSegment(/*spill=*/true);
 }
 
 Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommit(bool wait_compaction) {
     std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-    PAIMON_RETURN_NOT_OK(SealCurrentSegment());
+    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*spill=*/false));
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
     {
         std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
@@ -248,7 +251,6 @@ Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommit(bool wait_compac
 
 Status RealtimePrimaryKeyWriter::FlushSegment(
     const std::shared_ptr<RealtimeSegmentHandle>& segment) {
-    // TODO(xinyu.lxy): Validate row count from commit readers.
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> readers,
                            realtime_store_->CreateCommitReaders(segment));
     PAIMON_ASSIGN_OR_RAISE(

@@ -137,6 +137,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
 
     std::shared_ptr<RealtimeStoreFactory> factory_;
     mutable std::mutex mutex_;
+    std::mutex refresh_mutex_;
     std::mutex progress_mutex_;
     std::map<RealtimePartitionBucket, StoreEntry> stores_;
     // Full-table progress used as the initial offset when a store is created lazily.

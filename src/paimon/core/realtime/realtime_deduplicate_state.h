@@ -28,6 +28,8 @@
 namespace paimon {
 
 class RealtimeStore;
+class RealtimeReadView;
+class KeyOffsetLookup;
 struct DataFileMeta;
 
 class RealtimeOffsetFileIndexLookup;
@@ -38,12 +40,20 @@ class RealtimeOffsetFileIndexLookup;
 /// RealtimeCommitProgress carries them to commit, which materializes snapshot-specific DVs.
 class RealtimeDeduplicateState {
  public:
+    struct PreparedSnapshot {
+        std::shared_ptr<RealtimeOffsetFileIndexLookup> previous_file_lookup;
+        std::shared_ptr<RealtimeOffsetFileIndexLookup> file_lookup;
+        std::shared_ptr<const KeyOffsetLookup> key_lookup;
+    };
+
     Status AttachFileIndexLookup(const std::shared_ptr<RealtimeOffsetFileIndexLookup>& file_lookup,
                                  const std::shared_ptr<RealtimeStore>& store);
 
-    Status InstallCommittedSnapshot(
-        int64_t committed_end_offset,
-        const std::vector<std::shared_ptr<DataFileMeta>>& active_data_files,
+    Result<PreparedSnapshot> PrepareCommittedSnapshot(
+        const std::vector<std::shared_ptr<DataFileMeta>>& active_data_files) const;
+
+    Result<std::shared_ptr<RealtimeReadView>> InstallPreparedSnapshot(
+        int64_t committed_end_offset, const PreparedSnapshot& prepared,
         const std::shared_ptr<RealtimeStore>& store);
 
  private:

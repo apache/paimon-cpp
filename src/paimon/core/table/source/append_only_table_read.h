@@ -38,6 +38,7 @@ class InternalReadContext;
 class MemoryPool;
 class RealtimeSplit;
 class RoaringBitmap64;
+class RealtimeFileSchema;
 
 class AppendOnlyTableRead : public TableRead {
  public:
@@ -67,6 +68,7 @@ class AppendOnlyTableRead : public TableRead {
 
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
     std::shared_ptr<InternalReadContext> context_;
+    std::shared_ptr<RealtimeFileSchema> realtime_file_schema_;
 };
 
 }  // namespace paimon

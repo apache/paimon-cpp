@@ -285,6 +285,89 @@ TEST_F(RawFileSplitReadTest, TestCreateReader) {
     CheckReadResult(read_schema, expected_array);
 }
 
+TEST_F(RawFileSplitReadTest, TestCreateReaderUsesExplicitPredicate) {
+    const std::string path =
+        GetDataDir() + "/orc/multi_partition_append_table.db/multi_partition_append_table";
+    ReadContextBuilder builder(path);
+    builder.EnablePredicateFilter(true)
+        .SetPredicate(PredicateBuilder::Equal(0, "f0", FieldType::STRING,
+                                              Literal(FieldType::STRING, "Bob", 3)))
+        .AddOption(Options::FILE_INDEX_READ_ENABLED, "false");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+    SchemaManager schemas(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schemas.ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<InternalReadContext> context,
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
+    const CoreOptions& options = context->GetCoreOptions();
+    const auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths, options.CreateExternalPaths());
+    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_path,
+                         options.CreateGlobalIndexExternalPath());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> paths,
+        FileStorePathFactory::Create(
+            path, schema, table_schema->PartitionKeys(), options.GetPartitionDefaultName(),
+            options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
+            options.LegacyPartitionNameEnabled(), external_paths, global_index_path,
+            options.IndexFileInDataFileDir(), pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
+    RawFileSplitRead read(paths, context, pool_, executor);
+    auto split = std::dynamic_pointer_cast<DataSplitImpl>(PrepareDataSplits().front());
+    ASSERT_NE(nullptr, split);
+    const auto first = split->DataFiles().front();
+    const auto second = std::make_shared<DataFileMeta>(*first);
+    // The supplied predicate, not the context's predicate, must be used for both files.
+    const std::shared_ptr<Predicate> predicate =
+        PredicateBuilder::Equal(0, "f0", FieldType::STRING, Literal(FieldType::STRING, "Tony", 4));
+    RoaringBitmap32 deleted;
+    deleted.Add(1);
+    std::shared_ptr<DeletionVector> dv = std::make_shared<BitmapDeletionVector>(deleted);
+    DeletionVector::Factory dv_factory =
+        [dv](const std::string&) -> Result<std::shared_ptr<DeletionVector>> { return dv; };
+    RawFileSplitRead::PredicateProvider no_pushdown =
+        [](const std::shared_ptr<DataFileMeta>&) -> Result<std::shared_ptr<Predicate>> {
+        return std::shared_ptr<Predicate>();
+    };
+    ASSERT_NOK_WITH_MSG(
+        read.CreateReaderWithPredicateProvider(split->Partition(), split->Bucket(), {first, second},
+                                               dv_factory, std::nullopt, context->GetReadSchema(),
+                                               predicate, /*predicate_provider=*/{}),
+        "file predicate provider is null");
+    ASSERT_NOK_WITH_MSG(
+        read.CreateReaderWithPredicateProvider(split->Partition(), split->Bucket(), {first, second},
+                                               dv_factory, std::vector<Range>{Range(0, 0)},
+                                               context->GetReadSchema(), predicate, no_pushdown),
+        "file-local row ranges require exactly one data file");
+    arrow::FieldVector output_fields = {arrow::field("_VALUE_KIND", arrow::int8())};
+    output_fields.insert(output_fields.end(), schema->fields().begin(), schema->fields().end());
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(output_fields), R"([
+                                [0, "Tony", 10, 0, 14.1],
+                                [0, "Tony", 10, 0, 14.1]
+                            ])")
+                        .ValueOrDie();
+    for (bool use_provider : {false, true}) {
+        SCOPED_TRACE(use_provider);
+        std::unique_ptr<BatchReader> reader;
+        if (use_provider) {
+            // A provider without pushdown must not suppress the explicit residual predicate.
+            ASSERT_OK_AND_ASSIGN(
+                reader, read.CreateReaderWithPredicateProvider(
+                            split->Partition(), split->Bucket(), {first, second}, dv_factory,
+                            std::nullopt, context->GetReadSchema(), predicate, no_pushdown));
+        } else {
+            ASSERT_OK_AND_ASSIGN(
+                reader,
+                read.CreateReader(split->Partition(), split->Bucket(), {first, second}, dv_factory,
+                                  std::nullopt, context->GetReadSchema(), predicate));
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(result->Equals(std::make_shared<arrow::ChunkedArray>(expected)))
+            << result->ToString();
+    }
+}
+
 // recall all columns with reverse sequence in data
 TEST_F(RawFileSplitReadTest, TestCreateReaderWithReserveSequence) {
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),

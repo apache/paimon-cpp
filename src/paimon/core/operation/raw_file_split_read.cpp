@@ -148,6 +148,22 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& local_row_ranges,
     const std::shared_ptr<arrow::Schema>& read_schema,
     const std::shared_ptr<Predicate>& predicate) {
+    PredicateProvider predicate_provider =
+        [predicate](const std::shared_ptr<DataFileMeta>&) -> Result<std::shared_ptr<Predicate>> {
+        return predicate;
+    };
+    return CreateReaderWithPredicateProvider(partition, bucket, data_files, std::move(dv_factory),
+                                             local_row_ranges, read_schema, predicate,
+                                             predicate_provider);
+}
+
+Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReaderWithPredicateProvider(
+    const BinaryRow& partition, int32_t bucket,
+    const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+    DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& local_row_ranges,
+    const std::shared_ptr<arrow::Schema>& read_schema,
+    const std::shared_ptr<Predicate>& residual_predicate,
+    const PredicateProvider& predicate_provider) {
     PAIMON_RETURN_NOT_OK(ValidateFileLocalRowRanges(data_files, local_row_ranges));
     if (!read_schema) {
         return Status::Invalid("raw file read schema is null");
@@ -157,16 +173,17 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
 
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
-        CreateRawFileReaders(partition, data_files, read_schema, predicate, dv_factory,
-                             local_row_ranges, data_file_path_factory,
-                             /*extra_format_options=*/{}));
+        CreateRawFileReadersWithPredicateProvider(
+            partition, data_files, read_schema, predicate_provider, dv_factory, local_row_ranges,
+            data_file_path_factory, /*extra_format_options=*/{}));
 
     auto raw_readers =
         ObjectUtils::MoveVector<std::unique_ptr<BatchReader>>(std::move(raw_file_readers));
     auto concat_batch_reader =
         std::make_unique<ConcatBatchReader>(std::move(raw_readers), arrow_pool_);
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
-                           ApplyPredicateFilterIfNeeded(std::move(concat_batch_reader), predicate));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BatchReader> batch_reader,
+        ApplyPredicateFilterIfNeeded(std::move(concat_batch_reader), residual_predicate));
     return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), arrow_pool_);
 }
 

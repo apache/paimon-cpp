@@ -19,6 +19,7 @@
 #include "paimon/core/realtime/arrow_deduplicate_realtime_store.h"
 
 #include <algorithm>
+#include <set>
 #include <utility>
 
 #include "arrow/api.h"
@@ -26,6 +27,7 @@
 #include "arrow/c/helpers.h"
 #include "arrow/compute/api.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -65,13 +67,9 @@ Result<BatchReader::ReadBatch> ExportBatch(const std::shared_ptr<arrow::StructAr
     return std::make_pair(std::move(array), std::move(schema));
 }
 
-Result<std::shared_ptr<arrow::StructArray>> FilterDeletedOffsets(
-    const std::shared_ptr<arrow::StructArray>& source,
-    const std::shared_ptr<const RoaringBitmap64>& deleted_offsets,
-    const std::shared_ptr<arrow::MemoryPool>& pool) {
-    if (!deleted_offsets || deleted_offsets->IsEmpty() || source->length() == 0) {
-        return source;
-    }
+Result<RoaringBitmap32> FilterDeletedOffsets(
+    const std::shared_ptr<arrow::StructArray>& source, const RoaringBitmap32& input_bitmap,
+    const std::shared_ptr<const RoaringBitmap64>& deleted_offsets) {
     std::shared_ptr<arrow::Array> offset_array =
         source->GetFieldByName(SpecialFields::RealtimeOffset().Name());
     if (!offset_array || offset_array->type_id() != arrow::Type::INT64 ||
@@ -81,21 +79,27 @@ Result<std::shared_ptr<arrow::StructArray>> FilterDeletedOffsets(
     }
     std::shared_ptr<arrow::Int64Array> offsets =
         checked_pointer_cast<arrow::Int64Array>(offset_array);
-    arrow::BooleanBuilder selection(pool.get());
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(selection.Reserve(source->length()));
-    // TODO(xinyu.lxy): Merge-scan the ordered offsets with a RoaringBitmap64 iterator instead of
-    // calling Contains for every row.
-    for (int64_t row = 0; row < source->length(); ++row) {
-        selection.UnsafeAppend(!deleted_offsets->Contains(offsets->Value(row)));
+    for (auto row = input_bitmap.Begin(); row != input_bitmap.End(); ++row) {
+        if (static_cast<int64_t>(*row) >= offsets->length()) {
+            return Status::Invalid("selected row id is out of bounds for deduplicate batch");
+        }
     }
-    std::shared_ptr<arrow::Array> selection_array;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(selection.Finish(&selection_array));
-    arrow::compute::ExecContext exec_context(pool.get());
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-        arrow::Datum filtered,
-        arrow::compute::Filter(source, selection_array, arrow::compute::FilterOptions::Defaults(),
-                               &exec_context));
-    return checked_pointer_cast<arrow::StructArray>(filtered.make_array());
+    if (!deleted_offsets || deleted_offsets->IsEmpty() || input_bitmap.IsEmpty()) {
+        return input_bitmap;
+    }
+    RoaringBitmap32 selection;
+    auto deleted = deleted_offsets->EqualOrLarger(offsets->Value(*input_bitmap.Begin()));
+    const auto deleted_end = deleted_offsets->End();
+    for (auto row = input_bitmap.Begin(); row != input_bitmap.End(); ++row) {
+        const int64_t offset = offsets->Value(*row);
+        if (deleted != deleted_end && *deleted < offset) {
+            deleted.EqualOrLarger(offset);
+        }
+        if (deleted == deleted_end || *deleted != offset) {
+            selection.Add(*row);
+        }
+    }
+    return selection;
 }
 
 }  // namespace
@@ -158,6 +162,17 @@ class ArrowDeduplicateRealtimeStore::ReadView final : public RealtimeReadView {
     std::shared_ptr<const RoaringBitmap64> offset_deletions_;
 };
 
+class ArrowDeduplicateRealtimeStore::RetiredReadView final : public RealtimeReadView {
+ public:
+    std::optional<OffsetRange> GetOffsetRange() const override {
+        return std::nullopt;
+    }
+
+    std::shared_ptr<RealtimeReadView> delegate_view;
+    std::vector<SealedState> states;
+    std::shared_ptr<const KeyOffsetLookup> committed_lookup;
+};
+
 class ArrowDeduplicateRealtimeStore::OffsetFilteringBatchReader final : public BatchReader {
  public:
     OffsetFilteringBatchReader(std::unique_ptr<BatchReader> inner,
@@ -169,15 +184,19 @@ class ArrowDeduplicateRealtimeStore::OffsetFilteringBatchReader final : public B
           offset_deletions_(std::move(offset_deletions)),
           arrow_pool_(std::move(arrow_pool)) {}
 
-    // TODO(xinyu.lxy): Override NextBatchWithBitmap to compose the inner selection with offset
-    // deletions and avoid materializing an intermediate filtered array.
     Result<ReadBatch> NextBatch() override {
+        PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, NextBatchWithBitmap());
+        return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch), arrow_pool_);
+    }
+
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
         while (true) {
-            PAIMON_ASSIGN_OR_RAISE(ReadBatch batch, inner_->NextBatch());
+            PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, inner_->NextBatchWithBitmap());
             if (BatchReader::IsEofBatch(batch)) {
                 return batch;
             }
-            auto& [c_array, c_schema] = batch;
+            auto& [read_batch, input_bitmap] = batch;
+            auto& [c_array, c_schema] = read_batch;
             PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> imported,
                                               arrow::ImportArray(c_array.get(), c_schema.get()));
             if (!imported || imported->type_id() != arrow::Type::STRUCT) {
@@ -185,14 +204,15 @@ class ArrowDeduplicateRealtimeStore::OffsetFilteringBatchReader final : public B
             }
             std::shared_ptr<arrow::StructArray> source =
                 checked_pointer_cast<arrow::StructArray>(imported);
-            PAIMON_ASSIGN_OR_RAISE(source,
-                                   FilterDeletedOffsets(source, offset_deletions_, arrow_pool_));
-            if (source->length() == 0) {
+            PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 selection,
+                                   FilterDeletedOffsets(source, input_bitmap, offset_deletions_));
+            if (selection.IsEmpty()) {
                 continue;
             }
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> projected,
                                    ProjectByName(source, output_schema_));
-            return ExportBatch(projected, arrow_pool_);
+            PAIMON_ASSIGN_OR_RAISE(ReadBatch output, ExportBatch(projected, arrow_pool_));
+            return ReadBatchWithBitmap(std::move(output), std::move(selection));
         }
     }
 
@@ -374,30 +394,53 @@ Status ArrowDeduplicateRealtimeStore::WriteAndLookup(
 
 Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>
 ArrowDeduplicateRealtimeStore::SealForCommit() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!building_offset_range_) {
-        return std::optional<std::shared_ptr<RealtimeSegmentHandle>>();
-    }
-    // Delegate rotation and the key/deletion state rotation must be atomic. Deduplicate mode
-    // currently rejects real-time spill, so the delegate only performs its short in-memory
-    // rotation here.
-    // TODO(xinyu.lxy): Introduce two-phase store sealing before allowing deduplicate spill, so
-    // delegate spill I/O can complete without holding this mutex.
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> delegate_segment,
-                           delegate_->SealForCommit());
+    return SealCurrentSegment(/*spill=*/true);
+}
+
+Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>
+ArrowDeduplicateRealtimeStore::FreezeBuildingSegment() {
+    return SealCurrentSegment(/*spill=*/false);
+}
+
+Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>
+ArrowDeduplicateRealtimeStore::SealCurrentSegment(bool spill) {
+    std::lock_guard<std::mutex> seal_lock(seal_mutex_);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MutableKeyOffsetIndex> next_building_index,
                            MutableKeyOffsetIndex::Create(key_field_, memory_pool_));
-    std::shared_ptr<const RoaringBitmap64> checkpoint = pending_offset_deletions_;
-    RoaringBitmap64 live_rows =
-        RoaringBitmap64::AndNot(building_row_offsets_, *pending_offset_deletions_);
-    auto handle = std::make_shared<SegmentHandle>(delegate_segment.value_or(nullptr),
-                                                  building_offset_range_.value(),
-                                                  live_rows.Cardinality(), checkpoint);
-    sealed_states_.push_back(
-        SealedState{building_offset_range_.value(), building_key_index_->Snapshot(), checkpoint});
-    building_key_index_ = std::move(next_building_index);
-    building_row_offsets_ = RoaringBitmap64();
-    building_offset_range_.reset();
+    RealtimeStoreTwoPhaseSeal* two_phase =
+        dynamic_cast<RealtimeStoreTwoPhaseSeal*>(delegate_.get());
+    std::optional<std::shared_ptr<RealtimeSegmentHandle>> delegate_segment;
+    std::optional<OffsetRange> offset_range;
+    std::shared_ptr<const RoaringBitmap64> checkpoint;
+    RoaringBitmap64 row_offsets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!building_offset_range_) {
+            return std::optional<std::shared_ptr<RealtimeSegmentHandle>>();
+        }
+        // The fallback preserves compatibility with custom, non-spilling delegates. Context
+        // creation rejects deduplicate spill when this optional capability is absent.
+        PAIMON_ASSIGN_OR_RAISE(delegate_segment, two_phase ? two_phase->FreezeBuildingSegment()
+                                                           : delegate_->SealForCommit());
+        offset_range = building_offset_range_;
+        checkpoint = pending_offset_deletions_;
+        sealed_states_.push_back(
+            SealedState{offset_range.value(), building_key_index_->Snapshot(), checkpoint});
+        building_key_index_ = std::move(next_building_index);
+        row_offsets = std::move(building_row_offsets_);
+        building_row_offsets_ = RoaringBitmap64();
+        building_offset_range_.reset();
+    }
+    // The frozen keys remain discoverable while another thread writes the new building segment.
+    // Both the row-count calculation and all spill I/O use only this immutable checkpoint.
+    RoaringBitmap64 live_rows = RoaringBitmap64::AndNot(row_offsets, *checkpoint);
+    if (spill && two_phase && delegate_segment) {
+        PAIMON_ASSIGN_OR_RAISE(delegate_segment.value(),
+                               two_phase->SpillFrozenSegment(delegate_segment.value()));
+    }
+    auto handle =
+        std::make_shared<SegmentHandle>(delegate_segment.value_or(nullptr), offset_range.value(),
+                                        live_rows.Cardinality(), checkpoint);
     return std::optional<std::shared_ptr<RealtimeSegmentHandle>>(std::move(handle));
 }
 
@@ -492,7 +535,8 @@ Status ArrowDeduplicateRealtimeStore::AdvanceCommittedOffset(int64_t) {
         "deduplicate committed advancement requires an atomic key-offset lookup replacement");
 }
 
-Status ArrowDeduplicateRealtimeStore::AdvanceCommittedOffsetAndLookup(
+Result<std::shared_ptr<RealtimeReadView>>
+ArrowDeduplicateRealtimeStore::RetireCommittedOffsetAndLookup(
     int64_t committed_end_offset, const std::shared_ptr<const KeyOffsetLookup>& committed_lookup) {
     if (committed_end_offset < 0) {
         return Status::Invalid("committed real-time offset must not be negative");
@@ -500,24 +544,36 @@ Status ArrowDeduplicateRealtimeStore::AdvanceCommittedOffsetAndLookup(
     if (!committed_lookup) {
         return Status::Invalid("committed key-offset lookup must not be null");
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    PAIMON_RETURN_NOT_OK(delegate_->AdvanceCommittedOffset(committed_end_offset));
-    std::shared_ptr<const RoaringBitmap64> applied_checkpoint;
-    size_t reclaimed_count = 0;
-    while (reclaimed_count < sealed_states_.size() &&
-           sealed_states_[reclaimed_count].offset_range.end <= committed_end_offset) {
-        applied_checkpoint = sealed_states_[reclaimed_count].offset_deletions;
-        ++reclaimed_count;
+    auto retired = std::make_shared<RetiredReadView>();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto* two_phase = dynamic_cast<RealtimeStoreTwoPhaseSeal*>(delegate_.get());
+        if (two_phase) {
+            PAIMON_ASSIGN_OR_RAISE(retired->delegate_view,
+                                   two_phase->RetireCommittedSegments(committed_end_offset));
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(retired->delegate_view, delegate_->AcquireReadView());
+            PAIMON_RETURN_NOT_OK(delegate_->AdvanceCommittedOffset(committed_end_offset));
+        }
+        std::shared_ptr<const RoaringBitmap64> applied_checkpoint;
+        size_t reclaimed_count = 0;
+        while (reclaimed_count < sealed_states_.size() &&
+               sealed_states_[reclaimed_count].offset_range.end <= committed_end_offset) {
+            applied_checkpoint = sealed_states_[reclaimed_count].offset_deletions;
+            retired->states.push_back(std::move(sealed_states_[reclaimed_count]));
+            ++reclaimed_count;
+        }
+        if (reclaimed_count > 0) {
+            sealed_states_.erase(sealed_states_.begin(), sealed_states_.begin() + reclaimed_count);
+        }
+        if (applied_checkpoint) {
+            PAIMON_RETURN_NOT_OK(EnsureMutableDeletionBitmap());
+            *pending_offset_deletions_ -= *applied_checkpoint;
+        }
+        retired->committed_lookup = std::move(committed_key_lookup_);
+        committed_key_lookup_ = committed_lookup;
     }
-    if (reclaimed_count > 0) {
-        sealed_states_.erase(sealed_states_.begin(), sealed_states_.begin() + reclaimed_count);
-    }
-    if (applied_checkpoint) {
-        PAIMON_RETURN_NOT_OK(EnsureMutableDeletionBitmap());
-        *pending_offset_deletions_ -= *applied_checkpoint;
-    }
-    committed_key_lookup_ = committed_lookup;
-    return Status::OK();
+    return std::shared_ptr<RealtimeReadView>(std::move(retired));
 }
 
 Status ArrowDeduplicateRealtimeStore::AttachCommittedKeyOffsetLookup(
@@ -532,11 +588,32 @@ Status ArrowDeduplicateRealtimeStore::AttachCommittedKeyOffsetLookup(
 }
 
 RealtimeStoreDataUsage ArrowDeduplicateRealtimeStore::GetDataUsage() const {
-    return delegate_->GetDataUsage();
+    std::lock_guard<std::mutex> lock(mutex_);
+    RealtimeStoreDataUsage usage = delegate_->GetDataUsage();
+    usage.building_memory_bytes += building_key_index_->GetMemoryUsage();
+    if (!building_row_offsets_.IsEmpty()) {
+        usage.building_memory_bytes += building_row_offsets_.GetSizeInBytes();
+    }
+    // A checkpoint can be shared by several sealed states and the pending building DV. Attribute
+    // shared storage to sealed memory first, and count only the distinct pending DV as building.
+    std::set<const RoaringBitmap64*> counted;
+    for (const SealedState& sealed : sealed_states_) {
+        usage.sealed_memory_bytes += sealed.key_lookup->GetMemoryUsage();
+        if (counted.insert(sealed.offset_deletions.get()).second &&
+            !sealed.offset_deletions->IsEmpty()) {
+            usage.sealed_memory_bytes += sealed.offset_deletions->GetSizeInBytes();
+        }
+    }
+    if (counted.insert(pending_offset_deletions_.get()).second &&
+        !pending_offset_deletions_->IsEmpty()) {
+        usage.building_memory_bytes += pending_offset_deletions_->GetSizeInBytes();
+    }
+    return usage;
 }
 
 uint64_t ArrowDeduplicateRealtimeStore::GetMemoryUsage() const {
-    return delegate_->GetMemoryUsage();
+    const RealtimeStoreDataUsage usage = GetDataUsage();
+    return usage.building_memory_bytes + usage.sealed_memory_bytes;
 }
 
 }  // namespace paimon

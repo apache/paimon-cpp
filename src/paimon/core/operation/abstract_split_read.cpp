@@ -102,11 +102,27 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::map<std::string, std::string>& extra_format_options) const {
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<RawFileReaderWithMeta> readers_with_meta,
-        CreateRawFileReadersWithMeta(partition, data_files, read_schema, predicate, dv_factory,
-                                     row_ranges, data_file_path_factory, extra_format_options,
-                                     /*attach_blob_context=*/false));
+    PredicateProvider predicate_provider =
+        [predicate](const std::shared_ptr<DataFileMeta>&) -> Result<std::shared_ptr<Predicate>> {
+        return predicate;
+    };
+    return CreateRawFileReadersWithPredicateProvider(partition, data_files, read_schema,
+                                                     predicate_provider, dv_factory, row_ranges,
+                                                     data_file_path_factory, extra_format_options);
+}
+
+Result<std::vector<std::unique_ptr<FileBatchReader>>>
+AbstractSplitRead::CreateRawFileReadersWithPredicateProvider(
+    const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+    const std::shared_ptr<arrow::Schema>& read_schema, const PredicateProvider& predicate_provider,
+    DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::map<std::string, std::string>& extra_format_options) const {
+    PAIMON_ASSIGN_OR_RAISE(std::vector<RawFileReaderWithMeta> readers_with_meta,
+                           CreateRawFileReadersWithMetaImpl(
+                               partition, data_files, read_schema, predicate_provider, dv_factory,
+                               row_ranges, data_file_path_factory, extra_format_options,
+                               /*attach_blob_context=*/false));
     std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers;
     raw_file_readers.reserve(readers_with_meta.size());
     for (auto& reader_with_meta : readers_with_meta) {
@@ -123,12 +139,40 @@ AbstractSplitRead::CreateRawFileReadersWithMeta(
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::map<std::string, std::string>& extra_format_options,
     bool attach_blob_context) const {
+    PredicateProvider predicate_provider =
+        [predicate](const std::shared_ptr<DataFileMeta>&) -> Result<std::shared_ptr<Predicate>> {
+        return predicate;
+    };
+    return CreateRawFileReadersWithMetaImpl(partition, data_files, read_schema, predicate_provider,
+                                            dv_factory, row_ranges, data_file_path_factory,
+                                            extra_format_options, attach_blob_context);
+}
+
+Result<std::vector<AbstractSplitRead::RawFileReaderWithMeta>>
+AbstractSplitRead::CreateRawFileReadersWithMetaImpl(
+    const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+    const std::shared_ptr<arrow::Schema>& read_schema, const PredicateProvider& predicate_provider,
+    DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::map<std::string, std::string>& extra_format_options,
+    bool attach_blob_context) const {
     if (data_files.empty()) {
         return std::vector<RawFileReaderWithMeta>();
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
-        FieldMappingBuilder::Create(read_schema, context_->GetPartitionKeys(), predicate));
+    if (!predicate_provider) {
+        return Status::Invalid("file predicate provider is null");
+    }
+
+    auto create_reader =
+        [&](const std::shared_ptr<DataFileMeta>& file) -> Result<RawFileReaderWithMeta> {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> predicate, predicate_provider(file));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
+            FieldMappingBuilder::Create(read_schema, context_->GetPartitionKeys(), predicate));
+        return CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
+                                   row_ranges, data_file_path_factory, extra_format_options,
+                                   attach_blob_context);
+    };
 
     std::vector<RawFileReaderWithMeta> raw_file_readers;
     raw_file_readers.reserve(data_files.size());
@@ -136,11 +180,7 @@ AbstractSplitRead::CreateRawFileReadersWithMeta(
         static_cast<uint32_t>(std::min<size_t>(kReaderBuildMaxParallelNum, data_files.size()));
     if (parallel_num <= 1) {
         for (const auto& file : data_files) {
-            PAIMON_ASSIGN_OR_RAISE(
-                RawFileReaderWithMeta file_reader,
-                CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
-                                    row_ranges, data_file_path_factory, extra_format_options,
-                                    attach_blob_context));
+            PAIMON_ASSIGN_OR_RAISE(RawFileReaderWithMeta file_reader, create_reader(file));
             if (file_reader.reader) {
                 raw_file_readers.push_back(std::move(file_reader));
             }
@@ -156,13 +196,7 @@ AbstractSplitRead::CreateRawFileReadersWithMeta(
     futures.reserve(data_files.size());
     for (const auto& file : data_files) {
         futures.push_back(
-            Via(build_executor.get(),
-                [this, file, &partition, &field_mapping_builder, &dv_factory, &row_ranges,
-                 &data_file_path_factory, &extra_format_options, attach_blob_context]() {
-                    return CreateRawFileReader(partition, file, field_mapping_builder.get(),
-                                               dv_factory, row_ranges, data_file_path_factory,
-                                               extra_format_options, attach_blob_context);
-                }));
+            Via(build_executor.get(), [file, &create_reader]() { return create_reader(file); }));
     }
     // Readers keep the file order of the split, and CollectAll preserves the submit order.
     Status first_error;

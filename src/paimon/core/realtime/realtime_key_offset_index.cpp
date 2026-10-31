@@ -69,7 +69,7 @@ Status MutableKeyOffsetIndex::EnsureMutable() {
     }
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<OffsetMap> copy,
-        OffsetMap::Create(std::max<uint64_t>(1, offsets_->Size()), memory_pool_));
+        OffsetMap::Create(std::max<uint64_t>(1024, offsets_->Size() * 2), memory_pool_));
     Status status = Status::OK();
     offsets_->ForEach([&](uint64_t hash, int64_t offset) {
         if (status.ok() && offset >= 0) {
@@ -123,9 +123,13 @@ Result<RoaringBitmap64> MutableKeyOffsetIndex::LookupOffsets(
     return result;
 }
 
-std::shared_ptr<const KeyOffsetLookup> MutableKeyOffsetIndex::Snapshot() const {
-    return std::shared_ptr<const KeyOffsetLookup>(
+std::shared_ptr<const MutableKeyOffsetIndex> MutableKeyOffsetIndex::Snapshot() const {
+    return std::shared_ptr<const MutableKeyOffsetIndex>(
         new MutableKeyOffsetIndex(key_field_, key_serializer_, offsets_, memory_pool_));
+}
+
+uint64_t MutableKeyOffsetIndex::GetMemoryUsage() const {
+    return offsets_->MemoryUsage();
 }
 
 Result<RoaringBitmap64> CompositeKeyOffsetLookup::LookupOffsets(

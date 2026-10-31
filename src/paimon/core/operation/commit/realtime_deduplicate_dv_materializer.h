@@ -40,6 +40,7 @@ class DeletionVector;
 class DeletionVectorsIndexFile;
 class FileStorePathFactory;
 class MemoryPool;
+class SchemaManager;
 class TableSchema;
 
 /// Shared, attempt-local DV processing for realtime deduplicate writes and compaction.
@@ -95,6 +96,7 @@ class RealtimeDeduplicateDvMaterializer {
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<CommitScanner> scanner_;
     CoreOptions options_;
+    std::shared_ptr<SchemaManager> schema_manager_;
     std::shared_ptr<MemoryPool> pool_;
 };
 

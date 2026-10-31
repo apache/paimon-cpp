@@ -30,6 +30,14 @@
 
 namespace paimon::test {
 
+TEST(RealtimeUtilsTest, TestValidateBranch) {
+    ASSERT_OK(RealtimeUtils::ValidateBranch(""));
+    ASSERT_OK(RealtimeUtils::ValidateBranch(" "));
+    ASSERT_OK(RealtimeUtils::ValidateBranch("main"));
+    ASSERT_NOK_WITH_MSG(RealtimeUtils::ValidateBranch("dev"),
+                        "real-time operations only support the main branch");
+}
+
 TEST(RealtimeUtilsTest, TestValidateOffsetField) {
     const std::shared_ptr<arrow::Field> offset_field =
         DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset());
@@ -101,14 +109,28 @@ TEST(RealtimeUtilsTest, TestValidateDeduplicateFileIndex) {
                                                 SpecialFields::RealtimeOffset().Name()}}));
     ASSERT_OK(RealtimeUtils::ValidateDeduplicateFileIndex(valid_options));
 
+    for (const std::string& type : {"bsi", "range-bitmap"}) {
+        ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                             CoreOptions::FromMap({{"file-index." + type + ".columns",
+                                                    SpecialFields::RealtimeOffset().Name()}}));
+        ASSERT_OK(RealtimeUtils::ValidateDeduplicateFileIndex(options));
+    }
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions approximate_options,
+        CoreOptions::FromMap({{"file-index.bloom-filter.columns", "_REALTIME_OFFSET"}}));
+    ASSERT_NOK_WITH_MSG(RealtimeUtils::ValidateDeduplicateFileIndex(approximate_options),
+                        "requires an index supporting exact BIGINT IN and NOT_IN row positions");
+
     ASSERT_OK_AND_ASSIGN(CoreOptions missing_index_options, CoreOptions::FromMap({}));
     ASSERT_NOK_WITH_MSG(RealtimeUtils::ValidateDeduplicateFileIndex(missing_index_options),
-                        "requires file-index.bitmap.columns to include _REALTIME_OFFSET");
+                        "requires an index supporting exact BIGINT IN and NOT_IN row positions on "
+                        "_REALTIME_OFFSET");
 
     ASSERT_OK_AND_ASSIGN(CoreOptions wrong_column_options,
                          CoreOptions::FromMap({{"file-index.bitmap.columns", "id"}}));
     ASSERT_NOK_WITH_MSG(RealtimeUtils::ValidateDeduplicateFileIndex(wrong_column_options),
-                        "requires file-index.bitmap.columns to include _REALTIME_OFFSET");
+                        "requires an index supporting exact BIGINT IN and NOT_IN row positions on "
+                        "_REALTIME_OFFSET");
 
     ASSERT_OK_AND_ASSIGN(
         CoreOptions disabled_read_options,
