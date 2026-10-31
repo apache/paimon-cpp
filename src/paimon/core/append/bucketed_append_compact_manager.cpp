@@ -30,7 +30,8 @@ BucketedAppendCompactManager::BucketedAppendCompactManager(
     const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer, int32_t min_file_num,
     int64_t target_file_size, int64_t compaction_file_size, bool force_rewrite_all_files,
     CompactRewriter rewriter, const std::shared_ptr<CompactionMetrics::Reporter>& reporter,
-    const std::shared_ptr<CancellationController>& cancellation_controller)
+    const std::shared_ptr<CancellationController>& cancellation_controller,
+    bool materialize_dv_on_commit)
     : executor_(executor),
       dv_maintainer_(dv_maintainer),
       min_file_num_(min_file_num),
@@ -43,7 +44,8 @@ BucketedAppendCompactManager::BucketedAppendCompactManager(
           [](const std::shared_ptr<DataFileMeta>& lhs, const std::shared_ptr<DataFileMeta>& rhs) {
               return lhs->min_sequence_number > rhs->min_sequence_number;
           }),
-      cancellation_controller_(cancellation_controller) {
+      cancellation_controller_(cancellation_controller),
+      materialize_dv_on_commit_(materialize_dv_on_commit) {
     assert(cancellation_controller_ != nullptr);
     for (const auto& file : restored) {
         to_compact_.push(file);
@@ -82,9 +84,9 @@ Status BucketedAppendCompactManager::TriggerFullCompaction() {
         to_compact_.pop();
     }
     cancellation_controller_->Reset();
-    auto compact_task = std::make_shared<FullCompactTask>(reporter_, dv_maintainer_, compacting,
-                                                          compaction_file_size_,
-                                                          force_rewrite_all_files_, rewriter_);
+    auto compact_task = std::make_shared<FullCompactTask>(
+        reporter_, dv_maintainer_, compacting, compaction_file_size_, force_rewrite_all_files_,
+        rewriter_, materialize_dv_on_commit_);
     task_future_ = Via(executor_.get(), [compact_task]() -> Result<std::shared_ptr<CompactResult>> {
         return compact_task->Execute();
     });
@@ -100,8 +102,8 @@ void BucketedAppendCompactManager::TriggerCompactionWithBestEffort() {
     if (picked) {
         cancellation_controller_->Reset();
         compacting_ = picked.value();
-        auto compact_task = std::make_shared<AutoCompactTask>(reporter_, dv_maintainer_,
-                                                              compacting_.value(), rewriter_);
+        auto compact_task = std::make_shared<AutoCompactTask>(
+            reporter_, dv_maintainer_, compacting_.value(), rewriter_, materialize_dv_on_commit_);
         task_future_ =
             Via(executor_.get(), [compact_task]() -> Result<std::shared_ptr<CompactResult>> {
                 return compact_task->Execute();
@@ -175,7 +177,8 @@ BucketedAppendCompactManager::GetCompactionResult(bool blocking) {
 
 Result<std::shared_ptr<CompactResult>> BucketedAppendCompactManager::Compact(
     const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer,
-    const std::vector<std::shared_ptr<DataFileMeta>>& to_compact, CompactRewriter rewriter) {
+    const std::vector<std::shared_ptr<DataFileMeta>>& to_compact, CompactRewriter rewriter,
+    bool materialize_dv_on_commit) {
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<DataFileMeta>> rewrite,
                            rewriter(to_compact));
 
@@ -184,9 +187,11 @@ Result<std::shared_ptr<CompactResult>> BucketedAppendCompactManager::Compact(
         for (const auto& file : to_compact) {
             dv_maintainer->RemoveDeletionVectorOf(file->file_name);
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CompactDeletionFile> deletion_file,
-                               CompactDeletionFile::GenerateFiles(dv_maintainer));
-        result->SetDeletionFile(deletion_file);
+        if (!materialize_dv_on_commit) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CompactDeletionFile> deletion_file,
+                                   CompactDeletionFile::GenerateFiles(dv_maintainer));
+            result->SetDeletionFile(deletion_file);
+        }
     }
     return result;
 }
@@ -209,7 +214,7 @@ Result<std::shared_ptr<CompactResult>> BucketedAppendCompactManager::FullCompact
         return Compact(
             dv_maintainer_,
             std::vector<std::shared_ptr<DataFileMeta>>(to_compact_.begin(), to_compact_.end()),
-            rewriter_);
+            rewriter_, materialize_dv_on_commit_);
     } else {
         // compute small files
         int32_t big = 0;
@@ -226,7 +231,7 @@ Result<std::shared_ptr<CompactResult>> BucketedAppendCompactManager::FullCompact
             return Compact(
                 /*dv_maintainer=*/nullptr,
                 std::vector<std::shared_ptr<DataFileMeta>>(to_compact_.begin(), to_compact_.end()),
-                rewriter_);
+                rewriter_, materialize_dv_on_commit_);
         } else {
             return std::make_shared<CompactResult>();
         }

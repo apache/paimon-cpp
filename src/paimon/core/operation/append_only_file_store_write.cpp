@@ -302,7 +302,8 @@ Result<std::shared_ptr<BatchWriter>> AppendOnlyFileStoreWrite::CreateWriter(
             options_.GetTargetFileSize(/*has_primary_key=*/false),
             options_.GetCompactionFileSize(/*has_primary_key=*/false),
             options_.CompactionForceRewriteAllFiles(), rewriter,
-            compaction_metrics_->CreateReporter(partition, bucket), cancellation_controller);
+            compaction_metrics_->CreateReporter(partition, bucket), cancellation_controller,
+            /*materialize_dv_on_commit=*/!options_.GetRealtimeDeduplicateKeyFields().empty());
     }
 
     auto writer = std::make_shared<AppendOnlyWriter>(
