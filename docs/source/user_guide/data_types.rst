@@ -146,12 +146,28 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
    * - ``TIME``
 
        ``TIME(p)``
-     - Not Supported
+     - Time32
      - Data type of a time without time zone consisting of hour:minute:second[.fractional] with up to nanosecond precision and values ranging from 00:00:00.000000000 to 23:59:59.999999999.
 
        The type can be declared using ``TIME(p)`` where p is the number of digits of
        fractional seconds (precision). p must have a value between 0 and 9
        (both inclusive). If no precision is specified, p is equal to 0.
+
+       Paimon C++ maps every ``TIME(p)`` to an Arrow ``Time32`` in milliseconds
+       (``time32[ms]``) and accepts no other Arrow time type. The declared
+       precision p is kept in the ``paimon.time.precision`` field metadata; a
+       ``Time32`` field without it is ``TIME(0)``. As in Paimon Java, values are
+       stored as milliseconds of the day whatever p is, so ``TIME(6)`` and
+       ``TIME(9)`` values keep only millisecond precision.
+
+       Paimon C++ reads TIME columns from Parquet, Lance and Vortex data files
+       and writes them to Lance and Vortex data files. ORC and Avro data files
+       do not support TIME.
+
+       **Note:** Only append-only tables support TIME columns. Primary-key
+       tables do not support TIME, whether as a primary key or as a value
+       column. A TIME column also cannot be a partition or bucket key, and
+       predicates cannot reference TIME columns.
 
    * - ``TIMESTAMP``
 
@@ -178,6 +194,11 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        Paimon C++ supports precision values 0 (seconds), 3 (milliseconds), 6
        (microseconds), and 9 (nanoseconds).
 
+       As in Paimon Java, Lance data files store this type as an Arrow
+       timestamp with the ``UTC`` time zone whatever the local time zone is,
+       and reads return it in the local time zone. Only the time zone of the
+       Arrow type changes; the values since the epoch are kept as they are.
+
    * - ``ARRAY<t>``
      - List
      - Data type of an array of elements with same subtype.
@@ -197,13 +218,27 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        Paimon C++ supports VECTOR value columns in append-only and primary-key
        tables backed by Parquet data files. They use the standard Parquet LIST
        representation on disk and are restored as Arrow ``FixedSizeList``
-       values on read. Row-tracking append-only tables with data evolution also
-       support full-row and partial-column VECTOR writes, including reads across
+       values on read. With Vortex enabled at build time, Vortex data files also
+       support VECTOR value columns. Row-tracking append-only Parquet tables
+       with data evolution support full-row and partial-column VECTOR writes, including reads across
        schema versions that add or drop VECTOR columns. Changing a VECTOR's
        dimension or element type is not supported. VECTOR columns cannot be
        primary, partition, or bucket keys, nor comparator-based
-       ordering fields such as sequence and sequence-group fields. Dedicated
-       vector storage is not included yet.
+       ordering fields such as sequence and sequence-group fields.
+
+       ``vector.file.format`` stores a single top-level VECTOR column in dedicated
+       ``.vector.<format>`` files. Supported formats are ``parquet``, ``lance``,
+       and ``vortex``; Lance and Vortex must be enabled at build time.
+       This mode requires ``file.format=parquet``, ``bucket=-1``,
+       ``row-tracking.enabled=true``, and ``data-evolution.enabled=true``, plus at
+       least one ordinary non-partition column. It supports full-row inserts into append-only
+       tables. Custom write schemas, partial writes, multiple or nested VECTOR
+       columns, and BLOB columns are not supported in this mode.
+
+       VECTOR files roll independently at ``vector.target-file-size``, which
+       defaults to ``target-file-size``. Main files roll at ``target-file-size``
+       or ``target-file-row-num`` and also close the current VECTOR file. One
+       main file can therefore cover the combined row range of several VECTOR files.
 
        Paimon C++ also reads Parquet files written by Paimon Rust or Python whose
        embedded Arrow schema restores VECTOR columns as ``FixedSizeList``,

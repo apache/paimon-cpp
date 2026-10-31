@@ -31,6 +31,7 @@ TEST(GlobalIndexerFactoryTest, TestBitmap) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<GlobalIndexer> indexer,
                          GlobalIndexerFactory::Get("bitmap", options));
     ASSERT_TRUE(dynamic_cast<BitmapGlobalIndexer*>(indexer.get()));
+    ASSERT_FALSE(indexer->SupportsFullTextSearch());
 }
 
 TEST(GlobalIndexerFactoryTest, TestNonExist) {

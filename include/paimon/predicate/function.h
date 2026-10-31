@@ -43,7 +43,8 @@ class PAIMON_EXPORT Function {
         STARTS_WITH = 13,
         ENDS_WITH = 14,
         CONTAINS = 15,
-        LIKE = 16
+        LIKE = 16,
+        FULL_TEXT_MATCH = 17
     };
     virtual ~Function() = default;
     virtual Type GetType() const = 0;

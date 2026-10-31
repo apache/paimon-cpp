@@ -19,6 +19,8 @@
 
 #include "paimon/common/global_index/global_index_utils.h"
 
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -26,6 +28,8 @@
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/utils/range.h"
+#include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon::test {
 
@@ -108,6 +112,20 @@ TEST_F(GlobalIndexUtilsTest, TestMismatchedExpectedNextRowId) {
     ASSERT_NOK_WITH_MSG(
         GlobalIndexUtils::CheckRelativeRowIds(&c_array, row_ids, 100),
         "first relative_row_ids 5 mismatch inner expected_next_row_id 100 in CheckRelativeRowIds");
+}
+
+TEST_F(GlobalIndexUtilsTest, TestRowIdsOfAndWithin) {
+    const int64_t max_row_id = std::numeric_limits<int64_t>::max();
+    ASSERT_EQ(GlobalIndexUtils::RowIdsOf(Range(3, 5)), RoaringBitmap64::From({3, 4, 5}));
+    ASSERT_EQ(GlobalIndexUtils::RowIdsOf(Range(max_row_id - 1, max_row_id)),
+              RoaringBitmap64::From({max_row_id - 1, max_row_id}));
+
+    RoaringBitmap64 row_ids = RoaringBitmap64::From({0, 3, 7, 10, max_row_id});
+    ASSERT_EQ(GlobalIndexUtils::RowIdsWithin(row_ids, Range(3, 7)), RoaringBitmap64::From({3, 7}));
+    ASSERT_EQ(GlobalIndexUtils::RowIdsWithin(row_ids, Range(8, max_row_id)),
+              RoaringBitmap64::From({10, max_row_id}));
+    ASSERT_EQ(GlobalIndexUtils::RowIdsWithin(row_ids, Range(4, 6)), RoaringBitmap64());
+    ASSERT_EQ(row_ids, RoaringBitmap64::From({0, 3, 7, 10, max_row_id}));
 }
 
 }  // namespace paimon::test

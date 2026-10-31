@@ -275,6 +275,22 @@ TEST(RoaringBitmap64Test, TestIterator) {
     ASSERT_EQ(iter, roaring.End());
 }
 
+TEST(RoaringBitmap64Test, TestEndIterator) {
+    RoaringBitmap64 empty;
+    ASSERT_EQ(empty.Begin(), empty.End());
+    ASSERT_EQ(empty.EqualOrLarger(0), empty.End());
+
+    const std::vector<int64_t> expected = {0, 1LL << 32, RoaringBitmap64::MAX_VALUE};
+    auto bitmap = RoaringBitmap64::From(expected);
+    auto iter = bitmap.Begin();
+    std::vector<int64_t> values;
+    for (; iter != bitmap.End(); ++iter) {
+        values.push_back(*iter);
+    }
+    ASSERT_EQ(values, expected);
+    ASSERT_EQ(iter, bitmap.End());
+}
+
 TEST(RoaringBitmap64Test, TestIteratorAssignAndMove) {
     RoaringBitmap64 roaring =
         RoaringBitmap64::From({10000000000010l, 100000000000100l, 100000000000200l});
@@ -308,6 +324,18 @@ TEST(RoaringBitmap64Test, TestIteratorAssignAndMove) {
     iter3 = std::move(iter2);
     ASSERT_EQ(10000000000010l, *iter3);
     ASSERT_FALSE(iter2.iterator_);  // NOLINT(bugprone-use-after-move)
+
+    iter3 = roaring.End();
+    auto copied_end = iter3;
+    auto moved_end = std::move(copied_end);
+    ASSERT_EQ(moved_end, roaring.End());
+    iter3 = roaring.Begin();
+    iter3 = moved_end;
+    ASSERT_EQ(iter3, roaring.End());
+    iter3 = roaring.Begin();
+    ASSERT_EQ(*iter3, 10000000000010l);
+    iter3 = std::move(moved_end);
+    ASSERT_EQ(iter3, roaring.End());
 }
 
 TEST(RoaringBitmap64Test, TestDeserializeFromInputStream) {
@@ -417,6 +445,14 @@ TEST(RoaringBitmap64Test, TestIteratorEqualOrLarger) {
     ASSERT_EQ(*iter, 100l);
     iter.EqualOrLarger(200l);
     ASSERT_EQ(iter, roaring.End());
+    ASSERT_EQ(roaring.End(), iter);
+    iter.EqualOrLarger(3l);
+    ASSERT_EQ(*iter, 3l);
+
+    iter = roaring.EqualOrLarger(200l);
+    ASSERT_EQ(iter, roaring.End());
+    iter.EqualOrLarger(5l);
+    ASSERT_EQ(*iter, 5l);
 }
 
 // Helper function to convert a RoaringBitmap64 to a list of contiguous ranges.

@@ -31,6 +31,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/catalog/table.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/snapshot.h"
@@ -91,6 +92,22 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     void SetLostAnswer(const Status& status) {
         lost_answer_ = status;
+    }
+
+    using CommitLockFactory = std::function<Result<std::unique_ptr<CommitLock>>(
+        const Identifier&, const std::optional<std::string>&, const std::string&)>;
+
+    void SetCommitLockFactory(CommitLockFactory factory) {
+        commit_lock_factory_ = std::move(factory);
+    }
+
+    Result<std::unique_ptr<CommitLock>> CreateCommitLock(
+        const Identifier& identifier, const std::optional<std::string>& table_uuid,
+        const std::string& commit_user, const CoreOptions& options) override {
+        if (!commit_lock_factory_) {
+            return std::unique_ptr<CommitLock>();
+        }
+        return commit_lock_factory_(identifier, table_uuid, commit_user);
     }
 
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override {
@@ -294,6 +311,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     Status load_snapshot_status_;
     std::vector<CommitCall> commit_calls_;
     std::map<std::string, std::string> options_;
+    CommitLockFactory commit_lock_factory_;
 };
 
 }  // namespace paimon::test

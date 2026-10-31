@@ -19,6 +19,7 @@
 #include "paimon/core/core_options.h"
 
 #include <limits>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,6 +54,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(manifest_format->Identifier(), "avro");
     ASSERT_EQ(core_options.GetFileFormat()->Identifier(), "parquet");
     ASSERT_EQ(nullptr, core_options.GetChangelogFileFormat());
+    ASSERT_EQ(nullptr, core_options.GetVectorFileFormat());
     ASSERT_EQ(core_options.GetWriteFileFormat(0)->Identifier(), "parquet");
     ASSERT_EQ(core_options.GetWriteFileFormat(3)->Identifier(), "parquet");
     ASSERT_TRUE(core_options.GetFileSystem());
@@ -62,6 +64,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(128 * 1024 * 1024L, core_options.GetTargetFileSize(/*has_primary_key=*/true));
     ASSERT_EQ(std::numeric_limits<int64_t>::max(), core_options.GetTargetFileRowNum());
     ASSERT_EQ(256 * 1024 * 1024L, core_options.GetBlobTargetFileSize());
+    ASSERT_EQ(256 * 1024 * 1024L, core_options.GetVectorTargetFileSize());
     ASSERT_TRUE(core_options.BlobSplitByFileSize());
     ASSERT_EQ(187904815, core_options.GetCompactionFileSize(/*has_primary_key=*/false));
     ASSERT_EQ(93952404, core_options.GetCompactionFileSize(/*has_primary_key=*/true));
@@ -105,6 +108,8 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(10, core_options.GetCommitMinRetryWait());
     ASSERT_EQ(10 * 1000, core_options.GetCommitMaxRetryWait());
     ASSERT_FALSE(core_options.CommitDiscardDuplicateFiles());
+    ASSERT_FALSE(core_options.RestCommitLockEnabled());
+    ASSERT_FALSE(core_options.RestCommitAcquireLock());
     ExpireConfig expire_config = core_options.GetExpireConfig();
     ASSERT_EQ(10, expire_config.GetSnapshotRetainMin());
     ASSERT_EQ(std::numeric_limits<int32_t>::max(), expire_config.GetSnapshotRetainMax());
@@ -160,6 +165,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ("main", core_options.GetBranch());
     ASSERT_TRUE(core_options.FileIndexReadEnabled());
     ASSERT_EQ(500, core_options.FileIndexInManifestThreshold());
+    ASSERT_EQ(1, core_options.FileIndexFormatVersion());
     ASSERT_EQ(std::nullopt, core_options.GetDataFileExternalPaths());
     ASSERT_EQ(ExternalPathStrategy::NONE, core_options.GetExternalPathStrategy());
     ASSERT_TRUE(core_options.EnableAdaptivePrefetchStrategy());
@@ -173,7 +179,6 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_TRUE(core_options.GetBlobDescriptorFields().empty());
     ASSERT_TRUE(core_options.GetBlobViewFields().empty());
     ASSERT_TRUE(core_options.GetBlobInlineFields().empty());
-    ASSERT_EQ(std::nullopt, core_options.GetBlobViewUpstreamWarehouse());
     ASSERT_TRUE(core_options.BlobViewResolveEnabled());
     ASSERT_TRUE(core_options.LegacyPartitionNameEnabled());
     ASSERT_TRUE(core_options.GlobalIndexEnabled());
@@ -214,12 +219,14 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::FILE_SYSTEM, "Local"},
         {Options::FILE_FORMAT, "ORC"},
         {Options::CHANGELOG_FILE_FORMAT, "avro"},
+        {Options::VECTOR_FILE_FORMAT, "parquet"},
         {"manifest.format", "ORC"},
         {Options::BUCKET, "3"},
         {Options::PAGE_SIZE, "128 kb"},
         {Options::TARGET_FILE_SIZE, "512MB"},
         {Options::TARGET_FILE_ROW_NUM, "123"},
         {Options::BLOB_TARGET_FILE_SIZE, "1G"},
+        {Options::VECTOR_TARGET_FILE_SIZE, "2MB"},
         {Options::PARTITION_DEFAULT_NAME, "foo"},
         {Options::MANIFEST_TARGET_FILE_SIZE, "16MB"},
         {Options::MANIFEST_FULL_COMPACTION_FILE_SIZE, "32MB"},
@@ -240,6 +247,8 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::COMMIT_MIN_RETRY_WAIT, "5ms"},
         {Options::COMMIT_MAX_RETRY_WAIT, "3s"},
         {Options::COMMIT_DISCARD_DUPLICATE_FILES, "true"},
+        {Options::REST_COMMIT_LOCK_ENABLED, "true"},
+        {Options::REST_COMMIT_ACQUIRE_LOCK, "true"},
         {Options::DYNAMIC_PARTITION_OVERWRITE, "false"},
         {Options::OVERWRITE_UPGRADE, "false"},
         {Options::SCAN_SNAPSHOT_ID, "5"},
@@ -284,6 +293,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::BRANCH, "rt"},
         {Options::FILE_INDEX_READ_ENABLED, "false"},
         {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "2KB"},
+        {Options::FILE_INDEX_FORMAT_VERSION, "2"},
         {Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///tmp/index"},
         {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "round-robin"},
         {Options::FILE_COMPRESSION, "snappy"},
@@ -299,7 +309,6 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::BLOB_DESCRIPTOR_FIELD, "blob3,blob4"},
         {Options::BLOB_AS_DESCRIPTOR, "true"},
         {Options::BLOB_VIEW_FIELD, "blob5"},
-        {Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, "FILE:///tmp/blob_view_upstream_warehouse/"},
         {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"},
         {Options::PARTITION_GENERATE_LEGACY_NAME, "false"},
         {Options::GLOBAL_INDEX_ENABLED, "false"},
@@ -354,6 +363,8 @@ TEST(CoreOptionsTest, TestFromMap) {
 
     ASSERT_EQ(core_options.GetFileFormat()->Identifier(), "orc");
     ASSERT_EQ(core_options.GetChangelogFileFormat()->Identifier(), "avro");
+    ASSERT_NE(nullptr, core_options.GetVectorFileFormat());
+    ASSERT_EQ(core_options.GetVectorFileFormat()->Identifier(), "parquet");
     ASSERT_EQ(core_options.GetWriteFileFormat(0)->Identifier(), "avro");
     ASSERT_EQ(core_options.GetWriteFileFormat(1)->Identifier(), "orc");
     ASSERT_EQ(core_options.GetWriteFileFormat(3)->Identifier(), "parquet");
@@ -367,6 +378,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(512 * 1024 * 1024L, core_options.GetTargetFileSize(/*has_primary_key=*/false));
     ASSERT_EQ(123, core_options.GetTargetFileRowNum());
     ASSERT_EQ(1024 * 1024 * 1024L, core_options.GetBlobTargetFileSize());
+    ASSERT_EQ(2 * 1024 * 1024L, core_options.GetVectorTargetFileSize());
     ASSERT_EQ("foo", core_options.GetPartitionDefaultName());
     ASSERT_EQ(16 * 1024 * 1024L, core_options.GetManifestTargetFileSize());
     ASSERT_EQ(32 * 1024 * 1024L, core_options.GetManifestFullCompactionThresholdSize());
@@ -391,6 +403,8 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(5, core_options.GetCommitMinRetryWait());
     ASSERT_EQ(3 * 1000, core_options.GetCommitMaxRetryWait());
     ASSERT_TRUE(core_options.CommitDiscardDuplicateFiles());
+    ASSERT_TRUE(core_options.RestCommitLockEnabled());
+    ASSERT_TRUE(core_options.RestCommitAcquireLock());
     ASSERT_EQ(5, core_options.GetScanSnapshotId().value_or(-1));
     ASSERT_EQ(7, core_options.GetScanManifestEntryCacheMaxSnapshots());
     ASSERT_FALSE(core_options.ScanManifestEntryLazyDecodeEnabled());
@@ -447,6 +461,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(core_options.GetBranch(), "rt");
     ASSERT_FALSE(core_options.FileIndexReadEnabled());
     ASSERT_EQ(2 * 1024, core_options.FileIndexInManifestThreshold());
+    ASSERT_EQ(2, core_options.FileIndexFormatVersion());
     ASSERT_EQ(core_options.GetDataFileExternalPaths(),
               std::optional<std::string>("FILE:///tmp/index"));
     ASSERT_EQ(core_options.GetExternalPathStrategy(), ExternalPathStrategy::ROUND_ROBIN);
@@ -469,8 +484,6 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(core_options.GetBlobViewFields(), std::vector<std::string>({"blob5"}));
     ASSERT_EQ(core_options.GetBlobInlineFields(),
               std::vector<std::string>({"blob3", "blob4", "blob5"}));
-    ASSERT_EQ(core_options.GetBlobViewUpstreamWarehouse(),
-              std::optional<std::string>("FILE:///tmp/blob_view_upstream_warehouse/"));
     ASSERT_FALSE(core_options.BlobViewResolveEnabled());
     ASSERT_FALSE(core_options.LegacyPartitionNameEnabled());
     ASSERT_FALSE(core_options.GlobalIndexEnabled());
@@ -527,6 +540,15 @@ TEST(CoreOptionsTest, TestFromMap) {
 }
 
 TEST(CoreOptionsTest, TestInvalidCase) {
+    ASSERT_NOK_WITH_MSG(
+        CoreOptions::FromMap({{Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "2147483648B"}}),
+        "file index inline threshold");
+    for (const std::string version : {"0", "3", "-1"}) {
+        ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{"file-index.format.version", version}}),
+                            "file-index.format.version must be 1 or 2");
+    }
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{"file-index.format.version", "invalid"}}),
+                        "Invalid Config [file-index.format.version: invalid]");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::TARGET_FILE_ROW_NUM, "0"}}),
                         "target-file-row-num should be at least 1");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BUCKET, "3.5"}}),
@@ -1031,6 +1053,28 @@ TEST(CoreOptionsTest, TestParseChangelogProducer) {
     }
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::CHANGELOG_PRODUCER, "invalid"}}),
                         "invalid changelog producer: invalid");
+}
+
+TEST(CoreOptionsTest, TestParseFullTextIndexSearchMode) {
+    auto search_mode =
+        [](const std::map<std::string, std::string>& options) -> Result<GlobalIndexSearchMode> {
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
+        return core_options.GetFullTextIndexSearchMode();
+    };
+    ASSERT_OK_AND_ASSIGN(GlobalIndexSearchMode mode, search_mode({}));
+    ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
+    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
+    ASSERT_EQ(mode, GlobalIndexSearchMode::FULL);
+    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "DETAIL"}}));
+    ASSERT_EQ(mode, GlobalIndexSearchMode::DETAIL);
+    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "fast"},
+                                            {Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
+    ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
+    ASSERT_NOK_WITH_MSG(search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "invalid"},
+                                     {Options::GLOBAL_INDEX_SEARCH_MODE, "fast"}}),
+                        "invalid full-text-index.search-mode: invalid");
+    ASSERT_NOK_WITH_MSG(search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "invalid"}}),
+                        "invalid global-index.search-mode: invalid");
 }
 
 TEST(CoreOptionsTest, TestParseExternalPathStrategy) {

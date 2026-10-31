@@ -20,18 +20,21 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "fmt/ranges.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/table.h"
@@ -41,7 +44,9 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/commit_table_request.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -92,6 +97,15 @@ struct MockCatalogState {
     std::string last_commit_body;
     std::string last_commit_table;
     bool refuse_commit = false;
+    int32_t refused_commits_left = 0;
+    std::vector<CommitLockRequest> lock_requests;
+    std::vector<std::string> lock_tables;
+    int32_t contended_acquires = 0;
+    int64_t lease_millis = 60000;
+    bool lose_on_renew = false;
+    int64_t snapshot_delay_millis = 0;
+    int64_t get_table_delay_millis = 0;
+    std::vector<std::string> table_events;
     bool break_commit_response = false;
     bool commit_response_without_outcome = false;
     bool accept_commit_then_report_unavailable = false;
@@ -331,12 +345,26 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
     bool list_snapshots = false;
     bool commit_table = false;
     bool load_snapshot = false;
+    bool acquire_lock = false;
+    bool renew_lock = false;
     const std::string snapshots_suffix = "/snapshots";
     const std::string snapshot_suffix = "/snapshot";
     const std::string commit_suffix = "/commit";
-    if (table_name.size() > snapshots_suffix.size() &&
-        table_name.compare(table_name.size() - snapshots_suffix.size(), snapshots_suffix.size(),
-                           snapshots_suffix) == 0) {
+    const std::string acquire_lock_suffix = "/commit-lock";
+    const std::string renew_lock_suffix = "/commit-lock/renew";
+    if (table_name.size() > renew_lock_suffix.size() &&
+        table_name.compare(table_name.size() - renew_lock_suffix.size(), renew_lock_suffix.size(),
+                           renew_lock_suffix) == 0) {
+        table_name = table_name.substr(0, table_name.size() - renew_lock_suffix.size());
+        renew_lock = true;
+    } else if (table_name.size() > acquire_lock_suffix.size() &&
+               table_name.compare(table_name.size() - acquire_lock_suffix.size(),
+                                  acquire_lock_suffix.size(), acquire_lock_suffix) == 0) {
+        table_name = table_name.substr(0, table_name.size() - acquire_lock_suffix.size());
+        acquire_lock = true;
+    } else if (table_name.size() > snapshots_suffix.size() &&
+               table_name.compare(table_name.size() - snapshots_suffix.size(),
+                                  snapshots_suffix.size(), snapshots_suffix) == 0) {
         table_name = table_name.substr(0, table_name.size() - snapshots_suffix.size());
         list_snapshots = true;
     } else if (table_name.size() > commit_suffix.size() &&
@@ -354,12 +382,39 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
     if (table_iter == tables.end()) {
         return MockError(404, ErrorResponse::kResourceTypeTable, table_name, "table not found");
     }
+    if (acquire_lock || renew_lock) {
+        if (request.method != "POST") {
+            return MockError(400, "", "", "unsupported method");
+        }
+        Result<CommitLockRequest> lock_request = CommitLockRequest::FromJsonString(request.body);
+        if (!lock_request.ok()) {
+            return MockError(400, "", "", "bad commit lock request");
+        }
+        state->lock_requests.push_back(lock_request.value());
+        state->lock_tables.push_back(table_name);
+        state->table_events.push_back(acquire_lock ? "acquire" : "renew");
+        bool contended = acquire_lock && state->contended_acquires > 0;
+        if (contended) {
+            --state->contended_acquires;
+        }
+        if (contended || (renew_lock && state->lose_on_renew)) {
+            CommitLockResponse not_granted(/*acquired=*/false, /*commit_user=*/std::nullopt,
+                                           /*expires_at_millis=*/0, /*lease_millis=*/0,
+                                           /*snapshot=*/std::nullopt);
+            return JsonResponse(200, not_granted.ToJsonString().value());
+        }
+        CommitLockResponse response(/*acquired=*/true, lock_request.value().GetCommitUser(),
+                                    /*expires_at_millis=*/1700000000000 + state->lease_millis,
+                                    state->lease_millis, /*snapshot=*/std::nullopt);
+        return JsonResponse(200, response.ToJsonString().value());
+    }
     if (commit_table) {
         if (request.method != "POST") {
             return MockError(400, "", "", "unsupported method");
         }
         state->last_commit_body = request.body;
         state->last_commit_table = table_name;
+        state->table_events.push_back("commit");
         ++state->commit_requests;
         if (state->accept_commit_then_report_unavailable) {
             if (state->commit_requests == 1) {
@@ -402,7 +457,12 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
         if (state->commit_response_without_outcome) {
             return JsonResponse(200, R"({"success": null})");
         }
-        CommitTableResponse response(!state->refuse_commit);
+        bool refuse = state->refuse_commit;
+        if (state->refused_commits_left > 0) {
+            --state->refused_commits_left;
+            refuse = true;
+        }
+        CommitTableResponse response(!refuse);
         return JsonResponse(200, response.ToJsonString().value());
     }
     if (load_snapshot) {
@@ -410,6 +470,10 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
             return MockError(400, "", "", "unsupported method");
         }
         state->last_snapshot_table = table_name;
+        state->table_events.push_back("snapshot");
+        if (state->snapshot_delay_millis > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(state->snapshot_delay_millis));
+        }
         if (state->null_snapshot_response) {
             return JsonResponse(200, R"({"snapshot": null})");
         }
@@ -433,6 +497,9 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
     }
     if (request.method == "GET") {
         state->get_table_requests++;
+        if (state->get_table_delay_millis > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(state->get_table_delay_millis));
+        }
         return JsonResponse(200, TableResponseJson(table_name, table_iter->second));
     }
     if (request.method == "DELETE") {
@@ -1913,6 +1980,292 @@ TEST_F(RestCatalogTest, CommitTakenThenReportedUnavailableIsNotReplayed) {
         ASSERT_EQ(3, state_->commit_requests);
         state_->accept_commit_then_report_unavailable = false;
     }
+}
+
+TEST_F(RestCatalogTest, CommitLockAddressesTheTableOrBranch) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_SYSTEM, "local"},
+                                               {Options::FILE_FORMAT, "mock_format"},
+                                               {Options::REST_COMMIT_LOCK_ENABLED, "true"},
+                                               {Options::REST_COMMIT_ACQUIRE_LOCK, "true"}}));
+    ASSERT_NOK_WITH_MSG(catalog->CreateCommitLock(Identifier("db1", "t1$snapshots"), "table-uuid",
+                                                  "commit-user", options),
+                        "Cannot 'createCommitLock' for system table");
+
+    MockCatalogState::TableData branch_data;
+    branch_data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],)"
+                              R"( "partitionKeys": [], "primaryKeys": [], "options": {}})";
+    branch_data.path = "wh1/db1.db/t1";
+    {
+        std::lock_guard<std::mutex> guard(state_->mutex);
+        state_->databases["db1"]["t1$branch_b1"] = branch_data;
+    }
+    struct Case {
+        Identifier identifier;
+        std::string served_table;
+    };
+    for (const Case& lease_case :
+         {Case{identifier, "t1"}, Case{Identifier("db1", "t1$branch_b1"), "t1$branch_b1"},
+          Case{Identifier("db1", "t1$branch_main"), "t1"}}) {
+        SCOPED_TRACE(lease_case.identifier.ToString());
+        size_t requests_before = 0;
+        {
+            std::lock_guard<std::mutex> guard(state_->mutex);
+            requests_before = state_->lock_requests.size();
+        }
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<CommitLock> lock,
+            catalog->CreateCommitLock(lease_case.identifier, "table-uuid", "commit-user", options));
+        ASSERT_TRUE(lock);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitLockScope> scope, lock->Acquire());
+        ASSERT_OK(scope->EnsureValid());
+        std::lock_guard<std::mutex> guard(state_->mutex);
+        ASSERT_EQ(requests_before + 1, state_->lock_requests.size());
+        ASSERT_EQ(lease_case.served_table, state_->lock_tables.back());
+        ASSERT_EQ("table-uuid", state_->lock_requests.back().GetTableId());
+        ASSERT_EQ("commit-user", state_->lock_requests.back().GetCommitUser());
+    }
+}
+
+class RestCatalogCommitLeaseTest : public RestCatalogTest {
+ protected:
+    void SetUp() override {
+        RestCatalogTest::SetUp();
+        dir_ = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir_);
+    }
+
+    Result<std::shared_ptr<Catalog>> CreateCatalogServingTable(bool lock_enabled) {
+        std::string lock_option = lock_enabled ? R"(, "rest.commit.lock-enabled": "true")" : "";
+        MockCatalogState::TableData table_data;
+        table_data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "STRING"},)"
+                                 R"( {"id": 1, "name": "f1", "type": "INT"},)"
+                                 R"( {"id": 2, "name": "f2", "type": "INT"},)"
+                                 R"( {"id": 3, "name": "f3", "type": "DOUBLE"}],)"
+                                 R"( "partitionKeys": ["f1"], "primaryKeys": [],)"
+                                 R"( "options": {"file.format": "orc", "manifest.format": "avro")" +
+                                 lock_option + "}}";
+        table_data.path = dir_->Str();
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RestCatalog> catalog,
+                               CreateRestCatalog(FastRetryConfig()));
+        PAIMON_RETURN_NOT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/true));
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            state_->databases["db1"]["t1"] = table_data;
+        }
+        return std::shared_ptr<Catalog>(std::move(catalog));
+    }
+
+    Result<std::unique_ptr<FileStoreCommit>> CreateCommit(
+        const std::shared_ptr<Catalog>& catalog, const std::optional<std::string>& table_id,
+        const std::map<std::string, std::string>& options) {
+        CommitContextBuilder builder(dir_->Str(), "commit-user");
+        builder.WithCatalog(catalog, Identifier("db1", "t1"));
+        if (table_id) {
+            builder.WithTableId(table_id.value());
+        }
+        for (const auto& [key, value] : options) {
+            builder.AddOption(key, value);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
+        return FileStoreCommit::Create(std::move(context));
+    }
+
+    std::vector<std::string> TableEvents() {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        return state_->table_events;
+    }
+
+    size_t LockRequests() {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        return state_->lock_requests.size();
+    }
+
+    void AssertNoManifestsLeft() {
+        std::shared_ptr<FileSystem> fs = dir_->GetFileSystem();
+        const std::string manifest_dir = PathUtil::JoinPath(dir_->Str(), "manifest");
+        ASSERT_OK_AND_ASSIGN(bool manifest_dir_exists, fs->Exists(manifest_dir));
+        if (manifest_dir_exists) {
+            std::vector<BasicFileStatus> manifests;
+            ASSERT_OK(fs->ListDir(manifest_dir, &manifests));
+            ASSERT_TRUE(manifests.empty()) << manifests.size();
+        }
+    }
+
+    std::unique_ptr<UniqueTestDirectory> dir_;
+};
+
+TEST_F(RestCatalogCommitLeaseTest, LeaseIsAcquiredBeforeTheHeadAndAgainAfterAConflict) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog,
+                         CreateCatalogServingTable(/*lock_enabled=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         CreateCommit(catalog, "1",
+                                      {{Options::REST_COMMIT_ACQUIRE_LOCK, "true"},
+                                       {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}}));
+    ASSERT_EQ(0u, LockRequests());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->refused_commits_left = 1;
+        state_->table_events.clear();
+    }
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> msgs,
+                         ReadFixtureCommitMessages(dir_->GetFileSystem()));
+    ASSERT_OK(commit->Commit(msgs, 7));
+
+    std::vector<std::string> events = TableEvents();
+    std::vector<std::string> leases_and_commits;
+    bool leased = false;
+    bool head_read_under_lease = false;
+    for (const std::string& event : events) {
+        if (event == "snapshot") {
+            head_read_under_lease = head_read_under_lease || leased;
+            continue;
+        }
+        leases_and_commits.push_back(event);
+        if (event == "acquire") {
+            leased = true;
+            head_read_under_lease = false;
+        } else if (event == "commit") {
+            ASSERT_TRUE(leased && head_read_under_lease)
+                << fmt::format("{}", fmt::join(events, ","));
+            leased = false;
+        }
+    }
+    ASSERT_EQ((std::vector<std::string>{"acquire", "commit", "acquire", "commit"}),
+              leases_and_commits);
+
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    ASSERT_EQ(2u, state_->lock_requests.size());
+    for (size_t i = 0; i < state_->lock_requests.size(); ++i) {
+        ASSERT_EQ("t1", state_->lock_tables[i]);
+        ASSERT_EQ("1", state_->lock_requests[i].GetTableId());
+        ASSERT_EQ("commit-user", state_->lock_requests[i].GetCommitUser());
+    }
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest published,
+                         CommitTableRequest::FromJsonString(state_->last_commit_body));
+    ASSERT_EQ(std::optional<std::string>("1"), published.GetTableId());
+    ASSERT_EQ("commit-user", published.GetSnapshot().CommitUser());
+}
+
+TEST_F(RestCatalogCommitLeaseTest, LeaseNeedsBothOptionsAndTheTableUuid) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog,
+                         CreateCatalogServingTable(/*lock_enabled=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCommit(catalog, "1", {}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> msgs,
+                         ReadFixtureCommitMessages(dir_->GetFileSystem()));
+    ASSERT_OK(commit->Commit(msgs, 7));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(1, state_->commit_requests);
+    }
+    ASSERT_NOK_WITH_MSG(
+        CreateCommit(catalog, std::nullopt, {{Options::REST_COMMIT_ACQUIRE_LOCK, "true"}}),
+        "requires the table UUID");
+
+    ASSERT_OK_AND_ASSIGN(catalog, CreateCatalogServingTable(/*lock_enabled=*/false));
+    Status refused =
+        CreateCommit(catalog, "1", {{Options::REST_COMMIT_ACQUIRE_LOCK, "true"}}).status();
+    ASSERT_TRUE(refused.IsInvalid()) << refused.ToString();
+    ASSERT_NOK_WITH_MSG(refused,
+                        "rest.commit.acquire-lock requires rest.commit.lock-enabled on the table.");
+    ASSERT_EQ(0u, LockRequests());
+}
+
+TEST_F(RestCatalogCommitLeaseTest, ContendedLeaseIsAwaitedUntilCommitTimeout) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog,
+                         CreateCatalogServingTable(/*lock_enabled=*/true));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> msgs,
+                         ReadFixtureCommitMessages(dir_->GetFileSystem()));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         CreateCommit(catalog, "1",
+                                      {{Options::REST_COMMIT_ACQUIRE_LOCK, "true"},
+                                       {Options::COMMIT_MAX_RETRIES, "0"}}));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->contended_acquires = 2;
+    }
+    ASSERT_OK(commit->Commit(msgs, 7));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(3u, state_->lock_requests.size());
+        ASSERT_EQ(1, state_->commit_requests);
+    }
+
+    ASSERT_OK_AND_ASSIGN(commit, CreateCommit(catalog, "1",
+                                              {{Options::REST_COMMIT_ACQUIRE_LOCK, "true"},
+                                               {Options::COMMIT_TIMEOUT, "0ms"},
+                                               {Options::COMMIT_MAX_RETRIES, "0"}}));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->contended_acquires = 1000;
+    }
+    Status failed = commit->Commit(msgs, 8);
+    ASSERT_NOK_WITH_MSG(failed, "could not acquire commit lock");
+    ASSERT_NOK_WITH_MSG(failed, "timed out acquiring the commit lock");
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    ASSERT_EQ(4u, state_->lock_requests.size());
+    ASSERT_EQ(1, state_->commit_requests);
+}
+
+TEST_F(RestCatalogCommitLeaseTest, LeaseExpiredLocallyBeforePublicationSendsNoCommit) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog,
+                         CreateCatalogServingTable(/*lock_enabled=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         CreateCommit(catalog, "1",
+                                      {{Options::REST_COMMIT_ACQUIRE_LOCK, "true"},
+                                       {Options::COMMIT_MAX_RETRIES, "1"},
+                                       {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}}));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->lease_millis = 60;
+        state_->snapshot_delay_millis = 200;
+        state_->table_events.clear();
+    }
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> msgs,
+                         ReadFixtureCommitMessages(dir_->GetFileSystem()));
+    Status failed = commit->Commit(msgs, 7);
+    ASSERT_TRUE(failed.IsInvalid()) << failed.ToString();
+    ASSERT_NOK_WITH_MSG(failed, "the commit lock was lost before publishing");
+    ASSERT_NOK_WITH_MSG(failed, "is no longer usable");
+    ASSERT_NOK_WITH_MSG(failed, "expired locally");
+    ASSERT_EQ(std::string::npos, failed.ToString().find("commit conflicts")) << failed.ToString();
+    std::vector<std::string> events = TableEvents();
+    ASSERT_EQ(2, std::count(events.begin(), events.end(), std::string("acquire")));
+    ASSERT_EQ(0, std::count(events.begin(), events.end(), std::string("commit")));
+    AssertNoManifestsLeft();
+}
+
+TEST_F(RestCatalogCommitLeaseTest, RenewalRefusedBeforePublicationSendsNoCommit) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog,
+                         CreateCatalogServingTable(/*lock_enabled=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         CreateCommit(catalog, "1",
+                                      {{Options::REST_COMMIT_ACQUIRE_LOCK, "true"},
+                                       {Options::COMMIT_MAX_RETRIES, "0"}}));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->lease_millis = 900;
+        state_->lose_on_renew = true;
+        state_->snapshot_delay_millis = 600;
+        state_->get_table_delay_millis = 100;
+        state_->table_events.clear();
+    }
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> msgs,
+                         ReadFixtureCommitMessages(dir_->GetFileSystem()));
+    Status failed = commit->Commit(msgs, 7);
+    ASSERT_TRUE(failed.IsInvalid()) << failed.ToString();
+    ASSERT_NOK_WITH_MSG(failed, "the commit lock was lost before publishing");
+    ASSERT_NOK_WITH_MSG(failed, "is no longer usable: the commit lease has expired");
+    ASSERT_EQ(std::string::npos, failed.ToString().find("expired locally")) << failed.ToString();
+    std::vector<std::string> events = TableEvents();
+    ASSERT_EQ(1, std::count(events.begin(), events.end(), std::string("acquire")));
+    ASSERT_EQ(1, std::count(events.begin(), events.end(), std::string("renew")));
+    ASSERT_EQ(0, std::count(events.begin(), events.end(), std::string("commit")));
+    AssertNoManifestsLeft();
 }
 
 TEST(RestApiErrorTest, ErrorToStatus) {

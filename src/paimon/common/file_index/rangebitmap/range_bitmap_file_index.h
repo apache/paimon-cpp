@@ -45,7 +45,7 @@ class PAIMON_EXPORT RangeBitmapFileIndex final : public FileIndexer {
     ~RangeBitmapFileIndex() override = default;
 
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema* arrow_schema, int32_t start, int32_t length,
+        ::ArrowSchema* arrow_schema, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input_stream,
         const std::shared_ptr<MemoryPool>& pool) const override;
 
@@ -86,7 +86,7 @@ class RangeBitmapFileIndexReader final
       public std::enable_shared_from_this<RangeBitmapFileIndexReader> {
  public:
     static Result<std::shared_ptr<RangeBitmapFileIndexReader>> Create(
-        const std::shared_ptr<arrow::DataType>& arrow_type, int32_t start, int32_t length,
+        const std::shared_ptr<arrow::DataType>& arrow_type, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool);
 
     ~RangeBitmapFileIndexReader() override;

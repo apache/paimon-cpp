@@ -24,10 +24,12 @@
 
 #include "arrow/type_fwd.h"
 #include "gtest/gtest.h"
+#include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/data/decimal.h"
 #include "paimon/defs.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/status.h"
@@ -97,6 +99,47 @@ TEST_F(FieldMappingTest, TestFieldNameMappingUsesIdsAcrossRenameAndReorder) {
 
     // test empty file fields
     ASSERT_TRUE(FieldMappingBuilder::CreateFieldNameMapping(table_fields, {}).empty());
+}
+
+TEST_F(FieldMappingTest, TestFullTextMatchRenameAndReorder) {
+    RoaringBitmap64 candidates;
+    candidates.Add(3);
+    candidates.Add(9);
+    auto match =
+        std::make_shared<FullTextMatch>("text", R"({"match":{"query":"apple"}})", candidates);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::FullTextMatch(1, match));
+    std::map<std::string, DataField> read_fields = {
+        {"text", DataField(7, arrow::field("text", arrow::utf8()))}};
+    std::map<int32_t, std::pair<int32_t, DataField>> data_fields = {
+        {7, {3, DataField(7, arrow::field("old_text", arrow::utf8()))}}};
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<Predicate>> reconstructed,
+                         FieldMappingBuilder::ReconstructPredicateWithDataFields(
+                             predicate, read_fields, data_fields));
+    ASSERT_TRUE(reconstructed);
+    auto full_text = std::dynamic_pointer_cast<FullTextMatchPredicate>(reconstructed.value());
+    ASSERT_TRUE(full_text);
+    ASSERT_EQ(full_text->FieldName(), "old_text");
+    ASSERT_EQ(full_text->FieldIndex(), 3);
+    ASSERT_EQ(full_text->GetFullTextMatch()->field_name, "old_text");
+    ASSERT_EQ(full_text->GetFullTextMatch()->query, match->query);
+    ASSERT_EQ(full_text->GetFullTextMatch()->include_row_ids, match->include_row_ids);
+    ASSERT_NE(full_text->GetFullTextMatch(), match);
+    ASSERT_EQ(match->field_name, "text");
+    auto original = std::dynamic_pointer_cast<FullTextMatchPredicate>(predicate);
+    ASSERT_EQ(original->FieldName(), "text");
+    ASSERT_EQ(original->FieldIndex(), 1);
+
+    ASSERT_NOK_WITH_MSG(
+        FieldMappingBuilder::ReconstructPredicateWithDataFields(predicate, {}, data_fields),
+        "FullTextMatch field 'text' is not projected");
+    ASSERT_NOK_WITH_MSG(
+        FieldMappingBuilder::ReconstructPredicateWithDataFields(predicate, read_fields, {}),
+        "FullTextMatch field 'text' does not exist in file schema");
+    data_fields = {{7, {0, DataField(7, arrow::field("old_text", arrow::int32()))}}};
+    ASSERT_NOK_WITH_MSG(FieldMappingBuilder::ReconstructPredicateWithDataFields(
+                            predicate, read_fields, data_fields),
+                        "FullTextMatch field 'old_text' must have STRING type");
 }
 
 TEST_F(FieldMappingTest, TestEmptyPartitionKeys) {

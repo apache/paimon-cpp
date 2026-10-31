@@ -24,6 +24,9 @@ File Index
 Interface
 =========
 
+.. doxygenstruct:: paimon::FullTextMatch
+   :members:
+
 .. doxygenclass:: paimon::FileIndexer
    :members:
    :undoc-members:

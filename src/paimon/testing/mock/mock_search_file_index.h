@@ -99,7 +99,7 @@ class MockSearchFileIndexer final : public FileIndexer {
     explicit MockSearchFileIndexer(SearchIndexType index_type);
 
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema* c_schema, int32_t start, int32_t length,
+        ::ArrowSchema* c_schema, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input,
         const std::shared_ptr<MemoryPool>& pool) const override;
 

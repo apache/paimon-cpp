@@ -18,9 +18,12 @@
 
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -82,6 +85,25 @@ class RestHttpClient {
         }
     };
 
+    /// Lets one thread abandon the `Execute` calls another thread runs with it. A retry
+    /// backoff ends at once. A transfer stops within about a second: libcurl checks for the
+    /// cancellation in its progress callback, which it calls about once a second while no
+    /// data moves. A request already sent may still reach the server.
+    class Cancellation {
+     public:
+        void Cancel();
+
+        bool IsCancelled() const;
+
+        /// Waits up to `delay_ms`, returning early once cancelled.
+        void WaitFor(int64_t delay_ms) const;
+
+     private:
+        mutable std::mutex mutex_;
+        mutable std::condition_variable cancelled_cv_;
+        std::atomic<bool> cancelled_{false};
+    };
+
     /// Creates a client against `base_uri`. The uri is normalized: surrounding
     /// whitespace and all trailing '/' are stripped and "http://" is prepended when no
     /// scheme is present.
@@ -103,11 +125,16 @@ class RestHttpClient {
     ///
     /// `retry_safe=false` disables retries and redirects, overriding `follow_redirects`,
     /// to prevent replay when the original request's outcome is unknown.
+    ///
+    /// Once `cancellation` is cancelled, the call returns a `Cancelled` status instead of
+    /// waiting for a response, starting another attempt or finishing a retry backoff; null
+    /// leaves the call bounded only by its timeouts.
     Result<Response> Execute(const std::string& method, const std::string& path,
                              const std::map<std::string, std::string>& query_params,
                              const std::map<std::string, std::string>& headers,
                              const std::string& body, bool follow_redirects = true,
-                             bool retry_safe = true) const;
+                             bool retry_safe = true,
+                             const Cancellation* cancellation = nullptr) const;
 
     const std::string& GetBaseUri() const {
         return base_uri_;
@@ -143,7 +170,7 @@ class RestHttpClient {
     Result<Response> ExecuteOnce(const std::string& method, const std::string& url,
                                  const std::map<std::string, std::string>& headers,
                                  const std::string& body, bool follow_redirects,
-                                 bool* transport_retriable) const;
+                                 const Cancellation* cancellation, bool* transport_retriable) const;
 
     std::optional<int64_t> GetRetryDelayMs(int32_t execution_count, const Response* response,
                                            int64_t remaining_budget_ms) const;

@@ -20,9 +20,11 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "paimon/common/metrics/histogram.h"
@@ -37,16 +39,15 @@ namespace paimon {
 class HistogramWindowingImpl : public Histogram {
  public:
     // Default: 3 windows, 60s per window , 100 per window (paimon-java default)
-    HistogramWindowingImpl()
-        : num_windows_(3), micros_per_window_(60 * 1000ULL * 1000ULL), min_num_per_window_(100) {
-        Init();
-    }
+    HistogramWindowingImpl() : HistogramWindowingImpl(3, 60 * 1000ULL * 1000ULL, 100) {}
 
     HistogramWindowingImpl(uint64_t num_windows, uint64_t micros_per_window,
-                           uint64_t min_num_per_window)
+                           uint64_t min_num_per_window,
+                           std::function<uint64_t()> now_micros = NowMicros)
         : num_windows_(num_windows),
           micros_per_window_(micros_per_window),
-          min_num_per_window_(min_num_per_window) {
+          min_num_per_window_(min_num_per_window),
+          now_micros_(std::move(now_micros)) {
         Init();
     }
 
@@ -69,6 +70,7 @@ class HistogramWindowingImpl : public Histogram {
     const uint64_t num_windows_;
     const uint64_t micros_per_window_;
     const uint64_t min_num_per_window_;
+    const std::function<uint64_t()> now_micros_;
 
     mutable std::mutex mu_;
 

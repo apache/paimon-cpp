@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -67,6 +68,20 @@ struct SpecialFields {
         return data_field;
     }
 
+    static std::string IndexScoreFieldName(const std::string& field_name) {
+        return "_" + field_name + "_INDEX_SCORE";
+    }
+
+    /// Parse a per-field score projection. The global `_INDEX_SCORE` is separate.
+    static std::optional<std::string> ParseIndexScoreFieldName(const std::string& name) {
+        const std::string suffix = "_INDEX_SCORE";
+        if (name.size() <= suffix.size() + 1 || !StringUtils::StartsWith(name, "_") ||
+            !StringUtils::EndsWith(name, suffix)) {
+            return std::nullopt;
+        }
+        return name.substr(1, name.size() - suffix.size() - 1);
+    }
+
     static const DataField& RealtimeOffset() {
         static const DataField data_field =
             DataField(SpecialFieldIds::REALTIME_OFFSET,
@@ -93,7 +108,8 @@ struct SpecialFields {
         }
         return field_name == SequenceNumber().Name() || field_name == ValueKind().Name() ||
                field_name == RowKind().Name() || field_name == RowId().Name() ||
-               field_name == IndexScore().Name();
+               field_name == IndexScore().Name() ||
+               ParseIndexScoreFieldName(field_name).has_value();
     }
 
     // TODO(xinyu.lxy): add a func to complete row-tracking fields

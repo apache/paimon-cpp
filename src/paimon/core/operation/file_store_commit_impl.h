@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "paimon/common/options/memory_size.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/manifest/partition_entry.h"
@@ -222,6 +223,16 @@ class FileStoreCommitImpl : public FileStoreCommit {
         const std::vector<std::map<std::string, std::string>>& removed_realtime_partitions,
         bool detect_conflicts, bool retry_on_conflict);
 
+    /// Acquires the lock scope of the next publication attempt. A failed acquisition has prepared
+    /// and published nothing, so it is retried within the same `commit.max-retries` and
+    /// `commit.timeout` budget as a conflict, counted in `retry_count`.
+    Result<std::unique_ptr<CommitLockScope>> AcquireLockScope(int64_t start_millis,
+                                                              int32_t* retry_count);
+
+    /// @param lock_scope Scope this attempt holds, checked right before publication; null when
+    /// publication takes no lock. An invalid scope fails the attempt like a conflict.
+    /// @param lock_failure Set to why `lock_scope` was found invalid, when that is why the
+    /// attempt returned false.
     Result<bool> TryCommitOnce(const std::vector<ManifestEntry>& delta_files,
                                const std::vector<ManifestEntry>& changelog_files,
                                const std::vector<IndexManifestEntry>& index_entries,
@@ -229,7 +240,8 @@ class FileStoreCommitImpl : public FileStoreCommit {
                                const std::map<std::string, std::string>& properties,
                                Snapshot::CommitKind commit_kind,
                                const std::optional<Snapshot>& latest_snapshot,
-                               bool detect_conflicts);
+                               bool detect_conflicts, CommitLockScope* lock_scope,
+                               Status* lock_failure);
 
     /// Requires schemas for files carrying row IDs to be available in the table directory.
     Status CheckRowIdSchemasArePublished(
@@ -239,14 +251,21 @@ class FileStoreCommitImpl : public FileStoreCommit {
 
     static std::string FormatBaseSnapshotUuid(const std::optional<Snapshot>& snapshot);
 
+    /// @param lock_scope Scope held for this publication, checked right before
+    /// `SnapshotCommit::Commit()`; null when publication takes no lock.
+    /// @param lock_failure Set to why `lock_scope` can no longer protect the publication, in which
+    /// case nothing is sent and false is returned.
+    /// @return Whether the snapshot was published; an error leaves the outcome uncertain.
     Result<bool> CommitSnapshotImpl(const std::optional<Snapshot>& base_snapshot,
                                     const Snapshot& new_snapshot,
-                                    const std::vector<PartitionEntry>& delta_statistics);
+                                    const std::vector<PartitionEntry>& delta_statistics,
+                                    CommitLockScope* lock_scope, Status* lock_failure);
 
     Result<std::vector<ManifestEntry>> ReadAddManifestEntries(const Snapshot& snapshot) const;
 
     void CleanUpTmpManifests(const std::string& previous_changes_list_name,
                              const std::string& new_changes_list_name,
+                             const std::string& changelog_list_name,
                              const std::vector<ManifestFileMeta>& old_metas,
                              const std::vector<ManifestFileMeta>& new_metas,
                              const std::optional<std::string>& old_index_manifest,

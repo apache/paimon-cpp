@@ -21,6 +21,8 @@ f_double DOUBLE
 f_string STRING
 f_binary BYTES
 f_date DATE
+f_time_0 TIME(0)
+f_time_3 TIME(3)
 f_ts_0 TIMESTAMP(0)
 f_ts_3 TIMESTAMP(3)
 f_ts_6 TIMESTAMP(6)
@@ -43,16 +45,20 @@ metadata.stats-mode = none
 Values below follow schema order; timestamps are UTC and binary values are hexadecimal.
 The second row has NULL in every field except id and the valid ROW parent with two NULL children.
 
-Add: (1, true, -5, -1000, 10000000001, 1.25, -2.5, "value-1", 0x0001027f, 1969-12-31, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [1, NULL, -1], [[1, NULL], NULL, []], (1, "row-1"), [1.0, -1.5, 0.25])
-Add: (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, (NULL, NULL), NULL)
+Add: (1, true, -5, -1000, 10000000001, 1.25, -2.5, "value-1", 0x0001027f, 1969-12-31, 00:00:00, 23:59:59.999, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [1, NULL, -1], [[1, NULL], NULL, []], (1, "row-1"), [1.0, -1.5, 0.25])
+Add: (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, (NULL, NULL), NULL)
 
 Commit - snapshot 1 (2 rows)
 
-Add: (10, false, -5, -1000, 10000000010, 1.25, -2.5, "", 0x0001027f, 2024-10-04, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [], [[10, NULL], NULL, []], (10, "row-10"), [10.0, -1.5, 0.25])
-Add: (11, true, -5, -1000, 10000000011, 1.25, -2.5, "value-11", 0x0001027f, 2024-10-04, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [11, NULL, -11], [[11, NULL], NULL, []], (11, "row-11"), [11.0, -1.5, 0.25])
+Add: (10, false, -5, -1000, 10000000010, 1.25, -2.5, "", 0x0001027f, 2024-10-04, 12:34:56, 00:00:01.123, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [], [[10, NULL], NULL, []], (10, "row-10"), [10.0, -1.5, 0.25])
+Add: (11, true, -5, -1000, 10000000011, 1.25, -2.5, "value-11", 0x0001027f, 2024-10-04, 23:59:59, 12:34:56.789, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [11, NULL, -11], [[11, NULL], NULL, []], (11, "row-11"), [11.0, -1.5, 0.25])
 
 Commit - snapshot 2 (4 rows total)
 
+Paimon Python maps every pyarrow time type to TIME(0), so f_time_3 was declared TIME(3)
+directly in the Paimon schema. Paimon Python writes both TIME columns to Lance as time32[ms]
+holding milliseconds of the day, with no field metadata; the declared precision comes from
+the table schema.
 Null and empty lists, null list elements, an empty string,
 binary zero bytes, null scalars, null ROW children and a null vector are included.
 ROW parents are always valid: this fixture does not claim null-parent ROW compatibility.

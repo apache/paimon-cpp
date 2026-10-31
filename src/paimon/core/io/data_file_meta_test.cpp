@@ -18,6 +18,8 @@
 
 #include "paimon/core/io/data_file_meta.h"
 
+#include <limits>
+
 #include "gtest/gtest.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/binary_row_generator.h"
@@ -178,6 +180,34 @@ TEST(DataFileMetaTest, TestNonNullFirstRowId) {
         ASSERT_NOK_WITH_MSG(file_meta->NonNullFirstRowId(),
                             "First row id of data-1.orc should not be null.");
     }
+}
+
+TEST(DataFileMetaTest, TestNonNullRowIdRange) {
+    auto create_file_meta = [](int64_t row_count, const std::optional<int64_t>& first_row_id) {
+        return std::make_shared<DataFileMeta>(
+            "data-0.orc", /*file_size=*/645, row_count, BinaryRow::EmptyRow(),
+            BinaryRow::EmptyRow(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
+            /*min_sequence_number=*/0, /*max_sequence_number=*/0, /*schema_id=*/0,
+            /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+            /*creation_time=*/Timestamp(1737111915429ll, 0),
+            /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt,
+            /*external_path=*/std::nullopt, first_row_id, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+    };
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    ASSERT_OK_AND_ASSIGN(Range range, create_file_meta(10, 100)->NonNullRowIdRange());
+    ASSERT_EQ(range, Range(100, 109));
+    ASSERT_OK_AND_ASSIGN(range, create_file_meta(2, kMax - 1)->NonNullRowIdRange());
+    ASSERT_EQ(range, Range(kMax - 1, kMax));
+    ASSERT_NOK_WITH_MSG(create_file_meta(3, kMax - 1)->NonNullRowIdRange(),
+                        "Invalid row id range of data-0.orc");
+    ASSERT_NOK_WITH_MSG(create_file_meta(0, 100)->NonNullRowIdRange(),
+                        "Invalid row id range of data-0.orc");
+    ASSERT_NOK_WITH_MSG(create_file_meta(10, -1)->NonNullRowIdRange(),
+                        "Invalid row id range of data-0.orc");
+    ASSERT_NOK_WITH_MSG(create_file_meta(10, std::nullopt)->NonNullRowIdRange(),
+                        "First row id of data-0.orc should not be null.");
 }
 
 TEST(DataFileMetaTest, TestToFileSelection) {

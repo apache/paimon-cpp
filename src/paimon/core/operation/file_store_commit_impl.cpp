@@ -272,6 +272,8 @@ Result<std::vector<ManifestEntry>> FileStoreCommitImpl::ReadAddManifestEntries(
 }
 
 Result<bool> FileStoreCommitImpl::RollbackToAsLatest(int64_t target_snapshot_id) {
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitLockScope> lock_scope,
+                           snapshot_commit_->AcquireLock());
     PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_opt, snapshot_manager_->LatestSnapshot());
     if (!latest_opt) {
         return Status::Invalid("Latest snapshot is null, can not roll back.");
@@ -312,13 +314,24 @@ Result<bool> FileStoreCommitImpl::RollbackToAsLatest(int64_t target_snapshot_id)
         }
     }
 
+    std::vector<ManifestFileMeta> new_manifests;
     std::pair<std::string, int64_t> base_manifest_list;
     std::pair<std::string, int64_t> delta_manifest_list;
+    // Removes the files written below if the rollback stops before sending its snapshot, as when
+    // its lock is lost. Once sent, they are kept even if uncertain or refused, matching Java.
+    ScopeGuard unsent_cleanup([&]() {
+        CleanUpTmpManifests(base_manifest_list.first, delta_manifest_list.first,
+                            /*changelog_list_name=*/std::string(), /*old_metas=*/{}, new_manifests,
+                            /*old_index_manifest=*/std::nullopt,
+                            /*new_index_manifest=*/std::nullopt);
+    });
     PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestFileMeta> base_manifests,
                            manifest_file_->Write(latest_entries));
+    new_manifests.insert(new_manifests.end(), base_manifests.begin(), base_manifests.end());
     PAIMON_ASSIGN_OR_RAISE(base_manifest_list, manifest_list_->Write(base_manifests));
     PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestFileMeta> delta_manifests,
                            manifest_file_->Write(delta_files));
+    new_manifests.insert(new_manifests.end(), delta_manifests.begin(), delta_manifests.end());
     PAIMON_ASSIGN_OR_RAISE(delta_manifest_list, manifest_list_->Write(delta_manifests));
 
     // For row-tracking tables nextRowId must stay monotonic: a rollback to an older snapshot must
@@ -348,8 +361,23 @@ Result<bool> FileStoreCommitImpl::RollbackToAsLatest(int64_t target_snapshot_id)
         delta_statistics.push_back(partition_entry);
     }
 
-    PAIMON_ASSIGN_OR_RAISE(bool success,
-                           CommitSnapshotImpl(latest_opt, new_snapshot, delta_statistics));
+    Status lock_failure;
+    Result<bool> commit_result = CommitSnapshotImpl(latest_opt, new_snapshot, delta_statistics,
+                                                    lock_scope.get(), &lock_failure);
+    if (!commit_result.ok()) {
+        // The snapshot may have been published before the response was lost.
+        unsent_cleanup.Release();
+        return commit_result.status();
+    }
+    if (!lock_failure.ok()) {
+        // Unlike a commit, a rollback is not retried once its lock is lost.
+        return lock_failure.WithMessage(fmt::format(
+            "Rollback of table {}{} to snapshot {} failed, the commit lock was lost before "
+            "publishing: {}",
+            root_path_, CommitTargetSuffix(), target_snapshot_id, lock_failure.message()));
+    }
+    unsent_cleanup.Release();
+    bool success = commit_result.value();
     if (success) {
         PAIMON_LOG_INFO(logger_,
                         "%s table %s%s to snapshot %ld as new snapshot %ld "
@@ -1080,6 +1108,10 @@ Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
     int32_t retry_count = 0;
     int64_t start_millis = DateTimeUtils::GetCurrentUTCTimeUs() / 1000;
     while (true) {
+        // Held from reading the head until publication, so the base the attempt builds on is
+        // covered too.
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitLockScope> lock_scope,
+                               AcquireLockScope(start_millis, &retry_count));
         PAIMON_ASSIGN_OR_RAISE(SnapshotManager::LatestSnapshotResult latest,
                                snapshot_manager_->LatestSnapshotWithSource());
         const std::optional<Snapshot>& latest_snapshot = latest.snapshot;
@@ -1108,11 +1140,13 @@ Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
         // From publication onward an error may have an uncertain outcome. Keep generated DVs
         // unless the publisher explicitly reports that this attempt lost the snapshot race.
         unpublished_cleanup.Release();
+        Status lock_failure;
         PAIMON_ASSIGN_OR_RAISE(
             bool commit_success,
             TryCommitOnce(commit_changes->delta_files, commit_changes->changelog_files,
                           commit_changes->index_entries, identifier, watermark, snapshot_properties,
-                          commit_kind, latest_snapshot, detect_conflicts));
+                          commit_kind, latest_snapshot, detect_conflicts, lock_scope.get(),
+                          &lock_failure));
         if (commit_success) {
             // Request-only commits have not published a snapshot yet. Never clean these files
             // on a lost race or an uncertain publication outcome, so the commit can be retried.
@@ -1128,6 +1162,8 @@ Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
             }
             break;
         }
+        // Not held while waiting to retry, which would keep other writers out for nothing.
+        lock_scope.reset();
         for (const std::string& temporary_file : commit_changes->temporary_files) {
             [[maybe_unused]] Status cleanup_status =
                 fs_->Delete(temporary_file, /*recursive=*/false);
@@ -1135,29 +1171,50 @@ Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
         if (!realtime_ranges.empty()) {
             auto offsets_iter = snapshot_properties.find(RealtimeCommitProperties::kOffsetsKey);
             if (offsets_iter != snapshot_properties.end()) {
-                // AtomicStore reported a known conflict, so this attempt's offsets file is not
-                // referenced by a snapshot and can be removed before rebasing the next attempt.
+                // AtomicStore reported a known conflict, or the lock stopped the attempt before
+                // publication, so this attempt's offsets file is not referenced by a snapshot and
+                // can be removed before rebasing the next attempt.
                 [[maybe_unused]] Status cleanup_status =
                     fs_->Delete(offsets_iter->second, /*recursive=*/false);
             }
         }
         if (!retry_on_conflict) {
+            if (!lock_failure.ok()) {
+                return lock_failure.WithMessage(fmt::format(
+                    "real-time commit failed, the commit lock was lost before publishing: {}",
+                    lock_failure.message()));
+            }
             return Status::Invalid("real-time commit failed due to snapshot conflict");
         }
         int64_t current_millis = DateTimeUtils::GetCurrentUTCTimeUs() / 1000;
         if (current_millis - start_millis > options_.GetCommitTimeout() ||
             retry_count >= options_.GetCommitMaxRetries()) {
+            if (!lock_failure.ok()) {
+                return lock_failure.WithMessage(fmt::format(
+                    "Commit to table {}{} failed after {} millis (commit.timeout is {} millis) "
+                    "with {} retries, the commit lock was lost before publishing: {}",
+                    root_path_, CommitTargetSuffix(), current_millis - start_millis,
+                    options_.GetCommitTimeout(), retry_count, lock_failure.message()));
+            }
             return Status::Invalid(fmt::format(
                 "Commit to table {}{} failed after {} millis (commit.timeout is {} millis) with "
                 "{} retries, there maybe exist commit conflicts between multiple jobs.",
                 root_path_, CommitTargetSuffix(), current_millis - start_millis,
                 options_.GetCommitTimeout(), retry_count));
         }
-        PAIMON_LOG_INFO(logger_,
-                        "Commit to table %s%s lost a race with a concurrent commit, rebasing and "
-                        "retrying (retry %d of %d).",
-                        root_path_.c_str(), CommitTargetSuffix().c_str(), retry_count + 1,
-                        options_.GetCommitMaxRetries());
+        if (!lock_failure.ok()) {
+            PAIMON_LOG_INFO(logger_,
+                            "Commit to table %s%s lost its commit lock before publishing, "
+                            "retrying under a new one (retry %d of %d).",
+                            root_path_.c_str(), CommitTargetSuffix().c_str(), retry_count + 1,
+                            options_.GetCommitMaxRetries());
+        } else {
+            PAIMON_LOG_INFO(logger_,
+                            "Commit to table %s%s lost a race with a concurrent commit, rebasing "
+                            "and retrying (retry %d of %d).",
+                            root_path_.c_str(), CommitTargetSuffix().c_str(), retry_count + 1,
+                            options_.GetCommitMaxRetries());
+        }
         retry_waiter_.RetryWait(retry_count);
         retry_count++;
     }
@@ -1230,13 +1287,38 @@ Result<std::optional<int64_t>> FileStoreCommitImpl::MaxSequenceNumber(
     return std::optional<int64_t>(max_from_manifest);
 }
 
+Result<std::unique_ptr<CommitLockScope>> FileStoreCommitImpl::AcquireLockScope(
+    int64_t start_millis, int32_t* retry_count) {
+    while (true) {
+        Result<std::unique_ptr<CommitLockScope>> lock_scope = snapshot_commit_->AcquireLock();
+        if (lock_scope.ok()) {
+            return lock_scope;
+        }
+        const Status& failure = lock_scope.status();
+        PAIMON_LOG_WARN(logger_, "Failed to acquire commit lock for table %s%s: %s",
+                        root_path_.c_str(), CommitTargetSuffix().c_str(),
+                        failure.ToString().c_str());
+        int64_t current_millis = DateTimeUtils::GetCurrentUTCTimeUs() / 1000;
+        if (current_millis - start_millis > options_.GetCommitTimeout() ||
+            *retry_count >= options_.GetCommitMaxRetries()) {
+            return failure.WithMessage(fmt::format(
+                "Commit to table {}{} failed after {} millis (commit.timeout is {} millis) with "
+                "{} retries, could not acquire commit lock: {}",
+                root_path_, CommitTargetSuffix(), current_millis - start_millis,
+                options_.GetCommitTimeout(), *retry_count, failure.message()));
+        }
+        retry_waiter_.RetryWait(*retry_count);
+        ++(*retry_count);
+    }
+}
+
 Result<bool> FileStoreCommitImpl::TryCommitOnce(
     const std::vector<ManifestEntry>& delta_entries,
     const std::vector<ManifestEntry>& changelog_entries,
     const std::vector<IndexManifestEntry>& index_entries, int64_t identifier,
     std::optional<int64_t> watermark, const std::map<std::string, std::string>& properties,
     Snapshot::CommitKind commit_kind, const std::optional<Snapshot>& latest_snapshot,
-    bool detect_conflicts) {
+    bool detect_conflicts, CommitLockScope* lock_scope, Status* lock_failure) {
     std::vector<ManifestEntry> delta_files = delta_entries;
     int64_t start_millis = DateTimeUtils::GetCurrentUTCTimeUs() / 1000;
 
@@ -1321,6 +1403,7 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
     std::vector<ManifestFileMeta> merge_after_manifests;
     std::pair<std::string, int64_t> base_manifest_list;
     std::pair<std::string, int64_t> delta_manifest_list;
+    std::optional<std::pair<std::string, int64_t>> changelog_manifest_list;
     std::vector<PartitionEntry> delta_statistics;
 
     std::optional<std::string> old_index_manifest;
@@ -1336,9 +1419,10 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
                         Snapshot::CommitKind::ToString(commit_kind).c_str(),
                         FormatBaseSnapshotUuid(latest_snapshot).c_str(), commit_time);
 
-        CleanUpTmpManifests(base_manifest_list.first, delta_manifest_list.first,
-                            merge_before_manifests, merge_after_manifests, old_index_manifest,
-                            index_manifest_name);
+        CleanUpTmpManifests(
+            base_manifest_list.first, delta_manifest_list.first,
+            changelog_manifest_list ? changelog_manifest_list.value().first : std::string(),
+            merge_before_manifests, merge_after_manifests, old_index_manifest, index_manifest_name);
     });
     int64_t next_row_id_start = first_row_id_start;
     int64_t previous_total_record_count = 0;
@@ -1412,10 +1496,11 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
     PAIMON_ASSIGN_OR_RAISE(delta_manifest_list, manifest_list_->Write(new_changes_manifests));
 
     // write changelog into manifest files
-    std::optional<std::pair<std::string, int64_t>> changelog_manifest_list;
     if (!changelog_entries.empty()) {
         PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestFileMeta> changelog_manifests,
                                manifest_file_->Write(changelog_entries));
+        merge_after_manifests.insert(merge_after_manifests.end(), changelog_manifests.begin(),
+                                     changelog_manifests.end());
         PAIMON_ASSIGN_OR_RAISE(changelog_manifest_list, manifest_list_->Write(changelog_manifests));
     }
 
@@ -1475,8 +1560,8 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
             : std::optional<std::map<std::string, std::string>>(snapshot_properties),
         next_row_id_start, new_snapshot_uuid);
 
-    Result<bool> commit_result =
-        CommitSnapshotImpl(latest_snapshot, new_snapshot, delta_statistics);
+    Result<bool> commit_result = CommitSnapshotImpl(latest_snapshot, new_snapshot, delta_statistics,
+                                                    lock_scope, lock_failure);
     if (!commit_result.ok()) {
         // The snapshot may have been published before the response was lost. Keep its metadata
         // and let FilterAndCommit resolve the outcome before retrying.
@@ -1554,7 +1639,8 @@ std::string FileStoreCommitImpl::FormatBaseSnapshotUuid(const std::optional<Snap
 
 Result<bool> FileStoreCommitImpl::CommitSnapshotImpl(
     const std::optional<Snapshot>& base_snapshot, const Snapshot& new_snapshot,
-    const std::vector<PartitionEntry>& delta_statistics) {
+    const std::vector<PartitionEntry>& delta_statistics, CommitLockScope* lock_scope,
+    Status* lock_failure) {
     std::vector<PartitionStatistics> statistics;
     statistics.reserve(delta_statistics.size());
     for (const auto& entry : delta_statistics) {
@@ -1564,6 +1650,19 @@ Result<bool> FileStoreCommitImpl::CommitSnapshotImpl(
     }
     std::optional<std::string> base_snapshot_uuid =
         base_snapshot ? base_snapshot.value().Uuid() : std::nullopt;
+    if (lock_scope != nullptr) {
+        // Checked last, so a lock lost while the snapshot was prepared stops its publication.
+        Status lock_status = lock_scope->EnsureValid();
+        if (!lock_status.ok()) {
+            PAIMON_LOG_WARN(logger_,
+                            "Commit lock for table %s%s is no longer valid, not publishing "
+                            "snapshot #%ld: %s",
+                            root_path_.c_str(), CommitTargetSuffix().c_str(), new_snapshot.Id(),
+                            lock_status.ToString().c_str());
+            *lock_failure = std::move(lock_status);
+            return false;
+        }
+    }
     Result<bool> commit_result = snapshot_commit_->Commit(base_snapshot_uuid, new_snapshot,
                                                           snapshot_manager_->Branch(), statistics);
     if (!commit_result.ok()) {
@@ -1582,6 +1681,7 @@ Result<bool> FileStoreCommitImpl::CommitSnapshotImpl(
 
 void FileStoreCommitImpl::CleanUpTmpManifests(
     const std::string& base_manifest_list_name, const std::string& delta_manifest_list_name,
+    const std::string& changelog_manifest_list_name,
     const std::vector<ManifestFileMeta>& merge_before_manifests,
     const std::vector<ManifestFileMeta>& merge_after_manifests,
     const std::optional<std::string>& old_index_manifest,
@@ -1593,6 +1693,11 @@ void FileStoreCommitImpl::CleanUpTmpManifests(
     if (!delta_manifest_list_name.empty()) {
         manifest_list_->DeleteQuietly(delta_manifest_list_name);
         PAIMON_LOG_DEBUG(logger_, "delta manifest list %s", delta_manifest_list_name.c_str());
+    }
+    if (!changelog_manifest_list_name.empty()) {
+        manifest_list_->DeleteQuietly(changelog_manifest_list_name);
+        PAIMON_LOG_DEBUG(logger_, "changelog manifest list %s",
+                         changelog_manifest_list_name.c_str());
     }
     // for faster searching
     std::set<std::string> merge_before_manifest_set;

@@ -26,6 +26,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/commit_table_request.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/result.h"
@@ -189,6 +190,49 @@ TEST(CatalogSnapshotCommitTest, TestBuildRequestWithoutCatalog) {
                          CommitTableRequest::FromJsonString(bare_request_str));
     ASSERT_EQ(bare_request.GetTableId(), std::nullopt);
     ASSERT_EQ(bare_request.GetBaseSnapshotUuid(), std::nullopt);
+}
+
+TEST(CatalogSnapshotCommitTest, TestAcquireLockUsesTheLockItWasGiven) {
+    class CountingLock : public CommitLock {
+     public:
+        explicit CountingLock(int32_t* acquisitions) : acquisitions_(acquisitions) {}
+
+        Result<std::unique_ptr<CommitLockScope>> Acquire() override {
+            ++*acquisitions_;
+            if (*acquisitions_ > 1) {
+                return Status::IOError("lock service unavailable");
+            }
+            return std::unique_ptr<CommitLockScope>(std::make_unique<Scope>());
+        }
+
+     private:
+        class Scope : public CommitLockScope {
+         public:
+            Status EnsureValid() override {
+                return Status::OK();
+            }
+        };
+
+        int32_t* acquisitions_;
+    };
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>(true);
+    CatalogSnapshotCommit unlocked(catalog, Identifier("db", "tbl"), "table-uuid");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitLockScope> scope, unlocked.AcquireLock());
+    ASSERT_FALSE(scope);
+    CatalogSnapshotCommit request_only("table-uuid");
+    ASSERT_OK_AND_ASSIGN(scope, request_only.AcquireLock());
+    ASSERT_FALSE(scope);
+
+    int32_t acquisitions = 0;
+    CatalogSnapshotCommit locked(catalog, Identifier("db", "tbl"), "table-uuid",
+                                 std::make_unique<CountingLock>(&acquisitions));
+    ASSERT_OK_AND_ASSIGN(scope, locked.AcquireLock());
+    ASSERT_TRUE(scope);
+    ASSERT_OK(scope->EnsureValid());
+    ASSERT_NOK_WITH_MSG(locked.AcquireLock(), "lock service unavailable");
+    ASSERT_EQ(2, acquisitions);
+    ASSERT_TRUE(catalog->CommitCalls().empty());
 }
 
 }  // namespace paimon::test

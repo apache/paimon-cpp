@@ -19,11 +19,11 @@
 
 #pragma once
 
-#include <deque>
 #include <memory>
 #include <vector>
 
 #include "arrow/type.h"
+#include "paimon/common/reader/blob_read_context.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/reader/file_batch_reader.h"
@@ -57,6 +57,8 @@ namespace paimon {
 ///    placeholder. The blob format reader emits placeholders as BlobDefs::kPlaceholderSentinel
 ///    bytes for scalar BLOBs, as a one-element sentinel array for ARRAY<BLOB>, or as a two-entry
 ///    map with duplicate keys for MAP<..., BLOB>.
+///    Older groups use a shared BlobReadContext to advance resolved rows without reading their
+///    payloads and to bound each batch by the current window and unresolved row runs.
 /// 4. A row that is a placeholder in every group degrades to a null blob: it keeps its
 ///    _ROW_ID, reports -1 as its _SEQUENCE_NUMBER, and returns null for every other field.
 class BlobFallbackBatchReader : public BatchReader {
@@ -70,12 +72,14 @@ class BlobFallbackBatchReader : public BatchReader {
         /// Gap segment only: the selected row ids the gap emits (all placeholders), as sorted
         /// disjoint ranges. Must not be empty for a gap segment.
         std::vector<Range> gap_selected_ranges;
+        /// File segment only: shared with the bottom blob reader before any per-file wrapping.
+        std::shared_ptr<BlobReadContext> blob_context = nullptr;
     };
 
     /// `sequence_groups` must be ordered by descending max sequence number and contain at least
-    /// two groups (a single group needs no fallback). `read_schema` is the schema every file
-    /// reader emits; it must contain exactly one blob field and may additionally contain the
-    /// row-tracking fields _ROW_ID and _SEQUENCE_NUMBER (completed per file by
+    /// one group (a single group can have gaps to fill with NULLs). `read_schema` is the schema
+    /// every file reader emits; it must contain exactly one blob field and may additionally contain
+    /// the row-tracking fields _ROW_ID and _SEQUENCE_NUMBER (completed per file by
     /// CompleteRowTrackingFieldsBatchReader), which stay correct for rows that are a
     /// placeholder in every layer.
     static Result<std::unique_ptr<BlobFallbackBatchReader>> Create(
@@ -92,16 +96,20 @@ class BlobFallbackBatchReader : public BatchReader {
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
 
  private:
-    /// A run of consecutive rows already fetched from one group: `array` rows
-    /// [offset, offset + length) for a file segment, or `length` placeholder rows for a gap
-    /// segment (array is null).
+    /// A run of consecutive rows already fetched from one group: the whole `array` for a file
+    /// segment, or `length` placeholder rows for a gap or an already resolved run (array is null).
     struct Chunk {
         std::shared_ptr<arrow::StructArray> array;
-        int64_t offset = 0;
         int64_t length = 0;
-        /// Gap chunk only: the row id of each of the `length` rows, filled when the read
-        /// schema contains _ROW_ID so all-placeholder rows can keep their row id.
+        /// Newest-group gap chunks only: one row id per row, filled when _ROW_ID is requested.
+        /// Empty for older groups and skipped runs.
         std::vector<int64_t> gap_row_ids;
+    };
+
+    /// Forward-only position in one group's chunks during assembly of a single output column.
+    struct ChunkCursor {
+        size_t chunk_idx = 0;
+        int64_t chunk_start = 0;
     };
 
     /// Read progress of one sequence group. Move-only, matching Segment's unique_ptr member.
@@ -118,9 +126,6 @@ class BlobFallbackBatchReader : public BatchReader {
         /// number of rows already emitted from that range.
         size_t gap_range_idx = 0;
         int64_t gap_range_pos = 0;
-        /// Rows fetched from the current file segment but not yet consumed.
-        std::deque<std::shared_ptr<arrow::StructArray>> pending;
-        int64_t pending_pos = 0;
     };
 
     BlobFallbackBatchReader(std::vector<GroupCursor>&& groups,
@@ -131,7 +136,16 @@ class BlobFallbackBatchReader : public BatchReader {
 
     /// Collects up to `want` rows from the group into chunks. Only the first group may come up
     /// short (which defines the window size); any later group ending early is a misalignment.
-    Result<int64_t> FillWindow(size_t group_idx, int64_t want, std::vector<Chunk>* chunks);
+    /// When `group_choice` is set, only rows still choosing -1 need to be materialized. Already
+    /// resolved runs advance without payload reads and are represented by unused placeholder
+    /// chunks. Every batch must fit in its requested run and is consumed completely.
+    Result<int64_t> FillWindow(size_t group_idx, int64_t want,
+                               const std::vector<int32_t>* group_choice,
+                               std::vector<Chunk>* chunks);
+
+    /// Applies a blob-only request for the complete outer call.
+    static Result<ReadBatchWithBitmap> ReadSegmentBatch(const Segment& segment, int32_t max_rows,
+                                                        bool read_payload);
 
     /// Flags each of the `row_count` window rows of the given chunks as placeholder or not.
     Result<std::vector<bool>> ComputePlaceholderFlags(const std::vector<Chunk>& chunks,
@@ -144,11 +158,12 @@ class BlobFallbackBatchReader : public BatchReader {
         int32_t field_idx, const std::vector<int32_t>& group_choice,
         const std::vector<std::vector<Chunk>>& group_chunks) const;
 
-    /// Assembles the _ROW_ID values of rows [run_start, run_end) from the given group's chunks;
-    /// gap chunks contribute their synthesized row ids.
+    /// Assembles _ROW_ID values of rows [run_start, run_end) from the newest group's chunks.
+    /// Requires _ROW_ID in the read schema. This group has no skipped runs, so every null-array
+    /// chunk is a gap with complete gap_row_ids. Shares its cursor with runs choosing group 0.
     Result<std::shared_ptr<arrow::Array>> AssembleRowIdRun(const std::vector<Chunk>& chunks,
-                                                           int64_t run_start,
-                                                           int64_t run_end) const;
+                                                           int64_t run_start, int64_t run_end,
+                                                           ChunkCursor* cursor) const;
 
     std::vector<GroupCursor> groups_;
     std::shared_ptr<arrow::Schema> read_schema_;

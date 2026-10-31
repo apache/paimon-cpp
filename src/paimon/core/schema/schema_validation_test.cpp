@@ -29,6 +29,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
@@ -215,6 +216,55 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
         "requires 'file-index.read.enabled=true'");
 }
 
+TEST(SchemaValidationTest, TestStartupMode) {
+    auto validate = [](const std::map<std::string, std::string>& options) -> Status {
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
+        return SchemaValidation::ValidateStartupMode(core_options);
+    };
+    ASSERT_OK(validate({}));
+    ASSERT_OK(validate({{Options::SCAN_MODE, "latest"}}));
+    ASSERT_OK(validate({{Options::SCAN_SNAPSHOT_ID, "1"}}));
+    ASSERT_OK(validate({{Options::SCAN_MODE, "from-snapshot"}, {Options::SCAN_TAG_NAME, "tag"}}));
+    ASSERT_OK(
+        validate({{Options::SCAN_MODE, "from-snapshot-full"}, {Options::SCAN_SNAPSHOT_ID, "1"}}));
+    ASSERT_OK(validate({{Options::SCAN_TIMESTAMP, "2023-06-01 00:00:00"}}));
+    ASSERT_OK(
+        validate({{Options::SCAN_MODE, "from-timestamp"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}}));
+
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_MODE, "latest-full"}, {Options::SCAN_SNAPSHOT_ID, "1"}}),
+        "scan.snapshot-id must be null when you use latest-full for scan.mode");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_MODE, "latest"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}}),
+        "scan.timestamp-millis must be null when you use latest for scan.mode");
+    ASSERT_NOK_WITH_MSG(validate({{Options::SCAN_MODE, "from-snapshot"}}),
+                        "must set only one key in [scan.snapshot-id,scan.tag-name] when you use "
+                        "from-snapshot for scan.mode");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_SNAPSHOT_ID, "1"}, {Options::SCAN_TAG_NAME, "tag"}}),
+        "must set only one key in [scan.snapshot-id,scan.tag-name] when you use from-snapshot for "
+        "scan.mode");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_TAG_NAME, "tag"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}}),
+        "[scan.timestamp-millis] must be null when you set [scan.snapshot-id,scan.tag-name]");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_MODE, "from-snapshot-full"}, {Options::SCAN_TAG_NAME, "tag"}}),
+        "scan.snapshot-id can not be null when you use from-snapshot-full for scan.mode");
+    ASSERT_NOK_WITH_MSG(validate({{Options::SCAN_MODE, "from-snapshot-full"},
+                                  {Options::SCAN_SNAPSHOT_ID, "1"},
+                                  {Options::SCAN_TAG_NAME, "tag"}}),
+                        "[scan.tag-name] must be null when you set [scan.snapshot-id]");
+    ASSERT_NOK_WITH_MSG(
+        validate({{Options::SCAN_MODE, "from-timestamp"}, {Options::SCAN_SNAPSHOT_ID, "1"}}),
+        "must set only one key in [scan.timestamp-millis,scan.timestamp] when you use "
+        "from-timestamp for scan.mode");
+    ASSERT_NOK_WITH_MSG(validate({{Options::SCAN_MODE, "from-timestamp"},
+                                  {Options::SCAN_TIMESTAMP_MILLIS, "1"},
+                                  {Options::SCAN_TAG_NAME, "tag"}}),
+                        "[scan.tag-name] must be null when you set "
+                        "[scan.timestamp-millis,scan.timestamp]");
+}
+
 TEST(SchemaValidationTest, TestVectorType) {
     auto vector_field = arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3));
     auto schema = arrow::schema({arrow::field("id", arrow::int64()), vector_field});
@@ -237,7 +287,7 @@ TEST(SchemaValidationTest, TestVectorType) {
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, orc_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR currently only supports parquet/lance data files");
+                        "VECTOR currently only supports parquet/lance/vortex data files");
 
     std::map<std::string, std::string> changelog_options = {
         {Options::BUCKET, "1"},
@@ -338,7 +388,7 @@ TEST(SchemaValidationTest, TestVectorType) {
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, data_evolution_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR currently only supports parquet/lance data files");
+                        "VECTOR currently only supports parquet/lance/vortex data files");
 }
 
 #ifdef PAIMON_ENABLE_MOSAIC
@@ -437,9 +487,21 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
         arrow::field("string", arrow::utf8()),
         arrow::field("binary", arrow::binary()),
         arrow::field("date", arrow::date32()),
+        arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI)),
         arrow::field("timestamp", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("ltz_0", arrow::timestamp(arrow::TimeUnit::SECOND, "UTC")),
+        arrow::field("ltz_3", arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai")),
+        arrow::field("ltz_6", arrow::timestamp(arrow::TimeUnit::MICRO, "GMT-10:00")),
+        arrow::field("ltz_9", arrow::timestamp(arrow::TimeUnit::NANO, "+08:00")),
+        arrow::field("ltz_array", arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"))),
+        arrow::field("nested_ltz",
+                     arrow::struct_({arrow::field(
+                         "values", arrow::list(arrow::timestamp(arrow::TimeUnit::MILLI, "UTC")))})),
         arrow::field("decimal", arrow::decimal128(38, 2)),
         arrow::field("array", arrow::list(arrow::float32())),
+        arrow::field("nested_time",
+                     arrow::struct_({arrow::field(
+                         "values", arrow::list(arrow::time32(arrow::TimeUnit::MILLI)))})),
         arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32())}),
                      /*nullable=*/false),
         arrow::field("nullable_row", arrow::struct_({arrow::field("value", arrow::int32())})),
@@ -470,15 +532,9 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
 
     arrow::FieldVector unsupported_fields = {
         arrow::field("map", arrow::map(arrow::int32(), arrow::utf8())),
-        arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")),
         VariantTypeUtils::ToArrowField("variant"),
-        arrow::field("time_millis", arrow::time32(arrow::TimeUnit::MILLI)),
-        arrow::field("nested_time",
-                     arrow::struct_({arrow::field(
-                         "values", arrow::list(arrow::time32(arrow::TimeUnit::MILLI)))})),
     };
-    std::vector<std::string> expected_errors = {"type MAP", "LOCAL_ZONED_TIMESTAMP", "type VARIANT",
-                                                "type time32", "type time32"};
+    std::vector<std::string> expected_errors = {"type MAP", "type VARIANT"};
     for (size_t i = 0; i < unsupported_fields.size(); ++i) {
         ASSERT_OK_AND_ASSIGN(
             table_schema,
@@ -508,6 +564,14 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
             table_schema,
             TableSchema::Create(
                 /*schema_id=*/0,
+                arrow::schema({arrow::field(
+                    "ltz", arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, "GMT-10:00")))}),
+                /*partition_keys=*/{}, /*primary_keys=*/{}, alternate_format_options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(
+                /*schema_id=*/0,
                 arrow::schema({arrow::field("map", arrow::map(arrow::int32(), arrow::utf8()))}),
                 /*partition_keys=*/{}, /*primary_keys=*/{}, alternate_format_options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type MAP");
@@ -515,7 +579,106 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
 }
 #endif
 
+TEST(SchemaValidationTest, TestDedicatedVectorStore) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto id = arrow::field("id", arrow::int64());
+    auto embedding = arrow::field("embedding", vector_type);
+    std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::VECTOR_FILE_FORMAT, "parquet"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    auto validate = [&](const arrow::FieldVector& fields,
+                        const std::map<std::string, std::string>& opts) -> Status {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
+                               TableSchema::Create(0, arrow::schema(fields), {}, {}, opts));
+        return SchemaValidation::ValidateTableSchema(*table_schema);
+    };
+    ASSERT_OK(validate({id, embedding}, options));
+    ASSERT_NOK_WITH_MSG(validate({id}, options), "exactly one top-level VECTOR");
+    ASSERT_NOK_WITH_MSG(validate({embedding}, options), "normal non-partition column");
+    ASSERT_NOK_WITH_MSG(validate({id, embedding, arrow::field("other", vector_type)}, options),
+                        "exactly one top-level VECTOR");
+    ASSERT_NOK_WITH_MSG(
+        validate({id, arrow::field("nested", arrow::struct_({embedding}))}, options),
+        "top-level VECTOR");
+    ASSERT_NOK_WITH_MSG(validate({id, embedding, BlobUtils::ToArrowField("blob", false)}, options),
+                        "does not yet support BLOB columns");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> partition_only_schema,
+        TableSchema::Create(0, arrow::schema({id, embedding}), {"id"}, {}, options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*partition_only_schema),
+                        "normal non-partition column");
+    auto invalid_options = options;
+    invalid_options[Options::ROW_TRACKING_ENABLED] = "false";
+    ASSERT_NOK(validate({id, embedding}, invalid_options));
+    invalid_options = options;
+    invalid_options[Options::BUCKET] = "1";
+    ASSERT_NOK(validate({id, embedding}, invalid_options));
+    invalid_options = options;
+    invalid_options[Options::DATA_EVOLUTION_ENABLED] = "false";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options),
+                        "requires row-tracking.enabled and data-evolution.enabled");
 #ifdef PAIMON_ENABLE_VORTEX
+    invalid_options = options;
+    invalid_options[Options::FILE_FORMAT] = "vortex";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options), "requires parquet main files");
+    invalid_options = options;
+    invalid_options[Options::FILE_FORMAT_PER_LEVEL] = "0:vortex";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options), "requires parquet main files");
+#endif
+    invalid_options = options;
+    invalid_options[Options::VECTOR_FILE_FORMAT] = "avro";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options),
+                        "VECTOR currently only supports parquet/lance/vortex");
+    invalid_options = options;
+    invalid_options[Options::VECTOR_TARGET_FILE_SIZE] = "0 b";
+    ASSERT_NOK_WITH_MSG(validate({id, embedding}, invalid_options), "must be positive");
+
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_EQ(core_options.GetVectorTargetFileSize(),
+              core_options.GetTargetFileSize(/*has_primary_key=*/false));
+    options[Options::VECTOR_TARGET_FILE_SIZE] = "1 mb";
+    ASSERT_OK_AND_ASSIGN(core_options, CoreOptions::FromMap(options));
+    ASSERT_EQ(core_options.GetVectorTargetFileSize(), 1024 * 1024);
+
+    std::vector<std::string> vector_formats = {"parquet"};
+#ifdef PAIMON_ENABLE_LANCE
+    vector_formats.push_back("lance");
+#endif
+#ifdef PAIMON_ENABLE_VORTEX
+    vector_formats.push_back("vortex");
+#endif
+    for (const auto& format : vector_formats) {
+        SCOPED_TRACE(format);
+        options[Options::VECTOR_FILE_FORMAT] = format;
+        ASSERT_OK(validate({id, embedding}, options));
+    }
+}
+
+#ifdef PAIMON_ENABLE_VORTEX
+TEST(SchemaValidationTest, TestVortexVectorType) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int64()), arrow::field("embedding", vector_type)});
+    for (const auto& [option_key, option_value] : std::vector<std::pair<std::string, std::string>>{
+             {Options::FILE_FORMAT, "vortex"},
+             {Options::FILE_FORMAT, "VORTEX"},
+             {Options::FILE_FORMAT_PER_LEVEL, "1:vortex"},
+             {Options::CHANGELOG_FILE_FORMAT, "vortex"}}) {
+        SCOPED_TRACE(option_key + "=" + option_value);
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                      {Options::FILE_FORMAT, "parquet"}};
+        options[option_key] = option_value;
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 /*primary_keys=*/{"id"}, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+}
+
 TEST(SchemaValidationTest, TestVortexDataTypes) {
     std::shared_ptr<TableSchema> table_schema;
     // Vortex as the default file format: unsupported types are rejected at validation time.

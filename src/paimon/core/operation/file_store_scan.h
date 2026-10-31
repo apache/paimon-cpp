@@ -130,6 +130,15 @@ class FileStoreScan {
         return this;
     }
 
+    /// Replaces the partition filter taken from the scan filter; a null filter accepts every
+    /// partition. `partition_schema` holds the partition fields the filter is indexed by.
+    FileStoreScan* WithPartitionFilter(const std::shared_ptr<PredicateFilter>& partition_filter,
+                                       const std::shared_ptr<arrow::Schema>& partition_schema) {
+        partition_filter_ = partition_filter;
+        partition_schema_ = partition_schema;
+        return this;
+    }
+
     FileStoreScan* WithTablePath(const std::string& table_path) {
         table_path_ = table_path;
         return this;
@@ -267,9 +276,13 @@ class FileStoreScan {
                                const std::shared_ptr<TableSchema>& data_schema) const;
 
  private:
-    Status ReadManifests(std::optional<Snapshot>* snapshot_ptr,
-                         std::vector<ManifestFileMeta>* all_manifests_ptr,
-                         std::vector<ManifestFileMeta>* filtered_manifests_ptr) const;
+    Status ReadManifests(std::optional<Snapshot>* snapshot,
+                         std::vector<ManifestFileMeta>* all_manifests,
+                         std::vector<ManifestFileMeta>* filtered_manifests) const;
+    Result<std::optional<Snapshot>> ReadSnapshot() const;
+    Status ReadManifestLists(const std::optional<Snapshot>& snapshot,
+                             std::vector<ManifestFileMeta>* all_manifests,
+                             std::vector<ManifestFileMeta>* filtered_manifests) const;
 
     Status ReadManifestsWithSnapshot(const Snapshot& snapshot,
                                      std::vector<ManifestFileMeta>* manifests) const;
@@ -280,8 +293,10 @@ class FileStoreScan {
     /// Read request-filtered entries while caching complete bucket snapshots.
     /// @return Number of entries considered before request-specific filtering.
     Result<uint64_t> ReadManifestEntriesWithCache(
-        const Snapshot& snapshot, const std::vector<ManifestFileMeta>& bucket_manifest_metas,
-        int32_t bucket, std::vector<ManifestEntry>* manifest_entries, bool* cache_hit) const;
+        const Snapshot& snapshot, int32_t bucket, std::vector<ManifestFileMeta>* all_manifest_metas,
+        std::vector<ManifestFileMeta>* filtered_manifest_metas,
+        std::vector<ManifestEntry>* manifest_entries, bool* cache_hit,
+        int64_t* all_data_files) const;
     std::shared_ptr<CacheKey> CreateSnapshotLiveManifestEntriesCacheKey(int32_t bucket) const;
     Status StoreSnapshotLiveManifestEntries(int32_t bucket,
                                             const SnapshotLiveManifestEntries& entries) const;
@@ -297,8 +312,8 @@ class FileStoreScan {
                                      std::vector<ManifestEntry>* manifest_entries) const;
 
     Status ReadFileEntries(const std::vector<ManifestFileMeta>& manifest_metas,
-                           std::vector<ManifestEntry>* manifest_entries,
-                           bool apply_scan_filter) const;
+                           bool apply_scan_filter,
+                           std::vector<ManifestEntry>* manifest_entries) const;
 
     bool MayContainBucket(const ManifestFileMeta& manifest, int32_t bucket) const;
 

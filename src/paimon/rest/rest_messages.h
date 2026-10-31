@@ -458,4 +458,78 @@ class CommitTableResponse : public Jsonizable<CommitTableResponse> {
     bool success_ = false;
 };
 
+/// Asks for, or renews, the commit lease of a table or branch for one writer.
+class CommitLockRequest : public Jsonizable<CommitLockRequest> {
+ public:
+    /// @param table_id Catalog UUID of the table or branch; a recreated table cannot inherit a
+    /// lease.
+    /// @param commit_user Exact commit user of the snapshots published under the lease.
+    CommitLockRequest(const std::string& table_id, const std::string& commit_user)
+        : table_id_(table_id), commit_user_(commit_user) {}
+
+    rapidjson::Value ToJson(rapidjson::Document::AllocatorType* allocator) const
+        noexcept(false) override;
+    void FromJson(const rapidjson::Value& obj) noexcept(false) override;
+
+    const std::string& GetTableId() const {
+        return table_id_;
+    }
+    const std::string& GetCommitUser() const {
+        return commit_user_;
+    }
+
+    CommitLockRequest() = default;
+
+ private:
+    std::string table_id_;
+    std::string commit_user_;
+};
+
+/// Outcome of acquiring or renewing a commit lease. Contention, a lost lease and an expired lease
+/// are all reported as `acquired=false`.
+class CommitLockResponse : public Jsonizable<CommitLockResponse> {
+ public:
+    CommitLockResponse(bool acquired, const std::optional<std::string>& commit_user,
+                       int64_t expires_at_millis, int64_t lease_millis,
+                       const std::optional<Snapshot>& snapshot)
+        : acquired_(acquired),
+          commit_user_(commit_user),
+          expires_at_millis_(expires_at_millis),
+          lease_millis_(lease_millis),
+          snapshot_(snapshot) {}
+
+    rapidjson::Value ToJson(rapidjson::Document::AllocatorType* allocator) const
+        noexcept(false) override;
+    void FromJson(const rapidjson::Value& obj) noexcept(false) override;
+
+    bool IsAcquired() const {
+        return acquired_;
+    }
+    /// Owner of the lease, or null when it was not acquired.
+    const std::optional<std::string>& GetCommitUser() const {
+        return commit_user_;
+    }
+    /// Expiration on the server's clock; zero when the lease was not acquired.
+    int64_t GetExpiresAtMillis() const {
+        return expires_at_millis_;
+    }
+    /// Lease duration, fixed within a scope; zero when the lease was not acquired.
+    int64_t GetLeaseMillis() const {
+        return lease_millis_;
+    }
+    /// Head at grant time; null for an empty table.
+    const std::optional<Snapshot>& GetSnapshot() const {
+        return snapshot_;
+    }
+
+    CommitLockResponse() = default;
+
+ private:
+    bool acquired_ = false;
+    std::optional<std::string> commit_user_;
+    int64_t expires_at_millis_ = 0;
+    int64_t lease_millis_ = 0;
+    std::optional<Snapshot> snapshot_;
+};
+
 }  // namespace paimon

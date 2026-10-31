@@ -61,6 +61,9 @@ class PAIMON_EXPORT PredicateUtils {
     static Status GetAllNames(const std::shared_ptr<Predicate>& predicate,
                               std::set<std::string>* field_names);
 
+    /// Whether the predicate contains a full-text matching condition.
+    static bool ContainsFullTextMatch(const std::shared_ptr<Predicate>& predicate);
+
     template <typename T>
     static Result<T> VisitPredicate(const std::shared_ptr<LeafPredicate>& predicate,
                                     const std::shared_ptr<FunctionVisitor<T>>& visitor) {
@@ -114,6 +117,11 @@ class PAIMON_EXPORT PredicateUtils {
                 assert(predicate->Literals().size() == 1);
                 return visitor->VisitLike(predicate->Literals()[0]);
             }
+            case Function::Type::FULL_TEXT_MATCH: {
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FullTextMatch> full_text_match,
+                                       GetFullTextMatch(predicate));
+                return visitor->VisitFullTextMatch(full_text_match);
+            }
             default:
                 return Status::Invalid("invalid " + predicate->GetFunction().ToString() +
                                        " function in leaf predicate");
@@ -121,6 +129,9 @@ class PAIMON_EXPORT PredicateUtils {
     }
 
  private:
+    static Result<std::shared_ptr<FullTextMatch>> GetFullTextMatch(
+        const std::shared_ptr<LeafPredicate>& predicate);
+
     static Result<std::optional<std::shared_ptr<Predicate>>> ReconstructPredicateWithPickedFields(
         const std::shared_ptr<Predicate>& predicate,
         const std::map<std::string, int32_t>& picked_field_name_to_idx);

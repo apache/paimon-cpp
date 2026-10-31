@@ -35,6 +35,7 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon {
+struct CatalogContext;
 class Executor;
 class MemoryPool;
 class Predicate;
@@ -43,10 +44,30 @@ class RealtimeContext;
 // internal read context, contains ReadContext, CoreOptions and TableSchema
 class InternalReadContext {
  public:
+    struct IndexScoreSource {
+        enum class Type { VECTOR_SEARCH, FULL_TEXT_SEARCH, FULL_TEXT_MATCH };
+
+        bool operator==(const IndexScoreSource& other) const {
+            return type == other.type && field_name == other.field_name;
+        }
+
+        Type type;
+        /// Original table field name, before per-file field mapping.
+        std::string field_name;
+    };
+
     static Result<std::unique_ptr<InternalReadContext>> Create(
         const std::shared_ptr<ReadContext>& read_context,
         const std::shared_ptr<TableSchema>& table_schema,
         const std::map<std::string, std::string>& options);
+
+    /// Maps score output positions in the read schema to their logical search sources.
+    const std::map<int32_t, IndexScoreSource>& GetIndexScoreBindings() const {
+        return index_score_bindings_;
+    }
+
+    /// Root TopK needs scores even without a score projection.
+    bool NeedsScores(const IndexScoreSource& source) const;
 
     const CoreOptions& GetCoreOptions() const {
         return options_;
@@ -60,6 +81,9 @@ class InternalReadContext {
     const std::string& GetPath() const {
         return read_context_->GetPath();
     }
+
+    std::shared_ptr<CatalogContext> CreateDependencyCatalogContext() const;
+
     const std::vector<std::string>& GetPartitionKeys() const {
         return table_schema_->PartitionKeys();
     }
@@ -129,10 +153,8 @@ class InternalReadContext {
         return read_context_->GetWarmupLevel();
     }
 
-    /// Create a new InternalReadContext with a different read schema.
-    /// Useful for creating a context with a minimal column set for specialized reads.
-    /// All other settings (predicate, options, table_schema, etc.) are inherited
-    /// from the original context.
+    /// Create the minimal read schema for PK COUNT(*). Search requests and score
+    /// projections are unsupported; their bindings cannot be inherited across schemas.
     static Result<std::shared_ptr<InternalReadContext>> CreateWithSchema(
         const std::shared_ptr<InternalReadContext>& original,
         const std::shared_ptr<arrow::Schema>& new_read_schema);
@@ -149,16 +171,19 @@ class InternalReadContext {
                                                                bool has_vector_or_full_text_search);
     static std::optional<DataField> TryResolveSpecialFieldByName(
         const std::string& name, const CoreOptions& core_options,
-        bool has_vector_or_full_text_search);
+        bool has_vector_or_full_text_search, int32_t output_field_idx);
     static Result<std::shared_ptr<arrow::Field>> AlignReadFieldWithTableFieldIds(
         const std::shared_ptr<arrow::Field>& read_field,
         const std::shared_ptr<arrow::Field>& table_field);
+
+    Status BindIndexScores();
 
     std::shared_ptr<ReadContext> read_context_;
     std::shared_ptr<TableSchema> table_schema_;
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     CoreOptions options_;
+    std::map<int32_t, IndexScoreSource> index_score_bindings_;
 };
 
 }  // namespace paimon

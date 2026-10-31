@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -2589,7 +2590,7 @@ TEST_P(WriteAndReadInteTest, TestAppendTimestampType) {
     };
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
-    if (file_format == "mosaic" || file_format == "lance") {
+    if (file_format == "mosaic") {
         return;
     }
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
@@ -2646,7 +2647,7 @@ TEST_P(WriteAndReadInteTest, TestPkTimestampType) {
     };
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
-    if (file_format == "mosaic" || file_format == "lance") {
+    if (file_format == "mosaic") {
         return;
     }
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
@@ -5871,6 +5872,82 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingAllNullMapColumn) {
 }
 
 #ifdef PAIMON_ENABLE_VORTEX
+TEST(VortexVectorWriteInteTest, TestAppendVectorReadWrite) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("id", arrow::int32()), arrow::field("embedding", vector_type),
+        arrow::field("payload", arrow::struct_({arrow::field("embedding", vector_type)}))};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "vortex"}, {Options::BUCKET, "-1"}, {Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{}, options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+            [1, [1, 2, 3], [[4, 5, 6]]],
+            [2, null, [null]],
+            [3, [7, 8, 9], null]
+        ])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> commit_messages,
+                         helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                                /*expected_commit_messages=*/std::nullopt));
+    ASSERT_FALSE(commit_messages.empty());
+
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(arrow::struct_(result_fields), splits, R"([
+            [0, 1, [1, 2, 3], [[4, 5, 6]]],
+            [0, 2, null, [null]],
+            [0, 3, [7, 8, 9], null]
+        ])"));
+    ASSERT_TRUE(success);
+}
+
+TEST(VortexVectorWriteInteTest, TestPrimaryKeyVectorUpdate) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
+                                 arrow::field("embedding", vector_type)};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "vortex"}, {Options::BUCKET, "1"}, {Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+    const std::vector<std::string> batches = {R"([["a", [1, 2, 3]], ["b", [4, 5, 6]]])",
+                                              R"([["a", [7, 8, 9]], ["b", null]])"};
+    int64_t commit_identifier = 0;
+    for (const std::string& data_json : batches) {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<RecordBatch> batch,
+            TestHelper::MakeRecordBatch(arrow::struct_(fields), data_json, /*partition_map=*/{},
+                                        /*bucket=*/0, {}));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> commit_messages,
+                             helper->WriteAndCommit(std::move(batch), commit_identifier++,
+                                                    /*expected_commit_messages=*/std::nullopt));
+        ASSERT_FALSE(commit_messages.empty());
+    }
+
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(arrow::struct_(result_fields), splits,
+                                                    R"([[0, "a", [7, 8, 9]], [0, "b", null]])"));
+    ASSERT_TRUE(success);
+}
+
 // Regression: primary-key finalization requires one stats entry per write-schema field
 // (KeyValueDataFileWriter), which the Vortex extractor satisfies with unknown entries.
 TEST(VortexPrimaryKeyWriteInteTest, TestPKWriteFinalize) {
@@ -5902,38 +5979,186 @@ TEST(VortexPrimaryKeyWriteInteTest, TestPKWriteFinalize) {
                                                     R"([[0, "a", 1],[0, "b", 2]])"));
     ASSERT_TRUE(success);
 }
+#endif
 
+#if defined(PAIMON_ENABLE_LANCE) || defined(PAIMON_ENABLE_VORTEX)
 // Regression: append-table finalization always extracts statistics, and TIME has no statistics
 // factory of its own, so the extractor must still yield one entry for a TIME column.
-TEST(VortexTimeColumnWriteInteTest, TestAppendTimeColumnFinalize) {
+TEST(TimeColumnWriteInteTest, TestAppendTimeColumnFinalize) {
+    std::vector<std::string> file_formats;
+#ifdef PAIMON_ENABLE_LANCE
+    file_formats.push_back("lance");
+#endif
+#ifdef PAIMON_ENABLE_VORTEX
+    file_formats.push_back("vortex");
+#endif
+    for (const auto& file_format : file_formats) {
+        SCOPED_TRACE(file_format);
+        auto dir = UniqueTestDirectory::Create("local");
+        ASSERT_NE(dir, nullptr);
+        arrow::FieldVector fields = {arrow::field("f_time", arrow::time32(arrow::TimeUnit::MILLI)),
+                                     arrow::field("f1", arrow::int32())};
+        auto schema = arrow::schema(fields);
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                      {Options::BUCKET, "-1"},
+                                                      {Options::FILE_SYSTEM, "local"}};
+        ASSERT_OK_AND_ASSIGN(auto helper,
+                             TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{},
+                                                /*primary_keys=*/{}, options,
+                                                /*is_streaming_mode=*/false));
+        int64_t commit_identifier = 0;
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<RecordBatch> batch,
+            TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([[3723123, 1],[null, 2]])",
+                                        /*partition_map=*/{}, /*bucket=*/0, {}));
+        ASSERT_OK_AND_ASSIGN(auto commit_msgs,
+                             helper->WriteAndCommit(std::move(batch), commit_identifier++,
+                                                    /*expected_commit_messages=*/std::nullopt));
+        arrow::FieldVector fields_with_row_kind = fields;
+        fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                    arrow::field("_VALUE_KIND", arrow::int8()));
+        ASSERT_OK_AND_ASSIGN(
+            std::vector<std::shared_ptr<Split>> splits,
+            helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+        ASSERT_OK_AND_ASSIGN(
+            bool success, helper->ReadAndCheckResult(arrow::struct_(fields_with_row_kind), splits,
+                                                     R"([[0, 3723123, 1],[0, null, 2]])"));
+        ASSERT_TRUE(success);
+    }
+}
+#endif
+
+#ifdef PAIMON_ENABLE_LANCE
+class LanceTimestampLtzInteTest
+    : public ::testing::Test,
+      public ::testing::WithParamInterface<std::tuple<std::string, bool>> {};
+
+TEST_P(LanceTimestampLtzInteTest, TestWriteAndReadInPinnedTimezone) {
+    TimezoneGuard timezone_guard(std::get<0>(GetParam()));
+    const std::string timezone = DateTimeUtils::GetLocalTimezoneName();
+    const bool with_primary_key = std::get<1>(GetParam());
     auto dir = UniqueTestDirectory::Create("local");
     ASSERT_NE(dir, nullptr);
-    arrow::FieldVector fields = {arrow::field("f_time", arrow::time32(arrow::TimeUnit::MILLI)),
-                                 arrow::field("f1", arrow::int32())};
-    auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, "vortex"}, {Options::BUCKET, "-1"}, {Options::FILE_SYSTEM, "local"}};
-    ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{},
-                                                         /*primary_keys=*/{}, options,
-                                                         /*is_streaming_mode=*/false));
-    int64_t commit_identifier = 0;
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<RecordBatch> batch,
-        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([[3723123, 1],[null, 2]])",
-                                    /*partition_map=*/{}, /*bucket=*/0, {}));
-    ASSERT_OK_AND_ASSIGN(auto commit_msgs,
-                         helper->WriteAndCommit(std::move(batch), commit_identifier++,
-                                                /*expected_commit_messages=*/std::nullopt));
-    arrow::FieldVector fields_with_row_kind = fields;
-    fields_with_row_kind.insert(fields_with_row_kind.begin(),
-                                arrow::field("_VALUE_KIND", arrow::int8()));
+
+    auto ltz = [&timezone](arrow::TimeUnit::type unit) { return arrow::timestamp(unit, timezone); };
+    arrow::FieldVector fields = {
+        arrow::field("id", arrow::int32()),
+        arrow::field("ltz_0", ltz(arrow::TimeUnit::SECOND)),
+        arrow::field("ltz_9", ltz(arrow::TimeUnit::NANO)),
+        arrow::field("ltz_array", arrow::list(ltz(arrow::TimeUnit::MICRO))),
+        arrow::field(
+            "ltz_row",
+            arrow::struct_({arrow::field("ltz_3", ltz(arrow::TimeUnit::MILLI)),
+                            arrow::field("ntz", arrow::timestamp(arrow::TimeUnit::MICRO))})),
+        arrow::field("ntz_to_ltz", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("ltz_to_ntz", ltz(arrow::TimeUnit::MICRO)),
+    };
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "lance"},
+                                                  {Options::BUCKET, with_primary_key ? "1" : "-1"},
+                                                  {Options::FILE_SYSTEM, "local"}};
+    std::vector<std::string> primary_keys;
+    if (with_primary_key) {
+        primary_keys.push_back("id");
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields),
+                                            /*partition_keys=*/{}, primary_keys, options,
+                                            /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_v0,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+            [1, "1969-12-31 23:59:59", "1969-12-31 23:59:59.999999999",
+             ["2024-10-04 12:34:56.123456", null],
+             ["1970-01-01 00:00:00.001", "1970-01-01 00:00:00.000001"],
+             "1969-12-31 23:59:59.999999", "1970-01-01 00:00:00.000001"],
+            [2, null, null, null, [null, null], null, null],
+            [3, "2024-10-04 12:34:56", "2024-10-04 12:34:56.123456789", [],
+             ["2024-10-04 12:34:56.123", null], "2024-10-04 12:34:56.123456",
+             "2024-10-04 12:34:56.123456"]
+        ])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch_v0), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    SchemaManager schema_manager(dir->GetFileSystem(), table_path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema_v0, schema_manager.ReadSchema(0));
+    const int32_t added_field_id = schema_v0->HighestFieldId() + 1;
+    std::shared_ptr<arrow::Field> added_field =
+        arrow::field("ltz_added", ltz(arrow::TimeUnit::MICRO));
+    arrow::FieldVector fields_v1 = fields;
+    fields_v1[5] = fields[5]->WithType(ltz(arrow::TimeUnit::MICRO));
+    fields_v1[6] = fields[6]->WithType(arrow::timestamp(arrow::TimeUnit::MICRO));
+    fields_v1.push_back(added_field);
+    std::vector<DataField> data_fields_v1 = schema_v0->Fields();
+    data_fields_v1[5] = DataField(data_fields_v1[5].Id(), fields_v1[5]);
+    data_fields_v1[6] = DataField(data_fields_v1[6].Id(), fields_v1[6]);
+    data_fields_v1.emplace_back(added_field_id, added_field);
+    ASSERT_OK(TestHelper::WriteNextSchema(dir->GetFileSystem(), table_path, data_fields_v1,
+                                          added_field_id, options));
+    helper.reset();
+    ASSERT_OK_AND_ASSIGN(helper,
+                         TestHelper::Create(table_path, options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_v1,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields_v1), R"([
+            [4, "1970-01-01 00:00:00", null, [null], [null, "1969-12-31 23:59:59.999999"],
+             "1969-12-31 23:59:59.999999", "1970-01-01 00:00:00.000001",
+             "2024-10-04 12:34:56.123456"]
+        ])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch_v1), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
                          helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(bool success,
-                         helper->ReadAndCheckResult(arrow::struct_(fields_with_row_kind), splits,
-                                                    R"([[0, 3723123, 1],[0, null, 2]])"));
-    ASSERT_TRUE(success);
+    ReadContextBuilder read_context_builder(table_path);
+    read_context_builder.SetOptions(options).SetReadFieldNames(
+        {"ltz_row", "ltz_added", "ltz_9", "id", "ltz_array", "ltz_0", "ltz_to_ntz", "ntz_to_ltz"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         table_read->CreateReader(splits));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+    const std::map<std::string, std::vector<std::string>> converted_values = {
+        {"UTC",
+         {"1970-01-01 00:00:00.000001", "1969-12-31 23:59:59.999999", "2024-10-04 12:34:56.123456",
+          "2024-10-04 12:34:56.123456"}},
+        {"Asia/Shanghai",
+         {"1970-01-01 08:00:00.000001", "1969-12-31 15:59:59.999999", "2024-10-04 20:34:56.123456",
+          "2024-10-04 04:34:56.123456"}},
+        {"Pacific/Honolulu",
+         {"1969-12-31 14:00:00.000001", "1970-01-01 09:59:59.999999", "2024-10-04 02:34:56.123456",
+          "2024-10-04 22:34:56.123456"}},
+    };
+    const std::vector<std::string>& converted = converted_values.at(std::get<0>(GetParam()));
+    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields_v1[4],
+                                         fields_v1[7], fields_v1[2], fields_v1[0], fields_v1[3],
+                                         fields_v1[1], fields_v1[6], fields_v1[5]});
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            expected_type, fmt::format(R"([
+            [0, ["1970-01-01 00:00:00.001", "1970-01-01 00:00:00.000001"], null,
+             "1969-12-31 23:59:59.999999999", 1, ["2024-10-04 12:34:56.123456", null],
+             "1969-12-31 23:59:59", "{}", "{}"],
+            [0, [null, null], null, null, 2, null, null, null, null],
+            [0, ["2024-10-04 12:34:56.123", null], null, "2024-10-04 12:34:56.123456789", 3, [],
+             "2024-10-04 12:34:56", "{}", "{}"],
+            [0, [null, "1969-12-31 23:59:59.999999"], "2024-10-04 12:34:56.123456", null, 4,
+             [null], "1970-01-01 00:00:00", "1970-01-01 00:00:00.000001",
+             "1969-12-31 23:59:59.999999"]
+        ])",
+                                       converted[0], converted[1], converted[2], converted[3]))
+            .ValueOrDie());
+    ASSERT_TRUE(expected->Equals(actual))
+        << "actual: " << actual->ToString() << "\nexpected: " << expected->ToString();
 }
+
+INSTANTIATE_TEST_SUITE_P(TimezoneAndPrimaryKey, LanceTimestampLtzInteTest,
+                         ::testing::Combine(::testing::Values(std::string("UTC"),
+                                                              std::string("Asia/Shanghai"),
+                                                              std::string("Pacific/Honolulu")),
+                                            ::testing::Bool()));
 #endif
 
 INSTANTIATE_TEST_SUITE_P(FileFormatAndFileSystem, WriteAndReadInteTest,

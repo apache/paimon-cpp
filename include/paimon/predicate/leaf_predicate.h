@@ -31,7 +31,8 @@ class LeafFunction;
 class Function;
 enum class FieldType;
 
-/// Leaf node of a `Predicate` tree. Compares a field with literals.
+/// Leaf node of a `Predicate` tree describing a condition on one field.
+/// Scalar leaves compare the field with literals; full-text leaves hold a search request.
 class PAIMON_EXPORT LeafPredicate : virtual public Predicate {
  public:
     int32_t FieldIndex() const {

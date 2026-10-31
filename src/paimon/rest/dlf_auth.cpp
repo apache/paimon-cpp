@@ -21,6 +21,7 @@
 
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <array>
 #include <climits>
 #include <ctime>
@@ -72,6 +73,13 @@ constexpr const char kAcsSignatureNonceHeader[] = "x-acs-signature-nonce";
 constexpr const char kAcsSignatureVersionHeader[] = "x-acs-signature-version";
 constexpr const char kAcsVersionHeader[] = "x-acs-version";
 constexpr const char kAcsSecurityTokenHeader[] = "x-acs-security-token";
+constexpr const char kAcsDateHeader[] = "x-acs-date";
+constexpr const char kAcsContentSha256Header[] = "x-acs-content-sha256";
+constexpr const char kAcsActionHeader[] = "x-acs-action";
+constexpr const char kAcs4Algorithm[] = "ACS4-HMAC-SHA256";
+// SHA-256 of the empty string, the payload hash of a request without a body.
+constexpr const char kEmptyBodySha256[] =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 Result<std::string> RequiredNonEmptyOption(const std::map<std::string, std::string>& options,
                                            const std::string& key) {
@@ -115,6 +123,15 @@ Result<std::string> FormatDlfTime(std::chrono::system_clock::time_point time) {
     std::array<char, 32> buffer{};
     if (std::strftime(buffer.data(), buffer.size(), "%Y%m%dT%H%M%SZ", &utc) == 0) {
         return Status::Invalid("failed to format DLF signing time");
+    }
+    return std::string(buffer.data());
+}
+
+Result<std::string> FormatAcsTime(std::chrono::system_clock::time_point time) {
+    PAIMON_ASSIGN_OR_RAISE(std::tm utc, ToUtc(time));
+    std::array<char, 32> buffer{};
+    if (std::strftime(buffer.data(), buffer.size(), "%Y-%m-%dT%H:%M:%SZ", &utc) == 0) {
+        return Status::Invalid("failed to format DLF OpenAPI V4 signing time");
     }
     return std::string(buffer.data());
 }
@@ -224,6 +241,17 @@ std::string HexEncode(const Bytes& value) {
         encoded.push_back(kHex[byte & 0x0f]);
     }
     return encoded;
+}
+
+// The signing key shared by the DLF4 and ACS4 schemes, derived from the secret through the
+// date, the region and the product.
+Result<Bytes> DeriveSigningKey(const std::string& access_key_secret, const std::string& date,
+                               const std::string& region) {
+    PAIMON_ASSIGN_OR_RAISE(Bytes date_key,
+                           Hmac(EVP_sha256(), ToBytes("aliyun_v4" + access_key_secret), date));
+    PAIMON_ASSIGN_OR_RAISE(Bytes region_key, Hmac(EVP_sha256(), date_key, region));
+    PAIMON_ASSIGN_OR_RAISE(Bytes product_key, Hmac(EVP_sha256(), region_key, "DlfNext"));
+    return Hmac(EVP_sha256(), product_key, "aliyun_v4_request");
 }
 
 Result<std::string> Base64Encode(const Bytes& value) {
@@ -343,6 +371,85 @@ Result<std::string> GenerateNonce(std::chrono::system_clock::time_point now) {
     return fmt::format("{}{}{}", uuid, millis, thread_id.str());
 }
 
+struct Acs4CanonicalHeaders {
+    std::string canonical_headers;
+    std::string signed_headers;
+};
+
+// The headers the ACS4 scheme signs: "host", "content-type" and every "x-acs-*" header, named
+// in lower case with trimmed values and sorted by name.
+Acs4CanonicalHeaders Acs4CanonicalizeHeaders(const DlfRequestSigner::Headers& headers) {
+    std::map<std::string, std::string> sorted;
+    for (const auto& [key, value] : headers) {
+        std::string lower_key = StringUtils::ToLowerCase(key);
+        if (StringUtils::StartsWith(lower_key, "x-acs-") || lower_key == "host" ||
+            lower_key == "content-type") {
+            sorted[lower_key] = Trimmed(value);
+        }
+    }
+    Acs4CanonicalHeaders result;
+    for (const auto& [key, value] : sorted) {
+        result.canonical_headers += key + ":" + value + "\n";
+        if (!result.signed_headers.empty()) {
+            result.signed_headers += ";";
+        }
+        result.signed_headers += key;
+    }
+    return result;
+}
+
+// The query parameters sorted by name and RFC 3986 encoded. `RestAuthParameter` holds the
+// values url-encoded once already, so they are decoded first: encoding them again would sign a
+// form the gateway cannot rebuild from the wire.
+std::string Acs4CanonicalQueryString(const RestAuthParameter& parameter) {
+    std::string canonical;
+    bool first = true;
+    for (const auto& [key, value] : parameter.parameters) {
+        if (!first) {
+            canonical += "&";
+        }
+        canonical += UrlUtils::PercentEncode(key) + "=";
+        if (!value.empty()) {
+            canonical += UrlUtils::PercentEncode(UrlUtils::DecodeString(value));
+        }
+        first = false;
+    }
+    return canonical;
+}
+
+struct SplitOperation {
+    std::vector<std::string> template_segments;
+    std::string action;
+};
+
+// The registered operations grouped by method, with their path templates split once.
+const std::map<std::string, std::vector<SplitOperation>>& OperationsByMethod() {
+    static const std::map<std::string, std::vector<SplitOperation>> kOperationsByMethod = [] {
+        std::map<std::string, std::vector<SplitOperation>> operations_by_method;
+        for (const DlfOpenApiActions::Operation& operation : DlfOpenApiActions::Operations()) {
+            operations_by_method[operation.method].push_back(
+                {StringUtils::Split(operation.path_template, "/", /*ignore_empty=*/false),
+                 operation.action});
+        }
+        return operations_by_method;
+    }();
+    return kOperationsByMethod;
+}
+
+bool MatchesPathTemplate(const std::vector<std::string>& template_segments,
+                         const std::vector<std::string>& segments) {
+    if (segments.size() != template_segments.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < template_segments.size(); ++i) {
+        bool variable = StringUtils::StartsWith(template_segments[i], "{");
+        if (variable ? segments[i].empty() : template_segments[i] != segments[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 Result<std::unique_ptr<DlfRequestSigner>> CreateSigner(const std::string& algorithm,
                                                        const std::string& region) {
     if (algorithm == DlfDefaultSigner::kIdentifier) {
@@ -351,9 +458,13 @@ Result<std::unique_ptr<DlfRequestSigner>> CreateSigner(const std::string& algori
     if (algorithm == DlfOpenApiSigner::kIdentifier) {
         return std::make_unique<DlfOpenApiSigner>();
     }
-    return Status::Invalid(fmt::format(
-        "unsupported DLF signing algorithm '{}', supported values are 'default' and 'openapi'",
-        algorithm));
+    if (algorithm == DlfOpenApiV4Signer::kIdentifier) {
+        return std::make_unique<DlfOpenApiV4Signer>(region);
+    }
+    return Status::Invalid(
+        fmt::format("unsupported DLF signing algorithm '{}', supported values are 'default', "
+                    "'openapi' and 'openapi-v4'",
+                    algorithm));
 }
 
 }  // namespace
@@ -531,24 +642,21 @@ Result<DlfRequestSigner::Headers> DlfDefaultSigner::SignHeaders(
 
 Result<std::string> DlfDefaultSigner::Authorization(const RestAuthParameter& parameter,
                                                     const DlfToken& token, const std::string& host,
-                                                    const Headers& sign_headers) const {
-    PAIMON_ASSIGN_OR_RAISE(std::string date_time, RequiredHeader(sign_headers, kDlfDateHeader));
+                                                    Headers* sign_headers) const {
+    const Headers& headers = *sign_headers;
+    PAIMON_ASSIGN_OR_RAISE(std::string date_time, RequiredHeader(headers, kDlfDateHeader));
     if (date_time.size() < 8) {
         return Status::Invalid("DLF signing date is invalid");
     }
     std::string date = date_time.substr(0, 8);
     std::string scope = fmt::format("{}/{}/DlfNext/aliyun_v4_request", date, region_);
-    std::string canonical_request = DefaultCanonicalRequest(parameter, sign_headers);
+    std::string canonical_request = DefaultCanonicalRequest(parameter, headers);
     PAIMON_ASSIGN_OR_RAISE(Bytes canonical_hash, Digest(EVP_sha256(), canonical_request));
     std::string string_to_sign =
         fmt::format("DLF4-HMAC-SHA256\n{}\n{}\n{}", date_time, scope, HexEncode(canonical_hash));
 
-    PAIMON_ASSIGN_OR_RAISE(
-        Bytes date_key,
-        Hmac(EVP_sha256(), ToBytes("aliyun_v4" + token.GetAccessKeySecret()), date));
-    PAIMON_ASSIGN_OR_RAISE(Bytes region_key, Hmac(EVP_sha256(), date_key, region_));
-    PAIMON_ASSIGN_OR_RAISE(Bytes service_key, Hmac(EVP_sha256(), region_key, "DlfNext"));
-    PAIMON_ASSIGN_OR_RAISE(Bytes signing_key, Hmac(EVP_sha256(), service_key, "aliyun_v4_request"));
+    PAIMON_ASSIGN_OR_RAISE(Bytes signing_key,
+                           DeriveSigningKey(token.GetAccessKeySecret(), date, region_));
     PAIMON_ASSIGN_OR_RAISE(Bytes signature, Hmac(EVP_sha256(), signing_key, string_to_sign));
     return fmt::format("DLF4-HMAC-SHA256 Credential={}/{},Signature={}", token.GetAccessKeyId(),
                        scope, HexEncode(signature));
@@ -579,26 +687,210 @@ Result<DlfRequestSigner::Headers> DlfOpenApiSigner::SignHeaders(
 
 Result<std::string> DlfOpenApiSigner::Authorization(const RestAuthParameter& parameter,
                                                     const DlfToken& token, const std::string& host,
-                                                    const Headers& sign_headers) const {
-    PAIMON_ASSIGN_OR_RAISE(std::string accept, RequiredHeader(sign_headers, kOpenApiAcceptHeader));
-    PAIMON_ASSIGN_OR_RAISE(std::string date, RequiredHeader(sign_headers, kOpenApiDateHeader));
+                                                    Headers* sign_headers) const {
+    const Headers& headers = *sign_headers;
+    PAIMON_ASSIGN_OR_RAISE(std::string accept, RequiredHeader(headers, kOpenApiAcceptHeader));
+    PAIMON_ASSIGN_OR_RAISE(std::string date, RequiredHeader(headers, kOpenApiDateHeader));
     std::string content_md5;
-    auto md5_iter = sign_headers.find(kContentMd5Header);
-    if (md5_iter != sign_headers.end()) {
+    auto md5_iter = headers.find(kContentMd5Header);
+    if (md5_iter != headers.end()) {
         content_md5 = md5_iter->second;
     }
     std::string content_type;
-    auto type_iter = sign_headers.find(kContentTypeHeader);
-    if (type_iter != sign_headers.end()) {
+    auto type_iter = headers.find(kContentTypeHeader);
+    if (type_iter != headers.end()) {
         content_type = type_iter->second;
     }
     std::string string_to_sign =
         parameter.method + "\n" + accept + "\n" + content_md5 + "\n" + content_type + "\n" + date +
-        "\n" + OpenApiCanonicalizedHeaders(sign_headers) + OpenApiCanonicalizedResource(parameter);
+        "\n" + OpenApiCanonicalizedHeaders(headers) + OpenApiCanonicalizedResource(parameter);
     PAIMON_ASSIGN_OR_RAISE(Bytes signature,
                            Hmac(EVP_sha1(), ToBytes(token.GetAccessKeySecret()), string_to_sign));
     PAIMON_ASSIGN_OR_RAISE(std::string encoded_signature, Base64Encode(signature));
     return fmt::format("acs {}:{}", token.GetAccessKeyId(), encoded_signature);
+}
+
+DlfOpenApiV4Signer::DlfOpenApiV4Signer(const std::string& region) : region_(region) {}
+
+Result<DlfRequestSigner::Headers> DlfOpenApiV4Signer::SignHeaders(
+    const std::string& body, std::chrono::system_clock::time_point now,
+    const std::optional<std::string>& security_token, const std::string& host) const {
+    if (host.empty()) {
+        return Status::Invalid("DLF OpenAPI signing host is empty");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::string date, FormatAcsTime(now));
+    PAIMON_ASSIGN_OR_RAISE(std::string nonce, GenerateNonce(now));
+    // "Host" and "Content-Type" keep the spelling `RestApi` and the other signers use, so that
+    // merging these headers replaces a header of the same name rather than sending a second
+    // copy of it; the signature names every header in lower case either way.
+    Headers headers = {{kAcsDateHeader, date},
+                       {kOpenApiHostHeader, host},
+                       {kAcsContentSha256Header, kEmptyBodySha256},
+                       {kAcsSignatureNonceHeader, nonce},
+                       {kAcsVersionHeader, "2026-01-18"}};
+    if (!body.empty()) {
+        PAIMON_ASSIGN_OR_RAISE(Bytes body_hash, Digest(EVP_sha256(), body));
+        headers[kAcsContentSha256Header] = HexEncode(body_hash);
+        headers[kContentTypeHeader] = kJsonMediaType;
+    }
+    if (security_token) {
+        headers[kAcsSecurityTokenHeader] = security_token.value();
+    }
+    return headers;
+}
+
+Result<std::string> DlfOpenApiV4Signer::Authorization(const RestAuthParameter& parameter,
+                                                      const DlfToken& token,
+                                                      const std::string& host,
+                                                      Headers* sign_headers) const {
+    PAIMON_ASSIGN_OR_RAISE(std::string date_time, RequiredHeader(*sign_headers, kAcsDateHeader));
+    if (date_time.size() < 10) {
+        return Status::Invalid("DLF signing date is invalid");
+    }
+    std::string date = date_time.substr(0, 10);
+    date.erase(std::remove(date.begin(), date.end(), '-'), date.end());
+
+    // POP gateways may route by the action, so it is signed and sent with the other headers.
+    std::optional<std::string> action =
+        DlfOpenApiActions::Resolve(parameter.method, parameter.resource_path);
+    if (action) {
+        (*sign_headers)[kAcsActionHeader] = action.value();
+    }
+
+    Acs4CanonicalHeaders canonical_headers = Acs4CanonicalizeHeaders(*sign_headers);
+    std::string canonical_uri = StringUtils::IsNullOrWhitespaceOnly(parameter.resource_path)
+                                    ? std::string("/")
+                                    : parameter.resource_path;
+    auto payload_iter = sign_headers->find(kAcsContentSha256Header);
+    std::string hashed_payload =
+        payload_iter == sign_headers->end() ? std::string(kEmptyBodySha256) : payload_iter->second;
+    std::string canonical_request = parameter.method + "\n" + canonical_uri + "\n" +
+                                    Acs4CanonicalQueryString(parameter) + "\n" +
+                                    canonical_headers.canonical_headers + "\n" +
+                                    canonical_headers.signed_headers + "\n" + hashed_payload;
+    PAIMON_ASSIGN_OR_RAISE(Bytes canonical_hash, Digest(EVP_sha256(), canonical_request));
+    std::string string_to_sign = std::string(kAcs4Algorithm) + "\n" + HexEncode(canonical_hash);
+
+    PAIMON_ASSIGN_OR_RAISE(Bytes signing_key,
+                           DeriveSigningKey(token.GetAccessKeySecret(), date, region_));
+    PAIMON_ASSIGN_OR_RAISE(Bytes signature, Hmac(EVP_sha256(), signing_key, string_to_sign));
+    return fmt::format(
+        "{} Credential={}/{}/{}/DlfNext/aliyun_v4_request,SignedHeaders={},Signature={}",
+        kAcs4Algorithm, token.GetAccessKeyId(), date, region_, canonical_headers.signed_headers,
+        HexEncode(signature));
+}
+
+const std::vector<DlfOpenApiActions::Operation>& DlfOpenApiActions::Operations() {
+    // Mirrors the Java `DLFOpenApiActions`, so both clients name every request the same way.
+    static const std::vector<Operation> kOperations = {
+        {"GET", "/v1/config", "GetConfig"},
+        {"GET", "/v1/{prefix}/databases", "ListDatabases"},
+        {"POST", "/v1/{prefix}/databases", "CreateDatabase"},
+        {"GET", "/v1/{prefix}/databases/{database}", "GetDatabase"},
+        {"POST", "/v1/{prefix}/databases/{database}", "AlterDatabase"},
+        {"DELETE", "/v1/{prefix}/databases/{database}", "DropDatabase"},
+        {"POST", "/v1/{prefix}/databases/{database}/register", "RegisterTable"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables", "ListTables"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables", "CreateTable"},
+        {"GET", "/v1/{prefix}/databases/{database}/table-details", "ListTableDetails"},
+        {"GET", "/v1/{prefix}/tables", "ListTablesGlobally"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}", "GetTable"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}", "AlterTable"},
+        {"DELETE", "/v1/{prefix}/databases/{database}/tables/{table}", "DropTable"},
+        {"GET", "/v1/{prefix}/tables/id/{tableId}", "GetTableById"},
+        {"POST", "/v1/{prefix}/tables/rename", "RenameTable"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/auth", "AuthTableQuery"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/commit", "CommitTable"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/commit-lock",
+         "AcquireCommitLock"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/commit-lock/renew",
+         "RenewCommitLock"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/replace", "ReplaceTable"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/token", "GetTableToken"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/rollback", "RollbackToSnapshot"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/rollback-schema",
+         "RollbackSchema"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/snapshot", "GetTableSnapshot"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/snapshots", "ListSnapshots"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/snapshots/{version}",
+         "GetVersionSnapshot"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/schemas", "ListSchemas"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/schemas/{version}", "GetSchema"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/partitions", "ListPartitions"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/partitions", "CreatePartitions"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/partitions/drop",
+         "DropPartitions"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/partitions/mark",
+         "MarkDonePartitions"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/partitions/list-by-names",
+         "ListPartitionsByNames"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/partitions/list-by-filter",
+         "ListPartitionsByFilter"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/branches", "ListBranches"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/branches", "CreateBranch"},
+        {"DELETE", "/v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}",
+         "DropBranch"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/branches/{branch}/forward",
+         "FastForwardBranch"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/tags", "ListTags"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/tags", "CreateTag"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/tags/{tag}", "GetTag"},
+        {"DELETE", "/v1/{prefix}/databases/{database}/tables/{table}/tags/{tag}", "DropTag"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/consumers", "ListConsumers"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/consumers/reset",
+         "ResetConsumer"},
+        {"GET", "/v1/{prefix}/databases/{database}/tables/{table}/policies", "ListPolicies"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/policies", "CreatePolicy"},
+        {"POST", "/v1/{prefix}/databases/{database}/tables/{table}/policies/drop", "DropPolicy"},
+        {"GET", "/v1/{prefix}/databases/{database}/views", "ListViews"},
+        {"POST", "/v1/{prefix}/databases/{database}/views", "CreateView"},
+        {"GET", "/v1/{prefix}/databases/{database}/view-details", "ListViewDetails"},
+        {"GET", "/v1/{prefix}/views", "ListViewsGlobally"},
+        {"GET", "/v1/{prefix}/databases/{database}/views/{view}", "GetView"},
+        {"POST", "/v1/{prefix}/databases/{database}/views/{view}", "AlterView"},
+        {"DELETE", "/v1/{prefix}/databases/{database}/views/{view}", "DropView"},
+        {"POST", "/v1/{prefix}/views/rename", "RenameView"},
+        {"GET", "/v1/{prefix}/databases/{database}/semantic-views", "ListSemanticViews"},
+        {"GET", "/v1/{prefix}/databases/{database}/semantic-views/{semanticView}",
+         "GetSemanticView"},
+        {"POST", "/v1/{prefix}/databases/{database}/semantic-views/{semanticView}",
+         "UpsertSemanticView"},
+        {"DELETE", "/v1/{prefix}/databases/{database}/semantic-views/{semanticView}",
+         "DeleteSemanticView"},
+        {"GET", "/v1/{prefix}/databases/{database}/functions", "ListFunctions"},
+        {"POST", "/v1/{prefix}/databases/{database}/functions", "CreateFunction"},
+        {"GET", "/v1/{prefix}/databases/{database}/function-details", "ListFunctionDetails"},
+        {"GET", "/v1/{prefix}/functions", "ListFunctionsGlobally"},
+        {"GET", "/v1/{prefix}/databases/{database}/functions/{function}", "GetFunction"},
+        {"POST", "/v1/{prefix}/databases/{database}/functions/{function}", "AlterFunction"},
+        {"DELETE", "/v1/{prefix}/databases/{database}/functions/{function}", "DropFunction"},
+        {"GET", "/v1/{prefix}/permissions", "ListPermissionAssignments"},
+        {"POST", "/v1/{prefix}/permissions/grant", "GrantPermissionAssignment"},
+        {"POST", "/v1/{prefix}/permissions/revoke", "RevokePermissionAssignment"},
+        {"GET", "/v1/{prefix}/labels", "ListLabels"},
+        {"POST", "/v1/{prefix}/labels/get", "GetLabel"},
+        {"POST", "/v1/{prefix}/labels/upsert", "UpsertLabel"},
+        {"POST", "/v1/{prefix}/labels/delete", "DeleteLabel"},
+    };
+    return kOperations;
+}
+
+std::optional<std::string> DlfOpenApiActions::Resolve(const std::string& method,
+                                                      const std::string& resource_path) {
+    const std::map<std::string, std::vector<SplitOperation>>& operations_by_method =
+        OperationsByMethod();
+    auto candidates = operations_by_method.find(StringUtils::ToUpperCase(method));
+    if (candidates == operations_by_method.end()) {
+        return std::nullopt;
+    }
+    std::vector<std::string> segments =
+        StringUtils::Split(resource_path, "/", /*ignore_empty=*/false);
+    for (const SplitOperation& operation : candidates->second) {
+        if (MatchesPathTemplate(operation.template_segments, segments)) {
+            return operation.action;
+        }
+    }
+    return std::nullopt;
 }
 
 DlfAuthProvider::DlfAuthProvider(std::unique_ptr<DlfTokenLoader> token_loader,
@@ -744,7 +1036,7 @@ Result<std::map<std::string, std::string>> DlfAuthProvider::MergeAuthHeader(
         DlfRequestSigner::Headers sign_headers,
         signer_->SignHeaders(parameter.data, signing_time, token.GetSecurityToken(), host_));
     PAIMON_ASSIGN_OR_RAISE(std::string authorization,
-                           signer_->Authorization(parameter, token, host_, sign_headers));
+                           signer_->Authorization(parameter, token, host_, &sign_headers));
     std::map<std::string, std::string> headers = base_header;
     for (const auto& [key, value] : sign_headers) {
         headers[key] = value;

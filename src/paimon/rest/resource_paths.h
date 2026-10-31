@@ -39,6 +39,11 @@ class ResourcePaths {
     std::string RenameTable() const;
     std::string Snapshots(const std::string& database_name, const std::string& table_name) const;
     std::string CommitTable(const std::string& database_name, const std::string& table_name) const;
+    /// Endpoint acquiring the commit lease of a table or branch.
+    std::string CommitLock(const std::string& database_name, const std::string& table_name) const;
+    /// Endpoint renewing the commit lease of a table or branch.
+    std::string RenewCommitLock(const std::string& database_name,
+                                const std::string& table_name) const;
     /// Endpoint for the table's current snapshot.
     std::string TableSnapshot(const std::string& database_name,
                               const std::string& table_name) const;

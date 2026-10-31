@@ -133,6 +133,28 @@ class RestApi {
                                 const Snapshot& snapshot,
                                 const std::vector<PartitionStatistics>& statistics) const;
 
+    /// Acquires the commit lease of a table or branch for `commit_user`. Contention is reported
+    /// as `acquired=false`, not as an error.
+    ///
+    /// @param identifier Table or branch the lease guards.
+    /// @param table_uuid Catalog UUID of the table or branch.
+    /// @param commit_user Exact commit user of the snapshots published under the lease.
+    Result<CommitLockResponse> AcquireCommitLock(const Identifier& identifier,
+                                                 const std::string& table_uuid,
+                                                 const std::string& commit_user) const;
+
+    /// Renews the lease `commit_user` holds. A renewal never acquires a new lease, so
+    /// `acquired=false` means the lease was lost or has expired.
+    ///
+    /// @param identifier Table or branch the lease guards.
+    /// @param table_uuid Catalog UUID of the table or branch.
+    /// @param commit_user Exact commit user the lease was granted to.
+    /// @param cancellation Ends the renewal with a `Cancelled` status once cancelled, including
+    /// while it waits for the response or to retry; null to wait for the outcome.
+    Result<CommitLockResponse> RenewCommitLock(
+        const Identifier& identifier, const std::string& table_uuid, const std::string& commit_user,
+        const RestHttpClient::Cancellation* cancellation = nullptr) const;
+
     /// Loads the temporary file system credentials of one table. A 403 means the caller
     /// has no permission for the table and is reported as an error status carrying a
     /// `RestErrorDetail`.
@@ -152,14 +174,21 @@ class RestApi {
             const std::map<std::string, std::string>& options, const ResourcePaths& paths);
 
     /// Executes an authenticated request and maps unsuccessful responses to errors.
-    /// `retry_safe=false` disables retries and redirects.
-    Result<RestHttpClient::Response> Execute(const std::string& method, const std::string& path,
-                                             const std::map<std::string, std::string>& query_params,
-                                             const std::string& body, bool retry_safe = true) const;
+    /// `retry_safe=false` disables retries and redirects. See `RestHttpClient::Execute()` for
+    /// `cancellation`.
+    Result<RestHttpClient::Response> Execute(
+        const std::string& method, const std::string& path,
+        const std::map<std::string, std::string>& query_params, const std::string& body,
+        bool retry_safe = true, const RestHttpClient::Cancellation* cancellation = nullptr) const;
 
     template <typename ResponseT>
     Result<ResponseT> GetEntity(const std::string& path,
                                 const std::map<std::string, std::string>& query_params) const;
+
+    /// Posts a commit lease request to `path`, which acquiring and renewing share.
+    Result<CommitLockResponse> PostCommitLock(
+        const std::string& path, const std::string& table_uuid, const std::string& commit_user,
+        const RestHttpClient::Cancellation* cancellation) const;
 
     /// Fetches all pages, stopping at an empty page or a missing/empty next page token.
     template <typename ResponseT>

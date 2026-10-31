@@ -55,6 +55,19 @@ TEST(SpecialFieldsTest, TestIndexScore) {
     ASSERT_EQ(SpecialFields::IndexScore().Type()->id(), arrow::Type::FLOAT);
 }
 
+TEST(SpecialFieldsTest, TestPerFieldIndexScoreNames) {
+    for (const auto& field_name : {"F1", "body_text", "_title", "文档"}) {
+        const auto name = SpecialFields::IndexScoreFieldName(field_name);
+        ASSERT_EQ(SpecialFields::ParseIndexScoreFieldName(name), field_name);
+        ASSERT_TRUE(SpecialFields::IsSystemField(name));
+    }
+    ASSERT_EQ(SpecialFields::IndexScoreFieldName("F1"), "_F1_INDEX_SCORE");
+    for (const auto& name : {"_INDEX_SCORE", "__INDEX_SCORE", "F1_INDEX_SCORE", "_F1_index_score",
+                             "_F1_INDEX_SCORE_extra"}) {
+        ASSERT_FALSE(SpecialFields::ParseIndexScoreFieldName(name));
+    }
+}
+
 TEST(SpecialFieldsTest, TestRealtimeOffset) {
     ASSERT_EQ(SpecialFields::RealtimeOffset().Id(), SpecialFieldIds::REALTIME_OFFSET);
     ASSERT_EQ(SpecialFields::RealtimeOffset().Name(), "_REALTIME_OFFSET");

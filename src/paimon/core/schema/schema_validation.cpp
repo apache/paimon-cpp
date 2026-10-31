@@ -70,6 +70,7 @@
 #include "paimon/format/file_format.h"
 #include "paimon/result.h"
 #include "paimon/table/format/format_table.h"
+#include "paimon/table/source/startup_mode.h"
 
 namespace paimon {
 namespace {
@@ -120,10 +121,11 @@ Status ValidateSharedShreddingFileFormat(const std::string& option_key,
 
 Status ValidateVectorFileFormat(const std::string& option_key, const std::string& file_format) {
     if (!StringUtils::EqualsIgnoreCase(file_format, "parquet") &&
-        !StringUtils::EqualsIgnoreCase(file_format, "lance")) {
-        return Status::Invalid(
-            fmt::format("VECTOR currently only supports parquet/lance data files, but {} is {}.",
-                        option_key, file_format));
+        !StringUtils::EqualsIgnoreCase(file_format, "lance") &&
+        !StringUtils::EqualsIgnoreCase(file_format, "vortex")) {
+        return Status::Invalid(fmt::format(
+            "VECTOR currently only supports parquet/lance/vortex data files, but {} is {}.",
+            option_key, file_format));
     }
     return Status::OK();
 }
@@ -191,6 +193,34 @@ Status ValidateBTreeIndexerOptions(const std::map<std::string, std::string>& opt
     if (!std::isfinite(high_priority_pool_ratio) || high_priority_pool_ratio < 0.0 ||
         high_priority_pool_ratio >= 1.0) {
         return Status::Invalid("The BTree high priority pool ratio should be in the range [0, 1).");
+    }
+    return Status::OK();
+}
+
+/// Java `SchemaValidation#checkExactOneOptionExistInMode`.
+Status CheckExactOneOptionExistInMode(const std::map<std::string, std::string>& options,
+                                      const StartupMode& mode,
+                                      const std::vector<std::string>& keys) {
+    auto set_count = std::count_if(keys.begin(), keys.end(), [&options](const std::string& key) {
+        return options.count(key) > 0;
+    });
+    if (set_count != 1) {
+        return Status::Invalid(fmt::format("must set only one key in [{}] when you use {} for {}",
+                                           fmt::join(keys, ","), mode.ToString(),
+                                           Options::SCAN_MODE));
+    }
+    return Status::OK();
+}
+
+/// Java `SchemaValidation#checkOptionsConflict`.
+Status CheckOptionsConflict(const std::map<std::string, std::string>& options,
+                            const std::vector<std::string>& illegal_keys,
+                            const std::vector<std::string>& legal_keys) {
+    for (const auto& key : illegal_keys) {
+        if (options.count(key) > 0) {
+            return Status::Invalid(fmt::format("[{}] must be null when you set [{}]", key,
+                                               fmt::join(legal_keys, ",")));
+        }
     }
     return Status::OK();
 }
@@ -397,6 +427,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateVortexDataFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateVectorStore(schema, options));
     return Status::OK();
 }
 
@@ -999,19 +1030,15 @@ Status SchemaValidation::ValidateLanceDataField(const std::shared_ptr<arrow::Fie
         case arrow::Type::FLOAT:
         case arrow::Type::DOUBLE:
         case arrow::Type::DATE32:
+        case arrow::Type::TIME32:
+        // Lance cannot parse a time zone id containing ':', but LanceFormatWriter, like Paimon
+        // Java, writes every zoned timestamp with the "UTC" time zone.
+        case arrow::Type::TIMESTAMP:
         case arrow::Type::STRING:
         case arrow::Type::BINARY:
         case arrow::Type::DECIMAL128:
         case arrow::Type::FIXED_SIZE_LIST:
             return Status::OK();
-        case arrow::Type::TIMESTAMP: {
-            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*type);
-            if (!timestamp_type.timezone().empty()) {
-                return Status::Invalid(
-                    "Lance file format does not support type LOCAL_ZONED_TIMESTAMP");
-            }
-            return Status::OK();
-        }
         case arrow::Type::LIST:
             return ValidateLanceDataField(type->field(0));
         case arrow::Type::STRUCT:
@@ -1261,6 +1288,57 @@ Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
     return Status::OK();
 }
 
+Status SchemaValidation::ValidateVectorStore(const TableSchema& schema,
+                                             const CoreOptions& options) {
+    const std::shared_ptr<FileFormat> vector_format = options.GetVectorFileFormat();
+    if (!vector_format) {
+        return Status::OK();
+    }
+    PAIMON_RETURN_NOT_OK(
+        ValidateVectorFileFormat(Options::VECTOR_FILE_FORMAT, vector_format->Identifier()));
+    if (!schema.PrimaryKeys().empty()) {
+        return Status::NotImplemented("Dedicated VECTOR storage only supports append-only tables");
+    }
+    if (!options.RowTrackingEnabled() || !options.DataEvolutionEnabled()) {
+        return Status::Invalid(
+            "Dedicated VECTOR storage requires row-tracking.enabled and data-evolution.enabled");
+    }
+    if (options.GetBucket() != -1) {
+        return Status::Invalid("Dedicated VECTOR storage requires bucket=-1");
+    }
+    if (options.GetFileFormat()->Identifier() != "parquet" ||
+        options.GetWriteFileFormat(/*level=*/0)->Identifier() != "parquet") {
+        return Status::NotImplemented(
+            "Dedicated VECTOR storage currently requires parquet main files");
+    }
+    int32_t vector_count = 0;
+    int32_t normal_count = 0;
+    for (const DataField& field : schema.Fields()) {
+        if (ContainsBlobField(field.ArrowField())) {
+            return Status::NotImplemented(
+                "Dedicated VECTOR storage does not yet support BLOB columns");
+        }
+        if (VectorUtils::ContainsVectorField(field.ArrowField())) {
+            if (field.Type()->id() != arrow::Type::FIXED_SIZE_LIST) {
+                return Status::NotImplemented(
+                    "Dedicated VECTOR storage only supports a top-level VECTOR column");
+            }
+            ++vector_count;
+        } else if (std::find(schema.PartitionKeys().begin(), schema.PartitionKeys().end(),
+                             field.Name()) == schema.PartitionKeys().end()) {
+            ++normal_count;
+        }
+    }
+    if (vector_count != 1) {
+        return Status::NotImplemented(
+            "Dedicated VECTOR storage requires exactly one top-level VECTOR column");
+    }
+    if (normal_count == 0) {
+        return Status::Invalid("Dedicated VECTOR storage requires a normal non-partition column");
+    }
+    return Status::OK();
+}
+
 Status SchemaValidation::ValidateVectorFields(const TableSchema& schema,
                                               const CoreOptions& options) {
     bool has_vector = false;
@@ -1281,6 +1359,46 @@ Status SchemaValidation::ValidateVectorFields(const TableSchema& schema,
     if (changelog_format) {
         PAIMON_RETURN_NOT_OK(ValidateVectorFileFormat(Options::CHANGELOG_FILE_FORMAT,
                                                       changelog_format->Identifier()));
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateStartupMode(const CoreOptions& options) {
+    // Only the options of Java `SchemaValidation#validateStartupMode` that Paimon C++ defines.
+    const std::map<std::string, std::string>& options_map = options.ToMap();
+    StartupMode mode = options.GetStartupMode();
+    if (mode == StartupMode::FromTimestamp()) {
+        std::vector<std::string> timestamp_keys = {Options::SCAN_TIMESTAMP_MILLIS,
+                                                   Options::SCAN_TIMESTAMP};
+        PAIMON_RETURN_NOT_OK(CheckExactOneOptionExistInMode(options_map, mode, timestamp_keys));
+        return CheckOptionsConflict(
+            options_map, {Options::SCAN_SNAPSHOT_ID, Options::SCAN_TAG_NAME}, timestamp_keys);
+    }
+    if (mode == StartupMode::FromSnapshot()) {
+        std::vector<std::string> snapshot_keys = {Options::SCAN_SNAPSHOT_ID,
+                                                  Options::SCAN_TAG_NAME};
+        PAIMON_RETURN_NOT_OK(CheckExactOneOptionExistInMode(options_map, mode, snapshot_keys));
+        return CheckOptionsConflict(
+            options_map, {Options::SCAN_TIMESTAMP_MILLIS, Options::SCAN_TIMESTAMP}, snapshot_keys);
+    }
+    if (mode == StartupMode::FromSnapshotFull()) {
+        if (options_map.count(Options::SCAN_SNAPSHOT_ID) == 0) {
+            return Status::Invalid(fmt::format("{} can not be null when you use {} for {}",
+                                               Options::SCAN_SNAPSHOT_ID, mode.ToString(),
+                                               Options::SCAN_MODE));
+        }
+        return CheckOptionsConflict(
+            options_map,
+            {Options::SCAN_TIMESTAMP_MILLIS, Options::SCAN_TIMESTAMP, Options::SCAN_TAG_NAME},
+            {Options::SCAN_SNAPSHOT_ID});
+    }
+    const char* const travel_keys[] = {Options::SCAN_TIMESTAMP_MILLIS, Options::SCAN_TIMESTAMP,
+                                       Options::SCAN_SNAPSHOT_ID, Options::SCAN_TAG_NAME};
+    for (const char* key : travel_keys) {
+        if (options_map.count(key) > 0) {
+            return Status::Invalid(fmt::format("{} must be null when you use {} for {}", key,
+                                               mode.ToString(), Options::SCAN_MODE));
+        }
     }
     return Status::OK();
 }

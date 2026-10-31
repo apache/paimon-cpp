@@ -32,6 +32,11 @@ TEST(ResourcePathsTest, WithPrefix) {
     ASSERT_EQ("/v1/my+prefix/tables/rename", paths.RenameTable());
     ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/snapshots", paths.Snapshots("db", "t1"));
     ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/commit", paths.CommitTable("db", "t1"));
+    ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/commit-lock", paths.CommitLock("db", "t1"));
+    ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/commit-lock/renew",
+              paths.RenewCommitLock("db", "t1"));
+    ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1%24branch_b1/commit-lock",
+              paths.CommitLock("db", "t1$branch_b1"));
     ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/snapshot", paths.TableSnapshot("db", "t1"));
     ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/token", paths.TableToken("db", "t1"));
     ASSERT_EQ("/v1/my+prefix/databases/db%231/tables/t+1/token", paths.TableToken("db#1", "t 1"));

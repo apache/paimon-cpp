@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -258,6 +259,22 @@ TEST_F(SplitGeneratorTest, TestDataEvolutionBlobSplitByFileSize) {
                              split_generator.SplitForBatch(create_files()));
         CheckResult(split_groups, {{"f1", "blob1.blob", "f2", "blob2.blob"}}, {false});
     }
+}
+
+TEST_F(SplitGeneratorTest, TestDataEvolutionRowIdRangeAtInt64Max) {
+    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+    DataEvolutionSplitGenerator split_generator(/*target_split_size=*/1000, /*open_file_cost=*/10,
+                                                /*count_blob_size=*/true);
+    ASSERT_OK_AND_ASSIGN(std::vector<SplitGenerator::SplitGroup> split_groups,
+                         split_generator.SplitForBatch(
+                             {CreateDataFileMetaWithRowId("f1", /*file_size=*/100, /*row_count=*/2,
+                                                          /*first_row_id=*/kMax - 1),
+                              CreateDataFileMetaWithRowId("f2", /*file_size=*/100, /*row_count=*/1,
+                                                          /*first_row_id=*/kMax)}));
+    CheckResult(split_groups, {{"f1", "f2"}}, {false});
+    ASSERT_NOK_WITH_MSG(split_generator.SplitForBatch({CreateDataFileMetaWithRowId(
+                            "f3", /*file_size=*/100, /*row_count=*/3, /*first_row_id=*/kMax - 1)}),
+                        "Invalid row id range of f3");
 }
 
 TEST_F(SplitGeneratorTest, TestMergeTree) {

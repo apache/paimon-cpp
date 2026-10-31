@@ -41,6 +41,7 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
 #include "paimon/core/catalog/catalog_utils.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
@@ -104,6 +105,7 @@
 #include "paimon/file_store_write.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
@@ -317,6 +319,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         CoreOptions options,
         CoreOptions::FromMap(opts, specific_fs, ctx->GetFileSystemSchemeToIdentifierMap()));
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*schema, options));
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateVectorStore(*schema, options));
+    if (options.GetVectorFileFormat() && !ctx->GetWriteSchema().empty()) {
+        return Status::NotImplemented(
+            "Dedicated VECTOR storage does not yet support custom write schemas or partial writes");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 
@@ -987,6 +994,12 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
 Result<std::unique_ptr<TableRead>> CreateTableRead(
     const std::shared_ptr<InternalReadContext>& internal_context,
     const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor) {
+    if (PredicateUtils::ContainsFullTextMatch(internal_context->GetPredicate())) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    }
+    if (!internal_context->GetIndexScoreBindings().empty()) {
+        return Status::NotImplemented("Per-field index score output is not implemented yet");
+    }
     const auto& core_options = internal_context->GetCoreOptions();
     const auto& table_schema = internal_context->GetTableSchema();
     if (internal_context->GetRealtimeContext() && !core_options.RealtimeEnabled()) {
@@ -1050,6 +1063,9 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(
 /// refuses by name what a format table cannot honour.
 Result<std::unique_ptr<TableRead>> NewFormatTableRead(const std::shared_ptr<FormatTable>& table,
                                                       const std::shared_ptr<ReadContext>& context) {
+    if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
                            FormatTableRead::Create(table, context));
     return std::unique_ptr<TableRead>(std::move(read));
@@ -1085,6 +1101,10 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
+        if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+            return Status::NotImplemented(
+                "FullTextMatch predicate execution is not implemented yet");
+        }
         if (context->HasVectorOrFullTextSearch()) {
             return Status::NotImplemented(
                 "VectorSearch or FullTextSearch is not supported for system tables");
@@ -1166,17 +1186,26 @@ bool IsCatalogCommit(const CommitContext& ctx) {
 
 Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
     const CommitContext& ctx, const std::optional<Identifier>& catalog_identifier,
-    const std::shared_ptr<FileSystem>& fs,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager) {
+    const CoreOptions& options, const std::shared_ptr<SnapshotManager>& snapshot_manager) {
     if (IsCatalogCommit(ctx)) {
         if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitLock> lock,
+                               AsVersionManaged(ctx.GetCatalog())
+                                   ->CreateCommitLock(catalog_identifier.value(), ctx.GetTableId(),
+                                                      ctx.GetCommitUser(), options));
         // Reuse the caller's UUID so table recreation cannot redirect this commit.
         return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(
-            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId()));
+            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId(), std::move(lock)));
     }
     if (ctx.UseRESTCatalogCommit()) {
+        if (options.RestCommitAcquireLock()) {
+            return Status::Invalid(fmt::format(
+                "'{}' needs a commit through a REST catalog with WithCatalog(); a commit table "
+                "request built for the caller to send cannot hold a commit lease",
+                Options::REST_COMMIT_ACQUIRE_LOCK));
+        }
         return std::shared_ptr<SnapshotCommit>(
             std::make_shared<CatalogSnapshotCommit>(ctx.GetTableId()));
     }
@@ -1188,7 +1217,7 @@ Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
             "catalog with WithCatalog() or ask for the request with UseRESTCatalogCommit()");
     }
     return std::shared_ptr<SnapshotCommit>(
-        std::make_shared<RenamingSnapshotCommit>(fs, snapshot_manager));
+        std::make_shared<RenamingSnapshotCommit>(options.GetFileSystem(), snapshot_manager));
 }
 
 /// Creates a format-table commit, rejecting non-default options that require snapshots.
@@ -1402,9 +1431,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
                                              ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<SnapshotCommit> snapshot_commit,
-        NewSnapshotCommit(*ctx, catalog_identifier, options.GetFileSystem(), snapshot_manager));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotCommit> snapshot_commit,
+                           NewSnapshotCommit(*ctx, catalog_identifier, options, snapshot_manager));
 
     return std::make_unique<FileStoreCommitImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, root_path, ctx->GetCommitUser(),

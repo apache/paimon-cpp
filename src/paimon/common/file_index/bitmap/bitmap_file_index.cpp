@@ -18,6 +18,7 @@
 
 #include "paimon/common/file_index/bitmap/bitmap_file_index.h"
 
+#include <limits>
 #include <utility>
 
 #include "arrow/c/bridge.h"
@@ -25,6 +26,7 @@
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta_v1.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta_v2.h"
+#include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -77,9 +79,15 @@ FieldType BitmapFileIndex::ConvertType(const FieldType& data_type) {
 }
 
 Result<std::shared_ptr<FileIndexReader>> BitmapFileIndex::CreateReader(
-    ::ArrowSchema* c_arrow_schema, int32_t start, int32_t length,
+    ::ArrowSchema* c_arrow_schema, int64_t start, int64_t length,
     const std::shared_ptr<InputStream>& input_stream,
     const std::shared_ptr<MemoryPool>& pool) const {
+    if (length > std::numeric_limits<int32_t>::max()) {
+        return Status::NotImplemented(
+            "Bitmap file index does not support payloads larger than INT32_MAX");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetInputStream> bounded_stream,
+                           OffsetInputStream::Create(input_stream, length, start));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
                                       arrow::ImportSchema(c_arrow_schema));
     if (arrow_schema->num_fields() != 1) {
@@ -90,8 +98,7 @@ Result<std::shared_ptr<FileIndexReader>> BitmapFileIndex::CreateReader(
     auto arrow_type = arrow_schema->field(0)->type();
     PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
                            FieldTypeUtils::ConvertToFieldType(arrow_type->id()));
-    return std::make_shared<BitmapFileIndexReader>(arrow_type, data_type, start, length,
-                                                   input_stream, pool);
+    return std::make_shared<BitmapFileIndexReader>(arrow_type, data_type, bounded_stream, pool);
 }
 
 Result<std::shared_ptr<FileIndexWriter>> BitmapFileIndex::CreateWriter(
@@ -228,16 +235,10 @@ Result<PAIMON_UNIQUE_PTR<Bytes>> BitmapFileIndexWriter::SerializedBytes() const 
 }
 
 BitmapFileIndexReader::BitmapFileIndexReader(const std::shared_ptr<arrow::DataType>& arrow_type,
-                                             const FieldType& data_type, int32_t start,
-                                             int32_t length,
+                                             const FieldType& data_type,
                                              const std::shared_ptr<InputStream>& input_stream,
                                              const std::shared_ptr<MemoryPool>& pool)
-    : head_start_(start),
-      length_(length),
-      data_type_(data_type),
-      arrow_type_(arrow_type),
-      pool_(pool),
-      input_stream_(input_stream) {}
+    : data_type_(data_type), arrow_type_(arrow_type), pool_(pool), input_stream_(input_stream) {}
 
 Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitEqual(const Literal& literal) {
     return VisitIn({literal});
@@ -329,16 +330,17 @@ Result<RoaringBitmap32> BitmapFileIndexReader::ReadBitmap(const Literal& literal
 
 Status BitmapFileIndexReader::ReadInternalMeta() {
     if (!bitmap_file_index_meta_) {
-        PAIMON_RETURN_NOT_OK(input_stream_->Seek(head_start_, SeekOrigin::FS_SEEK_SET));
+        PAIMON_RETURN_NOT_OK(input_stream_->Seek(0, SeekOrigin::FS_SEEK_SET));
+        PAIMON_ASSIGN_OR_RAISE(int64_t length, input_stream_->Length());
         DataInputStream data_input_stream(input_stream_);
         PAIMON_ASSIGN_OR_RAISE(int8_t version, data_input_stream.ReadValue<int8_t>());
         FieldType converted_type = BitmapFileIndex::ConvertType(data_type_);
         if (version == BitmapFileIndex::VERSION_1) {
             bitmap_file_index_meta_ = std::make_shared<BitmapFileIndexMetaV1>(
-                converted_type, head_start_, length_, pool_);
+                converted_type, /*start=*/0, static_cast<int32_t>(length), pool_);
         } else if (version == BitmapFileIndex::VERSION_2) {
-            bitmap_file_index_meta_ =
-                std::make_shared<BitmapFileIndexMetaV2>(converted_type, length_, pool_);
+            bitmap_file_index_meta_ = std::make_shared<BitmapFileIndexMetaV2>(
+                converted_type, static_cast<int32_t>(length), pool_);
         } else {
             return Status::Invalid(fmt::format("unknown bitmap file index version {}", version));
         }

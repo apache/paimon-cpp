@@ -31,6 +31,7 @@
 #include "paimon/core/options/changelog_producer.h"
 #include "paimon/core/options/compress_options.h"
 #include "paimon/core/options/external_path_strategy.h"
+#include "paimon/core/options/global_index_search_mode.h"
 #include "paimon/core/options/lookup_compact_mode.h"
 #include "paimon/core/options/lookup_strategy.h"
 #include "paimon/core/options/map_shared_shredding_column_placement_policy.h"
@@ -80,6 +81,7 @@ class PAIMON_EXPORT CoreOptions {
 
     int32_t GetBucket() const;
     std::shared_ptr<FileFormat> GetFileFormat() const;
+    std::shared_ptr<FileFormat> GetVectorFileFormat() const;
     std::shared_ptr<FileFormat> GetWriteFileFormat(int32_t level) const;
     std::shared_ptr<FileSystem> GetFileSystem() const;
     const std::string& GetFileCompression() const;
@@ -89,6 +91,7 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetTargetFileSize(bool has_primary_key) const;
     int64_t GetTargetFileRowNum() const;
     int64_t GetBlobTargetFileSize() const;
+    int64_t GetVectorTargetFileSize() const;
     bool BlobSplitByFileSize() const;
     int64_t GetCompactionFileSize(bool has_primary_key) const;
     std::string GetPartitionDefaultName() const;
@@ -140,6 +143,8 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetCommitMinRetryWait() const;
     int64_t GetCommitMaxRetryWait() const;
     bool CommitDiscardDuplicateFiles() const;
+    bool RestCommitLockEnabled() const;
+    bool RestCommitAcquireLock() const;
     bool DynamicPartitionOverwrite() const;
     bool OverwriteUpgrade() const;
     int32_t GetCompactionMinFileNum() const;
@@ -224,6 +229,7 @@ class PAIMON_EXPORT CoreOptions {
     bool PrepareCommitWaitCompaction() const;
     bool FileIndexReadEnabled() const;
     int64_t FileIndexInManifestThreshold() const;
+    int32_t FileIndexFormatVersion() const;
 
     std::map<std::string, std::string> GetFieldsSequenceGroups() const;
     bool PartialUpdateRemoveRecordOnDelete() const;
@@ -298,11 +304,13 @@ class PAIMON_EXPORT CoreOptions {
 
     BucketFunctionType GetBucketFunctionType() const;
     std::optional<int32_t> GetGlobalIndexThreadNum() const;
+    /// Returns `full-text-index.search-mode`, or else `global-index.search-mode`, or else
+    /// `GlobalIndexSearchMode::FAST`, as Java `CoreOptions#fullTextIndexSearchMode` does.
+    GlobalIndexSearchMode GetFullTextIndexSearchMode() const;
 
     const std::vector<std::string>& GetBlobFields() const;
     const std::vector<std::string>& GetBlobDescriptorFields() const;
     const std::vector<std::string>& GetBlobViewFields() const;
-    std::optional<std::string> GetBlobViewUpstreamWarehouse() const;
     bool BlobViewResolveEnabled() const;
     std::vector<std::string> GetBlobInlineFields() const;
 

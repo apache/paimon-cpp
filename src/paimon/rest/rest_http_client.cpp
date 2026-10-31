@@ -134,6 +134,17 @@ bool IsRetriableTransportError(CURLcode code) {
     }
 }
 
+// A non-zero result makes libcurl abort the transfer with CURLE_ABORTED_BY_CALLBACK.
+int AbortWhenCancelled(void* user_data, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/,
+                       curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) {
+    const auto* cancellation = static_cast<const RestHttpClient::Cancellation*>(user_data);
+    return cancellation->IsCancelled() ? 1 : 0;
+}
+
+Status CancelledStatus(const std::string& method) {
+    return Status::Cancelled(fmt::format("http {} request was cancelled", method));
+}
+
 // libcurl sends no User-Agent of its own, so requests would reach the server unnamed. A
 // "header.User-Agent" option still wins: an explicit request header overrides
 // CURLOPT_USERAGENT.
@@ -202,6 +213,24 @@ class RestHttpClient::HandlePool {
     mutable std::vector<CURL*> handles_;
 };
 
+void RestHttpClient::Cancellation::Cancel() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_.store(true);
+    }
+    cancelled_cv_.notify_all();
+}
+
+bool RestHttpClient::Cancellation::IsCancelled() const {
+    return cancelled_.load();
+}
+
+void RestHttpClient::Cancellation::WaitFor(int64_t delay_ms) const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cancelled_cv_.wait_for(lock, std::chrono::milliseconds(delay_ms),
+                           [this]() { return cancelled_.load(); });
+}
+
 RestHttpClient::RestHttpClient(const std::string& base_uri, const Config& config)
     : handle_pool_(std::make_unique<HandlePool>()),
       base_uri_(base_uri),
@@ -252,7 +281,7 @@ std::string RestHttpClient::BuildQueryString(
 Result<RestHttpClient::Response> RestHttpClient::ExecuteOnce(
     const std::string& method, const std::string& url,
     const std::map<std::string, std::string>& headers, const std::string& body,
-    bool follow_redirects, bool* transport_retriable) const {
+    bool follow_redirects, const Cancellation* cancellation, bool* transport_retriable) const {
     CURL* curl = handle_pool_->Acquire();
     if (curl == nullptr) {
         return Status::IOError("failed to create curl handle");
@@ -274,6 +303,13 @@ Result<RestHttpClient::Response> RestHttpClient::ExecuteOnce(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, WriteHeaderCallback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
+    if (cancellation != nullptr) {
+        // The callback only reads the cancellation; curl just takes a non-const pointer.
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, AbortWhenCancelled);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
+                         const_cast<void*>(static_cast<const void*>(cancellation)));
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    }
     // Redirects can be disabled for auth headers whose signatures are bound to the
     // original request. Otherwise they are restricted to http(s) targets. Without
     // CURLOPT_POSTREDIR a 301/302 would replay a body-carrying request as a bodyless
@@ -325,6 +361,9 @@ Result<RestHttpClient::Response> RestHttpClient::ExecuteOnce(
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
 
     CURLcode curl_code = curl_easy_perform(curl);
+    if (curl_code == CURLE_ABORTED_BY_CALLBACK && cancellation != nullptr) {
+        return CancelledStatus(method);
+    }
     if (curl_code != CURLE_OK) {
         *transport_retriable = IsRetriableTransportError(curl_code);
         // Neither the url nor the response body is echoed in errors: both may carry
@@ -404,7 +443,7 @@ Result<RestHttpClient::Response> RestHttpClient::Execute(
     const std::string& method, const std::string& path,
     const std::map<std::string, std::string>& query_params,
     const std::map<std::string, std::string>& headers, const std::string& body,
-    bool follow_redirects, bool retry_safe) const {
+    bool follow_redirects, bool retry_safe, const Cancellation* cancellation) const {
     if (method != "GET" && method != "POST" && method != "DELETE") {
         return Status::Invalid(fmt::format("unsupported http method: {}", method));
     }
@@ -428,10 +467,14 @@ Result<RestHttpClient::Response> RestHttpClient::Execute(
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     int32_t execution_count = 0;
     while (true) {
+        // Also ends a retry backoff that the cancellation cut short.
+        if (cancellation != nullptr && cancellation->IsCancelled()) {
+            return CancelledStatus(method);
+        }
         execution_count++;
         bool transport_retriable = false;
-        Result<Response> result =
-            ExecuteOnce(method, url, headers, body, follow_redirects, &transport_retriable);
+        Result<Response> result = ExecuteOnce(method, url, headers, body, follow_redirects,
+                                              cancellation, &transport_retriable);
         bool retriable;
         if (result.ok()) {
             retriable = IsRetriableCode(result.value().code);
@@ -465,7 +508,11 @@ Result<RestHttpClient::Response> RestHttpClient::Execute(
                         static_cast<long long>(delay_ms.value()),  // NOLINT(runtime/int)
                         execution_count, config_.max_retries, reason.c_str());
         if (delay_ms.value() > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms.value()));
+            if (cancellation != nullptr) {
+                cancellation->WaitFor(delay_ms.value());
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms.value()));
+            }
         }
     }
 }

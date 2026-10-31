@@ -44,7 +44,7 @@ class LuminaFileIndexer final : public FileIndexer {
     Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const override;
 
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
-        ::ArrowSchema* arrow_schema, int32_t start, int32_t length,
+        ::ArrowSchema* arrow_schema, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input_stream,
         const std::shared_ptr<MemoryPool>& pool) const override;
 
@@ -66,6 +66,7 @@ class LuminaFileIndexWriter final : public FileIndexWriter {
     Status AddBatch(::ArrowArray* batch) override;
 
     Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const override;
+    Result<bool> WriteTo(OutputStream* output) const override;
 
  private:
     std::string field_name_;

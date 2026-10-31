@@ -62,7 +62,7 @@ struct PAIMON_EXPORT CatalogOptions {
     /// "dlf.token-ecs-role-name" - Optional ECS RAM role name.
     static const char DLF_TOKEN_ECS_ROLE_NAME[];
 
-    /// "dlf.signing-algorithm" - DLF signer ("default" or "openapi").
+    /// "dlf.signing-algorithm" - DLF signer ("default", "openapi" or "openapi-v4").
     static const char DLF_SIGNING_ALGORITHM[];
 
     /// "dlf.oss-endpoint" - OSS endpoint that overrides the "fs.oss.endpoint" of a data

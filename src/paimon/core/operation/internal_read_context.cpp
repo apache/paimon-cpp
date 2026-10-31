@@ -18,6 +18,8 @@
 
 #include "paimon/core/operation/internal_read_context.h"
 
+#include <algorithm>
+#include <functional>
 #include <optional>
 #include <utility>
 
@@ -25,22 +27,88 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/catalog/catalog.h"
+#include "paimon/catalog_options.h"
+#include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
+#include "paimon/common/utils/url_utils.h"
 #include "paimon/core/options/map_storage_layout.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
 #include "paimon/core/utils/nested_projection_utils.h"
+#include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/predicate/vector_search.h"
+#include "paimon/rest/rest_api.h"
 #include "paimon/status.h"
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 namespace paimon {
+namespace {
+
+std::string IdentifierToFlatJson(const Identifier& identifier) {
+    rapidjson::Document document(rapidjson::kObjectType);
+    auto& allocator = document.GetAllocator();
+    document.AddMember(rapidjson::StringRef("database"),
+                       rapidjson::Value(identifier.GetDatabaseName(), allocator), allocator);
+    // Keep branch and system-table suffixes in the reported object name.
+    document.AddMember(rapidjson::StringRef("object"),
+                       rapidjson::Value(identifier.GetObjectName(), allocator), allocator);
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    document.Accept(writer);
+    return buffer.GetString();
+}
+
+}  // namespace
+
+std::shared_ptr<CatalogContext> InternalReadContext::CreateDependencyCatalogContext() const {
+    const auto& catalog = read_context_->GetCatalog();
+    if (!catalog) {
+        // Preserve path-only filesystem reads using <warehouse>/<database>.db/<table>.
+        return std::make_shared<CatalogContext>(
+            PathUtil::GetParentDirPath(PathUtil::GetParentDirPath(GetPath())), options_.ToMap(),
+            GetFileSystemSchemeToIdentifierMap());
+    }
+
+    // Preserve the dependency catalog's effective settings: table options, then catalog
+    // options, then explicit read overrides. The upstream reader loads its own table options;
+    // ReadContextBuilder must not copy these catalog settings back into that read.
+    auto dependency_options = options_.ToMap();
+    const auto& catalog_options = catalog->GetOptions();
+    for (const auto& [key, value] : catalog_options) {
+        dependency_options[key] = value;
+    }
+    const auto& read_options = read_context_->GetOptions();
+    for (const auto& [key, value] : read_options) {
+        dependency_options[key] = value;
+    }
+    const std::string read_via_option =
+        std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
+    auto metastore = dependency_options.find(CatalogOptions::METASTORE);
+    if (metastore != dependency_options.end() &&
+        StringUtils::ToLowerCase(metastore->second) == "rest" && read_context_->GetIdentifier() &&
+        dependency_options.count(read_via_option) == 0) {
+        // Only fill in a missing header when the merged options select a REST dependency catalog.
+        dependency_options[read_via_option] =
+            UrlUtils::EncodeString(IdentifierToFlatJson(*read_context_->GetIdentifier()));
+    }
+    // A REST warehouse identifies the catalog, independent of the table's storage location.
+    return std::make_shared<CatalogContext>(catalog->GetRootPath(), dependency_options,
+                                            GetFileSystemSchemeToIdentifierMap());
+}
 
 Result<std::shared_ptr<arrow::Field>> InternalReadContext::AlignReadFieldWithTableFieldIds(
     const std::shared_ptr<arrow::Field>& read_field,
@@ -175,7 +243,12 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldById(
 }
 
 std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
-    const std::string& name, const CoreOptions& core_options, bool has_vector_or_full_text_search) {
+    const std::string& name, const CoreOptions& core_options, bool has_vector_or_full_text_search,
+    int32_t output_field_idx) {
+    if (SpecialFields::ParseIndexScoreFieldName(name)) {
+        // These virtual columns have read-local negative IDs, not persistent table IDs.
+        return DataField(-1 - output_field_idx, arrow::field(name, arrow::float32()));
+    }
     if (name == SpecialFields::ValueKind().Name()) {
         return SpecialFields::ValueKind();
     }
@@ -245,7 +318,8 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
         // Align special-field validation with read_field_ids/read_field_names branches.
         for (const auto& read_field : read_schema->fields()) {
             if (auto resolved_special_field = TryResolveSpecialFieldByName(
-                    read_field->name(), core_options, has_vector_or_full_text_search)) {
+                    read_field->name(), core_options, has_vector_or_full_text_search,
+                    static_cast<int32_t>(read_data_fields.size()))) {
                 read_data_fields.push_back(*resolved_special_field);
                 continue;
             }
@@ -281,8 +355,9 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     } else if (!context->GetReadFieldNames().empty()) {
         read_data_fields.reserve(context->GetReadFieldNames().size());
         for (const auto& name : context->GetReadFieldNames()) {
-            if (auto resolved_special_field = TryResolveSpecialFieldByName(
-                    name, core_options, has_vector_or_full_text_search)) {
+            if (auto resolved_special_field =
+                    TryResolveSpecialFieldByName(name, core_options, has_vector_or_full_text_search,
+                                                 static_cast<int32_t>(read_data_fields.size()))) {
                 read_data_fields.push_back(*resolved_special_field);
                 continue;
             }
@@ -311,13 +386,85 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
             *read_schema, context->GetPredicate(), /*validate_field_idx=*/true));
     }
-
     if (!context->GetMemoryPool()) {
         return Status::Invalid("memory pool is null");
     }
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(context->GetMemoryPool());
-    return std::unique_ptr<InternalReadContext>(
+    auto internal_context = std::unique_ptr<InternalReadContext>(
         new InternalReadContext(context, table_schema, read_schema, core_options, arrow_pool));
+    PAIMON_RETURN_NOT_OK(internal_context->BindIndexScores());
+    return internal_context;
+}
+
+Status InternalReadContext::BindIndexScores() {
+    std::map<std::string, int32_t> projected_scores;
+    for (int32_t idx = 0; idx < read_schema_->num_fields(); ++idx) {
+        if (auto field_name =
+                SpecialFields::ParseIndexScoreFieldName(read_schema_->field(idx)->name())) {
+            projected_scores.emplace(*field_name, idx);
+        }
+    }
+    if (projected_scores.empty()) {
+        return Status::OK();
+    }
+    auto bind = [&](const IndexScoreSource& source, bool under_or) -> Status {
+        auto iter = projected_scores.find(source.field_name);
+        if (iter == projected_scores.end()) {
+            return Status::OK();
+        }
+        if (under_or) {
+            return Status::Invalid("Score-producing FullTextMatch cannot appear under OR");
+        }
+        if (!index_score_bindings_.emplace(iter->second, source).second) {
+            return Status::Invalid(fmt::format(
+                "Score-producing search field '{}' occurs more than once", source.field_name));
+        }
+        return Status::OK();
+    };
+    std::function<Status(const std::shared_ptr<Predicate>&, bool)> visit =
+        [&](const std::shared_ptr<Predicate>& predicate, bool under_or) -> Status {
+        if (auto full_text = std::dynamic_pointer_cast<FullTextMatchPredicate>(predicate)) {
+            return bind({IndexScoreSource::Type::FULL_TEXT_MATCH, full_text->FieldName()},
+                        under_or);
+        }
+        if (auto compound = std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
+            const bool child_under_or =
+                under_or || compound->GetFunction().GetType() == Function::Type::OR;
+            for (const auto& child : compound->Children()) {
+                PAIMON_RETURN_NOT_OK(visit(child, child_under_or));
+            }
+        }
+        return Status::OK();
+    };
+    PAIMON_RETURN_NOT_OK(visit(GetPredicate(), /*under_or=*/false));
+    if (const auto& search = GetVectorSearch()) {
+        PAIMON_RETURN_NOT_OK(
+            bind({IndexScoreSource::Type::VECTOR_SEARCH, search->field_name}, /*under_or=*/false));
+    }
+    if (const auto& search = GetFullTextSearch()) {
+        PAIMON_RETURN_NOT_OK(bind({IndexScoreSource::Type::FULL_TEXT_SEARCH, search->field_name},
+                                  /*under_or=*/false));
+    }
+    for (const auto& [field_name, output_idx] : projected_scores) {
+        if (index_score_bindings_.find(output_idx) == index_score_bindings_.end()) {
+            return Status::Invalid(fmt::format("Index score field '{}' has no search source",
+                                               read_schema_->field(output_idx)->name()));
+        }
+    }
+    return Status::OK();
+}
+
+bool InternalReadContext::NeedsScores(const IndexScoreSource& source) const {
+    if (source.type == IndexScoreSource::Type::VECTOR_SEARCH) {
+        const auto& search = GetVectorSearch();
+        return search && search->field_name == source.field_name;
+    }
+    if (source.type == IndexScoreSource::Type::FULL_TEXT_SEARCH) {
+        const auto& search = GetFullTextSearch();
+        return search && search->field_name == source.field_name;
+    }
+    return std::any_of(index_score_bindings_.begin(), index_score_bindings_.end(),
+                       [&source](const auto& binding) { return binding.second == source; });
 }
 
 InternalReadContext::InternalReadContext(const std::shared_ptr<ReadContext>& read_context,
@@ -334,6 +481,11 @@ InternalReadContext::InternalReadContext(const std::shared_ptr<ReadContext>& rea
 Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSchema(
     const std::shared_ptr<InternalReadContext>& original,
     const std::shared_ptr<arrow::Schema>& new_read_schema) {
+    if (original->HasVectorOrFullTextSearch() ||
+        PredicateUtils::ContainsFullTextMatch(original->GetPredicate())) {
+        return Status::NotImplemented(
+            "CreateWithSchema does not support search requests or index score projections");
+    }
     // Create a new InternalReadContext sharing all properties except read_schema.
     // The new read_schema is the minimal column set for COUNT(*).
     return std::shared_ptr<InternalReadContext>(

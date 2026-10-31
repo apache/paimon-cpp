@@ -18,15 +18,19 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/result.h"
+#include "paimon/status.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
+struct FullTextMatch;
+
 /// A visitor interface for evaluating filter predicates on indexed columns.
 /// @tparam T The result type produced by each visit method (e.g., a file index result or global
 /// index result).
@@ -76,5 +80,11 @@ class PAIMON_EXPORT FunctionVisitor {
 
     /// Evaluates whether string values like the given string.
     virtual Result<T> VisitLike(const Literal& literal) = 0;
+
+    /// Evaluates a full-text condition without TopK truncation.
+    /// Visitors without full-text support return NotImplemented.
+    virtual Result<T> VisitFullTextMatch(const std::shared_ptr<FullTextMatch>& full_text_match) {
+        return Status::NotImplemented("This visitor does not support complete full-text matching");
+    }
 };
 }  // namespace paimon

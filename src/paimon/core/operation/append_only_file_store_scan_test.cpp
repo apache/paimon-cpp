@@ -815,7 +815,9 @@ TEST(AppendOnlyFileStoreScanTest, TestDropStatsAfterFiltering) {
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     TimezoneGuard guard("Asia/Shanghai");
     std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
-    auto cache = std::make_shared<LruCache>(/*max_weight=*/16 * 1024 * 1024);
+    auto cache = std::make_shared<CountingRoutingCache>(
+        std::map<CacheKind, int64_t>{{CacheKind::MANIFEST, 16 * 1024 * 1024},
+                                     {CacheKind::SNAPSHOT_LIVE_MANIFEST, 16 * 1024 * 1024}});
 
     // First scan on snapshot 5: cache miss, entries rebuilt from all manifests.
     auto scan_first = BuildScan(table_path, cache, /*bucket=*/0);
@@ -839,6 +841,11 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     ASSERT_EQ(first_cache_hit, 0);
     ASSERT_EQ(first_cache_misses, 1);
 
+    const int64_t manifest_gets = cache->GetCount(CacheKind::MANIFEST);
+    ASSERT_GT(manifest_gets, 0);
+    ASSERT_OK_AND_ASSIGN(uint64_t first_skipped,
+                         first_metrics->GetCounter(ScanMetrics::LAST_SCAN_SKIPPED_TABLE_FILES));
+
     // Second scan on the same snapshot should read the same bucket live entries from cache.
     auto scan_second = BuildScan(table_path, cache, /*bucket=*/0);
     scan_second->WithSnapshot(snapshot_5);
@@ -855,9 +862,36 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
         uint64_t materialized_rows,
         second_metrics->GetCounter(ScanMetrics::LAST_LAZY_DECODE_MATERIALIZED_ROWS));
     ASSERT_EQ(second_cache_hit, 1);
+    ASSERT_EQ(cache->GetCount(CacheKind::MANIFEST), manifest_gets);
+    ASSERT_OK_AND_ASSIGN(uint64_t second_scanned,
+                         second_metrics->GetCounter(ScanMetrics::LAST_SCANNED_MANIFESTS));
+    ASSERT_OK_AND_ASSIGN(uint64_t second_skipped,
+                         second_metrics->GetCounter(ScanMetrics::LAST_SCAN_SKIPPED_TABLE_FILES));
+    ASSERT_EQ(second_scanned, 0);
+    ASSERT_EQ(second_skipped, first_skipped);
     ASSERT_EQ(second_cache_hits, 1);
     ASSERT_GE(scanned_rows, materialized_rows);
     ASSERT_OK(second_metrics->GetHistogramStats(ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION));
+
+    // A different predicate must still filter the cached, unfiltered bucket entries.
+    std::shared_ptr<Predicate> predicate =
+        PredicateBuilder::Equal(0, "f0", FieldType::STRING, Literal(FieldType::STRING, "David", 5));
+    auto filtered = BuildScan(table_path, cache, /*bucket=*/0, predicate);
+    filtered->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto filtered_plan, filtered->CreatePlan());
+    auto expected = BuildScan(table_path, nullptr, /*bucket=*/0, predicate);
+    expected->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto expected_plan, expected->CreatePlan());
+    ASSERT_EQ(SortedFileNames(filtered_plan->Files()), SortedFileNames(expected_plan->Files()));
+    ASSERT_EQ(cache->GetCount(CacheKind::MANIFEST), manifest_gets);
+
+    // Eviction must rebuild from source; an exact-hit shortcut cannot survive invalidation.
+    cache->InvalidateAll();
+    auto rebuilt = BuildScan(table_path, cache, /*bucket=*/0);
+    rebuilt->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto rebuilt_plan, rebuilt->CreatePlan());
+    ASSERT_EQ(first_file_names, SortedFileNames(rebuilt_plan->Files()));
+    ASSERT_GT(cache->GetCount(CacheKind::MANIFEST), manifest_gets);
 }
 
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {
@@ -998,9 +1032,10 @@ TEST(AppendOnlyFileStoreScanTest, SnapshotCacheRebuildsCorruptValues) {
             segment.PutValue<int32_t>(offset, -1);
         }
         MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
-        out.WriteValue<int32_t>(corruption == "magic" ? 0 : 0x534d4543);
+        out.WriteValue<int32_t>(corruption == "magic" ? 0 : 0x534d4544);
         out.WriteValue<int32_t>(1);
         out.WriteValue<int64_t>(snapshot.Id());
+        out.WriteValue<int64_t>(1);
         out.WriteValue<int32_t>(1);
         ASSERT_OK(row_serializer.Serialize(row, &out));
         ASSERT_EQ(out.Segments().size(), 1);
@@ -1078,7 +1113,11 @@ TEST(AppendOnlyFileStoreScanTest, PartitionPruningAcrossCacheModes) {
                 scan->partition_filter_ = counting;
                 ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
                 ASSERT_EQ(counting->row_calls_.load(), 2);
-                ASSERT_GT(counting->stats_calls_.load(), 0);
+                if (mode == 2 && scans > 0) {
+                    ASSERT_EQ(counting->stats_calls_.load(), 0);
+                } else {
+                    ASSERT_GT(counting->stats_calls_.load(), 0);
+                }
                 ASSERT_EQ(plan->Files().size(), partition == 99 ? 0 : 1);
                 if (partition != 99) {
                     ASSERT_EQ(plan->Files()[0].Partition().GetInt(0), partition);
@@ -1156,7 +1195,7 @@ TEST(AppendOnlyFileStoreScanTest, PartitionPruningSkipsExcludedMetadataInCreateP
         if (mode == 2) {
             // Seed the complete snapshot directly: rebuilding must decode every partition.
             SnapshotLiveManifestEntries entries(8);
-            entries.Put(1, {kept, excluded});
+            entries.Put(1, {kept, excluded}, /*total_data_files=*/2);
             ASSERT_OK(scan->StoreSnapshotLiveManifestEntries(0, entries));
         }
         for (int32_t attempt = 0; attempt < 2; ++attempt) {

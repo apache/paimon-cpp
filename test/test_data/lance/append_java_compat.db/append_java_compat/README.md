@@ -16,6 +16,8 @@ f_string STRING
 f_binary BINARY(4)
 f_varbinary BYTES
 f_date DATE
+f_time_0 TIME(0)
+f_time_3 TIME(3)
 f_ts_0 TIMESTAMP(0)
 f_ts_3 TIMESTAMP(3)
 f_ts_6 TIMESTAMP(6)
@@ -41,18 +43,20 @@ BatchTableWrite/BatchTableCommit APIs wrote two rows per commit into two Lance d
 with schema, Avro manifests and two snapshots. All four rows were read back and verified in Java.
 Values below follow schema order; timestamps are UTC and binary values are hexadecimal.
 
-Add: (1, true, -5, -1000, 10000000001, 1.25, -2.5, "char0001", "value-1", 0x62696e31, 0x0001027f, 1969-12-31, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [1, NULL, -1], [[1, NULL], NULL, []], (1, "required"), (1, "nullable"), [1.0, -1.5, 0.25])
-Add: (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, (NULL, NULL), (NULL, NULL), NULL)
+Add: (1, true, -5, -1000, 10000000001, 1.25, -2.5, "char0001", "value-1", 0x62696e31, 0x0001027f, 1969-12-31, 00:00:00, 23:59:59.999, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [1, NULL, -1], [[1, NULL], NULL, []], (1, "required"), (1, "nullable"), [1.0, -1.5, 0.25])
+Add: (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, (NULL, NULL), (NULL, NULL), NULL)
 
 Commit - snapshot 1 (2 rows)
 
-Add: (10, false, -5, -1000, 10000000010, 1.25, -2.5, "char0001", "", 0x62696e31, 0x0001027f, 2024-10-04, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [], [[10, NULL], NULL, []], (10, "required"), (10, "nullable"), [10.0, -1.5, 0.25])
-Add: (11, true, -5, -1000, 10000000011, 1.25, -2.5, "char0001", "value-11", 0x62696e31, 0x0001027f, 2024-10-04, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [11, NULL, -11], [[11, NULL], NULL, []], (11, "required"), (11, "nullable"), [11.0, -1.5, 0.25])
+Add: (10, false, -5, -1000, 10000000010, 1.25, -2.5, "char0001", "", 0x62696e31, 0x0001027f, 2024-10-04, 12:34:56, 00:00:01.123, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [], [[10, NULL], NULL, []], (10, "required"), (10, "nullable"), [10.0, -1.5, 0.25])
+Add: (11, true, -5, -1000, 10000000011, 1.25, -2.5, "char0001", "value-11", 0x62696e31, 0x0001027f, 2024-10-04, 23:59:59, 12:34:56.789, 1970-01-01 00:00:01, 1970-01-01 00:00:01.123, 1970-01-01 00:00:01.123456, 1970-01-01 00:00:01.123456789, -3, 1.25, 12345678901234567.89, 12345678901234567890.123456789012345678, [11, NULL, -11], [[11, NULL], NULL, []], (11, "required"), (11, "nullable"), [11.0, -1.5, 0.25])
 
 Commit - snapshot 2 (4 rows total)
 
-At this Java revision, nullable ROW declarations are accepted but actual null ROW parents
+At the writer commit above, nullable ROW declarations are accepted but actual null ROW parents
 do not survive the Lance round trip (a separate probe read id=2's null parent as non-null).
 Both struct parents here are valid, including id=2 where their children are NULL.
-TIME32 is omitted because the C++ table path does not support it; Java's Lance validator
-rejects local-zoned timestamps, MAP, MULTISET, VARIANT and BLOB.
+Java writes both TIME columns to Lance as time32[ms] holding milliseconds of the day, with
+no precision in the field metadata; the declared precision comes from the table schema.
+At the writer commit above, Java's Lance validator rejects local-zoned timestamps, MAP,
+MULTISET, VARIANT and BLOB, so this fixture omits them.

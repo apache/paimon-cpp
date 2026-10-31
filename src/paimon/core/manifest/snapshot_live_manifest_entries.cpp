@@ -34,7 +34,7 @@
 namespace paimon {
 namespace {
 
-constexpr int32_t kMagic = 0x534d4543;  // SMEC
+constexpr int32_t kMagic = 0x534d4544;  // SMED: includes per-snapshot total file counts
 
 size_t NormalizeMaxSnapshots(int32_t max_snapshots) {
     return static_cast<size_t>(std::max(0, max_snapshots));
@@ -61,12 +61,14 @@ std::shared_ptr<Bytes> ToBytes(const MemorySegmentOutputStream& out,
 SnapshotLiveManifestEntries::SnapshotLiveManifestEntries(int32_t max_snapshots)
     : max_snapshots_(max_snapshots) {}
 
-void SnapshotLiveManifestEntries::Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries) {
+void SnapshotLiveManifestEntries::Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries,
+                                      int64_t total_data_files) {
     if (NormalizeMaxSnapshots(max_snapshots_) == 0) {
         return;
     }
     entries_by_snapshot_[snapshot_id] =
         std::make_shared<const std::vector<ManifestEntry>>(std::move(entries));
+    total_data_files_by_snapshot_[snapshot_id] = total_data_files;
     EvictIfNeeded();
 }
 
@@ -83,6 +85,7 @@ Result<std::shared_ptr<Bytes>> SnapshotLiveManifestEntries::Serialize(
     ManifestEntrySerializer serializer(pool);
     for (const auto& [snapshot_id, entries] : entries_by_snapshot_) {
         out.WriteValue<int64_t>(snapshot_id);
+        out.WriteValue<int64_t>(total_data_files_by_snapshot_.at(snapshot_id));
         PAIMON_RETURN_NOT_OK(serializer.SerializeList(*entries, &out));
     }
     return ToBytes(out, pool);
@@ -111,7 +114,10 @@ Result<SnapshotLiveManifestEntries> SnapshotLiveManifestEntries::Deserialize(
     ManifestEntrySerializer serializer(pool);
     for (int32_t i = 0; i < snapshot_count; i++) {
         PAIMON_ASSIGN_OR_RAISE(int64_t snapshot_id, in.ReadValue<int64_t>());
+        PAIMON_ASSIGN_OR_RAISE(int64_t total_data_files, in.ReadValue<int64_t>());
         PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> entries, serializer.DeserializeList(&in));
+        snapshot_live_manifest_entries.total_data_files_by_snapshot_[snapshot_id] =
+            total_data_files;
         snapshot_live_manifest_entries.entries_by_snapshot_[snapshot_id] =
             std::make_shared<const std::vector<ManifestEntry>>(std::move(entries));
     }
@@ -122,6 +128,7 @@ Result<SnapshotLiveManifestEntries> SnapshotLiveManifestEntries::Deserialize(
 void SnapshotLiveManifestEntries::EvictIfNeeded() {
     size_t max_snapshots = NormalizeMaxSnapshots(max_snapshots_);
     while (entries_by_snapshot_.size() > max_snapshots) {
+        total_data_files_by_snapshot_.erase(entries_by_snapshot_.begin()->first);
         entries_by_snapshot_.erase(entries_by_snapshot_.begin());
     }
 }
@@ -151,6 +158,7 @@ SnapshotLiveManifestEntries::ReadSnapshot(
     std::optional<int64_t> previous_id;
     for (int32_t i = 0; i < snapshot_count; ++i) {
         PAIMON_ASSIGN_OR_RAISE(int64_t id, in.ReadValue<int64_t>());
+        PAIMON_ASSIGN_OR_RAISE(int64_t total_data_files, in.ReadValue<int64_t>());
         // Serialize emits snapshots in ascending order. Validate this before using the position
         // to honor a retention limit smaller than the one used when the cache was populated.
         if (previous_id && id <= previous_id.value()) {
@@ -165,6 +173,7 @@ SnapshotLiveManifestEntries::ReadSnapshot(
         if (keep) {
             selected.emplace();
             selected->candidate_entries = entry_count;
+            selected->total_data_files = total_data_files;
             if (!row_filter) {
                 selected->entries.reserve(entry_count);
             }

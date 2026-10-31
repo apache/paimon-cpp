@@ -17,6 +17,8 @@
  * under the License.
  */
 #include <algorithm>
+#include <iterator>
+#include <set>
 #include <tuple>
 
 #include "arrow/type.h"
@@ -30,9 +32,17 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/vector_store_utils.h"
+#include "paimon/core/core_options.h"
+#include "paimon/core/global_index/global_index_live_row_filter.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
+#include "paimon/core/operation/file_store_scan.h"
+#include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
+#include "paimon/executor.h"
 #include "paimon/format/mosaic/mosaic_format_defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
@@ -97,10 +107,14 @@ class DataEvolutionTableTest : public ::testing::Test,
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArrays(
         const std::string& table_path, const std::map<std::string, std::string>& partition,
         const std::vector<std::string>& write_cols,
-        const std::vector<std::shared_ptr<arrow::Array>>& write_arrays) const {
+        const std::vector<std::shared_ptr<arrow::Array>>& write_arrays,
+        const std::map<std::string, std::string>& write_options = {}) const {
         // write
         WriteContextBuilder write_builder(table_path, "commit_user_1");
         write_builder.WithWriteSchema(write_cols);
+        for (const auto& [key, value] : write_options) {
+            write_builder.AddOption(key, value);
+        }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
                                FileStoreWrite::Create(std::move(write_context)));
@@ -122,8 +136,9 @@ class DataEvolutionTableTest : public ::testing::Test,
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArray(
         const std::string& table_path, const std::map<std::string, std::string>& partition,
         const std::vector<std::string>& write_cols,
-        const std::shared_ptr<arrow::Array>& write_array) const {
-        return WriteArrays(table_path, partition, write_cols, {write_array});
+        const std::shared_ptr<arrow::Array>& write_array,
+        const std::map<std::string, std::string>& write_options = {}) const {
+        return WriteArrays(table_path, partition, write_cols, {write_array}, write_options);
     }
 
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArray(
@@ -161,8 +176,8 @@ class DataEvolutionTableTest : public ::testing::Test,
     /// created with, which a test that later evolves the schema has to pass along.
     /// `extra_options` is merged in for tests that also pin a read batch or split target size.
     std::map<std::string, std::string> CreateDataEvolutionTable(
-        bool deletion_vectors_enabled,
-        const std::map<std::string, std::string>& extra_options = {}) const {
+        bool deletion_vectors_enabled, const std::map<std::string, std::string>& extra_options = {},
+        const std::vector<std::string>& partition_keys = {}) const {
         std::map<std::string, std::string> options = {{Options::FILE_FORMAT, FileFormat()},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
@@ -173,7 +188,7 @@ class DataEvolutionTableTest : public ::testing::Test,
                             std::get<2>(GetParam()) ? "true" : "false");
         }
         options.insert(extra_options.begin(), extra_options.end());
-        CreateTable(/*partition_keys=*/{}, options);
+        CreateTable(partition_keys, options);
         return options;
     }
 
@@ -203,7 +218,8 @@ class DataEvolutionTableTest : public ::testing::Test,
     /// free to serve f2 from the full-row write instead.
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteAndCommitGroup(
         const std::string& table_path, int64_t first_row_id, const std::vector<int32_t>& f0_values,
-        const std::map<std::string, std::string>& partition = {}) const {
+        const std::map<std::string, std::string>& partition = {},
+        const std::map<std::string, std::string>& partial_write_options = {}) const {
         auto partition_f1 = partition.find("f1");
         std::string base_json = "[";
         std::string f2_json = "[";
@@ -235,8 +251,9 @@ class DataEvolutionTableTest : public ::testing::Test,
         auto f2_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(f2_fields), f2_json)
                 .ValueOrDie());
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<CommitMessage>> f2_msgs,
-                               WriteArray(table_path, partition, {"f2"}, f2_array));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::shared_ptr<CommitMessage>> f2_msgs,
+            WriteArray(table_path, partition, {"f2"}, f2_array, partial_write_options));
         SetFirstRowId(first_row_id, f2_msgs);
         PAIMON_RETURN_NOT_OK(Commit(table_path, f2_msgs));
 
@@ -1796,6 +1813,562 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
     }
 }
 
+#ifdef PAIMON_ENABLE_VORTEX
+TEST_P(DataEvolutionTableTest, TestReadJavaDedicatedVectorStore) {
+    if (FileFormat() != "parquet") {
+        GTEST_SKIP() << "The Java fixture uses parquet main files";
+    }
+    const std::string fixture_path = PathUtil::JoinPath(
+        GetDataDir(), "vortex/dedicated_vector_java_compat.db/dedicated_vector_java_compat");
+    const std::string table_path = PathUtil::JoinPath(dir_->Str(), "java_dedicated_vector");
+    // Preserve the Java-produced files: this test only scans and reads the copied table.
+    ASSERT_TRUE(TestUtil::CopyDirectory(fixture_path, table_path));
+
+    // Java DataTypes.FLOAT() serializes the VECTOR element as nullable in schema-0.
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/true), 3);
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", vector_type),
+                                 arrow::field("tag", arrow::utf8())};
+    auto expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, [1, 2, 3], "a"], [2, null, "b"], [3, [-1, 0, 1], "c"],
+            [4, null, "d"], [5, [7, 8, 9], "e"], [6, [10, 11, 12], "f"]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, expected));
+    auto normal_projection =
+        arrow::StructArray::Make({expected->field(0), expected->field(2)}, {fields[0], fields[2]})
+            .ValueOrDie();
+    ASSERT_OK(ScanAndRead(table_path, {"id", "tag"}, normal_projection));
+    auto vector_projection =
+        arrow::StructArray::Make({expected->field(1)}, {fields[1]}).ValueOrDie();
+    ASSERT_OK(ScanAndRead(table_path, {"embedding"}, vector_projection));
+
+    // Row ids 1-4 cross the two Java commits and include a null vector from each commit.
+    auto selected_rows = checked_pointer_cast<arrow::StructArray>(expected->Slice(1, 4));
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, selected_rows,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 4)}));
+    auto selected_vectors =
+        checked_pointer_cast<arrow::StructArray>(vector_projection->Slice(1, 4));
+    ASSERT_OK(ScanAndRead(table_path, {"embedding"}, selected_vectors,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 4)}));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    std::map<int64_t, std::vector<std::shared_ptr<DataFileMeta>>> row_groups;
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(data_split, nullptr);
+        for (const auto& file : data_split->DataFiles()) {
+            ASSERT_TRUE(file->first_row_id.has_value());
+            row_groups[file->first_row_id.value()].push_back(file);
+        }
+    }
+    ASSERT_EQ(row_groups.size(), 2);
+    ASSERT_EQ(row_groups.count(0), 1);
+    ASSERT_EQ(row_groups.count(3), 1);
+    for (const auto& [first_row_id, files] : row_groups) {
+        SCOPED_TRACE(first_row_id);
+        ASSERT_EQ(files.size(), 2);
+        int32_t vector_file_count = 0;
+        for (const auto& file : files) {
+            ASSERT_EQ(file->row_count, 3);
+            if (VectorStoreUtils::IsVectorStoreFile(file->file_name)) {
+                ++vector_file_count;
+                ASSERT_TRUE(StringUtils::EndsWith(file->file_name, ".vector.vortex"));
+                ASSERT_EQ(file->write_cols, std::vector<std::string>({"embedding"}));
+            } else {
+                ASSERT_TRUE(StringUtils::EndsWith(file->file_name, ".parquet"));
+                ASSERT_EQ(file->write_cols, std::vector<std::string>({"id", "tag"}));
+            }
+        }
+        ASSERT_EQ(vector_file_count, 1);
+    }
+}
+
+TEST_P(DataEvolutionTableTest, TestReadJavaIndependentlyRolledVectorStore) {
+    if (FileFormat() != "parquet") {
+        GTEST_SKIP() << "The Java fixture uses parquet main files";
+    }
+    const std::string fixture_path = PathUtil::JoinPath(
+        GetDataDir(), "vortex/dedicated_vector_java_rolling.db/dedicated_vector_java_rolling");
+    const std::string table_path = PathUtil::JoinPath(dir_->Str(), "java_rolled_vector");
+    ASSERT_TRUE(TestUtil::CopyDirectory(fixture_path, table_path));
+
+    constexpr int32_t kRowCount = 3001;
+    auto vector_type = arrow::fixed_size_list(arrow::float32(), 3);
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", vector_type),
+                                 arrow::field("tag", arrow::utf8())};
+    const std::vector<int32_t> null_vector_ids = {0, 999, 1000, 1999, 2000, 2999, 3000};
+    auto expected = PrepareBulkData(
+        kRowCount,
+        [&null_vector_ids](int32_t id) {
+            std::string vector_json = std::find(null_vector_ids.begin(), null_vector_ids.end(),
+                                                id) != null_vector_ids.end()
+                                          ? "null"
+                                          : fmt::format("[{}, {}, {}]", id, id + 1, id + 2);
+            return fmt::format(R"({}, {}, "row-{}")", id, vector_json, id);
+        },
+        fields);
+    // The Java fixture sets read.batch-size=127 so batch and vector file boundaries differ.
+    auto check_projections = [&](const std::shared_ptr<arrow::StructArray>& rows,
+                                 const std::vector<Range>& row_ranges) -> Status {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::StructArray> normal_projection,
+            arrow::StructArray::Make({rows->field(0), rows->field(2)}, {fields[0], fields[2]}));
+        PAIMON_RETURN_NOT_OK(ScanAndRead(table_path, {"id", "tag"}, normal_projection,
+                                         /*predicate=*/nullptr, row_ranges));
+        PAIMON_RETURN_NOT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, rows,
+                                         /*predicate=*/nullptr, row_ranges));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> vector_projection,
+                                          arrow::StructArray::Make({rows->field(1)}, {fields[1]}));
+        return ScanAndRead(table_path, {"embedding"}, vector_projection,
+                           /*predicate=*/nullptr, row_ranges);
+    };
+    ASSERT_OK(check_projections(expected, {}));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    std::shared_ptr<DataFileMeta> main_file;
+    std::map<int64_t, std::shared_ptr<DataFileMeta>> vector_files;
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(data_split, nullptr);
+        for (const auto& file : data_split->DataFiles()) {
+            ASSERT_TRUE(file->first_row_id.has_value());
+            if (VectorStoreUtils::IsVectorStoreFile(file->file_name)) {
+                ASSERT_TRUE(StringUtils::EndsWith(file->file_name, ".vector.vortex"));
+                ASSERT_EQ(file->write_cols, std::vector<std::string>({"embedding"}));
+                ASSERT_TRUE(vector_files.emplace(file->first_row_id.value(), file).second);
+            } else {
+                ASSERT_EQ(main_file, nullptr);
+                ASSERT_TRUE(StringUtils::EndsWith(file->file_name, ".parquet"));
+                ASSERT_EQ(file->write_cols, std::vector<std::string>({"id", "tag"}));
+                main_file = file;
+            }
+        }
+    }
+    ASSERT_NE(main_file, nullptr);
+    ASSERT_EQ(main_file->first_row_id, 0);
+    ASSERT_EQ(main_file->row_count, kRowCount);
+    ASSERT_GT(vector_files.size(), 1);
+
+    int64_t next_row_id = 0;
+    std::vector<Range> selected_ranges = {Range(0, 0)};
+    for (const auto& [first_row_id, file] : vector_files) {
+        ASSERT_EQ(first_row_id, next_row_id);
+        ASSERT_GT(file->row_count, 0);
+        next_row_id += file->row_count;
+        if (first_row_id == 0) {
+            continue;
+        }
+        SCOPED_TRACE(first_row_id);
+        const int64_t from = std::max<int64_t>(0, first_row_id - 2);
+        const int64_t to = std::min<int64_t>(kRowCount - 1, first_row_id + 2);
+        auto boundary_rows =
+            checked_pointer_cast<arrow::StructArray>(expected->Slice(from, to - from + 1));
+        ASSERT_OK(check_projections(boundary_rows, {Range(from, to)}));
+        selected_ranges.emplace_back(std::max<int64_t>(0, first_row_id - 1),
+                                     std::min<int64_t>(kRowCount - 1, first_row_id + 1));
+    }
+    ASSERT_EQ(next_row_id, kRowCount);
+
+    // Disjoint selections retain row order while skipping most rows in each physical file.
+    selected_ranges = Range::SortAndMergeOverlap(selected_ranges, /*adjacent=*/true);
+    ASSERT_GT(selected_ranges.size(), 1);
+    arrow::ArrayVector selected_chunks;
+    for (const auto& range : selected_ranges) {
+        selected_chunks.push_back(expected->Slice(range.from, range.Count()));
+    }
+    auto selected_rows =
+        checked_pointer_cast<arrow::StructArray>(arrow::Concatenate(selected_chunks).ValueOrDie());
+    ASSERT_OK(check_projections(selected_rows, selected_ranges));
+
+    // Omit the outer VECTOR files in an in-memory split to exercise NULL fill for uncovered
+    // rows. The main file has no physical embedding column, and the Java fixture stays intact.
+    ASSERT_EQ(splits.size(), 1);
+    auto original_split = std::dynamic_pointer_cast<DataSplitImpl>(splits[0]);
+    ASSERT_NE(original_split, nullptr);
+    auto middle_file = std::next(vector_files.begin())->second;
+    const int64_t middle_from = middle_file->first_row_id.value();
+    const int64_t middle_to = middle_from + middle_file->row_count - 1;
+    DataSplitImpl::Builder gap_builder(
+        original_split->Partition(), original_split->Bucket(), original_split->BucketPath(),
+        std::vector<std::shared_ptr<DataFileMeta>>{main_file, middle_file});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> gap_split,
+                         gap_builder.WithTotalBuckets(original_split->TotalBuckets())
+                             .WithSnapshot(original_split->SnapshotId())
+                             .RawConvertible(false)
+                             .Build());
+    auto gap_expected = PrepareBulkData(
+        kRowCount,
+        [&](int32_t id) {
+            const bool missing_vector = id < middle_from || id > middle_to;
+            const bool null_vector = std::find(null_vector_ids.begin(), null_vector_ids.end(),
+                                               id) != null_vector_ids.end();
+            std::string vector_json = missing_vector || null_vector
+                                          ? "null"
+                                          : fmt::format("[{}, {}, {}]", id, id + 1, id + 2);
+            return fmt::format("0, {}", vector_json);
+        },
+        {SpecialFields::ValueKind().ArrowField(), fields[1]});
+    arrow::ArrayVector selected_gap_chunks;
+    for (const auto& range : selected_ranges) {
+        selected_gap_chunks.push_back(gap_expected->Slice(range.from, range.Count()));
+    }
+    auto selected_gap_expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::Concatenate(selected_gap_chunks).ValueOrDie());
+    ReadContextBuilder read_builder(table_path);
+    read_builder.SetReadFieldNames({"embedding"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                         TableRead::Create(std::move(read_context)));
+    const std::vector<std::pair<std::shared_ptr<Split>, std::shared_ptr<arrow::StructArray>>>
+        gap_cases = {{gap_split, gap_expected},
+                     {std::make_shared<IndexedSplitImpl>(gap_split, selected_ranges),
+                      selected_gap_expected}};
+    for (const auto& [split, expected_rows] : gap_cases) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_NE(result, nullptr);
+        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected_rows)))
+            << "actual=" << result->ToString() << "\nexpected=" << expected_rows->ToString();
+    }
+
+    // Like Java, the normal file supplies sequence numbers even when VECTOR files are newer.
+    auto sequence_main = std::make_shared<DataFileMeta>(*main_file);
+    sequence_main->AssignSequenceNumber(3, 3);
+    std::vector<std::shared_ptr<DataFileMeta>> sequence_files = {sequence_main};
+    int64_t sequence = 2;
+    for (const auto& [first, file] : vector_files) {
+        auto sequence_vector = std::make_shared<DataFileMeta>(*file);
+        sequence_vector->AssignSequenceNumber(sequence, sequence);
+        sequence_files.push_back(sequence_vector);
+        ++sequence;
+    }
+    auto sequence_tail = sequence_files.back();
+    DataSplitImpl::Builder sequence_builder(original_split->Partition(), original_split->Bucket(),
+                                            original_split->BucketPath(),
+                                            std::move(sequence_files));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> sequence_split,
+                         sequence_builder.RawConvertible(false).Build());
+    auto tracking = PrepareBulkData(
+        kRowCount, [](int32_t id) { return fmt::format("0, {}, 3", id); },
+        {SpecialFields::ValueKind().ArrowField(), SpecialFields::RowId().ArrowField(),
+         SpecialFields::SequenceNumber().ArrowField()});
+    for (bool sequential : {true, false}) {
+        SCOPED_TRACE(sequential);
+        std::shared_ptr<Split> split = sequence_split;
+        std::shared_ptr<arrow::Array> vectors = expected->field(1);
+        if (!sequential) {
+            // A newer VECTOR covering only the tail forces the range-reader fallback.
+            const auto& tail = sequence_tail;
+            ASSERT_GT(tail->max_sequence_number, sequence_main->max_sequence_number);
+            DataSplitImpl::Builder tail_builder(
+                original_split->Partition(), original_split->Bucket(), original_split->BucketPath(),
+                std::vector<std::shared_ptr<DataFileMeta>>{sequence_main, tail});
+            ASSERT_OK_AND_ASSIGN(split, tail_builder.RawConvertible(false).Build());
+            const int64_t first = tail->first_row_id.value();
+            auto missing = arrow::MakeArrayOfNull(vector_type, first).ValueOrDie();
+            vectors = arrow::Concatenate({missing, vectors->Slice(first)}).ValueOrDie();
+        }
+        auto sequence_expected =
+            arrow::StructArray::Make(
+                {tracking->field(0), expected->field(0), vectors, tracking->field(1),
+                 tracking->field(2)},
+                {"_VALUE_KIND", "id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"})
+                .ValueOrDie();
+        for (const std::vector<std::string>& projection :
+             {std::vector<std::string>{"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"},
+              std::vector<std::string>{"id", "_ROW_ID", "_SEQUENCE_NUMBER"},
+              std::vector<std::string>{"_ROW_ID", "_SEQUENCE_NUMBER"}}) {
+            ReadContextBuilder sequence_read_builder(table_path);
+            sequence_read_builder.SetReadFieldNames(projection);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> sequence_context,
+                                 sequence_read_builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> sequence_read,
+                                 TableRead::Create(std::move(sequence_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> sequence_reader,
+                                 sequence_read->CreateReader(split));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> sequence_result,
+                                 ReadResultCollector::CollectResult(std::move(sequence_reader)));
+            ASSERT_NE(sequence_result, nullptr);
+            arrow::ArrayVector projected_arrays = {tracking->field(0)};
+            std::vector<std::string> projected_names = {"_VALUE_KIND"};
+            for (const auto& name : projection) {
+                projected_arrays.push_back(sequence_expected->GetFieldByName(name));
+                projected_names.push_back(name);
+            }
+            auto projected_expected =
+                arrow::StructArray::Make(projected_arrays, projected_names).ValueOrDie();
+            ASSERT_TRUE(sequence_result->Equals(arrow::ChunkedArray(projected_expected)))
+                << sequence_result->ToString();
+        }
+    }
+}
+
+#endif
+
+class DedicatedVectorTableTest : public DataEvolutionTableTest {};
+
+TEST_P(DedicatedVectorTableTest, TestDedicatedVectorStore) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", vector_type),
+                                 arrow::field("tag", arrow::utf8())};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},       {Options::VECTOR_FILE_FORMAT, FileFormat()},
+        {Options::FILE_SYSTEM, "local"},         {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::TARGET_FILE_ROW_NUM, "2"},     {Options::READ_BATCH_SIZE, "2"}};
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto input = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [0, [0, 0, 0], "skip"],
+            [1, [1, 2, 3], "a"], [2, null, "b"],
+            [3, null, "c"], [4, null, "d"],
+            [5, [7, 8, 9], "e"]
+        ])")
+            .ValueOrDie());
+    // Sliced input also exercises a pair containing only null vectors.
+    std::vector<std::shared_ptr<arrow::Array>> batches = {input->Slice(1, 2), input->Slice(3, 2),
+                                                          input->Slice(5, 1)};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         WriteArrays(table_path, {}, {}, batches));
+    ASSERT_EQ(messages.size(), 1);
+    auto message = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_NE(message, nullptr);
+    const auto& files = message->data_increment_.new_files_;
+    ASSERT_EQ(files.size(), 6);
+    for (size_t i = 0; i < files.size(); i += 2) {
+        ASSERT_FALSE(VectorStoreUtils::IsVectorStoreFile(files[i]->file_name));
+        ASSERT_TRUE(StringUtils::EndsWith(files[i + 1]->file_name,
+                                          fmt::format(".vector.{}", FileFormat())));
+        ASSERT_EQ(files[i]->row_count, files[i + 1]->row_count);
+        ASSERT_EQ(files[i]->write_cols, std::vector<std::string>({"id", "tag"}));
+        ASSERT_EQ(files[i + 1]->write_cols, std::vector<std::string>({"embedding"}));
+    }
+    ASSERT_OK(Commit(table_path, messages));
+    auto expected = checked_pointer_cast<arrow::StructArray>(input->Slice(1));
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, expected));
+    auto normal_projection =
+        arrow::StructArray::Make({expected->field(0), expected->field(2)}, {fields[0], fields[2]})
+            .ValueOrDie();
+    ASSERT_OK(ScanAndRead(table_path, {"id", "tag"}, normal_projection));
+    auto vector_projection = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}), R"([
+            [null], [null], [null], [[7, 8, 9]]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"embedding"}, vector_projection, /*predicate=*/nullptr,
+                          /*row_ranges=*/{Range(1, 4)}));
+
+    ASSERT_OK_AND_ASSIGN(messages, WriteArray(table_path, {}, input->Slice(1, 2)));
+    ASSERT_OK(Commit(table_path, messages));
+    auto appended_expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, [1, 2, 3], "a"], [2, null, "b"],
+            [3, null, "c"], [4, null, "d"], [5, [7, 8, 9], "e"],
+            [1, [1, 2, 3], "a"], [2, null, "b"]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, appended_expected));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    std::map<int64_t, std::vector<std::shared_ptr<DataFileMeta>>> row_groups;
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(data_split, nullptr);
+        for (const auto& file : data_split->DataFiles()) {
+            ASSERT_TRUE(file->first_row_id.has_value());
+            row_groups[file->first_row_id.value()].push_back(file);
+        }
+    }
+    ASSERT_EQ(row_groups.size(), 4);
+    ASSERT_EQ(row_groups.count(0), 1);
+    ASSERT_EQ(row_groups.count(2), 1);
+    ASSERT_EQ(row_groups.count(4), 1);
+    ASSERT_EQ(row_groups.count(5), 1);
+    for (const auto& [first_row_id, group] : row_groups) {
+        ASSERT_EQ(group.size(), 2);
+        ASSERT_EQ(group[0]->row_count, group[1]->row_count);
+    }
+
+    WriteContextBuilder partial_builder(table_path, "partial");
+    partial_builder.WithWriteSchema({"embedding"});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> partial_context, partial_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(partial_context)).status(),
+                        "partial writes");
+
+    WriteContextBuilder invalid_builder(table_path, "invalid");
+    invalid_builder.AddOption(Options::DATA_EVOLUTION_ENABLED, "false");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> invalid_context, invalid_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(invalid_context)).status(),
+                        "requires row-tracking.enabled and data-evolution.enabled");
+}
+
+TEST_P(DedicatedVectorTableTest, TestIndependentVectorRolling) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", vector_type),
+                                 arrow::field("tag", arrow::utf8())};
+    const std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::VECTOR_FILE_FORMAT, FileFormat()},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::WRITE_ONLY, "true"},
+        {Options::TARGET_FILE_SIZE, "128 mb"},
+        {Options::TARGET_FILE_ROW_NUM, "2500"},
+        {Options::VECTOR_TARGET_FILE_SIZE, "1 b"},
+        {Options::WRITE_BATCH_SIZE, "100"},
+        {Options::READ_BATCH_SIZE, "127"},
+        {Options::DELETION_VECTORS_ENABLED, "true"}};
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    const std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto input = PrepareBulkData(
+        6001,
+        [](int32_t id) {
+            const std::string vector = id % 1000 == 0 || id % 1000 == 999
+                                           ? "null"
+                                           : fmt::format("[{}, {}, {}]", id, id + 1, id + 2);
+            return fmt::format(R"({}, {}, "row-{}")", id, vector, id);
+        },
+        fields);
+    std::vector<std::shared_ptr<arrow::Array>> batches;
+    for (int64_t offset = 0; offset < input->length(); offset += 1000) {
+        batches.push_back(input->Slice(offset, std::min<int64_t>(1000, input->length() - offset)));
+    }
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         WriteArrays(table_path, {}, {}, batches));
+    ASSERT_EQ(messages.size(), 1);
+    auto message = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_NE(message, nullptr);
+    int32_t main_count = 0;
+    int32_t vector_count = 0;
+    int64_t main_rows = 0;
+    int64_t vector_rows = 0;
+    for (const auto& file : message->data_increment_.new_files_) {
+        if (VectorStoreUtils::IsVectorStoreFile(file->file_name)) {
+            ASSERT_GT(main_count, 0);
+            ASSERT_GT(file->row_count, 0);
+            vector_rows += file->row_count;
+            ASSERT_LE(vector_rows, main_rows);
+            ++vector_count;
+        } else {
+            ASSERT_EQ(main_rows, vector_rows);
+            main_rows += file->row_count;
+            ++main_count;
+        }
+    }
+    ASSERT_EQ(main_count, 3);
+    ASSERT_EQ(main_rows, input->length());
+    ASSERT_EQ(vector_rows, main_rows);
+    // Lance checks encoded bytes only; a small file may stay buffered until the main file closes.
+    if (FileFormat() != "lance") {
+        ASSERT_GT(vector_count, main_count);
+    }
+    ASSERT_OK(Commit(table_path, messages));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    std::map<int64_t, std::shared_ptr<DataFileMeta>> main_files;
+    std::map<int64_t, std::shared_ptr<DataFileMeta>> vector_files;
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_NE(data_split, nullptr);
+        for (const auto& file : data_split->DataFiles()) {
+            ASSERT_OK_AND_ASSIGN(int64_t first_row_id, file->NonNullFirstRowId());
+            ASSERT_EQ(file->min_sequence_number, 1);
+            ASSERT_EQ(file->max_sequence_number, 1);
+            auto& files =
+                VectorStoreUtils::IsVectorStoreFile(file->file_name) ? vector_files : main_files;
+            ASSERT_TRUE(files.emplace(first_row_id, file).second);
+        }
+    }
+    ASSERT_EQ(main_files.size(), 3);
+    auto vector_file = vector_files.begin();
+    int64_t next_row_id = 0;
+    for (const auto& [first, main] : main_files) {
+        ASSERT_EQ(first, next_row_id);
+        const int64_t end = first + main->row_count;
+        while (next_row_id < end) {
+            ASSERT_NE(vector_file, vector_files.end());
+            ASSERT_EQ(vector_file->first, next_row_id);
+            next_row_id += vector_file->second->row_count;
+            ASSERT_LE(next_row_id, end);
+            ++vector_file;
+        }
+    }
+    ASSERT_EQ(next_row_id, input->length());
+    ASSERT_EQ(vector_file, vector_files.end());
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, input));
+    auto normal_projection =
+        arrow::StructArray::Make({input->field(0), input->field(2)}, {fields[0], fields[2]})
+            .ValueOrDie();
+    ASSERT_OK(ScanAndRead(table_path, {"id", "tag"}, normal_projection));
+    auto vector_projection = arrow::StructArray::Make({input->field(1)}, {fields[1]}).ValueOrDie();
+    ASSERT_OK(ScanAndRead(table_path, {"embedding"}, vector_projection));
+    for (const Range& range : {Range(999, 1001), Range(2999, 3001), Range(5999, 6000)}) {
+        auto expected = checked_pointer_cast<arrow::StructArray>(
+            input->Slice(range.from, range.to - range.from + 1));
+        ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, expected,
+                              /*predicate=*/nullptr, /*row_ranges=*/{range}));
+    }
+
+    // Delete across main/VECTOR boundaries, including a whole VECTOR file and the last row.
+    std::set<int64_t> deleted_ids = {0, 999, 1000, 2499, 2500, 2999, 3000, 4999, 6000};
+    if (FileFormat() != "lance") {
+        const auto& deleted_file = std::next(vector_files.begin())->second;
+        for (int64_t i = 0; i < deleted_file->row_count; ++i) {
+            deleted_ids.insert(deleted_file->first_row_id.value() + i);
+        }
+    }
+    std::map<std::string, std::vector<int64_t>> deleted_positions;
+    for (const auto& [first, file] : main_files) {
+        for (int64_t id : deleted_ids) {
+            if (id >= first && id < first + file->row_count) {
+                deleted_positions[file->file_name].push_back(id - first);
+            }
+        }
+    }
+    ASSERT_OK(CommitDeletionVectors(table_path, messages[0], deleted_positions));
+    for (const std::vector<Range>& selection :
+         {std::vector<Range>{Range(0, 6000)},
+          std::vector<Range>{Range(998, 1002), Range(2498, 2502), Range(5998, 6000)}}) {
+        arrow::ArrayVector surviving_rows;
+        for (const auto& range : selection) {
+            int64_t next = range.from;
+            for (int64_t id : deleted_ids) {
+                if (id < next || id > range.to) {
+                    continue;
+                }
+                if (next < id) {
+                    surviving_rows.push_back(input->Slice(next, id - next));
+                }
+                next = id + 1;
+            }
+            if (next <= range.to) {
+                surviving_rows.push_back(input->Slice(next, range.to - next + 1));
+            }
+        }
+        auto expected = checked_pointer_cast<arrow::StructArray>(
+            arrow::Concatenate(surviving_rows).ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, expected,
+                              /*predicate=*/nullptr, selection));
+    }
+
+    ASSERT_OK_AND_ASSIGN(messages, WriteArray(table_path, {}, input->Slice(0, 2)));
+    ASSERT_OK(Commit(table_path, messages));
+    auto appended = checked_pointer_cast<arrow::StructArray>(input->Slice(0, 2));
+    ASSERT_OK(ScanAndRead(table_path, {"id", "embedding", "tag"}, appended,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(6001, 6002)}));
+}
+
 TEST_P(DataEvolutionTableTest, TestVectorReadWrite) {
     if (FileFormat() != "parquet" && FileFormat() != "lance") {
         return;
@@ -2293,15 +2866,12 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
                               expected_array));
     }
     {
-        // The old file's f2 index does not contain 102, but the newer file owns f2.
+        // The newer file owns f2; its bitmap selects the same row in every merged reader.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(102));
         auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
-        ["Lily", 2, 102, 2.1],
-        ["Alice", 4, 104, 3.1],
-        ["Bob", 6, 106, 4.1],
-        ["David", 8, 108, 5.1]
+        ["Lily", 2, 102, 2.1]
     ])")
                 .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
@@ -2360,15 +2930,13 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
     {
         // test row id with predicate
         std::vector<Range> row_ranges = {Range(0l, 2l)};
-        // A merged group keeps all selected row ids to preserve column alignment.
+        // Intersect the group's shared bitmap with row ranges while preserving column alignment.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(106));
         CheckScanResult(table_path, /*predicate=*/predicate, /*row_ranges=*/row_ranges,
                         /*expected_first_row_ids=*/{0, 0}, /*expected_row_counts=*/{4, 4});
         auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
-        ["Lily", 2, 102, 2.1],
-        ["Alice", 4, 104, 3.1],
         ["Bob", 6, 106, 4.1]
     ])")
                 .ValueOrDie());
@@ -2948,6 +3516,72 @@ TEST_P(DataEvolutionDvTableTest, TestGlobalIndexScoresWithMergedFileFiltering) {
     CheckGlobalIndexScoresWithFiltering(/*merge_files=*/true);
 }
 
+TEST_P(DataEvolutionDvTableTest, TestGlobalIndexLiveRows) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true, /*extra_options=*/{},
+                             /*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> group_msgs0,
+        WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{0, 1, 2, 3},
+                            /*partition=*/{{"f1", "p0"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> group_msgs1,
+        WriteAndCommitGroup(table_path, /*first_row_id=*/4, /*f0_values=*/{4, 5, 6, 7},
+                            /*partition=*/{{"f1", "p1"}}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
+                         PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchor_file_names.size(), 2);
+
+    std::shared_ptr<FileSystem> fs = dir_->GetFileSystem();
+    SchemaManager schema_manager(fs, table_path);
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
+                         schema_manager.Latest());
+    ASSERT_TRUE(table_schema);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap(table_schema.value()->Options(), fs));
+    SnapshotManager snapshot_manager(fs, table_path);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> snapshot_before_deletion,
+                         snapshot_manager.LatestSnapshot());
+    ASSERT_TRUE(snapshot_before_deletion);
+
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs0[0],
+                                    {{anchor_file_names[0], /*deleted_positions=*/{1, 3}}}));
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs1[0],
+                                    {{anchor_file_names[1], /*deleted_positions=*/{0}}}));
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> snapshot, snapshot_manager.LatestSnapshot());
+    ASSERT_TRUE(snapshot);
+
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    auto read_live_rows = [&](const Snapshot& read_snapshot,
+                              const std::shared_ptr<PredicateFilter>& partition_filter) {
+        return GlobalIndexLiveRowFilter::LiveRows(table_path, table_schema.value(), read_snapshot,
+                                                  partition_filter, options, executor,
+                                                  GetDefaultPool());
+    };
+    ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap64> live_rows,
+                         read_live_rows(snapshot.value(), /*partition_filter=*/nullptr));
+    ASSERT_TRUE(live_rows);
+    ASSERT_EQ(live_rows.value(), RoaringBitmap64::From({0, 2, 5, 6, 7}));
+
+    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema.value()->Fields());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<PredicateFilter> p0_filter,
+                         FileStoreScan::CreatePartitionPredicate(
+                             table_schema.value()->PartitionKeys(),
+                             options.GetPartitionDefaultName(), arrow_schema, {{{"f1", "p0"}}}));
+    ASSERT_OK_AND_ASSIGN(live_rows, read_live_rows(snapshot.value(), p0_filter));
+    ASSERT_TRUE(live_rows);
+    ASSERT_EQ(live_rows.value(), RoaringBitmap64::From({0, 2}));
+
+    ASSERT_OK_AND_ASSIGN(live_rows, read_live_rows(snapshot_before_deletion.value(),
+                                                   /*partition_filter=*/nullptr));
+    ASSERT_TRUE(live_rows);
+    ASSERT_EQ(live_rows.value(), RoaringBitmap64::From({0, 1, 2, 3, 4, 5, 6, 7}));
+
+    ASSERT_OK(fs->Delete(PathUtil::JoinPath(table_path, "index")));
+    ASSERT_NOK_WITH_MSG(read_live_rows(snapshot.value(), /*partition_filter=*/nullptr),
+                        "failed to read deletion vector of data file");
+}
+
 TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectors) {
     CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -3023,6 +3657,143 @@ TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectors) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_selected,
                           /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 2)}));
+}
+
+TEST_P(DataEvolutionDvTableTest, TestIndexSkipsBeforeReadingDeletionVector) {
+    CreateDataEvolutionTable(
+        /*deletion_vectors_enabled=*/true,
+        {{"file-index.bitmap.columns", "f2"}, {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto data = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_),
+                                                  R"([[0,"a0","x0"],[1,"a1","x1"],
+                                                     [2,"a2","x2"],[3,"a3","x3"]])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         WriteArray(table_path, {}, {"f0", "f1", "f2"}, data));
+    SetFirstRowId(100, messages);
+    ASSERT_OK(Commit(table_path, messages));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> merged_messages,
+                         WriteAndCommitGroup(table_path, 200, {0, 1, 2, 3}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors, PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchors.size(), 2);
+    ASSERT_OK(CommitDeletionVectors(table_path, messages[0], {{anchors[0], {2}}}));
+    ASSERT_OK(CommitDeletionVectors(table_path, merged_messages[0], {{anchors[1], {2}}}));
+
+    {
+        // Indexes keep positions 1 and 2 in both groups; their DVs remove position 2.
+        auto predicate = PredicateBuilder::In(
+            2, "f2", FieldType::STRING,
+            {Literal(FieldType::STRING, "x1", 2), Literal(FieldType::STRING, "x2", 2),
+             Literal(FieldType::STRING, "y1", 2), Literal(FieldType::STRING, "y2", 2)});
+        auto expected = checked_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_),
+                                                      R"([[1,"a1","x1"],[1,"a1","y1"]])")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, expected, predicate, {},
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    std::set<std::string> dv_paths;
+    for (const auto& split : splits) {
+        auto data_split = checked_pointer_cast<DataSplitImpl>(split);
+        for (const auto& deletion_file : data_split->DeletionFiles()) {
+            if (deletion_file) {
+                dv_paths.insert(deletion_file->path);
+            }
+        }
+    }
+    ASSERT_FALSE(dv_paths.empty());
+    for (const auto& path : dv_paths) {
+        ASSERT_OK(dir_->GetFileSystem()->Delete(path, /*recursive=*/false));
+    }
+    auto missing = PredicateBuilder::Equal(2, "f2", FieldType::STRING,
+                                           Literal(FieldType::STRING, "missing", 7));
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, nullptr, missing, {},
+                          /*check_scan_plan_when_empty_result=*/false,
+                          /*apply_predicate_to_scan=*/false));
+    auto single_match =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "x1", 2));
+    auto merged_match =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "y1", 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> match,
+                         PredicateBuilder::Or({single_match, merged_match}));
+    // Both single-file and merged groups are rejected by rowRanges intersected with the bitmap.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, nullptr, match,
+                          {Range(100, 100), Range(200, 200)},
+                          /*check_scan_plan_when_empty_result=*/false,
+                          /*apply_predicate_to_scan=*/false));
+    // A selected matching row still needs its DV; do not hide an actual missing sidecar.
+    ASSERT_NOK(ScanAndRead(table_path, {"f0", "f1", "f2"}, nullptr, match, {Range(101, 101)},
+                           /*check_scan_plan_when_empty_result=*/false,
+                           /*apply_predicate_to_scan=*/false));
+}
+
+TEST_P(DataEvolutionDvTableTest, TestSharedBitmapSelectionComposesWithDeletionVectors) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true,
+                             {{"file-index.bitmap.columns", "f0,f2"},
+                              {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"},
+                              {Options::READ_BATCH_SIZE, "2"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> first,
+                         WriteAndCommitGroup(table_path, 100, {0, 1, 2, 3}, {},
+                                             {{"file-index.bitmap.columns", "f2"}}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> second,
+                         WriteAndCommitGroup(table_path, 200, {0, 1, 2, 3}, {},
+                                             {{"file-index.bitmap.columns", "f2"}}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors, PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchors.size(), 2);
+    ASSERT_OK(CommitDeletionVectors(table_path, first[0], {{anchors[0], {2}}}));
+    ASSERT_OK(CommitDeletionVectors(table_path, second[0], {{anchors[1], {1}}}));
+    auto one =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "y1", 2));
+    auto two =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "y2", 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate, PredicateBuilder::Or({one, two}));
+    arrow::FieldVector fields = fields_;
+    fields.push_back(SpecialFields::RowId().ArrowField());
+    auto expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[1,"a1","y1",101],[2,"a2","y2",202]])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected, predicate, {},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/false));
+
+    // The newer f2 index must win over its stale copy in the anchor file.
+    auto newer =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "y1", 2));
+    auto expected_one = checked_pointer_cast<arrow::StructArray>(expected->Slice(0, 1));
+    auto small = PredicateBuilder::Equal(0, "f0", FieldType::INT, Literal(1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> combined,
+                         PredicateBuilder::And({small, predicate}));
+    // f0 and f2 are won by different files. Intersect both indexes before applying the DV.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_one, combined, {},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/false));
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_one, newer, {},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/false));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    for (const auto& split : splits) {
+        auto data_split = checked_pointer_cast<DataSplitImpl>(split);
+        for (const auto& file : data_split->DataFiles()) {
+            if (file->first_row_id == 200) {
+                ASSERT_OK(dir_->GetFileSystem()->Delete(
+                    PathUtil::JoinPath(data_split->BucketPath(), file->file_name), false));
+            }
+        }
+    }
+    // The second group's only bitmap hit is deleted: skip it before opening any data file.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_one, one, {},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/false));
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, nullptr, one, {Range(200, 203)},
+                          /*check_scan_plan_when_empty_result=*/false,
+                          /*apply_predicate_to_scan=*/false));
 }
 
 TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectorsAcrossReadBatches) {
@@ -3575,6 +4346,26 @@ std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionDvTableTest() 
 
 INSTANTIATE_TEST_SUITE_P(FileFormat, DataEvolutionDvTableTest,
                          ::testing::ValuesIn(GetTestValuesForDataEvolutionDvTableTest()));
+
+std::vector<DataEvolutionTableParam> GetTestValuesForDedicatedVectorTableTest() {
+    std::vector<std::string> formats = {"parquet"};
+#ifdef PAIMON_ENABLE_LANCE
+    formats.push_back("lance");
+#endif
+#ifdef PAIMON_ENABLE_VORTEX
+    formats.push_back("vortex");
+#endif
+    std::vector<DataEvolutionTableParam> values;
+    for (const auto& format : formats) {
+        for (bool enable_cache : {false, true}) {
+            values.emplace_back(format, enable_cache, /*bitmap64=*/false);
+        }
+    }
+    return values;
+}
+
+INSTANTIATE_TEST_SUITE_P(VectorFormat, DedicatedVectorTableTest,
+                         ::testing::ValuesIn(GetTestValuesForDedicatedVectorTableTest()));
 
 INSTANTIATE_TEST_SUITE_P(FileFormat, DataEvolutionTableTest,
                          ::testing::ValuesIn(GetTestValuesForDataEvolutionTableTest()));

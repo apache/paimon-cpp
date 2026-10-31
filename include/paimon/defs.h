@@ -162,6 +162,14 @@ struct PAIMON_EXPORT Options {
     /// "blob.target-file-size" - Target size of a blob file. Default is TARGET_FILE_SIZE.
     static const char BLOB_TARGET_FILE_SIZE[];
 
+    /// "vector.file.format" - Optional dedicated VECTOR storage format (parquet, lance or vortex)
+    /// for a single top-level VECTOR column in row-tracking append-only tables.
+    static const char VECTOR_FILE_FORMAT[];
+
+    /// "vector.target-file-size" - Target size of the vector file. Defaults to TARGET_FILE_SIZE.
+    /// VECTOR files roll independently; rolling a main file also closes the current VECTOR file.
+    static const char VECTOR_TARGET_FILE_SIZE[];
+
     /// "blob.split-by-file-size" - Whether to consider blob file size as a factor when performing
     /// scan splitting. When unset, defaults to the negation of BLOB_AS_DESCRIPTOR.
     static const char BLOB_SPLIT_BY_FILE_SIZE[];
@@ -305,6 +313,16 @@ struct PAIMON_EXPORT Options {
     /// "commit.discard-duplicate-files" - Whether to discard duplicate files in commit.
     /// Default value is "false".
     static const char COMMIT_DISCARD_DUPLICATE_FILES[];
+
+    /// "rest.commit.lock-enabled" - Enable the REST catalog's server-side table commit lease
+    /// capability. Writers acquire a lease only when "rest.commit.acquire-lock" is enabled.
+    /// Default value is "false".
+    static const char REST_COMMIT_LOCK_ENABLED[];
+
+    /// "rest.commit.acquire-lock" - Whether this writer acquires a REST commit lease for each
+    /// publication attempt. Can be set dynamically for a writer and requires
+    /// "rest.commit.lock-enabled" on the table. Default value is "false".
+    static const char REST_COMMIT_ACQUIRE_LOCK[];
 
     /// "compaction.max-size-amplification-percent" - The size amplification is defined as the
     /// amount (in percentage) of additional storage needed to store a single byte of data in the
@@ -470,6 +488,9 @@ struct PAIMON_EXPORT Options {
     /// manifest. Default value is 500B.
     static const char FILE_INDEX_IN_MANIFEST_THRESHOLD[];
 
+    /// "file-index.format.version" - File index container write version, 1 or 2. Defaults to 1.
+    static const char FILE_INDEX_FORMAT_VERSION[];
+
     /// "data-file.external-paths" - The external paths where the data of this table will be
     /// written, multiple elements separated by commas.
     static const char DATA_FILE_EXTERNAL_PATHS[];
@@ -569,12 +590,6 @@ struct PAIMON_EXPORT Options {
     /// tables at read time. Set to false to preserve serialized BlobViewStruct bytes when
     /// forwarding blob view values to another blob-view table. Default value is "true".
     static const char BLOB_VIEW_RESOLVE_ENABLED[];
-    /// "blob-view-upstream-warehouse" - Warehouse root the upstream table a blob-view field points
-    /// at is resolved from. Since the catalog capabilities are partially missing, cpp paimon cannot
-    /// always obtain it automatically, so it may be configured explicitly. When it is not set, the
-    /// read falls back to the warehouse the downstream table itself lives in, which resolves a
-    /// co-located upstream table. No default value.
-    static const char BLOB_VIEW_UPSTREAM_WAREHOUSE[];
     /// "blob-write-null-on-missing-file" - Whether to write NULL for a descriptor BLOB value,
     /// including an ARRAY<BLOB> element or a MAP<..., BLOB> value, when the referenced file does
     /// not exist at write time.
@@ -599,6 +614,15 @@ struct PAIMON_EXPORT Options {
     /// "global-index.external-path" - Global index root directory, if not set, the global index
     /// files will be stored under the index directory.
     static const char GLOBAL_INDEX_EXTERNAL_PATH[];
+    /// "global-index.search-mode" - Fallback search mode for global index queries, used when the
+    /// search mode of the index family is not set: "fast", "full" or "detail". No default value.
+    /// Paimon C++ reads it only for full-text search so far.
+    static const char GLOBAL_INDEX_SEARCH_MODE[];
+    /// "full-text-index.search-mode" - Search mode for full-text index queries: "fast" searches
+    /// only the rows that an index covers, while "full" and "detail" also search the rows that no
+    /// index covers. Default value is "global-index.search-mode", or else "fast". Paimon C++
+    /// supports only "fast" so far, and a full-text search in another mode fails.
+    static const char FULL_TEXT_INDEX_SEARCH_MODE[];
     /// "pk-btree.index.columns" - Comma-separated columns indexed by primary-key BTree indexes.
     /// No default value.
     static const char PK_BTREE_INDEX_COLUMNS[];

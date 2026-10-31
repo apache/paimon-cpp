@@ -19,14 +19,13 @@
 
 #include "paimon/common/global_index/union_global_index_reader.h"
 
-#include <algorithm>
 #include <cassert>
 #include <future>
-#include <unordered_set>
 #include <utility>
 
 #include "paimon/common/executor/future.h"
-#include "paimon/common/utils/fields_comparator.h"
+#include "paimon/common/global_index/global_index_utils.h"
+#include "paimon/common/global_index/scored_global_index_result_utils.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -37,68 +36,6 @@ std::shared_ptr<ScoredGlobalIndexResult> EmptyScoredResult() {
     return std::make_shared<BitmapScoredGlobalIndexResult>(RoaringBitmap64(), std::vector<float>());
 }
 
-RoaringBitmap64 RowIdsOf(const Range& range) {
-    // `range.to` may be the largest int64 value, so add it apart from the half-open range.
-    RoaringBitmap64 row_ids;
-    row_ids.AddRange(range.from, range.to);
-    row_ids.Add(range.to);
-    return row_ids;
-}
-
-/// Returns the row ids of `row_ids` within `range`. Trimming a copy costs time in proportion to
-/// the containers of `row_ids`, not to the rows or the span of `range`.
-RoaringBitmap64 RowIdsWithin(const RoaringBitmap64& row_ids, const Range& range) {
-    RoaringBitmap64 result = row_ids;
-    result.RemoveRange(0, range.from);
-    if (range.to < RoaringBitmap64::MAX_VALUE) {
-        // RemoveRange leaves out its end, so the largest int64 value is removed on its own.
-        result.RemoveRange(range.to + 1, RoaringBitmap64::MAX_VALUE);
-        result -= RoaringBitmap64::From({RoaringBitmap64::MAX_VALUE});
-    }
-    return result;
-}
-
-/// Returns whether `left` ranks before `right`: a higher score first, then a lower row id. Scores
-/// are ordered as -infinity < -0.0 < +0.0 < +infinity < NaN.
-bool RanksBefore(const std::pair<int64_t, float>& left, const std::pair<int64_t, float>& right) {
-    int32_t score_order = FieldsComparator::CompareFloatingPoint(left.second, right.second);
-    if (score_order != 0) {
-        return score_order > 0;
-    }
-    return left.first < right.first;
-}
-
-/// Merges scored results and keeps the `limit` rows that rank first. A row id in more than one
-/// result keeps its first score.
-Result<std::shared_ptr<ScoredGlobalIndexResult>> MergeTopK(
-    const std::vector<std::shared_ptr<ScoredGlobalIndexResult>>& results, int32_t limit) {
-    std::unordered_set<int64_t> merged_row_ids;
-    std::vector<std::pair<int64_t, float>> rows;
-    for (const auto& result : results) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScoredGlobalIndexResult::ScoredIterator> iter,
-                               result->CreateScoredIterator());
-        while (iter->HasNext()) {
-            std::pair<int64_t, float> row = iter->NextWithScore();
-            if (merged_row_ids.insert(row.first).second) {
-                rows.push_back(row);
-            }
-        }
-    }
-    auto top_k = static_cast<size_t>(limit);
-    if (rows.size() > top_k) {
-        std::nth_element(rows.begin(), rows.begin() + top_k, rows.end(), RanksBefore);
-        rows.resize(top_k);
-    }
-    std::sort(rows.begin(), rows.end());
-    RoaringBitmap64 bitmap;
-    std::vector<float> scores;
-    scores.reserve(rows.size());
-    for (const auto& [row_id, score] : rows) {
-        bitmap.Add(row_id);
-        scores.push_back(score);
-    }
-    return std::make_shared<BitmapScoredGlobalIndexResult>(std::move(bitmap), std::move(scores));
-}
 }  // namespace
 
 UnionGlobalIndexReader::UnionGlobalIndexReader(
@@ -251,7 +188,7 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::VisitFu
     if (scored_results.empty()) {
         return std::shared_ptr<ScoredGlobalIndexResult>();
     }
-    return MergeTopK(scored_results, full_text_search->limit);
+    return ScoredGlobalIndexResultUtils::MergeTopK(scored_results, full_text_search->limit);
 }
 
 std::shared_ptr<FullTextSearch> UnionGlobalIndexReader::FullTextSearchForReader(
@@ -270,7 +207,7 @@ std::shared_ptr<FullTextSearch> UnionGlobalIndexReader::FullTextSearchForReader(
         }
         return std::make_shared<FullTextSearch>(full_text_search->field_name,
                                                 full_text_search->query, full_text_search->limit,
-                                                RowIdsOf(search_range.value()));
+                                                GlobalIndexUtils::RowIdsOf(search_range.value()));
     }
     const RoaringBitmap64& include_row_ids = full_text_search->include_row_ids.value();
     auto first = include_row_ids.EqualOrLarger(search_range->from);
@@ -281,9 +218,9 @@ std::shared_ptr<FullTextSearch> UnionGlobalIndexReader::FullTextSearchForReader(
     if (ranks_all_rows) {
         return full_text_search;
     }
-    return std::make_shared<FullTextSearch>(full_text_search->field_name, full_text_search->query,
-                                            full_text_search->limit,
-                                            RowIdsWithin(include_row_ids, search_range.value()));
+    return std::make_shared<FullTextSearch>(
+        full_text_search->field_name, full_text_search->query, full_text_search->limit,
+        GlobalIndexUtils::RowIdsWithin(include_row_ids, search_range.value()));
 }
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::UnionScored(

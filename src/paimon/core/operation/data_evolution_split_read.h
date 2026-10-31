@@ -20,12 +20,12 @@
 
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "paimon/common/data/blob_view_struct.h"
@@ -36,6 +36,7 @@
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace arrow {
 class Schema;
@@ -61,7 +62,7 @@ struct DeletionFile;
 /// splits)->(BlobViewResolvingBatchReader)->(CompleteIndexScoreBatchReader)->
 /// CompleteRowKindBatchReader->(PredicateBatchReader)
 /// ->ConcatBatchReader across files->DataEvolutionFileReader
-/// ->(ConcatBatchReader across blob files | BlobFallbackBatchReader across blob sequence layers)
+/// ->(ConcatBatchReader across vector files | BlobFallbackBatchReader across blob sequence layers)
 /// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(ApplyBitmapIndexBatchReader)
 /// ->(CompleteRowTrackingFieldsBatchReader)->(ShreddingFileReader)
 /// ->(VectorFileBatchReader)->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)
@@ -69,9 +70,9 @@ struct DeletionFile;
 ///
 ///
 /// A union `SplitRead` to read multiple inner files to merge columns. A single-file row range
-/// group gets both file-index and format-level predicate pushdown. A merged group only uses file
-/// indexes to skip the whole group: filtering its child readers independently would break their
-/// positional alignment.
+/// group gets both file-index and format-level predicate pushdown. A merged group of normal
+/// files sharing one row-id range shares the intersection of its file-index selections across
+/// all child readers to preserve alignment.
 ///
 /// Deletion vectors are supported: a row range group's vector is maintained against the
 /// group's anchor file (DataEvolutionUtils::RetrieveAnchorFile), so its positions are
@@ -104,7 +105,7 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
     class FieldBunch {
      public:
         virtual ~FieldBunch() = default;
-        virtual int64_t RowCount() const = 0;
+        virtual Result<int64_t> RowCount() const = 0;
         virtual const std::vector<std::shared_ptr<DataFileMeta>>& Files() const = 0;
     };
 
@@ -112,7 +113,7 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
      public:
         explicit DataBunch(const std::shared_ptr<DataFileMeta>& data_file)
             : data_files_({data_file}) {}
-        int64_t RowCount() const override {
+        Result<int64_t> RowCount() const override {
             return data_files_[0]->row_count;
         }
         const std::vector<std::shared_ptr<DataFileMeta>>& Files() const override {
@@ -123,42 +124,43 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         std::vector<std::shared_ptr<DataFileMeta>> data_files_;
     };
 
+    /// Compatible VECTOR files tiling one main file's row range without gaps or overlaps.
+    class VectorBunch : public FieldBunch {
+     public:
+        VectorBunch(std::vector<std::shared_ptr<DataFileMeta>> files, int64_t row_count)
+            : files_(std::move(files)), row_count_(row_count) {}
+        Result<int64_t> RowCount() const override {
+            return row_count_;
+        }
+        const std::vector<std::shared_ptr<DataFileMeta>>& Files() const override {
+            return files_;
+        }
+
+     private:
+        std::vector<std::shared_ptr<DataFileMeta>> files_;
+        int64_t row_count_;
+    };
+
     /// All blob files of one blob field in a merge group. Unlike data files, every file is kept
     /// (aligned with Java's BlobFileBunch): files whose max sequence numbers differ form layers
     /// of a data-evolution partial update, where newer layers record untouched rows as
     /// placeholder entries and reading falls back row by row to older layers.
-    /// Files must be added ordered by first row id ascending (then max sequence number
-    /// descending), as produced by MergeRangesAndSort.
     class BlobBunch : public FieldBunch {
      public:
-        explicit BlobBunch(int64_t expected_row_count, bool has_row_ids_selection)
-            : expected_row_count_(expected_row_count),
+        BlobBunch(const std::optional<Range>& expected_row_range, bool has_row_ids_selection)
+            : expected_row_range_(expected_row_range),
               has_row_ids_selection_(has_row_ids_selection) {}
-        /// Number of distinct row ids covered by the added files. Without a row-ids selection
-        /// the covered range is contiguous (enforced by Add) and matches the data files.
-        int64_t RowCount() const override;
+        /// The normal file owns the logical rows, including rows with no physical blob value.
+        Result<int64_t> RowCount() const override;
+        Result<Range> LogicalRange() const;
         const std::vector<std::shared_ptr<DataFileMeta>>& Files() const override {
             return files_;
         }
         Status Add(const std::shared_ptr<DataFileMeta>& file);
-        /// True when every file shares one max sequence number, so the files are read
-        /// sequentially without the fallback merge. A lone layer is expected to hold no
-        /// placeholder entries; if one does (a user value equal to the placeholder sentinel
-        /// written by a first write), the strict blob reader rejects the read, since no older
-        /// layer exists to resolve it.
-        bool SequentialReadOptimize() const {
-            return sequence_group_end_.size() <= 1;
-        }
 
      private:
-        int64_t expected_row_count_ = -1;
+        std::optional<Range> expected_row_range_;
         bool has_row_ids_selection_ = false;
-        int64_t union_first_row_id_ = std::numeric_limits<int64_t>::max();
-        /// Exclusive end of the union row id range covered so far.
-        int64_t union_end_row_id_ = std::numeric_limits<int64_t>::min();
-        /// Per max sequence number: exclusive end of the last added range, to reject
-        /// overlapping files within one layer.
-        std::map<int64_t, int64_t> sequence_group_end_;
         std::vector<Range> ranges_;
         std::vector<std::shared_ptr<DataFileMeta>> files_;
     };
@@ -183,12 +185,15 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         const std::shared_ptr<Predicate>& predicate,
         const std::shared_ptr<arrow::Schema>& read_schema);
 
-    /// Returns true when file indexes prove that no row in a merged row range group can match.
-    /// Only normal files are considered, and an older copy of a field is excluded after a newer
-    /// file has claimed the same field id.
-    Result<bool> SkipByFileIndex(
+    /// Evaluates the winning files' indexes before opening the group's DV or data files. Shared
+    /// bitmap selection is restricted to normal files with the same row-id range; a single-file
+    /// group may always use its bitmap. The bitmap uses file-local positions and is intersected
+    /// with `row_ranges`. Nullopt means no bitmap restriction; an empty bitmap rejects the group.
+    Result<std::optional<RoaringBitmap32>> SelectByFileIndex(
         const std::shared_ptr<Predicate>& predicate,
         const std::vector<std::shared_ptr<DataFileMeta>>& files,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
 
     /// Builds the deletion vector factory over the split's deletion files, keyed by data file
@@ -207,13 +212,36 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
     /// the anchor range and limited to its row count. Null factory when the group has no vector.
     static Result<DeletionVector::Factory> CreateGroupDvFactory(
         const std::vector<std::shared_ptr<DataFileMeta>>& group,
-        const std::optional<GroupDeletionVector>& group_dv);
+        const std::optional<GroupDeletionVector>& group_dv,
+        const std::optional<std::vector<Range>>& row_ranges);
+
+    /// Removes deleted positions without expanding the selection into row-id ranges. Both the
+    /// selection and the deletion vector must use the same file-local positions.
+    static Result<RoaringBitmap32> ExcludeDeletedPositions(
+        RoaringBitmap32 selection, const std::shared_ptr<DeletionVector>& deletion_vector);
 
     /// Removes the row ids deleted by `group_dv` from the sorted disjoint `ranges` (absolute
-    /// row ids). Probes the vector once per row id, since it exposes no range API; the cost is
-    /// paid once per gap segment while building the reader, not per batch.
+    /// row ids). Iterates over deletions when they are sparser than the selected rows.
     static Result<std::vector<Range>> ExcludeDeletedRowIds(const std::vector<Range>& ranges,
                                                            const GroupDeletionVector& group_dv);
+
+    struct VectorReadRange {
+        Range range;
+        std::vector<std::shared_ptr<DataFileMeta>> files;
+    };
+
+    /// Split at VECTOR file boundaries so each field has one latest provider per range.
+    static Result<std::vector<VectorReadRange>> PlanVectorReadRanges(
+        const std::vector<std::shared_ptr<DataFileMeta>>& files,
+        const std::vector<int32_t>& read_field_ids,
+        const std::function<Result<std::vector<int32_t>>(const std::shared_ptr<DataFileMeta>&)>&
+            file_to_field_ids);
+
+    /// Empty means the layout needs range planning. Errors resolving providers still propagate.
+    static Result<std::vector<std::shared_ptr<FieldBunch>>> TryPlanSequentialVectorRead(
+        const std::vector<std::shared_ptr<DataFileMeta>>& files,
+        const std::function<Result<std::vector<int32_t>>(const std::shared_ptr<DataFileMeta>&)>&
+            file_to_field_ids);
 
     static Result<std::vector<std::shared_ptr<DataEvolutionSplitRead::FieldBunch>>>
     SplitFieldBunches(const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
@@ -248,9 +276,26 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         const std::optional<std::vector<Range>>& row_ranges) const;
 
  private:
-    Result<std::unique_ptr<DataEvolutionFileReader>> CreateUnionReader(
+    Result<std::unique_ptr<BatchReader>> CreateUnionReader(
         const BinaryRow& partition,
         const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const DeletionVector::Factory& group_dv_factory,
+        const std::optional<GroupDeletionVector>& group_dv,
+        const std::shared_ptr<arrow::Schema>& read_schema) const;
+
+    Result<std::unique_ptr<BatchReader>> CreateFieldUnionReader(
+        const BinaryRow& partition,
+        const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const DeletionVector::Factory& group_dv_factory,
+        const std::optional<GroupDeletionVector>& group_dv,
+        const std::shared_ptr<arrow::Schema>& read_schema) const;
+
+    Result<std::unique_ptr<BatchReader>> CreateFieldUnionReader(
+        const BinaryRow& partition, const std::vector<std::shared_ptr<FieldBunch>>& fields_files,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const DeletionVector::Factory& group_dv_factory,
@@ -265,11 +310,19 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
     /// emitting the same surviving rows.
     Result<std::unique_ptr<BatchReader>> CreateBlobFallbackReader(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& files,
-        const std::shared_ptr<arrow::Schema>& file_read_schema,
+        const Range& logical_range, const std::shared_ptr<arrow::Schema>& file_read_schema,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const DeletionVector::Factory& group_dv_factory,
         const std::optional<GroupDeletionVector>& group_dv) const;
+
+    /// Set only on a per-group reader after SelectByFileIndex has evaluated its indexes.
+    /// Lazy child readers inherit it so no sidecar is reopened during reader construction.
+    bool file_indexes_evaluated_ = false;
+
+    /// Shared file-local selection on a per-group reader. Present only for a single-file group
+    /// or normal files with identical row-id ranges; every column reader consumes the same bitmap.
+    std::optional<RoaringBitmap32> group_selection_;
 };
 
 }  // namespace paimon

@@ -19,7 +19,9 @@
 #include "paimon/logging.h"
 
 #include <atomic>
-#include <cstdarg>
+#include <chrono>
+#include <cstdlib>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -30,7 +32,6 @@
 
 #include "glog/log_severity.h"
 #include "glog/logging.h"
-#include "glog/raw_logging.h"
 #include "paimon/common/executor/future.h"
 #include "paimon/executor.h"
 #include "paimon/fs/file_system.h"
@@ -40,35 +41,80 @@ namespace {
 
 std::atomic<int> g_creator_calls{0};
 
-// A Logger that forwards to glog exactly like the built-in adaptor. It is used to
-// restore behavior-preserving logging after exercising the custom-creator path,
-// because the registry cannot be reset to "unset" through the public API.
-class GlogForwardingLogger : public Logger {
- public:
-    void LogV(PaimonLogLevel level, const char* fname, int lineno, const char* /*function*/,
-              const char* fmt, ...) override {
-        va_list args;
-        va_start(args, fmt);
-        google::RawLog__(ToGlog(level), fname, lineno, fmt, args);
-        va_end(args);
-    }
+std::string CaptureInfoLogs(const std::function<void()>& log) {
+    const int32_t prev_stderrthreshold = FLAGS_stderrthreshold;
+    FLAGS_stderrthreshold = google::GLOG_INFO;
+    ::testing::internal::CaptureStderr();
+    log();
+    std::string output = ::testing::internal::GetCapturedStderr();
+    FLAGS_stderrthreshold = prev_stderrthreshold;
+    return output;
+}
 
-    bool IsLevelEnabled(PaimonLogLevel /*level*/) const override {
-        return true;
-    }
+void RegisterCustomLoggerCreatorAndExit() {
+    auto default_logger = Logger::GetLogger("default_path");
+    const Logger* expected_logger = default_logger.get();
+    g_creator_calls.store(0);
+    Logger::RegisterLogger([&default_logger](const std::string&) -> std::unique_ptr<Logger> {
+        g_creator_calls.fetch_add(1);
+        return std::move(default_logger);
+    });
 
- private:
-    static google::LogSeverity ToGlog(PaimonLogLevel level) {
-        switch (level) {
-            case PAIMON_LOG_LEVEL_WARN:
-                return google::GLOG_WARNING;
-            case PAIMON_LOG_LEVEL_ERROR:
-                return google::GLOG_ERROR;
-            default:
-                return google::GLOG_INFO;
+    auto logger = Logger::GetLogger("custom_path");
+    const bool used_creator = logger && logger.get() == expected_logger &&
+                              g_creator_calls.load() == 1 &&
+                              logger->IsLevelEnabled(PAIMON_LOG_LEVEL_INFO);
+    std::_Exit(used_creator ? 0 : 1);
+}
+
+void RegisterStatefulLoggerCreatorAndExit() {
+    g_creator_calls.store(0);
+    Logger::RegisterLogger([calls = 0](const std::string&) mutable -> std::unique_ptr<Logger> {
+        g_creator_calls.store(++calls);
+        return nullptr;
+    });
+    Logger::GetLogger("first");
+    Logger::GetLogger("second");
+    std::_Exit(g_creator_calls.load() == 2 ? 0 : 1);
+}
+
+void RegisterLoggerCreatorWhileGettingLoggerAndExit() {
+    g_creator_calls.store(0);
+    std::thread getter([]() {
+        while (g_creator_calls.load() == 0) {
+            Logger::GetLogger("getter");
         }
+    });
+    Logger::RegisterLogger([](const std::string&) -> std::unique_ptr<Logger> {
+        g_creator_calls.fetch_add(1);
+        return nullptr;
+    });
+    getter.join();
+    // std::exit runs ThreadSanitizer's exit check, which fails the process on a race.
+    std::exit(0);
+}
+
+void RegisterLoggerFromLoggerCreatorAndExit() {
+    static std::weak_ptr<int> creator_state;
+    static bool kept_alive = false;
+    auto state = std::make_shared<int>(0);
+    creator_state = state;
+    Logger::RegisterLogger([state](const std::string&) -> std::unique_ptr<Logger> {
+        Logger::RegisterLogger(
+            [](const std::string&) -> std::unique_ptr<Logger> { return nullptr; });
+        kept_alive = !creator_state.expired();
+        return nullptr;
+    });
+    state.reset();
+    std::future<void> getter =
+        std::async(std::launch::async, []() { Logger::GetLogger("getter"); });
+    if (getter.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
+        std::cerr << "GetLogger() did not finish within 30 seconds" << std::endl;
+        std::_Exit(1);
     }
-};
+    getter.get();
+    std::_Exit(kept_alive && creator_state.expired() ? 0 : 1);
+}
 
 }  // namespace
 TEST(LoggerTest, TestMultiThreadGetLogger) {
@@ -97,6 +143,30 @@ TEST(LoggerTest, TestLogAllSeverities) {
     // NONE and MAX fall into the default branch of the mapping.
     logger->LogV(PAIMON_LOG_LEVEL_NONE, __FILE__, __LINE__, __FUNCTION__, "none severity");
     logger->LogV(PAIMON_LOG_LEVEL_MAX, __FILE__, __LINE__, __FUNCTION__, "max severity");
+}
+
+TEST(LoggerTest, TestLogFormatsArguments) {
+    auto logger = Logger::GetLogger("format_test");
+    ASSERT_TRUE(logger);
+
+    const std::string output = CaptureInfoLogs(
+        [&]() { PAIMON_LOG_INFO(logger, "name=%s count=%d raw=%s", "paimon", 42, "100%d"); });
+    ASSERT_NE(output.find("name=paimon count=42 raw=100%d"), std::string::npos) << output;
+}
+
+TEST(LoggerTest, TestLogTruncatesLongMessage) {
+    auto logger = Logger::GetLogger("truncate_test");
+    ASSERT_TRUE(logger);
+    constexpr size_t kMaxMessageLength = 2047;
+    const std::string fitting_message = "[" + std::string(kMaxMessageLength - 2, 'a') + "]";
+    const std::string long_message = "[" + std::string(4096, 'b');
+
+    const std::string output = CaptureInfoLogs([&]() {
+        PAIMON_LOG_INFO(logger, "%s", fitting_message.c_str());
+        PAIMON_LOG_INFO(logger, "%s", long_message.c_str());
+    });
+    ASSERT_NE(output.find(fitting_message + "\n"), std::string::npos);
+    ASSERT_NE(output.find(long_message.substr(0, kMaxMessageLength) + "\n"), std::string::npos);
 }
 
 // Demonstrates that glog's normal LOG() path actually writes a log file to disk.
@@ -166,19 +236,25 @@ TEST(LoggerTest, TestGlogWritesLogFileToDisk) {
     FLAGS_minloglevel = prev_minloglevel;
 }
 
-// Keep this test last: it installs a process-wide logger creator that cannot be
-// unset, so it must not run before tests that rely on the default logger.
+// A registered logger creator cannot be unset, so register it in a separate process
+// to keep the default logger for other tests regardless of test order.
 TEST(LoggerTest, TestRegisterCustomLoggerCreator) {
-    g_creator_calls.store(0);
-    Logger::RegisterLogger([](const std::string& /*path*/) -> std::unique_ptr<Logger> {
-        g_creator_calls.fetch_add(1);
-        return std::make_unique<GlogForwardingLogger>();
-    });
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT(RegisterCustomLoggerCreatorAndExit(), ::testing::ExitedWithCode(0), "");
+}
 
-    auto logger = Logger::GetLogger("custom_path");
-    ASSERT_TRUE(logger);
-    // GetLogger must have gone through the registered creator branch.
-    ASSERT_EQ(1, g_creator_calls.load());
-    ASSERT_TRUE(logger->IsLevelEnabled(PAIMON_LOG_LEVEL_INFO));
+TEST(LoggerTest, TestRegisterStatefulLoggerCreator) {
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT(RegisterStatefulLoggerCreatorAndExit(), ::testing::ExitedWithCode(0), "");
+}
+
+TEST(LoggerTest, TestRegisterLoggerCreatorWhileGettingLogger) {
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT(RegisterLoggerCreatorWhileGettingLoggerAndExit(), ::testing::ExitedWithCode(0), "");
+}
+
+TEST(LoggerTest, TestRegisterLoggerFromLoggerCreator) {
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT(RegisterLoggerFromLoggerCreatorAndExit(), ::testing::ExitedWithCode(0), "");
 }
 }  // namespace paimon::test
