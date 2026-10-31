@@ -48,6 +48,8 @@ class BitSliceIndexBitmapFileIndex : public FileIndexer {
     explicit BitSliceIndexBitmapFileIndex(const std::map<std::string, std::string>& options);
     ~BitSliceIndexBitmapFileIndex() override = default;
 
+    bool SupportsExactPredicate(Function::Type function, FieldType field_type) const override;
+
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
         ::ArrowSchema* arrow_schema, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input_stream,

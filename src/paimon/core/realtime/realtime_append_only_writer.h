@@ -80,7 +80,7 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
                              int64_t next_offset, const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
-    Status SealCurrentSegment();
+    Status SealCurrentSegment(bool spill);
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<RealtimeStore> realtime_store_;

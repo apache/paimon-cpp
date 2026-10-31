@@ -44,6 +44,7 @@ if(PAIMON_BUILD_TESTS)
 
     add_paimon_test(test_utils_test
                     SOURCES
+                    blocking_file_system_test.cpp
                     data_generator_test.cpp
                     dict_array_converter_test.cpp
                     STATIC_LINK_LIBS

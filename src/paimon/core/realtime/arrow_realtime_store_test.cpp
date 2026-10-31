@@ -39,6 +39,7 @@
 #include "paimon/realtime/arrow_realtime_store_factory.h"
 #include "paimon/record_batch.h"
 #include "paimon/testing/utils/read_result_collector.h"
+#include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -370,6 +371,58 @@ TEST_F(ArrowRealtimeStoreTest, TestSealSpillsAndKeepsPinnedMemoryViewReadable) {
     for (const std::shared_ptr<arrow::Array>& chunk : spilled->chunks()) {
         ASSERT_EQ(1, chunk->length());
     }
+}
+
+TEST_F(ArrowRealtimeStoreTest, TestTwoPhaseSealDoesNotResurrectReclaimedSegment) {
+    auto directory = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, directory);
+    auto store = std::make_shared<ArrowRealtimeStore>(
+        schema_, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE, directory->Str(),
+        directory->GetFileSystem(), "zstd", 1, pool_, arrow_pool_);
+    ASSERT_NOK_WITH_MSG(store->SpillFrozenSegment(std::make_shared<ForeignSegment>()),
+                        "requires a frozen memory segment");
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> empty,
+                         store->FreezeBuildingSegment());
+    ASSERT_FALSE(empty.has_value());
+    ASSERT_OK(store->Write(RealtimeWriteBatch{MakeBatch(R"([[0, 1, "a"]])"), OffsetRange(0, 1)}));
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> frozen,
+                         store->FreezeBuildingSegment());
+    ASSERT_TRUE(frozen.has_value());
+    ASSERT_GT(store->GetDataUsage().sealed_memory_bytes, 0);
+    ASSERT_OK(store->Write(RealtimeWriteBatch{MakeBatch(R"([[1, 2, "b"]])"), OffsetRange(1, 2)}));
+    const uint64_t building_bytes = store->GetDataUsage().building_memory_bytes;
+    ASSERT_GT(building_bytes, 0);
+    ASSERT_OK(store->AdvanceCommittedOffset(1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeSegmentHandle> spilled,
+                         store->SpillFrozenSegment(frozen.value()));
+    ASSERT_EQ(OffsetRange(0, 1), spilled->GetOffsetRange());
+    ASSERT_EQ(1, spilled->GetRowCount());
+    const RealtimeStoreDataUsage usage = store->GetDataUsage();
+    ASSERT_EQ(building_bytes, usage.building_memory_bytes);
+    ASSERT_EQ(0, usage.sealed_memory_bytes);
+    ASSERT_EQ(1, usage.building_row_count);
+    ASSERT_EQ(0, usage.sealed_row_count);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
+    ASSERT_EQ(std::optional<OffsetRange>(OffsetRange(1, 2)), view->GetOffsetRange());
+}
+
+TEST_F(ArrowRealtimeStoreTest, TestRetiredSpillStorageIsReleasedByCaller) {
+    auto directory = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, directory);
+    auto store = std::make_shared<ArrowRealtimeStore>(
+        schema_, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE, directory->Str(),
+        directory->GetFileSystem(), "zstd", 1, pool_, arrow_pool_);
+    ASSERT_OK(store->Write(RealtimeWriteBatch{MakeBatch(R"([[0, 1, "a"]])"), OffsetRange(0, 1)}));
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                         store->SealForCommit());
+    ASSERT_TRUE(segment.has_value());
+    segment.reset();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> retired,
+                         store->RetireCommittedSegments(1));
+    ASSERT_EQ(0, store->GetDataUsage().sealed_row_count);
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(directory->GetFileSystem(), directory->Str()));
+    retired.reset();
+    ASSERT_EQ(0, TestHelper::CountChannelFiles(directory->GetFileSystem(), directory->Str()));
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestFactoryDoesNotSpillWithoutOption) {

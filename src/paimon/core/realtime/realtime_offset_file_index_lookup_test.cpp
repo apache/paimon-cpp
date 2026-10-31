@@ -20,6 +20,7 @@
 #include "paimon/core/realtime/realtime_offset_file_index_lookup.h"
 
 #include <cstdint>
+#include <future>
 #include <map>
 #include <memory>
 #include <optional>
@@ -28,6 +29,7 @@
 
 #include "arrow/api.h"
 #include "arrow/ipc/json_simple.h"
+#include "fmt/format.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
@@ -35,8 +37,11 @@
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/file_index_options.h"
+#include "paimon/core/realtime/data_file_key_offset_index_writer.h"
 #include "paimon/core/realtime/realtime_key_offset_index.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/defs.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
@@ -73,9 +78,13 @@ class RealtimeOffsetFileIndexLookupTest : public testing::Test {
         ASSERT_OK(path_factory_->Init(directory_->Str(), /*format_identifier=*/"parquet",
                                       /*data_file_prefix=*/"data-",
                                       /*external_path_provider=*/nullptr));
-        key_field_ = arrow::field("id", arrow::int64());
-        schema_ = arrow::schema(
-            {DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()), key_field_});
+        key_field_ = DataField::ConvertDataFieldToArrowField(
+            DataField(1, arrow::field("id", arrow::int64(), /*nullable=*/false)));
+        schema_ = DataField::ConvertDataFieldsToArrowSchema(
+            {DataField(0, SpecialFields::RealtimeOffset().ArrowField()),
+             DataField(1, arrow::field("id", arrow::int64(), /*nullable=*/false))});
+        schema_manager_ =
+            std::make_shared<SchemaManager>(directory_->GetFileSystem(), directory_->Str());
         options_ = {{"file-index.bitmap.columns", SpecialFields::RealtimeOffset().Name()},
                     {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}};
     }
@@ -87,7 +96,36 @@ class RealtimeOffsetFileIndexLookupTest : public testing::Test {
                                CoreOptions::FromMap(options_, directory_->GetFileSystem()));
         return RealtimeOffsetFileIndexLookup::Create(
             schema_, data_schema_id, key_field_, data_files, path_factory_,
-            directory_->GetFileSystem(), GetDefaultPool(), options);
+            directory_->GetFileSystem(), options, schema_manager_, GetDefaultPool());
+    }
+
+    Result<std::shared_ptr<TableSchema>> WriteHistoricalSchema(
+        const std::shared_ptr<arrow::Schema>& schema) const {
+        std::map<std::string, std::string> options = options_;
+        options[Options::REALTIME_DEDUPLICATE_KEY_FIELDS] = "id";
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
+                               TableSchema::Create(0, schema, {}, {}, options));
+        PAIMON_RETURN_NOT_OK(
+            directory_->GetFileSystem()->Mkdirs(schema_manager_->SchemaDirectory()));
+        PAIMON_ASSIGN_OR_RAISE(std::string content, table_schema->ToJsonString());
+        PAIMON_RETURN_NOT_OK(directory_->GetFileSystem()->AtomicStore(
+            schema_manager_->SchemaDirectory() + "/schema-0", content));
+        return table_schema;
+    }
+
+    Result<std::shared_ptr<DataFileMeta>> CreateKeyIndexedDataFile(const std::string& file_name,
+                                                                   const std::string& json) const {
+        std::shared_ptr<arrow::StructArray> batch = checked_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema_->fields()), json)
+                .ValueOrDie());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
+                               DataFileKeyOffsetIndexWriter::Create(
+                                   key_field_, directory_->GetFileSystem(), GetDefaultPool()));
+        PAIMON_RETURN_NOT_OK(writer->AddBatch(batch));
+        std::shared_ptr<DataFileMeta> file = MakeDataFile(file_name, batch->length());
+        PAIMON_ASSIGN_OR_RAISE(std::string sidecar,
+                               writer->Finish(path_factory_->ToPath(file), file->row_count));
+        return file->CopyWithExtraFiles({sidecar});
     }
 
     Result<std::shared_ptr<DataFileMeta>> CreateIndexedDataFile(
@@ -133,6 +171,7 @@ class RealtimeOffsetFileIndexLookupTest : public testing::Test {
     std::shared_ptr<arrow::Field> key_field_;
     std::shared_ptr<arrow::Schema> schema_;
     std::map<std::string, std::string> options_;
+    std::shared_ptr<SchemaManager> schema_manager_;
 };
 
 TEST_F(RealtimeOffsetFileIndexLookupTest, TestLookupFilePositionsAcrossDataFiles) {
@@ -166,6 +205,28 @@ TEST_F(RealtimeOffsetFileIndexLookupTest, TestLookupFilePositionsAcrossDataFiles
     ASSERT_TRUE(positions.empty());
 }
 
+TEST_F(RealtimeOffsetFileIndexLookupTest, TestMixedExactIndexTypes) {
+    std::vector<std::shared_ptr<DataFileMeta>> files;
+    int64_t offset = 0;
+    for (const std::string& type : {"bitmap", "bsi", "range-bitmap"}) {
+        options_ = {{"file-index." + type + ".columns", "_REALTIME_OFFSET"},
+                    {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}};
+        const std::string json = fmt::format("[[{}, 1]]", offset);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> file,
+                             CreateIndexedDataFile(type + ".parquet", json, offset, offset));
+        files.push_back(file);
+        ++offset;
+    }
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> lookup,
+                         CreateLookup(files));
+    std::map<std::string, RoaringBitmap32> positions;
+    ASSERT_OK_AND_ASSIGN(positions, lookup->LookupFilePositions(RoaringBitmap64::From({0, 1, 2})));
+    ASSERT_EQ(3, positions.size());
+    for (const auto& entry : positions) {
+        ASSERT_EQ("{0}", entry.second.ToString());
+    }
+}
+
 TEST_F(RealtimeOffsetFileIndexLookupTest, TestCreateAndCloneDataFiles) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> lookup,
                          CreateLookup(/*data_files=*/{}));
@@ -192,14 +253,83 @@ TEST_F(RealtimeOffsetFileIndexLookupTest, TestCreateAndCloneDataFiles) {
         "invalid data file");
 }
 
+TEST_F(RealtimeOffsetFileIndexLookupTest, TestReusesUnchangedFileKeyReaders) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> first,
+                         CreateKeyIndexedDataFile("first.parquet", R"([[10, 1], [12, 2]])"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> second,
+                         CreateKeyIndexedDataFile("second.parquet", R"([[20, 1], [22, 2]])"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> initial,
+                         CreateLookup({first}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> old_keys,
+                         initial->CreateKeyOffsetLookup());
+    const std::string first_path = path_factory_->ToPath(first);
+    const std::string second_path = path_factory_->ToPath(second);
+    const auto first_reader = initial->key_readers_.at(first_path).reader;
+
+    auto first_copy = std::make_shared<DataFileMeta>(*first);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> next,
+                         initial->WithDataFiles({first_copy, second}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> next_keys,
+                         next->CreateKeyOffsetLookup());
+    ASSERT_EQ(first_reader, next->key_readers_.at(first_path).reader);
+    auto reading_old = std::async(std::launch::async,
+                                  [&]() { return old_keys->LookupOffsets(MakeKeys(key_field_)); });
+    auto reading_next = std::async(
+        std::launch::async, [&]() { return next_keys->LookupOffsets(MakeKeys(key_field_)); });
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 old_found, reading_old.get());
+    ASSERT_EQ("{10,12}", old_found.ToString());
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 next_found, reading_next.get());
+    ASSERT_EQ("{10,12,20,22}", next_found.ToString());
+    ASSERT_EQ(1, initial->key_readers_.size());
+    ASSERT_EQ(2, next->key_readers_.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> repeated,
+                         next->CreateKeyOffsetLookup());
+    ASSERT_EQ(first_reader, next->key_readers_.at(first_path).reader);
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 found, next_keys->LookupOffsets(MakeKeys(key_field_)));
+    ASSERT_EQ("{10,12,20,22}", found.ToString());
+    ASSERT_OK_AND_ASSIGN(found, old_keys->LookupOffsets(MakeKeys(key_field_)));
+    ASSERT_EQ("{10,12}", found.ToString());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> removed,
+                         next->WithDataFiles({second}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> removed_keys,
+                         removed->CreateKeyOffsetLookup());
+    ASSERT_EQ(1, removed->key_readers_.size());
+    ASSERT_EQ(next->key_readers_.at(second_path).reader,
+              removed->key_readers_.at(second_path).reader);
+    ASSERT_OK_AND_ASSIGN(found, removed_keys->LookupOffsets(MakeKeys(key_field_)));
+    ASSERT_EQ("{20,22}", found.ToString());
+    ASSERT_OK_AND_ASSIGN(found, next_keys->LookupOffsets(MakeKeys(key_field_)));
+    ASSERT_EQ("{10,12,20,22}", found.ToString());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> replacement,
+                         CreateKeyIndexedDataFile("replacement.parquet", R"([[30, 1], [32, 2]])"));
+    std::shared_ptr<DataFileMeta> changed = first->CopyWithExtraFiles(replacement->extra_files);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> rewritten,
+                         initial->WithDataFiles({changed}));
+    ASSERT_TRUE(rewritten->key_readers_.empty());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> rewritten_keys,
+                         rewritten->CreateKeyOffsetLookup());
+    ASSERT_NE(first_reader, rewritten->key_readers_.at(first_path).reader);
+    ASSERT_OK_AND_ASSIGN(found, rewritten_keys->LookupOffsets(MakeKeys(key_field_)));
+    ASSERT_EQ("{30,32}", found.ToString());
+}
+
 TEST_F(RealtimeOffsetFileIndexLookupTest, TestDifferentSchemaDoesNotUseCurrentStatsPosition) {
-    // These unnamed stats represent another field at position 0 in the old schema. The current
-    // schema has _REALTIME_OFFSET at position 0, so interpreting them with the current layout would
-    // incorrectly prune offset 10 before consulting its bitmap index.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> old_schema,
+                         WriteHistoricalSchema(arrow::schema(
+                             {arrow::field("id", arrow::int64(), false),
+                              arrow::field("_REALTIME_OFFSET", arrow::int64(), false)})));
+    key_field_ = DataField::ConvertDataFieldToArrowField(old_schema->Fields()[0]);
+    schema_ = arrow::schema(
+        {DataField::ConvertDataFieldToArrowField(old_schema->Fields()[1]), key_field_});
+    // Offset is at position 1 in the old schema, but position 0 in the current schema.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> old_schema_file,
                          CreateIndexedDataFile("data-0.parquet", R"([[10, 1], [12, 2]])",
                                                /*min_offset=*/100, /*max_offset=*/200,
                                                /*schema_id=*/0, /*name_value_stats=*/false));
+    old_schema_file->value_stats =
+        BinaryRowGenerator::GenerateStats({100, 10}, {200, 12}, {0, 0}, GetDefaultPool().get());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> lookup,
                          CreateLookup({old_schema_file}, /*data_schema_id=*/1));
 
@@ -209,6 +339,59 @@ TEST_F(RealtimeOffsetFileIndexLookupTest, TestDifferentSchemaDoesNotUseCurrentSt
     ASSERT_OK_AND_ASSIGN(positions, lookup->LookupFilePositions(deleted_offsets));
     ASSERT_EQ(1, positions.size());
     ASSERT_EQ("{0}", positions.at("data-0.parquet").ToString());
+
+    // The old schema's actual offset bounds can also prune irrelevant lookups.
+    old_schema_file->embedded_index =
+        std::make_shared<Bytes>("invalid index", GetDefaultPool().get());
+    RoaringBitmap64 outside;
+    outside.Add(100);
+    ASSERT_OK_AND_ASSIGN(positions, lookup->LookupFilePositions(outside));
+    ASSERT_TRUE(positions.empty());
+}
+
+TEST_F(RealtimeOffsetFileIndexLookupTest, TestHistoricalKeyRenameAndIncompatibleKey) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> old_schema,
+                         WriteHistoricalSchema(
+                             arrow::schema({arrow::field("_REALTIME_OFFSET", arrow::int64(), false),
+                                            arrow::field("id", arrow::int64(), false)})));
+    schema_ = DataField::ConvertDataFieldsToArrowSchema(old_schema->Fields());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> file,
+                         CreateIndexedDataFile("data-0.parquet", R"([[10, 1], [12, 2]])", 10, 12));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
+                         DataFileKeyOffsetIndexWriter::Create(
+                             schema_->field(1), directory_->GetFileSystem(), GetDefaultPool()));
+    auto batch = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema_->fields()),
+                                                  R"([[10, 1], [12, 2]])")
+            .ValueOrDie());
+    ASSERT_OK(writer->AddBatch(batch));
+    ASSERT_OK_AND_ASSIGN(std::string sidecar,
+                         writer->Finish(path_factory_->ToPath(file), file->row_count));
+    file = file->CopyWithExtraFiles({sidecar});
+    key_field_ = schema_->field(1)->WithName("renamed_id");
+    schema_ = arrow::schema({schema_->field(0), key_field_});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> lookup,
+                         CreateLookup({file}, /*data_schema_id=*/1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> keys,
+                         lookup->CreateKeyOffsetLookup());
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 found, keys->LookupOffsets(MakeKeys(key_field_)));
+    ASSERT_EQ("{10,12}", found.ToString());
+
+    key_field_ = key_field_->WithType(arrow::int32());
+    ASSERT_OK_AND_ASSIGN(lookup, CreateLookup({file}, /*data_schema_id=*/1));
+    ASSERT_NOK_WITH_MSG(lookup->CreateKeyOffsetLookup(), "deduplicate key is incompatible");
+    key_field_ = DataField::ConvertDataFieldToArrowField(
+        DataField(2, arrow::field("renamed_id", arrow::int64(), false)));
+    ASSERT_OK_AND_ASSIGN(lookup, CreateLookup({file}, /*data_schema_id=*/1));
+    ASSERT_NOK_WITH_MSG(lookup->CreateKeyOffsetLookup(), "deduplicate key is incompatible");
+
+    schema_ = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(3, arrow::field("_REALTIME_OFFSET", arrow::int64(), false)),
+         DataField(1, arrow::field("id", arrow::int64(), false))});
+    ASSERT_OK_AND_ASSIGN(lookup, CreateLookup({file}, /*data_schema_id=*/1));
+    RoaringBitmap64 offsets;
+    offsets.Add(10);
+    ASSERT_NOK_WITH_MSG(lookup->LookupFilePositions(offsets), "offset field ID is incompatible");
 }
 
 TEST_F(RealtimeOffsetFileIndexLookupTest, TestCreateValidation) {
@@ -217,12 +400,14 @@ TEST_F(RealtimeOffsetFileIndexLookupTest, TestCreateValidation) {
                                                 SpecialFields::RealtimeOffset().Name()}}));
     ASSERT_NOK_WITH_MSG(RealtimeOffsetFileIndexLookup::Create(
                             schema_, /*data_schema_id=*/0, key_field_, {nullptr}, path_factory_,
-                            directory_->GetFileSystem(), GetDefaultPool(), valid_options),
+                            directory_->GetFileSystem(), valid_options,
+                            /*schema_manager=*/nullptr, GetDefaultPool()),
                         "invalid data file");
-    ASSERT_NOK_WITH_MSG(RealtimeOffsetFileIndexLookup::Create(
-                            schema_, /*data_schema_id=*/0, key_field_, {}, nullptr,
-                            directory_->GetFileSystem(), GetDefaultPool(), valid_options),
-                        "missing a dependency");
+    ASSERT_NOK_WITH_MSG(
+        RealtimeOffsetFileIndexLookup::Create(schema_, /*data_schema_id=*/0, key_field_, {},
+                                              nullptr, directory_->GetFileSystem(), valid_options,
+                                              /*schema_manager=*/nullptr, GetDefaultPool()),
+        "missing a dependency");
 }
 
 }  // namespace paimon::test

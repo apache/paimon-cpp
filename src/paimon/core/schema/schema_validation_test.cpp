@@ -187,8 +187,7 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
 
     std::map<std::string, std::string> spill_options = valid_options;
     spill_options[Options::REALTIME_SPILL_ENABLED] = "true";
-    ASSERT_NOK_WITH_MSG(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, spill_options),
-                        "does not support 'realtime.spill-enabled=true'");
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, spill_options));
 
     std::map<std::string, std::string> bitmap64_options = valid_options;
     bitmap64_options[Options::DELETION_VECTOR_BITMAP64] = "true";
@@ -207,7 +206,18 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
     no_offset_index_options.erase("file-index.bitmap.columns");
     ASSERT_NOK_WITH_MSG(
         CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, no_offset_index_options),
-        "requires file-index.bitmap.columns to include _REALTIME_OFFSET");
+        "requires an index supporting exact BIGINT IN and NOT_IN row positions on "
+        "_REALTIME_OFFSET");
+
+    for (const std::string& type : {"bsi", "range-bitmap", "bloom-filter"}) {
+        std::map<std::string, std::string> index_options = no_offset_index_options;
+        index_options["file-index." + type + ".columns"] = "_REALTIME_OFFSET";
+        if (type == "bloom-filter") {
+            ASSERT_NOK(CreateAndValidateTableSchema(schema, {}, index_options));
+        } else {
+            ASSERT_OK(CreateAndValidateTableSchema(schema, {}, index_options));
+        }
+    }
 
     std::map<std::string, std::string> disabled_file_index_read_options = valid_options;
     disabled_file_index_read_options[Options::FILE_INDEX_READ_ENABLED] = "false";

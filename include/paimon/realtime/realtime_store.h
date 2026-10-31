@@ -95,6 +95,7 @@ struct PAIMON_EXPORT RealtimeWriteBatch {
 /// Row counts are physical stored rows. For primary-key stores they include old versions and
 /// delete records, rather than the rows visible after merge-on-read. A segment removed by
 /// `AdvanceCommittedOffset` is no longer included, even if an older read view still pins it.
+/// Deduplicate stores also include retained in-memory key-index buffers and offset bitmaps.
 struct PAIMON_EXPORT RealtimeStoreDataUsage {
     uint64_t building_memory_bytes = 0;
     uint64_t sealed_memory_bytes = 0;
@@ -209,6 +210,28 @@ class PAIMON_EXPORT RealtimeStore {
 
     /// Returns the number of bytes currently retained by building and sealed segments.
     virtual uint64_t GetMemoryUsage() const = 0;
+};
+
+/// Optional capability for `RealtimeStore` implementations to separate segment freezing from spill
+/// I/O.
+class PAIMON_EXPORT RealtimeStoreTwoPhaseSeal {
+ public:
+    virtual ~RealtimeStoreTwoPhaseSeal() = default;
+
+    /// Freezes the building segment without spill I/O.
+    virtual Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>
+    FreezeBuildingSegment() = 0;
+
+    /// Spills a segment returned by FreezeBuildingSegment and returns its commit handle.
+    virtual Result<std::shared_ptr<RealtimeSegmentHandle>> SpillFrozenSegment(
+        const std::shared_ptr<RealtimeSegmentHandle>& segment) = 0;
+
+    /// Advances the committed offset without destroying retired storage. The returned view owns
+    /// exactly the segments removed in this operation, including concurrent spill replacements.
+    /// The caller releases it after unlocking its write mutex, so cleanup never runs under that
+    /// mutex. This operation must not perform I/O.
+    virtual Result<std::shared_ptr<RealtimeReadView>> RetireCommittedSegments(
+        int64_t committed_end_offset) = 0;
 };
 
 /// Factory for application-provided `RealtimeStore` implementations.

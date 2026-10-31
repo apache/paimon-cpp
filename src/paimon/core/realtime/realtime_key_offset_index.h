@@ -65,7 +65,10 @@ class MutableKeyOffsetIndex final : public KeyOffsetLookup {
     Result<RoaringBitmap64> LookupOffsets(
         const std::shared_ptr<arrow::StructArray>& keys) const override;
 
-    std::shared_ptr<const KeyOffsetLookup> Snapshot() const;
+    std::shared_ptr<const MutableKeyOffsetIndex> Snapshot() const;
+
+    /// Bucket and occupancy-bitmap bytes retained by this index, excluding older COW snapshots.
+    uint64_t GetMemoryUsage() const;
 
  private:
     using OffsetMap = HashMap<uint64_t, int64_t>;

@@ -251,7 +251,7 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryBitmapBounds) {
                         "selected row id 1 is out of bounds for realtime query batch length 1");
 }
 
-TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsPartialBitmap) {
+TEST_F(RealtimePrimaryKeyReaderTest, TestQueryAllowsPartialBitmap) {
     std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
     std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
     std::shared_ptr<arrow::Schema> store_write_schema = MakeStoreWriteSchema({key});
@@ -271,7 +271,15 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsPartialBitmap) {
         std::unique_ptr<KeyValueRecordReader> reader,
         CreateRealtimePrimaryKeyQueryReaderForTest(std::move(batch_reader), OffsetRange(0, 2),
                                                    value_schema, value_schema, pool_));
-    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "must cover every raw transport row");
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<KeyValue> results,
+        (ReadResultCollector::CollectKeyValueResult<KeyValueRecordReader,
+                                                    KeyValueRecordReader::Iterator>(reader.get())));
+    std::vector<RowKind*> row_kinds = {const_cast<RowKind*>(RowKind::Insert())};
+    std::vector<int64_t> levels = {KeyValue::UNKNOWN_LEVEL};
+    std::vector<KeyValue> expected =
+        KeyValueChecker::GenerateKeyValues(row_kinds, {10}, levels, {{1}}, {{1}}, pool_);
+    KeyValueChecker::CheckResult(expected, results, 1, 1);
 }
 
 TEST_F(RealtimePrimaryKeyReaderTest, TestCommitCoverageAcrossReadersAndBatches) {

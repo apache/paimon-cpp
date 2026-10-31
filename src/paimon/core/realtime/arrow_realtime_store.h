@@ -42,7 +42,7 @@ class MemoryPool;
 class PredicateFilter;
 
 /// Internal Arrow-backed implementation of the default `RealtimeStore`.
-class ArrowRealtimeStore final : public RealtimeStore {
+class ArrowRealtimeStore final : public RealtimeStore, public RealtimeStoreTwoPhaseSeal {
  public:
     ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
                        StatisticsMode statistics_mode, const std::string& temp_directory,
@@ -55,6 +55,11 @@ class ArrowRealtimeStore final : public RealtimeStore {
 
     Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> SealForCommit() override;
 
+    Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> FreezeBuildingSegment() override;
+
+    Result<std::shared_ptr<RealtimeSegmentHandle>> SpillFrozenSegment(
+        const std::shared_ptr<RealtimeSegmentHandle>& segment) override;
+
     Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
         const std::shared_ptr<RealtimeSegmentHandle>& segment) override;
 
@@ -65,6 +70,9 @@ class ArrowRealtimeStore final : public RealtimeStore {
         const RealtimeQueryContext& context) override;
 
     Status AdvanceCommittedOffset(int64_t committed_end_offset) override;
+
+    Result<std::shared_ptr<RealtimeReadView>> RetireCommittedSegments(
+        int64_t committed_end_offset) override;
 
     RealtimeStoreDataUsage GetDataUsage() const override;
 

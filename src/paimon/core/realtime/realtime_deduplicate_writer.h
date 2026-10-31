@@ -41,10 +41,10 @@ class MemoryPool;
 class RealtimeContext;
 class RealtimeSchemaLayout;
 class RealtimeSegmentHandle;
+class SchemaManager;
 struct DataFileMeta;
 
 /// Writer for an append table whose user-defined deduplicate key uses last-write-wins semantics.
-/// TODO(xinyu.lxy): Currently only the happy path is supported.
 class RealtimeDeduplicateWriter final : public BatchWriter {
  public:
     static Result<std::shared_ptr<RealtimeDeduplicateWriter>> Create(
@@ -56,6 +56,7 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
         const std::vector<std::shared_ptr<DataFileMeta>>& restored_data_files,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const CoreOptions& options, const std::string& temp_directory,
+        const std::shared_ptr<SchemaManager>& schema_manager,
         const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
@@ -77,7 +78,7 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
                               std::shared_ptr<arrow::Field> deduplicate_key_field,
                               int64_t next_offset, std::shared_ptr<MemoryPool> memory_pool);
 
-    Status SealCurrentSegment();
+    Status SealCurrentSegment(bool spill);
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;

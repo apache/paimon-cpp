@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -38,13 +39,16 @@ namespace paimon {
 class CacheManager;
 class CoreOptions;
 class DataFilePathFactory;
+class DataFileKeyOffsetIndexReader;
 class FileSystem;
 class KeyOffsetLookup;
 class MemoryPool;
+class RealtimeFileSchema;
+class SchemaManager;
 struct DataFileMeta;
 
 /// Uses the configured bitmap file index on `_REALTIME_OFFSET` to translate a pinned offset DV to
-/// physical row positions. Instances are immutable and therefore safe to pin for lock-free I/O.
+/// physical row positions. File sets are immutable; sidecar readers are reused across snapshots.
 class RealtimeOffsetFileIndexLookup {
  public:
     // Maps data file names to matching physical row positions within a single partition and bucket.
@@ -55,8 +59,9 @@ class RealtimeOffsetFileIndexLookup {
         const std::shared_ptr<arrow::Field>& deduplicate_key_field,
         const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
-        const std::shared_ptr<FileSystem>& file_system,
-        const std::shared_ptr<MemoryPool>& memory_pool, const CoreOptions& options);
+        const std::shared_ptr<FileSystem>& file_system, const CoreOptions& options,
+        const std::shared_ptr<SchemaManager>& schema_manager,
+        const std::shared_ptr<MemoryPool>& memory_pool);
 
     Result<FilePositions> LookupFilePositions(const RoaringBitmap64& offsets) const;
 
@@ -70,16 +75,21 @@ class RealtimeOffsetFileIndexLookup {
     }
 
  private:
-    RealtimeOffsetFileIndexLookup(
-        std::shared_ptr<arrow::Schema> data_schema, int64_t data_schema_id,
-        std::shared_ptr<arrow::Field> deduplicate_key_field,
-        std::vector<std::shared_ptr<DataFileMeta>> data_files,
-        std::shared_ptr<DataFilePathFactory> path_factory, std::shared_ptr<FileSystem> file_system,
-        std::map<std::string, std::string> options, uint32_t cache_page_size,
-        std::shared_ptr<CacheManager> cache_manager, std::shared_ptr<MemoryPool> memory_pool);
+    struct KeyReader {
+        std::shared_ptr<DataFileMeta> file;
+        std::shared_ptr<DataFileKeyOffsetIndexReader> reader;
+    };
 
-    std::shared_ptr<arrow::Schema> data_schema_;
-    int64_t data_schema_id_;
+    RealtimeOffsetFileIndexLookup(std::shared_ptr<arrow::Field> deduplicate_key_field,
+                                  std::vector<std::shared_ptr<DataFileMeta>> data_files,
+                                  std::shared_ptr<DataFilePathFactory> path_factory,
+                                  std::shared_ptr<FileSystem> file_system,
+                                  std::map<std::string, std::string> options,
+                                  uint32_t cache_page_size,
+                                  std::shared_ptr<CacheManager> cache_manager,
+                                  std::shared_ptr<RealtimeFileSchema> file_schema,
+                                  std::shared_ptr<MemoryPool> memory_pool);
+
     std::shared_ptr<arrow::Field> deduplicate_key_field_;
     std::vector<std::shared_ptr<DataFileMeta>> data_files_;
     std::shared_ptr<DataFilePathFactory> path_factory_;
@@ -89,6 +99,9 @@ class RealtimeOffsetFileIndexLookup {
     uint32_t cache_page_size_;
     // One budget for all sidecars and all pinned committed snapshots of this bucket.
     std::shared_ptr<CacheManager> cache_manager_;
+    std::shared_ptr<RealtimeFileSchema> file_schema_;
+    mutable std::mutex key_readers_mutex_;
+    mutable std::map<std::string, KeyReader> key_readers_;
 };
 
 }  // namespace paimon

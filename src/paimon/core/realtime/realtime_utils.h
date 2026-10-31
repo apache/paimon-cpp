@@ -29,6 +29,9 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/file_index_options.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
+#include "paimon/core/utils/branch_manager.h"
+#include "paimon/file_index/file_indexer.h"
+#include "paimon/file_index/file_indexer_factory.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -37,6 +40,13 @@ class RealtimeUtils {
  public:
     RealtimeUtils() = delete;
     ~RealtimeUtils() = delete;
+
+    static Status ValidateBranch(const std::string& branch) {
+        if (!BranchManager::IsMainBranch(BranchManager::NormalizeBranch(branch))) {
+            return Status::Invalid("real-time operations only support the main branch");
+        }
+        return Status::OK();
+    }
 
     static Result<int32_t> GetDeduplicateKeyPosition(
         const std::shared_ptr<arrow::Schema>& schema,
@@ -92,8 +102,6 @@ class RealtimeUtils {
         return Status::OK();
     }
 
-    // TODO(xinyu.lxy): Relax the bitmap-only restriction after other exact file indexes can
-    // return row positions for realtime offsets.
     static Status ValidateDeduplicateFileIndex(const CoreOptions& options) {
         if (!options.FileIndexReadEnabled()) {
             return Status::Invalid(
@@ -103,12 +111,20 @@ class RealtimeUtils {
                                FileIndexOptions::FromCoreOptions(options));
         const std::string& offset_name = SpecialFields::RealtimeOffset().Name();
         for (const FileIndexDefinition& definition : file_indexes.Definitions()) {
-            if (definition.column_name == offset_name && definition.index_type == "bitmap") {
+            if (definition.column_name != offset_name) {
+                continue;
+            }
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<FileIndexer> indexer,
+                FileIndexerFactory::Get(definition.index_type, definition.options));
+            if (indexer && indexer->SupportsExactPredicate(Function::Type::IN, FieldType::BIGINT) &&
+                indexer->SupportsExactPredicate(Function::Type::NOT_IN, FieldType::BIGINT)) {
                 return Status::OK();
             }
         }
         return Status::Invalid(
-            "real-time deduplicate mode requires file-index.bitmap.columns to include ",
+            "real-time deduplicate mode requires an index supporting exact BIGINT IN and NOT_IN "
+            "row positions on ",
             offset_name);
     }
 };

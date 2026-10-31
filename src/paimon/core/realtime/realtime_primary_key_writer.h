@@ -83,7 +83,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
                              const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
-    Status SealCurrentSegment();
+    Status SealCurrentSegment(bool spill);
 
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;

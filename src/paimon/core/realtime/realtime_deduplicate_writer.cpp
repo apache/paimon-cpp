@@ -67,7 +67,8 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
     const std::vector<std::string>& deduplicate_key_fields,
     const std::vector<std::shared_ptr<DataFileMeta>>& restored_data_files,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory, const CoreOptions& options,
-    const std::string& temp_directory, const std::shared_ptr<MemoryPool>& memory_pool) {
+    const std::string& temp_directory, const std::shared_ptr<SchemaManager>& schema_manager,
+    const std::shared_ptr<MemoryPool>& memory_pool) {
     if (!realtime_context || !file_writer || !schema_layout || !data_file_path_factory ||
         !memory_pool) {
         return Status::Invalid("deduplicate real-time writer is missing a dependency");
@@ -103,7 +104,7 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
         RealtimeOffsetFileIndexLookup::Create(
             schema_layout->CommitSchema(), schema_id,
             schema_layout->StoreWriteSchema()->field(key_position), restored_data_files,
-            data_file_path_factory, options.GetFileSystem(), memory_pool, options));
+            data_file_path_factory, options.GetFileSystem(), options, schema_manager, memory_pool));
     PAIMON_RETURN_NOT_OK(
         store_state.deduplicate_state->AttachFileIndexLookup(created_lookup, store));
     return std::shared_ptr<RealtimeDeduplicateWriter>(new RealtimeDeduplicateWriter(
@@ -169,9 +170,10 @@ Status RealtimeDeduplicateWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return Status::OK();
 }
 
-Status RealtimeDeduplicateWriter::SealCurrentSegment() {
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
-                           realtime_store_->SealForCommit());
+Status RealtimeDeduplicateWriter::SealCurrentSegment(bool spill) {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+        spill ? realtime_store_->SealForCommit() : realtime_store_->FreezeBuildingSegment());
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
     if (!segment) {
         return Status::OK();
@@ -186,12 +188,12 @@ Status RealtimeDeduplicateWriter::SealCurrentSegment() {
 
 Status RealtimeDeduplicateWriter::Seal() {
     std::lock_guard<std::mutex> lock(prepare_mutex_);
-    return SealCurrentSegment();
+    return SealCurrentSegment(/*spill=*/true);
 }
 
 Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compaction) {
     std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-    PAIMON_RETURN_NOT_OK(SealCurrentSegment());
+    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*spill=*/false));
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
     {
         std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);

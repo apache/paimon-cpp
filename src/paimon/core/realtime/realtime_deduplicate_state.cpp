@@ -50,18 +50,9 @@ Status RealtimeDeduplicateState::AttachFileIndexLookup(
     return Status::OK();
 }
 
-Status RealtimeDeduplicateState::InstallCommittedSnapshot(
-    int64_t committed_end_offset,
-    const std::vector<std::shared_ptr<DataFileMeta>>& active_data_files,
-    const std::shared_ptr<RealtimeStore>& store) {
-    if (committed_end_offset < 0 || !store) {
-        return Status::Invalid("invalid deduplicate committed advancement");
-    }
-    std::shared_ptr<ArrowDeduplicateRealtimeStore> deduplicate_store =
-        std::dynamic_pointer_cast<ArrowDeduplicateRealtimeStore>(store);
-    if (!deduplicate_store) {
-        return Status::Invalid("deduplicate state requires ArrowDeduplicateRealtimeStore");
-    }
+Result<RealtimeDeduplicateState::PreparedSnapshot>
+RealtimeDeduplicateState::PrepareCommittedSnapshot(
+    const std::vector<std::shared_ptr<DataFileMeta>>& active_data_files) const {
     std::shared_ptr<RealtimeOffsetFileIndexLookup> current_file_lookup;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -74,13 +65,31 @@ Status RealtimeDeduplicateState::InstallCommittedSnapshot(
                            current_file_lookup->WithDataFiles(active_data_files));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const KeyOffsetLookup> next_key_lookup,
                            next_file_lookup->CreateKeyOffsetLookup());
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        PAIMON_RETURN_NOT_OK(deduplicate_store->AdvanceCommittedOffsetAndLookup(
-            committed_end_offset, next_key_lookup));
-        committed_file_lookup_ = std::move(next_file_lookup);
+    return PreparedSnapshot{std::move(current_file_lookup), std::move(next_file_lookup),
+                            std::move(next_key_lookup)};
+}
+
+Result<std::shared_ptr<RealtimeReadView>> RealtimeDeduplicateState::InstallPreparedSnapshot(
+    int64_t committed_end_offset, const PreparedSnapshot& prepared,
+    const std::shared_ptr<RealtimeStore>& store) {
+    if (committed_end_offset < 0 || !store || !prepared.previous_file_lookup ||
+        !prepared.file_lookup || !prepared.key_lookup) {
+        return Status::Invalid("invalid deduplicate committed advancement");
     }
-    return Status::OK();
+    std::shared_ptr<ArrowDeduplicateRealtimeStore> deduplicate_store =
+        std::dynamic_pointer_cast<ArrowDeduplicateRealtimeStore>(store);
+    if (!deduplicate_store) {
+        return Status::Invalid("deduplicate state requires ArrowDeduplicateRealtimeStore");
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (committed_file_lookup_ != prepared.previous_file_lookup) {
+        return Status::Invalid("deduplicate committed lookup changed during refresh preparation");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> retired,
+                           deduplicate_store->RetireCommittedOffsetAndLookup(committed_end_offset,
+                                                                             prepared.key_lookup));
+    committed_file_lookup_ = prepared.file_lookup;
+    return retired;
 }
 
 }  // namespace paimon

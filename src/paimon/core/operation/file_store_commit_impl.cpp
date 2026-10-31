@@ -74,6 +74,7 @@
 #include "paimon/core/operation/metrics/commit_metrics.h"
 #include "paimon/core/operation/metrics/commit_stats.h"
 #include "paimon/core/partition/partition_statistics.h"
+#include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -984,6 +985,7 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
     if (!options_.RealtimeEnabled()) {
         return Status::Invalid("CommitWithProgress requires realtime.enabled=true");
     }
+    PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(options_.GetBranch()));
     if (realtime_commits.empty()) {
         return Status::Invalid("real-time commits must not be empty");
     }

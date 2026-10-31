@@ -43,9 +43,11 @@
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_file_schema.h"
 #include "paimon/core/realtime/realtime_reader.h"
 #include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/realtime/realtime_store_read_pipeline.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/table/source/append_count_reader.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/realtime_split.h"
@@ -120,6 +122,13 @@ AppendOnlyTableRead::AppendOnlyTableRead(const std::shared_ptr<FileStorePathFact
                                          const std::shared_ptr<Executor>& executor)
     : context_(context) {
     const auto& core_options = context->GetCoreOptions();
+    if (!core_options.GetRealtimeDeduplicateKeyFields().empty()) {
+        realtime_file_schema_ = std::make_shared<RealtimeFileSchema>(
+            DataField::ConvertDataFieldsToArrowSchema(context->GetTableSchema()->Fields()),
+            context->GetTableSchema()->Id(),
+            std::make_shared<SchemaManager>(core_options.GetFileSystem(), context->GetPath(),
+                                            core_options.GetBranch()));
+    }
     if (core_options.DataEvolutionEnabled()) {
         // add data evolution first
         split_reads_.push_back(
@@ -341,33 +350,33 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateDeduplicateDiskR
         read_schema = arrow::schema(std::move(fields), read_schema->metadata());
     }
 
-    // TODO(xinyu.lxy): Build a file-specific visibility predicate for each data file. Use the
-    // `_REALTIME_OFFSET` min/max statistics in DataFileMeta to remove deleted offsets that cannot
-    // intersect that file, instead of pushing the complete bucket offset DV to every file.
-    std::vector<Literal> deleted_offsets;
-    deleted_offsets.reserve(offset_deletions->Cardinality());
-    for (RoaringBitmap64::Iterator offset = offset_deletions->Begin();
-         offset != offset_deletions->End(); ++offset) {
-        deleted_offsets.emplace_back(static_cast<int64_t>(*offset));
-    }
     const int32_t offset_position = read_schema->GetFieldIndex(offset_name);
-    std::shared_ptr<Predicate> visibility_predicate =
-        PredicateBuilder::NotIn(offset_position, offset_name, FieldType::BIGINT, deleted_offsets);
-    std::shared_ptr<Predicate> predicate = visibility_predicate;
-    if (context_->GetPredicate()) {
-        PAIMON_ASSIGN_OR_RAISE(predicate, PredicateBuilder::And({context_->GetPredicate(),
-                                                                 std::move(visibility_predicate)}));
-    }
+    AbstractSplitRead::PredicateProvider predicate_provider =
+        [file_schema = realtime_file_schema_, offset_deletions, offset_position, offset_name,
+         user_predicate = context_->GetPredicate()](
+            const std::shared_ptr<DataFileMeta>& file) -> Result<std::shared_ptr<Predicate>> {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> deleted_offsets,
+                               file_schema->SelectOffsets(*file, *offset_deletions));
+        if (deleted_offsets.empty()) {
+            return user_predicate;
+        }
+        std::shared_ptr<Predicate> visibility_predicate = PredicateBuilder::NotIn(
+            offset_position, offset_name, FieldType::BIGINT, deleted_offsets);
+        if (user_predicate) {
+            return PredicateBuilder::And({user_predicate, visibility_predicate});
+        }
+        return visibility_predicate;
+    };
 
     DeletionVector::Factory committed_factory = DeletionVector::CreateFactory(
         context_->GetCoreOptions().GetFileSystem(),
         DeletionVector::CreateDeletionFileMap(data_split->DataFiles(), data_split->DeletionFiles()),
         context_->GetMemoryPool());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<BatchReader> reader,
-        raw_read->CreateReader(data_split->Partition(), data_split->Bucket(),
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
+                           raw_read->CreateReaderWithPredicateProvider(
+                               data_split->Partition(), data_split->Bucket(),
                                data_split->DataFiles(), std::move(committed_factory), row_ranges,
-                               read_schema, predicate));
+                               read_schema, context_->GetPredicate(), predicate_provider));
     if (!expose_offset) {
         reader = std::make_unique<RemoveRealtimeOffsetBatchReader>(std::move(reader));
     }

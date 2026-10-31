@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -65,6 +66,11 @@ class TableSchema;
 
 class AbstractSplitRead : public SplitRead {
  public:
+    /// Supplies the complete predicate for a file. The provider must be nonempty, but may return
+    /// a null predicate when no predicate applies to an individual file.
+    using PredicateProvider =
+        std::function<Result<std::shared_ptr<Predicate>>(const std::shared_ptr<DataFileMeta>&)>;
+
     ~AbstractSplitRead() override = default;
 
     /// `extra_format_options` are merged over the table options when building the format
@@ -90,6 +96,16 @@ class AbstractSplitRead : public SplitRead {
                       std::unique_ptr<SchemaManager>&& schema_manager,
                       const std::shared_ptr<MemoryPool>& memory_pool,
                       const std::shared_ptr<Executor>& executor);
+
+    /// Creates raw readers using each file's predicate for pushdown. The provider is called once
+    /// per file and may be called concurrently.
+    Result<std::vector<std::unique_ptr<FileBatchReader>>> CreateRawFileReadersWithPredicateProvider(
+        const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const PredicateProvider& predicate_provider, DeletionVector::Factory dv_factory,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::map<std::string, std::string>& extra_format_options) const;
 
     /// Creates raw readers while preserving the metadata associated with every reader which was
     /// not eliminated by a file index or deletion vector. Set `attach_blob_context` only for
@@ -131,6 +147,15 @@ class AbstractSplitRead : public SplitRead {
         const std::optional<std::vector<std::string>>& write_cols);
 
  private:
+    Result<std::vector<RawFileReaderWithMeta>> CreateRawFileReadersWithMetaImpl(
+        const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const PredicateProvider& predicate_provider, DeletionVector::Factory dv_factory,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::map<std::string, std::string>& extra_format_options,
+        bool attach_blob_context) const;
+
     /// What a data file is opened with, gathered from the context and the table options once so
     /// that the reader builder and the file reader cannot be built from different answers.
     DataFileReadOptions BuildDataFileReadOptions() const;
