@@ -182,6 +182,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_TRUE(core_options.BlobViewResolveEnabled());
     ASSERT_TRUE(core_options.LegacyPartitionNameEnabled());
     ASSERT_TRUE(core_options.GlobalIndexEnabled());
+    ASSERT_FALSE(core_options.GlobalIndexFilterRefineFromData());
     ASSERT_EQ(std::nullopt, core_options.GetGlobalIndexExternalPath());
     ASSERT_EQ(std::nullopt, core_options.GetGlobalIndexThreadNum());
     ASSERT_EQ(std::nullopt, core_options.GetScanTagName());
@@ -312,6 +313,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"},
         {Options::PARTITION_GENERATE_LEGACY_NAME, "false"},
         {Options::GLOBAL_INDEX_ENABLED, "false"},
+        {Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA, "true"},
         {Options::GLOBAL_INDEX_THREAD_NUM, "4"},
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, "FILE:///tmp/global_index/"},
         {Options::SCAN_TAG_NAME, "test-tag"},
@@ -487,6 +489,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_FALSE(core_options.BlobViewResolveEnabled());
     ASSERT_FALSE(core_options.LegacyPartitionNameEnabled());
     ASSERT_FALSE(core_options.GlobalIndexEnabled());
+    ASSERT_TRUE(core_options.GlobalIndexFilterRefineFromData());
     ASSERT_EQ(core_options.GetGlobalIndexThreadNum(), 4);
     ASSERT_TRUE(core_options.GetGlobalIndexExternalPath());
     ASSERT_EQ(core_options.GetGlobalIndexExternalPath().value(), "FILE:///tmp/global_index/");
@@ -1055,26 +1058,36 @@ TEST(CoreOptionsTest, TestParseChangelogProducer) {
                         "invalid changelog producer: invalid");
 }
 
-TEST(CoreOptionsTest, TestParseFullTextIndexSearchMode) {
-    auto search_mode =
-        [](const std::map<std::string, std::string>& options) -> Result<GlobalIndexSearchMode> {
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
-        return core_options.GetFullTextIndexSearchMode();
+TEST(CoreOptionsTest, TestParseIndexSearchMode) {
+    struct IndexFamily {
+        std::string key;
+        GlobalIndexSearchMode (CoreOptions::*get_search_mode)() const;
     };
-    ASSERT_OK_AND_ASSIGN(GlobalIndexSearchMode mode, search_mode({}));
-    ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
-    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
-    ASSERT_EQ(mode, GlobalIndexSearchMode::FULL);
-    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "DETAIL"}}));
-    ASSERT_EQ(mode, GlobalIndexSearchMode::DETAIL);
-    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "fast"},
-                                            {Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
-    ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
-    ASSERT_NOK_WITH_MSG(search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "invalid"},
-                                     {Options::GLOBAL_INDEX_SEARCH_MODE, "fast"}}),
-                        "invalid full-text-index.search-mode: invalid");
-    ASSERT_NOK_WITH_MSG(search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "invalid"}}),
-                        "invalid global-index.search-mode: invalid");
+    const std::vector<IndexFamily> families = {
+        {Options::FULL_TEXT_INDEX_SEARCH_MODE, &CoreOptions::GetFullTextIndexSearchMode},
+        {Options::SCALAR_INDEX_SEARCH_MODE, &CoreOptions::GetScalarIndexSearchMode}};
+    for (const IndexFamily& family : families) {
+        SCOPED_TRACE(family.key);
+        auto search_mode = [&family](const std::map<std::string, std::string>& options)
+            -> Result<GlobalIndexSearchMode> {
+            PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
+            return (core_options.*family.get_search_mode)();
+        };
+        ASSERT_OK_AND_ASSIGN(GlobalIndexSearchMode mode, search_mode({}));
+        ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
+        ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
+        ASSERT_EQ(mode, GlobalIndexSearchMode::FULL);
+        ASSERT_OK_AND_ASSIGN(mode, search_mode({{family.key, "DETAIL"}}));
+        ASSERT_EQ(mode, GlobalIndexSearchMode::DETAIL);
+        ASSERT_OK_AND_ASSIGN(
+            mode, search_mode({{family.key, "fast"}, {Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
+        ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
+        ASSERT_NOK_WITH_MSG(
+            search_mode({{family.key, "invalid"}, {Options::GLOBAL_INDEX_SEARCH_MODE, "fast"}}),
+            "invalid " + family.key + ": invalid");
+        ASSERT_NOK_WITH_MSG(search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "invalid"}}),
+                            "invalid global-index.search-mode: invalid");
+    }
 }
 
 TEST(CoreOptionsTest, TestParseExternalPathStrategy) {
