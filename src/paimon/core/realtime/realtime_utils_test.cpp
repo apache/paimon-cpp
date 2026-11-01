@@ -109,7 +109,7 @@ TEST(RealtimeUtilsTest, TestValidateDeduplicateFileIndex) {
                                                 SpecialFields::RealtimeOffset().Name()}}));
     ASSERT_OK(RealtimeUtils::ValidateDeduplicateFileIndex(valid_options));
 
-    for (const std::string& type : {"bsi", "range-bitmap"}) {
+    for (const std::string type : {"bsi", "range-bitmap"}) {
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{"file-index." + type + ".columns",
                                                     SpecialFields::RealtimeOffset().Name()}}));

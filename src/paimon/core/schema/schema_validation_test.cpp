@@ -209,7 +209,7 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
         "requires an index supporting exact BIGINT IN and NOT_IN row positions on "
         "_REALTIME_OFFSET");
 
-    for (const std::string& type : {"bsi", "range-bitmap", "bloom-filter"}) {
+    for (const std::string type : {"bsi", "range-bitmap", "bloom-filter"}) {
         std::map<std::string, std::string> index_options = no_offset_index_options;
         index_options["file-index." + type + ".columns"] = "_REALTIME_OFFSET";
         if (type == "bloom-filter") {
@@ -233,7 +233,7 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicateBucketKey) {
          arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64(), /*nullable=*/false)});
     for (const std::vector<std::string>& partition_keys :
          {std::vector<std::string>{}, std::vector<std::string>{"pt"}}) {
-        for (const std::string& buckets : {"1", "2"}) {
+        for (const std::string buckets : {"1", "2"}) {
             std::map<std::string, std::string> options = {
                 {Options::BUCKET, buckets},
                 {Options::BUCKET_KEY, "id"},
@@ -245,7 +245,7 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicateBucketKey) {
                                  TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
                                                      /*primary_keys=*/{}, options));
             ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
-            for (const std::string& bucket_key : {"payload", "id,payload", "_REALTIME_OFFSET"}) {
+            for (const std::string bucket_key : {"payload", "id,payload", "_REALTIME_OFFSET"}) {
                 SCOPED_TRACE(bucket_key);
                 options[Options::BUCKET_KEY] = bucket_key;
                 ASSERT_OK_AND_ASSIGN(table_schema,
