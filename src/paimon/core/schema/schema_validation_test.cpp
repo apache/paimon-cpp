@@ -226,6 +226,48 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
         "requires 'file-index.read.enabled=true'");
 }
 
+TEST(SchemaValidationTest, TestRealtimeDeduplicateBucketKey) {
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(
+        {arrow::field("id", arrow::int64(), /*nullable=*/false),
+         arrow::field("payload", arrow::utf8()), arrow::field("pt", arrow::utf8()),
+         arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64(), /*nullable=*/false)});
+    for (const std::vector<std::string>& partition_keys :
+         {std::vector<std::string>{}, std::vector<std::string>{"pt"}}) {
+        for (const std::string& buckets : {"1", "2"}) {
+            std::map<std::string, std::string> options = {
+                {Options::BUCKET, buckets},
+                {Options::BUCKET_KEY, "id"},
+                {Options::REALTIME_ENABLED, "true"},
+                {Options::REALTIME_DEDUPLICATE_KEY_FIELDS, "id"},
+                {Options::DELETION_VECTORS_ENABLED, "true"},
+                {"file-index.bitmap.columns", SpecialFields::RealtimeOffset().Name()}};
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                                 TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
+                                                     /*primary_keys=*/{}, options));
+            ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+            for (const std::string& bucket_key : {"payload", "id,payload", "_REALTIME_OFFSET"}) {
+                SCOPED_TRACE(bucket_key);
+                options[Options::BUCKET_KEY] = bucket_key;
+                ASSERT_OK_AND_ASSIGN(table_schema,
+                                     TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
+                                                         /*primary_keys=*/{}, options));
+                ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+                ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateRealtime(*table_schema, core_options),
+                                    "bucket-key to use only deduplicate key fields");
+                ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                                    "bucket-key to use only deduplicate key fields");
+            }
+            options.erase(Options::BUCKET_KEY);
+            ASSERT_OK_AND_ASSIGN(table_schema,
+                                 TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
+                                                     /*primary_keys=*/{}, options));
+            ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+            ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateRealtime(*table_schema, core_options),
+                                "bucket-key to use only deduplicate key fields");
+        }
+    }
+}
+
 TEST(SchemaValidationTest, TestStartupMode) {
     auto validate = [](const std::map<std::string, std::string>& options) -> Status {
         PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));

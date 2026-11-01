@@ -29,7 +29,6 @@ Applications can provide their own ``RealtimeStoreFactory`` through
 ``RealtimeContext::Create(factory)`` to customize storage and retrieval while
 keeping Paimon's real-time write, read, and commit lifecycle.
 
-This is not a streaming scan, a write-ahead log, or a cross-process cache.
 Durability still comes from snapshot commits. Upstream must retain replayable
 input and provide monotonically increasing offsets for each partition-bucket.
 Real-time operations currently support only the main branch. Use a separate
@@ -178,8 +177,10 @@ append deduplicate ``.offset`` sidecar or an offset bitmap file index.
 
 For append deduplicate, create a table with no primary keys. Its schema must
 contain ``_REALTIME_OFFSET BIGINT NOT NULL`` and a non-null key, for example
-``id BIGINT NOT NULL``. Keep all versions of a key in the same partition and
-bucket, for example with ``bucket-key=id`` on an unpartitioned table:
+``id BIGINT NOT NULL``. Deduplication is scoped to a partition: the same key may
+exist independently in different partitions. The bucket key must use only
+deduplicate key fields; applications are responsible for assigning rows to the
+correct bucket. For example, use ``bucket-key=id``:
 
 .. code-block:: text
 
@@ -201,10 +202,8 @@ The two indexes serve different purposes:
   positions and filter those rows.
 
 The offset column must have an index supporting exact BIGINT ``IN`` and
-``NOT_IN`` row-position matching. Supported choices are ``bitmap``, ``bsi``,
-and ``range-bitmap``; for example, replace the bitmap declaration above with
-``file-index.bsi.columns=_REALTIME_OFFSET`` or
-``file-index.range-bitmap.columns=_REALTIME_OFFSET``. Indexes may be embedded
+``NOT_IN`` row-position matching. Among Paimon's default plugins, supported
+choices include ``bitmap``, ``bsi``, and ``range-bitmap``. Indexes may be embedded
 in file metadata or stored in an external file-index file. Approximate indexes
 such as Bloom filters are insufficient.
 

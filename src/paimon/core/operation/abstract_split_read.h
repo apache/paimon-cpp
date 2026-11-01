@@ -101,9 +101,8 @@ class AbstractSplitRead : public SplitRead {
     /// per file and may be called concurrently.
     Result<std::vector<std::unique_ptr<FileBatchReader>>> CreateRawFileReadersWithPredicateProvider(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-        const std::shared_ptr<arrow::Schema>& read_schema,
-        const PredicateProvider& predicate_provider, DeletionVector::Factory dv_factory,
-        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<arrow::Schema>& read_schema, PredicateProvider predicate_provider,
+        DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const std::map<std::string, std::string>& extra_format_options) const;
 
@@ -149,9 +148,8 @@ class AbstractSplitRead : public SplitRead {
  private:
     Result<std::vector<RawFileReaderWithMeta>> CreateRawFileReadersWithMetaImpl(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-        const std::shared_ptr<arrow::Schema>& read_schema,
-        const PredicateProvider& predicate_provider, DeletionVector::Factory dv_factory,
-        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<arrow::Schema>& read_schema, PredicateProvider predicate_provider,
+        DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const std::map<std::string, std::string>& extra_format_options,
         bool attach_blob_context) const;

@@ -407,8 +407,7 @@ ArrowDeduplicateRealtimeStore::SealCurrentSegment(bool spill) {
     std::lock_guard<std::mutex> seal_lock(seal_mutex_);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MutableKeyOffsetIndex> next_building_index,
                            MutableKeyOffsetIndex::Create(key_field_, memory_pool_));
-    RealtimeStoreTwoPhaseSeal* two_phase =
-        dynamic_cast<RealtimeStoreTwoPhaseSeal*>(delegate_.get());
+    auto* two_phase = dynamic_cast<RealtimeStoreTwoPhaseSeal*>(delegate_.get());
     std::optional<std::shared_ptr<RealtimeSegmentHandle>> delegate_segment;
     std::optional<OffsetRange> offset_range;
     std::shared_ptr<const RoaringBitmap64> checkpoint;

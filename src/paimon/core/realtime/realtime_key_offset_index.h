@@ -73,6 +73,9 @@ class MutableKeyOffsetIndex final : public KeyOffsetLookup {
  private:
     using OffsetMap = HashMap<uint64_t, int64_t>;
 
+    static constexpr uint64_t kInitialCapacity = 1024;
+    static constexpr uint64_t kCopyCapacityMultiplier = 2;
+
     MutableKeyOffsetIndex(std::shared_ptr<arrow::Field> key_field,
                           std::shared_ptr<KeySerializer> key_serializer,
                           std::shared_ptr<OffsetMap> offsets,

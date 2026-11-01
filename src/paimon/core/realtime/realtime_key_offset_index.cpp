@@ -44,7 +44,7 @@ Result<std::shared_ptr<MutableKeyOffsetIndex>> MutableKeyOffsetIndex::Create(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeySerializer> serializer,
                            KeySerializer::Create(key_field->type(), memory_pool));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetMap> offsets,
-                           OffsetMap::Create(/*initial_capacity=*/1024, memory_pool));
+                           OffsetMap::Create(kInitialCapacity, memory_pool));
     return std::shared_ptr<MutableKeyOffsetIndex>(new MutableKeyOffsetIndex(
         key_field, std::move(serializer), std::move(offsets), memory_pool));
 }
@@ -69,7 +69,9 @@ Status MutableKeyOffsetIndex::EnsureMutable() {
     }
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<OffsetMap> copy,
-        OffsetMap::Create(std::max<uint64_t>(1024, offsets_->Size() * 2), memory_pool_));
+        OffsetMap::Create(
+            std::max<uint64_t>(kInitialCapacity, offsets_->Size() * kCopyCapacityMultiplier),
+            memory_pool_));
     Status status = Status::OK();
     offsets_->ForEach([&](uint64_t hash, int64_t offset) {
         if (status.ok() && offset >= 0) {

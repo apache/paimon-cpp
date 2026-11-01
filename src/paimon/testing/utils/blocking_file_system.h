@@ -82,7 +82,9 @@ class BlockingFileSystem final : public FileSystem {
                 released_ = true;
             }
             cv_.notify_all();
-            if (!cv_.wait_for(lock, std::chrono::seconds(60), [&]() { return released_; })) {
+            const bool released =
+                cv_.wait_for(lock, std::chrono::seconds(60), [&]() { return released_; });
+            if (!released) {
                 result_ = Status::IOError("timed out waiting for blocked file operation");
                 released_ = true;
                 cv_.notify_all();

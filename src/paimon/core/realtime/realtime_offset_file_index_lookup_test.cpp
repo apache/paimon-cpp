@@ -208,7 +208,7 @@ TEST_F(RealtimeOffsetFileIndexLookupTest, TestLookupFilePositionsAcrossDataFiles
 TEST_F(RealtimeOffsetFileIndexLookupTest, TestMixedExactIndexTypes) {
     std::vector<std::shared_ptr<DataFileMeta>> files;
     int64_t offset = 0;
-    for (const std::string& type : {"bitmap", "bsi", "range-bitmap"}) {
+    for (const std::string type : {"bitmap", "bsi", "range-bitmap"}) {
         options_ = {{"file-index." + type + ".columns", "_REALTIME_OFFSET"},
                     {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}};
         const std::string json = fmt::format("[[{}, 1]]", offset);

@@ -207,8 +207,7 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
 }
 
 Status RealtimePrimaryKeyWriter::SealCurrentSegment(bool spill) {
-    RealtimeStoreTwoPhaseSeal* two_phase =
-        dynamic_cast<RealtimeStoreTwoPhaseSeal*>(realtime_store_.get());
+    auto* two_phase = dynamic_cast<RealtimeStoreTwoPhaseSeal*>(realtime_store_.get());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
                            !spill && two_phase ? two_phase->FreezeBuildingSegment()
                                                : realtime_store_->SealForCommit());

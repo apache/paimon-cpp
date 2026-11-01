@@ -26,11 +26,10 @@
 #include "arrow/api.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
-#include "paimon/common/utils/string_utils.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/schema/schema_manager.h"
-#include "paimon/defs.h"
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
@@ -72,13 +71,13 @@ Status RealtimeFileSchema::ValidateKey(const DataFileMeta& file,
     PAIMON_RETURN_NOT_OK(GetFileSchema(file).status());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> file_schema,
                            schema_manager_->ReadSchema(file.schema_id));
-    auto iter = file_schema->Options().find(Options::REALTIME_DEDUPLICATE_KEY_FIELDS);
-    if (iter == file_schema->Options().end()) {
-        return Status::Invalid("historical file schema has no realtime deduplicate key definition");
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(file_schema->Options()));
+    const std::vector<std::string>& key_fields = options.GetRealtimeDeduplicateKeyFields();
+    if (key_fields.size() != 1 || key_fields.front().empty()) {
+        return Status::Invalid(
+            "historical file schema must define exactly one realtime deduplicate key field");
     }
-    std::string key_name = iter->second;
-    StringUtils::Trim(&key_name);
-    PAIMON_ASSIGN_OR_RAISE(DataField file_key, file_schema->GetField(key_name));
+    PAIMON_ASSIGN_OR_RAISE(DataField file_key, file_schema->GetField(key_fields.front()));
     PAIMON_ASSIGN_OR_RAISE(DataField current_key,
                            DataField::ConvertArrowFieldToDataField(key_field));
     if (file_key.Id() != current_key.Id() ||

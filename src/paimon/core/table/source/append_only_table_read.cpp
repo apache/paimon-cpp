@@ -372,11 +372,12 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateDeduplicateDiskR
         context_->GetCoreOptions().GetFileSystem(),
         DeletionVector::CreateDeletionFileMap(data_split->DataFiles(), data_split->DeletionFiles()),
         context_->GetMemoryPool());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
-                           raw_read->CreateReaderWithPredicateProvider(
-                               data_split->Partition(), data_split->Bucket(),
-                               data_split->DataFiles(), std::move(committed_factory), row_ranges,
-                               read_schema, context_->GetPredicate(), predicate_provider));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BatchReader> reader,
+        raw_read->CreateReaderWithPredicateProvider(
+            data_split->Partition(), data_split->Bucket(), data_split->DataFiles(),
+            std::move(committed_factory), row_ranges, read_schema, context_->GetPredicate(),
+            std::move(predicate_provider)));
     if (!expose_offset) {
         reader = std::make_unique<RemoveRealtimeOffsetBatchReader>(std::move(reader));
     }

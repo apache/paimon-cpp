@@ -106,22 +106,22 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
         [predicate](const std::shared_ptr<DataFileMeta>&) -> Result<std::shared_ptr<Predicate>> {
         return predicate;
     };
-    return CreateRawFileReadersWithPredicateProvider(partition, data_files, read_schema,
-                                                     predicate_provider, dv_factory, row_ranges,
-                                                     data_file_path_factory, extra_format_options);
+    return CreateRawFileReadersWithPredicateProvider(
+        partition, data_files, read_schema, std::move(predicate_provider), dv_factory, row_ranges,
+        data_file_path_factory, extra_format_options);
 }
 
 Result<std::vector<std::unique_ptr<FileBatchReader>>>
 AbstractSplitRead::CreateRawFileReadersWithPredicateProvider(
     const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-    const std::shared_ptr<arrow::Schema>& read_schema, const PredicateProvider& predicate_provider,
+    const std::shared_ptr<arrow::Schema>& read_schema, PredicateProvider predicate_provider,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::map<std::string, std::string>& extra_format_options) const {
     PAIMON_ASSIGN_OR_RAISE(std::vector<RawFileReaderWithMeta> readers_with_meta,
                            CreateRawFileReadersWithMetaImpl(
-                               partition, data_files, read_schema, predicate_provider, dv_factory,
-                               row_ranges, data_file_path_factory, extra_format_options,
+                               partition, data_files, read_schema, std::move(predicate_provider),
+                               dv_factory, row_ranges, data_file_path_factory, extra_format_options,
                                /*attach_blob_context=*/false));
     std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers;
     raw_file_readers.reserve(readers_with_meta.size());
@@ -143,15 +143,15 @@ AbstractSplitRead::CreateRawFileReadersWithMeta(
         [predicate](const std::shared_ptr<DataFileMeta>&) -> Result<std::shared_ptr<Predicate>> {
         return predicate;
     };
-    return CreateRawFileReadersWithMetaImpl(partition, data_files, read_schema, predicate_provider,
-                                            dv_factory, row_ranges, data_file_path_factory,
-                                            extra_format_options, attach_blob_context);
+    return CreateRawFileReadersWithMetaImpl(
+        partition, data_files, read_schema, std::move(predicate_provider), dv_factory, row_ranges,
+        data_file_path_factory, extra_format_options, attach_blob_context);
 }
 
 Result<std::vector<AbstractSplitRead::RawFileReaderWithMeta>>
 AbstractSplitRead::CreateRawFileReadersWithMetaImpl(
     const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-    const std::shared_ptr<arrow::Schema>& read_schema, const PredicateProvider& predicate_provider,
+    const std::shared_ptr<arrow::Schema>& read_schema, PredicateProvider predicate_provider,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::map<std::string, std::string>& extra_format_options,

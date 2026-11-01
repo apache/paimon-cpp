@@ -467,6 +467,7 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(
             }
         }
         if (!pending.empty()) {
+            // Open sidecars outside the progress lock to avoid blocking scans on I/O.
             progress_lock.unlock();
             for (Notification* notification : pending) {
                 PAIMON_ASSIGN_OR_RAISE(RealtimeDeduplicateState::PreparedSnapshot prepared,

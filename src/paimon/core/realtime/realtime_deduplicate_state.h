@@ -41,8 +41,11 @@ class RealtimeOffsetFileIndexLookup;
 class RealtimeDeduplicateState {
  public:
     struct PreparedSnapshot {
+        // Current snapshot's file lookup.
         std::shared_ptr<RealtimeOffsetFileIndexLookup> previous_file_lookup;
+        // Next snapshot's file lookup.
         std::shared_ptr<RealtimeOffsetFileIndexLookup> file_lookup;
+        // Next snapshot's key-to-offset lookup.
         std::shared_ptr<const KeyOffsetLookup> key_lookup;
     };
 
