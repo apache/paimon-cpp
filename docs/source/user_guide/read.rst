@@ -77,10 +77,20 @@ the pool alive. Use a thread-safe pool, or synchronize all its operations includ
 cleanup, when planning tasks or consumers can run concurrently. A scan itself
 must not be called concurrently.
 
+Cache entries remain charged to the pool that allocated them until they are
+released. A shared cache can retain allocations from multiple pools; keep each
+such pool alive until all entries using its allocations have been released.
+
 When ordinary manifest planning fails, it waits for already accepted metadata
-tasks before unwinding the task submission scope. This does not cancel native
-I/O or force an application executor to discard completed task closures; their
-retained allocations remain subject to the pool lifetime rule above.
+tasks before unwinding the task submission scope. For this guarantee, if
+``Executor::Add`` throws, it must not have accepted or run the submitted task.
+The default executor satisfies this condition.
+
+Waiting for a future to become ready does not guarantee that its task closure
+has been destroyed. Destroying the default executor from a caller thread waits
+for its workers to finish. With a shared or custom executor, ensure task closures
+and their retained results have been released before releasing the pool.
+Waiting for tasks does not cancel native I/O.
 
 Schema Evolution
 -----------------------
