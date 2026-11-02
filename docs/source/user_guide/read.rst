@@ -87,9 +87,9 @@ tasks before unwinding the task submission scope. For this guarantee, if
 The default executor satisfies this condition.
 
 Waiting for a future to become ready does not guarantee that its task closure
-has been destroyed. Destroying the default executor from a caller thread waits
-for its workers to finish. With a shared or custom executor, ensure task closures
-and their retained results have been released before releasing the pool.
+has been destroyed. Keep the pool alive until task closures and their retained
+results have been released, including when a shared or custom executor outlives
+the scan.
 Waiting for tasks does not cancel native I/O.
 
 Schema Evolution
