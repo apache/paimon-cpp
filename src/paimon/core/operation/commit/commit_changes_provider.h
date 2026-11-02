@@ -47,6 +47,8 @@ struct CommitChanges {
     std::vector<IndexManifestEntry> index_entries;
     // Unpublished files owned by this attempt; retain on uncertain publication outcomes.
     std::vector<std::string> temporary_files;
+    // Unpublished intermediate outputs; delete only after confirmed snapshot publication.
+    std::vector<std::string> files_to_delete_after_commit;
 };
 
 class CommitChangesProvider {

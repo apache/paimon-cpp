@@ -59,6 +59,7 @@ class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
 class Predicate;
+struct BlobReadContext;
 struct DataFileMeta;
 class TableSchema;
 
@@ -81,6 +82,7 @@ class AbstractSplitRead : public SplitRead {
     struct RawFileReaderWithMeta {
         std::shared_ptr<DataFileMeta> file;
         std::unique_ptr<FileBatchReader> reader;
+        std::shared_ptr<BlobReadContext> blob_context = nullptr;
     };
 
     AbstractSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
@@ -90,14 +92,16 @@ class AbstractSplitRead : public SplitRead {
                       const std::shared_ptr<Executor>& executor);
 
     /// Creates raw readers while preserving the metadata associated with every reader which was
-    /// not eliminated by a file index or deletion vector.
+    /// not eliminated by a file index or deletion vector. Set `attach_blob_context` only for
+    /// data-evolution blob fallback readers.
     Result<std::vector<RawFileReaderWithMeta>> CreateRawFileReadersWithMeta(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::map<std::string, std::string>& extra_format_options) const;
+        const std::map<std::string, std::string>& extra_format_options,
+        bool attach_blob_context) const;
 
     Result<std::unique_ptr<BatchReader>> ApplyPredicateFilterIfNeeded(
         std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<Predicate>& predicate) const;
@@ -131,13 +135,14 @@ class AbstractSplitRead : public SplitRead {
     /// that the reader builder and the file reader cannot be built from different answers.
     DataFileReadOptions BuildDataFileReadOptions() const;
 
-    // return nullptr if data file is skipped by index or dv
-    Result<std::unique_ptr<FileBatchReader>> CreateRawFileReader(
+    // Return metadata with a null reader if the data file is skipped by index or dv.
+    Result<RawFileReaderWithMeta> CreateRawFileReader(
         const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::map<std::string, std::string>& extra_format_options) const;
+        const std::map<std::string, std::string>& extra_format_options,
+        bool attach_blob_context) const;
 
     Result<std::unique_ptr<ReaderBuilder>> PrepareReaderBuilder(
         const std::string& format_identifier,
