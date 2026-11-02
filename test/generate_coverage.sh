@@ -20,10 +20,25 @@ set -e
 
 cd $(dirname "$0")/../
 mkdir -p build && cd build
-cmake ../ -DCMAKE_BUILD_TYPE=Debug -DPAIMON_BUILD_TESTS=ON -DPAIMON_USE_ASAN=ON -DPAIMON_GENERATE_COVERAGE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake ../ -DCMAKE_BUILD_TYPE=Debug -DPAIMON_BUILD_TESTS=ON -DPAIMON_USE_ASAN=ON -DPAIMON_GENERATE_COVERAGE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DPAIMON_ENABLE_AVRO=ON -DPAIMON_ENABLE_ORC=ON \
+    -DPAIMON_ENABLE_MOSAIC=ON -DPAIMON_ENABLE_LANCE=ON -DPAIMON_ENABLE_VORTEX=ON
 make -j
 make test
 lcov --capture --directory src/paimon --directory test --output-file coverage.info
+# Keep only project implementation code in the report: drop system headers,
+# third-party dependencies from the build tree and third_party/, and test
+# sources (*_test.cpp, test helpers, mocks).
+lcov --remove coverage.info \
+    '/usr/*' \
+    '*/build*/*' \
+    '*/third_party/*' \
+    '*_test.cpp' \
+    '*/test/*' \
+    '*/testing/*' \
+    '*mock*' \
+    --output-file coverage_filtered.info
+mv coverage_filtered.info coverage.info
 genhtml coverage.info --output-directory coverage
 
 ip=$(hostname -I | awk '{print $1}')
