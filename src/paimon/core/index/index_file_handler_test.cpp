@@ -81,7 +81,9 @@ class IndexFileHandlerTest : public testing::Test {
                                IndexManifestFile::Create(
                                    core_options.GetFileSystem(), core_options.GetManifestFormat(),
                                    core_options.GetManifestCompression(), path_factory,
-                                   core_options.GetBucket(), memory_pool_, core_options));
+                                   core_options.GetBucket() == -1 ? BucketMode::BUCKET_UNAWARE
+                                                                  : BucketMode::HASH_FIXED,
+                                   memory_pool_, core_options));
         auto path_factories = std::make_shared<IndexFilePathFactories>(path_factory);
         return std::make_unique<IndexFileHandler>(
             core_options.GetFileSystem(), std::move(index_manifest_file), path_factories,

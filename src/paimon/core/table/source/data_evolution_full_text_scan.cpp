@@ -272,7 +272,8 @@ Result<std::shared_ptr<FullTextScan::Plan>> DataEvolutionFullTextScan::CreatePla
         std::unique_ptr<IndexManifestFile> index_manifest_file,
         IndexManifestFile::Create(options_.GetFileSystem(), options_.GetManifestFormat(),
                                   options_.GetManifestCompression(), path_factory_,
-                                  options_.GetBucket(), pool_, options_));
+                                  ResolveBucketMode(options_.GetBucket(), table_schema_), pool_,
+                                  options_));
     IndexFileHandler index_file_handler(options_.GetFileSystem(), std::move(index_manifest_file),
                                         std::make_shared<IndexFilePathFactories>(path_factory_),
                                         options_.DeletionVectorsBitmap64(), pool_);
