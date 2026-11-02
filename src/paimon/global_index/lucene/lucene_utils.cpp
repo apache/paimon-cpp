@@ -16,6 +16,13 @@
  * limitations under the License.
  */
 #include "paimon/global_index/lucene/lucene_utils.h"
+
+#include <filesystem>
+#include <map>
+#include <mutex>
+#include <system_error>
+
+#include "cppjieba/Jieba.hpp"
 namespace paimon::lucene {
 
 Result<std::string> LuceneUtils::GetJiebaDictionaryDir() {
@@ -28,6 +35,29 @@ Result<std::string> LuceneUtils::GetJiebaDictionaryDir() {
 #endif
     return Status::Invalid(
         fmt::format("cannot get dictionary dir for jieba, must set env {}", kJiebaDictDirEnv));
+}
+
+Result<std::shared_ptr<const cppjieba::Jieba>> LuceneUtils::GetJieba() {
+    PAIMON_ASSIGN_OR_RAISE(std::string configured_dir, GetJiebaDictionaryDir());
+    std::error_code ec;
+    std::string dictionary_dir = std::filesystem::canonical(configured_dir, ec).string();
+    if (ec) {
+        return Status::IOError(fmt::format("cannot resolve dictionary dir {} for jieba: {}",
+                                           configured_dir, ec.message()));
+    }
+    static std::mutex mutex;
+    static std::map<std::string, std::shared_ptr<const cppjieba::Jieba>> dir_to_jieba;
+    // The lock is held while loading, so concurrent callers wait for one load of a directory
+    // instead of each loading it.
+    std::lock_guard<std::mutex> lock(mutex);
+    std::shared_ptr<const cppjieba::Jieba>& jieba = dir_to_jieba[dictionary_dir];
+    if (!jieba) {
+        jieba = std::make_shared<cppjieba::Jieba>(
+            dictionary_dir + "/jieba.dict.utf8", dictionary_dir + "/hmm_model.utf8",
+            dictionary_dir + "/user.dict.utf8", dictionary_dir + "/idf.utf8",
+            dictionary_dir + "/stop_words.utf8");
+    }
+    return jieba;
 }
 
 }  // namespace paimon::lucene

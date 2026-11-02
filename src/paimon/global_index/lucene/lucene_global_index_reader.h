@@ -121,7 +121,7 @@ class LuceneGlobalIndexReader : public GlobalIndexReader {
     LuceneGlobalIndexReader(const std::wstring& wfield_name,
                             const Lucene::IndexSearcherPtr& searcher,
                             const std::string& tokenize_mode,
-                            const std::shared_ptr<cppjieba::Jieba>& jieba)
+                            const std::shared_ptr<const cppjieba::Jieba>& jieba)
         : wfield_name_(wfield_name),
           searcher_(searcher),
           tokenize_mode_(tokenize_mode),
@@ -142,6 +142,6 @@ class LuceneGlobalIndexReader : public GlobalIndexReader {
     std::wstring wfield_name_;
     Lucene::IndexSearcherPtr searcher_;
     std::string tokenize_mode_;
-    std::shared_ptr<cppjieba::Jieba> jieba_;
+    std::shared_ptr<const cppjieba::Jieba> jieba_;
 };
 }  // namespace paimon::lucene

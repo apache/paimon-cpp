@@ -16,10 +16,16 @@
  * limitations under the License.
  */
 #pragma once
+#include <memory>
+#include <string>
+
 #include "fmt/format.h"
 #include "lucene++/StringUtils.h"
 #include "paimon/global_index/lucene/lucene_defs.h"
 #include "paimon/result.h"
+namespace cppjieba {
+class Jieba;
+}  // namespace cppjieba
 namespace paimon::lucene {
 class LuceneUtils {
  public:
@@ -37,5 +43,11 @@ class LuceneUtils {
     }
 
     static Result<std::string> GetJiebaDictionaryDir();
+
+    /// Returns the Jieba segmenter of the dictionaries in `GetJiebaDictionaryDir()`, which is
+    /// resolved to a canonical absolute path. Loading the dictionaries is slow, so each directory
+    /// is loaded on first use, cached until the process exits and shared by all Lucene index
+    /// readers and writers; its const methods are safe to call from many threads.
+    static Result<std::shared_ptr<const cppjieba::Jieba>> GetJieba();
 };
 }  // namespace paimon::lucene
