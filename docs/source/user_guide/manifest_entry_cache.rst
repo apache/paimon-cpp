@@ -86,6 +86,14 @@ under
            .AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3")
            .Finish());
 
+.. note::
+
+   ``LruCache`` is the built-in weight-bounded implementation, but it is declared in
+   ``src/paimon/common/io/cache/lru_cache.h`` and only ``include/`` is installed, so it is
+   not reachable from an installed Paimon. ``WithCache`` takes the public ``Cache``
+   interface of ``include/paimon/cache/cache.h``; pass your own implementation of it when
+   you build against the installed package.
+
 Cache entries are scoped by table path, branch, and bucket, so they can be
 reused across newly created ``TableScan`` and ``FileStoreScan`` instances as
 long as they share the same cache object and scan the same bucket.

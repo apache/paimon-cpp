@@ -144,7 +144,7 @@ a column name containing only such whitespace selects the indexed field.
 
 - **Environment Variable**: ``PAIMON_JIEBA_DICT_DIR``
 
-  - **Description**: Specifies the directory containing Jieba dictionary files for Chinese text tokenization. At runtime, the system first checks this environment variable; if not set, it falls back to the compile-time ``JIEBA_TEST_DICT_DIR`` macro (only available in test builds). If neither is available, will fail with an error.
+  - **Description**: Specifies the directory containing Jieba dictionary files for Chinese text tokenization. At runtime, the system first checks this environment variable; if not set, it falls back to the compile-time ``JIEBA_TEST_DICT_DIR`` macro (only available in test builds). If neither is available, will fail with an error. A relative directory is resolved against the current working directory. Each dictionary directory is loaded once per process and shared by all Lucene index readers and writers, so changes to its dictionary files take effect only after the process restarts.
 
 Full-Text Index (Experimental)
 ------------------------------

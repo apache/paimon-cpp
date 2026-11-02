@@ -84,10 +84,11 @@ Current scope
   definitions are recognized for validation, but their evaluation conservatively falls
   back to a normal scan until their dedicated payload readers are supported.
 - The read path targets the Java release-2.0.0 layout and scan semantics (source metadata
-  v1, ``GlobalIndexMeta`` with ``_SOURCE_META``, commit message v12). Source-file names
-  currently use the existing C++ length-prefixed UTF-8 streams; ASCII and non-null BMP
-  names are compatible with Java ``writeUTF``, while complete modified UTF-8 support for
-  supplementary code points will be handled by a shared stream-level change.
+  v1, ``GlobalIndexMeta`` with ``_SOURCE_META``). Commit messages are written at version 13
+  and remain readable down to version 3. Source-file names currently use the existing C++
+  length-prefixed UTF-8 streams; ASCII and non-null BMP names are compatible with Java
+  ``writeUTF``, while complete modified UTF-8 support for supplementary code points will be
+  handled by a shared stream-level change.
 - Automatic maintenance is synchronous during prepare-commit. Java's asynchronous build
   scheduling, retries, fairness metrics, and manual rebuild actions are not part of the C++
   API. Realtime and postpone-bucket writers do not build source-backed payloads.
