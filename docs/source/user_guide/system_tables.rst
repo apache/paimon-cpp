@@ -26,6 +26,59 @@ Branch-qualified paths are also supported. For example,
 ``/warehouse/db.db/orders$branch_audit$files`` reads the files system table from
 the ``audit`` branch.
 
+Table-Level System Tables
+-------------------------
+
+These suffixes are recognized on a data table path. Matching is
+case-insensitive, and an unrecognized suffix fails with
+``unsupported system table: <name>`` instead of falling back to the base table.
+
+* ``$options``: the latest base table options as key/value rows.
+* ``$snapshots``: snapshot commit history.
+* ``$schemas``: schema evolution history.
+* ``$tags``: tags and the snapshots they reference.
+* ``$branches``: table branches, including ``main``.
+* ``$consumers``: persisted streaming consumer offsets.
+* ``$manifests``: data manifest metadata in the latest snapshot.
+* ``$files``: data file metadata in the latest snapshot.
+* ``$audit_log``: row-level changelog records with rowkind.
+* ``$binlog``: changelog records with list-wrapped data columns.
+* ``$ro``: read-optimized data, described in the next section.
+
+Global System Tables
+--------------------
+
+Four system tables are not bound to a single data table. They live under the
+reserved ``sys`` database, and three of them enumerate across all databases in
+the warehouse:
+
+* ``sys.catalog_options``: catalog-level configuration as key/value rows.
+* ``sys.all_table_options``: all table options as
+  ``(database_name, table_name, key, value)`` rows.
+* ``sys.tables``: metadata for all tables, including record counts and file
+  statistics.
+* ``sys.partitions``: partition-level file statistics for all tables.
+
+``sys.all_table_options``, ``sys.tables`` and ``sys.partitions`` are always
+available. ``sys.catalog_options`` is disabled by default and has to be turned
+on with the catalog option ``catalog-options-table.enabled``; a disabled one is
+reported as not existing.
+
+Those three enumerate databases and tables, so they need a catalog: loading a
+bare ``<warehouse>/sys/<name>`` path fails with ``global system table requires
+catalog context: <name>``. ``sys.catalog_options`` enumerates nothing, and is
+the one a bare path serves.
+
+.. note::
+
+   No public read path serves those three yet. A catalog lists them and
+   returns their schema, but does not hand back a readable table:
+   ``Catalog::GetTable(Identifier("sys", "tables"))`` is rejected by a
+   file-system catalog with ``do not support checking TableSchemaExists for
+   system table``, and a REST catalog returns one whose path is left unset,
+   which ``TableScan`` and ``TableRead`` cannot dispatch to the global system
+   table loader.
+
 Read-Optimized System Table
 ---------------------------
 

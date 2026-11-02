@@ -167,11 +167,13 @@ class PAIMON_EXPORT Variant {
 /// Example: read `$.age` as INT64 and `$.city` as STRING from variant column `v`:
 ///
 ///     VariantAccessBuilder builder;
-///     builder.AddField(age_type, "$.age");
-///     builder.AddField(city_type, "$.city");
-///     auto field = builder.Build("v");  // use in ReadContextBuilder::SetReadSchema
+///     PAIMON_RETURN_NOT_OK(builder.AddField(age_type, "$.age"));
+///     PAIMON_RETURN_NOT_OK(builder.AddField(city_type, "$.city"));
+///     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<struct ArrowSchema> field, builder.Build("v"));
 ///
-/// The resulting struct has one child per added field, named by its position ("0", "1", ...).
+/// Use the resulting field in `ReadContextBuilder::SetReadSchema`. Both macros require the
+/// enclosing function to return `Status` or `Result<T>`. The resulting struct has one child
+/// per added field, named by its position ("0", "1", ...).
 class PAIMON_EXPORT VariantAccessBuilder {
  public:
     VariantAccessBuilder();
