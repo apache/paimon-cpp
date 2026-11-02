@@ -23,9 +23,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <mutex>
-#include <optional>
 #include <shared_mutex>
+#include <utility>
 
 #include "glog/log_severity.h"
 #include "glog/logging.h"
@@ -43,8 +44,8 @@ static const char* GetProgramName() {
 #endif
 }
 
-static std::optional<Logger::LoggerCreator>& getLoggerCreator() {
-    static std::optional<Logger::LoggerCreator> _loggerCreator;
+static std::shared_ptr<Logger::LoggerCreator>& getLoggerCreator() {
+    static std::shared_ptr<Logger::LoggerCreator> _loggerCreator;
     return _loggerCreator;
 }
 
@@ -55,7 +56,7 @@ static std::shared_mutex& getRegistryLock() {
 
 void Logger::RegisterLogger(LoggerCreator creator) {
     std::unique_lock<std::shared_mutex> lock(getRegistryLock());
-    getLoggerCreator() = creator;
+    getLoggerCreator() = std::make_shared<LoggerCreator>(std::move(creator));
 }
 
 static google::LogSeverity ToGlogLevel(PaimonLogLevel level) {
@@ -99,15 +100,22 @@ class GlogAdaptor : public Logger {
 };
 
 std::unique_ptr<Logger> Logger::GetLogger(const std::string& path) {
-    auto& creator = getLoggerCreator();
-    if (creator) {
+    // Share the registered creator under the lock and call it after unlocking, so it keeps
+    // its state, stays alive if replaced, and may call RegisterLogger() without deadlocking.
+    std::shared_ptr<LoggerCreator> creator;
+    {
         std::shared_lock<std::shared_mutex> lock(getRegistryLock());
-        return creator.value()(path);
+        creator = getLoggerCreator();
     }
-    std::unique_lock<std::shared_mutex> ulock(getRegistryLock());
-    if (!google::IsGoogleLoggingInitialized()) {
-        google::InitGoogleLogging(GetProgramName());
+    if (creator) {
+        return (*creator)(path);
     }
+    static std::once_flag glog_init_flag;
+    std::call_once(glog_init_flag, []() {
+        if (!google::IsGoogleLoggingInitialized()) {
+            google::InitGoogleLogging(GetProgramName());
+        }
+    });
     return std::make_unique<GlogAdaptor>();
 }
 

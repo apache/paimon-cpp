@@ -83,6 +83,13 @@ class PAIMON_EXPORT GlobalIndexer {
     virtual bool SupportsCheckpoint() const {
         return false;
     }
+
+    /// Whether readers of this indexer answer `GlobalIndexReader::VisitFullTextSearch()`, as Java
+    /// `GlobalIndexerFactory#supportsFullTextSearch` says. `FullTextSearchBuilder` searches only
+    /// the index files whose indexer supports it.
+    virtual bool SupportsFullTextSearch() const {
+        return false;
+    }
 };
 
 }  // namespace paimon

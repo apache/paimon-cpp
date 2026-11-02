@@ -53,7 +53,9 @@ class FileStorePathFactoryTest : public ::testing::Test {
     }
     void TearDown() override {}
 
-    std::shared_ptr<FileStorePathFactory> CreateFactory(const std::string& root) const {
+    std::shared_ptr<FileStorePathFactory> CreateFactory(
+        const std::string& root,
+        const std::optional<std::string>& global_index_external_path = std::nullopt) const {
         arrow::FieldVector fields = {arrow::field("f0", arrow::boolean()),
                                      arrow::field("f1", arrow::int8()),
                                      arrow::field("f2", arrow::int8()),
@@ -76,13 +78,13 @@ class FileStorePathFactoryTest : public ::testing::Test {
         EXPECT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
         EXPECT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
                              options.CreateExternalPaths());
-        EXPECT_OK_AND_ASSIGN(auto path_factory,
-                             FileStorePathFactory::Create(
-                                 root, schema, {"f0", "f3"}, options.GetPartitionDefaultName(),
-                                 options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
-                                 options.LegacyPartitionNameEnabled(), external_paths,
-                                 /*global_index_external_path=*/std::nullopt,
-                                 options.IndexFileInDataFileDir(), mem_pool_));
+        EXPECT_OK_AND_ASSIGN(
+            auto path_factory,
+            FileStorePathFactory::Create(
+                root, schema, {"f0", "f3"}, options.GetPartitionDefaultName(),
+                options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
+                options.LegacyPartitionNameEnabled(), external_paths, global_index_external_path,
+                options.IndexFileInDataFileDir(), mem_pool_));
         return path_factory;
     }
 
@@ -596,11 +598,14 @@ TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactory) {
     std::shared_ptr<FileStorePathFactory> file_store_path_factory = CreateFactory(dir->Str());
     std::shared_ptr<FileSystem> file_system = dir->GetFileSystem();
 
-    std::string prefix = "lumina-global-index-vector-10-20-task-1-";
+    std::string prefix = "lumina-global-index-vector-10-20-";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory,
                          file_store_path_factory->CreateGlobalIndexCheckpointPathFactory(
                              "lumina", "vector", Range(10, 20), "task-1"));
-    std::string checkpoint_dir = PathUtil::JoinPath(dir->Str(), "index/checkpoint");
+    std::string checkpoint_dir = PathUtil::JoinPath(dir->Str(), "index/checkpoint/task-1");
+    ASSERT_OK_AND_ASSIGN(std::string task_directory, IndexCheckpointPathFactory::GetTaskDirectory(
+                                                         dir->Str(), "task-1", std::nullopt));
+    ASSERT_EQ(task_directory, checkpoint_dir);
     ASSERT_EQ(checkpoint_path_factory->GetDirectoryPath(), checkpoint_dir);
     std::string first_path = checkpoint_path_factory->NewPath(0);
     ASSERT_EQ(first_path, PathUtil::JoinPath(checkpoint_dir, prefix + "0.index.ckpt"));
@@ -609,9 +614,9 @@ TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactory) {
     ASSERT_EQ(checkpoint_path_factory->ToPath("checkpoint"),
               PathUtil::JoinPath(checkpoint_dir, "checkpoint"));
     ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(prefix + "9.index.ckpt"), 9);
-    ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(
-                  "lumina-global-index-other-10-20-task-1-9.index.ckpt"),
-              std::nullopt);
+    ASSERT_EQ(
+        checkpoint_path_factory->GetCheckpointId("lumina-global-index-other-10-20-9.index.ckpt"),
+        std::nullopt);
     ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(prefix + "invalid-10.index.ckpt"),
               std::nullopt);
     ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(prefix + "-1.index.ckpt"), std::nullopt);
@@ -628,6 +633,30 @@ TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactory) {
               std::nullopt);
 
     ASSERT_OK_AND_ASSIGN(bool exists, file_system->Exists(checkpoint_dir));
+    ASSERT_FALSE(exists);
+}
+
+TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactoryWithExternalPath) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    for (const std::string& external_path :
+         {"file://" + dir->Str() + "/external-index/", std::string("s3://bucket/external-index")}) {
+        auto factory = CreateFactory(dir->Str(), external_path);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_factory,
+                             factory->CreateGlobalIndexCheckpointPathFactory(
+                                 "lumina", "vector", Range(10, 20), "task-1"));
+        std::string checkpoint_dir = PathUtil::JoinPath(external_path, "checkpoint/task-1");
+        ASSERT_OK_AND_ASSIGN(
+            std::string task_directory,
+            IndexCheckpointPathFactory::GetTaskDirectory(dir->Str(), "task-1", external_path));
+        ASSERT_EQ(task_directory, checkpoint_dir);
+        ASSERT_EQ(checkpoint_factory->GetDirectoryPath(), checkpoint_dir);
+        std::string file_name = "lumina-global-index-vector-10-20-9.index.ckpt";
+        ASSERT_EQ(checkpoint_factory->NewPath(9), PathUtil::JoinPath(checkpoint_dir, file_name));
+        ASSERT_EQ(checkpoint_factory->ToPath(file_name), checkpoint_factory->NewPath(9));
+    }
+    ASSERT_OK_AND_ASSIGN(bool exists, dir->GetFileSystem()->Exists(
+                                          PathUtil::JoinPath(dir->Str(), "external-index")));
     ASSERT_FALSE(exists);
 }
 
@@ -659,14 +688,18 @@ TEST_F(FileStorePathFactoryTest, TestCheckpointTaskIsolation) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> other_factory,
                          factory->CreateGlobalIndexCheckpointPathFactory("lumina", "vector",
                                                                          Range(10, 20), "task-2"));
-    ASSERT_EQ(own_factory->GetDirectoryPath(), other_factory->GetDirectoryPath());
+    ASSERT_NE(own_factory->GetDirectoryPath(), other_factory->GetDirectoryPath());
     ASSERT_OK(fs->Mkdirs(own_factory->GetDirectoryPath()));
+    ASSERT_OK(fs->Mkdirs(other_factory->GetDirectoryPath()));
     std::string own_path = own_factory->NewPath(0);
     ASSERT_OK(fs->WriteFile(own_path, "checkpoint", /*overwrite=*/false));
+    std::string same_name_other_path = other_factory->NewPath(0);
+    ASSERT_EQ(PathUtil::GetName(own_path), PathUtil::GetName(same_name_other_path));
+    ASSERT_OK(fs->WriteFile(same_name_other_path, "foreign", /*overwrite=*/false));
     std::string other_path = other_factory->NewPath(100);
     ASSERT_OK(fs->WriteFile(other_path, "foreign", /*overwrite=*/false));
     ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(own_path)), 0);
-    ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(other_path)), std::nullopt);
+    ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(other_path)), 100);
 
     GlobalIndexFileManager manager(fs, factory->CreateGlobalIndexFileFactory(),
                                    std::move(own_factory));
@@ -690,6 +723,8 @@ TEST_F(FileStorePathFactoryTest, TestCheckpointTaskIsolation) {
     ASSERT_OK(manager.DeleteCheckpoint());
     ASSERT_OK_AND_ASSIGN(exists, fs->Exists(other_path));
     ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, fs->Exists(same_name_other_path));
+    ASSERT_TRUE(exists);
 }
 
 TEST_F(FileStorePathFactoryTest, TestCheckpointRejectsInvalidPathComponents) {
@@ -698,6 +733,7 @@ TEST_F(FileStorePathFactoryTest, TestCheckpointRejectsInvalidPathComponents) {
     auto factory = CreateFactory(dir->Str());
     for (const std::string& invalid : std::vector<std::string>{"", ".", "..", " ", "a/b", "a\\b",
                                                                "a\nb", std::string("a\0b", 3)}) {
+        ASSERT_NOK(IndexCheckpointPathFactory::GetTaskDirectory(dir->Str(), invalid, std::nullopt));
         ASSERT_NOK(factory->CreateGlobalIndexCheckpointPathFactory(invalid, "vector", Range(10, 20),
                                                                    "task"));
         ASSERT_NOK(factory->CreateGlobalIndexCheckpointPathFactory("lumina", invalid, Range(10, 20),

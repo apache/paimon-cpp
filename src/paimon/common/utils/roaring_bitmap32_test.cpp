@@ -256,6 +256,21 @@ TEST(RoaringBitmap32Test, TestIterator) {
     ASSERT_EQ(iter, roaring.End());
 }
 
+TEST(RoaringBitmap32Test, TestEndIterator) {
+    RoaringBitmap32 empty;
+    ASSERT_EQ(empty.Begin(), empty.End());
+    ASSERT_EQ(empty.EqualOrLarger(0), empty.End());
+
+    auto bitmap = RoaringBitmap32::From({0, 10, 20});
+    auto iter = bitmap.Begin();
+    std::vector<int32_t> values;
+    for (; iter != bitmap.End(); ++iter) {
+        values.push_back(*iter);
+    }
+    ASSERT_EQ(values, (std::vector<int32_t>{0, 10, 20}));
+    ASSERT_EQ(iter, bitmap.End());
+}
+
 TEST(RoaringBitmap32Test, TestNextAndPreviousValue) {
     RoaringBitmap32 roaring = RoaringBitmap32::From({10, 20, 30});
 
@@ -307,6 +322,18 @@ TEST(RoaringBitmap32Test, TestIteratorAssignAndMove) {
     iter3 = std::move(iter2);
     ASSERT_EQ(10, *iter3);
     ASSERT_FALSE(iter2.iterator_);  // NOLINT(bugprone-use-after-move)
+
+    iter3 = roaring.End();
+    auto copied_end = iter3;
+    auto moved_end = std::move(copied_end);
+    ASSERT_EQ(moved_end, roaring.End());
+    iter3 = roaring.Begin();
+    iter3 = moved_end;
+    ASSERT_EQ(iter3, roaring.End());
+    iter3 = roaring.Begin();
+    ASSERT_EQ(*iter3, 10);
+    iter3 = std::move(moved_end);
+    ASSERT_EQ(iter3, roaring.End());
 }
 
 TEST(RoaringBitmap32Test, TestDeserializeFromInputStream) {

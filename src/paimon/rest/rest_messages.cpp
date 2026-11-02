@@ -58,6 +58,10 @@ constexpr const char kFieldSuccess[] = "success";
 constexpr const char kFieldSnapshot[] = "snapshot";
 constexpr const char kFieldToken[] = "token";
 constexpr const char kFieldExpiresAtMillis[] = "expiresAtMillis";
+constexpr const char kFieldTableId[] = "tableId";
+constexpr const char kFieldCommitUser[] = "commitUser";
+constexpr const char kFieldAcquired[] = "acquired";
+constexpr const char kFieldLeaseMillis[] = "leaseMillis";
 
 void AddOptionalStringMember(rapidjson::Value* obj, const char* key,
                              const std::optional<std::string>& value,
@@ -451,6 +455,47 @@ void CommitTableResponse::FromJson(const rapidjson::Value& obj) noexcept(false) 
     // Require an explicit boolean: treating an unknown outcome as false could delete
     // manifests belonging to an accepted commit.
     success_ = RapidJsonUtil::DeserializeKeyValue<bool>(obj, kFieldSuccess);
+}
+
+rapidjson::Value CommitLockRequest::ToJson(rapidjson::Document::AllocatorType* allocator) const
+    noexcept(false) {
+    rapidjson::Value obj(rapidjson::kObjectType);
+    obj.AddMember(rapidjson::StringRef(kFieldTableId),
+                  RapidJsonUtil::SerializeValue(table_id_, allocator).Move(), *allocator);
+    obj.AddMember(rapidjson::StringRef(kFieldCommitUser),
+                  RapidJsonUtil::SerializeValue(commit_user_, allocator).Move(), *allocator);
+    return obj;
+}
+
+void CommitLockRequest::FromJson(const rapidjson::Value& obj) noexcept(false) {
+    table_id_ = RapidJsonUtil::DeserializeKeyValue<std::string>(obj, kFieldTableId);
+    commit_user_ = RapidJsonUtil::DeserializeKeyValue<std::string>(obj, kFieldCommitUser);
+}
+
+rapidjson::Value CommitLockResponse::ToJson(rapidjson::Document::AllocatorType* allocator) const
+    noexcept(false) {
+    rapidjson::Value obj(rapidjson::kObjectType);
+    obj.AddMember(rapidjson::StringRef(kFieldAcquired),
+                  RapidJsonUtil::SerializeValue(acquired_, allocator).Move(), *allocator);
+    obj.AddMember(rapidjson::StringRef(kFieldCommitUser),
+                  RapidJsonUtil::SerializeValue(commit_user_, allocator).Move(), *allocator);
+    obj.AddMember(rapidjson::StringRef(kFieldExpiresAtMillis),
+                  RapidJsonUtil::SerializeValue(expires_at_millis_, allocator).Move(), *allocator);
+    obj.AddMember(rapidjson::StringRef(kFieldLeaseMillis),
+                  RapidJsonUtil::SerializeValue(lease_millis_, allocator).Move(), *allocator);
+    obj.AddMember(rapidjson::StringRef(kFieldSnapshot),
+                  RapidJsonUtil::SerializeValue(snapshot_, allocator).Move(), *allocator);
+    return obj;
+}
+
+void CommitLockResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
+    // Required: a response that says nothing about the lease must not read as contention.
+    acquired_ = RapidJsonUtil::DeserializeKeyValue<bool>(obj, kFieldAcquired);
+    commit_user_ =
+        RapidJsonUtil::DeserializeKeyValue<std::optional<std::string>>(obj, kFieldCommitUser);
+    expires_at_millis_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, kFieldExpiresAtMillis, 0);
+    lease_millis_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, kFieldLeaseMillis, 0);
+    snapshot_ = RapidJsonUtil::DeserializeKeyValue<std::optional<Snapshot>>(obj, kFieldSnapshot);
 }
 
 }  // namespace paimon

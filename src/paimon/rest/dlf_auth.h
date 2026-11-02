@@ -124,9 +124,11 @@ class DlfRequestSigner {
                                         const std::optional<std::string>& security_token,
                                         const std::string& host) const = 0;
 
+    /// Signs the request. `sign_headers` holds the headers `SignHeaders` returned and must not
+    /// be null; a signer may add headers to it, which it signs and the request must send too.
     virtual Result<std::string> Authorization(const RestAuthParameter& parameter,
                                               const DlfToken& token, const std::string& host,
-                                              const Headers& sign_headers) const = 0;
+                                              Headers* sign_headers) const = 0;
 };
 
 /// DLF4-HMAC-SHA256 signer used by the default DLF VPC endpoint.
@@ -142,7 +144,7 @@ class DlfDefaultSigner : public DlfRequestSigner {
 
     Result<std::string> Authorization(const RestAuthParameter& parameter, const DlfToken& token,
                                       const std::string& host,
-                                      const Headers& sign_headers) const override;
+                                      Headers* sign_headers) const override;
 
  private:
     std::string region_;
@@ -159,7 +161,50 @@ class DlfOpenApiSigner : public DlfRequestSigner {
 
     Result<std::string> Authorization(const RestAuthParameter& parameter, const DlfToken& token,
                                       const std::string& host,
-                                      const Headers& sign_headers) const override;
+                                      Headers* sign_headers) const override;
+};
+
+/// ACS4-HMAC-SHA256 signer for DlfNext OpenAPI endpoints, selected only when configured.
+/// Unlike the other signers, it adds an "x-acs-action" header to a request that matches a
+/// registered operation, naming that operation's API, and signs it with the other headers.
+class DlfOpenApiV4Signer : public DlfRequestSigner {
+ public:
+    static constexpr const char* kIdentifier = "openapi-v4";
+
+    explicit DlfOpenApiV4Signer(const std::string& region);
+
+    Result<Headers> SignHeaders(const std::string& body, std::chrono::system_clock::time_point now,
+                                const std::optional<std::string>& security_token,
+                                const std::string& host) const override;
+
+    Result<std::string> Authorization(const RestAuthParameter& parameter, const DlfToken& token,
+                                      const std::string& host,
+                                      Headers* sign_headers) const override;
+
+ private:
+    std::string region_;
+};
+
+/// Maps a REST request to the POP action it is registered under in DlfNext 2026-01-18.
+class DlfOpenApiActions {
+ public:
+    /// One registered operation. A "{name}" segment of `path_template` matches any one
+    /// non-empty path segment.
+    struct Operation {
+        const char* method;
+        const char* path_template;
+        const char* action;
+    };
+
+    DlfOpenApiActions() = delete;
+
+    /// Every registered operation, in the order requests are matched against them.
+    static const std::vector<Operation>& Operations();
+
+    /// Returns the action of the request, or `std::nullopt` when no operation is registered
+    /// for it. The method is matched ignoring case, the path segment by segment.
+    static std::optional<std::string> Resolve(const std::string& method,
+                                              const std::string& resource_path);
 };
 
 /// Generates DLF authentication headers and refreshes expiring credentials.

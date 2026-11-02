@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <ctime>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -36,7 +37,9 @@
 
 #include "gtest/gtest.h"
 #include "paimon/catalog_options.h"
+#include "paimon/rest/resource_paths.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/testing/utils/timezone_guard.h"
 
 namespace paimon::test {
 
@@ -46,6 +49,14 @@ using StringMap = std::map<std::string, std::string>;
 
 std::chrono::system_clock::time_point FixedTime() {
     return std::chrono::system_clock::from_time_t(1744775086);
+}
+
+constexpr const char kEmptyBodySha256[] =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+void AssertAction(const std::optional<std::string>& expected, const std::string& method,
+                  const std::string& path) {
+    ASSERT_EQ(expected, DlfOpenApiActions::Resolve(method, path)) << method << " " << path;
 }
 
 class SequenceTokenLoader : public DlfTokenLoader {
@@ -159,7 +170,7 @@ TEST(DlfDefaultSignerTest, SignsJavaCompatibleRequest) {
     ASSERT_EQ("securityToken", headers.at("x-dlf-security-token"));
 
     ASSERT_OK_AND_ASSIGN(std::string authorization,
-                         signer.Authorization(parameter, token, "unused", headers));
+                         signer.Authorization(parameter, token, "unused", &headers));
     ASSERT_EQ(
         "DLF4-HMAC-SHA256 Credential=YourAccessKeyId/20250416/cn-beijing/"
         "DlfNext/aliyun_v4_request,Signature="
@@ -180,7 +191,7 @@ TEST(DlfDefaultSignerTest, MatchesJavaGoldenAuthorization) {
     ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
                          signer.SignHeaders(body, signing_time, token.GetSecurityToken(), "host"));
     ASSERT_OK_AND_ASSIGN(std::string authorization,
-                         signer.Authorization(parameter, token, "host", headers));
+                         signer.Authorization(parameter, token, "host", &headers));
     ASSERT_EQ(
         "DLF4-HMAC-SHA256 Credential=access-key-id/20231203/cn-hangzhou/"
         "DlfNext/aliyun_v4_request,Signature="
@@ -220,7 +231,7 @@ TEST(DlfOpenApiSignerTest, SignsJavaCompatibleRequest) {
     ASSERT_EQ("securityToken", headers.at("x-acs-security-token"));
 
     ASSERT_OK_AND_ASSIGN(std::string authorization,
-                         signer.Authorization(parameter, token, host, headers));
+                         signer.Authorization(parameter, token, host, &headers));
     ASSERT_EQ("acs YourAccessKeyId:wX4CDPSCtfgYkxdK9tJIO3ez5VI=", authorization);
 }
 
@@ -234,7 +245,7 @@ TEST(DlfOpenApiSignerTest, DecodesPathAndQueryValuesBeforeSigning) {
     headers["x-acs-signature-nonce"] = "fixed-nonce";
 
     ASSERT_OK_AND_ASSIGN(std::string authorization,
-                         signer.Authorization(parameter, token, "host", headers));
+                         signer.Authorization(parameter, token, "host", &headers));
     ASSERT_EQ("acs ak:vD+M7291KKoOTvt2gQuD6jPDlw8=", authorization);
     ASSERT_EQ(0, headers.count("Content-MD5"));
     ASSERT_EQ(0, headers.count("Content-Type"));
@@ -487,7 +498,7 @@ TEST(DlfDefaultSignerTest, SignsSpecialCharQueryLikeJava) {
     ASSERT_EQ("20231203T121212Z", headers.at("x-dlf-date"));
     ASSERT_EQ("F2vHiexkcYvt4XOY5o4tmQ==", headers.at("Content-MD5"));
     ASSERT_OK_AND_ASSIGN(std::string authorization,
-                         signer.Authorization(parameter, token, "host", headers));
+                         signer.Authorization(parameter, token, "host", &headers));
     ASSERT_EQ(
         "DLF4-HMAC-SHA256 Credential=access-key-id/20231203/cn-hangzhou/"
         "DlfNext/aliyun_v4_request,Signature="
@@ -579,6 +590,7 @@ TEST(DlfOpenApiSignerTest, ConcurrentNonceGenerationStaysUnique) {
 TEST(DlfSignerTest, ExposesJavaCompatibleIdentifiers) {
     ASSERT_EQ(std::string("default"), std::string(DlfDefaultSigner::kIdentifier));
     ASSERT_EQ(std::string("openapi"), std::string(DlfOpenApiSigner::kIdentifier));
+    ASSERT_EQ(std::string("openapi-v4"), std::string(DlfOpenApiV4Signer::kIdentifier));
 }
 
 TEST(DlfAuthProviderTest, ParsesSigningAlgorithmFromUriBoundaries) {
@@ -616,6 +628,255 @@ TEST(DlfAuthProviderTest, ParsesRegionFromUriVariants) {
     }
     ASSERT_NOK_WITH_MSG(DlfAuthProvider::ParseRegionFromUri("http://127.0.0.1:8080").status(),
                         "could not determine DLF region");
+}
+
+TEST(DlfOpenApiV4SignerTest, SignsHeadersWithBody) {
+    DlfOpenApiV4Signer signer("cn-beijing");
+    const std::string body = R"({"CategoryName":"test","CategoryType":"UNSTRUCTURED"})";
+    const std::string host = "dlfnext.cn-beijing.aliyuncs.com";
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders(body, FixedTime(), std::nullopt, host));
+    ASSERT_EQ("2025-04-16T03:44:46Z", headers.at("x-acs-date"));
+    ASSERT_EQ(host, headers.at("Host"));
+    ASSERT_EQ("d8171130c3edc0f7d4e2827c5dab801a603c9a376b214a9ab6d5d12665c8c5df",
+              headers.at("x-acs-content-sha256"));
+    ASSERT_EQ("application/json", headers.at("Content-Type"));
+    ASSERT_FALSE(headers.at("x-acs-signature-nonce").empty());
+    ASSERT_EQ("2026-01-18", headers.at("x-acs-version"));
+    ASSERT_EQ(6, headers.size());
+
+    ASSERT_NOK_WITH_MSG(signer.SignHeaders(body, FixedTime(), std::nullopt, "").status(),
+                        "host is empty");
+}
+
+TEST(DlfOpenApiV4SignerTest, OmitsBodyAndSecurityTokenHeadersWhenAbsent) {
+    DlfOpenApiV4Signer signer("cn-beijing");
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders("", FixedTime(), std::nullopt, "host"));
+    ASSERT_EQ(kEmptyBodySha256, headers.at("x-acs-content-sha256"));
+    ASSERT_EQ(0, headers.count("Content-Type"));
+    ASSERT_EQ(0, headers.count("x-acs-security-token"));
+    ASSERT_EQ(5, headers.size());
+}
+
+TEST(DlfOpenApiV4SignerTest, SignsUtcDateInNonUtcTimezone) {
+    TimezoneGuard timezone_guard("Asia/Shanghai");
+    DlfOpenApiV4Signer signer("cn-beijing");
+    DlfToken token("TestAKId", "TestAKSecret", std::nullopt, std::nullopt);
+    RestAuthParameter parameter = RestAuthParameter::Create("GET", "/test/path", {}, "");
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders("", std::chrono::system_clock::from_time_t(1744747200),
+                                            std::nullopt, "host"));
+    ASSERT_EQ("2025-04-15T20:00:00Z", headers.at("x-acs-date"));
+
+    ASSERT_OK_AND_ASSIGN(std::string authorization,
+                         signer.Authorization(parameter, token, "host", &headers));
+    ASSERT_EQ(0, authorization.find("ACS4-HMAC-SHA256 Credential=TestAKId/20250415/cn-beijing/"));
+}
+
+TEST(DlfOpenApiV4SignerTest, MatchesJavaGoldenSignatureForEncodedQueryValues) {
+    DlfOpenApiV4Signer signer("cn-hangzhou");
+    DlfToken token("TestAKId", "TestAKSecret", std::nullopt, std::nullopt);
+    const std::string host = "dlfnext.cn-hangzhou.aliyuncs.com";
+    RestAuthParameter parameter =
+        RestAuthParameter::Create("GET", "/v1/prefix/functions",
+                                  {{"pageToken", "a b/c"}, {"functionNamePattern", "func%"}}, "");
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders("", FixedTime(), std::nullopt, host));
+    headers["x-acs-signature-nonce"] = "fixed-nonce-for-test";
+
+    ASSERT_OK_AND_ASSIGN(std::string authorization,
+                         signer.Authorization(parameter, token, host, &headers));
+    ASSERT_EQ(
+        "ACS4-HMAC-SHA256 Credential=TestAKId/20250416/cn-hangzhou/DlfNext/aliyun_v4_request,"
+        "SignedHeaders=host;x-acs-action;x-acs-content-sha256;x-acs-date;"
+        "x-acs-signature-nonce;x-acs-version,"
+        "Signature=2d5fdb5201901a5cdceee97318366666a88504eeae0b1ce534dbf86889cc00fb",
+        authorization);
+    ASSERT_EQ("ListFunctionsGlobally", headers.at("x-acs-action"));
+}
+
+TEST(DlfOpenApiV4SignerTest, MatchesJavaGoldenSignatureWithAction) {
+    DlfOpenApiV4Signer signer("cn-hangzhou");
+    DlfToken token("TestAKId", "TestAKSecret", std::nullopt, std::nullopt);
+    const std::string host = "dlfnext.cn-hangzhou.aliyuncs.com";
+    const std::string body = R"({"identifier":{"database":"db","object":"t"}})";
+    RestAuthParameter parameter =
+        RestAuthParameter::Create("POST", "/v1/clg-paimon-1/databases/db/tables", {}, body);
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders(body, FixedTime(), std::nullopt, host));
+    headers["x-acs-signature-nonce"] = "fixed-nonce-for-test";
+
+    ASSERT_OK_AND_ASSIGN(std::string authorization,
+                         signer.Authorization(parameter, token, host, &headers));
+    ASSERT_EQ("CreateTable", headers.at("x-acs-action"));
+    ASSERT_EQ(
+        "ACS4-HMAC-SHA256 Credential=TestAKId/20250416/cn-hangzhou/DlfNext/aliyun_v4_request,"
+        "SignedHeaders=content-type;host;x-acs-action;x-acs-content-sha256;"
+        "x-acs-date;x-acs-signature-nonce;x-acs-version,"
+        "Signature=420206b5263536e6bc271a7a32582b4a820e23c8c58ae692b708c69f9d19e51d",
+        authorization);
+}
+
+TEST(DlfOpenApiV4SignerTest, SignatureDependsOnRegion) {
+    DlfToken token("TestAKId", "TestAKSecret", std::nullopt, std::nullopt);
+    RestAuthParameter parameter = RestAuthParameter::Create("GET", "/test/path", {}, "");
+    DlfOpenApiV4Signer beijing("cn-beijing");
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         beijing.SignHeaders("", FixedTime(), std::nullopt, "host"));
+    headers["x-acs-signature-nonce"] = "fixed-nonce-for-test";
+    ASSERT_OK_AND_ASSIGN(std::string beijing_authorization,
+                         beijing.Authorization(parameter, token, "host", &headers));
+
+    DlfOpenApiV4Signer hangzhou("cn-hangzhou");
+    ASSERT_OK_AND_ASSIGN(std::string hangzhou_authorization,
+                         hangzhou.Authorization(parameter, token, "host", &headers));
+    size_t beijing_signature_start = beijing_authorization.find(",Signature=");
+    size_t hangzhou_signature_start = hangzhou_authorization.find(",Signature=");
+    ASSERT_NE(std::string::npos, beijing_signature_start);
+    ASSERT_NE(std::string::npos, hangzhou_signature_start);
+    ASSERT_NE(beijing_authorization.substr(beijing_signature_start),
+              hangzhou_authorization.substr(hangzhou_signature_start));
+    ASSERT_NE(std::string::npos, beijing_authorization.find("/cn-beijing/DlfNext/"));
+    ASSERT_NE(std::string::npos, hangzhou_authorization.find("/cn-hangzhou/DlfNext/"));
+}
+
+TEST(DlfOpenApiV4SignerTest, SignsHeaderNamesInLowerCaseAndValuesTrimmed) {
+    DlfOpenApiV4Signer signer("cn-beijing");
+    DlfToken token("TestAKId", "TestAKSecret", std::nullopt, std::nullopt);
+    RestAuthParameter parameter = RestAuthParameter::Create("GET", "/test/path", {}, "");
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders("", FixedTime(), std::nullopt, "host"));
+    headers["x-acs-signature-nonce"] = "fixed-nonce-for-test";
+    DlfRequestSigner::Headers renamed_headers = headers;
+    renamed_headers.erase("x-acs-signature-nonce");
+    renamed_headers["X-ACS-SIGNATURE-NONCE"] = " fixed-nonce-for-test ";
+
+    ASSERT_OK_AND_ASSIGN(std::string expected,
+                         signer.Authorization(parameter, token, "host", &headers));
+    ASSERT_OK_AND_ASSIGN(std::string actual,
+                         signer.Authorization(parameter, token, "host", &renamed_headers));
+    ASSERT_EQ(expected, actual);
+}
+
+TEST(DlfOpenApiV4SignerTest, SignsUnregisteredPathWithoutAction) {
+    DlfOpenApiV4Signer signer("cn-beijing");
+    DlfToken token("TestAKId", "TestAKSecret", std::nullopt, std::nullopt);
+    RestAuthParameter parameter =
+        RestAuthParameter::Create("GET", "/v1/clg-paimon-1/databases/db/tables/t/unknown", {}, "");
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders("", FixedTime(), std::nullopt, "host"));
+
+    ASSERT_OK_AND_ASSIGN(std::string authorization,
+                         signer.Authorization(parameter, token, "host", &headers));
+    ASSERT_EQ(0, headers.count("x-acs-action"));
+    ASSERT_EQ(std::string::npos, authorization.find("x-acs-action"));
+}
+
+TEST(DlfOpenApiV4SignerTest, RequiresSigningDate) {
+    DlfOpenApiV4Signer signer("cn-beijing");
+    DlfToken token("TestAKId", "TestAKSecret", std::nullopt, std::nullopt);
+    RestAuthParameter parameter = RestAuthParameter::Create("GET", "/test/path", {}, "");
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders("", FixedTime(), std::nullopt, "host"));
+    headers["x-acs-date"] = "2025";
+    ASSERT_NOK_WITH_MSG(signer.Authorization(parameter, token, "host", &headers).status(),
+                        "signing date is invalid");
+    headers.erase("x-acs-date");
+    ASSERT_NOK_WITH_MSG(signer.Authorization(parameter, token, "host", &headers).status(),
+                        "x-acs-date");
+}
+
+TEST(DlfAuthProviderTest, SignsWithOpenApiV4OnlyWhenConfigured) {
+    std::map<std::string, std::string> options = {
+        {CatalogOptions::URI, "https://dlfnext.cn-hangzhou.aliyuncs.com"},
+        {CatalogOptions::TOKEN_PROVIDER, "dlf"},
+        {CatalogOptions::DLF_ACCESS_KEY_ID, "ak"},
+        {CatalogOptions::DLF_ACCESS_KEY_SECRET, "sk"},
+        {CatalogOptions::DLF_SECURITY_TOKEN, "sts"}};
+    ASSERT_EQ("openapi",
+              DlfAuthProvider::ParseSigningAlgorithmFromUri(options.at(CatalogOptions::URI)));
+    const std::string body = R"({"name":"db"})";
+    RestAuthParameter parameter =
+        RestAuthParameter::Create("POST", "/v1/clg-paimon-1/databases", {}, body);
+    const StringMap base_headers = {{"Content-Type", "application/json"}};
+    for (const char* algorithm : {DlfDefaultSigner::kIdentifier, DlfOpenApiSigner::kIdentifier}) {
+        options[CatalogOptions::DLF_SIGNING_ALGORITHM] = algorithm;
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<AuthProvider> provider, AuthProvider::Create(options));
+        ASSERT_OK_AND_ASSIGN(StringMap headers, provider->MergeAuthHeader(base_headers, parameter));
+        ASSERT_EQ(0, headers.count("x-acs-action")) << algorithm;
+    }
+
+    options[CatalogOptions::DLF_SIGNING_ALGORITHM] = DlfOpenApiV4Signer::kIdentifier;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AuthProvider> provider, AuthProvider::Create(options));
+    ASSERT_OK_AND_ASSIGN(StringMap headers, provider->MergeAuthHeader(base_headers, parameter));
+    const std::string& authorization = headers.at("Authorization");
+    ASSERT_EQ(0, authorization.find("ACS4-HMAC-SHA256 Credential=ak/"));
+    ASSERT_NE(std::string::npos,
+              authorization.find("/cn-hangzhou/DlfNext/aliyun_v4_request,SignedHeaders="
+                                 "content-type;host;x-acs-action;x-acs-content-sha256;x-acs-date;"
+                                 "x-acs-security-token;x-acs-signature-nonce;x-acs-version,"));
+    ASSERT_EQ("CreateDatabase", headers.at("x-acs-action"));
+    ASSERT_EQ("sts", headers.at("x-acs-security-token"));
+    ASSERT_EQ("application/json", headers.at("Content-Type"));
+    ASSERT_EQ(0, headers.count("content-type"));
+    ASSERT_EQ("dlfnext.cn-hangzhou.aliyuncs.com", headers.at("Host"));
+    ASSERT_EQ(0, headers.count("host"));
+}
+
+TEST(DlfOpenApiActionsTest, EveryOperationResolvesToItself) {
+    static const std::regex kVariable("\\{[^}]+\\}");
+    std::set<std::string> actions;
+    for (const DlfOpenApiActions::Operation& operation : DlfOpenApiActions::Operations()) {
+        AssertAction(operation.action, operation.method,
+                     std::regex_replace(operation.path_template, kVariable, "x1"));
+        actions.insert(operation.action);
+    }
+    ASSERT_EQ(DlfOpenApiActions::Operations().size(), actions.size());
+    ASSERT_EQ(74, actions.size());
+}
+
+TEST(DlfOpenApiActionsTest, ClientPathsResolveToRegisteredActions) {
+    ResourcePaths paths("clg-paimon-1");
+    AssertAction("GetConfig", "GET", ResourcePaths::Config());
+    AssertAction("ListDatabases", "GET", paths.Databases());
+    AssertAction("CreateDatabase", "POST", paths.Databases());
+    AssertAction("GetDatabase", "GET", paths.Database("db"));
+    AssertAction("DropDatabase", "DELETE", paths.Database("db"));
+    AssertAction("ListTables", "GET", paths.Tables("db"));
+    AssertAction("CreateTable", "POST", paths.Tables("db"));
+    AssertAction("GetTable", "GET", paths.Table("db", "t"));
+    AssertAction("DropTable", "DELETE", paths.Table("db", "t"));
+    AssertAction("RenameTable", "POST", paths.RenameTable());
+    AssertAction("ListSnapshots", "GET", paths.Snapshots("db", "t"));
+    AssertAction("CommitTable", "POST", paths.CommitTable("db", "t"));
+    AssertAction("GetTableSnapshot", "GET", paths.TableSnapshot("db", "t"));
+    AssertAction("GetTableToken", "GET", paths.TableToken("db", "t"));
+}
+
+TEST(DlfOpenApiActionsTest, MatchesWholeSegmentsAndMethodIgnoringCase) {
+    ResourcePaths paths("clg-paimon-1");
+    AssertAction("GetConfig", "get", ResourcePaths::Config());
+    AssertAction("GetDatabase", "GET", paths.Database("tables"));
+    AssertAction("GetTable", "GET", paths.Table("db", "token"));
+    AssertAction("GetTableToken", "GET", paths.TableToken("config", "t$snapshots"));
+    AssertAction("GetTable", "GET", paths.Table("a/b", "c d"));
+    AssertAction("ListDatabases", "GET", ResourcePaths("rename").Databases());
+    AssertAction("DropBranch", "DELETE", "/v1/clg-paimon-1/databases/db/tables/t/branches/forward");
+    AssertAction("GetTag", "GET", "/v1/clg-paimon-1/databases/db/tables/t/tags/tags");
+}
+
+TEST(DlfOpenApiActionsTest, UnregisteredRequestsHaveNoAction) {
+    ResourcePaths paths("clg-paimon-1");
+    AssertAction(std::nullopt, "GET", paths.RenameTable());
+    AssertAction(std::nullopt, "DELETE", "/v1/clg-paimon-1/tables/id/tbl-1");
+    AssertAction(std::nullopt, "GET", paths.CommitTable("db", "t"));
+    AssertAction(std::nullopt, "PUT", paths.Table("db", "t"));
+    AssertAction(std::nullopt, "GET", ResourcePaths::Config() + "/");
+    AssertAction(std::nullopt, "GET", "/v1//databases");
+    AssertAction(std::nullopt, "GET", ResourcePaths("").Databases());
+    AssertAction(std::nullopt, "", ResourcePaths::Config());
+    AssertAction(std::nullopt, "GET", "");
 }
 
 }  // namespace paimon::test

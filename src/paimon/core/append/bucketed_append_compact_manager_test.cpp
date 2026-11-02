@@ -82,7 +82,8 @@ class BucketedAppendCompactManagerTest : public testing::Test {
             executor_, to_compact_before_pick,
             /*dv_maintainer=*/nullptr, min_file_num, target_file_size, threshold,
             /*force_rewrite_all_files=*/false, /*rewriter=*/nullptr, /*reporter=*/nullptr,
-            /*cancellation_controller=*/std::make_shared<CancellationController>());
+            /*cancellation_controller=*/std::make_shared<CancellationController>(),
+            /*materialize_dv_on_commit=*/false);
         auto actual = manager.PickCompactBefore();
         if (expected_present) {
             ASSERT_TRUE(actual.has_value());
@@ -332,7 +333,7 @@ TEST_F(BucketedAppendCompactManagerTest, TestCancelCompactionPropagatesToRewrite
         /*target_file_size=*/1024,
         /*compaction_file_size=*/700,
         /*force_rewrite_all_files=*/false, rewriter,
-        /*reporter=*/nullptr, cancellation_controller);
+        /*reporter=*/nullptr, cancellation_controller, /*materialize_dv_on_commit=*/false);
 
     ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/true));
     manager.CancelAndWaitCompaction();
@@ -353,7 +354,7 @@ TEST_F(BucketedAppendCompactManagerTest, TestTriggerCompactionResetsCancelFlag) 
         /*target_file_size=*/1024,
         /*compaction_file_size=*/700,
         /*force_rewrite_all_files=*/false, rewriter,
-        /*reporter=*/nullptr, cancellation_controller);
+        /*reporter=*/nullptr, cancellation_controller, /*materialize_dv_on_commit=*/false);
 
     ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/true));
     ASSERT_FALSE(cancellation_controller->IsCancelled());
@@ -386,7 +387,8 @@ TEST_F(BucketedAppendCompactManagerTest, TestHasDeletionFileLargeFileWithDvRetai
         /*compaction_file_size=*/500,
         /*force_rewrite_all_files=*/false, rewriter,
         /*reporter=*/nullptr,
-        /*cancellation_controller=*/std::make_shared<CancellationController>());
+        /*cancellation_controller=*/std::make_shared<CancellationController>(),
+        /*materialize_dv_on_commit=*/false);
 
     ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/true));
     ASSERT_OK_AND_ASSIGN(auto result, manager.GetCompactionResult(/*blocking=*/true));
@@ -426,7 +428,8 @@ TEST_F(BucketedAppendCompactManagerTest, TestHasDeletionFileLargeFileWithoutDvSk
         /*compaction_file_size=*/500,
         /*force_rewrite_all_files=*/false, rewriter,
         /*reporter=*/nullptr,
-        /*cancellation_controller=*/std::make_shared<CancellationController>());
+        /*cancellation_controller=*/std::make_shared<CancellationController>(),
+        /*materialize_dv_on_commit=*/false);
 
     ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/true));
     ASSERT_OK_AND_ASSIGN(auto result, manager.GetCompactionResult(/*blocking=*/true));
@@ -458,7 +461,8 @@ TEST_F(BucketedAppendCompactManagerTest, TestDoCompactWithNullDvMaintainerWithLe
         /*compaction_file_size=*/500,
         /*force_rewrite_all_files=*/false, rewriter,
         /*reporter=*/nullptr,
-        /*cancellation_controller=*/std::make_shared<CancellationController>());
+        /*cancellation_controller=*/std::make_shared<CancellationController>(),
+        /*materialize_dv_on_commit=*/false);
 
     ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/true));
     ASSERT_OK_AND_ASSIGN(auto result, manager.GetCompactionResult(/*blocking=*/true));
@@ -489,7 +493,8 @@ TEST_F(BucketedAppendCompactManagerTest, TestDoNoCompact) {
         /*compaction_file_size=*/500,
         /*force_rewrite_all_files=*/false, rewriter,
         /*reporter=*/nullptr,
-        /*cancellation_controller=*/std::make_shared<CancellationController>());
+        /*cancellation_controller=*/std::make_shared<CancellationController>(),
+        /*materialize_dv_on_commit=*/false);
 
     ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/true));
     ASSERT_OK_AND_ASSIGN(auto result, manager.GetCompactionResult(/*blocking=*/true));
@@ -514,7 +519,8 @@ TEST_F(BucketedAppendCompactManagerTest, TestAllFilesWithoutCompacting) {
         /*compaction_file_size=*/500,
         /*force_rewrite_all_files=*/false, rewriter,
         /*reporter=*/nullptr,
-        /*cancellation_controller=*/std::make_shared<CancellationController>());
+        /*cancellation_controller=*/std::make_shared<CancellationController>(),
+        /*materialize_dv_on_commit=*/false);
 
     auto all_files = manager.AllFiles();
     // to_compact_ is a min-heap sorted by min_sequence_number, so file1 comes first.
@@ -552,7 +558,8 @@ TEST_F(BucketedAppendCompactManagerTest, TestAllFilesWithCompacting) {
         /*compaction_file_size=*/500,
         /*force_rewrite_all_files=*/false, rewriter,
         /*reporter=*/nullptr,
-        /*cancellation_controller=*/std::make_shared<CancellationController>());
+        /*cancellation_controller=*/std::make_shared<CancellationController>(),
+        /*materialize_dv_on_commit=*/false);
 
     // Trigger compaction — all 4 small files will be picked
     ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/true));

@@ -41,6 +41,7 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
 #include "paimon/core/catalog/catalog_utils.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
@@ -384,7 +385,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                                                                       snapshot_manager, options));
             }
         } else if (realtime_deduplicate) {
-            return Status::Invalid("real-time deduplicate write requires a real-time context");
+            if (!ctx->GetWriteSchema().empty() || ignore_previous_files || options.WriteOnly()) {
+                return Status::Invalid(
+                    "deduplicate compaction requires the full schema, restored files and "
+                    "write-only=false");
+            }
         }
         std::shared_ptr<arrow::Schema> write_schema = arrow_schema;
         const auto& write_field_names = ctx->GetWriteSchema();
@@ -1181,17 +1186,26 @@ bool IsCatalogCommit(const CommitContext& ctx) {
 
 Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
     const CommitContext& ctx, const std::optional<Identifier>& catalog_identifier,
-    const std::shared_ptr<FileSystem>& fs,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager) {
+    const CoreOptions& options, const std::shared_ptr<SnapshotManager>& snapshot_manager) {
     if (IsCatalogCommit(ctx)) {
         if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitLock> lock,
+                               AsVersionManaged(ctx.GetCatalog())
+                                   ->CreateCommitLock(catalog_identifier.value(), ctx.GetTableId(),
+                                                      ctx.GetCommitUser(), options));
         // Reuse the caller's UUID so table recreation cannot redirect this commit.
         return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(
-            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId()));
+            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId(), std::move(lock)));
     }
     if (ctx.UseRESTCatalogCommit()) {
+        if (options.RestCommitAcquireLock()) {
+            return Status::Invalid(fmt::format(
+                "'{}' needs a commit through a REST catalog with WithCatalog(); a commit table "
+                "request built for the caller to send cannot hold a commit lease",
+                Options::REST_COMMIT_ACQUIRE_LOCK));
+        }
         return std::shared_ptr<SnapshotCommit>(
             std::make_shared<CatalogSnapshotCommit>(ctx.GetTableId()));
     }
@@ -1203,7 +1217,7 @@ Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
             "catalog with WithCatalog() or ask for the request with UseRESTCatalogCommit()");
     }
     return std::shared_ptr<SnapshotCommit>(
-        std::make_shared<RenamingSnapshotCommit>(fs, snapshot_manager));
+        std::make_shared<RenamingSnapshotCommit>(options.GetFileSystem(), snapshot_manager));
 }
 
 /// Creates a format-table commit, rejecting non-default options that require snapshots.
@@ -1417,9 +1431,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
                                              ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<SnapshotCommit> snapshot_commit,
-        NewSnapshotCommit(*ctx, catalog_identifier, options.GetFileSystem(), snapshot_manager));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotCommit> snapshot_commit,
+                           NewSnapshotCommit(*ctx, catalog_identifier, options, snapshot_manager));
 
     return std::make_unique<FileStoreCommitImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, root_path, ctx->GetCommitUser(),

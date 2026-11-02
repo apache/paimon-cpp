@@ -46,6 +46,11 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
         const CoreOptions& options, const std::shared_ptr<Executor>& executor,
         const std::shared_ptr<MemoryPool>& pool);
 
+    /// Returns `executor` if it is not null, or else creates an executor with
+    /// `global-index.thread-num` threads, which defaults to the number of CPUs.
+    static Result<std::shared_ptr<Executor>> GetOrCreateExecutor(
+        const std::shared_ptr<Executor>& executor, const CoreOptions& options);
+
     Result<std::shared_ptr<GlobalIndexResult>> Scan(const std::shared_ptr<Predicate>& predicate);
 
     Result<std::vector<std::shared_ptr<GlobalIndexReader>>> CreateReaders(

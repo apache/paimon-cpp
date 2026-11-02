@@ -86,6 +86,8 @@ Result<std::unique_ptr<ColumnStats>> LanceStatsExtractor::CreateEmptyStats(
             return ColumnStats::CreateStringColumnStats(std::nullopt, std::nullopt, std::nullopt);
         case arrow::Type::DATE32:
             return ColumnStats::CreateDateColumnStats(std::nullopt, std::nullopt, std::nullopt);
+        case arrow::Type::TIME32:
+            return ColumnStats::CreateIntColumnStats(std::nullopt, std::nullopt, std::nullopt);
         case arrow::Type::TIMESTAMP: {
             std::shared_ptr<arrow::TimestampType> timestamp_type =
                 checked_pointer_cast<arrow::TimestampType>(type);

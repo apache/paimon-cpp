@@ -178,6 +178,18 @@ class ConfigParser {
             "sort engine", sort_engine);
     }
 
+    // Parse GlobalIndexSearchMode of full-text search, as Java `CoreOptions#indexSearchMode` does
+    Status ParseFullTextIndexSearchMode(GlobalIndexSearchMode* search_mode) const {
+        const char* key = config_map_.count(Options::FULL_TEXT_INDEX_SEARCH_MODE) > 0
+                              ? Options::FULL_TEXT_INDEX_SEARCH_MODE
+                              : Options::GLOBAL_INDEX_SEARCH_MODE;
+        return ParseEnum(key,
+                         {{"fast", GlobalIndexSearchMode::FAST},
+                          {"full", GlobalIndexSearchMode::FULL},
+                          {"detail", GlobalIndexSearchMode::DETAIL}},
+                         key, search_mode);
+    }
+
     // Parse MergeEngine
     Status ParseMergeEngine(MergeEngine* merge_engine) const {
         return ParseEnum(Options::MERGE_ENGINE,
@@ -437,6 +449,7 @@ struct CoreOptions::Impl {
     std::optional<int32_t> num_levels;
     std::optional<int32_t> lookup_compact_max_interval;
     std::optional<int32_t> global_index_thread_num;
+    GlobalIndexSearchMode full_text_index_search_mode = GlobalIndexSearchMode::FAST;
 
     bool realtime_enabled = false;
     bool realtime_spill_enabled = false;
@@ -474,6 +487,8 @@ struct CoreOptions::Impl {
     bool global_index_enabled = true;
     bool commit_force_compact = false;
     bool commit_discard_duplicate_files = false;
+    bool rest_commit_lock_enabled = false;
+    bool rest_commit_acquire_lock = false;
     bool dynamic_partition_overwrite = true;
     bool overwrite_upgrade = true;
     bool compaction_force_rewrite_all_files = false;
@@ -704,6 +719,12 @@ struct CoreOptions::Impl {
         // Parse commit.discard-duplicate-files - whether to discard duplicate files on append
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::COMMIT_DISCARD_DUPLICATE_FILES,
                                                 &commit_discard_duplicate_files));
+        // Parse rest.commit.lock-enabled - server-side commit lease capability of the table
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::REST_COMMIT_LOCK_ENABLED, &rest_commit_lock_enabled));
+        // Parse rest.commit.acquire-lock - whether this writer acquires a commit lease
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::REST_COMMIT_ACQUIRE_LOCK, &rest_commit_acquire_lock));
         // Parse dynamic-partition-overwrite - whether overwrite only dynamic partitions
         // for partitioned table overwrite.
         PAIMON_RETURN_NOT_OK(
@@ -905,6 +926,8 @@ struct CoreOptions::Impl {
         // index, no default value
         PAIMON_RETURN_NOT_OK(
             parser.Parse<int32_t>(Options::GLOBAL_INDEX_THREAD_NUM, &global_index_thread_num));
+        // Parse full-text-index.search-mode, falling back to global-index.search-mode, default fast
+        PAIMON_RETURN_NOT_OK(parser.ParseFullTextIndexSearchMode(&full_text_index_search_mode));
         // Parse global-index.external-path - global index root directory
         PAIMON_RETURN_NOT_OK(
             parser.Parse(Options::GLOBAL_INDEX_EXTERNAL_PATH, &global_index_external_path));
@@ -1341,6 +1364,14 @@ int64_t CoreOptions::GetCommitMaxRetryWait() const {
 
 bool CoreOptions::CommitDiscardDuplicateFiles() const {
     return impl_->commit_discard_duplicate_files;
+}
+
+bool CoreOptions::RestCommitLockEnabled() const {
+    return impl_->rest_commit_lock_enabled;
+}
+
+bool CoreOptions::RestCommitAcquireLock() const {
+    return impl_->rest_commit_acquire_lock;
 }
 
 bool CoreOptions::DynamicPartitionOverwrite() const {
@@ -1883,6 +1914,10 @@ bool CoreOptions::GlobalIndexEnabled() const {
 
 std::optional<int32_t> CoreOptions::GetGlobalIndexThreadNum() const {
     return impl_->global_index_thread_num;
+}
+
+GlobalIndexSearchMode CoreOptions::GetFullTextIndexSearchMode() const {
+    return impl_->full_text_index_search_mode;
 }
 
 std::optional<std::string> CoreOptions::GetGlobalIndexExternalPath() const {

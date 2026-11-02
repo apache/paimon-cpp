@@ -25,12 +25,14 @@
 
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 
 namespace paimon {
+class CoreOptions;
 
 /// Snapshot publication interface for catalogs returning true from `SupportsVersionManagement()`.
 ///
@@ -59,6 +61,20 @@ class VersionManagedCatalog {
                                         const std::optional<std::string>& base_snapshot_uuid,
                                         const Snapshot& snapshot,
                                         const std::vector<PartitionStatistics>& statistics) = 0;
+
+    /// Creates the lock taken around each snapshot publication to a table or branch, mirroring
+    /// Java `Catalog.createLock`.
+    ///
+    /// @param identifier Identifier of the table or branch the snapshots are published to.
+    /// @param table_uuid Catalog UUID of the table or branch; null if unavailable.
+    /// @param commit_user Commit user of the snapshots published under the lock.
+    /// @param options Table options merged with the writer's dynamic options.
+    /// @return The lock, or null when publication takes none.
+    virtual Result<std::unique_ptr<CommitLock>> CreateCommitLock(
+        const Identifier& identifier, const std::optional<std::string>& table_uuid,
+        const std::string& commit_user, const CoreOptions& options) {
+        return std::unique_ptr<CommitLock>();
+    }
 };
 
 /// Returns version management only when the catalog both advertises and implements it.

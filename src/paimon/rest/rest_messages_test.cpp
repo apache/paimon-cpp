@@ -19,6 +19,7 @@
 #include "paimon/rest/rest_messages.h"
 
 #include <map>
+#include <optional>
 #include <string>
 
 #include "gtest/gtest.h"
@@ -373,6 +374,74 @@ TEST(RestMessagesTest, CommitTableResponseRoundTrip) {
     ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString("null"), "value must be an object");
     ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString("true"), "value must be an object");
     ASSERT_NOK(CommitTableResponse::FromJsonString("not json"));
+}
+
+TEST(RestMessagesTest, CommitLockRequestRoundTrip) {
+    CommitLockRequest request("table-uuid", "commit-user");
+    ASSERT_OK_AND_ASSIGN(std::string json, request.ToJsonString());
+    rapidjson::Document doc;
+    doc.Parse(json.c_str());
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_EQ(2u, doc.MemberCount());
+    ASSERT_STREQ("table-uuid", doc["tableId"].GetString());
+    ASSERT_STREQ("commit-user", doc["commitUser"].GetString());
+
+    ASSERT_OK_AND_ASSIGN(CommitLockRequest parsed, CommitLockRequest::FromJsonString(json));
+    ASSERT_EQ("table-uuid", parsed.GetTableId());
+    ASSERT_EQ("commit-user", parsed.GetCommitUser());
+
+    ASSERT_NOK_WITH_MSG(CommitLockRequest::FromJsonString(R"({"commitUser": "u"})"),
+                        "key must exist");
+    ASSERT_NOK_WITH_MSG(CommitLockRequest::FromJsonString(R"({"tableId": "t"})"), "key must exist");
+}
+
+TEST(RestMessagesTest, CommitLockResponseRoundTrip) {
+    std::string granted_json =
+        R"({"acquired": true, "commitUser": "commit-user", "expiresAtMillis": 1700000060000,)"
+        R"( "leaseMillis": 60000, "snapshot": {"version": 3, "id": 7, "schemaId": 0,)"
+        R"( "baseManifestList": "bml", "deltaManifestList": "dml", "commitUser": "u",)"
+        R"( "commitIdentifier": 1, "commitKind": "APPEND", "timeMillis": 100,)"
+        R"( "totalRecordCount": 10, "deltaRecordCount": 1}, "unknown": 1})";
+    ASSERT_OK_AND_ASSIGN(CommitLockResponse granted,
+                         CommitLockResponse::FromJsonString(granted_json));
+    ASSERT_TRUE(granted.IsAcquired());
+    ASSERT_EQ(std::optional<std::string>("commit-user"), granted.GetCommitUser());
+    ASSERT_EQ(1700000060000, granted.GetExpiresAtMillis());
+    ASSERT_EQ(60000, granted.GetLeaseMillis());
+    ASSERT_TRUE(granted.GetSnapshot());
+    ASSERT_EQ(7, granted.GetSnapshot()->Id());
+
+    ASSERT_OK_AND_ASSIGN(std::string written, granted.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(CommitLockResponse round_tripped,
+                         CommitLockResponse::FromJsonString(written));
+    ASSERT_TRUE(round_tripped.IsAcquired());
+    ASSERT_EQ(granted.GetCommitUser(), round_tripped.GetCommitUser());
+    ASSERT_EQ(granted.GetExpiresAtMillis(), round_tripped.GetExpiresAtMillis());
+    ASSERT_EQ(granted.GetLeaseMillis(), round_tripped.GetLeaseMillis());
+    ASSERT_EQ(granted.GetSnapshot(), round_tripped.GetSnapshot());
+
+    ASSERT_OK_AND_ASSIGN(
+        CommitLockResponse contended,
+        CommitLockResponse::FromJsonString(
+            R"({"acquired": false, "commitUser": null, "expiresAtMillis": 0, "leaseMillis": 0,)"
+            R"( "snapshot": null})"));
+    ASSERT_FALSE(contended.IsAcquired());
+    ASSERT_FALSE(contended.GetCommitUser());
+    ASSERT_EQ(0, contended.GetLeaseMillis());
+    ASSERT_FALSE(contended.GetSnapshot());
+    ASSERT_OK_AND_ASSIGN(std::string contended_json, contended.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(CommitLockResponse contended_round_trip,
+                         CommitLockResponse::FromJsonString(contended_json));
+    ASSERT_FALSE(contended_round_trip.IsAcquired());
+    ASSERT_FALSE(contended_round_trip.GetCommitUser());
+    ASSERT_FALSE(contended_round_trip.GetSnapshot());
+
+    ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString("{}"), "key must exist");
+    ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString(R"({"acquired": null})"),
+                        "key must exist");
+    ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString(R"({"acquired": "true"})"),
+                        "value must be bool");
+    ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString("[]"), "value must be an object");
 }
 
 TEST(RestMessagesTest, CreateDatabaseRequestRoundTrip) {

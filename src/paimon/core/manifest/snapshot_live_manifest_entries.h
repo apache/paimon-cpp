@@ -45,11 +45,12 @@ class SnapshotLiveManifestEntries {
     struct Selection {
         std::vector<ManifestEntry> entries;
         uint64_t candidate_entries = 0;
+        int64_t total_data_files = 0;
     };
 
     explicit SnapshotLiveManifestEntries(int32_t max_snapshots);
 
-    void Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries);
+    void Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries, int64_t total_data_files);
     size_t Size() const;
 
     Result<std::shared_ptr<Bytes>> Serialize(const std::shared_ptr<MemoryPool>& pool) const;
@@ -59,7 +60,7 @@ class SnapshotLiveManifestEntries {
 
     /// Select an exact retained snapshot, applying a row filter before constructing file metadata.
     /// The reader validates the entry version before invoking the filter, as in
-    /// ManifestFile::ReadSelectedEntries. The serialized cache value is unchanged. A Selection is
+    /// ManifestFile::ReadSelectedEntries. A Selection is
     /// deliberately not a cache value: query-filtered entries must never replace the complete
     /// bucket's cached entries.
     static Result<std::optional<Selection>> ReadSnapshot(
@@ -71,6 +72,7 @@ class SnapshotLiveManifestEntries {
     void EvictIfNeeded();
 
     std::map<int64_t, std::shared_ptr<const std::vector<ManifestEntry>>> entries_by_snapshot_;
+    std::map<int64_t, int64_t> total_data_files_by_snapshot_;
     int32_t max_snapshots_;
 };
 

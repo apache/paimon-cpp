@@ -39,6 +39,7 @@
 #include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/rest/rest_commit_lock.h"
 #include "paimon/rest/rest_credential_provider.h"
 #include "paimon/rest/rest_token_file_system.h"
 #include "paimon/rest/rest_util.h"
@@ -545,6 +546,25 @@ Result<bool> RestCatalog::CommitSnapshot(const Identifier& identifier,
     PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
     return api_->CommitSnapshot(load_identifier, table_uuid, base_snapshot_uuid, snapshot,
                                 statistics);
+}
+
+Result<std::unique_ptr<CommitLock>> RestCatalog::CreateCommitLock(
+    const Identifier& identifier, const std::optional<std::string>& table_uuid,
+    const std::string& commit_user, const CoreOptions& options) {
+    if (!options.RestCommitAcquireLock()) {
+        return std::unique_ptr<CommitLock>();
+    }
+    if (!options.RestCommitLockEnabled()) {
+        return Status::Invalid(fmt::format("{} requires {} on the table.",
+                                           Options::REST_COMMIT_ACQUIRE_LOCK,
+                                           Options::REST_COMMIT_LOCK_ENABLED));
+    }
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "createCommitLock"));
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RestCommitLock> lock,
+                           RestCommitLock::Create(api_, load_identifier, table_uuid, commit_user,
+                                                  options.GetCommitTimeout()));
+    return std::unique_ptr<CommitLock>(std::move(lock));
 }
 
 }  // namespace paimon

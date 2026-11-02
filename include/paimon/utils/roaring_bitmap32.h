@@ -65,6 +65,8 @@ class PAIMON_EXPORT RoaringBitmap32 {
         bool operator!=(const Iterator& other) const;
 
      private:
+        Iterator() = default;
+        // Null represents the end sentinel without an underlying iterator allocation.
         void* iterator_ = nullptr;
     };
 
@@ -136,6 +138,7 @@ class PAIMON_EXPORT RoaringBitmap32 {
     std::string ToString() const;
 
     Iterator Begin() const;
+    /// Returns an end sentinel without allocating an underlying iterator.
     Iterator End() const;
     /// @return the iterator moved to the value which is equal or larger than key
     Iterator EqualOrLarger(int32_t key) const;

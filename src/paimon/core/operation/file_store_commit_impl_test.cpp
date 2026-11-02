@@ -45,6 +45,7 @@
 #include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/commit_table_request.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
@@ -844,6 +845,92 @@ TEST_F(FileStoreCommitImplTest, TestRequestOnlyCommitToBranch) {
     ASSERT_GT(CountFiles(PathUtil::JoinPath(table_path_, "manifest")), 0u);
 }
 
+namespace {
+
+struct CommitLockLog {
+    struct Event {
+        std::string name;
+        size_t loads;
+        size_t commits;
+    };
+
+    void Record(const std::string& name) {
+        events.push_back(Event{name, catalog->LoadSnapshotCalls(), catalog->CommitCalls().size()});
+    }
+
+    std::vector<std::string> Names() const {
+        std::vector<std::string> names;
+        for (const Event& event : events) {
+            names.push_back(event.name);
+        }
+        return names;
+    }
+
+    const MockVersionManagedCatalog* catalog = nullptr;
+    std::vector<Event> events;
+    std::vector<Identifier> identifiers;
+    std::vector<std::optional<std::string>> table_uuids;
+    std::vector<std::string> commit_users;
+    int32_t failed_acquires = 0;
+    Status acquire_failure = Status::IOError("lock service unavailable");
+    int32_t failed_checks = 0;
+    Status check_failure = Status::Invalid("the commit lease has expired");
+};
+
+class FakeCommitLock : public CommitLock {
+ public:
+    explicit FakeCommitLock(std::shared_ptr<CommitLockLog> log) : log_(std::move(log)) {}
+
+    Result<std::unique_ptr<CommitLockScope>> Acquire() override {
+        log_->Record("acquire");
+        if (log_->failed_acquires > 0) {
+            --log_->failed_acquires;
+            return log_->acquire_failure;
+        }
+        return std::unique_ptr<CommitLockScope>(std::make_unique<Scope>(log_));
+    }
+
+ private:
+    class Scope : public CommitLockScope {
+     public:
+        explicit Scope(std::shared_ptr<CommitLockLog> log) : log_(std::move(log)) {}
+
+        ~Scope() override {
+            log_->Record("release");
+        }
+
+        Status EnsureValid() override {
+            log_->Record("check");
+            if (log_->failed_checks > 0) {
+                --log_->failed_checks;
+                return log_->check_failure;
+            }
+            return Status::OK();
+        }
+
+     private:
+        std::shared_ptr<CommitLockLog> log_;
+    };
+
+    std::shared_ptr<CommitLockLog> log_;
+};
+
+std::shared_ptr<CommitLockLog> InstallCommitLock(MockVersionManagedCatalog* catalog) {
+    auto log = std::make_shared<CommitLockLog>();
+    log->catalog = catalog;
+    catalog->SetCommitLockFactory(
+        [log](const Identifier& identifier, const std::optional<std::string>& table_uuid,
+              const std::string& commit_user) -> Result<std::unique_ptr<CommitLock>> {
+            log->identifiers.push_back(identifier);
+            log->table_uuids.push_back(table_uuid);
+            log->commit_users.push_back(commit_user);
+            return std::unique_ptr<CommitLock>(std::make_unique<FakeCommitLock>(log));
+        });
+    return log;
+}
+
+}  // namespace
+
 TEST_F(FileStoreCommitImplTest, TestCatalogCommitToBranchTakesTheBranchSnapshot) {
     SchemaManager branch_schema_manager(file_system_, table_path_, "dev");
     ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
@@ -866,12 +953,15 @@ TEST_F(FileStoreCommitImplTest, TestCatalogCommitToBranchTakesTheBranchSnapshot)
 
     auto catalog = CreateCatalog();
     catalog->SetHeldSnapshot(base_snapshot.value());
+    std::shared_ptr<CommitLockLog> log = InstallCommitLock(catalog.get());
     CatalogCommitSpec spec;
     spec.catalog = catalog;
     spec.identifier.emplace("db", "tbl$branch_dev");
     spec.table_id = "table-uuid-1";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
     ASSERT_OK(commit->Commit(CommitMessagesOfRound(2), /*commit_identifier=*/2));
+    ASSERT_EQ(std::vector<Identifier>{Identifier("db", "tbl$branch_dev")}, log->identifiers);
+    ASSERT_EQ((std::vector<std::string>{"acquire", "check", "release"}), log->Names());
 
     ASSERT_GT(catalog->LoadSnapshotCalls(), 0u);
     for (const Identifier& asked : catalog->LoadSnapshotIdentifiers()) {
@@ -1124,6 +1214,125 @@ TEST_F(FileStoreCommitImplTest, TestCatalogCommitRetriesWhenRefused) {
                                                  table_path_, "snapshot/snapshot-1")));
         ASSERT_FALSE(published);
     }
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitHoldsALockScopePerAttempt) {
+    auto catalog = CreateCatalog(false);
+    std::shared_ptr<CommitLockLog> log = InstallCommitLock(catalog.get());
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.table_id = "table-uuid-2";
+    spec.options = {{Options::COMMIT_MAX_RETRIES, "1"}, {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    ASSERT_EQ(1u, log->identifiers.size());
+    ASSERT_EQ(Identifier("db", "tbl"), log->identifiers[0]);
+    ASSERT_EQ(std::optional<std::string>("table-uuid-2"), log->table_uuids[0]);
+    ASSERT_EQ("commit_user_1", log->commit_users[0]);
+    ASSERT_TRUE(log->events.empty());
+
+    ASSERT_NOK_WITH_MSG(commit->Commit(CommitMessagesOfRound(1)), "commit conflicts");
+    ASSERT_EQ(
+        (std::vector<std::string>{"acquire", "check", "release", "acquire", "check", "release"}),
+        log->Names());
+    for (size_t attempt = 0; attempt < 2; ++attempt) {
+        SCOPED_TRACE(attempt);
+        const CommitLockLog::Event& acquire = log->events[attempt * 3];
+        const CommitLockLog::Event& check = log->events[attempt * 3 + 1];
+        const CommitLockLog::Event& release = log->events[attempt * 3 + 2];
+        ASSERT_GT(check.loads, acquire.loads);
+        ASSERT_EQ(attempt, acquire.commits);
+        ASSERT_EQ(attempt, check.commits);
+        ASSERT_EQ(attempt + 1, release.commits);
+    }
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitRetriesOnceTheLockScopeIsLost) {
+    auto failing_catalog = CreateCatalog();
+    std::shared_ptr<CommitLockLog> failing_log = InstallCommitLock(failing_catalog.get());
+    failing_log->failed_checks = 100;
+    CatalogCommitSpec spec;
+    spec.catalog = failing_catalog;
+    spec.options = {{Options::COMMIT_MAX_RETRIES, "1"}, {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
+    auto* first = dynamic_cast<CommitMessageImpl*>(msgs[0].get());
+    ASSERT_NE(nullptr, first);
+    msgs.push_back(std::make_shared<CommitMessageImpl>(
+        first->Partition(), first->Bucket(), first->TotalBuckets(),
+        DataIncrement({}, {}, {CreateAppendDataFileMeta("changelog-file-1", 10)}),
+        CompactIncrement({}, {}, {})));
+    Status lost = commit->Commit(msgs);
+    ASSERT_TRUE(lost.IsInvalid()) << lost.ToString();
+    ASSERT_NOK_WITH_MSG(lost, "1 retries");
+    ASSERT_NOK_WITH_MSG(lost, "the commit lock was lost before publishing");
+    ASSERT_NOK_WITH_MSG(lost, "the commit lease has expired");
+    ASSERT_EQ(std::string::npos, lost.ToString().find("commit conflicts")) << lost.ToString();
+    ASSERT_EQ(
+        (std::vector<std::string>{"acquire", "check", "release", "acquire", "check", "release"}),
+        failing_log->Names());
+    ASSERT_TRUE(failing_catalog->CommitCalls().empty());
+    std::vector<BasicFileStatus> manifests;
+    ASSERT_OK(file_system_->ListDir(PathUtil::JoinPath(table_path_, "manifest"), &manifests));
+    ASSERT_TRUE(manifests.empty());
+
+    auto catalog = CreateCatalog();
+    std::shared_ptr<CommitLockLog> log = InstallCommitLock(catalog.get());
+    log->failed_checks = 1;
+    spec.catalog = catalog;
+    spec.options = {{Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+    ASSERT_OK_AND_ASSIGN(commit, CreateCatalogCommit(spec));
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1)));
+    ASSERT_EQ(
+        (std::vector<std::string>{"acquire", "check", "release", "acquire", "check", "release"}),
+        log->Names());
+    ASSERT_EQ(1u, catalog->CommitCalls().size());
+}
+
+TEST_F(FileStoreCommitImplTest, TestCatalogCommitRetriesAFailedLockAcquisition) {
+    auto catalog = CreateCatalog();
+    std::shared_ptr<CommitLockLog> log = InstallCommitLock(catalog.get());
+    log->failed_acquires = 1;
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.options = {{Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    ASSERT_OK(commit->Commit(CommitMessagesOfRound(1)));
+    ASSERT_EQ((std::vector<std::string>{"acquire", "acquire", "check", "release"}), log->Names());
+    ASSERT_EQ(log->events[0].loads, log->events[1].loads);
+    ASSERT_EQ(1u, catalog->CommitCalls().size());
+
+    auto failing_catalog = CreateCatalog();
+    std::shared_ptr<CommitLockLog> failing_log = InstallCommitLock(failing_catalog.get());
+    failing_log->failed_acquires = 100;
+    spec.catalog = failing_catalog;
+    spec.options = {{Options::COMMIT_MAX_RETRIES, "2"}, {Options::COMMIT_MIN_RETRY_WAIT, "1ms"}};
+    ASSERT_OK_AND_ASSIGN(commit, CreateCatalogCommit(spec));
+    Status failed = commit->Commit(CommitMessagesOfRound(1));
+    ASSERT_TRUE(failed.IsIOError()) << failed.ToString();
+    ASSERT_NOK_WITH_MSG(failed, "could not acquire commit lock");
+    ASSERT_NOK_WITH_MSG(failed, "lock service unavailable");
+    ASSERT_NOK_WITH_MSG(failed, "2 retries");
+    ASSERT_EQ(std::vector<std::string>(3, "acquire"), failing_log->Names());
+    ASSERT_TRUE(failing_catalog->CommitCalls().empty());
+}
+
+TEST_F(FileStoreCommitImplTest, TestCommitWithoutAUsableLockIsNotCreated) {
+    auto catalog = CreateCatalog();
+    catalog->SetCommitLockFactory([](const Identifier&, const std::optional<std::string>&,
+                                     const std::string&) -> Result<std::unique_ptr<CommitLock>> {
+        return Status::Invalid("no commit lease for this table");
+    });
+    ASSERT_NOK_WITH_MSG(CreateCatalogCommit(catalog), "no commit lease for this table");
+    ASSERT_TRUE(catalog->CommitCalls().empty());
+
+    CommitContextBuilder builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         builder.AddOption(Options::FILE_SYSTEM, "local")
+                             .AddOption(Options::REST_COMMIT_ACQUIRE_LOCK, "true")
+                             .UseRESTCatalogCommit(true)
+                             .WithTableId("table-uuid")
+                             .Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(context)), "cannot hold a commit lease");
 }
 
 TEST_F(FileStoreCommitImplTest, TestUnknownCatalogOutcomeKeepsTheManifests) {
@@ -2137,6 +2346,38 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestThroughCatalog) {
     ASSERT_FALSE(exist);
 }
 
+TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestHoldsALockScope) {
+    CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
+                         base_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
+    ASSERT_OK_AND_ASSIGN(auto base_commit, FileStoreCommit::Create(std::move(base_context)));
+    for (int32_t round = 1; round <= 2; ++round) {
+        ASSERT_OK(base_commit->Commit(CommitMessagesOfRound(round), round));
+    }
+
+    auto catalog = CreateCatalog();
+    std::shared_ptr<CommitLockLog> log = InstallCommitLock(catalog.get());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+    ASSERT_OK_AND_ASSIGN(bool rolled_back, commit->RollbackToAsLatest(1));
+    ASSERT_TRUE(rolled_back);
+    ASSERT_EQ((std::vector<std::string>{"acquire", "check", "release"}), log->Names());
+    ASSERT_GT(log->events[1].loads, log->events[0].loads);
+    ASSERT_EQ(0u, log->events[1].commits);
+    ASSERT_EQ(1u, log->events[2].commits);
+
+    const std::string manifest_dir = PathUtil::JoinPath(table_path_, "manifest");
+    const size_t manifest_count = CountFiles(manifest_dir);
+    log->failed_checks = 1;
+    Status lost = commit->RollbackToAsLatest(1).status();
+    ASSERT_NOK_WITH_MSG(lost, "the commit lock was lost before publishing");
+    ASSERT_NOK_WITH_MSG(lost, "the commit lease has expired");
+    ASSERT_EQ(manifest_count, CountFiles(manifest_dir));
+    log->failed_acquires = 1;
+    ASSERT_NOK_WITH_MSG(commit->RollbackToAsLatest(1), "lock service unavailable");
+    ASSERT_EQ(manifest_count, CountFiles(manifest_dir));
+    ASSERT_EQ(1u, catalog->CommitCalls().size());
+}
+
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestNeedsTheTargetUnderTheTablePath) {
     CommitContextBuilder base_builder(table_path_, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
@@ -2506,10 +2747,10 @@ TEST_F(FileStoreCommitImplTest, TestCleanUpTmpManifests) {
                                     table_path_, "manifest/" + index_manifest.value())));
     ASSERT_TRUE(exist);
 
-    commit_impl->CleanUpTmpManifests(snapshot.value().BaseManifestList(),
-                                     snapshot.value().DeltaManifestList(), previous_manifests,
-                                     previous_manifests, /*old_index_manifest=*/std::nullopt,
-                                     /*new_index_manifest=*/index_manifest);
+    commit_impl->CleanUpTmpManifests(
+        snapshot.value().BaseManifestList(), snapshot.value().DeltaManifestList(),
+        /*changelog_list_name=*/std::string(), previous_manifests, previous_manifests,
+        /*old_index_manifest=*/std::nullopt, /*new_index_manifest=*/index_manifest);
     for (const auto& manifest : previous_manifests) {
         ASSERT_OK_AND_ASSIGN(exist, file_system_->Exists(PathUtil::JoinPath(
                                         table_path_, "manifest/" + manifest.FileName())));
@@ -2527,7 +2768,8 @@ TEST_F(FileStoreCommitImplTest, TestCleanUpTmpManifests) {
                                     table_path_, "manifest/" + index_manifest.value())));
     ASSERT_FALSE(exist);
     commit_impl->CleanUpTmpManifests(
-        snapshot.value().BaseManifestList(), snapshot.value().DeltaManifestList(), /*old_metas=*/{},
+        snapshot.value().BaseManifestList(), snapshot.value().DeltaManifestList(),
+        /*changelog_list_name=*/std::string(), /*old_metas=*/{},
         /*new_metas=*/previous_manifests, /*old_index_manifest=*/std::nullopt,
         /*new_index_manifest=*/std::nullopt);
     for (const auto& manifest : previous_manifests) {
