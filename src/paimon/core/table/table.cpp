@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "arrow/c/bridge.h"
+#include "arrow/compute/initialize.h"
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/commit_context.h"
@@ -1074,6 +1075,7 @@ Result<std::unique_ptr<TableRead>> NewFormatTableRead(const std::shared_ptr<Form
 }  // namespace
 
 Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext> ctx) {
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::compute::Initialize());
     std::shared_ptr<ReadContext> context = std::move(ctx);
     if (context == nullptr) {
         return Status::Invalid("read context is null pointer");
