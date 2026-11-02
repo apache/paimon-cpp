@@ -26,7 +26,10 @@ compaction is therefore a trade-off between write throughput and read efficiency
 .. note::
    - There can only be one job working on the same partition's compaction,
      otherwise it will cause conflicts.
-   - Paimon C++ does not support producing changelog for now.
+   - Changelog is produced according to the ``changelog-producer`` table option
+     (``input``, ``full-compaction`` or ``lookup``): the ``full-compaction`` and
+     ``lookup`` producers emit their changelog files from compaction, and the
+     files are committed with their snapshot.
    - Automatic compaction is disabled when ``write-only`` is set to ``true``,
      or when an append-only table uses unaware-bucket mode (``bucket = -1``).
    - For a complete list of compaction-related configurations, see the

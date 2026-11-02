@@ -32,7 +32,7 @@ Paimon C++ currently provides:
 
 - **Write**: append table and primary key table write support with compaction.
 - **Commit**: append table and primary key table commit support. Direct file-system commits work on non-object-store paths; object-store paths require a catalog-mediated commit.
-- **Scan**: batch and stream scan for append tables and primary key tables without changelog.
+- **Scan**: batch and stream scan for append tables and primary key tables, with changelog consumption when a changelog producer is configured.
 - **Read**: append table read, primary key table read with deletion vector, and primary key table merge-on-read.
 - **Arrow integration**: batch read and write interfaces based on the [Arrow Columnar In-Memory Format](https://arrow.apache.org).
 - **File systems**: file system abstraction with built-in local, Jindo, OSS, and S3 file system support.
