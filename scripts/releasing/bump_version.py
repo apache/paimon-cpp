@@ -27,6 +27,34 @@ from typing import Dict, List
 
 
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+SERIES_PATTERN = re.compile(r"^\d+\.\d+$")
+
+DOCS_URL = "https://paimon.apache.org/docs/cpp/"
+MAIN_ENTRY_VERSION = "main"
+
+
+def series(version: str) -> str:
+    """The major.minor documentation series a version belongs to."""
+    return ".".join(version.split(".")[:2])
+
+
+def stable_entry(series_name: str) -> Dict[str, object]:
+    """Dropdown entry for the latest release published at the site root."""
+    return {
+        "name": f"{series_name} (stable)",
+        "version": "",
+        "url": DOCS_URL,
+        "preferred": True,
+    }
+
+
+def series_entry(series_name: str) -> Dict[str, object]:
+    """Dropdown entry for an archived release series under <series>/."""
+    return {
+        "name": series_name,
+        "version": series_name,
+        "url": f"{DOCS_URL}{series_name}/",
+    }
 
 
 class VersionError(RuntimeError):
@@ -55,6 +83,54 @@ def load_versions(path: Path) -> List[Dict[str, object]]:
     return value
 
 
+def check_version_list(versions: List[Dict[str, object]]) -> None:
+    """Validate the dev/stable/archived layout of versions.json."""
+    if len(versions) < 2:
+        raise VersionError(
+            "versions.json must contain a dev entry followed by a stable entry"
+        )
+    dev = versions[0]
+    if (
+        dev.get("version") != MAIN_ENTRY_VERSION
+        or dev.get("name") != "main (development)"
+        or dev.get("url") != f"{DOCS_URL}main/"
+    ):
+        raise VersionError(
+            "the first versions.json entry must be the main-branch docs: "
+            f"name 'main (development)', version {MAIN_ENTRY_VERSION!r}, "
+            f"url {DOCS_URL}main/"
+        )
+    stable = versions[1]
+    name = stable.get("name")
+    match = (
+        re.fullmatch(r"(\d+\.\d+) \(stable\)", name)
+        if isinstance(name, str)
+        else None
+    )
+    if (
+        match is None
+        or stable.get("version") != ""
+        or stable.get("url") != DOCS_URL
+        or stable.get("preferred") is not True
+    ):
+        raise VersionError(
+            "the second versions.json entry must be the stable docs: name "
+            "'X.Y (stable)', version '', url the site root, preferred true"
+        )
+    for item in versions[2:]:
+        item_name = item.get("name")
+        if (
+            not isinstance(item_name, str)
+            or SERIES_PATTERN.fullmatch(item_name) is None
+            or item.get("version") != item_name
+            or item.get("url") != f"{DOCS_URL}{item_name}/"
+        ):
+            raise VersionError(
+                "archived versions.json entries must use name == version == "
+                f"X.Y with url {DOCS_URL}X.Y/, found {item!r}"
+            )
+
+
 def checked_files(root: Path, expected: str) -> Dict[Path, str]:
     cmake_path = root / "CMakeLists.txt"
     docs_path = root / "docs/source/conf.py"
@@ -70,23 +146,13 @@ def checked_files(root: Path, expected: str) -> Dict[Path, str]:
     docs_matches = re.findall(
         r'^version = "(\d+\.\d+\.\d+)"$', docs, re.MULTILINE
     )
-    json_matches = [
-        item
-        for item in versions
-        if item.get("name") == expected and item.get("version") == expected
-    ]
-
     if cmake_matches != [expected]:
         raise VersionError(f"CMake version is {cmake_matches}, expected [{expected!r}]")
     if docs_matches != [expected]:
         raise VersionError(
             f"documentation version is {docs_matches}, expected [{expected!r}]"
         )
-    if len(json_matches) != 1:
-        raise VersionError(
-            "versions.json must contain exactly one entry whose name and "
-            f"version are both {expected}"
-        )
+    check_version_list(versions)
     return {
         cmake_path: cmake,
         docs_path: docs,
@@ -114,13 +180,14 @@ def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
     )
 
     versions = load_versions(versions_path)
-    matches = [item for item in versions if item.get("version") == current]
-    if len(matches) != 1:
-        raise VersionError(
-            f"versions.json contains {len(matches)} entries for {current}"
-        )
-    matches[0]["name"] = new
-    matches[0]["version"] = new
+    if series(current) != series(new):
+        # A new documentation series ships with this release: the released
+        # version becomes the stable docs at docs/cpp/ and the previous
+        # stable docs move to their series directory. The main entry is
+        # fixed. Patch release cycles keep the version list unchanged.
+        previous_series = versions[1]["name"].split(" ")[0]
+        versions[1] = stable_entry(series(current))
+        versions.insert(2, series_entry(previous_series))
     files[versions_path] = json.dumps(versions, indent=4) + "\n"
     return files
 

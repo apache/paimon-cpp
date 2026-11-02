@@ -105,8 +105,11 @@ class ReleaseToolTest(unittest.TestCase):
             ),
             "docs/source/conf.py": b'version = "1.2.3"\n',
             "docs/source/_static/versions.json": (
-                b'[{"name": "1.2.3", "version": "1.2.3", '
-                b'"url": "https://paimon.apache.org/docs/cpp/"}]\n'
+                b'[{"name": "main (development)", "version": "main", '
+                b'"url": "https://paimon.apache.org/docs/cpp/main/"}, '
+                b'{"name": "1.1 (stable)", "version": "", '
+                b'"url": "https://paimon.apache.org/docs/cpp/", '
+                b'"preferred": true}]\n'
             ),
             ".github/.rat-excludes": b"",
             "scripts/releasing/create_source_release.sh": b"#!/usr/bin/env bash\n",
@@ -356,8 +359,11 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                 "NOTICE": "Apache Paimon\n",
                 "docs/source/conf.py": 'version = "1.2.3"\n',
                 "docs/source/_static/versions.json": (
-                    '[{"name": "1.2.3", "version": "1.2.3", '
-                    '"url": "https://paimon.apache.org/docs/cpp/"}]\n'
+                    '[{"name": "main (development)", "version": "main", '
+                    '"url": "https://paimon.apache.org/docs/cpp/main/"}, '
+                    '{"name": "1.1 (stable)", "version": "", '
+                    '"url": "https://paimon.apache.org/docs/cpp/", '
+                    '"preferred": true}]\n'
                 ),
                 ".github/.rat-excludes": "",
             }
@@ -610,10 +616,16 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             json.dumps(
                 [
                     {
-                        "name": "1.2.3",
-                        "version": "1.2.3",
+                        "name": "main (development)",
+                        "version": "main",
+                        "url": "https://paimon.apache.org/docs/cpp/main/",
+                    },
+                    {
+                        "name": "1.1 (stable)",
+                        "version": "",
                         "url": "https://paimon.apache.org/docs/cpp/",
-                    }
+                        "preferred": True,
+                    },
                 ],
                 indent=4,
             )
@@ -626,11 +638,40 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             root = Path(temp)
             self.create_version_tree(root)
             self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.2.3")
-            self.run_tool(VERSION_TOOL, "--root", str(root), "1.2.3", "1.2.4")
-            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.2.4")
-            self.assertIn("VERSION 1.2.4", (root / "CMakeLists.txt").read_text())
+            self.run_tool(VERSION_TOOL, "--root", str(root), "1.2.3", "1.3.0")
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.0")
+            self.assertIn("VERSION 1.3.0", (root / "CMakeLists.txt").read_text())
             self.assertIn(
-                'version = "1.2.4"', (root / "docs/source/conf.py").read_text()
+                'version = "1.3.0"', (root / "docs/source/conf.py").read_text()
+            )
+            versions_path = root / "docs/source/_static/versions.json"
+            versions = json.loads(versions_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                versions,
+                [
+                    {
+                        "name": "main (development)",
+                        "version": "main",
+                        "url": "https://paimon.apache.org/docs/cpp/main/",
+                    },
+                    {
+                        "name": "1.2 (stable)",
+                        "version": "",
+                        "url": "https://paimon.apache.org/docs/cpp/",
+                        "preferred": True,
+                    },
+                    {
+                        "name": "1.1",
+                        "version": "1.1",
+                        "url": "https://paimon.apache.org/docs/cpp/1.1/",
+                    },
+                ],
+            )
+            # A patch release cycle keeps the version list unchanged.
+            self.run_tool(VERSION_TOOL, "--root", str(root), "1.3.0", "1.3.1")
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.1")
+            self.assertEqual(
+                json.loads(versions_path.read_text(encoding="utf-8")), versions
             )
 
     def test_version_tool_rejects_inconsistent_metadata(self) -> None:

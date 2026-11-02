@@ -18,6 +18,11 @@
 name: "Publish Docs"
 
 on:
+  pull_request:
+    paths:
+      - 'apidoc/**'
+      - 'docs/**'
+      - 'include/**'
   push:
     branches:
       - main

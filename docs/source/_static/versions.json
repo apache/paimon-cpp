@@ -1,7 +1,13 @@
 [
     {
-        "name": "0.4.0",
-        "version": "0.4.0",
-        "url": "https://paimon.apache.org/docs/cpp/"
+        "name": "main (development)",
+        "version": "main",
+        "url": "https://paimon.apache.org/docs/cpp/main/"
+    },
+    {
+        "name": "0.3 (stable)",
+        "version": "",
+        "url": "https://paimon.apache.org/docs/cpp/",
+        "preferred": true
     }
 ]
