@@ -41,6 +41,47 @@ cross-language task scheduling and interaction (e.g., Java and C++), substantial
 across the two language ecosystems.
 
 
+Planning with a custom memory pool
+----------------------------------
+
+Use ``ScanContextBuilder::WithMemoryPool(pool)`` with ordinary
+``TableScan::Create`` and ``CreatePlan`` to supply an application-owned pool.
+Planning continues to use the normal metadata decoders, filters and caches.
+A pool that refuses an allocation can throw ``std::bad_alloc``. The caller must
+handle both an exception from the planning call and a failed ``Result``: adapters
+such as the Arrow memory pool can translate allocation refusal into an error.
+A failed call must not be treated as an empty or partial successful plan.
+
+The budget covers only requests routed through the supplied pool. STL containers,
+metadata parser storage, shared services and other allocations may bypass it.
+It is not a limit on total planning memory, data-reader memory or process RSS.
+Unaccounted allocations are not guaranteed to be small merely because the pool
+is bounded. Applications requiring a stronger bound need a separate policy and
+validation of the uncovered allocations.
+
+The application chooses the accounting policy in its pool. A **live-byte** limit
+charges outstanding requested bytes and returns credit on ``Free``. A growing
+``Realloc`` must reserve the increase before requesting storage; on failure it
+must preserve the original allocation and its charge. A **cumulative** limit
+instead charges allocation work without refunding frees. These are different
+contracts: freeing temporary buffers permits another allocation under a live-byte
+limit, but not necessarily under a cumulative limit. Neither policy accounts for
+allocations that do not reach that pool. ``MemoryPool::CurrentUsage`` describes
+live usage; the scan API does not install either budget policy for the caller.
+
+Keep a custom pool alive until all objects using its allocations have been
+released, including retained plans, separately retained splits, cache entries
+and executor task closures. A plan or split does not automatically retain a
+shared owner of every custom pool. It can outlive its scan when the caller keeps
+the pool alive. Use a thread-safe pool, or synchronize all its operations including
+cleanup, when planning tasks or consumers can run concurrently. A scan itself
+must not be called concurrently.
+
+When ordinary manifest planning fails, it waits for already accepted metadata
+tasks before unwinding the task submission scope. This does not cancel native
+I/O or force an application executor to discard completed task closures; their
+retained allocations remain subject to the pool lifetime rule above.
+
 Schema Evolution
 -----------------------
 Scope and Compatibility

@@ -39,7 +39,6 @@ User Guide
    user_guide/commit
    user_guide/compaction
    user_guide/read
-   user_guide/bounded_planning
    user_guide/metrics
    user_guide/clean
    user_guide/prefetch
