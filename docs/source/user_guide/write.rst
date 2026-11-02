@@ -31,8 +31,12 @@ Parquet, and Avro, thereby improving write throughput.
     - Append table
     - Primary Key table
 
-  Not supported in the current scope:
-    - Changelog
+  Changelog is produced on the write path according to the
+  ``changelog-producer`` table option (``input``, ``full-compaction`` or
+  ``lookup``), and the changelog files are committed with their snapshot,
+  except by the overwrite flow, which ignores them and logs a warning naming
+  the files it ignored. See :doc:`compaction` for the ``full-compaction`` and
+  ``lookup`` producers.
 
 Bucketing Modes
 ---------------
