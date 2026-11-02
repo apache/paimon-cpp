@@ -3124,6 +3124,47 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
+TEST(ScanAndReadDynamicBucketInteTest, TestBatchReadPkDynamicBucketWithDeletionVectors) {
+    // Written by Java Paimon. Keys spread over several dynamic buckets, each with its own
+    // deletion vector index, so deletion vectors must be looked up per (partition, bucket).
+    const std::string table_path =
+        GetDataDir() + "/parquet/pk_dynamic_bucket_dv.db/pk_dynamic_bucket_dv/";
+    const std::shared_ptr<arrow::DataType> result_type =
+        arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
+                        arrow::field("id", arrow::int32()), arrow::field("v", arrow::utf8())});
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"2", R"([[0, 1, "a"], [0, 2, "b"], [0, 3, "x"], [0, 4, "y"], [0, 5, "z"]])"},
+        {"4", R"([[0, 1, "c"], [0, 2, "b"], [0, 3, "x"], [0, 4, "w"], [0, 5, "z"]])"},
+        {"6", R"([[0, 1, "c"], [0, 3, "x"], [0, 4, "w"]])"},
+    };
+    for (const auto& [snapshot_id, expected_json] : cases) {
+        SCOPED_TRACE("snapshot " + snapshot_id);
+        ScanContextBuilder scan_context_builder(table_path);
+        scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, snapshot_id);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                             scan_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                             TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+        ASSERT_GT(plan->Splits().size(), 1);
+
+        ReadContextBuilder read_context_builder(table_path);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                             read_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                             TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                             table_read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
+        const std::shared_ptr<arrow::Schema> sort_schema = arrow::schema(result_type->fields());
+        ASSERT_OK_AND_ASSIGN(actual, ReadResultCollector::SortArray(actual, sort_schema));
+        const std::shared_ptr<arrow::ChunkedArray> expected = std::make_shared<arrow::ChunkedArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(result_type, expected_json).ValueOrDie());
+        ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
+    }
+}
+
 TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create("local");
     ASSERT_NE(nullptr, dir);

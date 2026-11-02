@@ -871,9 +871,12 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
         ValidateRealtimeScan(*table_schema, core_options, *context, read_optimized));
     // validate options
     if (core_options.GetBucket() == -1) {
-        if (!table_schema->PrimaryKeys().empty()) {
-            return Status::NotImplemented(fmt::format(
-                "do not support pk table bucket={} in scan process", core_options.GetBucket()));
+        // Batch planning of dynamic bucket primary key tables only depends on the buckets
+        // recorded in the manifest, and deletion vectors are looked up per (partition, bucket).
+        if (!table_schema->PrimaryKeys().empty() && context->IsStreamingMode()) {
+            return Status::NotImplemented(
+                fmt::format("do not support pk table bucket={} in streaming scan process",
+                            core_options.GetBucket()));
         }
     } else if (core_options.GetBucket() < 1 &&
                !SchemaValidation::IsPostponeBucketTable(*table_schema, core_options.GetBucket())) {
