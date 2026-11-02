@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -37,15 +38,33 @@ class Literal;
 /// Vector and full-text searches return no matches.
 class EmptyFileIndexReader : public FileIndexReader {
  public:
+    explicit EmptyFileIndexReader(std::vector<SearchType> search_types = {})
+        : search_types_(std::move(search_types)) {}
+
+    bool SupportsSearch(SearchType search_type) const override {
+        return std::find(search_types_.begin(), search_types_.end(), search_type) !=
+               search_types_.end();
+    }
+
+    Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
+        const std::shared_ptr<FullTextMatch>&, bool needs_scores = false) override {
+        if (needs_scores) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredFileIndexResult> result,
+                                   ScoredFileIndexResult::Create(RoaringBitmap32(), {}));
+            return result;
+        }
+        return std::make_shared<BitmapIndexResult>(
+            []() -> Result<RoaringBitmap32> { return RoaringBitmap32(); });
+    }
+
     Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override {
         return ScoredFileIndexResult::Create(RoaringBitmap32(), {});
     }
 
-    Result<std::shared_ptr<FileIndexResult>> VisitFullTextSearch(
+    Result<std::shared_ptr<ScoredFileIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) override {
-        return std::make_shared<BitmapIndexResult>(
-            []() -> Result<RoaringBitmap32> { return RoaringBitmap32(); });
+        return ScoredFileIndexResult::Create(RoaringBitmap32(), {});
     }
 
     Result<std::shared_ptr<FileIndexResult>> VisitEqual(const Literal& literal) override {
@@ -82,6 +101,9 @@ class EmptyFileIndexReader : public FileIndexReader {
         const std::vector<Literal>& literals) override {
         return FileIndexResult::Skip();
     }
+
+ private:
+    std::vector<SearchType> search_types_;
 };
 
 }  // namespace paimon

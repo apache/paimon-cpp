@@ -52,23 +52,26 @@ struct VectorSearch;
 /// @see ReadContextBuilder
 class PAIMON_EXPORT ReadContext {
  public:
-    ReadContext(
-        const std::string& path, const std::string& branch,
-        const std::vector<std::string>& read_field_names,
-        const std::vector<int32_t>& read_field_ids, const std::shared_ptr<Predicate>& predicate,
-        const std::shared_ptr<VectorSearch>& vector_search,
-        const std::shared_ptr<FullTextSearch>& full_text_search, bool enable_predicate_filter,
-        bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
-        uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
-        uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
-        const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
-        const std::shared_ptr<FileSystem>& specific_file_system,
-        const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-        const std::shared_ptr<RealtimeContext>& realtime_context,
-        const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
-        const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-        const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
-        const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier);
+    ReadContext(const std::string& path, const std::string& branch,
+                const std::vector<std::string>& read_field_names,
+                const std::vector<int32_t>& read_field_ids,
+                const std::shared_ptr<Predicate>& predicate,
+                const std::shared_ptr<VectorSearch>& vector_search,
+                const std::shared_ptr<FullTextSearch>& full_text_search,
+                bool enable_precise_file_index_evaluate, bool enable_predicate_filter,
+                bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
+                uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
+                uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
+                const std::shared_ptr<MemoryPool>& memory_pool,
+                const std::shared_ptr<Executor>& executor,
+                const std::shared_ptr<FileSystem>& specific_file_system,
+                const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
+                const std::shared_ptr<RealtimeContext>& realtime_context,
+                const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
+                const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
+                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
+                const std::shared_ptr<Catalog>& catalog,
+                const std::optional<Identifier>& identifier);
 
     ~ReadContext();
 
@@ -111,6 +114,10 @@ class PAIMON_EXPORT ReadContext {
     /// Whether a root TopK request is configured; full-text predicates are not TopK requests.
     bool HasVectorOrFullTextSearch() const {
         return vector_search_ != nullptr || full_text_search_ != nullptr;
+    }
+
+    bool EnablePreciseFileIndexEvaluate() const {
+        return enable_precise_file_index_evaluate_;
     }
 
     bool EnablePredicateFilter() const {
@@ -208,6 +215,7 @@ class PAIMON_EXPORT ReadContext {
     std::shared_ptr<Predicate> predicate_;
     std::shared_ptr<VectorSearch> vector_search_;
     std::shared_ptr<FullTextSearch> full_text_search_;
+    bool enable_precise_file_index_evaluate_;
     bool enable_predicate_filter_;
     bool enable_prefetch_;
     bool enable_late_materializing_;
@@ -352,25 +360,23 @@ class PAIMON_EXPORT ReadContextBuilder {
     ///
     /// All referenced fields, including full-text match fields, must be projected in the read
     /// schema.
-    /// TODO(lisizhuo.lsz): The behavior here will be aligned with Java Paimon in a follow-up
-    /// change: fields referenced in predicates will no longer be required to appear in the
-    /// projection. Full-text matches can be combined with scalar predicates using
-    /// PredicateBuilder::And/Or. Full-text predicate execution is not implemented yet; reading such
-    /// a predicate returns NotImplemented.
+    /// TODO(lisizhuo.lsz): The behavior here will be aligned with Java Paimon.
+    /// Full-text matches can be combined with scalar predicates using PredicateBuilder::And/Or.
     ///
     /// @param predicate Shared pointer to the predicate for data filtering.
     /// @return Reference to this builder for method chaining.
+    /// @note Predicates containing FullTextMatch require EnablePreciseFileIndexEvaluate(true).
     ReadContextBuilder& SetPredicate(const std::shared_ptr<Predicate>& predicate);
 
     /// Configure the root vector TopK request, logically applied after the predicate filter.
     /// The search field need not be projected. SetVectorSearch is mutually exclusive with
     /// SetFullTextSearch and must have a positive limit.
     /// Scores are required internally for TopK. Project `_<field>_INDEX_SCORE` to include them
-    /// in the result. Per-field score output is not implemented yet; reading such a projection
-    /// returns NotImplemented.
-    /// TODO(lisizhuo.lsz): Execute combined read predicates and merge TopK across files.
+    /// in the result.
+    /// TODO(lisizhuo.lsz): Merge TopK across files.
     /// @param vector_search Vector search request, or nullptr to clear it.
     /// @return Reference to this builder for method chaining.
+    /// @note Requires EnablePreciseFileIndexEvaluate(true).
     ReadContextBuilder& SetVectorSearch(const std::shared_ptr<VectorSearch>& vector_search);
 
     /// Configure the root full-text TopK request, logically applied after the predicate filter.
@@ -378,12 +384,24 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// full-text filter without TopK truncation. SetFullTextSearch is mutually exclusive with
     /// SetVectorSearch and must have a positive limit.
     /// Scores are required internally for TopK. Project `_<field>_INDEX_SCORE` to include them
-    /// in the result. Per-field score output is not implemented yet; reading such a projection
-    /// returns NotImplemented.
-    /// TODO(lisizhuo.lsz): Execute combined read predicates and merge TopK across files.
+    /// in the result.
+    /// TODO(lisizhuo.lsz): Merge TopK across files.
     /// @param full_text_search Full-text search request, or nullptr to clear it.
     /// @return Reference to this builder for method chaining.
+    /// @note Requires EnablePreciseFileIndexEvaluate(true).
     ReadContextBuilder& SetFullTextSearch(const std::shared_ptr<FullTextSearch>& full_text_search);
+
+    /// Compute exact file-local result row positions during file-index evaluation, using the
+    /// configured Predicate and optional VectorSearch or FullTextSearch request.
+    /// Requires file-index.read.enabled=true. Reads available file indexes and rechecks scalar
+    /// index candidates against the data. If a scalar predicate's field has no index, reads the
+    /// data to compute exact matching rows. Only scalar predicates may be evaluated without an
+    /// index. Score output must use named projections such as _<field>_INDEX_SCORE;
+    /// projecting _INDEX_SCORE by name, field ID or read schema is not supported in this mode.
+    /// The default is false.
+    /// @param enabled Whether to compute exact result row positions during file-index evaluation.
+    /// @return Reference to this builder for method chaining.
+    ReadContextBuilder& EnablePreciseFileIndexEvaluate(bool enabled);
 
     /// Whether to perform precise filtering according to predicates for data read from format
     /// reader.

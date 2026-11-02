@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "paimon/file_index/file_index_result.h"
@@ -31,6 +32,7 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
+class LeafPredicate;
 struct FullTextMatch;
 /// Evaluates filter predicates against a file-level index to determine file eligibility.
 ///
@@ -42,7 +44,17 @@ struct FullTextMatch;
 /// of the indexed data; otherwise, index filtering results may be incorrect.
 class PAIMON_EXPORT FileIndexReader : public FunctionVisitor<std::shared_ptr<FileIndexResult>> {
  public:
+    enum class SearchType { FULL_TEXT_MATCH, FULL_TEXT_SEARCH, VECTOR_SEARCH };
+
     ~FileIndexReader() override = default;
+
+    /// Whether this reader can execute the requested search without probing it with a query.
+    virtual bool SupportsSearch(SearchType search_type) const;
+
+    /// Estimated matching fraction in [0, 1], or unknown. Estimates only affect execution order.
+    /// Existing scalar indexes use the default unknown estimate.
+    virtual std::optional<double> EstimateSelectivity(
+        const std::shared_ptr<LeafPredicate>& predicate) const;
 
     Result<std::shared_ptr<FileIndexResult>> VisitIsNotNull() override;
 
@@ -77,13 +89,16 @@ class PAIMON_EXPORT FileIndexReader : public FunctionVisitor<std::shared_ptr<Fil
     virtual Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search);
 
-    /// Execute full-text search and return matching file-local physical row positions.
-    virtual Result<std::shared_ptr<FileIndexResult>> VisitFullTextSearch(
+    /// Execute full-text TopK search and return scored file-local physical row positions.
+    /// Scores are required for merging results across files, regardless of score projection.
+    virtual Result<std::shared_ptr<ScoredFileIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search);
 
     /// Return every matching file-local physical row position, without TopK truncation.
-    Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
-        const std::shared_ptr<FullTextMatch>& full_text_match) override;
+    /// When needs_scores is true, return a ScoredFileIndexResult, including for empty results.
+    /// When needs_scores is false, return a BitmapIndexResult, not a ScoredFileIndexResult.
+    virtual Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
+        const std::shared_ptr<FullTextMatch>& full_text_match, bool needs_scores = false);
 };
 
 }  // namespace paimon

@@ -583,10 +583,13 @@ Result<std::optional<RoaringBitmap32>> DataEvolutionSplitRead::SelectByFileIndex
         std::map<std::string, std::string> file_index_options;
         PAIMON_ASSIGN_OR_RAISE(file_index_options, FileIndexOptions::RewriteFieldNames(
                                                        options_.ToMap(), field_name_mapping));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileIndexEvaluator> evaluator,
+            FileIndexEvaluator::Create(written_schema, file_index_options, data_file_path_factory,
+                                       file, options_.GetFileSystem(),
+                                       /*only_use_embedding_index=*/false, pool_));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
-                               FileIndexEvaluator::Evaluate(written_schema, file_index_options,
-                                                            data_predicate, data_file_path_factory,
-                                                            file, options_.GetFileSystem(), pool_));
+                               evaluator->Evaluate(data_predicate));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, index_result->IsRemain());
         if (!is_remain) {
             return std::optional<RoaringBitmap32>(RoaringBitmap32());
@@ -619,14 +622,15 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-    const std::map<std::string, std::string>& file_index_options,
-    std::vector<float>* index_scores) const {
+    const std::map<std::string, std::string>& file_index_options) const {
     std::shared_ptr<FileIndexResult> file_index_result;
     if (options_.FileIndexReadEnabled() && !file_indexes_evaluated_) {
-        PAIMON_ASSIGN_OR_RAISE(file_index_result,
-                               FileIndexEvaluator::Evaluate(data_schema, file_index_options,
-                                                            predicate, data_file_path_factory, file,
-                                                            options_.GetFileSystem(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileIndexEvaluator> evaluator,
+            FileIndexEvaluator::Create(data_schema, file_index_options, data_file_path_factory,
+                                       file, options_.GetFileSystem(),
+                                       /*only_use_embedding_index=*/false, pool_));
+        PAIMON_ASSIGN_OR_RAISE(file_index_result, evaluator->Evaluate(predicate));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {
             return std::unique_ptr<FileBatchReader>();

@@ -56,6 +56,7 @@ class DataFilePathFactory;
 class DataSplitImpl;
 class Executor;
 class FieldMappingBuilder;
+class FileIndexReadExecutor;
 class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
@@ -85,6 +86,17 @@ class AbstractSplitRead : public SplitRead {
         const std::map<std::string, std::string>& extra_format_options) const;
 
  protected:
+    virtual bool EnablePreciseFileIndexEvaluate() const {
+        return false;
+    }
+
+    virtual Result<std::unique_ptr<FileBatchReader>> CreatePreciseFileIndexReader(
+        const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+        const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& path_factory,
+        const std::map<std::string, std::string>& extra_format_options) const;
+
     struct RawFileReaderWithMeta {
         std::shared_ptr<DataFileMeta> file;
         std::unique_ptr<FileBatchReader> reader;
@@ -130,8 +142,7 @@ class AbstractSplitRead : public SplitRead {
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::map<std::string, std::string>& file_index_options,
-        std::vector<float>* index_scores) const;
+        const std::map<std::string, std::string>& file_index_options) const;
 
     static Result<std::unique_ptr<FileBatchReader>> ApplyBitmapSelection(
         std::unique_ptr<FileBatchReader>&& file_reader,
@@ -146,6 +157,8 @@ class AbstractSplitRead : public SplitRead {
         const std::optional<std::vector<std::string>>& write_cols);
 
  private:
+    friend class FileIndexReadExecutor;
+
     Result<std::vector<RawFileReaderWithMeta>> CreateRawFileReadersWithMetaImpl(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
         const std::shared_ptr<arrow::Schema>& read_schema, PredicateProvider predicate_provider,
@@ -181,7 +194,8 @@ class AbstractSplitRead : public SplitRead {
         const BinaryRow& partition, std::unique_ptr<ReaderBuilder> reader_builder,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const RoaringBitmap32* exact_selection = nullptr) const;
 
     /// The returned field ID set contains MAP fields handled by shredding read plans. It tells
     /// FieldMappingReader to skip its generic selected-key filtering because the plans have already

@@ -26,6 +26,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/vector_search.h"
@@ -35,6 +36,10 @@ namespace paimon::test {
 TEST(EmptyFileIndexReaderTest, TestSimple) {
     Literal lit0(static_cast<int32_t>(0));
     EmptyFileIndexReader reader;
+
+    ASSERT_FALSE(reader.SupportsSearch(FileIndexReader::SearchType::FULL_TEXT_MATCH));
+    ASSERT_FALSE(reader.SupportsSearch(FileIndexReader::SearchType::FULL_TEXT_SEARCH));
+    ASSERT_FALSE(reader.SupportsSearch(FileIndexReader::SearchType::VECTOR_SEARCH));
 
     ASSERT_FALSE(reader.VisitIsNotNull().value()->IsRemain().value());
     ASSERT_FALSE(reader.VisitEqual(lit0).value()->IsRemain().value());
@@ -64,17 +69,22 @@ TEST(EmptyFileIndexReaderTest, TestVectorSearchReturnsNoMatches) {
     EXPECT_TRUE(result->GetScores().empty());
 }
 
-TEST(EmptyFileIndexReaderTest, TestFullTextSearchReturnsNoMatches) {
-    EmptyFileIndexReader reader;
-    auto search =
-        std::make_shared<FullTextSearch>("body", R"({"match":{"query":"word"}})", /*limit=*/1);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
-                         reader.VisitFullTextSearch(search));
-    ASSERT_OK_AND_ASSIGN(bool is_remain, result->IsRemain());
-    EXPECT_FALSE(is_remain);
-    auto bitmap_result = std::dynamic_pointer_cast<BitmapIndexResult>(result);
-    ASSERT_NE(nullptr, bitmap_result);
-    ASSERT_OK_AND_ASSIGN(const RoaringBitmap32* bitmap, bitmap_result->GetBitmap());
-    EXPECT_TRUE(bitmap->IsEmpty());
+TEST(EmptyFileIndexReaderTest, TestFullTextMatchAndScores) {
+    EmptyFileIndexReader reader({FileIndexReader::SearchType::FULL_TEXT_MATCH,
+                                 FileIndexReader::SearchType::FULL_TEXT_SEARCH});
+    ASSERT_TRUE(reader.SupportsSearch(FileIndexReader::SearchType::FULL_TEXT_MATCH));
+    ASSERT_TRUE(reader.SupportsSearch(FileIndexReader::SearchType::FULL_TEXT_SEARCH));
+    ASSERT_FALSE(reader.SupportsSearch(FileIndexReader::SearchType::VECTOR_SEARCH));
+    auto match = std::make_shared<FullTextMatch>("body", "word");
+    ASSERT_OK_AND_ASSIGN(auto result, reader.VisitFullTextMatch(match, /*needs_scores=*/true));
+    auto scored = std::dynamic_pointer_cast<ScoredFileIndexResult>(result);
+    ASSERT_TRUE(scored);
+    ASSERT_TRUE(scored->IsEmpty());
+    ASSERT_TRUE(scored->GetScores().empty());
+    ASSERT_OK_AND_ASSIGN(result, reader.VisitFullTextMatch(match));
+    auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(result);
+    ASSERT_TRUE(bitmap);
+    ASSERT_OK_AND_ASSIGN(const RoaringBitmap32* positions, bitmap->GetBitmap());
+    ASSERT_TRUE(positions->IsEmpty());
 }
 }  // namespace paimon::test

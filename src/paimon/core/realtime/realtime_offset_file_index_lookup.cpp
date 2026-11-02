@@ -104,9 +104,11 @@ RealtimeOffsetFileIndexLookup::LookupFilePositions(const RoaringBitmap64& offset
         std::shared_ptr<Predicate> predicate = PredicateBuilder::In(
             schema->GetFieldIndex(offset_name), offset_name, FieldType::BIGINT, literals);
         PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FileIndexResult> index_result,
-            FileIndexEvaluator::Evaluate(schema, options_, predicate, path_factory_, file,
-                                         file_system_, memory_pool_));
+            std::unique_ptr<FileIndexEvaluator> evaluator,
+            FileIndexEvaluator::Create(schema, options_, path_factory_, file, file_system_,
+                                       /*only_use_embedding_index=*/false, memory_pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
+                               evaluator->Evaluate(predicate));
         PAIMON_ASSIGN_OR_RAISE(bool remains, index_result->IsRemain());
         if (!remains) {
             continue;

@@ -66,6 +66,52 @@ TEST(InternalReadContext, TestReadWithUnspecifiedSchema) {
     ASSERT_TRUE(internal_context->GetReadSchema()->Equals(expected_schema));
 }
 
+TEST(InternalReadContext, TestPreciseScalarEvaluation) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0,
+                                             arrow::schema({arrow::field("f0", arrow::int32()),
+                                                            arrow::field("f1", arrow::utf8())}),
+                                             {}, {}, {}));
+    for (bool enabled : {false, true}) {
+        ReadContextBuilder builder("unused-table-path");
+        builder.EnablePreciseFileIndexEvaluate(enabled).SetPredicate(
+            PredicateBuilder::IsNotNull(0, "f0", FieldType::INT));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<InternalReadContext> internal_context,
+            InternalReadContext::Create(context, table_schema, table_schema->Options()));
+        ASSERT_EQ(internal_context->EnablePreciseFileIndexEvaluate(), enabled);
+        ASSERT_FALSE(internal_context->EnablePredicateFilter());
+        ASSERT_TRUE(internal_context->GetCoreOptions().FileIndexReadEnabled());
+        if (enabled) {
+            ASSERT_NOK_WITH_MSG(InternalReadContext::CreateWithSchema(
+                                    internal_context, internal_context->GetReadSchema()),
+                                "CreateWithSchema does not support precise file-index evaluation");
+        }
+    }
+    auto match = std::make_shared<FullTextMatch>("f1", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(auto full_text, PredicateBuilder::FullTextMatch(1, match));
+    ReadContextBuilder builder("unused-table-path");
+    builder.SetPredicate(full_text);
+    ASSERT_NOK_WITH_MSG(builder.Finish(), "EnablePreciseFileIndexEvaluate(true)");
+    builder.EnablePreciseFileIndexEvaluate(true);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+    ASSERT_TRUE(context->EnablePreciseFileIndexEvaluate());
+    ASSERT_OK(InternalReadContext::Create(context, table_schema, table_schema->Options()));
+}
+
+TEST(InternalReadContext, TestPreciseEvaluationRequiresFileIndexRead) {
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> table_schema,
+        TableSchema::Create(0, arrow::schema({arrow::field("f0", arrow::int32())}), {}, {}, {}));
+    ReadContextBuilder builder("unused-table-path");
+    builder.EnablePreciseFileIndexEvaluate(true);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema,
+                                                    {{Options::FILE_INDEX_READ_ENABLED, "false"}}),
+                        "requires file-index.read.enabled=true");
+}
+
 TEST(InternalReadContext, TestReadWithSpecifiedSchema) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     ReadContextBuilder context_builder(path);
@@ -369,47 +415,50 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
     }
 }
 
-TEST(InternalReadContext, TestVectorSearchIndexScoreProjection) {
+TEST(InternalReadContext, TestPreciseEvaluationRejectsUnnamedScoreProjection) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
-    std::shared_ptr<VectorSearch> vector_search = std::make_shared<VectorSearch>(
-        "f3", /*limit=*/2, std::vector<float>{1.0f}, nullptr, nullptr,
-        VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
-
-    {
-        ReadContextBuilder builder(path);
-        builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(vector_search);
-        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto internal_context,
-                             InternalReadContext::Create(std::move(read_context), table_schema,
-                                                         table_schema->Options()));
-        std::shared_ptr<arrow::Schema> expected = DataField::ConvertDataFieldsToArrowSchema(
-            {DataField(0, arrow::field("f0", arrow::utf8())), SpecialFields::IndexScore()});
-        EXPECT_TRUE(internal_context->GetReadSchema()->Equals(expected));
-    }
-    {
-        ReadContextBuilder builder(path);
-        builder.SetReadFieldIds({0, SpecialFieldIds::INDEX_SCORE}).SetVectorSearch(vector_search);
-        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto internal_context,
-                             InternalReadContext::Create(std::move(read_context), table_schema,
-                                                         table_schema->Options()));
-        EXPECT_EQ(arrow::Type::FLOAT, internal_context->GetReadSchema()->field(1)->type()->id());
-    }
-    {
-        std::shared_ptr<arrow::Schema> projected = arrow::schema(
-            {arrow::field("_INDEX_SCORE", arrow::float32()), arrow::field("f0", arrow::utf8())});
-        auto c_schema = std::make_unique<ArrowSchema>();
-        ASSERT_TRUE(arrow::ExportSchema(*projected, c_schema.get()).ok());
-        ReadContextBuilder builder(path);
-        builder.SetReadSchema(std::move(c_schema)).SetVectorSearch(vector_search);
-        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto internal_context,
-                             InternalReadContext::Create(std::move(read_context), table_schema,
-                                                         table_schema->Options()));
-        EXPECT_EQ(std::vector<std::string>({"_INDEX_SCORE", "f0"}),
-                  internal_context->GetReadSchema()->field_names());
+    for (const auto& search_type :
+         std::vector<std::string>{"none", "scalar", "vector", "full-text", "full-text-match"}) {
+        for (const auto& projection : std::vector<std::string>{"names", "ids", "schema"}) {
+            ReadContextBuilder builder(path);
+            builder.EnablePreciseFileIndexEvaluate(true).SetReadFieldNames({"f0"});
+            if (projection == "names") {
+                builder.SetReadFieldNames({"f0", "_INDEX_SCORE"});
+            } else if (projection == "ids") {
+                builder.SetReadFieldIds({0, SpecialFieldIds::INDEX_SCORE});
+            } else if (projection == "schema") {
+                builder.SetReadFieldIds({0});
+                auto c_schema = std::make_unique<ArrowSchema>();
+                ASSERT_TRUE(arrow::ExportSchema(
+                                *arrow::schema({arrow::field("f0", arrow::utf8()),
+                                                arrow::field("_INDEX_SCORE", arrow::float32())}),
+                                c_schema.get())
+                                .ok());
+                builder.SetReadSchema(std::move(c_schema));
+            }
+            if (search_type == "scalar") {
+                builder.SetPredicate(PredicateBuilder::IsNotNull(0, "f0", FieldType::STRING));
+            } else if (search_type == "vector") {
+                builder.SetVectorSearch(std::make_shared<VectorSearch>(
+                    "f3", 1, std::vector<float>{1.0f}, nullptr, nullptr, std::nullopt,
+                    std::map<std::string, std::string>{}));
+            } else if (search_type == "full-text") {
+                builder.SetFullTextSearch(
+                    std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"apple"}})", 1));
+            } else if (search_type == "full-text-match") {
+                ASSERT_OK_AND_ASSIGN(auto predicate,
+                                     PredicateBuilder::FullTextMatch(
+                                         0, std::make_shared<FullTextMatch>(
+                                                "f0", R"({"match":{"query":"apple"}})")));
+                builder.SetPredicate(predicate);
+            }
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+            ASSERT_NOK_WITH_MSG(
+                InternalReadContext::Create(context, table_schema, table_schema->Options()),
+                "not exist in table schema");
+        }
     }
 }
 
@@ -422,30 +471,20 @@ TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
         std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr,
                                        nullptr, std::nullopt, std::map<std::string, std::string>{});
     ReadContextBuilder builder(path);
-    builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(search);
+    builder.SetReadFieldNames({"f0", "_f3_INDEX_SCORE"})
+        .EnablePreciseFileIndexEvaluate(true)
+        .SetVectorSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<InternalReadContext> internal,
         InternalReadContext::Create(context, table_schema, table_schema->Options()));
     EXPECT_TRUE(internal->HasVectorOrFullTextSearch());
+    EXPECT_TRUE(internal->EnablePreciseFileIndexEvaluate());
 
     std::map<std::string, std::string> options = table_schema->Options();
     options[Options::DELETION_VECTORS_ENABLED] = "false";
     ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, options),
                         "primary-key tables requires deletion vectors");
-}
-
-TEST(InternalReadContext, TestFileFullTextSearchScoreIsNotSupported) {
-    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
-    auto search =
-        std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"query"}})", /*limit=*/1);
-    ReadContextBuilder builder(path);
-    builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetFullTextSearch(search);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
-    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, table_schema->Options()),
-                        "does not support score output");
 }
 
 TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
@@ -472,7 +511,9 @@ TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
         ASSERT_OK_AND_ASSIGN(auto predicate,
                              PredicateBuilder::FullTextMatch(test_case.field_index, match));
         ReadContextBuilder builder(path);
-        builder.SetReadFieldNames(test_case.projection).SetPredicate(predicate);
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames(test_case.projection)
+            .SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
         if (test_case.expected_error.empty()) {
             ASSERT_OK_AND_ASSIGN(
@@ -498,13 +539,23 @@ TEST(InternalReadContext, TestPerFieldTopKScoreBindings) {
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
     for (bool vector_search : {false, true}) {
-        for (bool project_score : {false, true}) {
+        for (const auto& projection_type : std::vector<std::string>{"none", "names", "schema"}) {
+            const bool project_score = projection_type != "none";
             ReadContextBuilder builder(path);
             std::vector<std::string> projection = {"f1"};
             if (project_score) {
                 projection.push_back(vector_search ? "_f3_INDEX_SCORE" : "_f0_INDEX_SCORE");
             }
             builder.SetReadFieldNames(projection);
+            if (projection_type == "schema") {
+                auto c_schema = std::make_unique<ArrowSchema>();
+                ASSERT_TRUE(arrow::ExportSchema(
+                                *arrow::schema({arrow::field("f1", arrow::int32()),
+                                                arrow::field(projection[1], arrow::float32())}),
+                                c_schema.get())
+                                .ok());
+                builder.SetReadSchema(std::move(c_schema));
+            }
             const InternalReadContext::IndexScoreSource source = {
                 vector_search ? SourceType::VECTOR_SEARCH : SourceType::FULL_TEXT_SEARCH,
                 vector_search ? "f3" : "f0"};
@@ -512,11 +563,11 @@ TEST(InternalReadContext, TestPerFieldTopKScoreBindings) {
                 auto search = std::make_shared<VectorSearch>(
                     "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr, std::nullopt,
                     std::map<std::string, std::string>{});
-                builder.SetVectorSearch(search);
+                builder.EnablePreciseFileIndexEvaluate(true).SetVectorSearch(search);
             } else {
                 auto search = std::make_shared<FullTextSearch>(
                     "f0", R"({"match":{"query":"apple"}})", /*limit=*/1);
-                builder.SetFullTextSearch(search);
+                builder.EnablePreciseFileIndexEvaluate(true).SetFullTextSearch(search);
             }
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
             ASSERT_OK_AND_ASSIGN(
@@ -590,7 +641,7 @@ TEST_F(InternalReadContextScoreTest, BindsFullTextScoresByProjection) {
         if (score_count == 2) {
             projection.push_back(test_case.reverse_scores ? "_F2_INDEX_SCORE" : "_F1_INDEX_SCORE");
         }
-        builder.SetPredicate(predicate);
+        builder.EnablePreciseFileIndexEvaluate(true).SetPredicate(predicate);
         if (test_case.explicit_schema) {
             arrow::FieldVector fields = {arrow::field("F1", arrow::utf8()),
                                          arrow::field("F2", arrow::utf8())};
@@ -645,8 +696,10 @@ TEST_F(InternalReadContextScoreTest, BindsRootAndPredicateScores) {
                          PredicateBuilder::FullTextMatch(0, match));
     auto search = std::make_shared<FullTextSearch>("F2", match->query, /*limit=*/10);
     ReadContextBuilder builder("/tmp/unused-table-path");
-    builder.SetPredicate(predicate).SetFullTextSearch(search).SetReadFieldNames(
-        {"F1", "_F2_INDEX_SCORE", "_F1_INDEX_SCORE"});
+    builder.SetPredicate(predicate)
+        .EnablePreciseFileIndexEvaluate(true)
+        .SetFullTextSearch(search)
+        .SetReadFieldNames({"F1", "_F2_INDEX_SCORE", "_F1_INDEX_SCORE"});
     ASSERT_OK_AND_ASSIGN(auto internal, Create(&builder));
     ASSERT_EQ(internal->GetReadSchema()->GetFieldIndex("F2"), -1);
     const auto& bindings = internal->GetIndexScoreBindings();
@@ -656,8 +709,10 @@ TEST_F(InternalReadContextScoreTest, BindsRootAndPredicateScores) {
     ASSERT_TRUE(internal->NeedsScores(search_source));
     ASSERT_TRUE(internal->NeedsScores(match_source));
 
-    builder.SetPredicate(predicate).SetFullTextSearch(search).SetReadFieldNames(
-        {"F1", "_F2_INDEX_SCORE", "F2", "_F1_INDEX_SCORE"});
+    builder.SetPredicate(predicate)
+        .EnablePreciseFileIndexEvaluate(true)
+        .SetFullTextSearch(search)
+        .SetReadFieldNames({"F1", "_F2_INDEX_SCORE", "F2", "_F1_INDEX_SCORE"});
     ASSERT_OK_AND_ASSIGN(internal, Create(&builder));
     const std::map<int32_t, InternalReadContext::IndexScoreSource> non_contiguous = {
         {1, search_source}, {3, match_source}};
@@ -665,8 +720,10 @@ TEST_F(InternalReadContextScoreTest, BindsRootAndPredicateScores) {
 
     auto scalar = PredicateBuilder::IsNotNull(0, "F1", FieldType::STRING);
     ASSERT_OK_AND_ASSIGN(predicate, PredicateBuilder::Or({predicate, scalar}));
-    builder.SetPredicate(predicate).SetFullTextSearch(search).SetReadFieldNames(
-        {"F1", "_F2_INDEX_SCORE"});
+    builder.SetPredicate(predicate)
+        .EnablePreciseFileIndexEvaluate(true)
+        .SetFullTextSearch(search)
+        .SetReadFieldNames({"F1", "_F2_INDEX_SCORE"});
     ASSERT_OK_AND_ASSIGN(internal, Create(&builder));
     ASSERT_TRUE(internal->NeedsScores(search_source));
     ASSERT_FALSE(internal->NeedsScores(match_source));
@@ -699,7 +756,8 @@ TEST_F(InternalReadContextScoreTest, RejectsAmbiguousOrConditionalScoreProjectio
     for (const auto& test_case : cases) {
         for (bool project_score : {false, true}) {
             ReadContextBuilder builder("/tmp/unused-table-path");
-            builder.SetPredicate(test_case.predicate)
+            builder.EnablePreciseFileIndexEvaluate(true)
+                .SetPredicate(test_case.predicate)
                 .SetReadFieldNames(project_score ? std::vector<std::string>{"F1", "_F1_INDEX_SCORE"}
                                                  : std::vector<std::string>{"F1"});
             if (test_case.root_search) {
@@ -735,10 +793,12 @@ TEST_F(InternalReadContextScoreTest, ResolvesScoresOnlyFromEffectiveProjection) 
     auto search = std::make_shared<FullTextSearch>("F2", R"({"match":{"query":"apple"}})", 1);
     for (bool explicit_schema : {false, true}) {
         ReadContextBuilder builder("/tmp/unused-table-path");
-        builder.SetFullTextSearch(search)
-            .SetReadFieldNames({"_missing_INDEX_SCORE"})
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .SetFullTextSearch(search)
+            .SetReadFieldNames({"_INDEX_SCORE", "_missing_INDEX_SCORE"})
             .SetReadFieldIds({0});
         if (explicit_schema) {
+            builder.SetReadFieldIds({SpecialFieldIds::INDEX_SCORE});
             auto c_schema = std::make_unique<ArrowSchema>();
             ASSERT_TRUE(arrow::ExportSchema(
                             *arrow::schema({arrow::field("_F2_INDEX_SCORE", arrow::float32())}),
