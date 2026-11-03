@@ -828,7 +828,7 @@ Result<std::unique_ptr<KeyValueRecordReader>> MergeFileSplitRead::CreateReaderFo
         std::vector<RawFileReaderWithMeta> raw_file_readers,
         CreateRawFileReadersWithMeta(partition, data_files, read_schema_, predicate, dv_factory,
                                      /*row_ranges=*/{}, data_file_path_factory,
-                                     /*extra_format_options=*/{}));
+                                     /*extra_format_options=*/{}, /*attach_blob_context=*/false));
 
     // KeyValueDataFileRecordReader converts arrow array from format reader to KeyValue objects
     std::vector<std::unique_ptr<KeyValueRecordReader>> file_record_readers;

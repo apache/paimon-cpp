@@ -28,6 +28,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_defs.h"
+#include "paimon/common/reader/blob_read_context.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/predicate/predicate.h"
@@ -99,6 +100,9 @@ namespace paimon::blob {
 ///
 /// Note:
 /// - Current version is 1.
+///
+/// Batch prefetching is not supported. If added, it must honor BlobReadContext's row limit
+/// and read/skip mode for each call. Skip results must not be reused for payload reads.
 class BlobFileBatchReader : public FileBatchReader {
  public:
     /// `emit_placeholder_sentinel` controls how placeholder entries (bin_length ==
@@ -111,6 +115,7 @@ class BlobFileBatchReader : public FileBatchReader {
         const std::shared_ptr<InputStream>& input_stream, int32_t batch_size,
         bool blob_as_descriptor, bool emit_placeholder_sentinel,
         const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<BlobReadContext>& blob_context,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override;
@@ -176,6 +181,7 @@ class BlobFileBatchReader : public FileBatchReader {
                         const std::vector<int64_t>& blob_offsets, int32_t batch_size,
                         bool blob_as_descriptor, bool emit_placeholder_sentinel,
                         const std::shared_ptr<MemoryPool>& pool,
+                        const std::shared_ptr<BlobReadContext>& blob_context,
                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<int64_t> GetOrCreateSerializedDescriptorSize() const;
@@ -244,6 +250,7 @@ class BlobFileBatchReader : public FileBatchReader {
     const bool emit_placeholder_sentinel_;
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<BlobReadContext> blob_context_;
     mutable int64_t serialized_descriptor_size_ = -1;
 
     std::shared_ptr<arrow::DataType> target_type_;

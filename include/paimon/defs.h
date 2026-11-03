@@ -614,6 +614,15 @@ struct PAIMON_EXPORT Options {
     /// "global-index.external-path" - Global index root directory, if not set, the global index
     /// files will be stored under the index directory.
     static const char GLOBAL_INDEX_EXTERNAL_PATH[];
+    /// "global-index.search-mode" - Fallback search mode for global index queries, used when the
+    /// search mode of the index family is not set: "fast", "full" or "detail". No default value.
+    /// Paimon C++ reads it only for full-text search so far.
+    static const char GLOBAL_INDEX_SEARCH_MODE[];
+    /// "full-text-index.search-mode" - Search mode for full-text index queries: "fast" searches
+    /// only the rows that an index covers, while "full" and "detail" also search the rows that no
+    /// index covers. Default value is "global-index.search-mode", or else "fast". Paimon C++
+    /// supports only "fast" so far, and a full-text search in another mode fails.
+    static const char FULL_TEXT_INDEX_SEARCH_MODE[];
     /// "pk-btree.index.columns" - Comma-separated columns indexed by primary-key BTree indexes.
     /// No default value.
     static const char PK_BTREE_INDEX_COLUMNS[];

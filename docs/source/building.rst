@@ -173,12 +173,20 @@ Optional Components
 
 By default, the C++ build system creates a fairly minimal build. We have
 several optional system components which you can opt into building by passing
-boolean flags to ``cmake``.
+boolean flags to ``cmake``. ORC and Avro are the exceptions: both already default
+to ``ON``, while every other component below defaults to ``OFF``.
 
 * ``-DPAIMON_ENABLE_ORC=ON``: Paimon integration with Apache ORC
 * ``-DPAIMON_ENABLE_AVRO=ON``: Apache Avro libraries and Paimon integration
 * ``-DPAIMON_ENABLE_LANCE=ON``: Lance 0.39 file format support through a Rust FFI; requires
   Rust 1.88 or newer, cbindgen, and protoc 3.12 or newer
+* ``-DPAIMON_ENABLE_MOSAIC=ON``: Apache Paimon Mosaic file format support through a Rust FFI;
+  requires cargo on ``PATH``
+* ``-DPAIMON_ENABLE_VORTEX=ON``: Vortex file format support through a Rust FFI; requires cargo,
+  the stable Rust toolchain (Vortex pins ``rust-version`` 1.95 or newer and is built with
+  ``RUSTUP_TOOLCHAIN=stable``), and a ``flatc`` whose version matches the flatbuffers crate that
+  Vortex uses. Distribution ``flatc`` packages are typically too old; set ``FLATC`` to the path of
+  a suitable binary when it is not on ``PATH``.
 * ``-DPAIMON_ENABLE_JINDO=ON``: Support for Alibaba Jindo filesystems
 * ``-DPAIMON_ENABLE_OSS=ON``: Support for Alibaba Cloud OSS through OSS SDK V2
 * ``-DPAIMON_ENABLE_S3=ON``: Support for Amazon S3-compatible filesystems
@@ -278,6 +286,8 @@ For development builds, you will often want to enable additional targets in
 enable to exercise your changes, using the following ``cmake`` options.
 
 * ``-DPAIMON_BUILD_TESTS=ON``: Build executable unit tests.
+* ``-DPAIMON_ENABLE_NETWORK_TESTS=ON``: Enable tests that access real remote services over the
+  network. These are disabled by default.
 
 Optional Checks
 ~~~~~~~~~~~~~~~

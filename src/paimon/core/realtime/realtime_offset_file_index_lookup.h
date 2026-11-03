@@ -47,6 +47,9 @@ struct DataFileMeta;
 /// physical row positions. Instances are immutable and therefore safe to pin for lock-free I/O.
 class RealtimeOffsetFileIndexLookup {
  public:
+    // Maps data file names to matching physical row positions within a single partition and bucket.
+    using FilePositions = std::map<std::string, RoaringBitmap32>;
+
     static Result<std::shared_ptr<RealtimeOffsetFileIndexLookup>> Create(
         const std::shared_ptr<arrow::Schema>& data_schema, int64_t data_schema_id,
         const std::shared_ptr<arrow::Field>& deduplicate_key_field,
@@ -55,8 +58,7 @@ class RealtimeOffsetFileIndexLookup {
         const std::shared_ptr<FileSystem>& file_system,
         const std::shared_ptr<MemoryPool>& memory_pool, const CoreOptions& options);
 
-    Result<std::map<std::string, RoaringBitmap32>> LookupFilePositions(
-        const RoaringBitmap64& offsets) const;
+    Result<FilePositions> LookupFilePositions(const RoaringBitmap64& offsets) const;
 
     Result<std::shared_ptr<const KeyOffsetLookup>> CreateKeyOffsetLookup() const;
 

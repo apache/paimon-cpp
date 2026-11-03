@@ -727,6 +727,92 @@ std::shared_ptr<arrow::DataType> NormalizeLeafRepresentation(
     }
     return t;
 }
+
+std::shared_ptr<arrow::ArrayData> AlignTimestampTimezonesData(
+    const std::shared_ptr<arrow::ArrayData>& data,
+    const std::shared_ptr<arrow::DataType>& read_type) {
+    const std::shared_ptr<arrow::DataType>& type = data->type;
+    if (type->id() == arrow::Type::TIMESTAMP && read_type->id() == arrow::Type::TIMESTAMP) {
+        const auto& stored = checked_cast<const arrow::TimestampType&>(*type);
+        const auto& wanted = checked_cast<const arrow::TimestampType&>(*read_type);
+        if (stored.unit() != wanted.unit() || stored.timezone().empty() ||
+            wanted.timezone().empty() || stored.timezone() == wanted.timezone()) {
+            return data;
+        }
+        std::shared_ptr<arrow::ArrayData> retyped = data->Copy();
+        retyped->type = arrow::timestamp(wanted.unit(), wanted.timezone());
+        return retyped;
+    }
+    if (type->id() == arrow::Type::STRUCT && read_type->id() == arrow::Type::STRUCT) {
+        const auto& wanted_struct = checked_cast<const arrow::StructType&>(*read_type);
+        arrow::FieldVector fields = type->fields();
+        std::shared_ptr<arrow::ArrayData> retyped;
+        for (int32_t i = 0; i < static_cast<int32_t>(data->child_data.size()); ++i) {
+            const int32_t index = wanted_struct.GetFieldIndex(fields[i]->name());
+            if (index < 0) {
+                continue;
+            }
+            std::shared_ptr<arrow::ArrayData> child = AlignTimestampTimezonesData(
+                data->child_data[i], wanted_struct.field(index)->type());
+            if (child == data->child_data[i]) {
+                continue;
+            }
+            if (retyped == nullptr) {
+                retyped = data->Copy();
+            }
+            retyped->child_data[i] = child;
+            fields[i] = fields[i]->WithType(child->type);
+        }
+        if (retyped == nullptr) {
+            return data;
+        }
+        retyped->type = arrow::struct_(fields);
+        return retyped;
+    }
+    if ((type->id() == arrow::Type::LIST || type->id() == arrow::Type::FIXED_SIZE_LIST) &&
+        type->id() == read_type->id() && !data->child_data.empty()) {
+        std::shared_ptr<arrow::ArrayData> values =
+            AlignTimestampTimezonesData(data->child_data[0], read_type->field(0)->type());
+        if (values == data->child_data[0]) {
+            return data;
+        }
+        std::shared_ptr<arrow::ArrayData> retyped = data->Copy();
+        retyped->child_data[0] = values;
+        const std::shared_ptr<arrow::Field> value_field = type->field(0)->WithType(values->type);
+        retyped->type = type->id() == arrow::Type::LIST
+                            ? arrow::list(value_field)
+                            : arrow::fixed_size_list(
+                                  value_field,
+                                  checked_cast<const arrow::FixedSizeListType&>(*type).list_size());
+        return retyped;
+    }
+    if (type->id() == arrow::Type::MAP && read_type->id() == arrow::Type::MAP &&
+        !data->child_data.empty()) {
+        const auto& stored_map = checked_cast<const arrow::MapType&>(*type);
+        const auto& wanted_map = checked_cast<const arrow::MapType&>(*read_type);
+        const std::shared_ptr<arrow::ArrayData>& entries = data->child_data[0];
+        std::shared_ptr<arrow::ArrayData> keys =
+            AlignTimestampTimezonesData(entries->child_data[0], wanted_map.key_type());
+        std::shared_ptr<arrow::ArrayData> items =
+            AlignTimestampTimezonesData(entries->child_data[1], wanted_map.item_type());
+        if (keys == entries->child_data[0] && items == entries->child_data[1]) {
+            return data;
+        }
+        const std::shared_ptr<arrow::Field> key_field =
+            stored_map.key_field()->WithType(keys->type);
+        const std::shared_ptr<arrow::Field> item_field =
+            stored_map.item_field()->WithType(items->type);
+        std::shared_ptr<arrow::ArrayData> retyped_entries = entries->Copy();
+        retyped_entries->type = arrow::struct_({key_field, item_field});
+        retyped_entries->child_data = {keys, items};
+        std::shared_ptr<arrow::ArrayData> retyped = data->Copy();
+        retyped->type =
+            std::make_shared<arrow::MapType>(key_field, item_field, stored_map.keys_sorted());
+        retyped->child_data = {retyped_entries};
+        return retyped;
+    }
+    return data;
+}
 }  // namespace
 
 Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::AlignArrayToReadType(
@@ -838,6 +924,15 @@ Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::AlignArrayToReadTyp
             return CastingUtils::Cast(array, read_type, arrow::compute::CastOptions::Safe(), pool);
         }
     }
+}
+
+std::shared_ptr<arrow::Array> NestedProjectionUtils::AlignTimestampTimezones(
+    const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& read_type) {
+    std::shared_ptr<arrow::ArrayData> data = AlignTimestampTimezonesData(array->data(), read_type);
+    if (data == array->data()) {
+        return array;
+    }
+    return arrow::MakeArray(data);
 }
 
 }  // namespace paimon

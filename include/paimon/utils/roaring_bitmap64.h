@@ -65,9 +65,12 @@ class PAIMON_EXPORT RoaringBitmap64 {
         bool operator==(const Iterator& other) const;
         bool operator!=(const Iterator& other) const;
         /// Move the iterator to the value which is equal or larger than input value
+        /// An End() sentinel remains at the end.
         void EqualOrLarger(int64_t value);
 
      private:
+        Iterator() = default;
+        // Null represents the end sentinel without an underlying iterator allocation.
         void* iterator_ = nullptr;
     };
 
@@ -149,6 +152,7 @@ class PAIMON_EXPORT RoaringBitmap64 {
     std::string ToString() const;
 
     Iterator Begin() const;
+    /// Returns an end sentinel without allocating an underlying iterator.
     Iterator End() const;
     /// @return the iterator moved to the value which is equal or larger than key
     Iterator EqualOrLarger(int64_t key) const;

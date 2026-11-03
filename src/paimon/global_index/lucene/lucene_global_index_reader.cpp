@@ -530,11 +530,8 @@ Result<std::shared_ptr<LuceneGlobalIndexReader>> LuceneGlobalIndexReader::Create
         Lucene::IndexReaderPtr reader = Lucene::IndexReader::open(lucene_dir, /*read_only=*/true);
         Lucene::IndexSearcherPtr searcher = Lucene::newLucene<Lucene::IndexSearcher>(reader);
 
-        PAIMON_ASSIGN_OR_RAISE(std::string dictionary_dir, LuceneUtils::GetJiebaDictionaryDir());
-        auto jieba = std::make_shared<cppjieba::Jieba>(
-            dictionary_dir + "/jieba.dict.utf8", dictionary_dir + "/hmm_model.utf8",
-            dictionary_dir + "/user.dict.utf8", dictionary_dir + "/idf.utf8",
-            dictionary_dir + "/stop_words.utf8");
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const cppjieba::Jieba> jieba,
+                               LuceneUtils::GetJieba());
 
         // priority: read options > write options > kDefaultJiebaTokenizeMode
         PAIMON_ASSIGN_OR_RAISE(

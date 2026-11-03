@@ -123,7 +123,7 @@ class ExpireSnapshotsTest : public testing::Test {
         ASSERT_OK_AND_ASSIGN(index_manifest_file_,
                              IndexManifestFile::Create(
                                  fs_, options.GetManifestFormat(), options.GetManifestCompression(),
-                                 path_factory_, options.GetBucket(), mem_pool_, options));
+                                 path_factory_, BucketMode::BUCKET_UNAWARE, mem_pool_, options));
     }
     void TearDown() override {}
 

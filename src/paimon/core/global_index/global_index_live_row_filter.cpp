@@ -118,8 +118,9 @@ Result<std::unique_ptr<SnapshotReader>> CreateSnapshotReader(
 
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<IndexManifestFile> index_manifest_file,
-        IndexManifestFile::Create(fs, options.GetManifestFormat(), options.GetManifestCompression(),
-                                  path_factory, options.GetBucket(), pool, options));
+        IndexManifestFile::Create(
+            fs, options.GetManifestFormat(), options.GetManifestCompression(), path_factory,
+            ResolveBucketMode(options.GetBucket(), table_schema), pool, options));
     auto index_file_handler = std::make_unique<IndexFileHandler>(
         fs, std::move(index_manifest_file), std::make_shared<IndexFilePathFactories>(path_factory),
         options.DeletionVectorsBitmap64(), pool);

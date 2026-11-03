@@ -210,7 +210,8 @@ Result<std::unique_ptr<OrphanFilesCleaner>> OrphanFilesCleaner::Create(
         std::shared_ptr<IndexManifestFile> index_manifest_file,
         IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                   options.GetManifestCompression(), path_factory,
-                                  options.GetBucket(), ctx->GetMemoryPool(), options));
+                                  ResolveBucketMode(options.GetBucket(), schema),
+                                  ctx->GetMemoryPool(), options));
     return std::make_unique<OrphanFilesCleanerImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, ctx->GetRootPath(), options,
         snapshot_manager, schema->PartitionKeys(), manifest_file, manifest_list,

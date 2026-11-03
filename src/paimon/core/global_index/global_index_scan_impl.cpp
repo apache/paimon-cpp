@@ -33,6 +33,7 @@
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
 #include "paimon/core/global_index/global_index_live_row_filter.h"
 #include "paimon/core/index/index_file_handler.h"
+#include "paimon/core/table/bucket_mode.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/global_index/global_indexer_factory.h"
@@ -52,26 +53,33 @@ GlobalIndexScanImpl::GlobalIndexScanImpl(
       live_rows_supplier_(std::move(live_rows_supplier)),
       executor_(executor) {}
 
+Result<std::shared_ptr<Executor>> GlobalIndexScanImpl::GetOrCreateExecutor(
+    const std::shared_ptr<Executor>& executor, const CoreOptions& options) {
+    if (executor) {
+        return executor;
+    }
+    std::optional<int32_t> thread_num = options.GetGlobalIndexThreadNum();
+    if (thread_num) {
+        if (thread_num.value() <= 0) {
+            return Status::Invalid(
+                fmt::format("invalid global index thread number {}", thread_num.value()));
+        }
+    } else {
+        uint32_t cpu_count = std::thread::hardware_concurrency();
+        thread_num = cpu_count > 0 ? static_cast<int32_t>(cpu_count) : 1;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Executor> created_executor,
+                           CreateDefaultExecutor(static_cast<uint32_t>(thread_num.value())));
+    return std::shared_ptr<Executor>(std::move(created_executor));
+}
+
 Result<std::unique_ptr<GlobalIndexScanImpl>> GlobalIndexScanImpl::Create(
     const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
     const Snapshot& snapshot, const std::shared_ptr<PredicateFilter>& partitions,
     const CoreOptions& options, const std::shared_ptr<Executor>& executor,
     const std::shared_ptr<MemoryPool>& pool) {
-    auto final_executor = executor;
-    if (!final_executor) {
-        std::optional<int32_t> thread_num = options.GetGlobalIndexThreadNum();
-        if (thread_num) {
-            if (thread_num.value() <= 0) {
-                return Status::Invalid(
-                    fmt::format("invalid global index thread number {}", thread_num.value()));
-            }
-        } else {
-            uint32_t cpu_count = std::thread::hardware_concurrency();
-            thread_num = cpu_count > 0 ? static_cast<int32_t>(cpu_count) : 1;
-        }
-        PAIMON_ASSIGN_OR_RAISE(final_executor,
-                               CreateDefaultExecutor(static_cast<uint32_t>(thread_num.value())));
-    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> final_executor,
+                           GetOrCreateExecutor(executor, options));
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
@@ -90,7 +98,8 @@ Result<std::unique_ptr<GlobalIndexScanImpl>> GlobalIndexScanImpl::Create(
         std::unique_ptr<IndexManifestFile> index_manifest_file,
         IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                   options.GetManifestCompression(), file_store_path_factory,
-                                  options.GetBucket(), pool, options));
+                                  ResolveBucketMode(options.GetBucket(), table_schema), pool,
+                                  options));
     auto index_file_handler = std::make_unique<IndexFileHandler>(
         options.GetFileSystem(), std::move(index_manifest_file),
         std::make_shared<IndexFilePathFactories>(file_store_path_factory),

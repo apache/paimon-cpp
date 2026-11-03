@@ -107,10 +107,14 @@ class DataEvolutionTableTest : public ::testing::Test,
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArrays(
         const std::string& table_path, const std::map<std::string, std::string>& partition,
         const std::vector<std::string>& write_cols,
-        const std::vector<std::shared_ptr<arrow::Array>>& write_arrays) const {
+        const std::vector<std::shared_ptr<arrow::Array>>& write_arrays,
+        const std::map<std::string, std::string>& write_options = {}) const {
         // write
         WriteContextBuilder write_builder(table_path, "commit_user_1");
         write_builder.WithWriteSchema(write_cols);
+        for (const auto& [key, value] : write_options) {
+            write_builder.AddOption(key, value);
+        }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
                                FileStoreWrite::Create(std::move(write_context)));
@@ -132,8 +136,9 @@ class DataEvolutionTableTest : public ::testing::Test,
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArray(
         const std::string& table_path, const std::map<std::string, std::string>& partition,
         const std::vector<std::string>& write_cols,
-        const std::shared_ptr<arrow::Array>& write_array) const {
-        return WriteArrays(table_path, partition, write_cols, {write_array});
+        const std::shared_ptr<arrow::Array>& write_array,
+        const std::map<std::string, std::string>& write_options = {}) const {
+        return WriteArrays(table_path, partition, write_cols, {write_array}, write_options);
     }
 
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArray(
@@ -213,7 +218,8 @@ class DataEvolutionTableTest : public ::testing::Test,
     /// free to serve f2 from the full-row write instead.
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteAndCommitGroup(
         const std::string& table_path, int64_t first_row_id, const std::vector<int32_t>& f0_values,
-        const std::map<std::string, std::string>& partition = {}) const {
+        const std::map<std::string, std::string>& partition = {},
+        const std::map<std::string, std::string>& partial_write_options = {}) const {
         auto partition_f1 = partition.find("f1");
         std::string base_json = "[";
         std::string f2_json = "[";
@@ -245,8 +251,9 @@ class DataEvolutionTableTest : public ::testing::Test,
         auto f2_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(f2_fields), f2_json)
                 .ValueOrDie());
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<CommitMessage>> f2_msgs,
-                               WriteArray(table_path, partition, {"f2"}, f2_array));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::shared_ptr<CommitMessage>> f2_msgs,
+            WriteArray(table_path, partition, {"f2"}, f2_array, partial_write_options));
         SetFirstRowId(first_row_id, f2_msgs);
         PAIMON_RETURN_NOT_OK(Commit(table_path, f2_msgs));
 
@@ -2859,15 +2866,12 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
                               expected_array));
     }
     {
-        // The old file's f2 index does not contain 102, but the newer file owns f2.
+        // The newer file owns f2; its bitmap selects the same row in every merged reader.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(102));
         auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
-        ["Lily", 2, 102, 2.1],
-        ["Alice", 4, 104, 3.1],
-        ["Bob", 6, 106, 4.1],
-        ["David", 8, 108, 5.1]
+        ["Lily", 2, 102, 2.1]
     ])")
                 .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
@@ -2926,15 +2930,13 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
     {
         // test row id with predicate
         std::vector<Range> row_ranges = {Range(0l, 2l)};
-        // A merged group keeps all selected row ids to preserve column alignment.
+        // Intersect the group's shared bitmap with row ranges while preserving column alignment.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(106));
         CheckScanResult(table_path, /*predicate=*/predicate, /*row_ranges=*/row_ranges,
                         /*expected_first_row_ids=*/{0, 0}, /*expected_row_counts=*/{4, 4});
         auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
-        ["Lily", 2, 102, 2.1],
-        ["Alice", 4, 104, 3.1],
         ["Bob", 6, 106, 4.1]
     ])")
                 .ValueOrDie());
@@ -3655,6 +3657,143 @@ TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectors) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_selected,
                           /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 2)}));
+}
+
+TEST_P(DataEvolutionDvTableTest, TestIndexSkipsBeforeReadingDeletionVector) {
+    CreateDataEvolutionTable(
+        /*deletion_vectors_enabled=*/true,
+        {{"file-index.bitmap.columns", "f2"}, {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto data = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_),
+                                                  R"([[0,"a0","x0"],[1,"a1","x1"],
+                                                     [2,"a2","x2"],[3,"a3","x3"]])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         WriteArray(table_path, {}, {"f0", "f1", "f2"}, data));
+    SetFirstRowId(100, messages);
+    ASSERT_OK(Commit(table_path, messages));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> merged_messages,
+                         WriteAndCommitGroup(table_path, 200, {0, 1, 2, 3}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors, PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchors.size(), 2);
+    ASSERT_OK(CommitDeletionVectors(table_path, messages[0], {{anchors[0], {2}}}));
+    ASSERT_OK(CommitDeletionVectors(table_path, merged_messages[0], {{anchors[1], {2}}}));
+
+    {
+        // Indexes keep positions 1 and 2 in both groups; their DVs remove position 2.
+        auto predicate = PredicateBuilder::In(
+            2, "f2", FieldType::STRING,
+            {Literal(FieldType::STRING, "x1", 2), Literal(FieldType::STRING, "x2", 2),
+             Literal(FieldType::STRING, "y1", 2), Literal(FieldType::STRING, "y2", 2)});
+        auto expected = checked_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_),
+                                                      R"([[1,"a1","x1"],[1,"a1","y1"]])")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, expected, predicate, {},
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    std::set<std::string> dv_paths;
+    for (const auto& split : splits) {
+        auto data_split = checked_pointer_cast<DataSplitImpl>(split);
+        for (const auto& deletion_file : data_split->DeletionFiles()) {
+            if (deletion_file) {
+                dv_paths.insert(deletion_file->path);
+            }
+        }
+    }
+    ASSERT_FALSE(dv_paths.empty());
+    for (const auto& path : dv_paths) {
+        ASSERT_OK(dir_->GetFileSystem()->Delete(path, /*recursive=*/false));
+    }
+    auto missing = PredicateBuilder::Equal(2, "f2", FieldType::STRING,
+                                           Literal(FieldType::STRING, "missing", 7));
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, nullptr, missing, {},
+                          /*check_scan_plan_when_empty_result=*/false,
+                          /*apply_predicate_to_scan=*/false));
+    auto single_match =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "x1", 2));
+    auto merged_match =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "y1", 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> match,
+                         PredicateBuilder::Or({single_match, merged_match}));
+    // Both single-file and merged groups are rejected by rowRanges intersected with the bitmap.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, nullptr, match,
+                          {Range(100, 100), Range(200, 200)},
+                          /*check_scan_plan_when_empty_result=*/false,
+                          /*apply_predicate_to_scan=*/false));
+    // A selected matching row still needs its DV; do not hide an actual missing sidecar.
+    ASSERT_NOK(ScanAndRead(table_path, {"f0", "f1", "f2"}, nullptr, match, {Range(101, 101)},
+                           /*check_scan_plan_when_empty_result=*/false,
+                           /*apply_predicate_to_scan=*/false));
+}
+
+TEST_P(DataEvolutionDvTableTest, TestSharedBitmapSelectionComposesWithDeletionVectors) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true,
+                             {{"file-index.bitmap.columns", "f0,f2"},
+                              {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"},
+                              {Options::READ_BATCH_SIZE, "2"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> first,
+                         WriteAndCommitGroup(table_path, 100, {0, 1, 2, 3}, {},
+                                             {{"file-index.bitmap.columns", "f2"}}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> second,
+                         WriteAndCommitGroup(table_path, 200, {0, 1, 2, 3}, {},
+                                             {{"file-index.bitmap.columns", "f2"}}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors, PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchors.size(), 2);
+    ASSERT_OK(CommitDeletionVectors(table_path, first[0], {{anchors[0], {2}}}));
+    ASSERT_OK(CommitDeletionVectors(table_path, second[0], {{anchors[1], {1}}}));
+    auto one =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "y1", 2));
+    auto two =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "y2", 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate, PredicateBuilder::Or({one, two}));
+    arrow::FieldVector fields = fields_;
+    fields.push_back(SpecialFields::RowId().ArrowField());
+    auto expected = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[1,"a1","y1",101],[2,"a2","y2",202]])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected, predicate, {},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/false));
+
+    // The newer f2 index must win over its stale copy in the anchor file.
+    auto newer =
+        PredicateBuilder::Equal(2, "f2", FieldType::STRING, Literal(FieldType::STRING, "y1", 2));
+    auto expected_one = checked_pointer_cast<arrow::StructArray>(expected->Slice(0, 1));
+    auto small = PredicateBuilder::Equal(0, "f0", FieldType::INT, Literal(1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> combined,
+                         PredicateBuilder::And({small, predicate}));
+    // f0 and f2 are won by different files. Intersect both indexes before applying the DV.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_one, combined, {},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/false));
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_one, newer, {},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/false));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+    for (const auto& split : splits) {
+        auto data_split = checked_pointer_cast<DataSplitImpl>(split);
+        for (const auto& file : data_split->DataFiles()) {
+            if (file->first_row_id == 200) {
+                ASSERT_OK(dir_->GetFileSystem()->Delete(
+                    PathUtil::JoinPath(data_split->BucketPath(), file->file_name), false));
+            }
+        }
+    }
+    // The second group's only bitmap hit is deleted: skip it before opening any data file.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_one, one, {},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/false));
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, nullptr, one, {Range(200, 203)},
+                          /*check_scan_plan_when_empty_result=*/false,
+                          /*apply_predicate_to_scan=*/false));
 }
 
 TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectorsAcrossReadBatches) {

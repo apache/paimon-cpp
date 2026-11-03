@@ -164,6 +164,7 @@ TEST_P(LuceneGlobalIndexTest, TestSimple) {
         {"lucene-fts.write.omit-term-freq-and-position", "false"},
         {"lucene-fts.read.buffer-size", std::to_string(read_buffer_size)},
         {"lucene-fts.write.tmp.directory", tmp_dir->Str()}};
+    ASSERT_TRUE(LuceneGlobalIndex(options).SupportsFullTextSearch());
     std::shared_ptr<arrow::Array> array = arrow::ipc::internal::json::ArrayFromJSON(data_type_,
                                                                                     R"([
         ["This is an test document."],

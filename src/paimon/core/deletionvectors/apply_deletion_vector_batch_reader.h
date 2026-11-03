@@ -57,8 +57,7 @@ class ApplyDeletionVectorBatchReader : public FileBatchReader {
                 return batch_with_bitmap;
             }
             auto& [batch, bitmap] = batch_with_bitmap;
-            PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 valid_bitmap, Filter(batch.first->length));
-            bitmap &= valid_bitmap;
+            PAIMON_ASSIGN_OR_RAISE(bitmap, Filter(bitmap));
             if (bitmap.IsEmpty()) {
                 ReaderUtils::ReleaseReadBatch(std::move(batch));
                 continue;
@@ -101,9 +100,12 @@ class ApplyDeletionVectorBatchReader : public FileBatchReader {
     }
 
  private:
-    Result<RoaringBitmap32> Filter(int32_t batch_size) const {
+    Result<RoaringBitmap32> Filter(const RoaringBitmap32& selection) const {
         RoaringBitmap32 is_valid;
-        for (int32_t i = 0; i < batch_size; ++i) {
+        // Unselected rows may lie outside the group's anchor range. Probe only rows that the
+        // format/index selection actually returns, just as ApplyDeletionVectorReader does.
+        for (auto iter = selection.Begin(); iter != selection.End(); ++iter) {
+            int32_t i = *iter;
             PAIMON_ASSIGN_OR_RAISE(uint64_t file_row_id, reader_->GetPreviousBatchFileRowId(i));
             PAIMON_ASSIGN_OR_RAISE(bool is_deleted, deletion_vector_->IsDeleted(file_row_id));
             if (!is_deleted) {

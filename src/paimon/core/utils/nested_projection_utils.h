@@ -128,6 +128,16 @@ class PAIMON_EXPORT NestedProjectionUtils {
         const std::shared_ptr<arrow::Array>& array,
         const std::shared_ptr<arrow::DataType>& read_type, arrow::MemoryPool* pool);
 
+    /// Relabel a TIMESTAMP in `array` with the zone `read_type` asks for, only when both sides
+    /// have a zone and the same unit. A zoned value is an instant since the epoch, so only the
+    /// type changes. STRUCT children are matched by name, and LIST/FIXED_SIZE_LIST elements and
+    /// MAP keys and values are followed; every other difference, a unit change included, is left
+    /// as is.
+    /// @return `array` itself when no TIMESTAMP is relabelled, otherwise a shallow copy.
+    static std::shared_ptr<arrow::Array> AlignTimestampTimezones(
+        const std::shared_ptr<arrow::Array>& array,
+        const std::shared_ptr<arrow::DataType>& read_type);
+
  private:
     static Result<bool> HasNestedSubfieldProjectionType(
         const std::shared_ptr<arrow::DataType>& file_type,

@@ -64,7 +64,7 @@ Result<std::vector<uint64_t>> MutableKeyOffsetIndex::HashKeys(
 }
 
 Status MutableKeyOffsetIndex::EnsureMutable() {
-    if (offsets_.unique()) {
+    if (offsets_.use_count() == 1) {
         return Status::OK();
     }
     PAIMON_ASSIGN_OR_RAISE(

@@ -31,6 +31,7 @@
 #include "paimon/core/options/changelog_producer.h"
 #include "paimon/core/options/compress_options.h"
 #include "paimon/core/options/external_path_strategy.h"
+#include "paimon/core/options/global_index_search_mode.h"
 #include "paimon/core/options/lookup_compact_mode.h"
 #include "paimon/core/options/lookup_strategy.h"
 #include "paimon/core/options/map_shared_shredding_column_placement_policy.h"
@@ -303,6 +304,9 @@ class PAIMON_EXPORT CoreOptions {
 
     BucketFunctionType GetBucketFunctionType() const;
     std::optional<int32_t> GetGlobalIndexThreadNum() const;
+    /// Returns `full-text-index.search-mode`, or else `global-index.search-mode`, or else
+    /// `GlobalIndexSearchMode::FAST`, as Java `CoreOptions#fullTextIndexSearchMode` does.
+    GlobalIndexSearchMode GetFullTextIndexSearchMode() const;
 
     const std::vector<std::string>& GetBlobFields() const;
     const std::vector<std::string>& GetBlobDescriptorFields() const;

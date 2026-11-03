@@ -38,7 +38,9 @@ efficient querying.
 Each bucket directory contains an LSM tree and its changelog files.
 
 .. note::
-   Changelog is not supported yet for Paimon C++ primary key table write.
+   Primary key table writes produce changelog according to the
+   ``changelog-producer`` table option, and the changelog files are committed
+   with their snapshot.
 
 The range for a bucket is determined by the hash value of one or more columns in
 the records. Users can specify bucketing columns by providing the bucket-key option.

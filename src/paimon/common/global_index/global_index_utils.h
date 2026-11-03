@@ -25,6 +25,8 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/status.h"
+#include "paimon/utils/range.h"
+#include "paimon/utils/roaring_bitmap64.h"
 namespace paimon {
 class GlobalIndexUtils {
  public:
@@ -53,6 +55,28 @@ class GlobalIndexUtils {
         }
         guard.Release();
         return Status::OK();
+    }
+
+    /// Returns the row ids of `range`.
+    static RoaringBitmap64 RowIdsOf(const Range& range) {
+        // `range.to` may be the largest int64 value, so add it apart from the half-open range.
+        RoaringBitmap64 row_ids;
+        row_ids.AddRange(range.from, range.to);
+        row_ids.Add(range.to);
+        return row_ids;
+    }
+
+    /// Returns the row ids of `row_ids` within `range`. Trimming a copy costs time in proportion to
+    /// the containers of `row_ids`, not to the rows or the span of `range`.
+    static RoaringBitmap64 RowIdsWithin(const RoaringBitmap64& row_ids, const Range& range) {
+        RoaringBitmap64 result = row_ids;
+        result.RemoveRange(0, range.from);
+        if (range.to < RoaringBitmap64::MAX_VALUE) {
+            // RemoveRange leaves out its end, so the largest int64 value is removed on its own.
+            result.RemoveRange(range.to + 1, RoaringBitmap64::MAX_VALUE);
+            result -= RoaringBitmap64::From({RoaringBitmap64::MAX_VALUE});
+        }
+        return result;
     }
 };
 }  // namespace paimon

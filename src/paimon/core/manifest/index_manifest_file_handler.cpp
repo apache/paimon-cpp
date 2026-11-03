@@ -197,7 +197,7 @@ IndexManifestFileHandler::GlobalDeletionVectorCombiner::Combine(
 
 Result<std::string> IndexManifestFileHandler::Write(
     const std::optional<std::string>& previous_index_manifest,
-    const std::vector<IndexManifestEntry>& new_index_entries, int32_t bucket_mode,
+    const std::vector<IndexManifestEntry>& new_index_entries, BucketMode bucket_mode,
     IndexManifestFile* index_manifest_file) {
     std::vector<IndexManifestEntry> entries;
     if (previous_index_manifest != std::nullopt) {
@@ -255,17 +255,16 @@ IndexManifestFileHandler::SeparateIndexEntries(
 
 Result<std::unique_ptr<IndexManifestFileHandler::IndexManifestFileCombiner>>
 IndexManifestFileHandler::GetIndexManifestFileCombine(const std::string& index_type,
-                                                      int32_t bucket_mode) {
+                                                      BucketMode bucket_mode) {
     if (index_type != DeletionVectorsIndexFile::DELETION_VECTORS_INDEX && index_type != "HASH") {
         return std::make_unique<GlobalFileNameCombiner>();
     }
-    // `bucket_mode` is the configured bucket, not a resolved BucketMode, standing in for Paimon
-    // Java's BucketMode.BUCKET_UNAWARE check. The two agree on every table that can exist:
-    // SchemaValidation rejects the other unaware bucket, 0, and BucketIdCalculator refuses to
-    // write the primary key table on which -1 means HASH_DYNAMIC instead. Lifting either
-    // restriction means passing the resolved BucketMode here, or a dynamic bucket table would
-    // combine its per-bucket deletion vectors by index file name.
-    if (index_type == DeletionVectorsIndexFile::DELETION_VECTORS_INDEX && bucket_mode == -1) {
+    // A dynamic bucket primary key table also has bucket=-1, but keeps one deletion vector index
+    // per (partition, bucket), so it uses the bucketed combiner. Only BUCKET_UNAWARE merges
+    // deletion vector index entries by index file name, using data file names to reject a data
+    // file covered by more than one deletion vector.
+    if (index_type == DeletionVectorsIndexFile::DELETION_VECTORS_INDEX &&
+        bucket_mode == BucketMode::BUCKET_UNAWARE) {
         return std::make_unique<GlobalDeletionVectorCombiner>();
     }
     return std::make_unique<BucketedCombiner>();
