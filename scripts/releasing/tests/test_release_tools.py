@@ -109,7 +109,7 @@ class ReleaseToolTest(unittest.TestCase):
             "docs/source/_static/versions.json": (
                 b'[{"name": "main (development)", "version": "main", '
                 b'"url": "https://paimon.apache.org/docs/cpp/main/"}, '
-                b'{"name": "1.1 (stable)", "version": "", '
+                b'{"name": "1.1.0 (stable)", "version": "", '
                 b'"url": "https://paimon.apache.org/docs/cpp/", '
                 b'"preferred": true}]\n'
             ),
@@ -363,7 +363,7 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                 "docs/source/_static/versions.json": (
                     '[{"name": "main (development)", "version": "main", '
                     '"url": "https://paimon.apache.org/docs/cpp/main/"}, '
-                    '{"name": "1.1 (stable)", "version": "", '
+                    '{"name": "1.1.0 (stable)", "version": "", '
                     '"url": "https://paimon.apache.org/docs/cpp/", '
                     '"preferred": true}]\n'
                 ),
@@ -623,7 +623,7 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                         "url": "https://paimon.apache.org/docs/cpp/main/",
                     },
                     {
-                        "name": "1.1 (stable)",
+                        "name": "1.1.0 (stable)",
                         "version": "",
                         "url": "https://paimon.apache.org/docs/cpp/",
                         "preferred": True,
@@ -657,21 +657,22 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                         "url": "https://paimon.apache.org/docs/cpp/main/",
                     },
                     {
-                        "name": "1.3 (stable)",
+                        "name": "1.3.0 (stable)",
                         "version": "",
                         "url": "https://paimon.apache.org/docs/cpp/",
                         "preferred": True,
                     },
                     {
-                        "name": "1.1",
+                        "name": "1.1.0",
                         "version": "1.1",
                         "url": "https://paimon.apache.org/docs/cpp/1.1/",
                     },
                 ],
             )
-            # A patch release cycle keeps the version list unchanged.
+            # A patch release updates the label without adding an archive.
             self.run_tool(VERSION_TOOL, "--root", str(root), "1.3.0", "1.3.1")
             self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.1")
+            versions[1]["name"] = "1.3.1 (stable)"
             self.assertEqual(
                 json.loads(versions_path.read_text(encoding="utf-8")), versions
             )
@@ -685,9 +686,20 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             versions = json.loads(
                 (root / "docs/source/_static/versions.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(versions[1]["name"], "1.2 (stable)")
+            self.assertEqual(versions[1]["name"], "1.2.4 (stable)")
             self.assertEqual(versions[2]["version"], "1.1")
             self.assertEqual(len(versions), 3)
+
+    def test_version_tool_updates_docs_from_previous_stable_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.create_version_tree(root)
+            docs_path = root / "docs/source/conf.py"
+            docs_path.write_text('version = "1.1.0"\n', encoding="utf-8")
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.2.3")
+            self.run_tool(VERSION_TOOL, "--root", str(root), "1.2.3", "1.3.0")
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.0")
+            self.assertIn('version = "1.3.0"', docs_path.read_text(encoding="utf-8"))
 
     def test_docs_channels_configure_version_warning(self) -> None:
         for channel, match, warning in [

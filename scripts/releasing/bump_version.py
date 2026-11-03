@@ -27,7 +27,6 @@ from typing import Dict, List
 
 
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
-SERIES_PATTERN = re.compile(r"^\d+\.\d+$")
 
 DOCS_URL = "https://paimon.apache.org/docs/cpp/"
 MAIN_ENTRY_VERSION = "main"
@@ -38,22 +37,22 @@ def series(version: str) -> str:
     return ".".join(version.split(".")[:2])
 
 
-def stable_entry(series_name: str) -> Dict[str, object]:
+def stable_entry(version: str) -> Dict[str, object]:
     """Dropdown entry for the latest release published at the site root."""
     return {
-        "name": f"{series_name} (stable)",
+        "name": f"{version} (stable)",
         "version": "",
         "url": DOCS_URL,
         "preferred": True,
     }
 
 
-def series_entry(series_name: str) -> Dict[str, object]:
+def series_entry(version: str) -> Dict[str, object]:
     """Dropdown entry for an archived release series under <series>/."""
     return {
-        "name": series_name,
-        "version": series_name,
-        "url": f"{DOCS_URL}{series_name}/",
+        "name": version,
+        "version": series(version),
+        "url": f"{DOCS_URL}{series(version)}/",
     }
 
 
@@ -103,7 +102,7 @@ def check_version_list(versions: List[Dict[str, object]]) -> None:
     stable = versions[1]
     name = stable.get("name")
     match = (
-        re.fullmatch(r"(\d+\.\d+) \(stable\)", name)
+        re.fullmatch(r"(\d+\.\d+\.\d+) \(stable\)", name)
         if isinstance(name, str)
         else None
     )
@@ -115,19 +114,19 @@ def check_version_list(versions: List[Dict[str, object]]) -> None:
     ):
         raise VersionError(
             "the second versions.json entry must be the stable docs: name "
-            "'X.Y (stable)', version '', url the site root, preferred true"
+            "'X.Y.Z (stable)', version '', url the site root, preferred true"
         )
     for item in versions[2:]:
         item_name = item.get("name")
         if (
             not isinstance(item_name, str)
-            or SERIES_PATTERN.fullmatch(item_name) is None
-            or item.get("version") != item_name
-            or item.get("url") != f"{DOCS_URL}{item_name}/"
+            or VERSION_PATTERN.fullmatch(item_name) is None
+            or item.get("version") != series(item_name)
+            or item.get("url") != f"{DOCS_URL}{series(item_name)}/"
         ):
             raise VersionError(
-                "archived versions.json entries must use name == version == "
-                f"X.Y with url {DOCS_URL}X.Y/, found {item!r}"
+                "archived versions.json entries must use name X.Y.Z, "
+                f"version X.Y and url {DOCS_URL}X.Y/, found {item!r}"
             )
 
 
@@ -148,11 +147,13 @@ def checked_files(root: Path, expected: str) -> Dict[Path, str]:
     )
     if cmake_matches != [expected]:
         raise VersionError(f"CMake version is {cmake_matches}, expected [{expected!r}]")
-    if docs_matches != [expected]:
-        raise VersionError(
-            f"documentation version is {docs_matches}, expected [{expected!r}]"
-        )
     check_version_list(versions)
+    stable_version = versions[1]["name"].split(" ")[0]
+    if docs_matches not in ([expected], [stable_version]):
+        raise VersionError(
+            f"documentation version is {docs_matches}, expected project version "
+            f"{expected!r} or stable documentation version {stable_version!r}"
+        )
     return {
         cmake_path: cmake,
         docs_path: docs,
@@ -174,19 +175,19 @@ def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
     )
     files[docs_path] = replace_once(
         files[docs_path],
-        rf'^version = "{re.escape(current)}"$',
+        r'^version = "\d+\.\d+\.\d+"$',
         f'version = "{new}"',
         f"documentation version {current}",
     )
 
     versions = load_versions(versions_path)
-    previous_series = versions[1]["name"].split(" ")[0]
-    if previous_series != series(new):
+    previous_version = versions[1]["name"].split(" ")[0]
+    if series(previous_version) != series(new):
         # Release preparation promotes the target series, even when the
         # project version already belongs to that series. Archive the
         # previous stable series only when it changes.
-        versions[1] = stable_entry(series(new))
-        versions.insert(2, series_entry(previous_series))
+        versions.insert(2, series_entry(previous_version))
+    versions[1] = stable_entry(new)
     files[versions_path] = json.dumps(versions, indent=4) + "\n"
     return files
 

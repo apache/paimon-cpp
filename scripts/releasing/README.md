@@ -60,10 +60,14 @@ scripts/releasing/bump_version.py 0.2.0 0.3.0
 scripts/releasing/bump_version.py --check 0.3.0
 ```
 
-The target version's major.minor series becomes the stable documentation
-entry. If it differs from the previous stable series, that previous series
-is moved to an archived entry. Further patch releases in the same stable
-series leave the documentation list unchanged. Use this command for release
+The target version becomes the stable documentation label (for example,
+`0.3.0 (stable)`). If its major.minor series differs from the previous stable
+series, the previous release is moved to an archived entry. Archived labels
+also show the full version, while their identifiers and URLs retain the
+major.minor series. Patch releases update the stable label without adding
+an archive. The documentation version may track the latest stable release
+while the CMake version advances; release preparation updates both to the
+target version. Use this command for release
 preparation; it also promotes documentation and is not a development-only
 version bump.
 

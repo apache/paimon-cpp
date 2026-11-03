@@ -19,7 +19,7 @@ File Index
 ==========
 
 Full-text predicates and root TopK
----------------------------------
+----------------------------------
 
 ``PredicateBuilder::FullTextMatch`` creates a ``LeafPredicate`` for a full-text
 condition without TopK truncation. It holds a shared ``FullTextMatch`` request,

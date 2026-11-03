@@ -5,7 +5,7 @@
         "url": "https://paimon.apache.org/docs/cpp/main/"
     },
     {
-        "name": "0.3 (stable)",
+        "name": "0.3.0 (stable)",
         "version": "",
         "url": "https://paimon.apache.org/docs/cpp/",
         "preferred": true
