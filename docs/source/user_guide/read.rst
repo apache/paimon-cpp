@@ -44,8 +44,8 @@ across the two language ecosystems.
 Planning with a custom memory pool
 ----------------------------------
 
-Supply an application-owned pool through ``ScanContextBuilder::WithMemoryPool``
-while using the ordinary scan API:
+Supply an application-owned pool through ``ScanContextBuilder::WithMemoryPool``.
+In a function returning ``Status`` or ``Result``, use the ordinary scan API:
 
 .. code-block:: cpp
 
