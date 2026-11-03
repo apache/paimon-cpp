@@ -21,12 +21,14 @@ import io
 import json
 import os
 import re
+import runpy
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -655,7 +657,7 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                         "url": "https://paimon.apache.org/docs/cpp/main/",
                     },
                     {
-                        "name": "1.2 (stable)",
+                        "name": "1.3 (stable)",
                         "version": "",
                         "url": "https://paimon.apache.org/docs/cpp/",
                         "preferred": True,
@@ -673,6 +675,39 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             self.assertEqual(
                 json.loads(versions_path.read_text(encoding="utf-8")), versions
             )
+
+    def test_version_tool_promotes_series_on_patch_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.create_version_tree(root)
+            self.run_tool(VERSION_TOOL, "--root", str(root), "1.2.3", "1.2.4")
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.2.4")
+            versions = json.loads(
+                (root / "docs/source/_static/versions.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(versions[1]["name"], "1.2 (stable)")
+            self.assertEqual(versions[2]["version"], "1.1")
+            self.assertEqual(len(versions), 3)
+
+    def test_docs_channels_configure_version_warning(self) -> None:
+        for channel, match, warning in [
+            (None, "main", True),
+            ("main", "main", True),
+            ("stable", "", False),
+            ("0.3", "0.3", True),
+        ]:
+            with self.subTest(channel=channel), mock.patch.dict(os.environ):
+                os.environ.pop("PAIMON_DOCS_VERSION", None)
+                if channel is not None:
+                    os.environ["PAIMON_DOCS_VERSION"] = channel
+                config = runpy.run_path(str(SOURCE_ROOT / "docs/source/conf.py"))
+                options = config["html_theme_options"]
+                self.assertEqual(options["switcher"]["version_match"], match)
+                self.assertEqual(options["show_version_warning_banner"], warning)
+                expected_release = config["version"]
+                if match == "main":
+                    expected_release += ".dev"
+                self.assertEqual(config["release"], expected_release)
 
     def test_version_tool_rejects_inconsistent_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

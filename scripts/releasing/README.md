@@ -60,6 +60,13 @@ scripts/releasing/bump_version.py 0.2.0 0.3.0
 scripts/releasing/bump_version.py --check 0.3.0
 ```
 
+The target version's major.minor series becomes the stable documentation
+entry. If it differs from the previous stable series, that previous series
+is moved to an archived entry. Further patch releases in the same stable
+series leave the documentation list unchanged. Use this command for release
+preparation; it also promotes documentation and is not a development-only
+version bump.
+
 ### Signing key setup and security
 
 Complete signing-key setup well before creating the first release candidate:

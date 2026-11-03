@@ -180,13 +180,12 @@ def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
     )
 
     versions = load_versions(versions_path)
-    if series(current) != series(new):
-        # A new documentation series ships with this release: the released
-        # version becomes the stable docs at docs/cpp/ and the previous
-        # stable docs move to their series directory. The main entry is
-        # fixed. Patch release cycles keep the version list unchanged.
-        previous_series = versions[1]["name"].split(" ")[0]
-        versions[1] = stable_entry(series(current))
+    previous_series = versions[1]["name"].split(" ")[0]
+    if previous_series != series(new):
+        # Release preparation promotes the target series, even when the
+        # project version already belongs to that series. Archive the
+        # previous stable series only when it changes.
+        versions[1] = stable_entry(series(new))
         versions.insert(2, series_entry(previous_series))
     files[versions_path] = json.dumps(versions, indent=4) + "\n"
     return files

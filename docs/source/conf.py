@@ -126,8 +126,8 @@ switcher_version = "" if docs_channel == "stable" else docs_channel
 # The release string feeds the version warning banner: main-branch builds
 # carry a ".dev" suffix so the banner calls them an unstable development
 # version, as the Apache Arrow documentation does. Release builds (stable
-# and archived series) keep the plain version, and the stable build matches
-# the preferred entry, so no banner is shown at docs/cpp/.
+# and archived series) keep the plain version. The stable channel disables
+# the banner because its empty switcher identifier is not a release number.
 release = f"{version}.dev" if docs_channel == "main" else version
 
 html_theme_options = {
@@ -158,7 +158,7 @@ html_theme_options = {
     "logo": {
         "text": "Apache Paimon C++",
     },
-    "show_version_warning_banner": True,
+    "show_version_warning_banner": docs_channel != "stable",
 }
 
 html_context = {
