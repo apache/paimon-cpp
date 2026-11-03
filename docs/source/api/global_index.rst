@@ -72,10 +72,6 @@ Interface
    :members:
    :undoc-members:
 
-.. doxygenclass:: paimon::FullTextScan::Plan
-   :members:
-   :undoc-members:
-
 .. doxygenclass:: paimon::FullTextRead
    :members:
    :undoc-members:

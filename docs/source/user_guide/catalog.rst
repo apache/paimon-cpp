@@ -418,7 +418,7 @@ the commit endpoint of ``tbl$branch_dev``, not the one of ``tbl``. A body sent
 to the bare table's URL publishes the branch's snapshot on the main branch.
 
 Authenticating with credentials of your own
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Credentials that a catalog does not issue — from a token service of your own, or
 from a store Paimon has no client for — reach a file system through a
 ``CredentialProvider`` that you consult yourself. Implement it together with a

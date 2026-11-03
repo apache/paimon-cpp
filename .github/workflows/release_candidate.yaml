@@ -20,6 +20,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/release_candidate.yaml"
+      - ".github/workflows/build_docs.yaml"
       - ".github/.rat-excludes"
       - "CMakeLists.txt"
       - "LICENSE"
