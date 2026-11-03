@@ -18,7 +18,8 @@
 
 set -e
 
-cd $(dirname "$0")/../
+cd "$(dirname "$0")/../"
+repo_root=$PWD
 mkdir -p build && cd build
 cmake ../ -DCMAKE_BUILD_TYPE=Debug -DPAIMON_BUILD_TESTS=ON -DPAIMON_USE_ASAN=ON -DPAIMON_GENERATE_COVERAGE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DPAIMON_ENABLE_AVRO=ON -DPAIMON_ENABLE_ORC=ON \
@@ -29,16 +30,17 @@ lcov --capture --directory src/paimon --directory test --output-file coverage.in
 # Keep only project implementation code in the report: drop system headers,
 # third-party dependencies from the build tree and third_party/, and test
 # sources (*_test.cpp, test helpers, mocks).
-# PWD is the build directory; do not match checkout ancestors such as /builds/.
+# Anchor exclusions to repository paths so checkout ancestors cannot match.
+# PWD is the build directory; mocks outside testing/ are listed explicitly.
 # Exclusion patterns can overlap or be absent, so unused patterns are nonfatal.
 lcov --remove coverage.info \
     '/usr/*' \
     "$PWD/*" \
-    '*/third_party/*' \
-    '*_test.cpp' \
-    '*/test/*' \
-    '*/testing/*' \
-    '*mock*' \
+    "$repo_root/third_party/*" \
+    "$repo_root/*_test.cpp" \
+    "$repo_root/test/*" \
+    "$repo_root/src/paimon/testing/*" \
+    "$repo_root/src/paimon/rest/mock_rest_server.*" \
     --ignore-errors unused \
     --output-file coverage_filtered.info
 mv coverage_filtered.info coverage.info
