@@ -6377,6 +6377,53 @@ TEST_F(RealtimeHashIndexInteTest, TestKeyAndValueIndexesPruneWithoutStatisticsOr
     ASSERT_OK(writer->Close());
 }
 
+TEST_F(RealtimeHashIndexInteTest, TestIndexedFieldCombinesWithStatisticsOnAnotherField) {
+    fields_.push_back(arrow::field("score", arrow::int64()));
+    schema_ = arrow::schema(fields_);
+    options_["realtime.index.hash.columns"] = "id";
+    options_[Options::REALTIME_STORE_STATS_MODE] = "full";
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    const std::vector<std::string> batches = {
+        // The index finds id 7, but max(score) excludes the entire batch.
+        R"([[0, 7, "below", "p0", 10], [1, 8, "below-other", "p0", 20]])",
+        // Both rows pass score statistics; only the index can remove id 8.
+        R"([[2, 7, "match", "p0", 150], [3, 8, "other", "p0", 160]])",
+        // id 7 lies inside min/max, but the index has no candidate in this batch.
+        R"([[4, 6, "no-match", "p0", 170], [5, 8, "no-match", "p0", 180]])"};
+    for (const std::string& json : batches) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             MakeUnpartitionedBatchFromJson(json));
+        ASSERT_OK(writer->Write(std::move(batch)));
+    }
+    const std::shared_ptr<Predicate> indexed = EqualId(7);
+    const std::shared_ptr<Predicate> statistics = PredicateBuilder::GreaterThan(
+        schema_->GetFieldIndex("score"), "score", FieldType::BIGINT, Literal(int64_t{100}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> combined,
+                         PredicateBuilder::And({indexed, statistics}));
+    const std::vector<std::shared_ptr<Predicate>> predicates = {indexed, statistics, combined};
+    const std::vector<std::string> expected = {
+        R"([[0, 7, 10], [0, 7, 150]])", R"([[0, 7, 150], [0, 8, 160], [0, 6, 170], [0, 8, 180]])",
+        R"([[0, 7, 150]])"};
+    const auto check_candidates = [&]() {
+        for (size_t i = 0; i < predicates.size(); ++i) {
+            SCOPED_TRACE(i);
+            ASSERT_NO_FATAL_FAILURE(
+                CheckProjectedQuery(realtime_context, predicates[i], {"id", "score"},
+                                    /*enable_predicate_filter=*/false, expected[i]));
+        }
+    };
+    ASSERT_NO_FATAL_FAILURE(check_candidates());
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_NO_FATAL_FAILURE(check_candidates());
+    ASSERT_OK(writer->Close());
+}
+
 TEST_F(RealtimeHashIndexInteTest, TestDeduplicateRebuildsFileIndexesAfterSkippingDeletedRows) {
     ConfigureRealtimeDeduplicateTable();
     options_["file-index.bitmap.columns"] = SpecialFields::RealtimeOffset().Name() + ",id,payload";
