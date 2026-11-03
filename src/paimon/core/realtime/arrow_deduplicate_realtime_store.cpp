@@ -516,7 +516,8 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowDeduplicateRealtimeStore:
     ArrowSchema inner_c_schema;
     ArrowSchemaMarkReleased(&inner_c_schema);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*output_schema, &inner_c_schema));
-    RealtimeQueryContext inner_context{&inner_c_schema, context.predicate, context.read_batch_size};
+    RealtimeQueryContext inner_context{&inner_c_schema, context.predicate, context.offset_range,
+                                       context.read_batch_size};
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<BatchReader>> inner,
         delegate_->CreateQueryReaders(deduplicate_view->Delegate(), inner_context));

@@ -29,6 +29,7 @@
 #include "arrow/array/builder_binary.h"
 #include "arrow/array/builder_nested.h"
 #include "arrow/array/builder_primitive.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -200,6 +201,78 @@ TEST_F(PredicateBatchReaderTest, TestFullAndEmptyCase) {
                                                        FieldType::BIGINT, Literal(20l));
         CheckResult(std::move(reader), predicate, nullptr);
     }
+}
+
+TEST_F(PredicateBatchReaderTest, TestPreservesSelectedRowPositions) {
+    const std::shared_ptr<arrow::Array> source = PrepareArray(12)->Slice(2, 8);
+    RoaringBitmap32 full;
+    full.AddRange(0, 8);
+    const std::vector<RoaringBitmap32> selections = {full, RoaringBitmap32::From({1, 2, 3, 4, 5}),
+                                                     RoaringBitmap32::From({0, 1, 4, 5, 7}),
+                                                     RoaringBitmap32::From({0, 2, 5, 7})};
+    for (const RoaringBitmap32& selection : selections) {
+        SCOPED_TRACE(selection.ToString());
+        // The index is intentionally wrong: binding must still resolve the field by name.
+        const std::shared_ptr<Predicate> predicate =
+            PredicateBuilder::GreaterThan(0, "f1", FieldType::BIGINT, Literal(int64_t{4}));
+        auto input = std::make_unique<MockFileBatchReader>(source, source->type(), selection,
+                                                           /*read_batch_size=*/8);
+        input->EnableRandomizeBatchSize(false);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<PredicateBatchReader> reader,
+                             PredicateBatchReader::Create(std::move(input), predicate,
+                                                          GetArrowPool(GetDefaultPool())));
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, reader->NextBatchWithBitmap());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        RoaringBitmap32 expected_selection;
+        for (auto iter = selection.Begin(); iter != selection.End(); ++iter) {
+            if (*iter + 2 > 4) {
+                expected_selection.Add(*iter);
+            }
+        }
+        ASSERT_EQ(expected_selection, batch.second);
+        arrow::Result<std::shared_ptr<arrow::Array>> imported =
+            arrow::ImportArray(batch.first.first.get(), batch.first.second.get());
+        ASSERT_TRUE(imported.ok()) << imported.status().ToString();
+        const std::shared_ptr<arrow::Array> output = std::move(imported).ValueOrDie();
+        ASSERT_TRUE(source->Equals(*output));
+        ASSERT_OK_AND_ASSIGN(batch, reader->NextBatchWithBitmap());
+        ASSERT_TRUE(BatchReader::IsEofBatch(batch));
+    }
+}
+
+TEST_F(PredicateBatchReaderTest, TestEmptySelectionsAndPredicateResults) {
+    const std::shared_ptr<arrow::Array> source = PrepareArray(12);
+    const std::shared_ptr<Predicate> predicate =
+        PredicateBuilder::GreaterThan(1, "f1", FieldType::BIGINT, Literal(int64_t{6}));
+    const RoaringBitmap32 selection = RoaringBitmap32::From({4, 5, 8, 10});
+    auto input = std::make_unique<MockFileBatchReader>(source, source->type(), selection,
+                                                       /*read_batch_size=*/4);
+    input->EnableRandomizeBatchSize(false);
+    const auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ArrayVector{source->Slice(8, 1), source->Slice(10, 1)});
+    ASSERT_NO_FATAL_FAILURE(CheckResult(std::move(input), predicate, expected));
+
+    input = std::make_unique<MockFileBatchReader>(source, source->type(), RoaringBitmap32(),
+                                                  /*read_batch_size=*/4);
+    input->EnableRandomizeBatchSize(false);
+    ASSERT_NO_FATAL_FAILURE(CheckResult(std::move(input), predicate, nullptr));
+}
+
+TEST_F(PredicateBatchReaderTest, TestSelectedNullsAndNextBatchMaterialization) {
+    const std::shared_ptr<arrow::Array> source =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({arrow::field("f1", arrow::int64())}), "[[null], [2], [null], [4], [5]]")
+            .ValueOrDie();
+    const RoaringBitmap32 selection = RoaringBitmap32::From({0, 2, 3});
+    auto input = std::make_unique<MockFileBatchReader>(source, source->type(), selection,
+                                                       /*read_batch_size=*/5);
+    input->EnableRandomizeBatchSize(false);
+    const std::shared_ptr<Predicate> predicate =
+        PredicateBuilder::IsNull(0, "f1", FieldType::BIGINT);
+    const std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(source->type(), "[[null], [null]]").ValueOrDie();
+    ASSERT_NO_FATAL_FAILURE(
+        CheckResult(std::move(input), predicate, std::make_shared<arrow::ChunkedArray>(expected)));
 }
 
 TEST_F(PredicateBatchReaderTest, TestInvalidInput) {

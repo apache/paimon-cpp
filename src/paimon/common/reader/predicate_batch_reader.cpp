@@ -85,12 +85,15 @@ Result<BatchReader::ReadBatchWithBitmap> PredicateBatchReader::NextBatchWithBitm
             return batch_with_bitmap;
         }
         auto& [batch, bitmap] = batch_with_bitmap;
+        if (bitmap.IsEmpty()) {
+            ReaderUtils::ReleaseReadBatch(std::move(batch));
+            continue;
+        }
         auto& [c_array, c_schema] = batch;
         assert(c_array);
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
-        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 valid_bitmap, Filter(array));
-        bitmap &= valid_bitmap;
+        PAIMON_ASSIGN_OR_RAISE(bitmap, Filter(array, bitmap));
         if (bitmap.IsEmpty()) {
             continue;
         }
@@ -123,19 +126,29 @@ Status PredicateBatchReader::BindPredicateToArray(const arrow::Array& array) {
     return Status::OK();
 }
 
-Result<RoaringBitmap32> PredicateBatchReader::Filter(const std::shared_ptr<arrow::Array>& array) {
+Result<RoaringBitmap32> PredicateBatchReader::Filter(const std::shared_ptr<arrow::Array>& array,
+                                                     const RoaringBitmap32& selection) {
     if (!predicate_filter_) {
         PAIMON_RETURN_NOT_OK(BindPredicateToArray(*array));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<char> result,
-                           predicate_filter_->Test(*array, arrow_pool_.get()));
-    assert(result.size() == static_cast<size_t>(array->length()));
+    PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector slices,
+                           ReaderUtils::GenerateFilteredArrayVector(array, selection));
     RoaringBitmap32 is_valid;
-    for (int32_t i = 0; i < static_cast<int32_t>(result.size()); i++) {
-        if (result[i]) {
-            is_valid.Add(i);
+    // Slices share the source buffers; selection maps their results to original batch rows.
+    auto iter = selection.Begin();
+    for (const std::shared_ptr<arrow::Array>& slice : slices) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<char> result,
+                               predicate_filter_->Test(*slice, arrow_pool_.get()));
+        assert(result.size() == static_cast<size_t>(slice->length()));
+        for (char matches : result) {
+            assert(iter != selection.End());
+            if (matches) {
+                is_valid.Add(*iter);
+            }
+            ++iter;
         }
     }
+    assert(iter == selection.End());
     return is_valid;
 }
 

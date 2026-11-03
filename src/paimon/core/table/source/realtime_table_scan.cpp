@@ -166,6 +166,7 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
         PAIMON_ASSIGN_OR_RAISE(std::string opaque_ticket,
                                realtime_context_->PinReadView(memory, read_view_ttl_millis_));
         pinned_tickets.push_back(opaque_ticket);
+        // Use the disk snapshot's committed end; memory reclamation may lag.
         return std::make_shared<RealtimeSplit>(
             RealtimeSplit::kCurrentVersion, snapshot_id, key.partition, key.bucket,
             std::move(grouped_disk_splits), GetCommittedEndOffset(committed_offsets, key),

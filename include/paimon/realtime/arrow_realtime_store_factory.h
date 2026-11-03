@@ -28,6 +28,8 @@ class PAIMON_EXPORT ArrowRealtimeStoreFactory : public RealtimeStoreFactory {
  public:
     /// Creates an Arrow-backed append or primary-key store for one partition and bucket.
     /// The framework uses the append implementation as the delegate of its DEDUPLICATE wrapper.
+    /// Append delegates resolve configured index plugins through the registry.
+    /// Primary-key stores do not support query indexes.
     Result<std::shared_ptr<RealtimeStore>> Create(RealtimeStoreCreateRequest&& request) override;
 };
 
