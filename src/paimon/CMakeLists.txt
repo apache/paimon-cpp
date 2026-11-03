@@ -1040,7 +1040,7 @@ if(PAIMON_BUILD_TESTS)
                     core/table/source/snapshot/snapshot_reader_test.cpp
                     core/table/source/startup_mode_test.cpp
                     core/table/source/table_scan_test.cpp
-                    core/table/source/planning_memory_pool_test.cpp
+                    core/table/source/scan_exception_safety_test.cpp
                     core/table/system/system_table_test.cpp
                     core/tag/tag_test.cpp
                     core/utils/blob_view_lookup_test.cpp

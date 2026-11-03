@@ -32,6 +32,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/executor.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
@@ -230,18 +231,14 @@ class PoolRefusingManifestFileSystem final : public LocalFileSystem {
 };
 }  // namespace
 
-TEST(OrdinaryPlanningPoolTest, RejectEachPlanningAllocationWithoutLeaking) {
+TEST(ScanExceptionSafetyTest, RejectEachPlanningAllocationWithoutLeaking) {
     auto baseline_pool = std::make_shared<PlanningFaultPool>();
-    auto scan_result = OrdinaryScan(baseline_pool);
-    ASSERT_TRUE(scan_result.ok()) << scan_result.status().ToString();
-    auto baseline_scan = std::move(scan_result).value();
+    ASSERT_OK_AND_ASSIGN(auto baseline_scan, OrdinaryScan(baseline_pool));
     RecordProperty("factory_pool_calls", baseline_pool->calls.load());
     baseline_pool->calls = 0;
     baseline_pool->malloc_calls = 0;
     baseline_pool->realloc_calls = 0;
-    auto baseline_result = baseline_scan->CreatePlan();
-    ASSERT_TRUE(baseline_result.ok()) << baseline_result.status().ToString();
-    auto baseline = std::move(baseline_result).value();
+    ASSERT_OK_AND_ASSIGN(auto baseline, baseline_scan->CreatePlan());
     ASSERT_FALSE(baseline->Splits().empty());
     const uint64_t allocation_count = baseline_pool->calls;
     ASSERT_GT(allocation_count, 0);
@@ -254,9 +251,7 @@ TEST(OrdinaryPlanningPoolTest, RejectEachPlanningAllocationWithoutLeaking) {
     for (uint64_t ordinal = 0; ordinal < allocation_count; ++ordinal) {
         SCOPED_TRACE(ordinal);
         auto pool = std::make_shared<PlanningFaultPool>();
-        auto result = OrdinaryScan(pool);
-        ASSERT_TRUE(result.ok()) << result.status().ToString();
-        auto scan = std::move(result).value();
+        ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool));
         pool->calls = 0;
         pool->fail_at = ordinal;
         bool failed = false;
@@ -272,49 +267,42 @@ TEST(OrdinaryPlanningPoolTest, RejectEachPlanningAllocationWithoutLeaking) {
         EXPECT_EQ(pool->CurrentUsage(), 0) << "pool storage survived failed planning";
         pool->fail_at = std::numeric_limits<uint64_t>::max();
         {
-            auto recovery_result = OrdinaryScan(pool);
-            ASSERT_TRUE(recovery_result.ok()) << recovery_result.status().ToString();
-            auto recovery = std::move(recovery_result).value();
-            auto plan = recovery->CreatePlan();
-            ASSERT_TRUE(plan.ok()) << plan.status().ToString();
-            EXPECT_FALSE(plan.value()->Splits().empty());
+            ASSERT_OK_AND_ASSIGN(auto recovery, OrdinaryScan(pool));
+            ASSERT_OK_AND_ASSIGN(auto plan, recovery->CreatePlan());
+            EXPECT_FALSE(plan->Splits().empty());
         }
         EXPECT_EQ(pool->CurrentUsage(), 0);
     }
 }
 
-TEST(OrdinaryPlanningPoolTest, RetainedSplitRemainsUsableWithCallerOwnedPool) {
+TEST(ScanExceptionSafetyTest, RetainedSplitRemainsUsableWithCallerOwnedPool) {
     auto pool = std::make_shared<PlanningFaultPool>();
-    auto scan_result = OrdinaryScan(pool);
-    ASSERT_TRUE(scan_result.ok()) << scan_result.status().ToString();
-    auto scan = std::move(scan_result).value();
-    auto plan_result = scan->CreatePlan();
-    ASSERT_TRUE(plan_result.ok()) << plan_result.status().ToString();
-    auto plan = std::move(plan_result).value();
+    ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool));
+    ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
     ASSERT_FALSE(plan->Splits().empty());
     auto split = plan->Splits().front();
-    auto original = Split::Serialize(split, pool);
-    ASSERT_TRUE(original.ok()) << original.status().ToString();
+    ASSERT_OK_AND_ASSIGN(auto original, Split::Serialize(split, pool));
     scan.reset();
     EXPECT_EQ(plan->SnapshotId(), 1);
     plan.reset();
-    auto retained = Split::Serialize(split, pool);
-    ASSERT_TRUE(retained.ok()) << retained.status().ToString();
-    EXPECT_EQ(original.value(), retained.value());
+    ASSERT_OK_AND_ASSIGN(auto retained, Split::Serialize(split, pool));
+    EXPECT_EQ(original, retained);
     split.reset();
     EXPECT_EQ(pool->CurrentUsage(), 0);
 }
 
-TEST(OrdinaryPlanningPoolTest, RefusedArrowReallocationPreservesExistingBuffer) {
+TEST(ScanExceptionSafetyTest, RefusedArrowReallocationPreservesExistingBuffer) {
     auto pool = std::make_shared<PlanningFaultPool>();
     auto arrow_pool = GetArrowPool(pool);
     uint8_t* data = nullptr;
-    ASSERT_TRUE(arrow_pool->Allocate(16, 64, &data).ok());
+    ASSERT_OK(ToPaimonStatus(arrow_pool->Allocate(16, 64, &data)));
     ASSERT_NE(data, nullptr);
     data[0] = 42;
     uint8_t* original = data;
     pool->fail_at = pool->calls.load();
-    EXPECT_TRUE(arrow_pool->Reallocate(16, 32, 64, &data).IsOutOfMemory());
+    auto status = arrow_pool->Reallocate(16, 32, 64, &data);
+    ASSERT_NOK(ToPaimonStatus(status));
+    EXPECT_TRUE(status.IsOutOfMemory());
     EXPECT_TRUE(pool->rejected);
     EXPECT_EQ(data, original);
     EXPECT_EQ(data[0], 42);
@@ -323,7 +311,7 @@ TEST(OrdinaryPlanningPoolTest, RefusedArrowReallocationPreservesExistingBuffer) 
     EXPECT_EQ(pool->CurrentUsage(), 0);
 }
 
-TEST(OrdinaryPlanningPoolTest, SubmissionFailureDrainsAcceptedManifestTask) {
+TEST(ScanExceptionSafetyTest, SubmissionFailureDrainsAcceptedManifestTask) {
     for (uint32_t phase = 0; phase < 3; ++phase) {
         SCOPED_TRACE(phase);
         PlanningInput input;
@@ -339,9 +327,7 @@ TEST(OrdinaryPlanningPoolTest, SubmissionFailureDrainsAcceptedManifestTask) {
         }
         auto pool = std::make_shared<PlanningFaultPool>();
         auto executor = std::make_shared<RejectingPlanningExecutor>(rejected_submission);
-        auto result = OrdinaryScan(pool, executor, input);
-        ASSERT_TRUE(result.ok()) << result.status().ToString();
-        auto scan = std::move(result).value();
+        ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
         auto planning = std::async(std::launch::async, [&scan] {
             try {
                 auto plan = scan->CreatePlan();
@@ -368,14 +354,12 @@ TEST(OrdinaryPlanningPoolTest, SubmissionFailureDrainsAcceptedManifestTask) {
     }
 }
 
-TEST(OrdinaryPlanningPoolTest, WorkerPoolExceptionDrainsAcceptedManifestTask) {
+TEST(ScanExceptionSafetyTest, WorkerPoolExceptionDrainsAcceptedManifestTask) {
     auto pool = std::make_shared<PlanningFaultPool>();
     auto executor = std::make_shared<RejectingPlanningExecutor>(0, 2);
     PlanningInput input;
     input.file_system = std::make_shared<PoolRefusingManifestFileSystem>(pool);
-    auto result = OrdinaryScan(pool, executor, input);
-    ASSERT_TRUE(result.ok()) << result.status().ToString();
-    auto scan = std::move(result).value();
+    ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
     auto planning = std::async(std::launch::async, [&scan] {
         try {
             (void)scan->CreatePlan();

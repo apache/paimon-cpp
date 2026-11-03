@@ -326,7 +326,9 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
             std::vector<std::future<Result<std::vector<ManifestFileMeta>>>> futures;
             ScopeGuard drain([&futures] {
                 for (auto& future : futures) {
-                    if (future.valid()) future.wait();
+                    if (future.valid()) {
+                        future.wait();
+                    }
                 }
             });
             futures.reserve(2);
@@ -360,7 +362,9 @@ Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manif
     std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
     ScopeGuard drain([&futures] {
         for (auto& future : futures) {
-            if (future.valid()) future.wait();
+            if (future.valid()) {
+                future.wait();
+            }
         }
     });
     futures.reserve(manifest_metas.size());
@@ -525,7 +529,9 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
         std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
         ScopeGuard drain([&futures] {
             for (auto& future : futures) {
-                if (future.valid()) future.wait();
+                if (future.valid()) {
+                    future.wait();
+                }
             }
         });
         futures.reserve(manifest_metas.size());
