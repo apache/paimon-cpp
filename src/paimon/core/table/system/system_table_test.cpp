@@ -233,8 +233,6 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
                                                  /*dynamic_options=*/{}, /*data_table_name=*/""));
     ASSERT_EQ(system_table->Name(), "table$ro");
 
-    // A view loaded with the logical name of its data table answers with it, branch included:
-    // reloading the name a branch view answers with addresses the same branch again.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> branch_view,
                          SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/uuid-dir", table_schema,
@@ -247,10 +245,6 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
     ASSERT_EQ(arrow_schema->field(1)->type()->id(), arrow::Type::INT32);
 }
 
-// A copy of a system table merges the dynamic options into the ones it was loaded with and
-// rebuilds through the same loader, the way Java Paimon's system tables re-wrap
-// `dataTable.copy(dynamicOptions)`: the copy keeps the view's identity while being a table of
-// its own, and an option the data table's own `Copy` would refuse is refused here too.
 TEST(SystemTableTest, TestCopyRebuildsThroughTheLoader) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};
@@ -265,13 +259,44 @@ TEST(SystemTableTest, TestCopyRebuildsThroughTheLoader) {
     EXPECT_NE(copy, system_table);
     EXPECT_TRUE(std::dynamic_pointer_cast<ReadOptimizedSystemTable>(copy) != nullptr);
 
-    // The dynamic options a copy is given reach the data table underneath it, so an immutable one
-    // is refused the way the data table's own `Copy` refuses it, and `type` names the kind of that
-    // table, which no copy changes.
     ASSERT_NOK_WITH_MSG(system_table->Copy({{Options::BUCKET_KEY, "other"}}),
                         "Change 'bucket-key' is not supported yet.");
     ASSERT_NOK_WITH_MSG(system_table->Copy({{Options::TYPE, "format-table"}}),
                         "Change 'type' is not supported yet.");
+}
+
+TEST(SystemTableTest, TestCopyOptionsAndAuditSequenceNumber) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> schema,
+        CreateTableSchemaForTest({{Options::FILE_SYSTEM, "local"}, {Options::FILE_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> options,
+                         SystemTableLoader::Load(OptionsSystemTable::kName, dir->GetFileSystem(),
+                                                 dir->Str(), schema, {}, "tbl"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
+                         options->Copy({{Options::READ_BATCH_SIZE, "2"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> again, copied->Copy({{"custom", "value"}}));
+    auto options_copy = std::dynamic_pointer_cast<OptionsSystemTable>(again);
+    ASSERT_TRUE(options_copy);
+    ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> rows, options_copy->BuildRows());
+    std::map<std::string, std::string> values;
+    for (const auto& row : rows) {
+        values.emplace(std::string(row.GetStringView(0)), std::string(row.GetStringView(1)));
+    }
+    EXPECT_EQ(values.at(Options::READ_BATCH_SIZE), "2");
+    EXPECT_EQ(values.at("custom"), "value");
+    EXPECT_EQ(schema->Options().count(Options::READ_BATCH_SIZE), 0);
+    for (const std::string& kind :
+         {std::string(AuditLogSystemTable::kName), std::string(BinlogSystemTable::kName)}) {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<SystemTable> view,
+            SystemTableLoader::Load(kind, dir->GetFileSystem(), dir->Str(), schema, {}, "tbl"));
+        ASSERT_NOK_WITH_MSG(view->Copy({{Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "true"}}),
+                            "is not supported by hint");
+        ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> allowed,
+                             view->Copy({{Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "false"}}));
+    }
 }
 
 TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
@@ -301,7 +326,7 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
         ReadContextBuilder builder("/tmp/table");
-        builder.SetOptions(options).SetWarmupLevel(level);
+        builder.SetWarmupLevel(level);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> caller_unique_context, builder.Finish());
         std::shared_ptr<ReadContext> caller_context(std::move(caller_unique_context));
         ASSERT_EQ(level, caller_context->GetWarmupLevel());
@@ -359,19 +384,21 @@ TEST(SystemTableTest, TestTheOperatorEntriesRefuseASystemTablePath) {
 
     ScanContextBuilder scan_builder(system_table_path);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)), "names a system table");
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context), {}), "names a system table");
 
     ReadContextBuilder read_builder(system_table_path);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), "names a system table");
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), {}), "names a system table");
 
     WriteContextBuilder write_builder(system_table_path, "commit_user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)), "names a system table");
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context), {}),
+                        "names a system table");
 
     CommitContextBuilder commit_builder(system_table_path, "commit_user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)), "names a system table");
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context), {}),
+                        "names a system table");
 }
 
 TEST(SystemTableTest, TestNewReadRefusesASearch) {

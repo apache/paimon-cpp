@@ -137,8 +137,7 @@ class RestCatalog : public Catalog,
         const Identifier& data_identifier, const std::optional<std::string>& branch,
         std::string* table_path, std::string* table_id) const;
 
-    /// Loads the system table a `T$system` identifier names, on the branch the identifier
-    /// carries, from the same response that carries the data table's schema and path.
+    /// Loads a T$system view from the same response as its data table's schema and path.
     Result<std::shared_ptr<SystemTable>> LoadSystemTable(
         const Identifier& identifier, const Identifier& load_identifier,
         const std::optional<std::string>& branch) const;

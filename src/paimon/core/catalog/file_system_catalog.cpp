@@ -385,8 +385,6 @@ Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(
         dynamic_options[Options::BRANCH] = branch.value();
     }
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
-    // The data table's logical name, branch included, so that a view of a branch answers with the
-    // name the branch is addressed by rather than the bare directory name.
     return SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
                                    latest_schema.value(), dynamic_options,
                                    data_identifier.GetObjectName());

@@ -34,15 +34,9 @@ class IOManager;
 class SplitGenerator;
 class TableSchema;
 
-/// The managed table a schema without primary keys describes, Java Paimon's
-/// `AppendOnlyFileStoreTable`. Its write appends the rows it is given, and its scan, read and
-/// commit walk the files as they were written. The operator flows are the ones `FileStoreTable`
-/// carries; the pieces those flows hand down are built here.
+/// Managed table without primary keys; uses the shared FileStoreTable operator flows.
 class AppendOnlyFileStoreTable : public FileStoreTable {
  public:
-    /// The constructor `FileStoreTable::Create` builds an append-only table through: the store
-    /// carries the storage state, `schema` is the schema the table was loaded with, and the base
-    /// class holds both.
     AppendOnlyFileStoreTable(const std::shared_ptr<FileStore>& store,
                              const std::shared_ptr<TableSchema>& schema,
                              const Identifier& identifier, const std::string& uuid);

@@ -46,14 +46,12 @@ class PAIMON_EXPORT WriteContext {
     WriteContext(const std::string& root_path, const std::string& commit_user,
                  bool is_streaming_mode, bool ignore_num_bucket_check, bool ignore_previous_files,
                  bool enable_multi_thread_spill, const std::optional<int32_t>& write_id,
-                 const std::string& branch, const std::optional<std::string>& named_branch,
                  const std::vector<std::string>& write_schema,
                  const std::shared_ptr<MemoryPool>& memory_pool,
                  const std::shared_ptr<Executor>& executor, const std::string& temp_directory,
                  const std::shared_ptr<FileSystem>& specific_file_system,
                  const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
                  const std::shared_ptr<RealtimeContext>& realtime_context,
-                 const std::map<std::string, std::string>& options,
                  const std::optional<std::string>& table_schema = std::nullopt,
                  const std::shared_ptr<Catalog>& catalog = nullptr,
                  const std::optional<Identifier>& identifier = std::nullopt);
@@ -64,8 +62,7 @@ class PAIMON_EXPORT WriteContext {
         return root_path_;
     }
 
-    /// Returns the table root path. An alias of `GetRootPath()`, so that every context
-    /// exposes the table location under the same name.
+    /// Alias for GetRootPath().
     const std::string& GetPath() const {
         return GetRootPath();
     }
@@ -76,18 +73,6 @@ class PAIMON_EXPORT WriteContext {
 
     const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
         return fs_scheme_to_identifier_map_;
-    }
-
-    const std::map<std::string, std::string>& GetOptions() const {
-        return options_;
-    }
-
-    /// Empties the options this context carries. A one-step `FileStoreWrite::Create()`-style entry
-    /// point folds them into the table it loads and clears them before handing the context to
-    /// `NewWrite`, which serves that table's own configuration alone; a caller holding a table
-    /// calls `NewWrite` with no options at all.
-    void ClearOptions() {
-        options_.clear();
     }
 
     bool IsStreamingMode() const {
@@ -104,18 +89,6 @@ class PAIMON_EXPORT WriteContext {
 
     const std::optional<int32_t> GetWriteId() const {
         return write_id_;
-    }
-
-    const std::string& GetBranch() const {
-        return branch_;
-    }
-
-    /// Returns the branch the identifier of `WithCatalog()`, the `branch` option or
-    /// `WithBranch()` named, or nullopt when none of them did. An operator serves the branch the
-    /// table it belongs to was loaded with, so a table refuses a context naming a branch it does
-    /// not serve - dropping the name in silence would publish the changes on its own branch.
-    const std::optional<std::string>& GetNamedBranch() const {
-        return named_branch_;
     }
 
     const std::vector<std::string>& GetWriteSchema() const {
@@ -147,7 +120,7 @@ class PAIMON_EXPORT WriteContext {
         return realtime_context_;
     }
 
-    /// Returns the table schema the caller set, or nullopt when the write loads it.
+    /// Returns the optional schema supplied by the caller.
     const std::optional<std::string>& GetSpecificTableSchema() const {
         return table_schema_;
     }
@@ -162,8 +135,7 @@ class PAIMON_EXPORT WriteContext {
         return identifier_;
     }
 
-    /// Returns the catalog table UUID, so that every context answers `GetTableId()` the way
-    /// `CommitContext` does; a write carries none.
+    /// Returns nullopt; write contexts do not carry a table UUID.
     const std::optional<std::string>& GetTableId() const {
         static const std::optional<std::string> kNoTableId;
         return kNoTableId;
@@ -172,8 +144,6 @@ class PAIMON_EXPORT WriteContext {
  private:
     std::string root_path_;
     std::string commit_user_;
-    std::string branch_;
-    std::optional<std::string> named_branch_;
     bool is_streaming_mode_;
     bool ignore_num_bucket_check_;
     bool ignore_previous_files_;
@@ -186,7 +156,6 @@ class PAIMON_EXPORT WriteContext {
     std::shared_ptr<FileSystem> specific_file_system_;
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<RealtimeContext> realtime_context_;
-    std::map<std::string, std::string> options_;
     std::optional<std::string> table_schema_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
@@ -201,33 +170,6 @@ class PAIMON_EXPORT WriteContextBuilder {
     WriteContextBuilder(const std::string& root_path, const std::string& commit_user);
 
     ~WriteContextBuilder();
-
-    /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite. A load merges them into the table it
-    /// hands back; an option contradicting a table you loaded already is refused, so change that
-    /// one through `Table::Copy()`.
-    /// @note The options map will clear the options added by `AddOption()` before.
-    /// @param options The configuration options map.
-    /// @return Reference to this builder for method chaining.
-    /// @deprecated These options reach an operator only through the deprecated
-    /// `FileStoreWrite::Create()`-style entry points, which merge them into the table they load
-    /// and then hand that table a context carrying none. An operator created from a `Table`
-    /// serves that table's own configuration alone and refuses a context carrying any option at
-    /// all, so pass dynamic options through `Table::Copy()` instead.
-    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
-    WriteContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
-
-    /// Add a single configuration option, served the way `SetOptions()` describes.
-    ///
-    /// If you want to add multiple options, call `AddOption()` multiple times or use `SetOptions()`
-    /// instead.
-    /// @param key The option key.
-    /// @param value The option value.
-    /// @return Reference to this builder for method chaining.
-    /// @deprecated Use `Table::Copy()` to pass dynamic options, for the reason `SetOptions()`
-    /// gives.
-    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
-    WriteContextBuilder& AddOption(const std::string& key, const std::string& value);
 
     /// Set whether to enable streaming mode (default is false)
     /// @return Reference to this builder for method chaining.
@@ -265,15 +207,6 @@ class PAIMON_EXPORT WriteContextBuilder {
     ///
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithWriteId(int32_t write_id);
-
-    /// Write to specific branch, default is main.
-    ///
-    /// The identifier of `WithCatalog()` and the `branch` option may name the branch too; naming
-    /// two different ones is refused rather than silently resolved. An empty name is the main
-    /// branch.
-    /// @param branch Name of the branch to write to.
-    /// @return Reference to this builder for method chaining.
-    WriteContextBuilder& WithBranch(const std::string& branch);
 
     /// For data evolution, user can write partial specific fields from table schema.
     /// If not set, write all fields in table.
@@ -329,13 +262,9 @@ class PAIMON_EXPORT WriteContextBuilder {
     WriteContextBuilder& WithFileSystemSchemeToIdentifierMap(
         const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
 
-    /// Set the table schema as a string to avoid schema loading I/O operations.
-    ///
-    /// @param table_schema String representation of the table schema.
-    /// @return Reference to this builder for method chaining.
-    /// @note The user must ensure that the schema string is valid and matches the table.
-    /// @note If not set, the schema is read from the catalog of `WithCatalog()` on the main
-    ///       branch, and loaded from the table path otherwise.
+    /// Supplies a serialized table schema to skip schema loading.
+    /// The caller must ensure it matches the table. Without it, main uses the catalog schema
+    /// when WithCatalog() is set; other branches load from the table path.
     WriteContextBuilder& SetTableSchema(const std::string& table_schema);
 
     /// Set the thread number for write buffer spill operations. (default is 0)

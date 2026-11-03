@@ -57,7 +57,7 @@ TEST(InternalReadContext, TestReadWithUnspecifiedSchema) {
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+                                                     table_schema->Options(), {}));
     std::vector<DataField> read_fields = {DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
                                           DataField(2, arrow::field("f2", arrow::int32())),
@@ -75,7 +75,7 @@ TEST(InternalReadContext, TestReadWithSpecifiedSchema) {
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+                                                     table_schema->Options(), {}));
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
     auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields);
@@ -99,10 +99,12 @@ TEST(InternalReadContext, TestDependencyReadMergesTableCatalogAndReadOptions) {
         {CatalogOptions::URI, "http://read"},
         {CatalogOptions::TOKEN, "read-token"},
         {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}};
+    std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder(path);
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<ReadContext> read_context,
-        builder.WithCatalog(catalog, Identifier("db1", "t1")).SetOptions(read_options).Finish());
+    builder_options = read_options;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context,
+
+                         builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
     std::map<std::string, std::string> options = table_schema->Options();
     options[Options::READ_BATCH_SIZE] = "64";
     options[CatalogOptions::DATA_TOKEN_ENABLED] = "false";
@@ -110,8 +112,9 @@ TEST(InternalReadContext, TestDependencyReadMergesTableCatalogAndReadOptions) {
     for (const auto& [key, value] : read_options) {
         options[key] = value;
     }
-    ASSERT_OK_AND_ASSIGN(auto internal_context,
-                         InternalReadContext::Create(read_context, table_schema, options));
+    ASSERT_OK_AND_ASSIGN(
+        auto internal_context,
+        InternalReadContext::Create(read_context, table_schema, options, builder_options));
 
     auto dependency_context = internal_context->CreateDependencyCatalogContext();
     auto expected_options = options;
@@ -119,7 +122,6 @@ TEST(InternalReadContext, TestDependencyReadMergesTableCatalogAndReadOptions) {
     ASSERT_EQ(dependency_context->root_path, catalog->GetRootPath());
     ASSERT_EQ(dependency_context->options, expected_options);
     ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"), "table-view");
-    ASSERT_EQ(read_context->GetOptions(), read_options);
     ASSERT_EQ(catalog->GetOptions(), catalog_options);
     ASSERT_EQ(internal_context->GetCoreOptions().ToMap(), options);
 }
@@ -148,20 +150,22 @@ TEST(InternalReadContext, TestDependencyReadKeepsTheOutermostView) {
         if (test_case.read_header) {
             read_options["header.X-Paimon-Read-Via"] = test_case.read_header;
         }
+        std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder(path);
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context,
-                             builder.WithCatalog(catalog, Identifier("db1", "nested-view"))
-                                 .SetOptions(read_options)
-                                 .Finish());
+        builder_options = read_options;
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<ReadContext> read_context,
+
+            builder.WithCatalog(catalog, Identifier("db1", "nested-view")).Finish());
         auto options = table_schema->Options();
         options["header.X-Paimon-Read-Via"] =
             test_case.read_header ? test_case.read_header : "table-view";
-        ASSERT_OK_AND_ASSIGN(auto internal_context,
-                             InternalReadContext::Create(read_context, table_schema, options));
+        ASSERT_OK_AND_ASSIGN(
+            auto internal_context,
+            InternalReadContext::Create(read_context, table_schema, options, builder_options));
         auto dependency_context = internal_context->CreateDependencyCatalogContext();
         ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"),
                   test_case.expected_header);
-        ASSERT_EQ(read_context->GetOptions(), read_options);
         ASSERT_EQ(catalog->GetOptions(), catalog_options);
         ASSERT_EQ(internal_context->GetCoreOptions().ToMap(), options);
     }
@@ -205,13 +209,15 @@ TEST(InternalReadContext, TestDependencyReadHeaderUsesFinalMetastore) {
             read_options[CatalogOptions::METASTORE] = test_case.read_metastore;
             options[CatalogOptions::METASTORE] = test_case.read_metastore;
         }
+        std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder(path);
+        builder_options = read_options;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context,
-                             builder.WithCatalog(catalog, Identifier("db1", "t1"))
-                                 .SetOptions(read_options)
-                                 .Finish());
-        ASSERT_OK_AND_ASSIGN(auto internal_context,
-                             InternalReadContext::Create(read_context, table_schema, options));
+
+                             builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+        ASSERT_OK_AND_ASSIGN(
+            auto internal_context,
+            InternalReadContext::Create(read_context, table_schema, options, builder_options));
         auto dependency_context = internal_context->CreateDependencyCatalogContext();
         if (test_case.expected_metastore) {
             ASSERT_EQ(dependency_context->options.at(CatalogOptions::METASTORE),
@@ -224,7 +230,6 @@ TEST(InternalReadContext, TestDependencyReadHeaderUsesFinalMetastore) {
         } else {
             ASSERT_EQ(dependency_context->options.count("header.X-Paimon-Read-Via"), 0u);
         }
-        ASSERT_EQ(read_context->GetOptions(), read_options);
         ASSERT_EQ(catalog->GetOptions(), catalog_options);
         ASSERT_EQ(internal_context->GetCoreOptions().ToMap(), options);
     }
@@ -234,14 +239,18 @@ TEST(InternalReadContext, TestDependencyReadHeaderNeedsAnIdentifier) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder(path);
+    builder_options[CatalogOptions::METASTORE] = "REST";
     ASSERT_OK_AND_ASSIGN(auto read_context,
-                         builder.AddOption(CatalogOptions::METASTORE, "REST").Finish());
+
+                         builder.Finish());
     ASSERT_FALSE(read_context->GetIdentifier());
     auto options = table_schema->Options();
     options[CatalogOptions::METASTORE] = "REST";
-    ASSERT_OK_AND_ASSIGN(auto internal_context, InternalReadContext::Create(std::move(read_context),
-                                                                            table_schema, options));
+    ASSERT_OK_AND_ASSIGN(
+        auto internal_context,
+        InternalReadContext::Create(std::move(read_context), table_schema, options, {}));
     auto dependency_context = internal_context->CreateDependencyCatalogContext();
     ASSERT_EQ(dependency_context->options.count("header.X-Paimon-Read-Via"), 0u);
 }
@@ -258,7 +267,7 @@ TEST(InternalReadContext, TestDependencyReadHeaderReportsTheBranchOfTheStartingT
                          builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).Finish());
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+                                                     table_schema->Options(), {}));
     auto dependency_context = internal_context->CreateDependencyCatalogContext();
     ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"),
               "%7B%22database%22%3A%22db1%22%2C%22object%22%3A%22t1%24branch_dev%22%7D");
@@ -279,7 +288,7 @@ TEST(InternalReadContext, TestFileSystemSchemeMapReachesTheDependencyRead) {
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+                                                     table_schema->Options(), {}));
     ASSERT_EQ(internal_context->GetFileSystemSchemeToIdentifierMap(), scheme_map);
     ASSERT_EQ(internal_context->CreateDependencyCatalogContext()->fs_scheme_to_identifier_map,
               scheme_map);
@@ -294,7 +303,7 @@ TEST(InternalReadContext, TestReadWithSpecifiedFieldId) {
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+                                                     table_schema->Options(), {}));
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
     auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields);
@@ -313,7 +322,7 @@ TEST(InternalReadContext, TestReadWithSpecifiedFieldIdAndSchema) {
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+                                                     table_schema->Options(), {}));
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
     auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields);
@@ -335,7 +344,7 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
         new_options[Options::DATA_EVOLUTION_ENABLED] = "true";
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
-            InternalReadContext::Create(std::move(read_context), table_schema, new_options));
+            InternalReadContext::Create(std::move(read_context), table_schema, new_options, {}));
         std::vector<DataField> read_fields = {
             DataField(3, arrow::field("f3", arrow::float64())),
             DataField(0, arrow::field("f0", arrow::utf8())), SpecialFields::RowId(),
@@ -352,7 +361,7 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
         ASSERT_NOK_WITH_MSG(InternalReadContext::Create(std::move(read_context), table_schema,
-                                                        table_schema->Options()),
+                                                        table_schema->Options(), {}),
                             "Get field _ROW_ID failed: not exist in table schema");
     }
     {
@@ -364,7 +373,7 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
         ASSERT_NOK_WITH_MSG(InternalReadContext::Create(std::move(read_context), table_schema,
-                                                        table_schema->Options()),
+                                                        table_schema->Options(), {}),
                             "Get field _INDEX_SCORE failed: not exist in table schema");
     }
 }
@@ -383,7 +392,7 @@ TEST(InternalReadContext, TestVectorSearchIndexScoreProjection) {
         ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto internal_context,
                              InternalReadContext::Create(std::move(read_context), table_schema,
-                                                         table_schema->Options()));
+                                                         table_schema->Options(), {}));
         std::shared_ptr<arrow::Schema> expected = DataField::ConvertDataFieldsToArrowSchema(
             {DataField(0, arrow::field("f0", arrow::utf8())), SpecialFields::IndexScore()});
         EXPECT_TRUE(internal_context->GetReadSchema()->Equals(expected));
@@ -394,7 +403,7 @@ TEST(InternalReadContext, TestVectorSearchIndexScoreProjection) {
         ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto internal_context,
                              InternalReadContext::Create(std::move(read_context), table_schema,
-                                                         table_schema->Options()));
+                                                         table_schema->Options(), {}));
         EXPECT_EQ(arrow::Type::FLOAT, internal_context->GetReadSchema()->field(1)->type()->id());
     }
     {
@@ -407,7 +416,7 @@ TEST(InternalReadContext, TestVectorSearchIndexScoreProjection) {
         ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto internal_context,
                              InternalReadContext::Create(std::move(read_context), table_schema,
-                                                         table_schema->Options()));
+                                                         table_schema->Options(), {}));
         EXPECT_EQ(std::vector<std::string>({"_INDEX_SCORE", "f0"}),
                   internal_context->GetReadSchema()->field_names());
     }
@@ -426,12 +435,12 @@ TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<InternalReadContext> internal,
-        InternalReadContext::Create(context, table_schema, table_schema->Options()));
+        InternalReadContext::Create(context, table_schema, table_schema->Options(), {}));
     EXPECT_TRUE(internal->HasVectorOrFullTextSearch());
 
     std::map<std::string, std::string> options = table_schema->Options();
     options[Options::DELETION_VECTORS_ENABLED] = "false";
-    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, options),
+    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, options, {}),
                         "primary-key tables requires deletion vectors");
 }
 
@@ -444,8 +453,9 @@ TEST(InternalReadContext, TestFileFullTextSearchScoreIsNotSupported) {
     ReadContextBuilder builder(path);
     builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
-    ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, table_schema->Options()),
-                        "does not support score output");
+    ASSERT_NOK_WITH_MSG(
+        InternalReadContext::Create(context, table_schema, table_schema->Options(), {}),
+        "does not support score output");
 }
 
 TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
@@ -477,7 +487,7 @@ TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
         if (test_case.expected_error.empty()) {
             ASSERT_OK_AND_ASSIGN(
                 std::shared_ptr<InternalReadContext> internal,
-                InternalReadContext::Create(context, table_schema, table_schema->Options()));
+                InternalReadContext::Create(context, table_schema, table_schema->Options(), {}));
             ASSERT_TRUE(internal->GetIndexScoreBindings().empty());
             ASSERT_FALSE(internal->NeedsScores(
                 {InternalReadContext::IndexScoreSource::Type::FULL_TEXT_MATCH, match->field_name}));
@@ -486,7 +496,7 @@ TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
                 "CreateWithSchema does not support");
         } else {
             ASSERT_NOK_WITH_MSG(
-                InternalReadContext::Create(context, table_schema, table_schema->Options()),
+                InternalReadContext::Create(context, table_schema, table_schema->Options(), {}),
                 test_case.expected_error);
         }
     }
@@ -521,7 +531,7 @@ TEST(InternalReadContext, TestPerFieldTopKScoreBindings) {
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
             ASSERT_OK_AND_ASSIGN(
                 std::shared_ptr<InternalReadContext> internal,
-                InternalReadContext::Create(context, table_schema, table_schema->Options()));
+                InternalReadContext::Create(context, table_schema, table_schema->Options(), {}));
             ASSERT_EQ(internal->GetReadSchema()->field_names(), projection);
             ASSERT_TRUE(internal->NeedsScores(source));
             ASSERT_FALSE(internal->NeedsScores(
@@ -557,7 +567,7 @@ class InternalReadContextScoreTest : public testing::Test {
 
     Result<std::unique_ptr<InternalReadContext>> Create(ReadContextBuilder* builder) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> context, builder->Finish());
-        return InternalReadContext::Create(context, table_schema_, table_schema_->Options());
+        return InternalReadContext::Create(context, table_schema_, table_schema_->Options(), {});
     }
 
     std::shared_ptr<TableSchema> table_schema_;
@@ -783,7 +793,7 @@ TEST(InternalReadContext, TestReadWithValueKindField) {
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+                                                     table_schema->Options(), {}));
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                           SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
@@ -809,7 +819,7 @@ TEST(InternalReadContext, TestReadWithFieldIdsAndSpecialFields) {
         new_options[Options::DATA_EVOLUTION_ENABLED] = "true";
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
-            InternalReadContext::Create(std::move(read_context), table_schema, new_options));
+            InternalReadContext::Create(std::move(read_context), table_schema, new_options, {}));
         std::vector<DataField> read_fields = {
             DataField(3, arrow::field("f3", arrow::float64())),
             DataField(0, arrow::field("f0", arrow::utf8())), SpecialFields::RowId(),
@@ -838,7 +848,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaAndSpecialFields) {
         ASSERT_OK_AND_ASSIGN(auto unique_read_context, context_builder.Finish());
         std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
         ASSERT_NOK_WITH_MSG(
-            InternalReadContext::Create(read_context, table_schema, table_schema->Options()),
+            InternalReadContext::Create(read_context, table_schema, table_schema->Options(), {}),
             "not exist in table schema");
     }
 
@@ -857,7 +867,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaAndSpecialFields) {
         std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
-            InternalReadContext::Create(read_context, table_schema, enabled_options));
+            InternalReadContext::Create(read_context, table_schema, enabled_options, {}));
         auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(projected_fields);
         ASSERT_TRUE(internal_context->GetReadSchema()->Equals(expected_schema));
     }
@@ -881,7 +891,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaWithoutFieldIds) {
 
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
-        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options(), {}));
 
     std::vector<DataField> expected_fields = {
         DataField(3, arrow::field("f3", arrow::float64())),
@@ -913,7 +923,7 @@ TEST(InternalReadContext, TestProjectedSchemaMetadataWhitelist) {
 
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
-        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options(), {}));
 
     auto aligned_field = internal_context->GetReadSchema()->GetFieldByName("f0");
     ASSERT_TRUE(aligned_field);
@@ -954,7 +964,7 @@ TEST(InternalReadContext, TestMapSharedShreddingAccessRequiresSharedShreddingLay
     std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
 
     ASSERT_NOK_WITH_MSG(
-        InternalReadContext::Create(read_context, table_schema, table_schema->Options()),
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options(), {}),
         "Selected-key MAP pushdown only supports top-level shared-shredding MAP field: tags");
 }
 

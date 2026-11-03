@@ -34,15 +34,9 @@ class IOManager;
 class SplitGenerator;
 class TableSchema;
 
-/// The managed table a schema with primary keys describes, Java Paimon's
-/// `PrimaryKeyFileStoreTable`. Its write merges by key, and its scan, read and commit read
-/// through the merge. The operator flows are the ones `FileStoreTable` carries; the pieces
-/// those flows hand down are built here.
+/// Managed table with primary keys; uses the shared FileStoreTable operator flows.
 class PrimaryKeyFileStoreTable : public FileStoreTable {
  public:
-    /// The constructor `FileStoreTable::Create` builds a primary key table through: the store
-    /// carries the storage state, `schema` is the schema the table was loaded with, and the base
-    /// class holds both.
     PrimaryKeyFileStoreTable(const std::shared_ptr<FileStore>& store,
                              const std::shared_ptr<TableSchema>& schema,
                              const Identifier& identifier, const std::string& uuid);

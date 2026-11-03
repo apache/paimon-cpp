@@ -51,14 +51,16 @@ class AppendCountReaderTest : public testing::Test {
  protected:
     Result<std::vector<std::shared_ptr<Split>>> CreateSplits(
         const std::string& table_path, const std::optional<int64_t>& snapshot_id) {
+        std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder(table_path);
         if (snapshot_id.has_value()) {
-            scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID,
-                                           std::to_string(snapshot_id.value()));
+            scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] =
+                std::to_string(snapshot_id.value());
         }
 
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context),
+                                                                  scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto plan, table_scan->CreatePlan());
         if (snapshot_id.has_value() &&
             (!plan->SnapshotId().has_value() || plan->SnapshotId().value() != snapshot_id)) {
@@ -136,7 +138,7 @@ TEST_F(AppendCountReaderTest, TestAppendOnlyTableReadCreateCountReaderPredicateN
     ReadContextBuilder read_context_builder(table_path);
     read_context_builder.SetPredicate(predicate);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context), {}));
 
     ASSERT_OK_AND_ASSIGN(auto splits, CreateSplits(table_path, /*snapshot_id=*/5));
     ASSERT_NOK_WITH_MSG(table_read->CreateCountReader(splits),

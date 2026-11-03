@@ -41,37 +41,24 @@ CommitContext::CommitContext(const std::string& root_path, const std::string& co
                              bool append_commit_check_conflict,
                              const std::shared_ptr<MemoryPool>& memory_pool,
                              const std::shared_ptr<Executor>& executor,
-                             const std::shared_ptr<FileSystem>& specific_file_system,
-                             const std::map<std::string, std::string>& options)
+                             const std::shared_ptr<FileSystem>& specific_file_system)
     : CommitContext(root_path, commit_user, ignore_empty_commit, use_rest_catalog_commit,
                     /*catalog=*/nullptr, /*identifier=*/std::nullopt, /*table_id=*/std::nullopt,
                     append_commit_check_conflict, memory_pool, executor, specific_file_system,
-                    options,
-                    // Without an identifier the option is the only name a branch can have.
-                    BranchManager::NormalizeBranch(
-                        options.count(Options::BRANCH) ? options.at(Options::BRANCH) : ""),
-                    // The option names the branch, and nothing else can when there is no
-                    // identifier.
-                    options.count(Options::BRANCH)
-                        ? std::optional<std::string>(BranchManager::NormalizeBranch(
-                              options.at(Options::BRANCH)))
-                        : std::nullopt,
                     /*table_schema=*/std::nullopt, /*fs_scheme_to_identifier_map=*/{}) {}
 
-CommitContext::CommitContext(
-    const std::string& root_path, const std::string& commit_user, bool ignore_empty_commit,
-    bool use_rest_catalog_commit, const std::shared_ptr<Catalog>& catalog,
-    const std::optional<Identifier>& identifier, const std::optional<std::string>& table_id,
-    bool append_commit_check_conflict, const std::shared_ptr<MemoryPool>& memory_pool,
-    const std::shared_ptr<Executor>& executor,
-    const std::shared_ptr<FileSystem>& specific_file_system,
-    const std::map<std::string, std::string>& options, const std::string& branch,
-    const std::optional<std::string>& named_branch,
-    const std::optional<std::string>& table_schema,
-    const std::map<std::string, std::string>& fs_scheme_to_identifier_map)
+CommitContext::CommitContext(const std::string& root_path, const std::string& commit_user,
+                             bool ignore_empty_commit, bool use_rest_catalog_commit,
+                             const std::shared_ptr<Catalog>& catalog,
+                             const std::optional<Identifier>& identifier,
+                             const std::optional<std::string>& table_id,
+                             bool append_commit_check_conflict,
+                             const std::shared_ptr<MemoryPool>& memory_pool,
+                             const std::shared_ptr<Executor>& executor,
+                             const std::shared_ptr<FileSystem>& specific_file_system,
+                             const std::optional<std::string>& table_schema,
+                             const std::map<std::string, std::string>& fs_scheme_to_identifier_map)
     : root_path_(root_path),
-      branch_(branch),
-      named_branch_(named_branch),
       commit_user_(commit_user),
       ignore_empty_commit_(ignore_empty_commit),
       use_rest_catalog_commit_(use_rest_catalog_commit),
@@ -83,7 +70,6 @@ CommitContext::CommitContext(
       executor_(executor),
       specific_file_system_(specific_file_system),
       fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
-      options_(options),
       table_schema_(table_schema) {}
 
 CommitContext::~CommitContext() = default;
@@ -104,7 +90,6 @@ class CommitContextBuilder::Impl {
         specific_file_system_.reset();
         fs_scheme_to_identifier_map_.clear();
         table_schema_ = std::nullopt;
-        options_.clear();
     }
 
  private:
@@ -121,7 +106,6 @@ class CommitContextBuilder::Impl {
     std::shared_ptr<FileSystem> specific_file_system_;
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::optional<std::string> table_schema_;
-    std::map<std::string, std::string> options_;
 };
 
 CommitContextBuilder::CommitContextBuilder(const std::string& root_path,
@@ -132,18 +116,6 @@ CommitContextBuilder::CommitContextBuilder(const std::string& root_path,
 }
 
 CommitContextBuilder::~CommitContextBuilder() = default;
-
-CommitContextBuilder& CommitContextBuilder::AddOption(const std::string& key,
-                                                      const std::string& value) {
-    impl_->options_[key] = value;
-    return *this;
-}
-
-CommitContextBuilder& CommitContextBuilder::SetOptions(
-    const std::map<std::string, std::string>& opts) {
-    impl_->options_ = opts;
-    return *this;
-}
 
 CommitContextBuilder& CommitContextBuilder::IgnoreEmptyCommit(bool ignore_empty_commit) {
     impl_->ignore_empty_commit_ = ignore_empty_commit;
@@ -216,31 +188,6 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
         PAIMON_RETURN_NOT_OK(
             CatalogUtils::CheckNotSystemTable(impl_->identifier_.value(), "commit"));
     }
-    std::optional<std::string> identifier_branch;
-    if (impl_->identifier_) {
-        PAIMON_ASSIGN_OR_RAISE(identifier_branch, impl_->identifier_->GetBranchName());
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::string branch, BranchManager::ResolveBranch(
-                                                   impl_->identifier_, impl_->options_,
-                                                   /*explicit_branch=*/std::nullopt, "commit"));
-    if (!BranchManager::IsMainBranch(branch)) {
-        // A commit which goes to a catalog, or is handed back as a request for one, names its
-        // branch by an object name, so the branch has to be one that reads back as itself.
-        // Refused here rather than at the commit, which writes metadata before publishing it.
-        if (impl_->catalog_ != nullptr || impl_->use_rest_catalog_commit_) {
-            PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
-        }
-        if (impl_->catalog_ != nullptr) {
-            if (!identifier_branch) {
-                PAIMON_ASSIGN_OR_RAISE(std::string table_name,
-                                       impl_->identifier_.value().GetDataTableName());
-                return Status::Invalid(fmt::format(
-                    "a commit through a catalog addresses a branch by the table identifier, so "
-                    "name branch '{}' there as '{}$branch_{}' rather than only in the '{}' option",
-                    branch, table_name, branch, Options::BRANCH));
-            }
-        }
-    }
     if (impl_->catalog_ != nullptr && impl_->use_rest_catalog_commit_) {
         return Status::Invalid(
             "a commit either goes to the catalog of WithCatalog() or is handed back as a request "
@@ -248,9 +195,7 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
     }
     if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr &&
         impl_->fs_scheme_to_identifier_map_.empty()) {
-        // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the commit uses the credentials of this table. A scheme map
-        // routes by scheme instead, so the catalog is not asked when one is set.
+        // A scheme map takes precedence over catalog-issued per-table credentials.
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
@@ -258,18 +203,11 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
     if (impl_->root_path_.empty()) {
         return Status::Invalid("root path is empty");
     }
-    // The branch the naming settings named, kept beside the resolved one so that a table can
-    // tell a context naming no branch - which it serves on its own - from one naming another.
-    std::optional<std::string> named_branch;
-    if (identifier_branch || impl_->options_.find(Options::BRANCH) != impl_->options_.end()) {
-        named_branch = branch;
-    }
     auto ctx = std::make_unique<CommitContext>(
         impl_->root_path_, impl_->commit_user_, impl_->ignore_empty_commit_,
         impl_->use_rest_catalog_commit_, impl_->catalog_, impl_->identifier_, impl_->table_id_,
         impl_->append_commit_check_conflict_, impl_->memory_pool_, impl_->executor_,
-        impl_->specific_file_system_, impl_->options_, branch, named_branch,
-        impl_->table_schema_, impl_->fs_scheme_to_identifier_map_);
+        impl_->specific_file_system_, impl_->table_schema_, impl_->fs_scheme_to_identifier_map_);
     impl_->Reset();
     return ctx;
 }

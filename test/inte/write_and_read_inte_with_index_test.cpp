@@ -133,16 +133,17 @@ class WriteAndReadInteWithIndexTest
                      const std::vector<std::shared_ptr<Split>> splits,
                      const std::shared_ptr<Predicate>& predicate,
                      const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
+        std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder(table_path);
-        context_builder.AddOption("read.batch-size", "2")
-            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
-            .SetPredicate(predicate)
-            .EnableLateMaterializing(false);
+        context_builder_options["read.batch-size"] = "2";
+        context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
+        context_builder.SetPredicate(predicate).EnableLateMaterializing(false);
         if (enable_prefetch_) {
             context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(std::move(read_context), context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
 
         ASSERT_OK_AND_ASSIGN(auto result_array,
@@ -1176,16 +1177,18 @@ TEST_P(WriteAndReadInteWithIndexTest, TestSimple) {
                                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
 
+    std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder(path);
-    context_builder.AddOption("read.batch-size", "2")
-        .AddOption("test.enable-adaptive-prefetch-strategy", "false")
-        .AddOption("orc.read.enable-metrics", "true")
-        .SetPredicate(predicate);
+    context_builder_options["read.batch-size"] = "2";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
+    context_builder_options["orc.read.enable-metrics"] = "true";
+    context_builder.SetPredicate(predicate);
     if (enable_prefetch_) {
         context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(std::move(read_context), context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(split));
     ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
     std::shared_ptr<Metrics> read_metrics = batch_reader->GetReaderMetrics();
@@ -1249,17 +1252,19 @@ TEST_P(WriteAndReadInteWithIndexTest, TestReadWithLimits) {
     auto predicate =
         PredicateBuilder::NotEqual(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
                                    Literal(FieldType::STRING, "Alice", 5));
+    std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder(path);
-    context_builder.AddOption(Options::FILE_FORMAT, "orc")
-        .AddOption("test.enable-adaptive-prefetch-strategy", "false")
-        .AddOption(Options::READ_BATCH_SIZE, "1")
-        .AddOption("orc.read.enable-metrics", "true")
-        .SetPredicate(predicate);
+    context_builder_options[Options::FILE_FORMAT] = "orc";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
+    context_builder_options[Options::READ_BATCH_SIZE] = "1";
+    context_builder_options["orc.read.enable-metrics"] = "true";
+    context_builder.SetPredicate(predicate);
     if (enable_prefetch_) {
         context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(std::move(read_context), context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(split));
     // simulate read limits, only read 3 batches
     std::vector<BatchReader::ReadBatch> batches;
@@ -1533,17 +1538,18 @@ TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
         /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
         Literal(FieldType::STRING, literal_str.data(), literal_str.size()));
 
+    std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder(path);
-    context_builder.AddOption("read.batch-size", "2")
-        .AddOption("test.enable-adaptive-prefetch-strategy", "false")
-        .SetPredicate(predicate)
-        .EnablePredicateFilter(true)
-        .EnableLateMaterializing(true);
+    context_builder_options["read.batch-size"] = "2";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
+    context_builder.SetPredicate(predicate).EnablePredicateFilter(true).EnableLateMaterializing(
+        true);
     if (enable_prefetch_) {
         context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(std::move(read_context), context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader,
                          table_read->CreateReader(std::vector<std::shared_ptr<Split>>{split}));
     ASSERT_OK_AND_ASSIGN(auto result_array,
@@ -2934,15 +2940,17 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithIOException) {
     for (size_t i = 0; i < 200; i++) {
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
+        std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder(path);
-        context_builder.AddOption("read.batch-size", "2")
-            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
-            .SetPredicate(predicate);
+        context_builder_options["read.batch-size"] = "2";
+        context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
+        context_builder.SetPredicate(predicate);
         if (enable_prefetch_) {
             context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        Result<std::unique_ptr<TableRead>> table_read = TableRead::Create(std::move(read_context));
+        Result<std::unique_ptr<TableRead>> table_read =
+            TableRead::Create(std::move(read_context), context_builder_options);
         CHECK_HOOK_STATUS(table_read.status(), i);
         Result<std::unique_ptr<BatchReader>> batch_reader = table_read.value()->CreateReader(split);
         CHECK_HOOK_STATUS(batch_reader.status(), i);

@@ -218,9 +218,14 @@ to both the index scan and the data scan:
                               "f0", R"({"match":{"query":"paimon lake"}})", /*limit=*/10)));
 
    paimon::ScanContextBuilder scan_builder(table_path);
-   scan_builder.AddOption(paimon::Options::SCAN_MODE, "from-snapshot")
-       .AddOption(paimon::Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id))
-       .SetGlobalIndexResult(result);
+   scan_builder.SetGlobalIndexResult(result);
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
+                          scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(
+       std::unique_ptr<paimon::TableScan> scan,
+       paimon::TableScan::Create(std::move(scan_context),
+                                {{paimon::Options::SCAN_MODE, "from-snapshot"},
+                                 {paimon::Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id)}}));
 
 **Configuration:**
 

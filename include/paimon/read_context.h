@@ -52,25 +52,21 @@ struct VectorSearch;
 /// @see ReadContextBuilder
 class PAIMON_EXPORT ReadContext {
  public:
-    ReadContext(const std::string& path, const std::string& branch,
-                const std::vector<std::string>& read_field_names,
-                const std::vector<int32_t>& read_field_ids,
-                const std::shared_ptr<Predicate>& predicate,
-                const std::shared_ptr<VectorSearch>& vector_search,
-                const std::shared_ptr<FullTextSearch>& full_text_search,
-                bool enable_predicate_filter, bool enable_prefetch, bool enable_late_materializing,
-                uint32_t prefetch_batch_count, uint32_t prefetch_max_parallel_num,
-                bool enable_multi_thread_row_to_batch, uint32_t row_to_batch_thread_number,
-                const std::optional<std::string>& table_schema,
-                const std::shared_ptr<MemoryPool>& memory_pool,
-                const std::shared_ptr<Executor>& executor,
-                const std::shared_ptr<FileSystem>& specific_file_system,
-                const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-                const std::shared_ptr<RealtimeContext>& realtime_context,
-                const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
-                const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-                WarmupLevel warmup_level, const std::shared_ptr<Catalog>& catalog,
-                const std::optional<Identifier>& identifier);
+    ReadContext(
+        const std::string& path, const std::vector<std::string>& read_field_names,
+        const std::vector<int32_t>& read_field_ids, const std::shared_ptr<Predicate>& predicate,
+        const std::shared_ptr<VectorSearch>& vector_search,
+        const std::shared_ptr<FullTextSearch>& full_text_search, bool enable_predicate_filter,
+        bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
+        uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
+        uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
+        const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
+        const std::shared_ptr<FileSystem>& specific_file_system,
+        const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
+        const std::shared_ptr<RealtimeContext>& realtime_context, bool read_ahead_cache_enabled,
+        const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
+        WarmupLevel warmup_level, const std::shared_ptr<Catalog>& catalog,
+        const std::optional<Identifier>& identifier);
 
     ~ReadContext();
 
@@ -78,24 +74,8 @@ class PAIMON_EXPORT ReadContext {
         return path_;
     }
 
-    const std::string& GetBranch() const {
-        return branch_;
-    }
-
     const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
         return fs_scheme_to_identifier_map_;
-    }
-
-    const std::map<std::string, std::string>& GetOptions() const {
-        return options_;
-    }
-
-    /// Empties the options this context carries. A one-step `TableRead::Create()`-style entry point
-    /// folds them into the table it loads and clears them before handing the context to `NewRead`,
-    /// which serves that table's own configuration alone; a caller holding a table calls
-    /// `NewRead` with no options at all.
-    void ClearOptions() {
-        options_.clear();
     }
 
     const std::vector<std::string>& GetReadFieldNames() const {
@@ -188,8 +168,7 @@ class PAIMON_EXPORT ReadContext {
         return identifier_;
     }
 
-    /// Returns the catalog table UUID, so that every context answers `GetTableId()` the way
-    /// `CommitContext` does; a read carries none.
+    /// Returns nullopt; read contexts do not carry a table UUID.
     const std::optional<std::string>& GetTableId() const {
         static const std::optional<std::string> kNoTableId;
         return kNoTableId;
@@ -213,7 +192,6 @@ class PAIMON_EXPORT ReadContext {
 
  private:
     std::string path_;
-    std::string branch_;
     std::vector<std::string> read_field_names_;
     std::vector<int32_t> read_field_ids_;
     std::shared_ptr<Predicate> predicate_;
@@ -232,7 +210,6 @@ class PAIMON_EXPORT ReadContext {
     std::shared_ptr<FileSystem> specific_file_system_;
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<RealtimeContext> realtime_context_;
-    std::map<std::string, std::string> options_;
     bool read_ahead_cache_enabled_;
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
@@ -324,33 +301,6 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @note Priority: read_schema > read_field_ids > read_field_names.
     ///       When set, read_field_ids and read_field_names are ignored.
     ReadContextBuilder& SetReadSchema(std::unique_ptr<ArrowSchema> read_schema);
-
-    /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite. A load merges them into the table it
-    /// hands back; an option contradicting a table you loaded already is refused, so change that
-    /// one through `Table::Copy()`.
-    /// @note The options map will clear the options added by `AddOption()` before.
-    /// @param options The configuration options map.
-    /// @return Reference to this builder for method chaining.
-    /// @deprecated These options reach an operator only through the deprecated
-    /// `TableRead::Create()`-style entry points, which merge them into the table they load and
-    /// then hand that table a context carrying none. An operator created from a `Table` serves
-    /// that table's own configuration alone and refuses a context carrying any option at all, so
-    /// pass dynamic options through `Table::Copy()` instead.
-    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
-    ReadContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
-
-    /// Add a single configuration option, served the way `SetOptions()` describes.
-    ///
-    /// If you want to add multiple options, call `AddOption()` multiple times or use `SetOptions()`
-    /// instead.
-    /// @param key The option key.
-    /// @param value The option value.
-    /// @return Reference to this builder for method chaining.
-    /// @deprecated Use `Table::Copy()` to pass dynamic options, for the reason `SetOptions()`
-    /// gives.
-    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
-    ReadContextBuilder& AddOption(const std::string& key, const std::string& value);
 
     /// Set a predicate for filtering data during reading.
     ///
@@ -512,19 +462,6 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @note The user must ensure that the schema string is valid and matches the table.
     /// @note If not set, the schema will be loaded from the table path.
     ReadContextBuilder& SetTableSchema(const std::string& table_schema);
-
-    /// Set the specific branch to read from in a versioned table.
-    ///
-    /// Paimon supports branching for data versioning and time travel queries.
-    /// This method allows reading from a specific branch instead of the main branch.
-    ///
-    /// The `branch` option names the branch too, as it does for a scan of one branch; naming two
-    /// different branches is refused rather than silently resolved.
-    ///
-    /// @param branch Name of the branch to read from.
-    /// @return Reference to this builder for method chaining.
-    /// @note Default branch is "main" if not specified. An empty name is the main branch.
-    ReadContextBuilder& WithBranch(const std::string& branch);
 
     /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
     /// identifiers. This allows selecting different pre-registered file system implementations

@@ -58,38 +58,24 @@ class InternalReadContext {
         std::string field_name;
     };
 
-    /// Builds the context of the read a table serves: the options are the table's own, already
-    /// parsed, and the cache the context carries is armed on them here.
-    /// @param root_path The root path the table was opened with. The read reads from it in place of
-    ///        the path the context names.
+    /// Builds a read context using the table's resolved options and the operation's cache.
+    /// @param root_path Table root path, overriding the context's path.
     static Result<std::unique_ptr<InternalReadContext>> CreateForTable(
         const std::shared_ptr<ReadContext>& read_context,
         const std::shared_ptr<TableSchema>& table_schema, CoreOptions core_options,
-        const std::string& root_path);
+        const std::string& root_path, const std::map<std::string, std::string>& dynamic_options);
 
-    /// Builds the context of a read whose options are composed on the spot rather than the table's
-    /// own: the reads a write or a lookup serve inside themselves. Such a read serves the file
-    /// system the context resolved and reads from the path the context names. A fallback branch
-    /// reads through `CreateForFallbackBranch` instead, whose schema belongs to another branch.
+    /// Builds an internal write/lookup read from effective options and the context's file system.
     static Result<std::unique_ptr<InternalReadContext>> Create(
         const std::shared_ptr<ReadContext>& read_context,
         const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& options);
+        const std::map<std::string, std::string>& options,
+        const std::map<std::string, std::string>& dynamic_options);
 
-    /// The read context of a fallback branch, whose schema is not the table's own: it is read
-    /// through a manager of that branch, and the read serves the options that schema was loaded
-    /// with, the branch it was read from among them. A branch the context carries is not honoured
-    /// here, and neither are options the context adds on its own: the fallback reader serves the
-    /// table the way the main reader does, and a load merges the context's options into the
-    /// dynamic options handed in here. The C++ reading of the Java
-    /// `FileStoreTableFactory#createOtherBranchTable`, which loads the other branch's table the
-    /// same way for the fallback reader to serve.
-    /// @param file_system The file system the table was opened with, in place of one resolved from
-    ///        the context.
-    /// @param root_path The root path the table was opened with, in place of the one the context
-    ///        names.
-    /// @param table_dynamic_options The dynamic options the load merged into the table - and the
-    ///        ones its copies accumulated.
+    /// Loads the fallback branch schema and applies the table's accumulated dynamic options.
+    /// @param file_system File system used to open the table.
+    /// @param root_path Table root path, overriding the context's path.
+    /// @param table_dynamic_options Overrides accumulated when loading or copying the table.
     static Result<std::unique_ptr<InternalReadContext>> CreateForFallbackBranch(
         const std::shared_ptr<ReadContext>& context, const std::string& branch,
         const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
@@ -200,17 +186,14 @@ class InternalReadContext {
                         const CoreOptions& options, std::optional<std::string> path,
                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
-    /// The tail of a read whose options are a map: they resolve to `CoreOptions` against
-    /// `file_system`, or against the context's own when it is null, and then go where
-    /// `CreateFromCoreOptions` takes them.
+    /// Resolves option maps using file_system, or the context's file system when null.
     static Result<std::unique_ptr<InternalReadContext>> CreateFromOptions(
         const std::shared_ptr<ReadContext>& read_context,
         const std::shared_ptr<TableSchema>& table_schema,
         const std::map<std::string, std::string>& options,
         const std::shared_ptr<FileSystem>& file_system, std::optional<std::string> path);
 
-    /// The tail both `Create` entries share: the options arrive parsed and cached, and the
-    /// validations and the read schema below are the same whichever way they were resolved.
+    /// Validates the resolved options and builds the read schema.
     static Result<std::unique_ptr<InternalReadContext>> CreateFromCoreOptions(
         const std::shared_ptr<ReadContext>& read_context,
         const std::shared_ptr<TableSchema>& table_schema, CoreOptions core_options,
@@ -233,9 +216,9 @@ class InternalReadContext {
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     CoreOptions options_;
+    std::map<std::string, std::string> dynamic_options_;
     std::map<int32_t, IndexScoreSource> index_score_bindings_;
-    /// The root path a table reads through, or empty for the read context's own, which a caller
-    /// without a table leaves it as.
+    /// Optional table root path; unset for reads using the context's path.
     std::optional<std::string> path_;
 };
 

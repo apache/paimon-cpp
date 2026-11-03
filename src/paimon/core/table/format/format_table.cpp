@@ -205,9 +205,13 @@ Result<std::shared_ptr<FormatTable>> FormatTable::CopySelf(
     for (const auto& [key, value] : dynamic_options) {
         options[key] = value;
     }
-    return Create(file_system_, root_path_, identifier_,
-                  std::static_pointer_cast<DataSchema>(schema_), location_carries_paimon_metadata_,
-                  options);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FormatTable> copied,
+        Create(file_system_, root_path_, identifier_, std::static_pointer_cast<DataSchema>(schema_),
+               location_carries_paimon_metadata_, options));
+    // Java merges file.format into the option map but retains the physical format of the table.
+    copied->format_ = format_;
+    return copied;
 }
 
 Result<std::shared_ptr<Table>> FormatTable::Copy(
@@ -228,8 +232,6 @@ Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
     std::shared_ptr<ScanContext> shared_context = std::move(context);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(shared_context, "scan"));
-    PAIMON_RETURN_NOT_OK(
-        ContextUtils::CheckContextCarriesNoOptions("scan", shared_context->GetOptions()));
     std::shared_ptr<FormatTable> table = SharedSelf();
     if (shared_context->IsStreamingMode()) {
         return Status::Invalid(
@@ -273,8 +275,6 @@ Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
     std::unique_ptr<ReadContext> context) const {
     std::shared_ptr<ReadContext> read_context = std::move(context);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(read_context, "read"));
-    PAIMON_RETURN_NOT_OK(
-        ContextUtils::CheckContextCarriesNoOptions("read", read_context->GetOptions()));
     if (read_context->HasVectorOrFullTextSearch()) {
         return Status::NotImplemented(
             "VectorSearch or FullTextSearch is not supported for format tables");
@@ -290,8 +290,6 @@ Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
 Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
     std::unique_ptr<WriteContext> context) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "write"));
-    PAIMON_RETURN_NOT_OK(
-        ContextUtils::CheckContextCarriesNoOptions("write", context->GetOptions()));
     std::shared_ptr<FormatTable> table = SharedSelf();
     if (context->GetCatalog() != nullptr) {
         return Status::Invalid(
@@ -322,8 +320,6 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
 Result<std::unique_ptr<FileStoreCommit>> FormatTable::NewCommit(
     std::unique_ptr<CommitContext> context) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "commit"));
-    PAIMON_RETURN_NOT_OK(
-        ContextUtils::CheckContextCarriesNoOptions("commit", context->GetOptions()));
     std::shared_ptr<FormatTable> given_table = SharedSelf();
     if (!context->IgnoreEmptyCommit()) {
         return Status::Invalid(

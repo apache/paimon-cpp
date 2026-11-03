@@ -323,11 +323,14 @@ class FileStoreCommitImplTest : public testing::Test {
     }
 
     void CommitAsCompetitor(int32_t round, int64_t commit_identifier) {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(table_path_, "competitor");
+        builder_options[Options::FILE_SYSTEM] = "local";
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                             builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
+
+                             builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> competitor,
-                             FileStoreCommit::Create(std::move(context)));
+                             FileStoreCommit::Create(std::move(context), builder_options));
         ASSERT_OK(competitor->Commit(CommitMessagesOfRound(round), commit_identifier));
     }
 
@@ -343,19 +346,20 @@ class FileStoreCommitImplTest : public testing::Test {
 
     Result<std::unique_ptr<FileStoreCommit>> CreateCatalogCommit(
         const CatalogCommitSpec& spec) const {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(spec.root_path.empty() ? table_path_ : spec.root_path,
                                      spec.commit_user);
-        builder.AddOption(Options::FILE_SYSTEM, "local")
-            .WithCatalog(spec.catalog, spec.identifier.value())
+        builder_options[Options::FILE_SYSTEM] = "local";
+        builder.WithCatalog(spec.catalog, spec.identifier.value())
             .AppendCommitCheckConflict(spec.append_commit_check_conflict);
         if (spec.table_id) {
             builder.WithTableId(spec.table_id.value());
         }
         for (const auto& [key, value] : spec.options) {
-            builder.AddOption(key, value);
+            builder_options[key] = value;
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
-        return FileStoreCommit::Create(std::move(context));
+        return FileStoreCommit::Create(std::move(context), builder_options);
     }
 
     Result<std::unique_ptr<FileStoreCommit>> CreateCatalogCommit(
@@ -412,16 +416,18 @@ class FileStoreCommitImplTest : public testing::Test {
 
     void CheckExpireIsRefusedWithoutDeleting(const std::string& branch,
                                              const std::string& expected_msg) {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(table_path_, "commit_user_1");
+        builder_options[Options::FILE_SYSTEM] = "local";
+        builder_options[Options::BRANCH] = branch;
+        builder_options[Options::SNAPSHOT_NUM_RETAINED_MIN] = "1";
+        builder_options[Options::SNAPSHOT_NUM_RETAINED_MAX] = "1";
+        builder_options[Options::SNAPSHOT_TIME_RETAINED] = "1ms";
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                             builder.AddOption(Options::FILE_SYSTEM, "local")
-                                 .AddOption(Options::BRANCH, branch)
-                                 .AddOption(Options::SNAPSHOT_NUM_RETAINED_MIN, "1")
-                                 .AddOption(Options::SNAPSHOT_NUM_RETAINED_MAX, "1")
-                                 .AddOption(Options::SNAPSHOT_TIME_RETAINED, "1ms")
-                                 .Finish());
+
+                             builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                             FileStoreCommit::Create(std::move(context)));
+                             FileStoreCommit::Create(std::move(context), builder_options));
         ASSERT_OK(PrepareFirstCommitMessageFiles());
         ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
         ASSERT_OK(commit->DropPartition({{{"f1", "10"}}}, /*commit_identifier=*/2));
@@ -610,13 +616,16 @@ class FileStoreCommitImplTest : public testing::Test {
 };
 
 TEST_F(FileStoreCommitImplTest, TestCommit) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
 
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
@@ -638,15 +647,17 @@ TEST_F(FileStoreCommitImplTest, TestCommit) {
 
 TEST_F(FileStoreCommitImplTest, TestRESTCatalogCommit) {
     TimezoneGuard guard("Asia/Shanghai");
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .UseRESTCatalogCommit(true)
-                             .WithTableId("table-uuid")
-                             .Finish());
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<CommitContext> commit_context,
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+        context_builder.UseRESTCatalogCommit(true).WithTableId("table-uuid").Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
 
     std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
     ASSERT_NOK_WITH_MSG(commit->GetLastCommitTableRequest(),
@@ -696,10 +707,14 @@ TEST_F(FileStoreCommitImplTest, TestRESTCatalogCommit) {
 TEST_F(FileStoreCommitImplTest, TestCommitCarriesBaseSnapshotUuid) {
     std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
 
+    std::map<std::string, std::string> base_builder_options;
     CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    base_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
-                         base_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto base_commit, FileStoreCommit::Create(std::move(base_context)));
+
+                         base_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto base_commit,
+                         FileStoreCommit::Create(std::move(base_context), base_builder_options));
     ASSERT_OK(base_commit->Commit(msgs, 1));
 
     std::string snapshot_path = PathUtil::JoinPath(table_path_, "snapshot/snapshot-1");
@@ -707,13 +722,15 @@ TEST_F(FileStoreCommitImplTest, TestCommitCarriesBaseSnapshotUuid) {
     ASSERT_TRUE(base_snapshot.Uuid().has_value());
     const std::string base_uuid = base_snapshot.Uuid().value();
 
+    std::map<std::string, std::string> rest_builder_options;
     CommitContextBuilder rest_builder(table_path_, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> rest_context,
-                         rest_builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .UseRESTCatalogCommit(true)
-                             .WithTableId("table-uuid")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto rest_commit, FileStoreCommit::Create(std::move(rest_context)));
+    rest_builder_options[Options::FILE_SYSTEM] = "local";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<CommitContext> rest_context,
+
+        rest_builder.UseRESTCatalogCommit(true).WithTableId("table-uuid").Finish());
+    ASSERT_OK_AND_ASSIGN(auto rest_commit,
+                         FileStoreCommit::Create(std::move(rest_context), rest_builder_options));
     ASSERT_OK(rest_commit->Commit(msgs, 2));
 
     ASSERT_OK_AND_ASSIGN(std::string request_str, rest_commit->GetLastCommitTableRequest());
@@ -773,25 +790,30 @@ TEST_F(FileStoreCommitImplTest, TestCatalogCommitTakesTheSnapshot) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitToBranch) {
+    std::map<std::string, std::string> missing_builder_options;
     CommitContextBuilder missing_builder(table_path_, "commit_user_1");
+    missing_builder_options[Options::FILE_SYSTEM] = "local";
+    missing_builder_options[Options::BRANCH] = "dev";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> missing_context,
-                         missing_builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::BRANCH, "dev")
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(missing_context)),
-                        "not found latest schema in branch dev");
+
+                         missing_builder.Finish());
+    ASSERT_NOK_WITH_MSG(
+        FileStoreCommit::Create(std::move(missing_context), missing_builder_options),
+        "not found latest schema in branch dev");
 
     SchemaManager branch_schema_manager(file_system_, table_path_, "dev");
     ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
                                                 /*primary_keys=*/{}, /*options=*/{}));
 
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(table_path_, "commit_user_1");
+    builder_options[Options::FILE_SYSTEM] = "local";
+    builder_options[Options::BRANCH] = "dev";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                         builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::BRANCH, "dev")
-                             .Finish());
+
+                         builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(context)));
+                         FileStoreCommit::Create(std::move(context), builder_options));
     ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
 
     std::string branch_snapshots = PathUtil::JoinPath(table_path_, "branch/branch-dev/snapshot");
@@ -817,15 +839,15 @@ TEST_F(FileStoreCommitImplTest, TestRequestOnlyCommitToBranch) {
     ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
                                                 /*primary_keys=*/{}, /*options=*/{}));
 
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(table_path_, "commit_user_1");
+    builder_options[Options::FILE_SYSTEM] = "local";
+    builder_options[Options::BRANCH] = "dev";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                         builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::BRANCH, "dev")
-                             .UseRESTCatalogCommit(true)
-                             .WithTableId("table-uuid")
-                             .Finish());
+
+                         builder.UseRESTCatalogCommit(true).WithTableId("table-uuid").Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(context)));
+                         FileStoreCommit::Create(std::move(context), builder_options));
     ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
 
     ASSERT_OK_AND_ASSIGN(std::string request_str, commit->GetLastCommitTableRequest());
@@ -936,13 +958,15 @@ TEST_F(FileStoreCommitImplTest, TestCatalogCommitToBranchTakesTheBranchSnapshot)
     ASSERT_OK(branch_schema_manager.CreateTable(arrow::schema(fields_), /*partition_keys=*/{"f1"},
                                                 /*primary_keys=*/{}, /*options=*/{}));
 
+    std::map<std::string, std::string> base_builder_options;
     CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    base_builder_options[Options::FILE_SYSTEM] = "local";
+    base_builder_options[Options::BRANCH] = "dev";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
-                         base_builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::BRANCH, "dev")
-                             .Finish());
+
+                         base_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> base_commit,
-                         FileStoreCommit::Create(std::move(base_context)));
+                         FileStoreCommit::Create(std::move(base_context), base_builder_options));
     ASSERT_OK(base_commit->Commit(CommitMessagesOfRound(1), /*commit_identifier=*/1));
     SnapshotManager branch_snapshot_manager(file_system_, table_path_, "dev");
     ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> base_snapshot,
@@ -1111,10 +1135,14 @@ TEST_F(FileStoreCommitImplTest, TestCatalogSchemaWinsOverTheOneUnderTheTablePath
     ASSERT_EQ(catalog->CommitCalls().size(), 1u);
     ASSERT_EQ(catalog->CommitCalls().front().snapshot.SchemaId(), 7);
 
+    std::map<std::string, std::string> path_builder_options;
     CommitContextBuilder path_builder(table_path_, "commit_user_2");
+    path_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> path_context,
-                         path_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto path_commit, FileStoreCommit::Create(std::move(path_context)));
+
+                         path_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto path_commit,
+                         FileStoreCommit::Create(std::move(path_context), path_builder_options));
     std::vector<std::shared_ptr<CommitMessage>> other_msgs = CommitMessagesOfRound(2);
     ASSERT_OK(path_commit->Commit(other_msgs, 2));
     ASSERT_OK_AND_ASSIGN(
@@ -1148,12 +1176,13 @@ TEST_F(FileStoreCommitImplTest, TestCatalogSchemaWhichIsNotADataTableSchemaIsRef
 }
 
 TEST_F(FileStoreCommitImplTest, TestTableIdWithNothingToSendItInIsRefused) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .WithTableId("table-uuid")
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)),
+
+                         context_builder.WithTableId("table-uuid").Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context), context_builder_options),
                         "publishes the snapshot by writing it to the table directory");
 
     auto catalog = CreateCatalog();
@@ -1325,14 +1354,15 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithoutAUsableLockIsNotCreated) {
     ASSERT_NOK_WITH_MSG(CreateCatalogCommit(catalog), "no commit lease for this table");
     ASSERT_TRUE(catalog->CommitCalls().empty());
 
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(table_path_, "commit_user_1");
+    builder_options[Options::FILE_SYSTEM] = "local";
+    builder_options[Options::REST_COMMIT_ACQUIRE_LOCK] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                         builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::REST_COMMIT_ACQUIRE_LOCK, "true")
-                             .UseRESTCatalogCommit(true)
-                             .WithTableId("table-uuid")
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(context)), "cannot hold a commit lease");
+
+                         builder.UseRESTCatalogCommit(true).WithTableId("table-uuid").Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(context), builder_options),
+                        "cannot hold a commit lease");
 }
 
 TEST_F(FileStoreCommitImplTest, TestUnknownCatalogOutcomeKeepsTheManifests) {
@@ -1631,7 +1661,7 @@ TEST_F(FileStoreCommitImplTest, TestCommitReadsThroughTheCatalogsFileSystem) {
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
                          context_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context), {}));
 
     ASSERT_OK(commit->Commit(CommitMessagesOfRound(1)));
     ASSERT_EQ(catalog->CommitCalls().size(), 1u);
@@ -1669,7 +1699,7 @@ TEST_F(FileStoreCommitImplTest, TestAGivenFileSystemWinsOverTheCatalogs) {
                          context_builder.WithCatalog(catalog, Identifier("db", "tbl"))
                              .WithFileSystem(given_fs)
                              .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context), {}));
 
     ASSERT_OK(commit->Commit(CommitMessagesOfRound(1)));
     ASSERT_EQ(catalog->CommitCalls().size(), 1u);
@@ -1843,14 +1873,17 @@ TEST_F(FileStoreCommitImplTest, TestCatalogSnapshotLoaderFailurePropagates) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestSnapshotSequenceMaxPropertyMergedOnCommit) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::WRITE_SEQUENCE_NUMBER_INIT_MODE] = "snapshot";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::WRITE_SEQUENCE_NUMBER_INIT_MODE, "snapshot")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -1890,16 +1923,18 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithConflictSnapshotAndRetryTenTimes) 
     ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
                          FileSystemFactory::Get("gmock_fs", table_path, {}));
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::COMMIT_MAX_RETRIES] = "10";
+    context_builder_options[Options::COMMIT_MIN_RETRY_WAIT] = "1ms";
+    context_builder_options[Options::COMMIT_MAX_RETRY_WAIT] = "1ms";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::COMMIT_MAX_RETRIES, "10")
-                             .AddOption(Options::COMMIT_MIN_RETRY_WAIT, "1ms")
-                             .AddOption(Options::COMMIT_MAX_RETRY_WAIT, "1ms")
-                             .WithFileSystem(fs)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.WithFileSystem(fs).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::string latest_hint = PathUtil::JoinPath(table_path, "snapshot/LATEST");
 
     auto* mock_fs = dynamic_cast<GmockFileSystem*>(fs.get());
@@ -1931,15 +1966,17 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithConflictSnapshotAndRetryOnce) {
     ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
                          FileSystemFactory::Get("gmock_fs", table_path, {}));
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::COMMIT_MIN_RETRY_WAIT] = "1ms";
+    context_builder_options[Options::COMMIT_MAX_RETRY_WAIT] = "1ms";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::COMMIT_MIN_RETRY_WAIT, "1ms")
-                             .AddOption(Options::COMMIT_MAX_RETRY_WAIT, "1ms")
-                             .WithFileSystem(fs)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.WithFileSystem(fs).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::string latest_hint = PathUtil::JoinPath(table_path, "snapshot/LATEST");
     auto* mock_fs = dynamic_cast<GmockFileSystem*>(fs.get());
     EXPECT_CALL(*mock_fs, ReadFile(testing::_, testing::_))
@@ -2003,17 +2040,19 @@ TEST_F(FileStoreCommitImplTest, TestRealtimeCommitRebasesAfterSnapshotConflict) 
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
                          FileSystemFactory::Get("gmock_fs", table_path_, {}));
+    std::map<std::string, std::string> realtime_builder_options;
     CommitContextBuilder realtime_builder(table_path_, "realtime_commit_user");
+    realtime_builder_options[Options::REALTIME_ENABLED] = "true";
+    realtime_builder_options[Options::BUCKET] = "2";
+    realtime_builder_options[Options::COMMIT_MAX_RETRIES] = "1";
+    realtime_builder_options[Options::COMMIT_MIN_RETRY_WAIT] = "1ms";
+    realtime_builder_options[Options::COMMIT_MAX_RETRY_WAIT] = "1ms";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> realtime_context,
-                         realtime_builder.AddOption(Options::REALTIME_ENABLED, "true")
-                             .AddOption(Options::BUCKET, "2")
-                             .AddOption(Options::COMMIT_MAX_RETRIES, "1")
-                             .AddOption(Options::COMMIT_MIN_RETRY_WAIT, "1ms")
-                             .AddOption(Options::COMMIT_MAX_RETRY_WAIT, "1ms")
-                             .WithFileSystem(fs)
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> realtime_commit,
-                         FileStoreCommit::Create(std::move(realtime_context)));
+
+                         realtime_builder.WithFileSystem(fs).Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> realtime_commit,
+        FileStoreCommit::Create(std::move(realtime_context), realtime_builder_options));
     auto realtime_commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(realtime_commit)));
 
@@ -2034,7 +2073,7 @@ TEST_F(FileStoreCommitImplTest, TestRealtimeCommitRebasesAfterSnapshotConflict) 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> concurrent_context,
                          concurrent_builder.WithFileSystem(file_system_).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> concurrent_commit,
-                         FileStoreCommit::Create(std::move(concurrent_context)));
+                         FileStoreCommit::Create(std::move(concurrent_context), {}));
 
     auto* mock_fs = dynamic_cast<GmockFileSystem*>(fs.get());
     ASSERT_NE(nullptr, mock_fs);
@@ -2078,13 +2117,15 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithAtomicWriteSnapshotTimeoutAndActua
     ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
                          FileSystemFactory::Get("gmock_fs", table_path, {}));
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .WithFileSystem(fs)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.WithFileSystem(fs).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::string new_snapshot_6 = PathUtil::JoinPath(table_path, "snapshot/snapshot-6");
     auto* mock_fs = dynamic_cast<GmockFileSystem*>(fs.get());
     EXPECT_CALL(*mock_fs, AtomicStore(testing::StrEq(new_snapshot_6), testing::_))
@@ -2105,13 +2146,15 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithAtomicWriteSnapshotTimeoutAndActua
         bool exist, file_system_->Exists(PathUtil::JoinPath(table_path, "snapshot/snapshot-6")));
     ASSERT_TRUE(exist);
 
+    std::map<std::string, std::string> context_builder_2_options;
     CommitContextBuilder context_builder_2(table_path, "commit_user_1");
+    context_builder_2_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context_2,
-                         context_builder_2.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .WithFileSystem(fs)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit_2, FileStoreCommit::Create(std::move(commit_context_2)));
+                         context_builder_2.WithFileSystem(fs).Finish());
+
+    ASSERT_OK_AND_ASSIGN(auto commit_2, FileStoreCommit::Create(std::move(commit_context_2),
+                                                                context_builder_2_options));
     ASSERT_OK_AND_ASSIGN(int32_t num_committed, commit_2->FilterAndCommit({{1, msgs}}));
     ASSERT_EQ(0, num_committed);
     std::string new_snapshot_7 = PathUtil::JoinPath(table_path, "snapshot/snapshot-7");
@@ -2129,14 +2172,17 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithAtomicWriteSnapshotTimeoutAndActua
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithSameMsgs) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "5kb";
+    context_builder_options[Options::MANIFEST_MERGE_MIN_COUNT] = "2";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "5kb")
-                             .AddOption(Options::MANIFEST_MERGE_MIN_COUNT, "2")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
 
     {
         std::vector<std::shared_ptr<CommitMessage>> msgs =
@@ -2192,13 +2238,16 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithSameMsgs) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitMultipleTimes) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     {
         std::vector<std::shared_ptr<CommitMessage>> msgs =
@@ -2263,12 +2312,15 @@ TEST_F(FileStoreCommitImplTest, TestCommitMultipleTimes) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatest) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
 
@@ -2320,10 +2372,14 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatest) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestThroughCatalog) {
+    std::map<std::string, std::string> base_builder_options;
     CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    base_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
-                         base_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto base_commit, FileStoreCommit::Create(std::move(base_context)));
+
+                         base_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto base_commit,
+                         FileStoreCommit::Create(std::move(base_context), base_builder_options));
     for (int32_t round = 1; round <= 2; ++round) {
         ASSERT_OK(base_commit->Commit(CommitMessagesOfRound(round), round));
     }
@@ -2347,10 +2403,14 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestThroughCatalog) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestHoldsALockScope) {
+    std::map<std::string, std::string> base_builder_options;
     CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    base_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
-                         base_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto base_commit, FileStoreCommit::Create(std::move(base_context)));
+
+                         base_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto base_commit,
+                         FileStoreCommit::Create(std::move(base_context), base_builder_options));
     for (int32_t round = 1; round <= 2; ++round) {
         ASSERT_OK(base_commit->Commit(CommitMessagesOfRound(round), round));
     }
@@ -2379,10 +2439,14 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestHoldsALockScope) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestNeedsTheTargetUnderTheTablePath) {
+    std::map<std::string, std::string> base_builder_options;
     CommitContextBuilder base_builder(table_path_, "commit_user_1");
+    base_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> base_context,
-                         base_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto base_commit, FileStoreCommit::Create(std::move(base_context)));
+
+                         base_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto base_commit,
+                         FileStoreCommit::Create(std::move(base_context), base_builder_options));
     for (int32_t round = 1; round <= 2; ++round) {
         ASSERT_OK(base_commit->Commit(CommitMessagesOfRound(round), round));
     }
@@ -2396,23 +2460,29 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestNeedsTheTargetUnderTheTabl
 }
 
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestNoLatestSnapshotReturnsError) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     ASSERT_NOK_WITH_MSG(commit->RollbackToAsLatest(/*target_snapshot_id=*/1),
                         "Latest snapshot is null, can not roll back.");
 }
 
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestTargetNotExistReturnsError) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
                               "/orc/append_09.db/append_09/commit_messages/commit_messages-01",
@@ -2441,14 +2511,17 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestDeletionVectorOnlyChange) 
                                    /*ignore_if_exists=*/false));
     std::string dv_table_path = PathUtil::JoinPath(test_root_, "foo.db/dv_bar");
 
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(dv_table_path, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MIN] = "1";
+    context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MAX] = "1";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MIN, "1")
-                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MAX, "1")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
 
@@ -2518,12 +2591,14 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestConcurrentConflictReturnsF
     // before writing. A stateful Exists() mock reproduces exactly that ordering.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
                          FileSystemFactory::Get("gmock_fs", table_path_, {}));
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .WithFileSystem(fs)
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.WithFileSystem(fs).Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
 
@@ -2560,12 +2635,15 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestConcurrentConflictReturnsF
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitAndOverwriteWithNoPartitionKey) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     {
         std::vector<std::shared_ptr<CommitMessage>> msgs =
             GetCommitMessages(paimon::test::GetDataDir() +
@@ -2605,12 +2683,15 @@ TEST_F(FileStoreCommitImplTest, TestCommitAndOverwriteWithNoPartitionKey) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitSuccessAfterIOException) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
 
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
@@ -2662,13 +2743,16 @@ TEST_F(FileStoreCommitImplTest, TestCommitSuccessAfterIOException) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCleanUpTmpManifests) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
 
     {
         std::vector<std::shared_ptr<CommitMessage>> msgs =
@@ -2780,14 +2864,16 @@ TEST_F(FileStoreCommitImplTest, TestCleanUpTmpManifests) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithIgnoreEmptyCommit) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::vector<std::shared_ptr<CommitMessage>> msgs;
     ASSERT_OK(commit->Commit(msgs));
     std::shared_ptr<Metrics> metrics = commit->GetCommitMetrics();
@@ -2798,14 +2884,16 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithIgnoreEmptyCommit) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestTryOverwrite) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
                               "/orc/append_09.db/append_09/commit_messages/"
@@ -2828,14 +2916,16 @@ TEST_F(FileStoreCommitImplTest, TestTryOverwrite) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestTryOverwriteFromNothing) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
     std::vector<ManifestEntry> changes;
@@ -2862,14 +2952,16 @@ TEST_F(FileStoreCommitImplTest, TestTryOverwriteFromNothing) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestTryOverwriteWithProperties) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
 
@@ -2889,14 +2981,16 @@ TEST_F(FileStoreCommitImplTest, TestTryOverwriteWithProperties) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestTryOverwriteThenCommit) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
     std::vector<ManifestEntry> changes;
@@ -3221,18 +3315,20 @@ TEST_F(FileStoreCommitImplTest, TestCatalogExpireWithoutPublishedSnapshots) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestDropPartitionAndExpireSnapshot) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MIN] = "1";
+    context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MAX] = "1";
+    context_builder_options[Options::SNAPSHOT_EXPIRE_LIMIT] = "30";
+    context_builder_options[Options::SNAPSHOT_TIME_RETAINED] = "1ms";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MIN, "1")
-                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MAX, "1")
-                             .AddOption(Options::SNAPSHOT_EXPIRE_LIMIT, "30")
-                             .AddOption(Options::SNAPSHOT_TIME_RETAINED, "1ms")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
                               "/orc/append_09.db/append_09/commit_messages/"
@@ -3293,18 +3389,20 @@ TEST_F(FileStoreCommitImplTest, TestExpireOnMainOfTableWithBranchesIsNotSupporte
 }
 
 TEST_F(FileStoreCommitImplTest, TestDropMultiPartitionAndExpireSnapshot) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MIN] = "1";
+    context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MAX] = "1";
+    context_builder_options[Options::SNAPSHOT_EXPIRE_LIMIT] = "30";
+    context_builder_options[Options::SNAPSHOT_TIME_RETAINED] = "1ms";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MIN, "1")
-                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MAX, "1")
-                             .AddOption(Options::SNAPSHOT_EXPIRE_LIMIT, "30")
-                             .AddOption(Options::SNAPSHOT_TIME_RETAINED, "1ms")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
                               "/orc/append_09.db/append_09/commit_messages/"
@@ -3340,14 +3438,16 @@ TEST_F(FileStoreCommitImplTest, TestDropMultiPartitionAndExpireSnapshot) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestTruncateTable) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
                               "/orc/append_09.db/append_09/commit_messages/"
@@ -3373,10 +3473,14 @@ TEST_F(FileStoreCommitImplTest, TestTruncateTable) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestAbortDeletesDataAndIndexFiles) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3425,10 +3529,14 @@ TEST_F(FileStoreCommitImplTest, TestAbortDeletesDataAndIndexFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, AbortIgnoresMissingFilesAndFailsForNonImplMessage) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3449,10 +3557,14 @@ TEST_F(FileStoreCommitImplTest, AbortIgnoresDeleteFailures) {
     // A delete that fails with an IO error (e.g. permission denied) must be swallowed by
     // best-effort cleanup, mirroring Java deleteQuietly: Abort still returns OK and does not
     // propagate the failure.
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
 
@@ -3488,13 +3600,15 @@ TEST_F(FileStoreCommitImplTest, TestTruncateEmptyTable) {
     // Truncating a table that has never been committed succeeds and produces an OVERWRITE snapshot
     // with no added and no deleted files: there is nothing to overwrite, but the overwrite is still
     // materialized.
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
 
     ASSERT_OK(commit->TruncateTable(/*commit_identifier=*/1));
 
@@ -3513,14 +3627,16 @@ TEST_F(FileStoreCommitImplTest, TestTruncateEmptyTable) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCreateManifestCommittable) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     std::vector<std::shared_ptr<CommitMessage>> msgs;
@@ -3533,14 +3649,17 @@ TEST_F(FileStoreCommitImplTest, TestCreateManifestCommittable) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCollectChanges) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::BUCKET] = "10";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::BUCKET, "10")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
                               "/orc/append_09.db/append_09/commit_messages/"
@@ -3576,13 +3695,16 @@ TEST_F(FileStoreCommitImplTest, TestCollectChanges) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestFilterCommitted) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3607,13 +3729,16 @@ TEST_F(FileStoreCommitImplTest, TestFilterCommitted) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestFilterCommittedWithMultipleCommittables) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3647,13 +3772,16 @@ TEST_F(FileStoreCommitImplTest, TestFilterCommittedWithMultipleCommittables) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestFilterCommittedRejectsDuplicateIdentifiers) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3678,13 +3806,16 @@ TEST_F(FileStoreCommitImplTest, TestFilterCommittedRejectsDuplicateIdentifiers) 
 }
 
 TEST_F(FileStoreCommitImplTest, FilterAndCommit) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     std::vector<std::string> data_files = {
@@ -3725,13 +3856,16 @@ TEST_F(FileStoreCommitImplTest, FilterAndCommit) {
 }
 
 TEST_F(FileStoreCommitImplTest, FilterAndCommitWithNotExistFile) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3747,13 +3881,16 @@ TEST_F(FileStoreCommitImplTest, FilterAndCommitWithNotExistFile) {
 }
 
 TEST_F(FileStoreCommitImplTest, FilterAndCommitWithCompactedChangelogFakePath) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3781,13 +3918,16 @@ TEST_F(FileStoreCommitImplTest, FilterAndCommitWithCompactedChangelogFakePath) {
 }
 
 TEST_F(FileStoreCommitImplTest, FilterAndCommitSkipCompactBeforeFileCheck) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3814,13 +3954,16 @@ TEST_F(FileStoreCommitImplTest, FilterAndCommitSkipCompactBeforeFileCheck) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestOverwriteNonSpecifyPartition) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -3853,13 +3996,16 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteNonSpecifyPartition) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithIndexFiles) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -3884,15 +4030,18 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithIndexFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithGlobalIndexFilesChecksConflicts) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::ROW_TRACKING_ENABLED] = "true";
+    context_builder_options[Options::DATA_EVOLUTION_ENABLED] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::ROW_TRACKING_ENABLED, "true")
-                             .AddOption(Options::DATA_EVOLUTION_ENABLED, "true")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -3916,14 +4065,16 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithGlobalIndexFilesChecksConflicts) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithCompactIndexFiles) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -3949,13 +4100,16 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithCompactIndexFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithDeletedIndexFiles) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -3987,14 +4141,16 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithDeletedIndexFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithCompactDeletedIndexFiles) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .IgnoreEmptyCommit(true)
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.IgnoreEmptyCommit(true).Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -4027,13 +4183,16 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithCompactDeletedIndexFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestOverwriteWithCompactIndexFiles) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -4061,13 +4220,16 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteWithCompactIndexFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestFilterAndOverwrite) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     std::vector<std::string> data_files = {
@@ -4116,13 +4278,16 @@ TEST_F(FileStoreCommitImplTest, TestFilterAndOverwrite) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestFilterAndOverwriteWithCompactIndexFiles) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -4155,13 +4320,16 @@ TEST_F(FileStoreCommitImplTest, TestFilterAndOverwriteWithCompactIndexFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestOverwriteWithSpecifyPartition) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4189,13 +4357,16 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteWithSpecifyPartition) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestOverwriteWithSameFile) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4219,14 +4390,17 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteWithSameFile) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestAppendDiscardDuplicateFiles) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::COMMIT_DISCARD_DUPLICATE_FILES] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::COMMIT_DISCARD_DUPLICATE_FILES, "true")
-                             .Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         context_builder.Finish());
+
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4251,12 +4425,15 @@ TEST_F(FileStoreCommitImplTest, TestAppendDiscardDuplicateFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithIOException) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
 
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
@@ -4283,12 +4460,15 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithIOException) {
         std::string tmp_table_path = tmp_dir->Str();
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
+        std::map<std::string, std::string> context_builder2_options;
         CommitContextBuilder context_builder2(tmp_table_path, "commit_user_1");
+        context_builder2_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+        context_builder2_options[Options::FILE_SYSTEM] = "local";
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context2,
-                             context_builder2.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                                 .AddOption(Options::FILE_SYSTEM, "local")
-                                 .Finish());
-        auto commit2 = FileStoreCommit::Create(std::move(commit_context2));
+
+                             context_builder2.Finish());
+        auto commit2 =
+            FileStoreCommit::Create(std::move(commit_context2), context_builder2_options);
         CHECK_HOOK_STATUS(commit2.status(), i);
         CHECK_HOOK_STATUS(commit2.value()->Commit(msgs), i);
         commit_run_complete = true;
@@ -4314,7 +4494,7 @@ TEST_F(FileStoreCommitImplTest, TestObjectStoreAllowedWithRESTCatalogCommit) {
     // REST commit with local path should work without the object store flag
     CommitContextBuilder builder(table_path_, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.UseRESTCatalogCommit(true).Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(ctx)));
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(ctx), {}));
 
     std::vector<std::shared_ptr<CommitMessage>> msgs = CommitMessagesOfRound(1);
     ASSERT_OK(commit->Commit(msgs));
@@ -4325,7 +4505,7 @@ TEST_F(FileStoreCommitImplTest, TestObjectStoreAllowedWithRESTCatalogCommit) {
     CommitContextBuilder catalog_builder(table_path_, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(auto catalog_ctx,
                          catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish());
-    ASSERT_OK_AND_ASSIGN(auto catalog_commit, FileStoreCommit::Create(std::move(catalog_ctx)));
+    ASSERT_OK_AND_ASSIGN(auto catalog_commit, FileStoreCommit::Create(std::move(catalog_ctx), {}));
     ASSERT_OK(catalog_commit->Commit(msgs));
     ASSERT_EQ(catalog->CommitCalls().size(), 1u);
 
@@ -4338,11 +4518,11 @@ TEST_F(FileStoreCommitImplTest, TestObjectStoreAllowedWithRESTCatalogCommit) {
     ASSERT_OK_AND_ASSIGN(
         auto object_store_ctx,
         object_store_builder.WithCatalog(object_store_catalog, Identifier("db", "tbl")).Finish());
-    ASSERT_OK(FileStoreCommit::Create(std::move(object_store_ctx)));
+    ASSERT_OK(FileStoreCommit::Create(std::move(object_store_ctx), {}));
 
     CommitContextBuilder plain_builder(object_store_path, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(auto plain_ctx, plain_builder.WithFileSystem(file_system_).Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(plain_ctx)),
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(plain_ctx), {}),
                         "invalid scheme oss for local file system");
 }
 
@@ -4364,10 +4544,13 @@ TEST_F(FileStoreCommitImplTest, TestFixedBucketPKTableCommitAllowed) {
 
     std::string pk_table_path = PathUtil::JoinPath(pk_root, "db.db/pk_tbl");
 
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(pk_table_path, "test_user");
-    builder.AddOption(Options::FILE_SYSTEM, "local").UseRESTCatalogCommit(true);
+    builder_options[Options::FILE_SYSTEM] = "local";
+    builder.UseRESTCatalogCommit(true);
     ASSERT_OK_AND_ASSIGN(auto commit_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto committer, FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(auto committer,
+                         FileStoreCommit::Create(std::move(commit_context), builder_options));
     ASSERT_TRUE(committer != nullptr);
 }
 
@@ -4397,14 +4580,17 @@ TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsAllowsManifestDeleteFileDro
 }
 
 TEST_F(FileStoreCommitImplTest, TestGetAllFilesKeepsValueStats) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::MANIFEST_DELETE_FILE_DROP_STATS] = "true";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::MANIFEST_DELETE_FILE_DROP_STATS, "true")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> commit,
+        FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
 
@@ -4426,14 +4612,17 @@ TEST_F(FileStoreCommitImplTest, TestGetAllFilesKeepsValueStats) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestOverwriteDropsDeleteFileStats) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::MANIFEST_DELETE_FILE_DROP_STATS] = "true";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::MANIFEST_DELETE_FILE_DROP_STATS, "true")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> commit,
+        FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
 
@@ -4501,21 +4690,28 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteDropsDeleteFileStats) {
 }
 
 TEST_F(FileStoreCommitImplTest, DropPartitionWithEmptyPartitionsFails) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     ASSERT_NOK_WITH_MSG(commit->DropPartition({}, /*commit_identifier=*/1),
                         "partitions list cannot be empty");
 }
 
 TEST_F(FileStoreCommitImplTest, FilterAndCommitMultipleIdentifiersAndEmptyInput) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4549,10 +4745,14 @@ TEST_F(FileStoreCommitImplTest, FilterAndCommitMultipleIdentifiersAndEmptyInput)
 }
 
 TEST_F(FileStoreCommitImplTest, CheckFilesExistenceFailsForNonImplCommitMessage) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4563,10 +4763,14 @@ TEST_F(FileStoreCommitImplTest, CheckFilesExistenceFailsForNonImplCommitMessage)
 }
 
 TEST_F(FileStoreCommitImplTest, CheckFilesExistenceCollectsIndexFilePaths) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -4590,13 +4794,16 @@ TEST_F(FileStoreCommitImplTest, CheckFilesExistenceCollectsIndexFilePaths) {
 }
 
 TEST_F(FileStoreCommitImplTest, OverwriteStaticPartitionValidatesFileOwnership) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::DYNAMIC_PARTITION_OVERWRITE] = "false";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::DYNAMIC_PARTITION_OVERWRITE, "false")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4618,12 +4825,15 @@ TEST_F(FileStoreCommitImplTest, OverwriteStaticPartitionValidatesFileOwnership) 
 }
 
 TEST_F(FileStoreCommitImplTest, OverwriteWithChangelogFilesLogsWarning) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     const BinaryRow partition = CreateIntRow(10);
@@ -4663,12 +4873,15 @@ TEST_F(FileStoreCommitImplTest, OverwriteUpgradesNonOverlappingPrimaryKeyFiles) 
                                    /*ignore_if_exists=*/false));
     std::string pk_table_path = PathUtil::JoinPath(pk_root, "db.db/pk_tbl");
 
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(pk_table_path, "test_user");
+    builder_options[Options::FILE_SYSTEM] = "local";
+    builder_options[Options::OVERWRITE_UPGRADE] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::OVERWRITE_UPGRADE, "true")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit,
+                         FileStoreCommit::Create(std::move(commit_context), builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4713,13 +4926,15 @@ TEST_F(FileStoreCommitImplTest, OverwriteUpgradesNonOverlappingPrimaryKeyFiles) 
 }
 
 TEST_F(FileStoreCommitImplTest, CommitWithAppendCommitCheckConflict) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AppendCommitCheckConflict(true)
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.AppendCommitCheckConflict(true).Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
 
     std::vector<std::shared_ptr<CommitMessage>> msgs =
         GetCommitMessages(paimon::test::GetDataDir() +
@@ -4736,12 +4951,15 @@ TEST_F(FileStoreCommitImplTest, SnapshotSequenceMaxFallsBackToManifestScan) {
     // First snapshot is committed in the default (scan) mode, so it does NOT carry the
     // max-sequence-number property.
     {
+        std::map<std::string, std::string> context_builder_options;
         CommitContextBuilder context_builder(table_path_, "commit_user_1");
+        context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+        context_builder_options[Options::FILE_SYSTEM] = "local";
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                             context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                                 .AddOption(Options::FILE_SYSTEM, "local")
-                                 .Finish());
-        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                             context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context),
+                                                                  context_builder_options));
         std::vector<std::shared_ptr<CommitMessage>> msgs1 =
             GetCommitMessages(paimon::test::GetDataDir() +
                                   "/orc/append_09.db/append_09/commit_messages/commit_messages-01",
@@ -4751,13 +4969,16 @@ TEST_F(FileStoreCommitImplTest, SnapshotSequenceMaxFallsBackToManifestScan) {
 
     // Second commit uses snapshot-init mode; since the previous snapshot lacks the property,
     // the max sequence number is recomputed by scanning the base manifests.
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::WRITE_SEQUENCE_NUMBER_INIT_MODE] = "snapshot";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::WRITE_SEQUENCE_NUMBER_INIT_MODE, "snapshot")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4780,12 +5001,15 @@ TEST_F(FileStoreCommitImplTest, SnapshotSequenceMaxFallsBackToManifestScan) {
 }
 
 TEST_F(FileStoreCommitImplTest, FilterAndOverwriteWithSpecifiedPartition) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4806,12 +5030,15 @@ TEST_F(FileStoreCommitImplTest, FilterAndOverwriteWithSpecifiedPartition) {
 }
 
 TEST_F(FileStoreCommitImplTest, TryUpgradeReturnsInputWhenOverwriteUpgradeDisabled) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    context_builder_options[Options::OVERWRITE_UPGRADE] = "false";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::OVERWRITE_UPGRADE, "false")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4839,12 +5066,15 @@ TEST_F(FileStoreCommitImplTest, TryUpgradeReturnsInputWhenEntryLevelAboveZero) {
                                    /*ignore_if_exists=*/false));
     std::string pk_table_path = PathUtil::JoinPath(pk_root, "db.db/pk_tbl");
 
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(pk_table_path, "test_user");
+    builder_options[Options::FILE_SYSTEM] = "local";
+    builder_options[Options::OVERWRITE_UPGRADE] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         builder.AddOption(Options::FILE_SYSTEM, "local")
-                             .AddOption(Options::OVERWRITE_UPGRADE, "true")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit,
+                         FileStoreCommit::Create(std::move(commit_context), builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4859,12 +5089,15 @@ TEST_F(FileStoreCommitImplTest, TryUpgradeReturnsInputWhenEntryLevelAboveZero) {
 }
 
 TEST_F(FileStoreCommitImplTest, CheckSameBucketFromSnapshotReturnsOkForEmptyDelta) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4882,10 +5115,14 @@ TEST_F(FileStoreCommitImplTest, CheckSameBucketFromSnapshotReturnsOkForEmptyDelt
 }
 
 TEST_F(FileStoreCommitImplTest, MaxSequenceNumberReturnsNulloptForEmptyManifests) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 
@@ -4895,10 +5132,14 @@ TEST_F(FileStoreCommitImplTest, MaxSequenceNumberReturnsNulloptForEmptyManifests
 }
 
 TEST_F(FileStoreCommitImplTest, RowIdCheckConflictSetsCheckSnapshotAndReturnsSelf) {
+    std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    context_builder_options[Options::FILE_SYSTEM] = "local";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+
+                         context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(std::move(commit_context), context_builder_options));
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
 

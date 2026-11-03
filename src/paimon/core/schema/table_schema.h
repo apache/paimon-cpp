@@ -102,14 +102,14 @@ class TableSchema : public DataSchema, public Jsonizable<TableSchema> {
         return options_;
     }
 
-    /// A copy of this schema with `dynamic_options` on top of the options it carries, which is
-    /// the precedence every copy of a table promises. Everything else - id, fields, keys,
-    /// comment - is copied as it is.
-    ///
-    /// @param dynamic_options Options given at the call, which win over the schema's own.
-    /// @return A result containing the merged schema, or an error status.
+    /// Copies the schema with dynamic_options overriding its current options.
+    /// Other schema attributes are preserved.
     Result<std::unique_ptr<TableSchema>> MergeOptions(
         const std::map<std::string, std::string>& dynamic_options) const;
+
+    /// Copies this schema with the complete replacement option map.
+    Result<std::unique_ptr<TableSchema>> Copy(
+        const std::map<std::string, std::string>& options) const;
     const std::vector<DataField>& Fields() const {
         return fields_;
     }
@@ -151,8 +151,7 @@ class TableSchema : public DataSchema, public Jsonizable<TableSchema> {
 
     Result<std::vector<std::string>> OriginalBucketKeys() const;
 
-    /// Derives `bucket_keys_` and `num_bucket_` from the options the schema carries: every
-    /// constructor path must call this, as both members serve scans and copies.
+    /// Derives cached bucket keys and count after construction or option changes.
     Status DeriveBucketInfo();
 
     static Result<std::shared_ptr<arrow::Field>> AssignFieldIdsRecursively(

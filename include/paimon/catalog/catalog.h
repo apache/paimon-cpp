@@ -69,9 +69,7 @@ class PAIMON_EXPORT Catalog {
     ///                    tokens, keeps routing each scheme to its backend. Ignored when
     ///                    `file_system` is supplied, which serves every scheme itself.
     /// @return A result containing a shared pointer to a `Catalog` instance, or an error status.
-    /// @note Shared rather than unique ownership: a global system table of the `sys` database
-    ///       builds its rows lazily through the catalog it was handed, so the table keeps the
-    ///       catalog alive. A catalog built by this factory always satisfies that.
+    /// @note Global system tables retain shared ownership of the catalog.
     static Result<std::shared_ptr<Catalog>> Create(
         const std::string& root_path, const std::map<std::string, std::string>& options,
         const std::shared_ptr<FileSystem>& file_system = nullptr,
@@ -148,21 +146,12 @@ class PAIMON_EXPORT Catalog {
     virtual Status RenameTable(const Identifier& from_table, const Identifier& to_table,
                                bool ignore_if_not_exists) = 0;
 
-    /// Gets a table.
+    /// Gets a managed, format or system table through the common Table interface.
     ///
-    /// The table's `type` option decides what is handed back: a `format-table` comes back as the
-    /// `FormatTable` it is - a directory of data files, with no snapshot and no manifest - and
-    /// every other implemented type as the managed table it is, while a `T$system` identifier names
-    /// a read-only `SystemTable`. All go through this one `Table` interface: `NewScan()` and
-    /// `NewRead()` serve any of them, `NewWrite()` and `NewCommit()` the writable ones.
-    ///
-    /// A global system table of the "sys" database reads its rows lazily through the catalog it
-    /// came from, so the table keeps shared ownership of that catalog. `Catalog::Create()` hands
-    /// back a `std::shared_ptr`, which satisfies this. A catalog held some other way, such as
-    /// through a `std::unique_ptr`, cannot be kept and is refused by name.
+    /// Global views that enumerate tables require shared catalog ownership.
     ///
     /// @param identifier Identifier of the table to get.
-    /// @return A result containing the table, or an error status.
+    /// @return The table, or an error status.
     virtual Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const = 0;
 
     /// Checks whether a database with the specified name exists in the catalog.

@@ -95,7 +95,7 @@ std::shared_ptr<CatalogContext> InternalReadContext::CreateDependencyCatalogCont
     for (const auto& [key, value] : catalog_options) {
         dependency_options[key] = value;
     }
-    const auto& read_options = read_context_->GetOptions();
+    const auto& read_options = dynamic_options_;
     for (const auto& [key, value] : read_options) {
         dependency_options[key] = value;
     }
@@ -279,16 +279,26 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForTable(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
-    CoreOptions core_options, const std::string& root_path) {
+    CoreOptions core_options, const std::string& root_path,
+    const std::map<std::string, std::string>& dynamic_options) {
     core_options.WithCache(context->GetCache());
-    return CreateFromCoreOptions(context, table_schema, std::move(core_options), root_path);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<InternalReadContext> result,
+        CreateFromCoreOptions(context, table_schema, std::move(core_options), root_path));
+    result->dynamic_options_ = dynamic_options;
+    return result;
 }
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options) {
-    return CreateFromOptions(context, table_schema, options, /*file_system=*/nullptr,
-                             /*path=*/std::nullopt);
+    const std::map<std::string, std::string>& options,
+    const std::map<std::string, std::string>& dynamic_options) {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<InternalReadContext> result,
+        CreateFromOptions(context, table_schema, options, /*file_system=*/nullptr,
+                          /*path=*/std::nullopt));
+    result->dynamic_options_ = dynamic_options;
+    return result;
 }
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromOptions(
@@ -334,7 +344,11 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallb
     } else {
         options.erase(Options::BRANCH);
     }
-    return CreateFromOptions(context, table_schema, options, file_system, root_path);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<InternalReadContext> result,
+        CreateFromOptions(context, table_schema, options, file_system, root_path));
+    result->dynamic_options_ = table_dynamic_options;
+    return result;
 }
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromCoreOptions(

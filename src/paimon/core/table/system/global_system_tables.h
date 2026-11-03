@@ -33,10 +33,7 @@ class FileSystem;
 /// Context passed to global system table constructors, providing catalog-level
 /// access for enumerating databases, tables, and reading metadata.
 struct GlobalSystemTableContext {
-    /// The catalog this table reads its rows through. Rows are built lazily, so a table handed back
-    /// to a caller keeps shared ownership of it. Empty when the table is transient and only its
-    /// schema is read. `GlobalSystemTableLoader::Load` refuses a table that enumerates data tables
-    /// when this is empty.
+    /// Shared catalog for lazy row loading; may be empty for schema-only tables.
     std::shared_ptr<const Catalog> catalog;
     std::shared_ptr<FileSystem> fs;
     std::string warehouse;
@@ -113,14 +110,11 @@ class GlobalSystemTableLoader {
     static Result<bool> IsSupported(const std::string& table_name,
                                     const std::map<std::string, std::string>& catalog_options);
 
-    /// Loads a global system table for a caller to read. A table that enumerates data tables needs
-    /// the catalog in the context, so it is refused here when the context carries none.
+    /// Loads a global system table. Views that enumerate tables require a catalog in context.
     static Result<std::shared_ptr<SystemTable>> Load(const std::string& table_name,
                                                      const GlobalSystemTableContext& context);
 
-    /// Loads a global system table for the schema it exposes alone, the way
-    /// `Catalog::LoadTableSchema` does. No rows are built, so a context that carries no catalog is
-    /// accepted here and refused by `Load` instead.
+    /// Loads only the system table schema; no catalog is required.
     static Result<std::shared_ptr<SystemTable>> LoadForSchema(
         const std::string& table_name, const GlobalSystemTableContext& context);
 

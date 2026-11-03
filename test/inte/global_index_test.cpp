@@ -129,7 +129,7 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         write_builder.WithFileSystem(fs_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+                               FileStoreWrite::Create(std::move(write_context), {}));
         ArrowArray c_array;
         EXPECT_TRUE(arrow::ExportArray(*write_array, &c_array).ok());
         auto record_batch = std::make_unique<RecordBatch>(
@@ -157,7 +157,7 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                                commit_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+                               FileStoreCommit::Create(std::move(commit_context), {}));
         return file_store_commit->Commit(commit_msgs);
     }
 
@@ -168,7 +168,7 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         scan_context_builder.SetPartitionFilter(partition_filters);
         scan_context_builder.WithFileSystem(fs_);
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context), {}));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
         EXPECT_EQ(result_plan->Splits().size(), 1);
         return std::dynamic_pointer_cast<DataSplitImpl>(result_plan->Splits()[0]);
@@ -396,16 +396,18 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         const std::map<std::string, std::string>& options = {},
         const std::shared_ptr<GlobalIndexResult>& index_result = nullptr,
         const std::shared_ptr<Cache>& cache = nullptr) const {
+        std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder(table_path);
+        scan_context_builder_options = options;
         scan_context_builder.SetPredicate(predicate)
-            .SetOptions(options)
             .SetGlobalIndexResult(index_result)
             .WithFileSystem(fs_);
         if (cache) {
             scan_context_builder.WithCache(cache);
         }
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context),
+                                                                  scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
         return result_plan;
     }
@@ -444,7 +446,7 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
             .EnableLateMaterializing(false);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context), {}));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
                                ReadResultCollector::CollectResult(std::move(batch_reader)));

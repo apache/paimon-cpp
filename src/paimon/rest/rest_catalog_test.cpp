@@ -1717,7 +1717,7 @@ TEST_F(RestCatalogTest, FileStoreCommitIsBuiltFromTheCatalog) {
     CommitContextBuilder builder(dir->Str(), "commit-user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
                          builder.WithCatalog(shared_catalog, Identifier("db1", "t1")).Finish());
-    ASSERT_OK(FileStoreCommit::Create(std::move(context)));
+    ASSERT_OK(FileStoreCommit::Create(std::move(context), {}));
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_GT(state_->get_table_requests, requests_before);
@@ -1950,7 +1950,7 @@ TEST_P(RestCatalogCommitRecoveryTest, CommitAcceptedThenLostRecoversAfterRestart
         CommitContextBuilder builder(dir->Str(), "commit-user");
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
                                builder.WithCatalog(catalog, identifier).Finish());
-        return FileStoreCommit::Create(std::move(context));
+        return FileStoreCommit::Create(std::move(context), {});
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, create_commit());
 
@@ -2122,16 +2122,17 @@ class RestCatalogCommitLeaseTest : public RestCatalogTest {
     Result<std::unique_ptr<FileStoreCommit>> CreateCommit(
         const std::shared_ptr<Catalog>& catalog, const std::optional<std::string>& table_id,
         const std::map<std::string, std::string>& options) {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(dir_->Str(), "commit-user");
         builder.WithCatalog(catalog, Identifier("db1", "t1"));
         if (table_id) {
             builder.WithTableId(table_id.value());
         }
         for (const auto& [key, value] : options) {
-            builder.AddOption(key, value);
+            builder_options[key] = value;
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
-        return FileStoreCommit::Create(std::move(context));
+        return FileStoreCommit::Create(std::move(context), builder_options);
     }
 
     std::vector<std::string> TableEvents() {

@@ -86,8 +86,7 @@ class FileSystemCatalog : public Catalog, public std::enable_shared_from_this<Fi
     Result<std::optional<std::shared_ptr<TableSchema>>> TableSchemaExists(
         const Identifier& identifier) const;
 
-    /// Loads the system table a `T$system` identifier names, on the branch the identifier
-    /// carries. The base table it belongs to must exist and carry a schema.
+    /// Loads a T$system view from the identifier's branch. The base table must have a schema.
     Result<std::shared_ptr<SystemTable>> LoadSystemTable(const Identifier& identifier) const;
 
     Status CreateDatabaseImpl(const std::string& db_name,

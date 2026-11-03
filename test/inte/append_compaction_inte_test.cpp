@@ -412,10 +412,13 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompactionWithMap
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
 
+        std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"));
-        read_context_builder.SetOptions(options).SetReadSchema(std::move(c_schema));
+        read_context_builder_options = options;
+        read_context_builder.SetReadSchema(std::move(c_schema));
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context),
+                                                                read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
         ASSERT_OK_AND_ASSIGN(auto actual,
                              ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -1035,10 +1038,13 @@ TEST_P(AppendCompactionInteTest, TestAppendTableCompactionDictionaryPassthrough)
     auto predicate = PredicateBuilder::Equal(
         /*field_index=*/1, /*field_name=*/"s", FieldType::STRING,
         Literal(FieldType::STRING, indexed_value.data(), indexed_value.size()));
+    std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"));
-    read_context_builder.SetOptions(options).SetPredicate(predicate);
+    read_context_builder_options = options;
+    read_context_builder.SetPredicate(predicate);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto filtered, ReadResultCollector::CollectResult(batch_reader.get()));
     auto expected = std::make_shared<arrow::ChunkedArray>(

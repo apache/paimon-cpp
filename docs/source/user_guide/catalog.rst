@@ -26,6 +26,45 @@ recommend that you use Catalog to access the Paimon table.
 Paimon C++ supports two metastores, selected with the catalog option
 ``metastore``: the filesystem metastore (default) and the REST metastore.
 
+Dynamic options and time travel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Use ``table->Copy(options)`` to apply dynamic options before creating operators.
+Managed table copies retain the current schema and identifier when ``branch``
+changes. ``FileStoreTable::SwitchToBranch`` loads the target branch's latest schema.
+Physical layout options such as ``merge-engine``, ``row-tracking.enabled`` and
+``data-evolution.enabled`` cannot be changed by a copy.
+Changing ``deletion-vectors.enabled`` requires the table's existing options to
+contain ``deletion-vectors.modifiable=true``. Set that option before copying with
+a different deletion-vectors mode.
+
+For time travel, specify one of ``scan.snapshot-id``, ``scan.tag-name``,
+``scan.timestamp-millis`` or ``scan.timestamp``. The copy selects the historical
+snapshot's schema, preserving runtime options. Create both the scan and read from
+that copied table so they use the same historical columns.
+
+Selectors are mutually exclusive and must match an explicit ``scan.mode``.
+Conflicting selectors, including ones accumulated across multiple copies, are
+rejected. Data views such as ``$ro``, ``$audit_log`` and ``$binlog`` also retain
+the selected historical schema when creating their scan and read operators.
+
+For example:
+
+.. code-block:: cpp
+
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> historical,
+                          table->Copy({{paimon::Options::SCAN_SNAPSHOT_ID, "1"}}));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
+                          historical->NewScan(std::move(scan_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
+                          historical->NewRead(std::move(read_context)));
+
+If the snapshot cannot be resolved, the copy keeps its current schema and the
+scan reports the snapshot error. A snapshot whose schema is missing makes the
+copy fail. The string-valued C++ option map cannot express Java's ``null`` option
+deletion. ``scan.version`` and watermark-based time travel are not supported.
+Existing scan-specific restrictions, including tag and timestamp restrictions
+for global-index scans on data-evolution tables, still apply.
+
 Filesystem Catalog
 ~~~~~~~~~~~~~~~~~~
 The filesystem metastore (``metastore=filesystem``, the default) stores both
@@ -218,8 +257,12 @@ keep it across recovery.
    }
    paimon::CommitContextBuilder builder(table_path, "writer-1");
    builder.WithCatalog(catalog, paimon::Identifier("db", "tbl"))
-       .WithTableId(table_uuid.value())
-       .AddOption(paimon::Options::REST_COMMIT_ACQUIRE_LOCK, "true");
+       .WithTableId(table_uuid.value());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> locked_table,
+                          table->Copy({{paimon::Options::REST_COMMIT_ACQUIRE_LOCK, "true"}}));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context, builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
+                          locked_table->NewCommit(std::move(context)));
 
 Each attempt acquires its own lease before reading the latest snapshot, waits
 while another writer holds it until ``commit.timeout`` without using up

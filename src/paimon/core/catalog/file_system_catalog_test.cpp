@@ -282,16 +282,24 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
     ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(system_table) != nullptr);
     ASSERT_EQ("tbl1$options", system_table->Name());
 
+    std::map<std::string, std::string> scan_builder_options;
     ScanContextBuilder scan_builder(system_table->GetRootPath());
-    scan_builder.SetOptions(options);
+    scan_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto scan, system_table->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_1,
+                         system_table->Copy(scan_builder_options));
+    ASSERT_OK_AND_ASSIGN(auto scan, configured_table_1->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(system_table->GetRootPath());
-    read_builder.SetOptions(options);
+    read_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto read, system_table->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_2,
+                         system_table->Copy(read_builder_options));
+    ASSERT_OK_AND_ASSIGN(auto read, configured_table_2->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto table_result, reader->NextBatch());
 
@@ -302,24 +310,28 @@ TEST(FileSystemCatalogTest, TestGetTableServesASystemTable) {
     batch = std::move(maybe_batch).ValueUnsafe();
     ASSERT_GE(batch->num_rows(), 2);
 
+    std::map<std::string, std::string> write_builder_options;
     WriteContextBuilder write_builder(system_table->GetRootPath(), "commit_user");
-    write_builder.SetOptions(options);
+    write_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(system_table->NewWrite(std::move(write_context)),
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_3,
+                         system_table->Copy(write_builder_options));
+    ASSERT_NOK_WITH_MSG(configured_table_3->NewWrite(std::move(write_context)),
                         "tbl1$options system table is read-only: writing is not supported");
 
+    std::map<std::string, std::string> commit_builder_options;
     CommitContextBuilder commit_builder(system_table->GetRootPath(), "commit_user");
-    commit_builder.SetOptions(options);
+    commit_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto commit_context, commit_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_4,
+                         system_table->Copy(commit_builder_options));
     ASSERT_NOK_WITH_MSG(
-        system_table->NewCommit(std::move(commit_context)),
+        configured_table_4->NewCommit(std::move(commit_context)),
         "tbl1$options system table is read-only: committing for it is not supported");
 }
 
-// A system table a catalog hands out is copied the way a data table is. The dynamic options the
-// copy is given are served by it - a `tbl$ro` view that selected a snapshot through `Copy` reads
-// that snapshot's rows - and a `branch` option routes the copy to the branch it names, the way
-// Java Paimon's system tables re-wrap `dataTable.copy(dynamicOptions)`.
 TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
@@ -339,13 +351,13 @@ TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
     ArrowSchemaRelease(&schema);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> managed, catalog.GetTable(identifier));
-    auto write_and_commit_two_rows = [](const std::shared_ptr<Table>& table) {
+    auto write_and_commit_two_rows = [](const std::shared_ptr<Table>& table, int32_t first_id = 1) {
         WriteContextBuilder write_builder(table->GetRootPath(), "commit-user");
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
                              table->NewWrite(std::move(write_context)));
         arrow::Int32Builder ids_builder;
-        ASSERT_TRUE(ids_builder.AppendValues({1, 2}).ok());
+        ASSERT_TRUE(ids_builder.AppendValues({first_id, first_id + 1}).ok());
         std::shared_ptr<arrow::Array> ids_array;
         ASSERT_TRUE(ids_builder.Finish(&ids_array).ok());
         auto struct_array =
@@ -368,7 +380,7 @@ TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
         ASSERT_OK(commit->Commit(messages));
         ASSERT_OK(write->Close());
     };
-    // Two commits, so snapshot 1 holds the first two rows and snapshot 2 all four.
+    // Snapshot 1 has two rows; snapshot 2 has four.
     write_and_commit_two_rows(managed);
     write_and_commit_two_rows(managed);
 
@@ -389,8 +401,6 @@ TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
         return rows ? rows->length() : 0;
     };
 
-    // A copy of `tbl$ro` selects the snapshot its options name: the view reads every row, the
-    // copy on snapshot 1 reads the two rows that commit wrote.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> ro, catalog.GetTable(Identifier("db1", "tbl1$ro")));
     ASSERT_OK_AND_ASSIGN(int64_t all_rows, count_rows(ro));
     EXPECT_EQ(all_rows, 4);
@@ -400,7 +410,32 @@ TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
     ASSERT_OK_AND_ASSIGN(int64_t selected_rows, count_rows(selected));
     EXPECT_EQ(selected_rows, 2);
 
-    // The dev branch holds its own schema and one commit of two rows of its own.
+    const std::map<std::string, std::string> pk_options = {{Options::FILE_SYSTEM, "local"},
+                                                           {Options::FILE_FORMAT, "orc"},
+                                                           {Options::BUCKET, "1"},
+                                                           {Options::BUCKET_KEY, "id"}};
+    ASSERT_TRUE(arrow::ExportSchema(*typed_schema, &schema).ok());
+    ASSERT_OK(catalog.CreateTable(Identifier("db1", "pk_tbl"), &schema, /*partition_keys=*/{},
+                                  /*primary_keys=*/{"id"}, pk_options, /*ignore_if_exists=*/false));
+    ArrowSchemaRelease(&schema);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> pk_table,
+                         catalog.GetTable(Identifier("db1", "pk_tbl")));
+    write_and_commit_two_rows(pk_table, 1);
+    write_and_commit_two_rows(pk_table, 3);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> audit,
+                         catalog.GetTable(Identifier("db1", "pk_tbl$audit_log")));
+    ASSERT_OK_AND_ASSIGN(int64_t audit_rows, count_rows(audit));
+    EXPECT_EQ(audit_rows, 4);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> audit_selected,
+        audit->Copy({{Options::SCAN_MODE, "from-snapshot"}, {Options::SCAN_SNAPSHOT_ID, "1"}}));
+    EXPECT_EQ(audit_selected->Name(), "pk_tbl$audit_log");
+    ASSERT_OK_AND_ASSIGN(int64_t audit_selected_rows, count_rows(audit_selected));
+    EXPECT_EQ(audit_selected_rows, 2);
+
+    ASSERT_OK_AND_ASSIGN(int64_t original_audit_rows, count_rows(audit));
+    EXPECT_EQ(original_audit_rows, 4);
+
     SchemaManager dev_schema_manager(core_options.GetFileSystem(), managed->GetRootPath(), "dev");
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> dev_schema,
                          dev_schema_manager.CreateTable(typed_schema, /*partition_keys=*/{},
@@ -409,14 +444,12 @@ TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
                          catalog.GetTable(Identifier("db1", "tbl1$branch_dev")));
     write_and_commit_two_rows(dev_managed);
 
-    // A `branch` option routes the copy to the branch it names: the copy answers with the branch
-    // view's name and reads the rows that branch holds.
+    // Copy retains the identifier while routing reads to dev.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_selected, ro->Copy({{Options::BRANCH, "dev"}}));
-    EXPECT_EQ(dev_selected->Name(), "tbl1$branch_dev$ro");
+    EXPECT_EQ(dev_selected->Name(), ro->Name());
     ASSERT_OK_AND_ASSIGN(int64_t dev_rows, count_rows(dev_selected));
     EXPECT_EQ(dev_rows, 2);
 
-    // A view of a branch keeps serving that branch through a copy.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_ro,
                          catalog.GetTable(Identifier("db1", "tbl1$branch_dev$ro")));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_ro_copy, dev_ro->Copy({}));
@@ -424,8 +457,7 @@ TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
     ASSERT_OK_AND_ASSIGN(int64_t dev_ro_rows, count_rows(dev_ro_copy));
     EXPECT_EQ(dev_ro_rows, 2);
 
-    // The metadata tables copy the same way: the snapshots view serves the branch its copy names,
-    // and a branch holding no schema does not exist.
+    // Metadata views also route reads to the copied branch.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> snapshots,
                          catalog.GetTable(Identifier("db1", "tbl1$snapshots")));
     ASSERT_OK_AND_ASSIGN(int64_t main_snapshot_rows, count_rows(snapshots));
@@ -434,8 +466,10 @@ TEST(FileSystemCatalogTest, TestACopyOfACatalogSystemTableAppliesItsOptions) {
                          snapshots->Copy({{Options::BRANCH, "dev"}}));
     ASSERT_OK_AND_ASSIGN(int64_t dev_snapshot_rows, count_rows(dev_snapshots));
     EXPECT_EQ(dev_snapshot_rows, 1);
-    ASSERT_NOK_WITH_MSG(snapshots->Copy({{Options::BRANCH, "missing"}}),
-                        "branch missing does not exist");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> missing,
+                         snapshots->Copy({{Options::BRANCH, "missing"}}));
+    ASSERT_OK_AND_ASSIGN(int64_t missing_rows, count_rows(missing));
+    EXPECT_EQ(missing_rows, 0);
 }
 
 TEST(FileSystemCatalogTest, TestGetTableServesTheSysDatabase) {
@@ -469,24 +503,31 @@ TEST(FileSystemCatalogTest, TestGetTableServesTheSysDatabase) {
                          catalog->GetTable(Identifier("sys", "catalog_options")));
     ASSERT_TRUE(std::dynamic_pointer_cast<SystemTable>(catalog_options) != nullptr);
 
-    // A global system table copies over the options it already carries and ignores the dynamic
-    // ones, as Java Paimon's `CatalogOptionsTable#copy` does, so its copy reads the same rows.
+    // Global system tables ignore dynamic options when copied.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied_catalog_options,
                          catalog_options->Copy({{"ignored", "on-top"}}));
     EXPECT_NE(copied_catalog_options, catalog_options);
+    std::map<std::string, std::string> copied_scan_builder_options;
     ScanContextBuilder copied_scan_builder(copied_catalog_options->GetRootPath());
-    copied_scan_builder.SetOptions(options);
+    copied_scan_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> copied_scan_context,
                          copied_scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_9,
+                         copied_catalog_options->Copy(copied_scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> copied_scan,
-                         copied_catalog_options->NewScan(std::move(copied_scan_context)));
+                         configured_table_9->NewScan(std::move(copied_scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> copied_plan, copied_scan->CreatePlan());
+    std::map<std::string, std::string> copied_read_builder_options;
     ReadContextBuilder copied_read_builder(copied_catalog_options->GetRootPath());
-    copied_read_builder.SetOptions(options);
+    copied_read_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> copied_read_context,
                          copied_read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_10,
+                         copied_catalog_options->Copy(copied_read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> copied_read,
-                         copied_catalog_options->NewRead(std::move(copied_read_context)));
+                         configured_table_10->NewRead(std::move(copied_read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> copied_reader,
                          copied_read->CreateReader(copied_plan->Splits()));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch copied_result, copied_reader->NextBatch());
@@ -499,17 +540,25 @@ TEST(FileSystemCatalogTest, TestGetTableServesTheSysDatabase) {
     ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("sys", "nope")), "not exist");
 
     ASSERT_OK_AND_ASSIGN(auto tables, catalog->GetTable(Identifier("sys", "tables")));
+    std::map<std::string, std::string> scan_builder_options;
     ScanContextBuilder scan_builder("sys/tables");
-    scan_builder.SetOptions(options);
+    scan_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto scan, tables->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_11,
+                         tables->Copy(scan_builder_options));
+    ASSERT_OK_AND_ASSIGN(auto scan, configured_table_11->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
     ASSERT_EQ(plan->Splits().size(), 1);
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder("sys/tables");
-    read_builder.SetOptions(options);
+    read_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto read, tables->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_12,
+                         tables->Copy(read_builder_options));
+    ASSERT_OK_AND_ASSIGN(auto read, configured_table_12->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto table_result, reader->NextBatch());
 
@@ -591,8 +640,7 @@ TEST(FileSystemCatalogTest, TestBranchTableLoadsBranchSchema) {
     ASSERT_TRUE(exists);
     ASSERT_OK_AND_ASSIGN(loaded_schema, catalog.LoadTableSchema(audit_log_identifier));
     ASSERT_EQ((std::vector<std::string>{"rowkind", "b1_c0"}), loaded_schema->FieldNames());
-    // A view of a branch answers with the name the branch is addressed by, so reloading that
-    // name lands on the same branch rather than on the main one.
+    // The returned name must address the same branch when reloaded.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> branch_view,
                          catalog.GetTable(audit_log_identifier));
     ASSERT_EQ(branch_view->Name(), "tbl1$branch_b1$audit_log");
@@ -1697,13 +1745,15 @@ TEST(FileSystemCatalogTest, TestClaimingVersionManagementWithoutImplementingItIs
     ASSERT_NOK_WITH_MSG(CheckVersionManagementImplemented(claiming),
                         "does not implement VersionManagedCatalog");
 
+    std::map<std::string, std::string> claiming_builder_options;
     CommitContextBuilder claiming_builder(dir->Str(), "commit_user_1");
+    claiming_builder_options = options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> claiming_context,
-                         claiming_builder.SetOptions(options)
-                             .WithCatalog(claiming, Identifier("db", "tbl"))
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(claiming_context)),
-                        "does not implement VersionManagedCatalog");
+
+                         claiming_builder.WithCatalog(claiming, Identifier("db", "tbl")).Finish());
+    ASSERT_NOK_WITH_MSG(
+        FileStoreCommit::Create(std::move(claiming_context), claiming_builder_options),
+        "does not implement VersionManagedCatalog");
 
     std::shared_ptr<Catalog> plain =
         std::make_shared<FileSystemCatalog>(core_options.GetFileSystem(), dir->Str(), options);

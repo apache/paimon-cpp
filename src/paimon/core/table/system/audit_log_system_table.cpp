@@ -42,6 +42,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/core/utils/context_utils.h"
@@ -401,8 +402,7 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
     if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
         data_table_fs = GetFileSystem();
     }
-    builder.SetOptions(options_)
-        .WithStreamingMode(context->IsStreamingMode())
+    builder.WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
         .WithFileSystem(data_table_fs)
@@ -420,7 +420,11 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
         builder.SetLimit(context->GetLimit().value());
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> data_context, builder.Finish());
-    return TableScan::Create(std::move(data_context));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStoreTable> data_table,
+        CreateDataTable(table_schema_, options_, data_context->GetSpecificFileSystem(),
+                        data_context->GetFileSystemSchemeToIdentifierMap()));
+    return data_table->NewScan(std::move(data_context));
 }
 
 Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewRead(
@@ -446,8 +450,12 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> data_context,
                            CreateDataReadContext(context, read_options));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStoreTable> data_table,
+        CreateDataTable(table_schema_, read_options, data_context->GetSpecificFileSystem(),
+                        data_context->GetFileSystemSchemeToIdentifierMap()));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> data_read,
-                           TableRead::Create(std::move(data_context)));
+                           data_table->NewRead(std::move(data_context)));
     auto* key_value_read = dynamic_cast<KeyValueTableRead*>(data_read.get());
     if (!key_value_read) {
         return Status::Invalid("audit_log system table requires key-value table read");
@@ -470,9 +478,7 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
     if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
         data_table_fs = GetFileSystem();
     }
-    builder.SetOptions(read_options)
-        .SetReadFieldNames(base_read_schema->field_names())
-        .WithBranch(core_options.GetBranch())
+    builder.SetReadFieldNames(base_read_schema->field_names())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
         .WithFileSystem(data_table_fs)

@@ -51,14 +51,16 @@ class PKCountReaderTest : public testing::Test {
  protected:
     Result<std::vector<std::shared_ptr<Split>>> CreateSplits(
         const std::string& table_path, const std::optional<int64_t>& snapshot_id) {
+        std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder(table_path);
         if (snapshot_id.has_value()) {
-            scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID,
-                                           std::to_string(snapshot_id.value()));
+            scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] =
+                std::to_string(snapshot_id.value());
         }
 
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context),
+                                                                  scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto plan, table_scan->CreatePlan());
         if (snapshot_id.has_value()) {
             if (!plan->SnapshotId().has_value() || plan->SnapshotId().value() != snapshot_id) {
@@ -78,7 +80,7 @@ class PKCountReaderTest : public testing::Test {
         PAIMON_ASSIGN_OR_RAISE(auto table_schema, schema_manager.ReadSchema(0));
         PAIMON_ASSIGN_OR_RAISE(
             auto internal_context,
-            InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
+            InternalReadContext::Create(read_context, table_schema, table_schema->Options(), {}));
         return std::shared_ptr<InternalReadContext>(std::move(internal_context));
     }
 

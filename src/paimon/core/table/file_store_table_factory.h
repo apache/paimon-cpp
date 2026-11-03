@@ -18,7 +18,9 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
+#include <string>
 
 #include "paimon/result.h"
 
@@ -30,23 +32,24 @@ class ScanContext;
 class Table;
 class WriteContext;
 
-/// Loads the data table a context names, as Java Paimon's `FileStoreTableFactory` does: the schema
-/// under the context's path describes it, and a path holding none is refused. A system table
-/// behind a `T$system` path and a format table are refused - a catalog hands those back through
-/// `GetTable`, and their operators come from the table itself - so the static `Create` of all four
-/// operators answers the one question this place asks and they cannot disagree.
+/// Loads managed tables for the static operator Create methods.
+/// System and format tables must be loaded through Catalog::GetTable().
 class FileStoreTableFactory {
  public:
     FileStoreTableFactory() = delete;
     ~FileStoreTableFactory() = delete;
 
-    static Result<std::shared_ptr<Table>> Create(const ScanContext& context);
+    static Result<std::shared_ptr<Table>> Create(const ScanContext& context,
+                                                 const std::map<std::string, std::string>& options);
 
-    static Result<std::shared_ptr<Table>> Create(const ReadContext& context);
+    static Result<std::shared_ptr<Table>> Create(const ReadContext& context,
+                                                 const std::map<std::string, std::string>& options);
 
-    static Result<std::shared_ptr<Table>> Create(const WriteContext& context);
+    static Result<std::shared_ptr<Table>> Create(const WriteContext& context,
+                                                 const std::map<std::string, std::string>& options);
 
-    static Result<std::shared_ptr<Table>> Create(const CommitContext& context);
+    static Result<std::shared_ptr<Table>> Create(const CommitContext& context,
+                                                 const std::map<std::string, std::string>& options);
 };
 
 }  // namespace paimon

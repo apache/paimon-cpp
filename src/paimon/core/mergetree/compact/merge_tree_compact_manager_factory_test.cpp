@@ -115,9 +115,10 @@ class MergeTreeCompactManagerFactoryWriteTest : public ::testing::Test {
                                                   table_options,
                                                   /*ignore_if_exists=*/false));
 
+        std::map<std::string, std::string> context_builder_options;
         WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"), "test");
         if (!context_options.empty()) {
-            context_builder.SetOptions(context_options);
+            context_builder_options = context_options;
         }
         if (with_io_manager) {
             context_builder.WithTempDirectory(dir->Str());
@@ -125,7 +126,7 @@ class MergeTreeCompactManagerFactoryWriteTest : public ::testing::Test {
 
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context,
                                context_builder.Finish());
-        return FileStoreWrite::Create(std::move(write_context));
+        return FileStoreWrite::Create(std::move(write_context), context_builder_options);
     }
 
     Result<std::unique_ptr<FileStoreWrite>> CreateSingleStringFileStoreWrite(

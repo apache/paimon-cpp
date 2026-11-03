@@ -308,9 +308,6 @@ Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::Load(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                            LoadForSchema(table_name, context));
-    // The inputs this table was built from are recorded for `Copy`, which re-enters this loader
-    // with the context unchanged: Java Paimon's global system tables copy over the options they
-    // already carry and ignore the dynamic ones a copy is given.
     SystemTable::Origin origin;
     origin.kind = StringUtils::ToLowerCase(table_name);
     origin.context = std::make_shared<GlobalSystemTableContext>(context);
@@ -329,9 +326,6 @@ Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::LoadForSchema(
             }
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                    entry.factory(context));
-            // TODO(yonghao.fyh): the loader-driven AdoptOwnSchema() is an init-style coupling;
-            // consider overriding LatestSchema() on SystemTable, as FormatTable does, to serve
-            // its own read-only schema and drop this call from every loader.
             PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
             return system_table;
         }

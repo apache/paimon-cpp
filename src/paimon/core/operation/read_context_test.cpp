@@ -85,33 +85,6 @@ TEST(ReadContextTest, TestWithCatalogNullRejected) {
                         "cannot read through a null catalog");
 }
 
-TEST(ReadContextTest, TestWithCatalogKeepsReadOptionsSeparate) {
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
-    catalog->SetOptions({{CatalogOptions::METASTORE, "rest"},
-                         {CatalogOptions::URI, "http://catalog"},
-                         {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}});
-
-    ReadContextBuilder builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
-    // Finishing a read neither imports catalog defaults nor generates a dependency header.
-    ASSERT_TRUE(ctx->GetOptions().empty());
-
-    catalog->SetOptions({{CatalogOptions::METASTORE, "rest"},
-                         {CatalogOptions::URI, "http://catalog"},
-                         {"header.X-Paimon-Read-Via", "catalog-view"}});
-    ASSERT_OK_AND_ASSIGN(auto nested_ctx,
-                         builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
-    ASSERT_TRUE(nested_ctx->GetOptions().empty());
-    const std::map<std::string, std::string> read_options = {
-        {Options::BLOB_VIEW_RESOLVE_ENABLED, "true"},
-        {"header.X-Paimon-Read-Via", "explicit-view"}};
-    ASSERT_OK_AND_ASSIGN(
-        auto explicit_ctx,
-        builder.WithCatalog(catalog, Identifier("db1", "t1")).SetOptions(read_options).Finish());
-    ASSERT_EQ(explicit_ctx->GetOptions(), read_options);
-}
-
 TEST(ReadContextTest, TestDefaultValue) {
     ReadContextBuilder builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
@@ -121,7 +94,6 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetExecutor());
     ASSERT_TRUE(ctx->GetReadFieldNames().empty());
     ASSERT_TRUE(ctx->GetReadFieldIds().empty());
-    ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetPredicate());
     ASSERT_FALSE(ctx->HasVectorOrFullTextSearch());
     ASSERT_FALSE(ctx->EnablePredicateFilter());
@@ -132,7 +104,6 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_EQ(3, ctx->GetPrefetchMaxParallelNum());
     ASSERT_FALSE(ctx->EnableMultiThreadRowToBatch());
     ASSERT_EQ(1, ctx->GetRowToBatchThreadNumber());
-    ASSERT_EQ("main", ctx->GetBranch());
     ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
     ASSERT_FALSE(ctx->GetSpecificFileSystem());
 }
@@ -146,7 +117,6 @@ TEST(ReadContextTest, TestSetContent) {
     cache_config.SetHoleSizeLimit(128);
     cache_config.SetPreBufferLimit(2048);
 
-    builder.AddOption("key", "value");
     builder.SetReadFieldNames({"f1", "f2"});
     builder.SetReadFieldIds({0, 1});
     auto predicate =
@@ -163,7 +133,7 @@ TEST(ReadContextTest, TestSetContent) {
     builder.WithMemoryPool(memory_pool);
     builder.WithExecutor(executor);
     builder.SetTableSchema("table-schema-json");
-    builder.WithBranch("rt");
+
     builder.WithCacheConfig(cache_config);
     auto fs = std::make_shared<MockFileSystem>();
     builder.WithFileSystem(fs);
@@ -190,13 +160,11 @@ TEST(ReadContextTest, TestSetContent) {
     ASSERT_EQ(executor, ctx->GetExecutor());
     ASSERT_TRUE(ctx->GetSpecificTableSchema().has_value());
     ASSERT_EQ("table-schema-json", ctx->GetSpecificTableSchema().value());
-    ASSERT_EQ("rt", ctx->GetBranch());
     ASSERT_EQ(512U, ctx->GetCacheConfig().GetRangeSizeLimit());
     ASSERT_EQ(128U, ctx->GetCacheConfig().GetHoleSizeLimit());
     ASSERT_EQ(2048U, ctx->GetCacheConfig().GetPreBufferLimit());
     ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
     std::map<std::string, std::string> expected_options = {{"key", "value"}};
-    ASSERT_EQ(expected_options, ctx->GetOptions());
     ASSERT_EQ(ctx->GetSpecificFileSystem(), fs);
     ASSERT_TRUE(ctx->GetCache());
 }
@@ -217,73 +185,6 @@ TEST(ReadContextTest, TestSetWarmupLevel) {
     ASSERT_EQ(WarmupLevel::NONE, first_ctx->GetWarmupLevel());
     ASSERT_OK_AND_ASSIGN(auto second_ctx, builder.Finish());
     ASSERT_EQ(WarmupLevel::RAW, second_ctx->GetWarmupLevel());
-}
-
-TEST(ReadContextTest, TestSetOptionsOverridesAddedOptions) {
-    ReadContextBuilder builder("table_root_path");
-    builder.AddOption("old", "value");
-    builder.SetOptions({{"key1", "value1"}, {"key2", "value2"}});
-
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
-
-    std::map<std::string, std::string> expected_options = {{"key1", "value1"}, {"key2", "value2"}};
-    ASSERT_EQ(expected_options, ctx->GetOptions());
-}
-
-TEST(ReadContextTest, TestBranch) {
-    ReadContextBuilder option_builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(auto option_ctx, option_builder.AddOption(Options::BRANCH, "rt").Finish());
-    ASSERT_EQ("rt", option_ctx->GetBranch());
-
-    ReadContextBuilder agreeing_builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(
-        auto agreeing_ctx,
-        agreeing_builder.WithBranch("rt").AddOption(Options::BRANCH, "rt").Finish());
-    ASSERT_EQ("rt", agreeing_ctx->GetBranch());
-
-    ReadContextBuilder mixed_builder("table_root_path");
-    ASSERT_NOK_WITH_MSG(mixed_builder.WithBranch("rt").AddOption(Options::BRANCH, "dev").Finish(),
-                        "but both 'dev' and 'rt' were named");
-
-    // An empty branch selects the main branch and stays accepted.
-    ReadContextBuilder main_builder("table_root_path");
-    main_builder.WithBranch("");
-    ASSERT_OK_AND_ASSIGN(auto ctx, main_builder.Finish());
-    ASSERT_EQ(BranchManager::DEFAULT_MAIN_BRANCH, ctx->GetBranch());
-    ReadContextBuilder empty_builder("table_root_path");
-    ASSERT_NOK_WITH_MSG(empty_builder.WithBranch("").AddOption(Options::BRANCH, "dev").Finish(),
-                        "but both 'dev' and 'main' were named");
-
-    // The branch names a directory under the table path, so a value that is not a single path
-    // component is rejected when the context is built.
-    ReadContextBuilder escaping_builder("table_root_path");
-    escaping_builder.WithBranch("rt/../../../../../outside");
-    ASSERT_NOK_WITH_MSG(escaping_builder.Finish(), "branch name cannot contain path separators");
-}
-
-TEST(ReadContextTest, TestBranchAgreesWithIdentifier) {
-    // A read through a catalog names its table with an Identifier that can itself carry a branch,
-    // so that branch and the one WithBranch() names must agree, exactly as the write and commit
-    // builders already require: one read cannot be aimed at two branches at once.
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
-
-    // The identifier's branch is honored when WithBranch() stays silent.
-    ReadContextBuilder identifier_builder("table_root_path");
-    identifier_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev"));
-    ASSERT_OK_AND_ASSIGN(auto identifier_ctx, identifier_builder.Finish());
-    ASSERT_EQ("dev", identifier_ctx->GetBranch());
-
-    // An agreeing WithBranch() is accepted.
-    ReadContextBuilder agreeing_builder("table_root_path");
-    agreeing_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).WithBranch("dev");
-    ASSERT_OK_AND_ASSIGN(auto agreeing_ctx, agreeing_builder.Finish());
-    ASSERT_EQ("dev", agreeing_ctx->GetBranch());
-
-    // A disagreeing WithBranch() is refused, and both branches are named.
-    ReadContextBuilder mixed_builder("table_root_path");
-    mixed_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).WithBranch("rt");
-    ASSERT_NOK_WITH_MSG(mixed_builder.Finish(), "but both 'dev' and 'rt' were named");
 }
 
 TEST(ReadContextTest, TestFileSystemAndSchemeMapConflict) {

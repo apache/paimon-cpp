@@ -73,18 +73,19 @@ Result<std::unique_ptr<MergeTreeCompactRewriter>> MergeTreeCompactRewriter::Crea
     auto write_schema = SpecialFields::CompleteSequenceAndValueKindField(data_schema);
 
     // TODO(xinyu.lxy): set executor
+    std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder(path_factory_cache->RootPath());
-    read_context_builder.SetOptions(options.ToMap())
-        .WithFileSystem(options.GetFileSystem())
+    read_context_builder_options = options.ToMap();
+    read_context_builder.WithFileSystem(options.GetFileSystem())
         .EnablePrefetch(true)
         .SetPrefetchMaxParallelNum(1)
         .SetPrefetchBatchCount(3)
         .WithMemoryPool(pool);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<InternalReadContext> internal_context,
-        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
+                           InternalReadContext::Create(read_context, table_schema, options.ToMap(),
+                                                       read_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         path_factory_cache->GetOrCreatePathFactory(options.GetFileFormat()->Identifier()));

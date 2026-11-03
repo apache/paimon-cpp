@@ -25,6 +25,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
@@ -74,6 +75,7 @@
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/core/utils/tag_manager.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/format/file_format.h"
@@ -97,8 +99,7 @@ namespace paimon {
 
 namespace {
 
-/// The escape hatch that lets an integration test commit on an object store, read where
-/// `NewCommit` refuses one below.
+/// Allows object-store commits in integration tests.
 constexpr const char kObjectStoreCommitInteTestOption[] = "enable-object-store-commit-in-inte-test";
 
 }  // namespace
@@ -129,14 +130,22 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     } else {
         options[Options::BRANCH] = normalized_branch;
     }
+    std::shared_ptr<TableSchema> effective_schema = schema;
+    if (options != schema->Options()) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> normalized_schema,
+                               schema->Copy(options));
+        effective_schema = std::shared_ptr<TableSchema>(std::move(normalized_schema));
+    }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, specified_file_system, fs_scheme_map));
     std::shared_ptr<FileStore> store = FileStore::Create(root_path, std::move(core_options));
     std::shared_ptr<FileStoreTable> table;
     if (!schema->PrimaryKeys().empty()) {
-        table = std::make_shared<PrimaryKeyFileStoreTable>(store, schema, identifier, uuid);
+        table =
+            std::make_shared<PrimaryKeyFileStoreTable>(store, effective_schema, identifier, uuid);
     } else {
-        table = std::make_shared<AppendOnlyFileStoreTable>(store, schema, identifier, uuid);
+        table =
+            std::make_shared<AppendOnlyFileStoreTable>(store, effective_schema, identifier, uuid);
     }
     table->dynamic_options_ = dynamic_options;
     table->specified_file_system_ = specified_file_system;
@@ -144,71 +153,113 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     return table;
 }
 
+Result<std::shared_ptr<TableSchema>> FileStoreTable::CopyTableSchema(
+    const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
+    const std::string& current_branch, const std::shared_ptr<TableSchema>& schema,
+    const std::map<std::string, std::string>& applied_options,
+    const std::map<std::string, std::string>& dynamic_options) {
+    std::map<std::string, std::string> overrides = dynamic_options;
+    auto type_option = overrides.find(Options::TYPE);
+    if (type_option != overrides.end()) {
+        PAIMON_ASSIGN_OR_RAISE(TableType schema_type,
+                               TableTypeDefine::FromOptions(schema->Options()));
+        PAIMON_ASSIGN_OR_RAISE(TableType named_type, TableTypeDefine::FromOptions(
+                                                         {{Options::TYPE, type_option->second}}));
+        if (named_type != schema_type) {
+            return Status::Invalid("Change 'type' is not supported yet.");
+        }
+        overrides.erase(type_option);
+    }
+    PAIMON_RETURN_NOT_OK(SchemaValidation::CheckCopyOptions(*schema, overrides));
+    for (const std::string& key : {std::string("primary-key"), std::string("partition")}) {
+        if (schema->Options().count(key) == 0) {
+            // The immutable check accepts these only when they normalize to the schema keys.
+            overrides.erase(key);
+        }
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged, schema->MergeOptions(overrides));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(merged->Options(), fs));
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateStartupMode(options));
+
+    // Snapshot lookup failures defer to scanning; a resolved snapshot with a missing schema
+    // fails Copy.
+    const std::shared_ptr<FileSystem> resolved_fs = options.GetFileSystem();
+    SnapshotManager snapshots(resolved_fs, root_path, current_branch);
+    auto resolve_snapshot = [&]() -> Result<std::optional<Snapshot>> {
+        const int32_t selectors = options.GetScanSnapshotId().has_value() +
+                                  options.GetScanTagName().has_value() +
+                                  options.GetScanTimestampMillis().has_value();
+        if (selectors == 0) {
+            return std::optional<Snapshot>();
+        }
+        if (options.GetScanSnapshotId()) {
+            PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
+                                   snapshots.LoadSnapshot(*options.GetScanSnapshotId()));
+            return std::optional<Snapshot>(std::move(snapshot));
+        }
+        if (options.GetScanTagName()) {
+            TagManager tags(resolved_fs, root_path, current_branch);
+            PAIMON_ASSIGN_OR_RAISE(Tag tag, tags.GetOrThrow(*options.GetScanTagName()));
+            PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, tag.TrimToSnapshot());
+            return std::optional<Snapshot>(std::move(snapshot));
+        }
+        return snapshots.EarlierOrEqualTimeMillis(*options.GetScanTimestampMillis());
+    };
+    auto snapshot = resolve_snapshot();
+    if (snapshot.ok() && snapshot.value()) {
+        SchemaManager schemas(resolved_fs, root_path, current_branch);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> historical,
+                               schemas.ReadSchema(snapshot.value()->SchemaId()));
+        auto historical_options = merged->Options();
+        // Restore historical column declarations and aliases unless explicitly overridden.
+        for (const std::vector<std::string>& keys :
+             {std::vector<std::string>{"vector-field"},
+              {Options::BLOB_FIELD},
+              {Options::BLOB_DESCRIPTOR_FIELD, Options::FALLBACK_BLOB_DESCRIPTOR_FIELD},
+              {Options::BLOB_VIEW_FIELD},
+              {"video-frame-field"}}) {
+            bool explicitly_set = false;
+            for (const auto& key : keys) {
+                explicitly_set |= applied_options.count(key) != 0 || overrides.count(key) != 0;
+            }
+            if (explicitly_set) {
+                continue;
+            }
+            for (const auto& key : keys) {
+                historical_options.erase(key);
+                auto value = historical->Options().find(key);
+                if (value != historical->Options().end()) {
+                    historical_options.emplace(*value);
+                }
+            }
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> historical_copy,
+                               historical->Copy(historical_options));
+        merged = std::move(historical_copy);
+    }
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateTableSchema(*merged));
+    return std::shared_ptr<TableSchema>(std::move(merged));
+}
+
 Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     const std::map<std::string, std::string>& dynamic_options) const {
-    std::shared_ptr<TableSchema> loaded_schema = std::static_pointer_cast<TableSchema>(schema_);
-    // `type` is immutable the way Java Paimon holds it: the kind of a copy is named by the primary
-    // keys of the schema it serves, never by this option. A value naming another type is refused,
-    // and one naming the same type - whatever its case, an absent `type` reading as `table` - is
-    // dropped, as Java's unchanged-key check drops it.
-    auto type_option = dynamic_options.find(Options::TYPE);
-    if (type_option != dynamic_options.end()) {
-        PAIMON_ASSIGN_OR_RAISE(TableType schema_type,
-                               TableTypeDefine::FromOptions(loaded_schema->Options()));
-        std::map<std::string, std::string> named{{Options::TYPE, type_option->second}};
-        PAIMON_ASSIGN_OR_RAISE(TableType named_type, TableTypeDefine::FromOptions(named));
-        if (named_type != schema_type) {
-            return Status::Invalid(fmt::format("Change '{}' is not supported yet.", Options::TYPE));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> copied_schema,
+                           CopyTableSchema(file_system_, root_path_, CurrentBranch(),
+                                           std::static_pointer_cast<TableSchema>(schema_),
+                                           dynamic_options_, dynamic_options));
+    auto accumulated = dynamic_options_;
+    for (const auto& [key, value] : dynamic_options) {
+        if (key != Options::TYPE) {
+            accumulated.insert_or_assign(key, value);
         }
     }
-    // `branch` names the branch the copy serves, the way it routes a load: a copy on the branch
-    // this table serves keeps this table's schema, while one on another branch reads that branch's
-    // own latest schema and refuses a branch that holds none, as `SwitchToBranch` does.
-    std::string target_branch = CurrentBranch();
-    auto branch_option = dynamic_options.find(Options::BRANCH);
-    if (branch_option != dynamic_options.end()) {
-        target_branch = BranchManager::NormalizeBranch(branch_option->second);
-    }
-    std::map<std::string, std::string> overridable = dynamic_options;
-    overridable.erase(Options::TYPE);
-    overridable.erase(Options::BRANCH);
-    std::shared_ptr<TableSchema> base_schema = loaded_schema;
-    // An `Identifier` is immutable once built, so the branch one is held beside this table's
-    // and the copy carries whichever names the branch it serves.
-    std::optional<Identifier> branch_identifier;
-    if (target_branch != CurrentBranch()) {
-        // The branch is read through the file system this table serves, the same read
-        // `SwitchToBranch` makes, and then served through the one its own schema resolves.
-        SchemaManager schema_manager(file_system_, root_path_, target_branch);
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
-                               schema_manager.Latest());
-        if (!latest) {
-            return Status::Invalid(fmt::format("branch {} does not exist", target_branch));
-        }
-        base_schema = *latest;
-        PAIMON_ASSIGN_OR_RAISE(Identifier branch_named,
-                               CatalogUtils::BranchIdentifier(identifier_, target_branch));
-        branch_identifier.emplace(std::move(branch_named));
-    }
-    std::map<std::string, std::string> accumulated = dynamic_options_;
-    accumulated.erase(Options::TYPE);
-    accumulated.erase(Options::BRANCH);
-    for (const auto& [key, value] : overridable) {
-        accumulated.insert_or_assign(key, value);
-    }
-    std::map<std::string, std::string> schema_overridable = accumulated;
-    if (target_branch != CurrentBranch() && target_branch != BranchManager::DEFAULT_MAIN_BRANCH) {
-        schema_overridable[Options::BRANCH] = target_branch;
-    }
-    PAIMON_RETURN_NOT_OK(SchemaValidation::CheckImmutableOptions(*base_schema, accumulated));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
-                           base_schema->MergeOptions(schema_overridable));
-    // A copy resolves its file system from its own merged options, so it takes over no manager of
-    // the table it was copied from: the store builds both over the resolution the copy names.
-    return FileStoreTable::Create(
-        specified_file_system_, root_path_, std::shared_ptr<TableSchema>(std::move(merged_schema)),
-        branch_identifier ? *branch_identifier : identifier_, CatalogUuid().value_or(""),
-        target_branch, fs_scheme_map_, accumulated);
+    auto branch = copied_schema->Options().find(Options::BRANCH);
+    const std::string target_branch = branch == copied_schema->Options().end()
+                                          ? BranchManager::DEFAULT_MAIN_BRANCH
+                                          : BranchManager::NormalizeBranch(branch->second);
+    return FileStoreTable::Create(specified_file_system_, root_path_, copied_schema, identifier_,
+                                  CatalogUuid().value_or(""), target_branch, fs_scheme_map_,
+                                  accumulated);
 }
 
 Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string& branch) const {
@@ -219,9 +270,6 @@ Result<std::shared_ptr<Table>> FileStoreTable::SwitchToBranch(const std::string&
                                       CatalogUuid().value_or(""), CurrentBranch(), fs_scheme_map_,
                                       dynamic_options_);
     }
-    // The branch is read through the file system this table serves, and then served through the
-    // one its own schema resolves: the store builds the managers over that resolution, so none of
-    // this table's is carried over.
     SchemaManager schema_manager(file_system_, root_path_, target_branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
                            schema_manager.Latest());
@@ -256,40 +304,6 @@ Status FileStoreTable::RestoreRealtimeCommittedProgress(
             RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
         PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
             latest_snapshot->Id(), realtime_committed_offsets, /*committed_data_files=*/{}));
-    }
-    return Status::OK();
-}
-
-Status FileStoreTable::CheckOptionsAgreeWithTable(
-    const TableSchema& table_schema,
-    const std::map<std::string, std::string>& context_options) const {
-    std::map<std::string, std::string> table_options = table_schema.Options();
-    for (const auto& [key, value] : dynamic_options_) {
-        table_options.insert_or_assign(key, value);
-    }
-    for (const auto& [key, value] : context_options) {
-        auto table_option = table_options.find(key);
-        if (table_option != table_options.end()) {
-            if (table_option->second != value) {
-                return Status::Invalid(
-                    fmt::format("option '{}' is '{}' in the context but '{}' on the table", key,
-                                SensitiveConfigUtils::RedactValue(key, value),
-                                SensitiveConfigUtils::RedactValue(key, table_option->second)));
-            }
-            continue;
-        }
-        // `branch` and `type` route a load to the table it names and are folded into it there - by
-        // the load or by `Copy` - so the spelling a context gives them is checked against the
-        // identifier and the schema, not against these keys.
-        if (key == Options::BRANCH || key == Options::TYPE) {
-            continue;
-        }
-        return Status::Invalid(fmt::format(
-            "option '{}' is '{}' in the context but the table was not loaded with it: the "
-            "operator serves the table's own configuration, so the context value would be "
-            "dropped in silence; load the table with this option or apply it through "
-            "Table::Copy()",
-            key, SensitiveConfigUtils::RedactValue(key, value)));
     }
     return Status::OK();
 }
@@ -371,7 +385,6 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
     PAIMON_ASSIGN_OR_RAISE(std::optional<Identifier> catalog_identifier,
                            CatalogUtils::BranchIdentifier(ctx->GetIdentifier(), CurrentBranch()));
     std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
-    PAIMON_RETURN_NOT_OK(CheckOptionsAgreeWithTable(*schema, ctx->GetOptions()));
     CoreOptions options = store_->GetOptions();
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*schema, options));
@@ -414,9 +427,8 @@ Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
-    PAIMON_RETURN_NOT_OK(CheckOptionsAgreeWithTable(*table_schema, context->GetOptions()));
     PAIMON_ASSIGN_OR_RAISE(bool read_optimized,
-                           OptionsUtils::GetValueFromMap<bool>(context->GetOptions(),
+                           OptionsUtils::GetValueFromMap<bool>(store_->GetOptions().ToMap(),
                                                                kReadOptimizedScanOption, false));
     CoreOptions core_options = store_->GetOptions();
     core_options.WithCache(context->GetCache());
@@ -539,10 +551,10 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     std::shared_ptr<ReadContext> read_context = std::move(context);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(read_context, "read"));
     std::shared_ptr<TableSchema> loaded_schema = std::static_pointer_cast<TableSchema>(schema_);
-    PAIMON_RETURN_NOT_OK(CheckOptionsAgreeWithTable(*loaded_schema, read_context->GetOptions()));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
-                           InternalReadContext::CreateForTable(read_context, loaded_schema,
-                                                               store_->GetOptions(), root_path_));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<InternalReadContext> internal_context,
+        InternalReadContext::CreateForTable(read_context, loaded_schema, store_->GetOptions(),
+                                            root_path_, dynamic_options_));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
                            CreateTableRead(internal_context, read_context->GetMemoryPool(),
@@ -606,7 +618,6 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
     std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
-    PAIMON_RETURN_NOT_OK(CheckOptionsAgreeWithTable(*schema, ctx->GetOptions()));
     CoreOptions options = store_->GetOptions();
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*schema, options));
     assert(options.GetFileSystem());
@@ -615,7 +626,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     PAIMON_ASSIGN_OR_RAISE(bool is_object_store, FileSystem::IsObjectStore(root_path_));
     if (is_object_store && !ctx->UseRESTCatalogCommit() &&
         AsVersionManaged(ctx->GetCatalog()) == nullptr &&
-        ctx->GetOptions().find(kObjectStoreCommitInteTestOption) == ctx->GetOptions().end()) {
+        options.ToMap().count(kObjectStoreCommitInteTestOption) == 0) {
         return Status::NotImplemented(
             "commit operation does not support object store file system for now");
     }

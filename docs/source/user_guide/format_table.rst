@@ -122,6 +122,10 @@ cannot decide what kind of table this is. The merged result is validated, not th
 options, so an option a format table refuses - ``metastore.partitioned-table``, a file format
 nothing here can read - is refused wherever it comes from rather than dropped in silence.
 
+Like Java, ``Copy()`` retains the table's original physical file format even if
+``file.format`` changes in the copied option map. Read and write operators
+continue using that original format.
+
 A setting the format path cannot act on is refused by name rather than quietly dropped:
 
 * ``ReadContextBuilder::SetReadSchema()``. A projected read schema can rename a column, prune a
@@ -143,8 +147,7 @@ A setting the format path cannot act on is refused by name rather than quietly d
 * the ``branch`` option, whatever names it: a format table keeps no metadata to branch, and its
   data is the files under its one location, which is where a read or a write would go whichever
   branch was asked for. It is refused wherever it comes from - the schema, a catalog that parsed
-  ``tbl$branch_dev``, or the options of a single call - and so is ``WithBranch()`` on a context
-  built from a format table. A branch quietly ignored would be the wrong answer everywhere and a
+  ``tbl$branch_dev``, or the options passed to ``Copy()``. A branch quietly ignored would be the wrong answer everywhere and a
   destructive one for an overwrite, which would clear the data it was told not to touch. The
   value naming the main branch is the default and is left alone.
 * A scan predicate or bucket filter, as above, and more than one partition filter: a scan descends

@@ -37,9 +37,9 @@ namespace paimon {
 class Predicate;
 
 ReadContext::ReadContext(
-    const std::string& path, const std::string& branch,
-    const std::vector<std::string>& read_field_names, const std::vector<int32_t>& read_field_ids,
-    const std::shared_ptr<Predicate>& predicate, const std::shared_ptr<VectorSearch>& vector_search,
+    const std::string& path, const std::vector<std::string>& read_field_names,
+    const std::vector<int32_t>& read_field_ids, const std::shared_ptr<Predicate>& predicate,
+    const std::shared_ptr<VectorSearch>& vector_search,
     const std::shared_ptr<FullTextSearch>& full_text_search, bool enable_predicate_filter,
     bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
     uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
@@ -47,12 +47,10 @@ ReadContext::ReadContext(
     const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
     const std::shared_ptr<FileSystem>& specific_file_system,
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-    const std::shared_ptr<RealtimeContext>& realtime_context,
-    const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
+    const std::shared_ptr<RealtimeContext>& realtime_context, bool read_ahead_cache_enabled,
     const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache, WarmupLevel warmup_level,
     const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier)
     : path_(path),
-      branch_(branch),
       read_field_names_(read_field_names),
       read_field_ids_(read_field_ids),
       predicate_(predicate),
@@ -71,7 +69,6 @@ ReadContext::ReadContext(
       specific_file_system_(specific_file_system),
       fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
       realtime_context_(realtime_context),
-      options_(options),
       read_ahead_cache_enabled_(read_ahead_cache_enabled),
       cache_config_(cache_config),
       cache_(cache),
@@ -101,12 +98,10 @@ class ReadContextBuilder::Impl {
  public:
     friend class ReadContextBuilder;
     void Reset() {
-        branch_.reset();
         read_field_names_.clear();
         read_field_ids_.clear();
         read_schema_.reset();
         fs_scheme_to_identifier_map_.clear();
-        options_.clear();
         predicate_.reset();
         vector_search_.reset();
         full_text_search_.reset();
@@ -132,14 +127,10 @@ class ReadContextBuilder::Impl {
 
  private:
     std::string path_;
-    /// Unset until `WithBranch()` names one, so that a branch named only by the `branch`
-    /// option is not overruled by the default.
-    std::optional<std::string> branch_;
     std::vector<std::string> read_field_names_;
     std::vector<int32_t> read_field_ids_;
     std::unique_ptr<ArrowSchema> read_schema_;
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
-    std::map<std::string, std::string> options_;
     std::shared_ptr<Predicate> predicate_;
     std::shared_ptr<VectorSearch> vector_search_;
     std::shared_ptr<FullTextSearch> full_text_search_;
@@ -172,17 +163,6 @@ ReadContextBuilder::~ReadContextBuilder() = default;
 
 ReadContextBuilder::ReadContextBuilder(ReadContextBuilder&&) noexcept = default;
 ReadContextBuilder& ReadContextBuilder::operator=(ReadContextBuilder&&) noexcept = default;
-
-ReadContextBuilder& ReadContextBuilder::AddOption(const std::string& key,
-                                                  const std::string& value) {
-    impl_->options_[key] = value;
-    return *this;
-}
-
-ReadContextBuilder& ReadContextBuilder::SetOptions(const std::map<std::string, std::string>& opts) {
-    impl_->options_ = opts;
-    return *this;
-}
 
 ReadContextBuilder& ReadContextBuilder::SetReadFieldNames(
     const std::vector<std::string>& read_field_names) {
@@ -277,11 +257,6 @@ ReadContextBuilder& ReadContextBuilder::SetTableSchema(const std::string& table_
     return *this;
 }
 
-ReadContextBuilder& ReadContextBuilder::WithBranch(const std::string& branch) {
-    impl_->branch_ = branch;
-    return *this;
-}
-
 ReadContextBuilder& ReadContextBuilder::WithFileSystemSchemeToIdentifierMap(
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map) {
     impl_->fs_scheme_to_identifier_map_ = fs_scheme_to_identifier_map;
@@ -356,9 +331,6 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::string branch,
-        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "read"));
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0");
     }
@@ -385,15 +357,14 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     }
 
     auto ctx = std::make_unique<ReadContext>(
-        impl_->path_, branch, impl_->read_field_names_, impl_->read_field_ids_, impl_->predicate_,
+        impl_->path_, impl_->read_field_names_, impl_->read_field_ids_, impl_->predicate_,
         impl_->vector_search_, impl_->full_text_search_, impl_->enable_predicate_filter_,
         impl_->enable_prefetch_, impl_->enable_late_materializing_, impl_->prefetch_batch_count_,
         impl_->prefetch_max_parallel_num_, impl_->enable_multi_thread_row_to_batch_,
         impl_->row_to_batch_thread_number_, impl_->table_schema_, impl_->memory_pool_,
         impl_->executor_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
-        impl_->realtime_context_, impl_->options_, impl_->read_ahead_cache_enabled_,
-        impl_->cache_config_, impl_->cache_, impl_->warmup_level_, impl_->catalog_,
-        impl_->identifier_);
+        impl_->realtime_context_, impl_->read_ahead_cache_enabled_, impl_->cache_config_,
+        impl_->cache_, impl_->warmup_level_, impl_->catalog_, impl_->identifier_);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
         ctx->SetReadSchema(std::move(impl_->read_schema_));
     }

@@ -94,19 +94,16 @@ class TestHelper {
         if (!temp_directory.empty()) {
             context_builder.WithTempDirectory(temp_directory);
         }
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context,
-                               context_builder.SetOptions(options)
-                                   .WithStreamingMode(is_streaming_mode)
-                                   .WithWriteId(12345)
-                                   .Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> write,
-                               FileStoreWrite::Create(std::move(write_context)));
-        CommitContextBuilder commit_context_builder(table_path, commit_user);
         PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.SetOptions(options).IgnoreEmptyCommit(false).Finish());
+            std::unique_ptr<WriteContext> write_context,
+            context_builder.WithStreamingMode(is_streaming_mode).WithWriteId(12345).Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> write,
+                               FileStoreWrite::Create(std::move(write_context), options));
+        CommitContextBuilder commit_context_builder(table_path, commit_user);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
+                               commit_context_builder.IgnoreEmptyCommit(false).Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+                               FileStoreCommit::Create(std::move(commit_context), options));
         return std::unique_ptr<TestHelper>(new TestHelper(std::move(file_system), std::move(write),
                                                           std::move(commit), commit_user,
                                                           table_path, options));
@@ -157,15 +154,14 @@ class TestHelper {
                                                         std::optional<int64_t> snapshot_id,
                                                         bool is_streaming = true) {
         ScanContextBuilder scan_context_builder(table_path_);
-        scan_context_builder.WithStreamingMode(is_streaming)
-            .SetOptions(options_)
-            .AddOption(Options::SCAN_MODE, startup_mode.ToString());
+        scan_context_builder.WithStreamingMode(is_streaming);
+        std::map<std::string, std::string> options = options_;
+        options[Options::SCAN_MODE] = startup_mode.ToString();
         if (snapshot_id) {
-            scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID,
-                                           std::to_string(snapshot_id.value()));
+            options[Options::SCAN_SNAPSHOT_ID] = std::to_string(snapshot_id.value());
         }
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(scan_, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(scan_, TableScan::Create(std::move(scan_context), options));
         return Scan();
     }
 
@@ -277,13 +273,13 @@ class TestHelper {
         const std::vector<std::shared_ptr<Split>>& splits,
         std::unique_ptr<::ArrowSchema> read_schema) {
         ReadContextBuilder read_context_builder(table_path_);
-        read_context_builder.SetOptions(options_);
         if (read_schema != nullptr) {
             read_context_builder.SetReadSchema(std::move(read_schema));
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_read,
+                               TableRead::Create(std::move(read_context), options_));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> collected,
                                ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -303,10 +299,10 @@ class TestHelper {
                                     const std::vector<std::shared_ptr<Split>>& splits,
                                     const std::string& expected_result) {
         ReadContextBuilder read_context_builder(table_path_);
-        read_context_builder.SetOptions(options_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_read,
+                               TableRead::Create(std::move(read_context), options_));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
                                ReadResultCollector::CollectResult(std::move(batch_reader)));

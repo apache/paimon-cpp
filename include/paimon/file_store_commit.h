@@ -51,16 +51,15 @@ class CommitMessage;
 /// manages versions. `UseRESTCatalogCommit()` only prepares a request for the caller to send.
 class PAIMON_EXPORT FileStoreCommit {
  public:
-    /// Create an instance of `FileStoreCommit`. The data table the context names is loaded from its
-    /// root path - a format table is refused, served by the table a catalog hands back through its
-    /// own `NewCommit` instead.
-    ///
-    /// @param context A unique pointer to the `CommitContext` used for commit operations.
-    ///
-    /// @return A Result containing a unique pointer to the `FileStoreCommit` instance.
-    /// @deprecated Use `Table::NewCommit()` on the table a catalog hands back instead.
+    /// Creates a managed-table commit from the context and table options.
+    /// @param context Commit context.
+    /// @param options Overrides for the stored schema options. Catalog branch commits require a
+    ///                branch-qualified identifier.
+    /// @return The commit, or an error status.
+    /// @deprecated Use Table::NewCommit().
     PAIMON_DEPRECATED("Use Table::NewCommit() instead")
-    static Result<std::unique_ptr<FileStoreCommit>> Create(std::unique_ptr<CommitContext> context);
+    static Result<std::unique_ptr<FileStoreCommit>> Create(
+        std::unique_ptr<CommitContext> context, const std::map<std::string, std::string>& options);
 
     virtual ~FileStoreCommit() = default;
 

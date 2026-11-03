@@ -37,20 +37,15 @@ namespace paimon {
 WriteContext::WriteContext(
     const std::string& root_path, const std::string& commit_user, bool is_streaming_mode,
     bool ignore_num_bucket_check, bool ignore_previous_files, bool enable_multi_thread_spill,
-    const std::optional<int32_t>& write_id, const std::string& branch,
-    const std::optional<std::string>& named_branch,
-    const std::vector<std::string>& write_schema, const std::shared_ptr<MemoryPool>& memory_pool,
-    const std::shared_ptr<Executor>& executor, const std::string& temp_directory,
-    const std::shared_ptr<FileSystem>& specific_file_system,
+    const std::optional<int32_t>& write_id, const std::vector<std::string>& write_schema,
+    const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
+    const std::string& temp_directory, const std::shared_ptr<FileSystem>& specific_file_system,
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
     const std::shared_ptr<RealtimeContext>& realtime_context,
-    const std::map<std::string, std::string>& options,
     const std::optional<std::string>& table_schema, const std::shared_ptr<Catalog>& catalog,
     const std::optional<Identifier>& identifier)
     : root_path_(root_path),
       commit_user_(commit_user),
-      branch_(branch),
-      named_branch_(named_branch),
       is_streaming_mode_(is_streaming_mode),
       ignore_num_bucket_check_(ignore_num_bucket_check),
       ignore_previous_files_(ignore_previous_files),
@@ -63,7 +58,6 @@ WriteContext::WriteContext(
       specific_file_system_(specific_file_system),
       fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
       realtime_context_(realtime_context),
-      options_(options),
       table_schema_(table_schema),
       catalog_(catalog),
       identifier_(identifier) {}
@@ -83,7 +77,6 @@ class WriteContextBuilder::Impl {
         memory_pool_ = GetDefaultPool();
         executor_ = CreateDefaultExecutor();
         temp_directory_.clear();
-        branch_.reset();
         write_schema_.clear();
         fs_scheme_to_identifier_map_.clear();
         specific_file_system_.reset();
@@ -91,15 +84,11 @@ class WriteContextBuilder::Impl {
         catalog_.reset();
         identifier_.reset();
         table_schema_ = std::nullopt;
-        options_.clear();
     }
 
  private:
     std::string root_path_;
     std::string commit_user_;
-    /// Unset until `WithBranch()` names one, so that a branch named only by the identifier or
-    /// the `branch` option is not overruled by the default.
-    std::optional<std::string> branch_;
     std::optional<int32_t> write_id_;
     bool is_streaming_mode_ = false;
     bool ignore_num_bucket_check_ = false;
@@ -115,7 +104,6 @@ class WriteContextBuilder::Impl {
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
     std::optional<std::string> table_schema_;
-    std::map<std::string, std::string> options_;
 };
 
 WriteContextBuilder::WriteContextBuilder(const std::string& root_path,
@@ -126,18 +114,6 @@ WriteContextBuilder::WriteContextBuilder(const std::string& root_path,
 }
 
 WriteContextBuilder::~WriteContextBuilder() = default;
-
-WriteContextBuilder& WriteContextBuilder::AddOption(const std::string& key,
-                                                    const std::string& value) {
-    impl_->options_[key] = value;
-    return *this;
-}
-
-WriteContextBuilder& WriteContextBuilder::SetOptions(
-    const std::map<std::string, std::string>& opts) {
-    impl_->options_ = opts;
-    return *this;
-}
 
 WriteContextBuilder& WriteContextBuilder::WithStreamingMode(bool is_streaming_mode) {
     impl_->is_streaming_mode_ = is_streaming_mode;
@@ -172,11 +148,6 @@ WriteContextBuilder& WriteContextBuilder::WithTempDirectory(const std::string& t
 
 WriteContextBuilder& WriteContextBuilder::WithWriteId(int32_t write_id) {
     impl_->write_id_ = write_id;
-    return *this;
-}
-
-WriteContextBuilder& WriteContextBuilder::WithBranch(const std::string& branch) {
-    impl_->branch_ = branch;
     return *this;
 }
 
@@ -235,29 +206,9 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         PAIMON_RETURN_NOT_OK(
             CatalogUtils::CheckNotSystemTable(impl_->identifier_.value(), "write"));
     }
-    std::optional<std::string> identifier_branch;
-    if (impl_->identifier_) {
-        PAIMON_ASSIGN_OR_RAISE(identifier_branch, impl_->identifier_->GetBranchName());
-    }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::string branch,
-        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "write"));
-    if (impl_->catalog_ != nullptr && !BranchManager::IsMainBranch(branch)) {
-        // Refused here rather than at the commit of what is written to the branch.
-        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
-        if (!identifier_branch) {
-            PAIMON_ASSIGN_OR_RAISE(std::string table_name, impl_->identifier_->GetDataTableName());
-            return Status::Invalid(fmt::format(
-                "a write through a catalog addresses a branch by the table identifier, so name "
-                "branch '{}' there as '{}$branch_{}'",
-                branch, table_name, branch));
-        }
-    }
     if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr &&
         impl_->fs_scheme_to_identifier_map_.empty()) {
-        // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the write uses the credentials of this table. A scheme map
-        // routes by scheme instead, so the catalog is not asked when one is set.
+        // A scheme map takes precedence over catalog-issued per-table credentials.
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
@@ -266,20 +217,12 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
             arrow::SetCpuThreadPoolCapacity(impl_->spill_thread_number_));
     }
-    // The branch the naming settings named, kept beside the resolved one so that a table can
-    // tell a context naming no branch - which it serves on its own - from one naming another.
-    std::optional<std::string> named_branch;
-    if (impl_->branch_ || identifier_branch ||
-        impl_->options_.find(Options::BRANCH) != impl_->options_.end()) {
-        named_branch = branch;
-    }
     auto ctx = std::make_unique<WriteContext>(
         impl_->root_path_, impl_->commit_user_, impl_->is_streaming_mode_,
         impl_->ignore_num_bucket_check_, impl_->ignore_previous_files_, enable_multi_thread_spill,
-        impl_->write_id_, branch, named_branch, impl_->write_schema_, impl_->memory_pool_,
-        impl_->executor_, impl_->temp_directory_, impl_->specific_file_system_,
-        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
-        impl_->table_schema_, impl_->catalog_, impl_->identifier_);
+        impl_->write_id_, impl_->write_schema_, impl_->memory_pool_, impl_->executor_,
+        impl_->temp_directory_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
+        impl_->realtime_context_, impl_->table_schema_, impl_->catalog_, impl_->identifier_);
     impl_->Reset();
     return ctx;
 }

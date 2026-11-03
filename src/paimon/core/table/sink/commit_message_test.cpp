@@ -1230,16 +1230,18 @@ TEST(CommitMessageTest, TestSerialize) {
                                    /*primary_keys=*/{}, options,
                                    /*ignore_if_exists=*/false));
 
+    std::map<std::string, std::string> context_builder_options;
     WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
                                         "commit_user1");
+    context_builder_options[Options::FILE_FORMAT] = "mock_format";
+    context_builder_options[Options::TARGET_FILE_SIZE] = "1024";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.AddOption(Options::FILE_FORMAT, "mock_format")
-                             .AddOption(Options::TARGET_FILE_SIZE, "1024")
-                             .Finish());
+
+                         context_builder.Finish());
 
     std::string root_path = write_context->GetRootPath();
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(std::move(write_context), context_builder_options));
 
     for (size_t i = 0; i < 10240; i++) {
         auto f0_array = std::make_shared<arrow::Array>();

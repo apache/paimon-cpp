@@ -19,25 +19,17 @@
 #pragma once
 
 #include "fmt/format.h"
-
-#include <map>
-#include <string>
-
-#include "paimon/common/utils/sensitive_config_utils.h"
 #include "paimon/status.h"
 
 namespace paimon {
 
-/// The checks every kind of table's operator entry points share.
+/// Shared operator-context checks.
 class ContextUtils {
  public:
     ContextUtils() = delete;
     ~ContextUtils() = delete;
 
-    /// The checks every operator entry point opens with: a context, a memory pool and an executor
-    /// must all be there for the operator to be built at all, so a null one is refused rather than
-    /// dereferenced. `kind` names the operator the first message speaks of, which is all that sets
-    /// the entry points' messages apart.
+    /// Requires a context, memory pool and executor; kind labels errors.
     template <typename ContextPointer>
     static Status CheckOperatorContext(const ContextPointer& context, const char* kind) {
         if (context == nullptr) {
@@ -50,26 +42,6 @@ class ContextUtils {
             return Status::Invalid("executor is null pointer");
         }
         return Status::OK();
-    }
-
-    /// An operator created from a table serves that table's own configuration and adds nothing
-    /// from the context a caller hands it, so a context carrying any option at all is refused:
-    /// dynamic configuration belongs to `Table::Copy()`, and a branch is named through
-    /// `WithBranch()` or the identifier of `WithCatalog()`, never through an option here. The
-    /// one-step `Create()` entry points fold the options they are given into the table they load
-    /// and clear them, so their contexts arrive empty. `kind` names the operator the message
-    /// speaks of.
-    static Status CheckContextCarriesNoOptions(const std::string& kind,
-                                              const std::map<std::string, std::string>& options) {
-        if (options.empty()) {
-            return Status::OK();
-        }
-        const auto& [key, value] = *options.begin();
-        return Status::Invalid(fmt::format(
-            "the {} context carries option '{}' as '{}', but an operator created from a table "
-            "serves that table's own configuration and adds nothing from the context: apply "
-            "dynamic configuration through Table::Copy()",
-            kind, key, SensitiveConfigUtils::RedactValue(key, value)));
     }
 };
 

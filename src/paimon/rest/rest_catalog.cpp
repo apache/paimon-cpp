@@ -428,8 +428,7 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
-    // The data table's logical name, branch included, so that a view of a table the REST store
-    // keeps under a UUID directory still answers with the name the catalog knows it by.
+    // Use the catalog name, including any branch, even when data lives under a UUID directory.
     PAIMON_ASSIGN_OR_RAISE(
         Identifier data_identifier,
         CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
@@ -464,10 +463,7 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
         PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
         return LoadSystemTable(identifier, load_identifier, NormalizeBranch(std::move(branch)));
     }
-    // Read UUID, path and schema together to avoid mixing table generations after recreation.
-    // The schema is read through the data-table path `LoadTableSchema` takes for one, so it
-    // arrives as the `TableSchema` the table below is built with, over the branch the identifier
-    // names - the same derivation that load makes.
+    // Load UUID, location and schema together to avoid mixing table generations.
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
     branch = NormalizeBranch(std::move(branch));
     PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));

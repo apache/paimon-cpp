@@ -32,17 +32,13 @@ class Catalog;
 class FormatTable;
 class Schema;
 
-/// The identifier tools and the checks shared by the catalog implementations. Every check takes an
-/// `action` naming the rejected operation in the error message, e.g. "dropTable".
+/// Identifier utilities shared by catalog implementations.
 class CatalogUtils {
  public:
     CatalogUtils() = delete;
     ~CatalogUtils() = delete;
 
-    /// The identifier a table path names when no catalog name goes with it, the C++ reading of the
-    /// Java `SchemaManagerUtils#identifierFromPath` over `ignoreIfUnknownDatabase = true`: the
-    /// directory above the table's names the database when it carries the `.db` suffix a catalog
-    /// lays its databases out with, and a path that names no database leaves it unknown.
+    /// Derives the database from the parent directory's .db suffix; otherwise leaves it unknown.
     static Identifier IdentifierFromPath(const std::string& table_path, const std::string& branch);
 
     /// Returns whether `db_name` is the reserved system database "sys".
@@ -65,9 +61,7 @@ class CatalogUtils {
     static Result<Identifier> BranchIdentifier(const Identifier& identifier,
                                                const std::string& branch);
 
-    /// The identifier a catalog knows the table by, on `branch`, when there is one to fold a
-    /// branch into: a caller without an identifier has none to ask the catalog about, and gets
-    /// none back rather than an error.
+    /// Returns an identifier qualified with branch, or nullopt if no identifier was supplied.
     static Result<std::optional<Identifier>> BranchIdentifier(
         const std::optional<Identifier>& identifier, const std::string& branch);
 
@@ -79,16 +73,9 @@ class CatalogUtils {
     /// branch name, system table name) cannot be used as a single path component.
     static Status CheckValidTableName(const Identifier& identifier);
 
-    /// Fails when `schema` is not a table a managed `Table` can describe.
-    ///
-    /// Only a managed table is one: the remaining table types are stored differently and are
-    /// not implemented here, so handing one back as a `Table` would promise snapshots it never
-    /// had. A schema that is not a data table's, such as a system table's, passes. A format
-    /// table is served by the caller - `GetTable()` hands one back as the `FormatTable` it is -
-    /// so its schema only reaches this check by mistake and falls to the refusal below.
-    ///
-    /// @param action The call being refused, qualified as a caller would write it, e.g.
-    ///        `Catalog::GetTable`. It names the entry point in the message.
+    /// Rejects unsupported managed-table types; system-table schemas pass through.
+    /// Format tables must be handled by the caller.
+    /// @param action Operation name used in the error message, e.g. Catalog::GetTable.
     static Status CheckManagedTableType(const Identifier& identifier,
                                         const std::shared_ptr<Schema>& schema,
                                         const std::string& action);

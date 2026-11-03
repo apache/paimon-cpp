@@ -87,13 +87,16 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
                            catalog->GetTable(paimon::Identifier(db_name, table_name)));
 
+    PAIMON_ASSIGN_OR_RAISE(table, table->Copy(options));
+
     std::string table_path = root_path + "/" + db_name + ".db/" + table_name;
 
     std::string commit_user = "some_commit_user";
     // write
     paimon::WriteContextBuilder context_builder(table_path, commit_user);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
-                           context_builder.SetOptions(options).Finish());
+
+                           context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
                            table->NewWrite(std::move(write_context)));
 
@@ -117,7 +120,8 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
     // commit
     paimon::CommitContextBuilder commit_context_builder(table_path, commit_user);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> commit_context,
-                           commit_context_builder.SetOptions(options).Finish());
+
+                           commit_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> committer,
                            table->NewCommit(std::move(commit_context)));
     PAIMON_RETURN_NOT_OK(committer->Commit(commit_message));
@@ -125,7 +129,8 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
     // scan
     paimon::ScanContextBuilder scan_context_builder(table_path);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
-                           scan_context_builder.SetOptions(options).Finish());
+
+                           scan_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scanner,
                            table->NewScan(std::move(scan_context)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Plan> plan, scanner->CreatePlan());
@@ -133,7 +138,8 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
     // read
     paimon::ReadContextBuilder read_context_builder(table_path);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
-                           read_context_builder.SetOptions(options).Finish());
+
+                           read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> table_read,
                            table->NewRead(std::move(read_context)));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> batch_reader,

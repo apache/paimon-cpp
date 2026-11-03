@@ -31,14 +31,19 @@
 #include "paimon/cache/cache.h"
 #include "paimon/commit_context.h"
 #include "paimon/commit_message.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/file_store_table_factory.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/fallback_data_split.h"
+#include "paimon/core/table/system/metadata_system_tables.h"
+#include "paimon/core/table/system/system_table.h"
+#include "paimon/core/utils/tag_manager.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
@@ -160,8 +165,6 @@ TEST(TableTest, TestTableCarriesManagersOfItsBranch) {
     auto file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(copy);
     ASSERT_TRUE(file_store_copy != nullptr);
     EXPECT_EQ(file_store_copy->CurrentBranch(), "dev");
-    // A copy builds its managers over its own resolution rather than taking this table's over, and
-    // so serves the same branch through managers of its own.
     ASSERT_TRUE(file_store_copy->GetSchemaManager() != nullptr);
     ASSERT_TRUE(file_store_copy->GetSnapshotManager() != nullptr);
     EXPECT_NE(file_store_copy->GetSchemaManager(), file_store_table->GetSchemaManager());
@@ -180,8 +183,6 @@ TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier, /*branch=*/"main",
                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
 
-    // A copy whose `branch` option names the branch the table serves stays on it, the option
-    // folded away, and still takes the other dynamic options.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy,
                          table->Copy({{Options::BRANCH, "main"}, {Options::BUCKET, "2"}}));
     auto file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(copy);
@@ -192,11 +193,15 @@ TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
     ASSERT_TRUE(copied_schema != nullptr);
     EXPECT_EQ(copied_schema->Options().at(Options::BUCKET), "2");
     {
+        std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder(dir->Str());
-        scan_builder.AddOption(Options::BRANCH, "main");
+        scan_builder_options[Options::BRANCH] = "main";
+
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_1,
+                             file_store_copy->Copy(scan_builder_options));
         ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
-                             file_store_copy->NewScan(std::move(ctx)));
+                             configured_table_1->NewScan(std::move(ctx)));
     }
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> branch_table,
@@ -209,15 +214,19 @@ TEST(TableTest, TestCopyKeepsTheBranchTheTableServes) {
     ASSERT_TRUE(branch_file_store_copy != nullptr);
     EXPECT_EQ(branch_file_store_copy->CurrentBranch(), "dev");
     {
+        std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder(dir->Str() + "/branch_tbl");
-        scan_builder.AddOption(Options::BRANCH, "dev");
+        scan_builder_options[Options::BRANCH] = "dev";
+
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_2,
+                             branch_file_store_copy->Copy(scan_builder_options));
         ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
-                             branch_file_store_copy->NewScan(std::move(ctx)));
+                             configured_table_2->NewScan(std::move(ctx)));
     }
 }
 
-TEST(TableTest, TestCopySwitchesToTheBranchItNames) {
+TEST(TableTest, TestCopyBranchRetainsCurrentSchemaAndIdentifier) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
@@ -226,7 +235,6 @@ TEST(TableTest, TestCopySwitchesToTheBranchItNames) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                          CreateManagedTable(fs, path, identifier, /*branch=*/"main",
                                             {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
-    // The dev branch holds its own schema, told apart from the main branch's by its bucket.
     SchemaManager dev_schema_manager(fs, path, "dev");
     auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
     ASSERT_OK_AND_ASSIGN(
@@ -234,20 +242,19 @@ TEST(TableTest, TestCopySwitchesToTheBranchItNames) {
         dev_schema_manager.CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{},
                                        {{Options::BUCKET, "4"}, {Options::BUCKET_KEY, "id"}}));
 
-    // A copy on another branch serves that branch's own latest schema, addressed as its table.
+    // Branch overrides retain the current schema and identifier.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_copy, table->Copy({{Options::BRANCH, "dev"}}));
     auto dev_file_store_copy = std::dynamic_pointer_cast<FileStoreTable>(dev_copy);
     ASSERT_TRUE(dev_file_store_copy != nullptr);
     EXPECT_EQ("dev", dev_file_store_copy->CurrentBranch());
-    EXPECT_EQ("tbl$branch_dev", dev_copy->Name());
+    EXPECT_EQ(table->Name(), dev_copy->Name());
     std::shared_ptr<DataSchema> dev_copied_schema =
         std::dynamic_pointer_cast<DataSchema>(dev_copy->LatestSchema());
     ASSERT_TRUE(dev_copied_schema != nullptr);
-    EXPECT_EQ(dev_copied_schema->Options().at(Options::BUCKET), "4");
+    EXPECT_EQ(dev_copied_schema->Options().at(Options::BUCKET), "1");
     EXPECT_EQ(dev_copied_schema->Options().at(Options::BRANCH), "dev");
     EXPECT_EQ("dev", dev_file_store_copy->GetSnapshotManager()->Branch());
 
-    // The copy's other dynamic options land on the branch's schema on top.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_copy_restyled,
                          table->Copy({{Options::BRANCH, "dev"}, {Options::BUCKET, "2"}}));
     std::shared_ptr<DataSchema> restyled_schema =
@@ -256,9 +263,9 @@ TEST(TableTest, TestCopySwitchesToTheBranchItNames) {
     EXPECT_EQ(restyled_schema->Options().at(Options::BUCKET), "2");
     EXPECT_EQ(restyled_schema->Options().at(Options::BUCKET_KEY), "id");
 
-    // A branch holding no schema does not exist.
-    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BRANCH, "missing"}}),
-                        "branch missing does not exist");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> missing,
+                         table->Copy({{Options::BRANCH, "missing"}}));
+    EXPECT_EQ(table->LatestSchema()->FieldNames(), missing->LatestSchema()->FieldNames());
 }
 
 TEST(TableTest, TestACopyHandsItsDynamicOptionsToTheFallbackReader) {
@@ -303,9 +310,7 @@ TEST(TableTest, TestAReadContextMatchingTheSchemaKeepsItsOptionsForTheFallbackRe
     const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
     const std::string path = dir->Str() + "/tbl";
 
-    // The main schema already carries the sequence-number setting, so a read context repeating
-    // it with the same value does not restyle the load; the setting still has to reach the
-    // fallback branch, whose schema omits it, or that reader refuses the sequence number.
+    // Persisted sequence-number options must also reach the fallback reader.
     SchemaManager schema_manager(fs, path, "main");
     auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
     ASSERT_OK_AND_ASSIGN(
@@ -322,12 +327,14 @@ TEST(TableTest, TestAReadContextMatchingTheSchemaKeepsItsOptionsForTheFallbackRe
                                             /*primary_keys=*/{"id"},
                                             {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(path);
-    read_builder.AddOption(Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true");
+    read_builder_options[Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED] = "true";
+
     read_builder.SetReadFieldNames({"id", "_SEQUENCE_NUMBER"});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(std::move(read_context), read_builder_options));
 }
 
 TEST(TableTest, TestACopyOfACopyServesTheLatestValueOfARepeatedDynamicOption) {
@@ -381,7 +388,6 @@ TEST(TableTest, TestACopySwitchingBranchesKeepsItsAccumulatedDynamicOptions) {
         std::unique_ptr<TableSchema> created,
         schema_manager.CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{"id"},
                                    {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
-    // The dev branch holds its own schema, one the sequence-number switch never reached.
     SchemaManager dev_schema_manager(fs, path, "dev");
     ASSERT_OK_AND_ASSIGN(
         [[maybe_unused]] std::unique_ptr<TableSchema> dev_schema,
@@ -393,9 +399,7 @@ TEST(TableTest, TestACopySwitchingBranchesKeepsItsAccumulatedDynamicOptions) {
                              /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
                              /*dynamic_options=*/{}));
 
-    // A copy onto another branch still applies the options a previous copy accumulated - the dev
-    // schema omits the sequence-number switch, yet the copy serves it enabled, or a read of
-    // _SEQUENCE_NUMBER through it fails while the record names the switch as effective.
+    // Verify accumulated options also reach the reader after changing branches.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> with_sequence,
                          table->Copy({{Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"}}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev_copy,
@@ -413,7 +417,6 @@ TEST(TableTest, TestACopySwitchingBranchesKeepsItsAccumulatedDynamicOptions) {
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
                          dev_copy->NewRead(std::move(read_context)));
 
-    // A key both the accumulated options and this call name takes this call's value.
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Table> off,
         with_sequence->Copy(
@@ -583,49 +586,6 @@ TEST(TableTest, TestAFallbackReaderServesItsBranchsOwnPartitionKeys) {
     EXPECT_TRUE(BatchReader::IsEofBatch(eof_batch));
 }
 
-TEST(TableTest, TestAFallbackReaderRefusesReadContextOptionsAbsentFromTheTable) {
-    auto dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(dir);
-    const std::shared_ptr<FileSystem> fs = dir->GetFileSystem();
-
-    auto make_table =
-        [&](const std::string& path,
-            const std::map<std::string, std::string>& options) -> Result<std::shared_ptr<Table>> {
-        SchemaManager schema_manager(fs, path, "main");
-        auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> created,
-                               schema_manager.CreateTable(schema, /*partition_keys=*/{},
-                                                          /*primary_keys=*/{}, options));
-        if (options.count(Options::SCAN_FALLBACK_BRANCH) != 0) {
-            SchemaManager fallback_schema_manager(fs, path, "fb");
-            PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<TableSchema> fallback_created,
-                fallback_schema_manager.CreateTable(schema, /*partition_keys=*/{},
-                                                    /*primary_keys=*/{}, {}));
-        }
-        return FileStoreTable::Create(fs, path, std::shared_ptr<TableSchema>(std::move(created)),
-                                      Identifier("db", "tbl"),
-                                      /*uuid=*/"", /*branch=*/"main", /*fs_scheme_map=*/{},
-                                      /*dynamic_options=*/{});
-    };
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> plain, make_table(dir->Str() + "/plain", {}));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Table> with_fallback,
-        make_table(dir->Str() + "/fallback", {{Options::SCAN_FALLBACK_BRANCH, "fb"}}));
-
-    for (const std::shared_ptr<Table>& table : {plain, with_fallback}) {
-        SCOPED_TRACE(table->GetRootPath());
-        ReadContextBuilder read_builder(table->GetRootPath());
-        read_builder.AddOption(Options::FILE_FORMAT, "bogus");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-        // `file.format` is a key `CoreOptions` knows, so neither the plain reader nor the
-        // fallback one may drop it in silence: both refuse it rather than read the table's own
-        // format behind the caller's back.
-        ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_context)),
-                            "the table was not loaded with it");
-    }
-}
-
 TEST(TableTest, TestACopyServesItsS3OptionThroughManagersOfItsOwn) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -640,9 +600,7 @@ TEST(TableTest, TestACopyServesItsS3OptionThroughManagersOfItsOwn) {
     auto file_store_table = std::dynamic_pointer_cast<FileStoreTable>(table);
     ASSERT_TRUE(file_store_table != nullptr);
 
-    // An option that moves the file system the schema named and one that leaves it where it was
-    // both come back as a copy of their own: a copy never reads metadata through the managers of
-    // the table it was copied from, whichever resolution it ends up serving.
+    // Copies rebuild managers even when the resolved file system is unchanged.
     for (const std::string& endpoint : {std::string("http://new"), std::string("http://old")}) {
         SCOPED_TRACE(endpoint);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy, table->Copy({{"s3.endpoint", endpoint}}));
@@ -692,8 +650,7 @@ TEST(TableTest, TestSwitchToBranch) {
                          dev_file_store_table->SwitchToBranch("dev"));
     auto same_file_store_table = std::dynamic_pointer_cast<FileStoreTable>(same_table);
     ASSERT_TRUE(same_file_store_table != nullptr);
-    // Switching to the branch a table already serves shares its schema and resolves again: the
-    // managers it hands back are instances of their own, reading the same path on the same branch.
+    // Switching to the same branch still rebuilds its managers.
     EXPECT_EQ(same_table->LatestSchema(), dev_table->LatestSchema());
     EXPECT_NE(same_file_store_table->GetSchemaManager(), dev_file_store_table->GetSchemaManager());
     EXPECT_NE(same_file_store_table->GetSnapshotManager(),
@@ -728,8 +685,6 @@ TEST(TableTest, TestCreateRefusesATableWithoutASchema) {
         dev_schema_manager.CreateTable(arrow::schema({arrow::field("c0", arrow::int32())}),
                                        /*partition_keys=*/{}, /*primary_keys=*/{}, {}));
 
-    // A path its own branch holds no schema under names no table: the call that opens one is
-    // refused, whatever another branch of it holds.
     ASSERT_NOK_WITH_MSG(FileStoreTable::Create(/*file_system=*/nullptr, path, /*schema=*/nullptr,
                                                Identifier("db", "tbl"), /*uuid=*/"",
                                                /*branch=*/BranchManager::DEFAULT_MAIN_BRANCH,
@@ -811,13 +766,9 @@ TEST(TableTest, TestOperatorsServeTheBranchTheTableWasLoadedWith) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
     EXPECT_FALSE(plan->Splits().empty());
 
-    ScanContextBuilder main_scan_builder(dir->Str());
-    main_scan_builder.AddOption(Options::BRANCH, "main");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> main_scan_ctx, main_scan_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> main_scan,
-                         table->NewScan(std::move(main_scan_ctx)));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> main_plan, main_scan->CreatePlan());
-    EXPECT_FALSE(main_plan->Splits().empty());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> main_copy,
+                         table->Copy({{Options::BRANCH, "main"}}));
+    EXPECT_EQ(table->LatestSchema()->FieldNames(), main_copy->LatestSchema()->FieldNames());
 }
 
 TEST(TableTest, TestGetTableWithUnknownDatabase) {
@@ -1058,7 +1009,7 @@ TEST(TableTest, TestNewScanServesTheSchemaTheTableWasLoadedWith) {
                          table->NewScan(std::move(held_ctx)));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, ScanContextBuilder(dir->Str()).Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)), "not found latest schema");
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx), {}), "not found latest schema");
 }
 
 TEST(TableTest, TestNewScanServesTheFileSystemTheTableWasOpenedWith) {
@@ -1105,7 +1056,7 @@ TEST(TableTest, TestNewScanServesTheFileSystemTheTableWasOpenedWith) {
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<ScanContext> ctx,
         ScanContextBuilder(dir->Str()).WithFileSystem(std::make_shared<MockFileSystem>()).Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)), "not found latest schema");
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx), {}), "not found latest schema");
 }
 
 TEST(TableTest, TestNewScanServesTheRootPathTheTableWasOpenedWith) {
@@ -1150,7 +1101,7 @@ TEST(TableTest, TestNewScanServesTheRootPathTheTableWasOpenedWith) {
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx,
                          ScanContextBuilder(dir->Str() + "/not-the-table").Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)), "not found latest schema");
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx), {}), "not found latest schema");
 }
 
 TEST(TableTest, TestNewReadCreatesATableRead) {
@@ -1263,6 +1214,72 @@ TEST(TableTest, TestNewWriteAndCommitRefuseAContextThatNamesAnotherTable) {
                          table->NewCommit(std::move(ctx)));
 }
 
+TEST(TableTest, TestFactoriesApplyOptionsWithoutContextConfiguration) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::map<std::string, std::string> schema_options = {{Options::BUCKET, "1"},
+                                                               {Options::BUCKET_KEY, "id"}};
+    for (const std::string& branch : {std::string("main"), std::string("dev")}) {
+        ASSERT_OK_AND_ASSIGN(
+            [[maybe_unused]] std::shared_ptr<Table> table,
+            CreateManagedTable(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl", branch),
+                               branch, schema_options));
+    }
+    for (const std::string& branch :
+         {std::string("main"), std::string("   "), std::string(""), std::string("dev")}) {
+        SCOPED_TRACE(branch);
+        const std::map<std::string, std::string> options = {{Options::BRANCH, branch},
+                                                            {Options::READ_BATCH_SIZE, "17"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                             ScanContextBuilder(dir->Str()).Finish());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> loaded,
+                             FileStoreTableFactory::Create(*scan_context, options));
+        auto managed = std::dynamic_pointer_cast<FileStoreTable>(loaded);
+        ASSERT_TRUE(managed);
+        ASSERT_EQ(managed->CurrentBranch(), BranchManager::NormalizeBranch(branch));
+        auto effective_schema = std::dynamic_pointer_cast<TableSchema>(loaded->LatestSchema());
+        ASSERT_TRUE(effective_schema);
+        ASSERT_EQ(effective_schema->Options().at(Options::READ_BATCH_SIZE), "17");
+        ASSERT_OK(TableScan::Create(std::move(scan_context), options).status());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                             ReadContextBuilder(dir->Str()).Finish());
+        ASSERT_OK(TableRead::Create(std::move(read_context), options).status());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
+                             WriteContextBuilder(dir->Str(), "commit-user").Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
+                             FileStoreWrite::Create(std::move(write_context), options));
+        ASSERT_OK(write->Close());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             CommitContextBuilder(dir->Str(), "commit-user").Finish());
+        ASSERT_OK(FileStoreCommit::Create(std::move(commit_context), options).status());
+    }
+}
+
+TEST(TableTest, TestFactoryOptionsCannotContradictTheCatalogBranch) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetFileSystem(dir->GetFileSystem());
+    const Identifier identifier("db", "tbl$branch_dev");
+    const std::map<std::string, std::string> options = {{Options::BRANCH, "other"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                         ScanContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context), options), "aimed at one branch");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), options), "aimed at one branch");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> write_context,
+        WriteContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context), options),
+                        "aimed at one branch");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<CommitContext> commit_context,
+        CommitContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context), options),
+                        "aimed at one branch");
+}
+
 TEST(TableTest, TestNewCommitRefusesABranchACatalogCannotAddress) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -1303,117 +1320,6 @@ TEST(TableTest, TestNewScanReadWriteCommitRejectANullContext) {
     ASSERT_NOK_WITH_MSG(table->NewRead(nullptr), "read context is null pointer");
     ASSERT_NOK_WITH_MSG(table->NewWrite(nullptr), "write context is null pointer");
     ASSERT_NOK_WITH_MSG(table->NewCommit(nullptr), "commit context is null pointer");
-}
-
-TEST(TableTest, TestOperatorsRefuseAnOptionThatContradictsTheTable) {
-    auto dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(dir);
-    const Identifier identifier("db", "tbl");
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Table> table,
-        CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier, /*branch=*/"main",
-                           {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
-
-    {
-        ScanContextBuilder scan_builder(dir->Str());
-        scan_builder.AddOption(Options::BUCKET, "2");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, scan_builder.Finish());
-        ASSERT_NOK_WITH_MSG(table->NewScan(std::move(ctx)),
-                            "option 'bucket' is '2' in the context but '1' on the table");
-    }
-    {
-        ReadContextBuilder read_builder(dir->Str());
-        read_builder.AddOption(Options::BUCKET, "2");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> ctx, read_builder.Finish());
-        ASSERT_NOK_WITH_MSG(table->NewRead(std::move(ctx)),
-                            "option 'bucket' is '2' in the context but '1' on the table");
-    }
-    {
-        WriteContextBuilder write_builder(dir->Str(), "commit-user");
-        write_builder.AddOption(Options::BUCKET, "2");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> ctx, write_builder.Finish());
-        ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(ctx)),
-                            "option 'bucket' is '2' in the context but '1' on the table");
-    }
-    {
-        CommitContextBuilder commit_builder(dir->Str(), "commit-user");
-        commit_builder.AddOption(Options::BUCKET, "2");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> ctx, commit_builder.Finish());
-        ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(ctx)),
-                            "option 'bucket' is '2' in the context but '1' on the table");
-    }
-
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied, table->Copy({{Options::BUCKET, "2"}}));
-    ScanContextBuilder agreeing_scan_builder(dir->Str());
-    agreeing_scan_builder.AddOption(Options::BUCKET, "2");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, agreeing_scan_builder.Finish());
-    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
-                         copied->NewScan(std::move(ctx)));
-}
-
-TEST(TableTest, TestOperatorsRefuseAnOptionTheTableWasNotLoadedWith) {
-    auto dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(dir);
-    const Identifier identifier("db", "tbl");
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
-                         CreateManagedTable(dir->GetFileSystem(), dir->Str(), identifier,
-                                            /*branch=*/"main",
-                                            {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}}));
-    WriteAndCommitTwoRows(table, dir->Str());
-
-    // The operators serve the configuration the table was loaded with and nothing else, so a
-    // context option that configuration does not carry - a `CoreOptions` key the schema never
-    // saved, or a key no one reads - is dropped in silence if it is not refused: refused on every
-    // side, whatever the key.
-    const std::string dropped_in_silence = "the table was not loaded with it";
-    {
-        ScanContextBuilder scan_builder(dir->Str());
-        scan_builder.AddOption(Options::SCAN_MODE, "from-snapshot")
-            .AddOption(Options::SCAN_SNAPSHOT_ID, "999");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx, scan_builder.Finish());
-        ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan_ctx)), dropped_in_silence);
-    }
-    {
-        ReadContextBuilder read_builder(dir->Str());
-        read_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "999");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_ctx, read_builder.Finish());
-        ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_ctx)), dropped_in_silence);
-    }
-    {
-        // The commit-lease switch a writer sets on a table whose schema does not carry it is the
-        // same case: refused rather than committed without the lease.
-        CommitContextBuilder commit_builder(dir->Str(), "commit-user");
-        commit_builder.AddOption(Options::REST_COMMIT_ACQUIRE_LOCK, "true");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_ctx, commit_builder.Finish());
-        ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit_ctx)), dropped_in_silence);
-    }
-    {
-        // A key no `CoreOptions` reads is refused the same way: whether it names a setting the
-        // table would drop or one the caller only mistyped, the table was not loaded with it.
-        ReadContextBuilder unknown_builder(dir->Str());
-        unknown_builder.AddOption("some.option-nothing-reads", "value");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> unknown_ctx, unknown_builder.Finish());
-        ASSERT_NOK_WITH_MSG(table->NewRead(std::move(unknown_ctx)), dropped_in_silence);
-    }
-
-    // A `header.` key a one-step load folds into the table is the same case held against a table
-    // that was not loaded with it: the table was not, whatever the key names downstream.
-    ReadContextBuilder header_builder(dir->Str());
-    header_builder.AddOption("header.X-Paimon-Read-Via", "table-view");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> header_ctx, header_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(header_ctx)), dropped_in_silence);
-
-    // The way to serve an option is a table loaded with it: `Copy()` merges it into the schema,
-    // and the copy applies it - which then fails on the snapshot it names, proving the option
-    // reached the scan instead of being dropped.
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Table> copied,
-        table->Copy({{Options::SCAN_MODE, "from-snapshot"}, {Options::SCAN_SNAPSHOT_ID, "999"}}));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> copied_scan_ctx,
-                         ScanContextBuilder(dir->Str()).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> copied_scan,
-                         copied->NewScan(std::move(copied_scan_ctx)));
-    ASSERT_NOK_WITH_MSG(copied_scan->CreatePlan(), "snapshot");
 }
 
 TEST(TableTest, TestCreateFailsWhenTheSchemaOptionsDoNotParse) {
@@ -1491,9 +1397,7 @@ TEST(TableTest, TestCopyServesTheTableWithTheGivenOptionsOnTop) {
     ASSERT_OK(commit->Commit(messages));
     ASSERT_OK(write->Close());
 
-    // The `type` option is immutable: a value naming another type is refused, the way Java
-    // Paimon's copy refuses it, and one naming the type the table already serves - whatever its
-    // case - is dropped.
+    // A matching type is accepted case-insensitively and omitted from overrides.
     ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET, "2"}, {Options::TYPE, "format-table"}}),
                         "Change 'type' is not supported yet.");
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
@@ -1520,6 +1424,252 @@ TEST(TableTest, TestCopyServesTheTableWithTheGivenOptionsOnTop) {
     ASSERT_FALSE(plan->Splits().empty());
 }
 
+TEST(TableTest, TestCopyTimeTravelUsesHistoricalSchema) {
+    for (const std::string& branch : {std::string("main"), std::string("dev")}) {
+        SCOPED_TRACE(branch);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto fs = dir->GetFileSystem();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> original,
+                             CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl"), branch,
+                                                {{Options::BUCKET, "-1"},
+                                                 {Options::ROW_TRACKING_ENABLED, "true"},
+                                                 {Options::DATA_EVOLUTION_ENABLED, "true"}}));
+        WriteAndCommitTwoRows(original, dir->Str());
+        auto managed = std::dynamic_pointer_cast<FileStoreTable>(original);
+        ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> snapshot,
+                             managed->GetSnapshotManager()->LatestSnapshot());
+        ASSERT_TRUE(snapshot);
+        ASSERT_OK_AND_ASSIGN(std::string snapshot_json, snapshot->ToJsonString());
+        TagManager tags(fs, dir->Str(), branch);
+        ASSERT_OK(fs->AtomicStore(tags.TagPath("old"), snapshot_json));
+
+        // Model a newly added column and its storage declarations in schema 1.
+        auto latest_options =
+            std::dynamic_pointer_cast<TableSchema>(original->LatestSchema())->Options();
+        latest_options[Options::BLOB_FIELD] = "payload";
+        latest_options[Options::FALLBACK_BLOB_DESCRIPTOR_FIELD] = "payload";
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableSchema> latest_schema,
+            TableSchema::Create(1,
+                                arrow::schema({arrow::field("id", arrow::int32(), false),
+                                               BlobUtils::ToArrowField("payload", true)}),
+                                {}, {}, latest_options));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Table> latest,
+            FileStoreTable::Create(fs, dir->Str(),
+                                   std::shared_ptr<TableSchema>(std::move(latest_schema)),
+                                   Identifier("db", "tbl"), "", branch, {}, {}));
+        for (const auto& selector : std::vector<std::pair<std::string, std::string>>{
+                 {Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot->Id())},
+                 {Options::SCAN_TAG_NAME, "old"},
+                 {Options::SCAN_TIMESTAMP_MILLIS, std::to_string(snapshot->TimeMillis())}}) {
+            SCOPED_TRACE(selector.first);
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> historical,
+                                 latest->Copy({selector, {Options::READ_BATCH_SIZE, "1"}}));
+            auto schema = std::dynamic_pointer_cast<TableSchema>(historical->LatestSchema());
+            ASSERT_TRUE(schema);
+            EXPECT_EQ(schema->Id(), 0);
+            EXPECT_EQ(schema->FieldNames(), (std::vector<std::string>{"id"}));
+            EXPECT_EQ(schema->Options().count(Options::BLOB_FIELD), 0);
+            EXPECT_EQ(schema->Options().count(Options::FALLBACK_BLOB_DESCRIPTOR_FIELD), 0);
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> again, historical->Copy({}));
+            EXPECT_EQ(std::dynamic_pointer_cast<TableSchema>(again->LatestSchema())->Id(), 0);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                                 ScanContextBuilder(dir->Str()).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                                 historical->NewScan(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_FALSE(plan->Splits().empty());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                 ReadContextBuilder(dir->Str()).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                 historical->NewRead(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 read->CreateReader(plan->Splits()));
+            int64_t rows = 0;
+            while (true) {
+                ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+                if (BatchReader::IsEofBatch(batch)) {
+                    break;
+                }
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                                     ReadResultCollector::GetArray(std::move(batch)));
+                rows += array->length();
+            }
+            EXPECT_EQ(rows, 2);
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> unavailable,
+                             original->Copy({{Options::SCAN_SNAPSHOT_ID, "999"}}));
+        EXPECT_EQ(std::dynamic_pointer_cast<TableSchema>(unavailable->LatestSchema())->Id(), 0);
+        ASSERT_NOK_WITH_MSG(
+            latest->Copy({{Options::SCAN_TAG_NAME, "old"}, {Options::BLOB_FIELD, "payload"}}),
+            "payload");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> explicitly_declared,
+                             latest->Copy({{Options::BLOB_FIELD, "payload"}}));
+        ASSERT_NOK_WITH_MSG(explicitly_declared->Copy({{Options::SCAN_TAG_NAME, "old"}}),
+                            "payload");
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<SystemTable> options_view,
+            SystemTableLoader::Load(OptionsSystemTable::kName, fs, dir->Str(),
+                                    std::dynamic_pointer_cast<TableSchema>(latest->LatestSchema()),
+                                    {}, "tbl"));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> old_options,
+                             options_view->Copy({{Options::SCAN_TAG_NAME, "old"}}));
+        auto old_view = std::dynamic_pointer_cast<OptionsSystemTable>(old_options);
+        ASSERT_TRUE(old_view);
+        ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> option_rows, old_view->BuildRows());
+        for (const auto& row : option_rows) {
+            EXPECT_NE(row.GetStringView(0), Options::BLOB_FIELD);
+            EXPECT_NE(row.GetStringView(0), Options::FALLBACK_BLOB_DESCRIPTOR_FIELD);
+        }
+
+        // Finding a snapshot but failing to load its schema must not silently use the current one.
+        ASSERT_OK(fs->Delete(managed->GetSchemaManager()->SchemaDirectory() + "/schema-0", false));
+        ASSERT_NOK_WITH_MSG(original->Copy({{Options::SCAN_TAG_NAME, "old"}}), "schema-0");
+    }
+}
+
+TEST(TableTest, TestCopyRejectsConflictingTimeTravelOptions) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> table,
+        CreateManagedTable(dir->GetFileSystem(), dir->Str(), Identifier("db", "t")));
+    const std::vector<std::map<std::string, std::string>> invalid = {
+        {{Options::SCAN_SNAPSHOT_ID, "1"}, {Options::SCAN_TAG_NAME, "tag"}},
+        {{Options::SCAN_SNAPSHOT_ID, "1"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}},
+        {{Options::SCAN_TAG_NAME, "tag"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}},
+        {{Options::SCAN_MODE, "latest-full"}, {Options::SCAN_SNAPSHOT_ID, "1"}},
+        {{Options::SCAN_MODE, "latest"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}},
+        {{Options::SCAN_MODE, "from-snapshot"}, {Options::SCAN_TIMESTAMP_MILLIS, "1"}},
+        {{Options::SCAN_MODE, "from-snapshot-full"}, {Options::SCAN_TAG_NAME, "tag"}},
+        {{Options::SCAN_MODE, "from-timestamp"}, {Options::SCAN_SNAPSHOT_ID, "1"}},
+        {{Options::SCAN_MODE, "from-snapshot"}},
+        {{Options::SCAN_MODE, "from-snapshot-full"}},
+        {{Options::SCAN_MODE, "from-timestamp"}},
+    };
+    for (const auto& options : invalid) {
+        ASSERT_NOK_WITH_MSG(table->Copy(options), "Invalid time travel options");
+    }
+    // Unavailable snapshots defer their error to the scan.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> historical,
+                         table->Copy({{Options::SCAN_SNAPSHOT_ID, "1"}}));
+    ASSERT_NOK_WITH_MSG(historical->Copy({{Options::SCAN_TAG_NAME, "tag"}}),
+                        "Invalid time travel options");
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> another_snapshot,
+                         historical->Copy({{Options::SCAN_SNAPSHOT_ID, "2"}}));
+}
+
+TEST(TableTest, TestCopyProtectsDeletionVectorsMode) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    for (bool enabled : {false, true}) {
+        SCOPED_TRACE(enabled);
+        const std::string value = enabled ? "true" : "false";
+        const std::string changed = enabled ? "false" : "true";
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableSchema> schema,
+            TableSchema::Create(
+                0, arrow::schema({arrow::field("id", arrow::int32(), false)}), {}, {"id"},
+                {{Options::BUCKET, "1"}, {Options::DELETION_VECTORS_ENABLED, value}}));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Table> table,
+            FileStoreTable::Create(fs, dir->Str(), std::shared_ptr<TableSchema>(std::move(schema)),
+                                   Identifier("db", "t"), "", "main", {}, {}));
+        ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> unchanged,
+                             table->Copy({{Options::DELETION_VECTORS_ENABLED, value}}));
+        ASSERT_NOK_WITH_MSG(table->Copy({{Options::DELETION_VECTORS_ENABLED, changed}}),
+                            "Cannot change deletion vectors mode");
+        // Check the original configuration, not the modifiable flag in this hint.
+        ASSERT_NOK_WITH_MSG(table->Copy({{Options::DELETION_VECTORS_ENABLED, changed},
+                                         {"deletion-vectors.modifiable", "true"}}),
+                            "Cannot change deletion vectors mode");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> modifiable,
+                             table->Copy({{"deletion-vectors.modifiable", "true"}}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> toggled,
+                             modifiable->Copy({{Options::DELETION_VECTORS_ENABLED, changed}}));
+        EXPECT_EQ(std::dynamic_pointer_cast<TableSchema>(toggled->LatestSchema())
+                      ->Options()
+                      .at(Options::DELETION_VECTORS_ENABLED),
+                  changed);
+    }
+}
+
+TEST(TableTest, TestSystemTableCopyUsesHistoricalSchemaForOperators) {
+    for (const std::string& branch : {std::string("main"), std::string("dev")}) {
+        for (const std::string& kind :
+             {std::string("ro"), std::string("audit_log"), std::string("binlog")}) {
+            SCOPED_TRACE(branch + "/" + kind);
+            auto dir = UniqueTestDirectory::Create();
+            ASSERT_TRUE(dir);
+            auto fs = dir->GetFileSystem();
+            std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                          {Options::BUCKET_KEY, "id"}};
+            const std::vector<std::string> primary_keys =
+                kind == "ro" ? std::vector<std::string>{} : std::vector<std::string>{"id"};
+            SchemaManager schemas(fs, dir->Str(), branch);
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableSchema> schema,
+                schemas.CreateTable(arrow::schema({arrow::field("id", arrow::int32(), false),
+                                                   arrow::field("v", arrow::int32())}),
+                                    {}, primary_keys, options));
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<Table> original,
+                FileStoreTable::Create(fs, dir->Str(),
+                                       std::shared_ptr<TableSchema>(std::move(schema)),
+                                       Identifier("db", "tbl"), "", branch, {}, {}));
+            WriteAndCommitRow(original, dir->Str(), 1, 10);
+            options = std::dynamic_pointer_cast<TableSchema>(original->LatestSchema())->Options();
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableSchema> latest,
+                TableSchema::Create(1,
+                                    arrow::schema({arrow::field("id", arrow::int32(), false),
+                                                   arrow::field("new", arrow::utf8())}),
+                                    {}, primary_keys, options));
+            ASSERT_OK_AND_ASSIGN(std::string latest_json, latest->ToJsonString());
+            ASSERT_OK(fs->AtomicStore(schemas.SchemaDirectory() + "/schema-1", latest_json));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> view,
+                                 SystemTableLoader::Load(
+                                     kind, fs, dir->Str(),
+                                     std::shared_ptr<TableSchema>(std::move(latest)), {}, "tbl"));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> historical,
+                                 view->Copy({{Options::SCAN_SNAPSHOT_ID, "1"}}));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                                 ScanContextBuilder(dir->Str()).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                                 historical->NewScan(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_FALSE(plan->Splits().empty());
+            ReadContextBuilder read_builder(dir->Str());
+            read_builder.SetReadFieldNames({"id", "v"});
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                 historical->NewRead(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 read->CreateReader(plan->Splits()));
+            ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+            ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                                 ReadResultCollector::GetArray(std::move(batch)));
+            auto rows = std::dynamic_pointer_cast<arrow::StructArray>(array);
+            ASSERT_TRUE(rows);
+            ASSERT_EQ(rows->length(), 1);
+            auto values = rows->GetFieldByName("v");
+            ASSERT_TRUE(values);
+            if (kind == "binlog") {
+                auto list = std::dynamic_pointer_cast<arrow::ListArray>(values);
+                ASSERT_TRUE(list);
+                values = list->values();
+            }
+            auto ints = std::dynamic_pointer_cast<arrow::Int32Array>(values);
+            ASSERT_TRUE(ints);
+            EXPECT_EQ(ints->Value(0), 10);
+        }
+    }
+}
+
 TEST(TableTest, TestCopyRefusesThePhysicalOptionsTheDataWasLaidOutWith) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -1533,13 +1683,19 @@ TEST(TableTest, TestCopyRefusesThePhysicalOptionsTheDataWasLaidOutWith) {
                         "Change 'bucket-key' is not supported yet.");
     ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET_FUNCTION_TYPE, "hash"}}),
                         "Change 'bucket-function.type' is not supported yet.");
-    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> restyled,
-                         table->Copy({{Options::MERGE_ENGINE, "deduplicate"}}));
+    for (const std::string& key :
+         {std::string(Options::MERGE_ENGINE), std::string(Options::ROW_TRACKING_ENABLED),
+          std::string(Options::DATA_EVOLUTION_ENABLED)}) {
+        ASSERT_NOK_WITH_MSG(table->Copy({{key, "true"}}), "is not supported yet");
+    }
+    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET, "-1"}}), "Cannot change bucket to -1");
     {
+        std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder(dir->Str());
-        scan_builder.AddOption(Options::BUCKET_KEY, "v");
+        scan_builder_options[Options::BUCKET_KEY] = "v";
+
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, scan_builder.Finish());
-        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx)),
+        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(ctx), scan_builder_options),
                             "Change 'bucket-key' is not supported yet.");
     }
 
@@ -1547,6 +1703,18 @@ TEST(TableTest, TestCopyRefusesThePhysicalOptionsTheDataWasLaidOutWith) {
                          table->Copy({{Options::BUCKET_KEY, "id"}, {Options::BUCKET, "1"}}));
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> rescaled,
                          table->Copy({{Options::BUCKET, "2"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> normalized,
+                         table->Copy({{"primary-key", " , "}, {"partition", " "}}));
+    auto normalized_schema = std::dynamic_pointer_cast<TableSchema>(normalized->LatestSchema());
+    ASSERT_TRUE(normalized_schema);
+    EXPECT_EQ(normalized_schema->Options().count("primary-key"), 0);
+    EXPECT_EQ(normalized_schema->Options().count("partition"), 0);
+    ASSERT_NOK_WITH_MSG(table->Copy({{"primary-key", "id"}}), "is not supported yet");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> bucket_unaware,
+                         CreateManagedTable(dir->GetFileSystem(), dir->Str() + "/bucket_unaware",
+                                            Identifier("db", "bucket_unaware")));
+    ASSERT_NOK_WITH_MSG(bucket_unaware->Copy({{Options::BUCKET, "1"}}),
+                        "Cannot change bucket when it is -1");
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> ignoring_deletes,
                          table->Copy({{Options::IGNORE_DELETE, "true"}}));
     {
@@ -1577,7 +1745,7 @@ TEST(TableTest, TestALoadNamesTheDatabaseThePathLaysOut) {
     {
         ScanContextBuilder builder(table_dir);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx, {}));
         ASSERT_EQ(table->FullName(), "my_db.my_table");
     }
 
@@ -1591,7 +1759,7 @@ TEST(TableTest, TestALoadNamesTheDatabaseThePathLaysOut) {
     {
         ScanContextBuilder builder(loose_table_dir);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx, {}));
         ASSERT_EQ(table->FullName(), "loose_table");
     }
 }
@@ -1600,9 +1768,7 @@ TEST(TableTest, TestALoadResolvesTheContextFormatOverTheSchemaOne) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false)});
-    // A schema whose stored format this process cannot resolve: resolving the schema's own
-    // options at load would fail on it, so the load only serves the table when the context
-    // overrides the format, and only when the override is merged before the resolution.
+    // Apply dynamic overrides before resolving the stored file format.
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableSchema> stored_schema,
         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
@@ -1612,16 +1778,17 @@ TEST(TableTest, TestALoadResolvesTheContextFormatOverTheSchemaOne) {
         ScanContextBuilder builder(dir->Str());
         builder.SetTableSchema(schema_json);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
-        ASSERT_NOK(FileStoreTableFactory::Create(*ctx));
+        ASSERT_NOK(FileStoreTableFactory::Create(*ctx, {}));
     }
     {
+        std::map<std::string, std::string> builder_options;
         ScanContextBuilder builder(dir->Str());
-        builder.SetTableSchema(schema_json).AddOption(Options::FILE_FORMAT, "parquet");
+        builder_options[Options::FILE_FORMAT] = "parquet";
+        builder.SetTableSchema(schema_json);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, FileStoreTableFactory::Create(*ctx));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             FileStoreTableFactory::Create(*ctx, builder_options));
         ASSERT_NE(table, nullptr);
-        // The scan builds its path factory over the format the merged options resolve, so it
-        // only opens when the override, not the stored format, is what the table serves.
         ScanContextBuilder scan_builder(dir->Str());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx, scan_builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_ctx)));
@@ -1646,24 +1813,24 @@ TEST(TableTest, TestCreateBuildsTheOperator) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx,
                          ScanContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
-                         TableScan::Create(std::move(scan_ctx)));
+                         TableScan::Create(std::move(scan_ctx), {}));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_ctx,
                          ReadContextBuilder(dir->Str()).WithCatalog(catalog, identifier).Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
-                         TableRead::Create(std::move(read_ctx)));
+                         TableRead::Create(std::move(read_ctx), {}));
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<WriteContext> write_ctx,
         WriteContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreWrite> write,
-                         FileStoreWrite::Create(std::move(write_ctx)));
+                         FileStoreWrite::Create(std::move(write_ctx), {}));
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<CommitContext> commit_ctx,
         CommitContextBuilder(dir->Str(), "commit-user").WithCatalog(catalog, identifier).Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(commit_ctx)));
+                         FileStoreCommit::Create(std::move(commit_ctx), {}));
 }
 
 TEST(TableTest, TestCreateWithSpecificTableSchemaSkipsTheCatalogSchema) {
@@ -1677,8 +1844,7 @@ TEST(TableTest, TestCreateWithSpecificTableSchemaSkipsTheCatalogSchema) {
     catalog->SetFileSystem(dir->GetFileSystem());
     catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
 
-    // A schema the caller gave replaces the catalog's on the main branch, so neither the write
-    // nor the commit asks the catalog for one.
+    // An explicit schema bypasses catalog schema loading on main.
     ASSERT_OK_AND_ASSIGN(std::string schema_json, table->LatestSchema()->GetJsonSchema());
 
     WriteContextBuilder write_builder(dir->Str(), "commit-user");
@@ -1686,14 +1852,14 @@ TEST(TableTest, TestCreateWithSpecificTableSchemaSkipsTheCatalogSchema) {
         std::unique_ptr<WriteContext> write_ctx,
         write_builder.WithCatalog(catalog, identifier).SetTableSchema(schema_json).Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreWrite> write,
-                         FileStoreWrite::Create(std::move(write_ctx)));
+                         FileStoreWrite::Create(std::move(write_ctx), {}));
 
     CommitContextBuilder commit_builder(dir->Str(), "commit-user");
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<CommitContext> commit_ctx,
         commit_builder.WithCatalog(catalog, identifier).SetTableSchema(schema_json).Finish());
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(commit_ctx)));
+                         FileStoreCommit::Create(std::move(commit_ctx), {}));
 
     ASSERT_EQ(catalog->LoadTableSchemaCalls(), 0U);
 }
@@ -1709,19 +1875,19 @@ TEST(TableTest, TestCreateWithCatalogReadsTheMainBranchSchemaFromIt) {
     catalog->SetFileSystem(dir->GetFileSystem());
     catalog->SetTableSchema(checked_pointer_cast<TableSchema>(table->LatestSchema()));
 
-    // All four loads take the schema the catalog holds on the main branch when the caller did
-    // not set one, so each of them asks the catalog exactly once.
+    // Without an explicit schema, each operator loads the catalog schema once.
     ScanContextBuilder scan_builder(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_ctx,
                          scan_builder.WithCatalog(catalog, identifier).Finish());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> scanned, FileStoreTableFactory::Create(*scan_ctx));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> scanned,
+                         FileStoreTableFactory::Create(*scan_ctx, {}));
     ASSERT_EQ(scanned->FullName(), "db.tbl");
 
     ReadContextBuilder read_builder(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_ctx,
                          read_builder.WithCatalog(catalog, identifier).Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> read_table,
-                         FileStoreTableFactory::Create(*read_ctx));
+                         FileStoreTableFactory::Create(*read_ctx, {}));
     ASSERT_EQ(read_table->FullName(), "db.tbl");
 
     ASSERT_EQ(catalog->LoadTableSchemaCalls(), 2U);

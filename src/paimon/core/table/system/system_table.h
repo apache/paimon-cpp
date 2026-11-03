@@ -33,6 +33,7 @@
 
 namespace paimon {
 class FileSystem;
+class FileStoreTable;
 class ReadContext;
 class ScanContext;
 class TableSchema;
@@ -51,13 +52,8 @@ struct SystemTablePath {
     bool is_global = false;
 };
 
-/// Base class for the table-scoped system tables such as `T$options` and `T$snapshots`. A
-/// `T$system` identifier names a read-only view that exposes a schema of its own and serves scans
-/// and reads from the data table it belongs to.
-///
-/// A system table of a data table answers `<data table name>$<kind>` for `Name()`. One of the `sys`
-/// database answers the bare kind name. `FullName()` returns the same as `Name()` in both cases,
-/// which is what Java Paimon's `Table.fullName()` defaults to.
+/// Read-only table-scoped or global system view.
+/// Table-scoped names are <data table>$<kind>; global names are <kind>. FullName() equals Name().
 class SystemTable : public Table, public std::enable_shared_from_this<SystemTable> {
  public:
     std::string Name() const override {
@@ -68,15 +64,10 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
         return name_;
     }
 
-    /// Returns the read-only schema this system table exposes. It is not the data table's schema.
+    /// Returns this view's schema, rather than its data table's schema.
     virtual Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const = 0;
 
-    /// Copies this system table with `dynamic_options` on top of the ones it was loaded with,
-    /// rebuilding it through the loader that created it - the way Java Paimon's system tables
-    /// re-wrap `dataTable.copy(dynamicOptions)`. A global system table of the `sys` database
-    /// copies over the options it already carries and ignores the dynamic ones, as Java's do.
-    /// Writing and committing stay refused: this view is read-only, and the data table
-    /// underneath serves them through its own `Table`.
+    /// Copies a table-scoped view with dynamic option overrides. Global views ignore overrides.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
@@ -87,48 +78,41 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
         std::unique_ptr<CommitContext> context) const override;
 
  protected:
-    /// @param fs File system the data table underneath is read through.
-    /// @param table_path Root path of the data table this system table belongs to.
-    /// @param name The name this table answers with: `ComposeName(data_table_name, kind)` for a
-    ///        table-scoped system table, the bare kind name for one of the `sys` database.
+    /// @param fs Data table file system.
+    /// @param table_path Data table root path.
+    /// @param name System table name.
     SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
                 std::string name);
 
-    /// Composes the name of a table-scoped system table out of the logical name of the data table
-    /// underneath - the object name a catalog knows it by, branch included - and the kind. Java
-    /// Paimon's `OptionsTable.name()` composes it the same way, from `location.getName()`; the
-    /// metadata tables answer with the directory name, while the views that serve the data table
-    /// answer with its logical name, the way Java's `ReadOptimizedTable` answers with the name of
-    /// the table it wraps.
+    /// Composes <data_table_name>$<kind>, preserving any branch suffix.
     static std::string ComposeName(const std::string& data_table_name, const std::string& kind);
 
-    /// Refuses a read whose context asks for a search: a root TopK request or a `FullTextMatch`
-    /// predicate. Neither is evaluated on the rows a system table serves, so answering one
-    /// would return plain rows and quietly drop the search and its top K.
+    /// Rejects TopK and full-text search requests, which system-table readers cannot evaluate.
     static Status CheckNoSearch(const std::shared_ptr<ReadContext>& context);
 
-    /// Fills in this table's own read-only `SystemTableSchema`. A loader calls it once the object
-    /// exists, because `ArrowSchema()` is virtual and cannot run from a constructor.
+    /// Initializes the system schema after construction, when ArrowSchema() can be called.
     Status AdoptOwnSchema();
+
+    /// Builds the data table using this view's schema, including one selected by time travel.
+    Result<std::shared_ptr<FileStoreTable>> CreateDataTable(
+        const std::shared_ptr<TableSchema>& table_schema,
+        const std::map<std::string, std::string>& options,
+        const std::shared_ptr<FileSystem>& specific_file_system,
+        const std::map<std::string, std::string>& fs_scheme_map) const;
 
     friend class SystemTableLoader;
     friend class GlobalSystemTableLoader;
 
  private:
-    /// The inputs the loader that created this table used, recorded so `Copy` rebuilds through
-    /// the same loader. A table-scoped system table records the `SystemTableLoader::Load`
-    /// arguments; a global one records the `GlobalSystemTableLoader::Load` ones instead.
+    /// Loader inputs retained for Copy.
     struct Origin {
-        /// System table kind, lower-case, the way the registry knows it.
         std::string kind;
         /// Data table schema the view was loaded with. Null for a global system table.
         std::shared_ptr<TableSchema> table_schema;
-        /// Dynamic options the table was loaded with, on top of the schema's own.
         std::map<std::string, std::string> dynamic_options;
-        /// Logical name of the data table underneath, branch included. May be empty for a
-        /// table-scoped table, whose loader then falls back to the directory name.
+        /// Logical data table name, including its branch; empty uses the directory name.
         std::string data_table_name;
-        /// Context a global system table was loaded with. Null for a table-scoped table.
+        /// Global table context; null for table-scoped views.
         std::shared_ptr<const GlobalSystemTableContext> context;
     };
 

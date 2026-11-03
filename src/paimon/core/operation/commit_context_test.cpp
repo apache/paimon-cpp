@@ -38,12 +38,9 @@ TEST(CommitContextTest, TestLegacyConstructor) {
     auto pool = GetDefaultPool();
     std::shared_ptr<Executor> executor = CreateDefaultExecutor();
     auto fs = std::make_shared<MockFileSystem>();
-    const std::map<std::string, std::string> options = {{"key", "value"}};
-    CommitContext context("table_root_path", "commit_user_1", false, true, true, pool, executor, fs,
-                          options);
+    CommitContext context("table_root_path", "commit_user_1", false, true, true, pool, executor,
+                          fs);
     ASSERT_EQ(context.GetRootPath(), "table_root_path");
-    // Without an identifier the option is the only name a branch can have.
-    ASSERT_EQ(context.GetBranch(), "main");
     ASSERT_EQ(context.GetCommitUser(), "commit_user_1");
     ASSERT_FALSE(context.IgnoreEmptyCommit());
     ASSERT_TRUE(context.UseRESTCatalogCommit());
@@ -51,7 +48,6 @@ TEST(CommitContextTest, TestLegacyConstructor) {
     ASSERT_EQ(context.GetMemoryPool(), pool);
     ASSERT_EQ(context.GetExecutor(), executor);
     ASSERT_EQ(context.GetSpecificFileSystem(), fs);
-    ASSERT_EQ(context.GetOptions(), options);
     ASSERT_EQ(context.GetCatalog(), nullptr);
     ASSERT_FALSE(context.GetIdentifier());
     ASSERT_FALSE(context.GetTableId());
@@ -65,7 +61,6 @@ TEST(CommitContextTest, TestDefaultValue) {
     ASSERT_OK_AND_ASSIGN(auto expected_root_path, PathUtil::NormalizePath("table_root_path"));
 
     ASSERT_EQ(ctx->GetRootPath(), expected_root_path);
-    ASSERT_EQ(ctx->GetBranch(), "main");
     ASSERT_EQ(ctx->GetCommitUser(), "commit_user_1");
     ASSERT_TRUE(ctx->IgnoreEmptyCommit());
     ASSERT_FALSE(ctx->UseRESTCatalogCommit());
@@ -76,7 +71,6 @@ TEST(CommitContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetMemoryPool());
     ASSERT_TRUE(ctx->GetExecutor());
     ASSERT_FALSE(ctx->GetSpecificFileSystem());
-    ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
     ASSERT_FALSE(ctx->GetSpecificTableSchema());
     ASSERT_FALSE(ctx->GetTableId());
@@ -116,7 +110,6 @@ TEST(CommitContextTest, TestSetContent) {
                                        .WithExecutor(executor)
                                        .WithFileSystem(fs)
                                        .SetTableSchema("table-schema-json")
-                                       .AddOption("key", "value")
                                        .Finish());
 
     ASSERT_OK_AND_ASSIGN(auto expected_root_path, PathUtil::NormalizePath("table_root_path"));
@@ -133,7 +126,6 @@ TEST(CommitContextTest, TestSetContent) {
     ASSERT_EQ("table-schema-json", ctx->GetSpecificTableSchema().value());
 
     std::map<std::string, std::string> expected_options = {{"key", "value"}};
-    ASSERT_EQ(ctx->GetOptions(), expected_options);
 }
 
 TEST(CommitContextTest, TestWithCatalog) {
@@ -161,108 +153,6 @@ TEST(CommitContextTest, TestWithCatalog) {
     ASSERT_EQ(next_ctx->GetCatalog(), nullptr);
     ASSERT_FALSE(next_ctx->GetIdentifier().has_value());
     ASSERT_EQ(next_ctx->GetTableId(), std::nullopt);
-}
-
-TEST(CommitContextTest, TestCatalogAddressesBranchByIdentifier) {
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-
-    CommitContextBuilder branch_builder("table_root_path", "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(
-        auto branch_ctx,
-        branch_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_dev")).Finish());
-    ASSERT_EQ(branch_ctx->GetIdentifier().value(), Identifier("db1", "t1$branch_dev"));
-    // Finish() stores the resolved branch, so the factory reads it instead of resolving again.
-    ASSERT_EQ(branch_ctx->GetBranch(), "dev");
-    CommitContextBuilder agreeing_builder("table_root_path", "commit_user_1");
-    ASSERT_OK(agreeing_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_dev"))
-                  .AddOption(Options::BRANCH, "dev")
-                  .Finish());
-    CommitContextBuilder constructed_builder("table_root_path", "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(
-        auto constructed_ctx,
-        constructed_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).Finish());
-    ASSERT_EQ(constructed_ctx->GetIdentifier().value(), Identifier("db1", "t1$branch_dev"));
-    ASSERT_EQ(constructed_ctx->GetBranch(), "dev");
-    CommitContextBuilder main_builder("table_root_path", "commit_user_1");
-    ASSERT_OK(main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_main"))
-                  .AddOption(Options::BRANCH, "main")
-                  .Finish());
-
-    CommitContextBuilder mixed_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(mixed_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_dev"))
-                            .AddOption(Options::BRANCH, "main")
-                            .Finish(),
-                        "but both 'dev' and 'main' were named");
-    CommitContextBuilder mixed_option_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(
-        mixed_option_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_main"))
-            .AddOption(Options::BRANCH, "dev")
-            .Finish(),
-        "but both 'main' and 'dev' were named");
-
-    CommitContextBuilder option_only_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(option_only_builder.WithCatalog(catalog, Identifier("db1", "t1"))
-                            .AddOption(Options::BRANCH, "dev")
-                            .Finish(),
-                        "name branch 'dev' there as 't1$branch_dev'");
-
-    CommitContextBuilder upper_main_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(
-        upper_main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_MAIN")).Finish(),
-        "a catalog names branch 'MAIN' as it names the main branch");
-
-    CommitContextBuilder splitter_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(splitter_builder.WithCatalog(catalog, Identifier("db1", "t1"))
-                            .AddOption(Options::BRANCH, "dev$options")
-                            .Finish(),
-                        "a branch a catalog addresses cannot contain '$'");
-
-    CommitContextBuilder system_table_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(
-        system_table_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev$options")).Finish(),
-        "Cannot 'commit' for system table");
-}
-
-TEST(CommitContextTest, TestBranch) {
-    CommitContextBuilder file_system_builder("table_root_path", "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(auto fs_branch_ctx,
-                         file_system_builder.AddOption(Options::BRANCH, "dev").Finish());
-    ASSERT_EQ(fs_branch_ctx->GetBranch(), "dev");
-
-    CommitContextBuilder upper_main_builder("table_root_path", "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(auto upper_main_ctx,
-                         upper_main_builder.AddOption(Options::BRANCH, "MAIN").Finish());
-    ASSERT_EQ(upper_main_ctx->GetOptions().at(Options::BRANCH), "MAIN");
-    CommitContextBuilder splitter_builder("table_root_path", "commit_user_1");
-    ASSERT_OK(splitter_builder.AddOption(Options::BRANCH, "dev$options").Finish());
-
-    CommitContextBuilder rest_builder("table_root_path", "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(
-        auto rest_ctx,
-        rest_builder.UseRESTCatalogCommit(true).AddOption(Options::BRANCH, "dev").Finish());
-    ASSERT_TRUE(rest_ctx->UseRESTCatalogCommit());
-    ASSERT_EQ(rest_ctx->GetBranch(), "dev");
-    ASSERT_EQ(rest_ctx->GetOptions().at(Options::BRANCH), "dev");
-    CommitContextBuilder rest_upper_main_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(rest_upper_main_builder.UseRESTCatalogCommit(true)
-                            .AddOption(Options::BRANCH, "MAIN")
-                            .Finish(),
-                        "a catalog names branch 'MAIN' as it names the main branch");
-
-    CommitContextBuilder escaping_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(escaping_builder.AddOption(Options::BRANCH, "dev/../../outside").Finish(),
-                        "branch name cannot contain path separators");
-}
-
-TEST(CommitContextTest, TestSetOptionsOverridesAddedOptions) {
-    CommitContextBuilder builder("table_root_path", "commit_user_1");
-    builder.AddOption("old", "value");
-    builder.SetOptions({{"key1", "value1"}, {"key2", "value2"}});
-
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
-
-    std::map<std::string, std::string> expected_options = {{"key1", "value1"}, {"key2", "value2"}};
-    ASSERT_EQ(ctx->GetOptions(), expected_options);
 }
 
 }  // namespace paimon::test

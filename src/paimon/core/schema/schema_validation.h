@@ -51,14 +51,16 @@ class SchemaValidation {
 
     static Status ValidateTableSchema(const TableSchema& schema);
 
-    /// Whether a copy's dynamic options stay within what the data on the table's path was laid out
-    /// with - the C++ reading of the Java `AbstractFileStoreTable#checkImmutability`. An option
-    /// that says what the schema already says moves nothing, an immutable one that says anything
-    /// else is refused, and `ignore-delete` carries the Java check's directional rule of its own:
-    /// it may only ever be turned on, never back off. The immutable options themselves are the
-    /// Java `CoreOptions.IMMUTABLE_OPTIONS`, as far as the C++ side has constants for them.
+    /// Checks layout options protected by low-level factories and Copy alike.
     static Status CheckImmutableOptions(const TableSchema& schema,
                                         const std::map<std::string, std::string>& dynamic_options);
+
+    /// Checks Java table Copy immutability, including bucket-mode transitions.
+    static Status CheckCopyOptions(const TableSchema& schema,
+                                   const std::map<std::string, std::string>& dynamic_options);
+
+    /// Checks selector exclusivity and compatibility with the effective scan.mode.
+    static Status ValidateStartupMode(const CoreOptions& options);
 
     /// Validates real-time options after operation-specific options have been merged with the
     /// table schema options.
@@ -129,9 +131,6 @@ class SchemaValidation {
     static Status ValidateBucket(const TableSchema& schema, const CoreOptions& options);
     static Status ValidateDefaultValues(const TableSchema& schema) {
         return Status::NotImplemented("validate default values not implemented");
-    }
-    static Status ValidateStartupMode(const CoreOptions& options) {
-        return Status::NotImplemented("validate startup mode not implemented");
     }
     static Status ValidateFieldsPrefix(const TableSchema& schema, const CoreOptions& options);
     static Status ValidateSequenceField(const TableSchema& schema, const CoreOptions& options);

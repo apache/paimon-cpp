@@ -36,7 +36,6 @@ namespace paimon {
 
 Result<std::string> BranchManager::ResolveBranch(const std::optional<Identifier>& identifier,
                                                  const std::map<std::string, std::string>& options,
-                                                 const std::optional<std::string>& explicit_branch,
                                                  const std::string& operation) {
     std::optional<std::string> identifier_branch;
     if (identifier) {
@@ -48,8 +47,7 @@ Result<std::string> BranchManager::ResolveBranch(const std::optional<Identifier>
                                      : std::optional<std::string>(option_iter->second);
 
     std::optional<std::string> resolved;
-    for (const std::optional<std::string>& named_branch :
-         {identifier_branch, option_branch, explicit_branch}) {
+    for (const std::optional<std::string>& named_branch : {identifier_branch, option_branch}) {
         if (!named_branch) {
             continue;
         }

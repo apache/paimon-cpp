@@ -113,7 +113,7 @@ class DataEvolutionTableTest : public ::testing::Test,
         write_builder.WithWriteSchema(write_cols);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+                               FileStoreWrite::Create(std::move(write_context), {}));
         for (const auto& write_array : write_arrays) {
             ArrowArray c_array;
             PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*write_array, &c_array));
@@ -163,7 +163,7 @@ class DataEvolutionTableTest : public ::testing::Test,
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                                commit_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+                               FileStoreCommit::Create(std::move(commit_context), {}));
         return file_store_commit->Commit(commit_msgs);
     }
 
@@ -300,6 +300,7 @@ class DataEvolutionTableTest : public ::testing::Test,
         const std::string& table_path, const std::vector<std::string>& read_schema, int32_t limit,
         const std::shared_ptr<Predicate>& predicate = nullptr,
         const std::vector<Range>& row_ranges = {}, bool enable_predicate_filter = false) const {
+        std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder(table_path);
         scan_context_builder.SetLimit(limit);
         scan_context_builder.SetPredicate(predicate);
@@ -307,10 +308,12 @@ class DataEvolutionTableTest : public ::testing::Test,
             scan_context_builder.SetGlobalIndexResult(
                 BitmapGlobalIndexResult::FromRanges(row_ranges));
         }
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
-                               FinishScanContext(scan_context_builder));
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                               TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<ScanContext> scan_context,
+            FinishScanContext(scan_context_builder, scan_context_builder_options));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<TableScan> table_scan,
+            TableScan::Create(std::move(scan_context), scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> result_plan, table_scan->CreatePlan());
 
         LimitScanResult result;
@@ -322,7 +325,7 @@ class DataEvolutionTableTest : public ::testing::Test,
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                               TableRead::Create(std::move(read_context)));
+                               TableRead::Create(std::move(read_context), {}));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                                table_read->CreateReader(result.splits));
         PAIMON_ASSIGN_OR_RAISE(result.rows,
@@ -335,11 +338,14 @@ class DataEvolutionTableTest : public ::testing::Test,
     /// the row count derived from them. Reading the splits back is ScanAndReadWithLimit's job,
     /// which verifies the returned rows after their reader has been destroyed.
     Result<std::vector<std::shared_ptr<Split>>> PlanSplits(const std::string& table_path) const {
+        std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder(table_path);
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
-                               FinishScanContext(scan_context_builder));
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                               TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<ScanContext> scan_context,
+            FinishScanContext(scan_context_builder, scan_context_builder_options));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<TableScan> table_scan,
+            TableScan::Create(std::move(scan_context), scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
         return plan->Splits();
     }
@@ -412,7 +418,7 @@ class DataEvolutionTableTest : public ::testing::Test,
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                                commit_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+                               FileStoreCommit::Create(std::move(commit_context), {}));
         file_store_commit->RowIdCheckConflict(row_id_check_from_snapshot);
         return file_store_commit->Commit(commit_msgs);
     }
@@ -470,11 +476,14 @@ class DataEvolutionTableTest : public ::testing::Test,
                 ASSERT_OK_AND_ASSIGN(std::string anchor, PlannedAnchorFileName(table_path));
                 ASSERT_OK(CommitDeletionVectors(table_path, base_msgs[0], {{anchor, deleted}}));
             }
+            std::map<std::string, std::string> scan_builder_options;
             ScanContextBuilder scan_builder(table_path);
             scan_builder.SetGlobalIndexResult(std::make_shared<BitmapScoredGlobalIndexResult>(
                 RoaringBitmap64::From(candidates), std::vector<float>(scores)));
-            ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_builder));
-            ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(auto scan_context,
+                                 FinishScanContext(scan_builder, scan_builder_options));
+            ASSERT_OK_AND_ASSIGN(auto scan,
+                                 TableScan::Create(std::move(scan_context), scan_builder_options));
             ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
             ASSERT_EQ(plan->Splits().size(), 1);
             auto scored_split = std::dynamic_pointer_cast<IndexedSplitImpl>(plan->Splits()[0]);
@@ -510,7 +519,7 @@ class DataEvolutionTableTest : public ::testing::Test,
                         .SetPredicate(bound_predicate)
                         .EnablePredicateFilter(true);
                     ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
-                    ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+                    ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context), {}));
                     // Reuse the same TableRead with and without scores: the internal row-id
                     // projection must not affect a subsequent split's output schema.
                     for (bool with_scores : {true, false}) {
@@ -560,14 +569,17 @@ class DataEvolutionTableTest : public ::testing::Test,
                        bool check_scan_plan_when_empty_result = true,
                        bool apply_predicate_to_scan = true) const {
         // scan
+        std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder(table_path);
         scan_context_builder.SetPredicate(apply_predicate_to_scan ? predicate : nullptr);
         if (!row_ranges.empty()) {
             auto global_index_result = BitmapGlobalIndexResult::FromRanges(row_ranges);
             scan_context_builder.SetGlobalIndexResult(global_index_result);
         }
-        PAIMON_ASSIGN_OR_RAISE(auto scan_context, FinishScanContext(scan_context_builder));
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto scan_context, FinishScanContext(scan_context_builder,
+                                                                    scan_context_builder_options));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context),
+                                                                  scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
         if (!expected_array && check_scan_plan_when_empty_result) {
             if (!result_plan->Splits().empty()) {
@@ -581,7 +593,7 @@ class DataEvolutionTableTest : public ::testing::Test,
         read_context_builder.SetReadFieldNames(read_schema).SetPredicate(predicate);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context), {}));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
                                ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -626,14 +638,17 @@ class DataEvolutionTableTest : public ::testing::Test,
                          const std::vector<std::optional<int64_t>>& expected_first_row_ids,
                          const std::vector<int64_t>& expected_row_counts) {
         ASSERT_EQ(expected_first_row_ids.size(), expected_row_counts.size());
+        std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder(table_path);
         scan_context_builder.SetPredicate(predicate);
         if (!row_ranges.empty()) {
             auto global_index_result = BitmapGlobalIndexResult::FromRanges(row_ranges);
             scan_context_builder.SetGlobalIndexResult(global_index_result);
         }
-        ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto scan_context,
+                             FinishScanContext(scan_context_builder, scan_context_builder_options));
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context),
+                                                                scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         const auto& result_splits = result_plan->Splits();
         if (expected_first_row_ids.empty()) {
@@ -658,14 +673,15 @@ class DataEvolutionTableTest : public ::testing::Test,
         ASSERT_EQ(result_row_counts, expected_row_counts);
     }
 
-    Result<std::unique_ptr<ScanContext>> FinishScanContext(ScanContextBuilder& builder) const {
+    Result<std::unique_ptr<ScanContext>> FinishScanContext(
+        ScanContextBuilder& builder, std::map<std::string, std::string>& options) const {
         if (EnableSnapshotLiveManifestCache()) {
             if (!snapshot_live_manifest_cache_) {
                 snapshot_live_manifest_cache_ =
                     std::make_shared<LruCache>(/*max_weight=*/64 * 1024 * 1024);
             }
-            builder.AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3")
-                .WithCache(snapshot_live_manifest_cache_);
+            options[Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS] = "3";
+            builder.WithCache(snapshot_live_manifest_cache_);
         }
         return builder.Finish();
     }
@@ -1090,16 +1106,19 @@ TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) 
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
 
+        std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder(table_path);
-        ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto scan_context,
+                             FinishScanContext(scan_context_builder, scan_context_builder_options));
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context),
+                                                                scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
 
         ReadContextBuilder read_context_builder(table_path);
         read_context_builder.SetReadSchema(std::move(c_schema));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context), {}));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
         ASSERT_OK_AND_ASSIGN(auto actual,
                              ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -2015,7 +2034,7 @@ TEST_P(DataEvolutionTableTest, TestReadJavaIndependentlyRolledVectorStore) {
     read_builder.SetReadFieldNames({"embedding"});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(std::move(read_context), {}));
     const std::vector<std::pair<std::shared_ptr<Split>, std::shared_ptr<arrow::StructArray>>>
         gap_cases = {{gap_split, gap_expected},
                      {std::make_shared<IndexedSplitImpl>(gap_split, selected_ranges),
@@ -2081,7 +2100,7 @@ TEST_P(DataEvolutionTableTest, TestReadJavaIndependentlyRolledVectorStore) {
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> sequence_context,
                                  sequence_read_builder.Finish());
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> sequence_read,
-                                 TableRead::Create(std::move(sequence_context)));
+                                 TableRead::Create(std::move(sequence_context), {}));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> sequence_reader,
                                  sequence_read->CreateReader(split));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> sequence_result,
@@ -2192,14 +2211,17 @@ TEST_P(DedicatedVectorTableTest, TestDedicatedVectorStore) {
     WriteContextBuilder partial_builder(table_path, "partial");
     partial_builder.WithWriteSchema({"embedding"});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> partial_context, partial_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(partial_context)).status(),
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(partial_context), {}).status(),
                         "partial writes");
 
+    std::map<std::string, std::string> invalid_builder_options;
     WriteContextBuilder invalid_builder(table_path, "invalid");
-    invalid_builder.AddOption(Options::DATA_EVOLUTION_ENABLED, "false");
+    invalid_builder_options[Options::DATA_EVOLUTION_ENABLED] = "false";
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> invalid_context, invalid_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(invalid_context)).status(),
-                        "requires row-tracking.enabled and data-evolution.enabled");
+    ASSERT_NOK_WITH_MSG(
+        FileStoreWrite::Create(std::move(invalid_context), invalid_builder_options).status(),
+        "requires row-tracking.enabled and data-evolution.enabled");
 }
 
 TEST_P(DedicatedVectorTableTest, TestIndependentVectorRolling) {
@@ -3826,7 +3848,7 @@ TEST_P(DataEvolutionDvTableTest, TestReadWithDeletionVectorsOnEveryRowRangeGroup
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> count_context,
                          count_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> count_table_read,
-                         TableRead::Create(std::move(count_context)));
+                         TableRead::Create(std::move(count_context), {}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CountReader> count_reader,
                          count_table_read->CreateCountReader(planned_splits));
     ASSERT_OK_AND_ASSIGN(int64_t counted_rows, count_reader->CountRows());

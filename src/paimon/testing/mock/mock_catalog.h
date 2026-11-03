@@ -114,9 +114,6 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override {
         ++get_table_calls_;
-        // A managed table's schema is a `TableSchema`, while the one this mock was set may be a
-        // format table's `DataSchema` - served by `LoadTableSchema` alone - or none at all;
-        // `GetTable`, the managed kind's door, lets `FileStoreTable::Create` refuse both.
         std::shared_ptr<TableSchema> managed_schema =
             std::dynamic_pointer_cast<TableSchema>(table_schema_);
         if (table_schema_ != nullptr && managed_schema == nullptr) {
@@ -132,8 +129,6 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
             /*dynamic_options=*/{});
     }
 
-    /// Sets the table's schema, which `LoadTableSchema` serves either kind of: a managed table's
-    /// `TableSchema` - the one a load hands the table is - or a format table's `DataSchema`.
     void SetTableSchema(const std::shared_ptr<Schema>& table_schema) {
         table_schema_ = table_schema;
     }

@@ -88,14 +88,16 @@ TEST(FileStoreWriteTest, TestRealtimeCatalogCommitRefreshAndRecovery) {
         };
         auto create_writer = [&](const std::shared_ptr<RealtimeContext>& realtime_context)
             -> Result<std::unique_ptr<FileStoreWrite>> {
+            std::map<std::string, std::string> builder_options;
             WriteContextBuilder builder(table_path, "writer");
+            builder_options[Options::FILE_SYSTEM] = "unregistered-file-system";
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> ctx,
+
                                    builder.WithCatalog(catalog, identifier)
                                        .WithStreamingMode(true)
                                        .WithRealtimeContext(realtime_context)
-                                       .AddOption(Options::FILE_SYSTEM, "unregistered-file-system")
                                        .Finish());
-            return FileStoreWrite::Create(std::move(ctx));
+            return FileStoreWrite::Create(std::move(ctx), builder_options);
         };
         ASSERT_OK_AND_ASSIGN(auto realtime_context, RealtimeContext::Create());
         ASSERT_OK_AND_ASSIGN(auto writer, create_writer(realtime_context));
@@ -106,7 +108,7 @@ TEST(FileStoreWriteTest, TestRealtimeCatalogCommitRefreshAndRecovery) {
         CommitContextBuilder commit_builder(table_path, "writer");
         ASSERT_OK_AND_ASSIGN(auto commit_ctx,
                              commit_builder.WithCatalog(catalog, identifier).Finish());
-        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_ctx)));
+        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_ctx), {}));
         ASSERT_OK_AND_ASSIGN(int64_t snapshot_id,
                              commit->CommitWithProgress(progress, 1, std::nullopt));
         ASSERT_EQ(snapshot_id, 1);
@@ -149,11 +151,11 @@ TEST(FileStoreWriteTest, TestCreateWithInvalidInput) {
     WriteContextBuilder builder(dir->Str(), "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> ctx1,
                          builder.WithMemoryPool(nullptr).Finish());
-    ASSERT_NOK(FileStoreWrite::Create(std::move(ctx1)));
+    ASSERT_NOK(FileStoreWrite::Create(std::move(ctx1), {}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> ctx2,
                          builder.WithExecutor(nullptr).Finish());
-    ASSERT_NOK(FileStoreWrite::Create(std::move(ctx2)));
-    ASSERT_NOK(FileStoreWrite::Create(/*context=*/nullptr));
+    ASSERT_NOK(FileStoreWrite::Create(std::move(ctx2), {}));
+    ASSERT_NOK(FileStoreWrite::Create(/*context=*/nullptr, {}));
 }
 
 TEST(FileStoreWriteTest, TestCreateAppendTable) {
@@ -180,7 +182,7 @@ TEST(FileStoreWriteTest, TestCreateAppendTable) {
         }
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+                             FileStoreWrite::Create(std::move(write_context), {}));
         ASSERT_OK(file_store_write->Close());
     }
 }
@@ -202,7 +204,7 @@ TEST(FileStoreWriteTest, TestCatalogWriteAsksTheCatalogOnlyForTheMainBranchSchem
         std::unique_ptr<WriteContext> main_context,
         main_builder.WithCatalog(catalog, Identifier("db", "table$branch_main")).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> main_write,
-                         FileStoreWrite::Create(std::move(main_context)));
+                         FileStoreWrite::Create(std::move(main_context), {}));
     ASSERT_OK(main_write->Close());
     ASSERT_EQ(catalog->LoadTableSchemaIdentifiers().size(), 1u);
     ASSERT_EQ(catalog->LoadTableSchemaIdentifiers().front(), Identifier("db", "table"));
@@ -216,7 +218,7 @@ TEST(FileStoreWriteTest, TestCatalogWriteAsksTheCatalogOnlyForTheMainBranchSchem
         std::unique_ptr<WriteContext> branch_context,
         branch_builder.WithCatalog(catalog, Identifier("db", "table$branch_dev")).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> branch_write,
-                         FileStoreWrite::Create(std::move(branch_context)));
+                         FileStoreWrite::Create(std::move(branch_context), {}));
     ASSERT_OK(branch_write->Close());
     ASSERT_EQ(catalog->LoadTableSchemaIdentifiers().size(), 1u);
 }
@@ -243,7 +245,7 @@ TEST(FileStoreWriteTest, TestCatalogWriteUsesPerTableFileSystem) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> ctx,
                          builder.WithCatalog(catalog, identifier).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                         FileStoreWrite::Create(std::move(ctx)));
+                         FileStoreWrite::Create(std::move(ctx), {}));
     ASSERT_OK(writer->Close());
 
     // The file system was resolved per table, not from the catalog-wide one.
@@ -267,11 +269,14 @@ TEST(FileStoreWriteTest, TestCreateAppendTableWithInvalidBucket) {
     ASSERT_OK(catalog->CreateTable(Identifier("foo", "bar"), &schema,
                                    /*partition_keys=*/{"f0", "f3"},
                                    /*primary_keys=*/{}, options, /*ignore_if_exists=*/false));
+    std::map<std::string, std::string> context_builder_options;
     WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
                                         "commit_user_1");
+    context_builder_options[Options::BUCKET] = "-2";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.AddOption(Options::BUCKET, "-2").Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)),
+
+                         context_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context), context_builder_options),
                         "not support bucket -2 in append table");
 }
 
@@ -293,13 +298,14 @@ TEST(FileStoreWriteTest, TestCreateAppendTableWithInvalidWriteType) {
     ASSERT_OK(catalog->CreateTable(Identifier("foo", "bar"), &schema,
                                    /*partition_keys=*/{},
                                    /*primary_keys=*/{}, options, /*ignore_if_exists=*/false));
+    std::map<std::string, std::string> context_builder_options;
     WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
                                         "commit_user_1");
+    context_builder_options[Options::BUCKET] = "-1";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.AddOption(Options::BUCKET, "-1")
-                             .WithWriteSchema({"field_non_exist"})
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)),
+
+                         context_builder.WithWriteSchema({"field_non_exist"}).Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context), context_builder_options),
                         "write field field_non_exist does not exist in table schema");
 }
 
@@ -319,12 +325,15 @@ TEST(FileStoreWriteTest, TestCreatePrimaryKeyTable) {
     ASSERT_OK(catalog->CreateTable(Identifier("foo", "bar"), &schema,
                                    /*partition_keys=*/{"f0"}, /*primary_keys=*/{"f0", "f1", "f4"},
                                    options, /*ignore_if_exists=*/false));
+    std::map<std::string, std::string> context_builder_options;
     WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
                                         "commit_user_1");
+    context_builder_options[Options::BUCKET] = "2";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.AddOption(Options::BUCKET, "2").Finish());
+
+                         context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(std::move(write_context), context_builder_options));
 
     auto fs = std::make_shared<LocalFileSystem>();
     SchemaManager schema_manager(fs, PathUtil::JoinPath(dir->Str(), "foo.db/bar"));
@@ -356,7 +365,7 @@ TEST(FileStoreWriteTest, TestCreatePrimaryKeyTableWithInvalidBucket) {
     WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
                                         "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)),
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context), {}),
                         "not support bucket -1 in key value table");
 }
 

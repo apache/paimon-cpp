@@ -551,13 +551,15 @@ class RealtimeWriteInteTest : public ::testing::Test {
     Result<std::unique_ptr<FileStoreWrite>> CreateRealtimeWriter(
         const std::shared_ptr<RealtimeContext>& realtime_context,
         const std::string& temp_directory) const {
+        std::map<std::string, std::string> builder_options;
         WriteContextBuilder builder(table_path_, commit_user_);
-        builder.SetOptions(options_).WithStreamingMode(true).WithRealtimeContext(realtime_context);
+        builder_options = options_;
+        builder.WithStreamingMode(true).WithRealtimeContext(realtime_context);
         if (!temp_directory.empty()) {
             builder.WithTempDirectory(temp_directory);
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> context, builder.Finish());
-        return FileStoreWrite::Create(std::move(context));
+        return FileStoreWrite::Create(std::move(context), builder_options);
     }
 
     Result<std::unique_ptr<FileStoreWrite>> CreateRealtimeWriter() const {
@@ -731,22 +733,28 @@ class RealtimeWriteInteTest : public ::testing::Test {
 
     Result<int64_t> Commit(const std::vector<RealtimeCommitProgress>& realtime_commits,
                            int64_t commit_identifier) const {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(table_path_, commit_user_);
+        builder_options = options_;
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
-                               builder.SetOptions(options_).Finish());
+
+                               builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> commit,
-                               FileStoreCommit::Create(std::move(context)));
+                               FileStoreCommit::Create(std::move(context), builder_options));
         return commit->CommitWithProgress(realtime_commits, commit_identifier,
                                           /*watermark=*/std::nullopt);
     }
 
     Result<int64_t> DropPartition(const std::map<std::string, std::string>& partition,
                                   int64_t commit_identifier) const {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(table_path_, kDropPartitionCommitUser);
+        builder_options = options_;
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
-                               builder.SetOptions(options_).Finish());
+
+                               builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> commit,
-                               FileStoreCommit::Create(std::move(context)));
+                               FileStoreCommit::Create(std::move(context), builder_options));
         PAIMON_RETURN_NOT_OK(commit->DropPartition({partition}, commit_identifier));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(options_));
         SnapshotManager snapshot_manager(options.GetFileSystem(), table_path_);
@@ -759,11 +767,14 @@ class RealtimeWriteInteTest : public ::testing::Test {
     }
 
     Result<int64_t> TruncateTable(int64_t commit_identifier) const {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(table_path_, kTruncateCommitUser);
+        builder_options = options_;
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
-                               builder.SetOptions(options_).Finish());
+
+                               builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> commit,
-                               FileStoreCommit::Create(std::move(context)));
+                               FileStoreCommit::Create(std::move(context), builder_options));
         PAIMON_RETURN_NOT_OK(commit->TruncateTable(commit_identifier));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(options_));
         SnapshotManager snapshot_manager(options.GetFileSystem(), table_path_);
@@ -776,11 +787,14 @@ class RealtimeWriteInteTest : public ::testing::Test {
     }
 
     Result<int64_t> RollbackToAsLatest(int64_t target_snapshot_id) const {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(table_path_, kRollbackCommitUser);
+        builder_options = options_;
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
-                               builder.SetOptions(options_).Finish());
+
+                               builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> commit,
-                               FileStoreCommit::Create(std::move(context)));
+                               FileStoreCommit::Create(std::move(context), builder_options));
         PAIMON_ASSIGN_OR_RAISE(bool rolled_back, commit->RollbackToAsLatest(target_snapshot_id));
         if (!rolled_back) {
             return Status::Invalid("failed to commit rollback snapshot");
@@ -798,12 +812,15 @@ class RealtimeWriteInteTest : public ::testing::Test {
     Result<Snapshot> CompactAndCommit(const std::map<std::string, std::string>& partition,
                                       int32_t bucket, int64_t commit_identifier,
                                       bool full_compaction = true) const {
+        std::map<std::string, std::string> write_builder_options;
         WriteContextBuilder write_builder(table_path_, commit_user_);
-        write_builder.SetOptions(options_).WithStreamingMode(true).WithTempDirectory(
+        write_builder_options = options_;
+        write_builder.WithStreamingMode(true).WithTempDirectory(
             PathUtil::JoinPath(dir_->Str(), "compact-tmp"));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> compaction_writer,
-                               FileStoreWrite::Create(std::move(write_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileStoreWrite> compaction_writer,
+            FileStoreWrite::Create(std::move(write_context), write_builder_options));
         PAIMON_RETURN_NOT_OK(compaction_writer->Compact(partition, bucket, full_compaction));
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::shared_ptr<CommitMessage>> compaction_messages,
@@ -812,11 +829,15 @@ class RealtimeWriteInteTest : public ::testing::Test {
             return Status::Invalid("compaction did not produce a commit message");
         }
 
+        std::map<std::string, std::string> commit_builder_options;
         CommitContextBuilder commit_builder(table_path_, commit_user_);
+        commit_builder_options = options_;
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
-                               commit_builder.SetOptions(options_).Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> compaction_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+
+                               commit_builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileStoreCommit> compaction_commit,
+            FileStoreCommit::Create(std::move(commit_context), commit_builder_options));
         PAIMON_RETURN_NOT_OK(compaction_commit->Commit(compaction_messages, commit_identifier));
         PAIMON_RETURN_NOT_OK(compaction_writer->Close());
 
@@ -831,40 +852,47 @@ class RealtimeWriteInteTest : public ::testing::Test {
     }
 
     Result<int32_t> ExpireSnapshots() const {
+        std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(table_path_, commit_user_);
+        builder_options = options_;
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
-                               builder.SetOptions(options_).Finish());
+
+                               builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> commit,
-                               FileStoreCommit::Create(std::move(context)));
+                               FileStoreCommit::Create(std::move(context), builder_options));
         return commit->Expire();
     }
 
     Result<std::shared_ptr<Plan>> CreatePlan(
         const std::shared_ptr<RealtimeContext>& realtime_context,
         const std::shared_ptr<Predicate>& predicate) const {
+        std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder(table_path_);
         if (realtime_context) {
             scan_builder.WithRealtimeContext(realtime_context);
         }
         scan_builder.SetPredicate(predicate).WithMemoryPool(pool_);
+        scan_builder_options = options_;
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
-                               scan_builder.SetOptions(options_).Finish());
+
+                               scan_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
-                               TableScan::Create(std::move(scan_context)));
+                               TableScan::Create(std::move(scan_context), scan_builder_options));
         return scan->CreatePlan();
     }
 
     Result<std::unique_ptr<BatchReader>> CreateQueryReader(
         const std::shared_ptr<Plan>& plan,
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
+        std::map<std::string, std::string> read_builder_options;
         ReadContextBuilder read_builder(table_path_);
-        read_builder.SetOptions(options_)
-            .SetReadFieldNames({"id", "payload", "pt"})
+        read_builder_options = options_;
+        read_builder.SetReadFieldNames({"id", "payload", "pt"})
             .WithRealtimeContext(realtime_context)
             .WithMemoryPool(pool_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                               TableRead::Create(std::move(read_context)));
+                               TableRead::Create(std::move(read_context), read_builder_options));
         return table_read->CreateReader(plan->Splits());
     }
 
@@ -879,16 +907,17 @@ class RealtimeWriteInteTest : public ::testing::Test {
         const std::shared_ptr<Plan>& plan, const std::shared_ptr<RealtimeContext>& realtime_context,
         const std::vector<std::string>& read_fields, const std::shared_ptr<Predicate>& predicate,
         bool enable_predicate_filter) const {
+        std::map<std::string, std::string> read_builder_options;
         ReadContextBuilder read_builder(table_path_);
-        read_builder.SetOptions(options_)
-            .SetReadFieldNames(read_fields)
+        read_builder_options = options_;
+        read_builder.SetReadFieldNames(read_fields)
             .SetPredicate(predicate)
             .EnablePredicateFilter(enable_predicate_filter)
             .WithRealtimeContext(realtime_context)
             .WithMemoryPool(pool_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                               TableRead::Create(std::move(read_context)));
+                               TableRead::Create(std::move(read_context), read_builder_options));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
                                table_read->CreateReader(plan->Splits()));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
@@ -902,14 +931,15 @@ class RealtimeWriteInteTest : public ::testing::Test {
                                     const std::string& expected_json) const {
         std::unique_ptr<ArrowSchema> c_read_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_read_schema.get()).ok());
+        std::map<std::string, std::string> read_builder_options;
         ReadContextBuilder read_builder(table_path_);
-        read_builder.SetOptions(options_)
-            .SetReadSchema(std::move(c_read_schema))
+        read_builder_options = options_;
+        read_builder.SetReadSchema(std::move(c_read_schema))
             .WithRealtimeContext(realtime_context)
             .WithMemoryPool(pool_);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                             TableRead::Create(std::move(read_context)));
+                             TableRead::Create(std::move(read_context), read_builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                              table_read->CreateReader(plan->Splits()));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -988,13 +1018,13 @@ class RealtimeWriteInteTest : public ::testing::Test {
 
     Result<int64_t> CountRows(const std::shared_ptr<Plan>& plan,
                               const std::shared_ptr<RealtimeContext>& realtime_context) const {
+        std::map<std::string, std::string> read_builder_options;
         ReadContextBuilder read_builder(table_path_);
-        read_builder.SetOptions(options_)
-            .WithRealtimeContext(realtime_context)
-            .WithMemoryPool(pool_);
+        read_builder_options = options_;
+        read_builder.WithRealtimeContext(realtime_context).WithMemoryPool(pool_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                               TableRead::Create(std::move(read_context)));
+                               TableRead::Create(std::move(read_context), read_builder_options));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CountReader> count_reader,
                                table_read->CreateCountReader(plan->Splits()));
         return count_reader->CountRows();
@@ -1251,31 +1281,39 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeOperationsRequireEnabledOption) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
 
+    std::map<std::string, std::string> write_builder_options;
     WriteContextBuilder write_builder(table_path_, commit_user_);
-    write_builder.SetOptions(disabled_options)
-        .WithStreamingMode(true)
-        .WithRealtimeContext(realtime_context);
+    write_builder_options = disabled_options;
+    write_builder.WithStreamingMode(true).WithRealtimeContext(realtime_context);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)),
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context), write_builder_options),
                         "real-time write requires realtime.enabled=true");
 
+    std::map<std::string, std::string> scan_builder_options;
     ScanContextBuilder scan_builder(table_path_);
-    scan_builder.SetOptions(disabled_options).WithRealtimeContext(realtime_context);
+    scan_builder_options = disabled_options;
+    scan_builder.WithRealtimeContext(realtime_context);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)),
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context), scan_builder_options),
                         "real-time scan requires realtime.enabled=true");
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(table_path_);
-    read_builder.SetOptions(disabled_options).WithRealtimeContext(realtime_context);
+    read_builder_options = disabled_options;
+    read_builder.WithRealtimeContext(realtime_context);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), read_builder_options),
                         "real-time read requires realtime.enabled=true");
 
+    std::map<std::string, std::string> commit_builder_options;
     CommitContextBuilder commit_builder(table_path_, commit_user_);
+    commit_builder_options = disabled_options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         commit_builder.SetOptions(disabled_options).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
+
+                         commit_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> commit,
+        FileStoreCommit::Create(std::move(commit_context), commit_builder_options));
     ASSERT_NOK_WITH_MSG(commit->CommitWithProgress(/*realtime_commits=*/{},
                                                    /*commit_identifier=*/0,
                                                    /*watermark=*/std::nullopt),
@@ -1496,11 +1534,15 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateCommitRetryMergesLatestDv) 
     auto concurrent_message = std::make_shared<CommitMessageImpl>(
         initial_message->Partition(), /*bucket=*/0, /*total_buckets=*/1,
         DataIncrement({}, {}, {}, {concurrent_dv}, {}), CompactIncrement({}, {}, {}, {}, {}));
+    std::map<std::string, std::string> concurrent_builder_options;
     CommitContextBuilder concurrent_builder(table_path_, "concurrent-dv-writer");
+    concurrent_builder_options = options_;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> concurrent_context,
-                         concurrent_builder.SetOptions(options_).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> concurrent_commit,
-                         FileStoreCommit::Create(std::move(concurrent_context)));
+
+                         concurrent_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> concurrent_commit,
+        FileStoreCommit::Create(std::move(concurrent_context), concurrent_builder_options));
     bool interleaved = false;
     auto fs = std::make_shared<InterleavingSnapshotFileSystem>(
         PathUtil::JoinPath(table_path_, "snapshot/snapshot-2"), [&]() -> Status {
@@ -1508,11 +1550,14 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateCommitRetryMergesLatestDv) 
             return concurrent_commit->Commit({concurrent_message}, /*commit_identifier=*/0,
                                              /*watermark=*/std::nullopt);
         });
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(table_path_, commit_user_);
+    builder_options = options_;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                         builder.SetOptions(options_).WithFileSystem(fs).Finish());
+
+                         builder.WithFileSystem(fs).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(context)));
+                         FileStoreCommit::Create(std::move(context), builder_options));
     ASSERT_OK_AND_ASSIGN(
         int64_t snapshot_id,
         commit->CommitWithProgress(progress, /*commit_identifier=*/1, /*watermark=*/std::nullopt));
@@ -1574,11 +1619,14 @@ TEST_F(RealtimeWriteInteTest, DISABLED_TestRealtimeDeduplicateCommitRetryRemapsC
             interleaved = true;
             return Status::OK();
         });
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(table_path_, commit_user_);
+    builder_options = options_;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                         builder.SetOptions(options_).WithFileSystem(fs).Finish());
+
+                         builder.WithFileSystem(fs).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(context)));
+                         FileStoreCommit::Create(std::move(context), builder_options));
     ASSERT_OK_AND_ASSIGN(
         int64_t snapshot_id,
         commit->CommitWithProgress(progress, /*commit_identifier=*/2, /*watermark=*/std::nullopt));
@@ -2460,18 +2508,24 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeCommitRetriesSnapshotConflict) {
 
     const std::string first_snapshot_path = PathUtil::JoinPath(table_path_, "snapshot/snapshot-1");
     auto conflict_file_system = std::make_shared<SnapshotConflictFileSystem>(first_snapshot_path);
+    std::map<std::string, std::string> bucket0_builder_options;
     CommitContextBuilder bucket0_builder(table_path_, "bucket0_realtime_commit_user");
+    bucket0_builder_options = options_;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> bucket0_context,
+
+                         bucket0_builder.WithFileSystem(conflict_file_system).Finish());
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<CommitContext> bucket0_context,
-        bucket0_builder.SetOptions(options_).WithFileSystem(conflict_file_system).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> bucket0_commit,
-                         FileStoreCommit::Create(std::move(bucket0_context)));
+        std::unique_ptr<FileStoreCommit> bucket0_commit,
+        FileStoreCommit::Create(std::move(bucket0_context), bucket0_builder_options));
+    std::map<std::string, std::string> bucket1_builder_options;
     CommitContextBuilder bucket1_builder(table_path_, "bucket1_realtime_commit_user");
+    bucket1_builder_options = options_;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> bucket1_context,
+
+                         bucket1_builder.WithFileSystem(conflict_file_system).Finish());
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<CommitContext> bucket1_context,
-        bucket1_builder.SetOptions(options_).WithFileSystem(conflict_file_system).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> bucket1_commit,
-                         FileStoreCommit::Create(std::move(bucket1_context)));
+        std::unique_ptr<FileStoreCommit> bucket1_commit,
+        FileStoreCommit::Create(std::move(bucket1_context), bucket1_builder_options));
 
     std::optional<Result<int64_t>> bucket0_result;
     std::optional<Result<int64_t>> bucket1_result;
@@ -2539,13 +2593,16 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeCommitRetriesConflictWithCompaction) {
         ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
     }
 
+    std::map<std::string, std::string> compact_write_builder_options;
     WriteContextBuilder compact_write_builder(table_path_, "compaction_write_user");
-    compact_write_builder.SetOptions(options_).WithStreamingMode(true).WithTempDirectory(
+    compact_write_builder_options = options_;
+    compact_write_builder.WithStreamingMode(true).WithTempDirectory(
         PathUtil::JoinPath(dir_->Str(), "conflict-compact-tmp"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> compact_write_context,
                          compact_write_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> compact_writer,
-                         FileStoreWrite::Create(std::move(compact_write_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> compact_writer,
+        FileStoreWrite::Create(std::move(compact_write_context), compact_write_builder_options));
     ASSERT_OK(compact_writer->Compact(/*partition=*/{}, /*bucket=*/0,
                                       /*full_compaction=*/true));
     ASSERT_OK_AND_ASSIGN(
@@ -2569,18 +2626,24 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeCommitRetriesConflictWithCompaction) {
         PathUtil::JoinPath(table_path_, "snapshot/snapshot-3");
     auto conflict_file_system =
         std::make_shared<SnapshotConflictFileSystem>(conflict_snapshot_path);
+    std::map<std::string, std::string> append_commit_builder_options;
     CommitContextBuilder append_commit_builder(table_path_, commit_user_);
+    append_commit_builder_options = options_;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> append_commit_context,
+
+                         append_commit_builder.WithFileSystem(conflict_file_system).Finish());
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<CommitContext> append_commit_context,
-        append_commit_builder.SetOptions(options_).WithFileSystem(conflict_file_system).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> append_commit,
-                         FileStoreCommit::Create(std::move(append_commit_context)));
+        std::unique_ptr<FileStoreCommit> append_commit,
+        FileStoreCommit::Create(std::move(append_commit_context), append_commit_builder_options));
+    std::map<std::string, std::string> compact_commit_builder_options;
     CommitContextBuilder compact_commit_builder(table_path_, "compaction_commit_user");
+    compact_commit_builder_options = options_;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> compact_commit_context,
+
+                         compact_commit_builder.WithFileSystem(conflict_file_system).Finish());
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<CommitContext> compact_commit_context,
-        compact_commit_builder.SetOptions(options_).WithFileSystem(conflict_file_system).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> compact_commit,
-                         FileStoreCommit::Create(std::move(compact_commit_context)));
+        std::unique_ptr<FileStoreCommit> compact_commit,
+        FileStoreCommit::Create(std::move(compact_commit_context), compact_commit_builder_options));
 
     std::optional<Result<int64_t>> append_result;
     std::optional<Status> compact_status;
@@ -2844,14 +2907,15 @@ TEST_F(RealtimeWriteInteTest, TestPkRead) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> lifetime_plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(table_path_);
-    read_builder.SetOptions(options_)
-        .SetReadFieldNames({"id", "payload", "pt"})
+    read_builder_options = options_;
+    read_builder.SetReadFieldNames({"id", "payload", "pt"})
         .WithRealtimeContext(realtime_context)
         .WithMemoryPool(pool_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(std::move(read_context), read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                          table_read->CreateReader(lifetime_plan->Splits()));
     ASSERT_FALSE(query_view->expired());
@@ -2923,10 +2987,14 @@ TEST_F(RealtimeWriteInteTest, TestPkRealtimeReadOptimizedScanUnsupported) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<SystemTable> table,
                          SystemTableLoader::LoadFromPath(core_options.GetFileSystem(),
                                                          table_path_ + "$ro", options_));
+    std::map<std::string, std::string> scan_builder_options;
     ScanContextBuilder scan_builder(table_path_ + "$ro");
-    scan_builder.SetOptions(options_).WithRealtimeContext(realtime_context).WithMemoryPool(pool_);
+    scan_builder_options = options_;
+    scan_builder.WithRealtimeContext(realtime_context).WithMemoryPool(pool_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    Result<std::unique_ptr<TableScan>> scan = table->NewScan(std::move(scan_context));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_1,
+                         table->Copy(scan_builder_options));
+    Result<std::unique_ptr<TableScan>> scan = configured_table_1->NewScan(std::move(scan_context));
     ASSERT_TRUE(scan.status().IsNotImplemented()) << scan.status().ToString();
     ASSERT_NE(std::string::npos, scan.status().ToString().find(
                                      "PK real-time union read does not support read-optimized"));
@@ -2956,14 +3024,15 @@ TEST_F(RealtimeWriteInteTest, TestPkDeleteInsertAndPinnedReadsAcrossRefresh) {
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> reader_plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(table_path_);
-    read_builder.SetOptions(options_)
-        .SetReadFieldNames({"id", "payload", "pt"})
+    read_builder_options = options_;
+    read_builder.SetReadFieldNames({"id", "payload", "pt"})
         .WithRealtimeContext(realtime_context)
         .WithMemoryPool(pool_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(std::move(read_context), read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> pinned_reader,
                          table_read->CreateReader(reader_plan->Splits()));
 
@@ -3154,14 +3223,15 @@ TEST_F(RealtimeWriteInteTest, TestPkNestedProjectionAcrossDiskAndMemory) {
     });
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(table_path_);
-    read_builder.SetOptions(options_)
-        .SetReadSchema(std::move(c_schema))
+    read_builder_options = options_;
+    read_builder.SetReadSchema(std::move(c_schema))
         .WithRealtimeContext(realtime_context)
         .WithMemoryPool(pool_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(std::move(read_context), read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                          table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
@@ -3449,22 +3519,28 @@ TEST_F(RealtimeWriteInteTest, TestPkPartitionBucketRecovery) {
 TEST_F(RealtimeWriteInteTest, TestPkRecovery) {
     CreatePkTable();
 
+    std::map<std::string, std::string> seed_builder_options;
     WriteContextBuilder seed_builder(table_path_, commit_user_);
-    seed_builder.SetOptions(options_).WithStreamingMode(true);
+    seed_builder_options = options_;
+    seed_builder.WithStreamingMode(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> seed_context, seed_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> seed_writer,
-                         FileStoreWrite::Create(std::move(seed_context)));
+                         FileStoreWrite::Create(std::move(seed_context), seed_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> seed_batch,
                          MakeLogicalBatch({Row{99, "seed", "p0"}}, /*bucket=*/0));
     ASSERT_OK(seed_writer->Write(std::move(seed_batch)));
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> seed_messages,
                          seed_writer->PrepareCommit(/*wait_compaction=*/false,
                                                     /*commit_identifier=*/0));
+    std::map<std::string, std::string> seed_commit_builder_options;
     CommitContextBuilder seed_commit_builder(table_path_, commit_user_);
+    seed_commit_builder_options = options_;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> seed_commit_context,
-                         seed_commit_builder.SetOptions(options_).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> seed_commit,
-                         FileStoreCommit::Create(std::move(seed_commit_context)));
+
+                         seed_commit_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> seed_commit,
+        FileStoreCommit::Create(std::move(seed_commit_context), seed_commit_builder_options));
     ASSERT_OK(seed_commit->Commit(seed_messages, /*commit_identifier=*/0));
     ASSERT_OK(seed_writer->Close());
     const std::vector<Row> mutations = {
@@ -3551,11 +3627,14 @@ TEST_F(RealtimeWriteInteTest, TestPkCompaction) {
         ASSERT_OK_AND_ASSIGN(uint64_t memory_usage, GetRealtimeMemoryUsage(realtime_context));
         ASSERT_EQ(0, memory_usage);
     }
+    std::map<std::string, std::string> compact_builder_options;
     WriteContextBuilder compact_builder(table_path_, commit_user_);
-    compact_builder.SetOptions(options_).WithStreamingMode(true);
+    compact_builder_options = options_;
+    compact_builder.WithStreamingMode(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> compact_context, compact_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> compact_writer,
-                         FileStoreWrite::Create(std::move(compact_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> compact_writer,
+        FileStoreWrite::Create(std::move(compact_context), compact_builder_options));
     ASSERT_OK(compact_writer->Compact(/*partition=*/{}, /*bucket=*/0,
                                       /*full_compaction=*/true));
     ASSERT_OK_AND_ASSIGN(
@@ -3583,11 +3662,15 @@ TEST_F(RealtimeWriteInteTest, TestPkCompaction) {
             std::max(compacted_live_max_sequence_number, file->max_sequence_number);
     }
     ASSERT_LT(compacted_live_max_sequence_number, kHistoricalMaxSequenceNumber);
+    std::map<std::string, std::string> commit_builder_options;
     CommitContextBuilder commit_builder(table_path_, commit_user_);
+    commit_builder_options = options_;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         commit_builder.SetOptions(options_).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
+
+                         commit_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> commit,
+        FileStoreCommit::Create(std::move(commit_context), commit_builder_options));
     ASSERT_OK(commit->Commit(compact_messages, /*commit_identifier=*/4));
     ASSERT_OK(compact_writer->Close());
 
@@ -3907,11 +3990,14 @@ TEST_F(RealtimeWriteInteTest, TestCommitWithProgressRejectsCoveredRangesFromAnot
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_OK(Commit(commits, /*commit_identifier=*/0));
 
+    std::map<std::string, std::string> builder_options;
     CommitContextBuilder builder(table_path_, "another_realtime_commit_user");
+    builder_options = options_;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                         builder.SetOptions(options_).Finish());
+
+                         builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(context)));
+                         FileStoreCommit::Create(std::move(context), builder_options));
     ASSERT_NOK_WITH_MSG(commit->CommitWithProgress(commits, /*commit_identifier=*/0,
                                                    /*watermark=*/std::nullopt),
                         "another commit user or identifier");
@@ -4727,14 +4813,15 @@ TEST_F(RealtimeWriteInteTest, TestSuccessfulReaderCreationConsumesRealtimeSplitT
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(table_path_);
-    read_builder.SetOptions(options_)
-        .SetReadFieldNames({"id", "payload", "pt"})
+    read_builder_options = options_;
+    read_builder.SetReadFieldNames({"id", "payload", "pt"})
         .WithRealtimeContext(realtime_context)
         .WithMemoryPool(pool_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(std::move(read_context), read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> first_reader,
                          table_read->CreateReader(plan->Splits()));
     first_reader->Close();
@@ -4759,16 +4846,17 @@ TEST_F(RealtimeWriteInteTest, TestFailedReaderCreationPreservesRealtimeSplitTick
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
     ASSERT_EQ(1, plan->Splits().size());
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(table_path_);
-    read_builder.SetOptions(options_)
-        .SetReadFieldNames({"id", "payload", "pt"})
+    read_builder_options = options_;
+    read_builder.SetReadFieldNames({"id", "payload", "pt"})
         .SetPredicate(std::make_shared<UnsupportedPredicate>())
         .EnablePredicateFilter(true)
         .WithRealtimeContext(realtime_context)
         .WithMemoryPool(pool_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(std::move(read_context), read_builder_options));
     ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()),
                         "cannot cast predicate unsupported");
 
@@ -5622,14 +5710,15 @@ TEST_F(RealtimeWriteInteTest, TestReaderPinsMemoryAcrossRefresh) {
         std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
     ASSERT_NE(nullptr, realtime_split);
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(table_path_);
-    read_builder.SetOptions(options_)
-        .SetReadFieldNames({"id", "payload", "pt"})
+    read_builder_options = options_;
+    read_builder.SetReadFieldNames({"id", "payload", "pt"})
         .WithRealtimeContext(realtime_context)
         .WithMemoryPool(pool_);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(std::move(read_context), read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                          table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,

@@ -42,35 +42,26 @@ class TableRead;
 class TableScan;
 class WriteContext;
 
-/// A table provides basic abstraction for table type.
-///
-/// The state every kind of table carries - file system, root path, schema and identifier - lives
-/// here, and each kind fills in the operations. The `NewXxx` operators below are the table-first
-/// entry points: the deprecated `TableScan::Create()` and its friends load the table a context
-/// names and hand the context to it. A table refuses by name whatever a context asks for that it
-/// cannot honour, rather than dropping it silently.
+/// Common interface for managed, format and system tables.
+/// Create operators with NewScan/NewRead/NewWrite/NewCommit; unsupported operations return errors.
 class PAIMON_EXPORT Table {
  public:
     virtual ~Table() = default;
 
-    /// Returns the file system the table was opened with, null when the opener had none. A
-    /// catalog that hands out per-table file systems opens a table with the one for that table.
+    /// Returns the table file system, or null if none was supplied.
     std::shared_ptr<FileSystem> GetFileSystem() const {
         return file_system_;
     }
 
-    /// Returns the root path of the table in its file system. It is empty when the opener had no
-    /// location for the table, which a mock in a test is one case of.
+    /// Returns the table root path, or an empty string if unavailable.
     const std::string& GetRootPath() const {
         return root_path_;
     }
 
-    /// A name to identify this table. A managed or format table answers the object name of its
-    /// identifier, a system table its own name.
+    /// Returns the object name for data tables, or the system table name.
     virtual std::string Name() const = 0;
 
-    /// Full name of the table: `database.tableName` for a managed or format table, the same name
-    /// as `Name()` for a system table.
+    /// Returns database.tableName for data tables, or Name() for system tables.
     virtual std::string FullName() const = 0;
 
     /// Returns the metastore UUID, falling back to `FullName()`.
@@ -90,36 +81,24 @@ class PAIMON_EXPORT Table {
         return schema_;
     }
 
-    /// Copies this table with `dynamic_options` on top of the options it carries. An option given
-    /// at the call wins over the one the schema stored, the precedence every context builder
-    /// promises. `type` is not overridable: it is structural and read from the schema alone.
-    ///
-    /// @param dynamic_options Options given at the call.
-    /// @return A result containing the copied table, or the error copying it reports.
+    /// Copies this table with dynamic_options overriding its current options.
+    /// The table type is structural and cannot be changed by these options.
     virtual Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const = 0;
 
-    /// Creates a scan of this table from a finished scan context.
-    /// @param context The finished scan context.
-    /// @return The scan, or the error building it reports.
+    /// Creates a scan using this table's schema and options.
     virtual Result<std::unique_ptr<TableScan>> NewScan(
         std::unique_ptr<ScanContext> context) const = 0;
 
-    /// Creates a read of this table from a finished read context.
-    /// @param context The finished read context.
-    /// @return The read, or the error building it reports.
+    /// Creates a reader using this table's schema and options.
     virtual Result<std::unique_ptr<TableRead>> NewRead(
         std::unique_ptr<ReadContext> context) const = 0;
 
-    /// Creates a write of this table from a finished write context.
-    /// @param context The finished write context.
-    /// @return The write, or the error building it reports.
+    /// Creates a writer using this table's schema and options.
     virtual Result<std::unique_ptr<FileStoreWrite>> NewWrite(
         std::unique_ptr<WriteContext> context) const = 0;
 
-    /// Creates a commit of this table from a finished commit context.
-    /// @param context The finished commit context.
-    /// @return The commit, or the error building it reports.
+    /// Creates a commit using this table's schema and options.
     virtual Result<std::unique_ptr<FileStoreCommit>> NewCommit(
         std::unique_ptr<CommitContext> context) const = 0;
 

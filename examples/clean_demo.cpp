@@ -51,23 +51,27 @@ Status DropPartition(const std::string& table_path,
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                            commit_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> committer,
-                           FileStoreCommit::Create(std::move(commit_context)));
+                           FileStoreCommit::Create(std::move(commit_context), {}));
     PAIMON_RETURN_NOT_OK(committer->DropPartition(partitions, /*commit_identifier=*/10));
 
     return Status::OK();
 }
 
 Status ExpireSnapshot(const std::string& table_path) {
+    std::map<std::string, std::string> commit_context_builder_options;
     CommitContextBuilder commit_context_builder(table_path, /*commit_user=*/"commit_user_1");
     std::map<std::string, std::string> commit_options = {
         {Options::SNAPSHOT_NUM_RETAINED_MAX, "2"},
         {Options::SNAPSHOT_NUM_RETAINED_MIN, "1"},
         {Options::SNAPSHOT_TIME_RETAINED, "1ms"},
         {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"}};
+    commit_context_builder_options = commit_options;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
-                           commit_context_builder.SetOptions(commit_options).Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> committer,
-                           FileStoreCommit::Create(std::move(commit_context)));
+
+                           commit_context_builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<FileStoreCommit> committer,
+        FileStoreCommit::Create(std::move(commit_context), commit_context_builder_options));
     PAIMON_RETURN_NOT_OK(committer->Expire());
 
     return Status::OK();

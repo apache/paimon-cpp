@@ -19,7 +19,9 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "paimon/executor.h"
@@ -43,15 +45,15 @@ class PAIMON_EXPORT TableRead {
  public:
     virtual ~TableRead() = default;
 
-    /// Create an instance of `TableRead`. The data table the context names is loaded from its path
-    /// - a system table behind a `T$system` path and a format table are refused, served by the
-    /// table a catalog hands back through its own `NewRead` instead.
-    ///
-    /// @param context A unique pointer to the `ReadContext` used for read operations.
-    /// @return A Result containing a unique pointer to the `TableRead` instance.
-    /// @deprecated Use `Table::NewRead()` on the table a catalog hands back instead.
+    /// Creates a managed-table reader from the context and table options.
+    /// System and format tables require Table::NewRead().
+    /// @param context Read context.
+    /// @param options Overrides for the stored schema options.
+    /// @return The reader, or an error status.
+    /// @deprecated Use Table::NewRead().
     PAIMON_DEPRECATED("Use Table::NewRead() instead")
-    static Result<std::unique_ptr<TableRead>> Create(std::unique_ptr<ReadContext> context);
+    static Result<std::unique_ptr<TableRead>> Create(
+        std::unique_ptr<ReadContext> context, const std::map<std::string, std::string>& options);
 
     /// Creates a `BatchReader` instance for reading data.
     ///

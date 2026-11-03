@@ -161,20 +161,21 @@ Result<BlobViewLookup::DescriptorMapping> BlobViewLookup::LoadTableDescriptorChu
         .WithCatalog(catalog, identifier);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                           TableScan::Create(std::move(scan_context)));
+                           TableScan::Create(std::move(scan_context), {}));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(table_path);
     std::vector<int32_t> read_field_ids = field_ids;
     read_field_ids.push_back(SpecialFieldIds::ROW_ID);
+    read_builder_options[Options::BLOB_AS_DESCRIPTOR] = "true";
     read_builder.SetReadFieldIds(read_field_ids)
-        .AddOption(Options::BLOB_AS_DESCRIPTOR, "true")
         .EnablePrefetch(true)
         .WithMemoryPool(pool)
         .WithCatalog(catalog, identifier);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           TableRead::Create(std::move(read_context)));
+                           TableRead::Create(std::move(read_context), read_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
                            table_read->CreateReader(plan->Splits()));
 

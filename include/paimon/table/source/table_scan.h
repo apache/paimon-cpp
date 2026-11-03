@@ -37,15 +37,16 @@ class ScanContext;
 /// A scanner interface for reading table's meta and create a plan.
 class PAIMON_EXPORT TableScan {
  public:
-    /// Create an instance of `TableScan`. The data table the context names is loaded from its path
-    /// - a system table behind a `T$system` path and a format table are refused, served by the
-    /// table a catalog hands back through its own `NewScan` instead.
-    ///
-    /// @param context A unique pointer to the `ScanContext` used for scan operations.
-    /// @return A Result containing a unique pointer to the `TableScan` instance.
-    /// @deprecated Use `Table::NewScan()` on the table a catalog hands back instead.
+    /// Creates a managed-table scan from the context and table options.
+    /// System and format tables require Table::NewScan().
+    /// @param context Scan context.
+    /// @param options Overrides for the stored schema options. The branch option must agree with
+    ///                any branch in the identifier.
+    /// @return The scan, or an error status.
+    /// @deprecated Use Table::NewScan().
     PAIMON_DEPRECATED("Use Table::NewScan() instead")
-    static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context);
+    static Result<std::unique_ptr<TableScan>> Create(
+        std::unique_ptr<ScanContext> context, const std::map<std::string, std::string>& options);
 
     virtual ~TableScan() = default;
 

@@ -763,37 +763,16 @@ TEST(FormatTableTest, TestCatalogManagedPartitionsAreRejected) {
     ASSERT_TRUE(dynamic_table.status().IsNotImplemented()) << dynamic_table.status().ToString();
 }
 
-TEST(FormatTableTest, TestTheTableOperatorsRefuseAContextOption) {
-    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+TEST(FormatTableTest, TestCopyValidatesDynamicOptions) {
+    auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
                          CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
-    const std::map<std::string, std::string> refused = {
-        {Options::METASTORE_PARTITIONED_TABLE, "true"}};
-
-    ScanContextBuilder scan_builder(dir->Str());
-    scan_builder.SetOptions(refused);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan_context)),
-                        "the scan context carries option 'metastore.partitioned-table'");
-
-    ReadContextBuilder read_builder(dir->Str());
-    read_builder.SetOptions(refused);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_context)),
-                        "the read context carries option 'metastore.partitioned-table'");
-
-    WriteContextBuilder write_builder(dir->Str(), "test-user");
-    write_builder.SetOptions(refused);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write_context)),
-                        "the write context carries option 'metastore.partitioned-table'");
-
-    CommitContextBuilder commit_builder(dir->Str(), "test-user");
-    commit_builder.SetOptions(refused);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit_context)),
-                        "the commit context carries option 'metastore.partitioned-table'");
+    ASSERT_NOK_WITH_MSG(table->Copy({{Options::METASTORE_PARTITIONED_TABLE, "true"}}),
+                        "is not supported by paimon-cpp yet");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context,
+                         ScanContextBuilder(dir->Str()).Finish());
+    ASSERT_OK(table->NewScan(std::move(context)).status());
 }
 
 TEST(FormatTableTest, TestValueOnlyPartitionCannotBeNamedAfterThisTablesMetadata) {
@@ -2807,10 +2786,8 @@ TEST(FormatTableTest, TestALoadedFormatTableIsServedThroughItsOwnOperators) {
     // what kind of table it is.
     ScanContextBuilder path_builder(data_dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> path_context, path_builder.Finish());
-    ASSERT_NOK(TableScan::Create(std::move(path_context)));
+    ASSERT_NOK(TableScan::Create(std::move(path_context), {}));
 
-    // The way to serve a different value is a copy that carries it, so a file is rolled per
-    // row rather than one file holding all three.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> rolled,
                          external->Copy({{Options::TARGET_FILE_ROW_NUM, "1"}}));
     WriteContextBuilder write_builder(external->Location(), "test-user");
@@ -2920,13 +2897,13 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
                          CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
     std::shared_ptr<Table> table = format_table;
 
-    ASSERT_NOK_WITH_MSG(TableScan::Create(nullptr), "scan context is null pointer");
+    ASSERT_NOK_WITH_MSG(TableScan::Create(nullptr, {}), "scan context is null pointer");
     ASSERT_NOK_WITH_MSG(table->NewScan(nullptr), "scan context is null pointer");
-    ASSERT_NOK_WITH_MSG(TableRead::Create(nullptr), "read context is null pointer");
+    ASSERT_NOK_WITH_MSG(TableRead::Create(nullptr, {}), "read context is null pointer");
     ASSERT_NOK_WITH_MSG(table->NewRead(nullptr), "read context is null pointer");
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(nullptr), "write context is null pointer");
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(nullptr, {}), "write context is null pointer");
     ASSERT_NOK_WITH_MSG(table->NewWrite(nullptr), "write context is null pointer");
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(nullptr), "commit context is null pointer");
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(nullptr, {}), "commit context is null pointer");
     ASSERT_NOK_WITH_MSG(table->NewCommit(nullptr), "commit context is null pointer");
 
     auto streaming_scan_context = [&dir]() -> Result<std::unique_ptr<ScanContext>> {
@@ -2935,7 +2912,8 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
         return builder.Finish();
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> streaming_context, streaming_scan_context());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(streaming_context)), "names a format table");
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(streaming_context), {}),
+                        "names a format table");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> streaming_context_again,
                          streaming_scan_context());
     ASSERT_NOK_WITH_MSG(table->NewScan(std::move(streaming_context_again)),
@@ -2950,7 +2928,7 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
         return builder.Finish();
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context, vector_read_context());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(vector_context)), "names a format table");
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(vector_context), {}), "names a format table");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context_again, vector_read_context());
     ASSERT_NOK_WITH_MSG(table->NewRead(std::move(vector_context_again)),
                         "not supported for format tables");
@@ -2963,7 +2941,8 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
         return builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish();
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> catalog_write, catalog_write_context());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(catalog_write)), "names a format table");
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(catalog_write), {}),
+                        "names a format table");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> catalog_write_again,
                          catalog_write_context());
     ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(catalog_write_again)),
@@ -2974,7 +2953,8 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
         return builder.WithCatalog(catalog, Identifier("db", "fmt")).Finish();
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> catalog_commit, catalog_commit_context());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(catalog_commit)), "names a format table");
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(catalog_commit), {}),
+                        "names a format table");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> catalog_commit_again,
                          catalog_commit_context());
     ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(catalog_commit_again)),
@@ -2986,7 +2966,7 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
         return builder.Finish();
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_id, write_id_context());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_id)), "names a format table");
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_id), {}), "names a format table");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_id_again, write_id_context());
     ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write_id_again)),
                         "a write id would name nothing");
@@ -3000,19 +2980,21 @@ TEST(FormatTableTest, TestTheGenericEntryPointsRefuseAFormatTablePath) {
 
     ScanContextBuilder scan_builder(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)), "names a format table");
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context), {}), "names a format table");
 
     ReadContextBuilder read_builder(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), "names a format table");
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), {}), "names a format table");
 
     WriteContextBuilder write_builder(dir->Str(), "test-user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)), "names a format table");
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context), {}),
+                        "names a format table");
 
     CommitContextBuilder commit_builder(dir->Str(), "test-user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)), "names a format table");
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context), {}),
+                        "names a format table");
 
     ScanContextBuilder served_builder(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> served_context, served_builder.Finish());
@@ -3022,7 +3004,7 @@ TEST(FormatTableTest, TestTheGenericEntryPointsRefuseAFormatTablePath) {
     ASSERT_EQ(plan->Splits().size(), 0u);
 }
 
-TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedByTheTableOperators) {
+TEST(FormatTableTest, TestBranchOptionsAreRefusedByFormatTables) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -3036,32 +3018,6 @@ TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedByTheTableOperators
     ASSERT_NOK_WITH_MSG(
         FormatTable::Create(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl"), branch),
         "has no branches");
-
-    ScanContextBuilder scan_builder(dir->Str());
-    scan_builder.SetOptions(branch);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan_context)),
-                        "the scan context carries option 'branch'");
-
-    ReadContextBuilder read_builder(dir->Str());
-    read_builder.SetOptions(branch);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read_context)),
-                        "the read context carries option 'branch'");
-
-    WriteContextBuilder write_builder(dir->Str(), "test-user");
-    write_builder.SetOptions(branch);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write_context)),
-                        "the write context carries option 'branch'");
-
-    // The commit is the one that matters most: an overwrite clears what it replaces before it
-    // publishes anything, so the refusal has to come before the deleting does.
-    CommitContextBuilder commit_builder(dir->Str(), "test-user");
-    commit_builder.SetOptions(branch);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
-    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit_context)),
-                        "the commit context carries option 'branch'");
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<FormatTableScan> scan,
@@ -3095,6 +3051,41 @@ TEST(FormatTableTest, TestATableCopiesItselfWithTheOptionsGivenAtTheCall) {
     ASSERT_NOK_WITH_MSG(table->Copy({{Options::BRANCH, "dev"}}), "has no branches");
 }
 
+TEST(FormatTableTest, TestCopyRetainsPhysicalFileFormat) {
+    for (const std::string& format : {std::string("parquet"), std::string("orc")}) {
+        SCOPED_TRACE(format);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> original,
+                             CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"},
+                                         {{Options::FILE_FORMAT, format}}));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> first,
+                             MakeBatch({1}, {"alice"}, "20240101", {{"dt", "20240101"}}));
+        ASSERT_OK(WriteAndCommit(original, std::move(first)));
+        const std::string hinted_format = format == "orc" ? "parquet" : "orc";
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy,
+                             original->Copy({{Options::FILE_FORMAT, hinted_format}}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> another,
+                             copy->Copy({{Options::READ_BATCH_SIZE, "1"}}));
+        auto copied = std::dynamic_pointer_cast<FormatTable>(another);
+        ASSERT_TRUE(copied);
+        EXPECT_EQ(copied->GetFormat(), original->GetFormat());
+        EXPECT_EQ(copied->Options().at(Options::FILE_FORMAT), hinted_format);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second,
+                             MakeBatch({2}, {"bob"}, "20240101", {{"dt", "20240101"}}));
+        ASSERT_OK(WriteAndCommit(copied, std::move(second)));
+        for (const auto& table : {original, copied}) {
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<FormatTableScan> scan,
+                FormatTableScan::Create(table, /*partition_filter=*/{}, /*limit=*/std::nullopt));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_OK_AND_ASSIGN(std::vector<std::string> rows, ReadAll(table, plan->Splits()));
+            std::sort(rows.begin(), rows.end());
+            EXPECT_EQ(rows, (std::vector<std::string>{"1|alice|20240101", "2|bob|20240101"}));
+        }
+    }
+}
+
 TEST(FormatTableTest, TestAFormatTableSchemaOnABranchIsRefusedRatherThanServedFromTheTableRoot) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -3111,17 +3102,23 @@ TEST(FormatTableTest, TestAFormatTableSchemaOnABranchIsRefusedRatherThanServedFr
                              MakeSchema(), /*partition_keys=*/{"dt"}, /*primary_keys=*/{},
                              {{Options::TYPE, "format-table"}, {Options::FILE_FORMAT, "parquet"}}));
 
+    std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder(dir->Str());
-    read_builder.WithBranch("dev");
+    read_builder_options[Options::BRANCH] = "dev";
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), "names a format table");
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), read_builder_options),
+                        "names a format table");
 
     // A scan takes its branch from the option rather than from a `WithBranch()` of its own, which
     // is the same branch by another name and gets the same answer.
+    std::map<std::string, std::string> scan_builder_options;
     ScanContextBuilder scan_builder(dir->Str());
-    scan_builder.SetOptions({{Options::BRANCH, "dev"}});
+    scan_builder_options = {{Options::BRANCH, "dev"}};
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)), "names a format table");
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context), scan_builder_options),
+                        "names a format table");
 
     ScanContextBuilder main_builder(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> main_context, main_builder.Finish());
@@ -3140,11 +3137,15 @@ TEST(FormatTableTest, TestTheTableOperatorsCarryTheContextThrough) {
 
     // `target-file-row-num` is stored nowhere in this table's schema, so a file would hold every
     // row. Given at the call it has to roll a file per row, as it does for a managed table.
+    std::map<std::string, std::string> write_builder_options;
     WriteContextBuilder write_builder(dir->Str(), "test-user");
-    write_builder.SetOptions({{Options::TARGET_FILE_ROW_NUM, "1"}});
+    write_builder_options = {{Options::TARGET_FILE_ROW_NUM, "1"}};
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_23,
+                         table->Copy(write_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
-                         table->NewWrite(std::move(write_context)));
+                         configured_table_23->NewWrite(std::move(write_context)));
     for (int32_t i = 0; i < 3; i++) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
                              MakeBatch({i}, {"name"}, "20240101", {}));
@@ -3162,19 +3163,25 @@ TEST(FormatTableTest, TestTheTableOperatorsCarryTheContextThrough) {
     ASSERT_OK(generic_commit->Commit(messages));
     ASSERT_OK(write->Close());
 
+    std::map<std::string, std::string> branch_builder_options;
     ReadContextBuilder branch_builder(dir->Str());
-    branch_builder.WithBranch("nosuchbranch");
+    branch_builder_options[Options::BRANCH] = "nosuchbranch";
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> branch_context, branch_builder.Finish());
-    ASSERT_NOK(TableRead::Create(std::move(branch_context)));
+    ASSERT_NOK(TableRead::Create(std::move(branch_context), branch_builder_options));
 
     // `type` is structural, so an option given at the call must not decide what kind of table
     // this is. Checked by reading the rows back rather than by counting splits: three small files
     // are packed into one split, so a split count says nothing about how many there are.
+    std::map<std::string, std::string> retyped_builder_options;
     ScanContextBuilder retyped_builder(dir->Str());
-    retyped_builder.SetOptions({{Options::TYPE, "table"}});
+    retyped_builder_options = {{Options::TYPE, "table"}};
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> retyped_context, retyped_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_24,
+                         table->Copy(retyped_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> retyped_scan,
-                         table->NewScan(std::move(retyped_context)));
+                         configured_table_24->NewScan(std::move(retyped_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> retyped_plan, retyped_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> retyped_rows,
                          ReadAll(table, retyped_plan->Splits()));

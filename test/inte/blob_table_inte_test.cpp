@@ -145,7 +145,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         write_builder.WithWriteSchema(write_cols);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+                               FileStoreWrite::Create(std::move(write_context), {}));
 
         for (const auto& write_array : write_arrays) {
             ArrowArray c_array;
@@ -180,7 +180,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                                commit_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+                               FileStoreCommit::Create(std::move(commit_context), {}));
         return file_store_commit->Commit(commit_msgs);
     }
 
@@ -280,7 +280,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
             scan_context_builder.SetGlobalIndexResult(global_index_result);
         }
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context), {}));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
         return result_plan;
     }
@@ -291,15 +291,17 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         const std::shared_ptr<Plan>& plan, const std::shared_ptr<Predicate>& predicate = nullptr,
         const std::map<std::string, std::string>& options = {}) const {
         auto splits = plan->Splits();
+        std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder(table_path);
         read_context_builder.SetReadFieldNames(read_schema).SetPredicate(predicate);
         read_context_builder.EnableLateMaterializing(false);
         if (!options.empty()) {
-            read_context_builder.SetOptions(options);
+            read_context_builder_options = options;
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context),
+                                                                  read_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
                                ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -4765,10 +4767,13 @@ TEST_P(BlobTableInteTest, TestReadArrayBlobTableFromJava) {
     const std::vector<std::string> read_fields = {"id", "array_payloads"};
 
     for (int64_t snapshot_id : {1, 2, 3}) {
+        std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder(table_path);
-        scan_builder.AddOption(Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id));
+        scan_builder_options[Options::SCAN_SNAPSHOT_ID] = std::to_string(snapshot_id);
+
         ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_scan,
+                             TableScan::Create(std::move(scan_context), scan_builder_options));
         ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
 
         size_t array_layer_count = 0;
@@ -4826,10 +4831,13 @@ TEST_P(BlobTableInteTest, TestReadMapBlobTableFromJava) {
                                                   "large_decimal_payloads"};
 
     for (int64_t snapshot_id : {1, 3}) {
+        std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder(table_path);
-        scan_builder.AddOption(Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id));
+        scan_builder_options[Options::SCAN_SNAPSHOT_ID] = std::to_string(snapshot_id);
+
         ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_scan,
+                             TableScan::Create(std::move(scan_context), scan_builder_options));
         ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
 
         size_t string_layer_count = 0;

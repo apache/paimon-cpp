@@ -200,6 +200,11 @@ Result<std::unique_ptr<TableSchema>> TableSchema::MergeOptions(
     for (const auto& [key, value] : dynamic_options) {
         options[key] = value;
     }
+    return Copy(options);
+}
+
+Result<std::unique_ptr<TableSchema>> TableSchema::Copy(
+    const std::map<std::string, std::string>& options) const {
     auto merged = std::unique_ptr<TableSchema>(
         new TableSchema(version_, id_, fields_, highest_field_id_, partition_keys_, primary_keys_,
                         options, comment_, time_millis_));

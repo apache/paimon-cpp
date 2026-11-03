@@ -55,21 +55,15 @@ class PAIMON_EXPORT ScanContext {
                 const std::shared_ptr<MemoryPool>& memory_pool,
                 const std::shared_ptr<Executor>& executor,
                 const std::shared_ptr<FileSystem>& specific_file_system,
-                const std::optional<std::string>& table_schema,
-                const std::map<std::string, std::string>& options,
-                const std::shared_ptr<Cache>& cache, const std::shared_ptr<Catalog>& catalog,
-                const std::optional<Identifier>& identifier, const std::string& branch,
+                const std::optional<std::string>& table_schema, const std::shared_ptr<Cache>& cache,
+                const std::shared_ptr<Catalog>& catalog,
+                const std::optional<Identifier>& identifier,
                 const std::map<std::string, std::string>& fs_scheme_to_identifier_map = {});
 
     ~ScanContext();
 
     const std::string& GetPath() const {
         return path_;
-    }
-
-    /// Returns the branch the builder resolved out of the identifier and the options.
-    const std::string& GetBranch() const {
-        return branch_;
     }
 
     bool IsStreamingMode() const {
@@ -83,18 +77,6 @@ class PAIMON_EXPORT ScanContext {
     std::shared_ptr<ScanFilter> GetScanFilters() const {
         return scan_filters_;
     }
-    const std::map<std::string, std::string>& GetOptions() const {
-        return options_;
-    }
-
-    /// Empties the options this context carries. A one-step `TableScan::Create()`-style entry point
-    /// folds them into the table it loads and clears them before handing the context to `NewScan`,
-    /// which serves that table's own configuration alone; a caller holding a table calls
-    /// `NewScan` with no options at all.
-    void ClearOptions() {
-        options_.clear();
-    }
-
     std::shared_ptr<MemoryPool> GetMemoryPool() const {
         return memory_pool_;
     }
@@ -137,8 +119,7 @@ class PAIMON_EXPORT ScanContext {
         return identifier_;
     }
 
-    /// Returns the catalog table UUID, so that every context answers `GetTableId()` the way
-    /// `CommitContext` does; a scan carries none.
+    /// Returns nullopt; scan contexts do not carry a table UUID.
     const std::optional<std::string>& GetTableId() const {
         static const std::optional<std::string> kNoTableId;
         return kNoTableId;
@@ -146,7 +127,6 @@ class PAIMON_EXPORT ScanContext {
 
  private:
     std::string path_;
-    std::string branch_;
     bool is_streaming_mode_;
     std::optional<int32_t> limit_;
     std::shared_ptr<ScanFilter> scan_filters_;
@@ -157,7 +137,6 @@ class PAIMON_EXPORT ScanContext {
     std::shared_ptr<FileSystem> specific_file_system_;
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::optional<std::string> table_schema_;
-    std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
@@ -218,26 +197,6 @@ class PAIMON_EXPORT ScanContextBuilder {
     ScanContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);
 
-    /// Add a single configuration option, served the way `SetOptions()` describes.
-    /// @deprecated Use `Table::Copy()` to pass dynamic options, for the reason `SetOptions()`
-    /// gives.
-    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
-    ScanContextBuilder& AddOption(const std::string& key, const std::string& value);
-    /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite. A load merges them into the table it
-    /// hands back; an option contradicting a table you loaded already is refused, so change that
-    /// one through `Table::Copy()`.
-    /// @note The options map will clear the options added by `AddOption()` before.
-    /// @param options The configuration options map.
-    /// @return Reference to this builder for method chaining.
-    /// @deprecated These options reach an operator only through the deprecated
-    /// `TableScan::Create()`-style entry points, which merge them into the table they load and
-    /// then hand that table a context carrying none. An operator created from a `Table` serves
-    /// that table's own configuration alone and refuses a context carrying any option at all, so
-    /// pass dynamic options through `Table::Copy()` instead.
-    PAIMON_DEPRECATED("Pass dynamic options through Table::Copy() instead")
-    ScanContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
-
     /// Set whether the scan is in streaming mode.
     /// @note if not set, is_streaming_mode = false
     ScanContextBuilder& WithStreamingMode(bool is_streaming_mode);
@@ -258,22 +217,10 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ScanContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
 
-    /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
-    /// identifiers. This allows selecting different pre-registered file system implementations
-    /// based on the URI scheme at runtime.
-    ///
-    /// @param fs_scheme_to_identifier_map Map from URI scheme (like "oss") to the corresponding
-    /// file system identifier.
-    /// @return Reference to this builder for method chaining.
-    /// @note
-    ///   - This method is intended for environments where multiple file systems are pre-registered.
-    ///   - The specified identifiers must correspond to file systems that have been registered at
-    ///   compile time or initialization.
-    ///   - Cannot be used together with `WithFileSystem()`.
-    ///   - If not set, use default file system (configured in `Options::FILE_SYSTEM`).
-    /// Example:
-    ///   builder.WithFileSystemSchemeToIdentifierMap({{"oss", "jindo"}, {"file", "local"}});
-    ///
+    /// Maps URI schemes to registered file system identifiers.
+    /// Mutually exclusive with WithFileSystem(); defaults to Options::FILE_SYSTEM when unset.
+    /// @param fs_scheme_to_identifier_map Mapping such as {{"oss", "jindo"}, {"file", "local"}}.
+    /// @return This builder.
     ScanContextBuilder& WithFileSystemSchemeToIdentifierMap(
         const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
 

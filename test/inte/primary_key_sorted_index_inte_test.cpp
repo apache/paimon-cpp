@@ -199,24 +199,25 @@ class PrimaryKeySortedIndexInteTest : public ::testing::Test,
         const std::optional<int64_t>& snapshot_id, bool index_enabled,
         const std::vector<std::map<std::string, std::string>>& partition_filters,
         const std::string& branch, const std::shared_ptr<FileSystem>& file_system) const {
+        std::map<std::string, std::string> builder_options;
         ScanContextBuilder builder(TablePath(partitioned));
-        builder.SetPredicate(predicate).AddOption(Options::GLOBAL_INDEX_ENABLED,
-                                                  index_enabled ? "true" : "false");
+        builder_options[Options::GLOBAL_INDEX_ENABLED] = index_enabled ? "true" : "false";
+        builder.SetPredicate(predicate);
         if (snapshot_id != std::nullopt) {
-            builder.AddOption(Options::SCAN_SNAPSHOT_ID, fmt::format("{}", snapshot_id.value()));
+            builder_options[Options::SCAN_SNAPSHOT_ID] = fmt::format("{}", snapshot_id.value());
         }
         if (!partition_filters.empty()) {
             builder.SetPartitionFilter(partition_filters);
         }
         if (!branch.empty()) {
-            builder.AddOption(Options::BRANCH, branch);
+            builder_options[Options::BRANCH] = branch;
         }
         if (file_system != nullptr) {
             builder.WithFileSystem(file_system);
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                               TableScan::Create(std::move(context)));
+                               TableScan::Create(std::move(context), builder_options));
         return table_scan->CreatePlan();
     }
 
@@ -224,6 +225,7 @@ class PrimaryKeySortedIndexInteTest : public ::testing::Test,
                                   const std::vector<std::shared_ptr<Split>>& splits,
                                   const std::map<std::string, std::string>& options,
                                   const std::shared_ptr<FileSystem>& file_system) const {
+        std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder(TablePath(partitioned));
         if (partitioned) {
             builder.SetReadFieldNames({"pt", "id", "score", "tag"});
@@ -232,14 +234,14 @@ class PrimaryKeySortedIndexInteTest : public ::testing::Test,
         }
         builder.SetPredicate(predicate).EnablePredicateFilter(true);
         for (const auto& [key, value] : options) {
-            builder.AddOption(key, value);
+            builder_options[key] = value;
         }
         if (file_system != nullptr) {
             builder.WithFileSystem(file_system);
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                               TableRead::Create(std::move(context)));
+                               TableRead::Create(std::move(context), builder_options));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                                table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
@@ -547,7 +549,7 @@ TEST_P(PrimaryKeySortedIndexInteTest, ScoredSplitFailsBeforeForceKeepDeleteFallb
         .EnablePredicateFilter(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(context)));
+                         TableRead::Create(std::move(context), {}));
     auto* key_value_table_read = dynamic_cast<KeyValueTableRead*>(table_read.get());
     ASSERT_TRUE(key_value_table_read != nullptr);
     key_value_table_read->ForceKeepDelete(true);

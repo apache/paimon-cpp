@@ -60,7 +60,7 @@ class MergeTreeCompactRewriterTest : public testing::Test {
         ScanContextBuilder scan_context_builder(table_path);
         scan_context_builder.SetBucketFilter(bucket).SetPartitionFilter({partition});
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context), {}));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
         auto splits = result_plan->Splits();
         EXPECT_EQ(1, splits.size());

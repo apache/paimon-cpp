@@ -36,9 +36,7 @@ class BinlogSystemTable : public AuditLogSystemTable {
  public:
     static constexpr const char* kName = "binlog";
 
-    /// @param data_table_name Logical object name of the data table underneath, branch included,
-    ///        which this view answers `<data_table_name>$binlog` with - the name a catalog knows
-    ///        the data table by, not the name of the directory it lives in.
+    /// @param data_table_name Logical table name, including any branch suffix.
     BinlogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                       std::shared_ptr<TableSchema> table_schema, std::string data_table_name,
                       std::map<std::string, std::string> options);

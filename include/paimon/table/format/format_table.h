@@ -37,26 +37,16 @@ namespace paimon {
 
 class FileSystem;
 
-/// A table that is a directory of data files of one format, laid out like a standard Hive table.
+/// A directory of data files in one format, without snapshots or manifests.
+/// Partitions use key=value directories, or bare values with
+/// format-table.partition-path-only-value. The type option must be format-table; file.format
+/// defaults to parquet.
 ///
-/// It carries no snapshots and no manifests: the files under its location are the table, and a
-/// partitioned table's partitions are the `key=value` directories below that location, or the
-/// bare-value ones under `format-table.partition-path-only-value`. A table is a format table when
-/// its `type` option is `format-table`; `file.format` then names the format of every file in it,
-/// defaulting to `parquet`.
+/// Writes accept inserts only, and reads expose _VALUE_KIND as INSERT. Load through
+/// Catalog::GetTable() and create operators through the Table interface. Instances must be owned by
+/// shared_ptr.
 ///
-/// Writes only insert - there is nowhere to record an update or a delete - so a read fills
-/// `_VALUE_KIND` with inserts throughout.
-///
-/// A format table is a `Table`, so it is reached both ways: through the `NewXxx` operators below,
-/// and through the entry points every other table uses - `TableScan::Create()` and friends - which
-/// recognise one from the schema under the table path, or take one already loaded through the
-/// `FormatTable` constructor every context builder has, how a table whose schema lives in a
-/// metastore is reached.
-///
-/// Every instance lives in a `shared_ptr`: a copy that adds nothing hands the same one back.
-///
-/// See `docs/source/user_guide/format_table.rst` for what is not supported yet.
+/// See docs/source/user_guide/format_table.rst for supported features.
 class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_this<FormatTable> {
  public:
     /// Formats a format table's files can be in.
@@ -72,18 +62,14 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
     /// The identifier of a format, as it appears in `file.format` and as a file extension.
     static std::string FormatToString(Format format);
 
-    /// Loads a format table from its directory, reading the schema stored under it.
-    ///
-    /// This needs a schema file under the table directory, which a table created through
-    /// `SchemaManager` or a file system catalog has. A table whose schema lives in a metastore has
-    /// none, and is loaded through `Catalog::GetTable()` instead.
+    /// Loads a format table from a schema stored under its data directory.
+    /// Use Catalog::GetTable() for tables whose schema is stored in a metastore.
     ///
     /// @param file_system File system holding the table directory.
-    /// @param table_path Root path of the table, which is also its data location.
-    /// @param identifier Logical table identifier, used for naming and error messages.
-    /// @param dynamic_options Options given at the call, which win over the ones stored in the
-    ///        schema. Empty when the caller has none.
-    /// @return A result containing the format table, or an error status.
+    /// @param table_path Table directory and data location.
+    /// @param identifier Logical table identifier.
+    /// @param dynamic_options Overrides for the stored schema options.
+    /// @return The table, or an error status.
     static Result<std::shared_ptr<FormatTable>> Create(
         const std::shared_ptr<FileSystem>& file_system, const std::string& table_path,
         const Identifier& identifier, const std::map<std::string, std::string>& dynamic_options);
@@ -116,7 +102,7 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
         return identifier_.GetFullName();
     }
 
-    /// The same table comes back when there is nothing to add.
+    /// Returns the same instance when dynamic_options is empty.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
@@ -158,8 +144,7 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
         return options_;
     }
 
-    /// Schema of the table, including its partition fields. Hides `Table::LatestSchema()` to hand
-    /// back the same schema as the `DataSchema` a format table is always created with.
+    /// Returns the data schema, including partition columns.
     std::shared_ptr<DataSchema> LatestSchema() const {
         return std::static_pointer_cast<DataSchema>(schema_);
     }
@@ -176,9 +161,7 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
         return location_carries_paimon_metadata_;
     }
 
-    /// The four operators below create this table's scan, read, write and commit, applying the
-    /// context's options on top of the ones this table carries and refusing by name what a
-    /// format table cannot honour.
+    /// Creates operators using this table's options and the supplied operation context.
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
 
     Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
@@ -196,14 +179,12 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
                 const std::string& file_compression, const std::string& partition_default_name,
                 bool partition_only_value_in_path, bool location_carries_paimon_metadata);
 
-    /// This table as a `shared_ptr`. `shared_from_this()` on a const method hands back a
-    /// `shared_ptr<const FormatTable>`, while the copy below needs a mutable one; the cast is
-    /// safe because the table is never written to.
+    /// Returns a mutable shared_ptr from this const instance; the table itself is not modified.
     std::shared_ptr<FormatTable> SharedSelf() const {
         return std::const_pointer_cast<FormatTable>(shared_from_this());
     }
 
-    /// `Copy()` as a `FormatTable` rather than a `Table`, which is what its operators need.
+    /// Typed implementation of Copy() for internal callers.
     Result<std::shared_ptr<FormatTable>> CopySelf(
         const std::map<std::string, std::string>& dynamic_options) const;
 

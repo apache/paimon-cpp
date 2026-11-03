@@ -83,7 +83,7 @@ class AppendCompactCoordinatorTest : public ::testing::Test {
         write_builder.WithStreamingMode(false);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+                               FileStoreWrite::Create(std::move(write_context), {}));
         ArrowArray c_array;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*write_array, &c_array));
         auto record_batch = std::make_unique<RecordBatch>(
@@ -101,7 +101,7 @@ class AppendCompactCoordinatorTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                                commit_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+                               FileStoreCommit::Create(std::move(commit_context), {}));
         return file_store_commit->Commit(commit_msgs);
     }
 

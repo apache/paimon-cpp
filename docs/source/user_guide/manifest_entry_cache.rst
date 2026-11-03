@@ -83,8 +83,11 @@ under
        std::unique_ptr<ScanContext> scan_context,
        context_builder
            .WithCache(cache)
-           .AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3")
            .Finish());
+   PAIMON_ASSIGN_OR_RAISE(
+       std::unique_ptr<TableScan> scan,
+       TableScan::Create(std::move(scan_context),
+                         {{Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3"}}));
 
 Cache entries are scoped by table path, branch, and bucket, so they can be
 reused across newly created ``TableScan`` and ``FileStoreScan`` instances as

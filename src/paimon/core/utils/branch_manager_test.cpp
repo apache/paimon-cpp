@@ -55,49 +55,49 @@ TEST(BranchManagerTest, TestBranchPath) {
 
 TEST(BranchManagerTest, TestResolveBranch) {
     const std::map<std::string, std::string> no_options;
-    ASSERT_OK_AND_ASSIGN(std::string unnamed,
-                         BranchManager::ResolveBranch(/*identifier=*/std::nullopt, no_options,
-                                                      /*explicit_branch=*/std::nullopt, "commit"));
+    ASSERT_OK_AND_ASSIGN(
+        std::string unnamed,
+        BranchManager::ResolveBranch(/*identifier=*/std::nullopt, no_options, "commit"));
     ASSERT_EQ(BranchManager::DEFAULT_MAIN_BRANCH, unnamed);
 
-    ASSERT_OK_AND_ASSIGN(std::string from_identifier,
-                         BranchManager::ResolveBranch(Identifier("db", "tbl$branch_data"),
-                                                      no_options, std::nullopt, "commit"));
+    ASSERT_OK_AND_ASSIGN(
+        std::string from_identifier,
+        BranchManager::ResolveBranch(Identifier("db", "tbl$branch_data"), no_options, "commit"));
     ASSERT_EQ("data", from_identifier);
-    ASSERT_OK_AND_ASSIGN(std::string from_option,
-                         BranchManager::ResolveBranch(std::nullopt, {{Options::BRANCH, "data"}},
-                                                      std::nullopt, "commit"));
+    ASSERT_OK_AND_ASSIGN(
+        std::string from_option,
+        BranchManager::ResolveBranch(std::nullopt, {{Options::BRANCH, "data"}}, "commit"));
     ASSERT_EQ("data", from_option);
-    ASSERT_OK_AND_ASSIGN(std::string from_given,
-                         BranchManager::ResolveBranch(std::nullopt, no_options, "data", "write"));
+    ASSERT_OK_AND_ASSIGN(
+        std::string from_given,
+        BranchManager::ResolveBranch(std::nullopt, {{Options::BRANCH, "data"}}, "write"));
     ASSERT_EQ("data", from_given);
 
-    ASSERT_OK_AND_ASSIGN(std::string empty,
-                         BranchManager::ResolveBranch(std::nullopt, no_options, "", "write"));
+    ASSERT_OK_AND_ASSIGN(std::string empty, BranchManager::ResolveBranch(
+                                                std::nullopt, {{Options::BRANCH, ""}}, "write"));
     ASSERT_EQ(BranchManager::DEFAULT_MAIN_BRANCH, empty);
-    ASSERT_OK_AND_ASSIGN(std::string agreed, BranchManager::ResolveBranch(
-                                                 Identifier("db", "tbl$branch_data"),
-                                                 {{Options::BRANCH, "data"}}, "data", "write"));
+    ASSERT_OK_AND_ASSIGN(std::string agreed,
+                         BranchManager::ResolveBranch(Identifier("db", "tbl$branch_data"),
+                                                      {{Options::BRANCH, "data"}}, "write"));
     ASSERT_EQ("data", agreed);
 
-    ASSERT_NOK_WITH_MSG(
-        BranchManager::ResolveBranch(Identifier("db", "tbl$branch_data"), {{Options::BRANCH, "rt"}},
-                                     std::nullopt, "commit"),
-        "a commit is aimed at one branch, but both 'data' and 'rt' were named");
-    ASSERT_NOK_WITH_MSG(
-        BranchManager::ResolveBranch(std::nullopt, {{Options::BRANCH, "main"}}, "rt", "write"),
-        "a write is aimed at one branch, but both 'main' and 'rt' were named");
+    ASSERT_NOK_WITH_MSG(BranchManager::ResolveBranch(Identifier("db", "tbl$branch_data"),
+                                                     {{Options::BRANCH, "rt"}}, "commit"),
+                        "a commit is aimed at one branch, but both 'data' and 'rt' were named");
+    ASSERT_NOK_WITH_MSG(BranchManager::ResolveBranch(Identifier("db", "tbl$branch_main"),
+                                                     {{Options::BRANCH, "rt"}}, "write"),
+                        "a write is aimed at one branch, but both 'main' and 'rt' were named");
 
-    ASSERT_NOK_WITH_MSG(BranchManager::ResolveBranch(Identifier("db", "tbl$a$b$c"), no_options,
-                                                     std::nullopt, "commit"),
-                        "Invalid object name");
+    ASSERT_NOK_WITH_MSG(
+        BranchManager::ResolveBranch(Identifier("db", "tbl$a$b$c"), no_options, "commit"),
+        "Invalid object name");
 
     ASSERT_NOK_WITH_MSG(
         BranchManager::ResolveBranch(Identifier("db", "tbl$branch_data"),
-                                     {{Options::BRANCH, "rt/../../outside"}}, std::nullopt, "read"),
+                                     {{Options::BRANCH, "rt/../../outside"}}, "read"),
         "branch name cannot contain path separators");
     ASSERT_NOK_WITH_MSG(
-        BranchManager::ResolveBranch(std::nullopt, no_options, "line\nfeed", "write"),
+        BranchManager::ResolveBranch(std::nullopt, {{Options::BRANCH, "line\nfeed"}}, "write"),
         "branch name cannot contain control characters");
 }
 

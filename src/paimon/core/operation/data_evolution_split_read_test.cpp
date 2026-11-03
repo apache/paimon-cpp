@@ -962,7 +962,7 @@ TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadReusesMainReader) {
         builder.WithFileSystem(counting_fs).EnablePrefetch(false).SetReadFieldNames(projection);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                             InternalReadContext::Create(read_context, table_schema, options));
+                             InternalReadContext::Create(read_context, table_schema, options, {}));
         auto split_read = std::make_unique<DataEvolutionSplitRead>(path_factory, context,
                                                                    GetDefaultPool(), executor);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, split_read->CreateReader(split));

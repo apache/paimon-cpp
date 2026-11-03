@@ -47,22 +47,15 @@ class SnapshotCommit {
     virtual Result<std::unique_ptr<CommitLockScope>> AcquireLock() {
         return std::unique_ptr<CommitLockScope>();
     }
-    /// The commit a table publishes its snapshots through, the C++ reading of the Java
-    /// `CatalogEnvironment#snapshotCommit`: a catalog that version-manages the table commits
-    /// through it, a caller that only wants the request built gets one with no catalog attached,
-    /// and everything else publishes by renaming the snapshot file into place.
-    ///
-    /// @param catalog The catalog the commit was handed, or null for one that has none.
-    /// @param catalog_identifier The identifier the catalog knows the table by, on the branch the
-    ///        commit commits to. A version-managing catalog needs one and is refused without it.
-    /// @param options Table options merged with the writer's dynamic options.
-    /// @param table_id The catalog's UUID for the table, captured before the changes were
-    ///        prepared; null when there is none.
-    /// @param commit_user The commit user of the snapshots published under a commit lock.
-    /// @param use_rest_catalog_commit Whether the caller asks for the request rather than for the
-    ///        catalog to send it.
-    /// @param file_system The file system the snapshot file is renamed through.
-    /// @param snapshot_manager The manager that names the snapshot file renamed.
+    /// Selects catalog-backed or file-system snapshot publication.
+    /// @param catalog Optional catalog.
+    /// @param catalog_identifier Branch-qualified identifier required by version-managed catalogs.
+    /// @param options Effective table options.
+    /// @param table_id Table UUID captured before preparing changes, or nullopt.
+    /// @param commit_user Commit user for commit locking.
+    /// @param use_rest_catalog_commit Build the request without sending it through the catalog.
+    /// @param file_system File system used for snapshot rename.
+    /// @param snapshot_manager Manager providing the snapshot paths.
     static Result<std::shared_ptr<SnapshotCommit>> Create(
         const std::shared_ptr<Catalog>& catalog,
         const std::optional<Identifier>& catalog_identifier, const CoreOptions& options,

@@ -43,16 +43,15 @@ class WriteContext;
 /// Interface for write operations in a file store.
 class PAIMON_EXPORT FileStoreWrite {
  public:
-    /// Create an instance of `FileStoreWrite`. The data table the context names is loaded from its
-    /// root path - a format table is refused, served by the table a catalog hands back through its
-    /// own `NewWrite` instead.
-    ///
-    /// @param context A unique pointer to the `WriteContext` used for write operations.
-    ///
-    /// @return A Result containing a unique pointer to the `FileStoreWrite` instance.
-    /// @deprecated Use `Table::NewWrite()` on the table a catalog hands back instead.
+    /// Creates a managed-table writer from the context and table options.
+    /// @param context Write context.
+    /// @param options Overrides for the stored schema options. Catalog branch writes require a
+    ///                branch-qualified identifier.
+    /// @return The writer, or an error status.
+    /// @deprecated Use Table::NewWrite().
     PAIMON_DEPRECATED("Use Table::NewWrite() instead")
-    static Result<std::unique_ptr<FileStoreWrite>> Create(std::unique_ptr<WriteContext> context);
+    static Result<std::unique_ptr<FileStoreWrite>> Create(
+        std::unique_ptr<WriteContext> context, const std::map<std::string, std::string>& options);
 
     virtual ~FileStoreWrite() = default;
 

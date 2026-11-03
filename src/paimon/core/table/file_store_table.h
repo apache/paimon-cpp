@@ -43,40 +43,16 @@ class ManifestList;
 class RealtimeContext;
 class SplitGenerator;
 
-/// The managed table a catalog hands out: one with snapshots and manifests, described by the
-/// schema under its root path. A format table - a directory of plain data files - is a
-/// `FormatTable`, the other kind of `Table`.
-///
-/// The four operators share one flow, the one Java Paimon's `AbstractFileStoreTable` carries. What
-/// the table was loaded with - schema, file system, root path, branch and managers - decides what
-/// every operator serves, so it is read once here and handed down. The schema's primary keys decide
-/// the kind of managed table it is, `AppendOnlyFileStoreTable` or `PrimaryKeyFileStoreTable`, which
-/// the `Create` factory below picks. That kind then builds the pieces the flow hands down: the
-/// write itself, the scans, the read and the split generator.
+/// Managed table backed by snapshots and manifests.
+/// Shares operator setup across append-only and primary-key tables, selected from the schema.
 class FileStoreTable : public Table {
  public:
-    /// Builds the managed table the schema describes, as the kind its primary keys name: an
-    /// `AppendOnlyFileStoreTable` when there are none, a `PrimaryKeyFileStoreTable` when there are.
-    /// Java Paimon's `FileStoreTableFactory` picks the kind the same way. A schema change can
-    /// neither add nor drop primary keys, so every schema the root path ever held names one kind.
-    /// The final options are resolved here once, before the store is built: the schema's own
-    /// options as `branch` restyles them - the main branch carries no `branch` option, another
-    /// branch names itself - are parsed, and a parse failure is this call's error. Every operator
-    /// and both managers are built over that one resolution.
-    /// @param specified_file_system The file system the caller opened the table through. It
-    ///        wins over the access configuration in the schema's options. Null leaves the
-    ///        resolution to that configuration, and to the default local file system when the
-    ///        options name none. Kept so `Copy` and `SwitchToBranch` resolve through it again.
-    /// @param schema The schema the table was loaded with, a `TableSchema` as every managed
-    ///        table's is. Its primary keys name the kind and its options are what the operators
-    ///        serve. Null is refused: a path a load found no schema under hands back no table,
-    ///        and the failure belongs to the call that opens one.
-    /// @param branch The branch the table serves, which the managers below read and write on.
-    /// @param fs_scheme_map The scheme-to-identifier map the caller's contexts resolve custom
-    ///        schemes through, which the options resolve through as well. Kept so `Copy` and
-    ///        `SwitchToBranch` resolve through it again.
-    /// @param dynamic_options The options a copy was given over the ones its schema stored, which
-    ///        `Copy` accumulates. See the member of the same name.
+    /// Creates an append-only or primary-key table according to the schema's primary keys.
+    /// @param specified_file_system Explicit file system, overriding option-based resolution.
+    /// @param schema Loaded table schema; must not be null.
+    /// @param branch Branch used by all operators and metadata managers.
+    /// @param fs_scheme_map URI scheme routing for option-based file system resolution.
+    /// @param dynamic_options Overrides accumulated by Copy and reused for fallback reads.
     static Result<std::shared_ptr<FileStoreTable>> Create(
         const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
         const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
@@ -104,25 +80,21 @@ class FileStoreTable : public Table {
         return identifier_.GetFullName();
     }
 
-    /// Returns a copy that serves `dynamic_options`. The root path stays as it is: it names this
-    /// table, and an option does not rename it. The `type` option is immutable the way Java
-    /// Paimon's is - a value naming the type the schema's primary keys already name, whatever its
-    /// case, is dropped, and any other value is refused - and the `branch` option names the branch
-    /// the copy serves: one on the branch this table serves keeps this table's schema, while one
-    /// on another branch reads that branch's own latest schema, carries the identifier of that
-    /// branch the way a load's routing does, and refuses a branch holding no schema. The copy
-    /// resolves the file system the caller opened this table through, if any, together with its
-    /// own merged options, and builds its managers over that resolution rather than taking this
-    /// table's over.
+    /// Applies dynamic options to the current schema, retaining the table's identifier. Time
+    /// travel selects the schema of the requested snapshot. Use SwitchToBranch to load another
+    /// branch's latest schema.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
-    /// Returns the table of `branch`, as Java Paimon's `switchToBranch` does. The branch switched
-    /// to is served as it is: its schema is read from its own directory and its managers are built
-    /// over the file system that schema resolves, so neither this table's dynamic options nor its
-    /// managers are carried over. Switching to the branch this table already serves hands back a
-    /// copy of it with the schema shared and the managers built over the same resolution again. A
-    /// branch with no schema does not exist.
+    /// Shared schema-copy semantics for managed tables and their system-table views.
+    static Result<std::shared_ptr<TableSchema>> CopyTableSchema(
+        const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
+        const std::string& current_branch, const std::shared_ptr<TableSchema>& schema,
+        const std::map<std::string, std::string>& applied_options,
+        const std::map<std::string, std::string>& dynamic_options);
+
+    /// Loads the latest schema from branch and discards this table's dynamic options.
+    /// Switching to the current branch preserves its effective schema and options.
     Result<std::shared_ptr<Table>> SwitchToBranch(const std::string& branch) const;
 
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
@@ -136,54 +108,36 @@ class FileStoreTable : public Table {
         std::unique_ptr<CommitContext> context) const override;
 
  private:
-    /// Checks the identity a context carries - the path it names, the identifier it gives a
-    /// catalog, the table id it records - against this table's own. The store below serves this
-    /// table's files, so a context naming another table would write this table's metadata and
-    /// publish it as the other's; a field that contradicts the table is refused by name, the way
-    /// `CheckContextCarriesNoOptions` refuses an option a context carries. A field the context
-    /// does not carry is no contradiction: a write or a commit from a bare path names no catalog
-    /// object. An identifier that names a branch this table does not serve names a branch of
-    /// another table, as the operator serves the branch the table was loaded with alone.
-    /// @param kind The operator the context was handed to, which the error names.
-    /// @param context_table_id The id `CommitContext` records for a catalog commit; a write
-    ///        context carries none, so `NewWrite` passes null.
+    /// Rejects paths, identifiers or UUIDs that contradict this table's identity.
+    /// Missing context fields are allowed.
+    /// @param kind Operation name used in errors.
+    /// @param context_table_id Catalog commit UUID; nullopt for writes.
     Status CheckContextNamesThisTable(const std::string& kind, const std::string& context_root_path,
                                       const std::optional<Identifier>& context_identifier,
                                       const std::optional<std::string>& context_table_id) const;
 
-    /// Builds the read `NewRead` hands back, from the internal context it read the schema into. The
-    /// path factory comes from the store. The reader is picked by the schema the read serves - the
-    /// primary keys it carries - not by the table's own kind.
+    /// Creates a reader for the internal context's schema and primary keys.
     Result<std::unique_ptr<TableRead>> CreateTableRead(
         const std::shared_ptr<InternalReadContext>& internal_context,
         const std::shared_ptr<MemoryPool>& memory_pool,
         const std::shared_ptr<Executor>& executor) const;
 
  protected:
-    /// The base constructor the kinds of managed table build through. The store carries the
-    /// storage they hand down; `schema` is the schema the table was loaded with, which the `Table`
-    /// base holds and the operators read. See `Create` for what each piece is.
     FileStoreTable(const std::shared_ptr<FileStore>& store,
                    const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
                    const std::string& uuid);
 
-    /// Restores the committed progress of a real-time write from the latest snapshot the snapshot
-    /// manager reads. It tells the write where to pick up, and both kinds ask for it the same way.
+    /// Restores real-time write progress from the latest snapshot.
     static Status RestoreRealtimeCommittedProgress(
         const std::shared_ptr<RealtimeContext>& realtime_context,
         const std::shared_ptr<SnapshotManager>& snapshot_manager, const CoreOptions& options);
 
-    /// Returns the scan restricted to the table's root path, which the kinds of file store scan
-    /// read from.
     static std::unique_ptr<FileStoreScan> WithTablePath(std::unique_ptr<FileStoreScan>&& scan,
                                                         const std::string& root_path);
 
-    /// Builds the write of this kind of table. `NewWrite` hands the pieces of the shared flow to
-    /// it. The schema and the branch the write serves are the table's own.
-    /// @param io_manager The spill manager the context's temp directory names, or null when the
-    ///        context named none.
-    /// @param ignore_previous_files Whether the write starts over rather than appends, which the
-    ///        flow resolved with this kind's own rules.
+    /// Creates the table-specific writer.
+    /// @param io_manager Optional spill manager.
+    /// @param ignore_previous_files Whether to start over instead of appending.
     virtual Result<std::unique_ptr<FileStoreWrite>> CreateWrite(
         const WriteContext& ctx, const std::shared_ptr<arrow::Schema>& arrow_schema,
         const std::shared_ptr<arrow::Schema>& partition_schema, const CoreOptions& options,
@@ -191,8 +145,6 @@ class FileStoreTable : public Table {
         const std::shared_ptr<SnapshotManager>& snapshot_manager,
         const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const = 0;
 
-    /// Builds the scan of this kind of table. `NewScan` hands it the manifest list and the manifest
-    /// file it built, over the table's own schema and managers.
     virtual Result<std::unique_ptr<FileStoreScan>> NewFileStoreScan(
         const std::shared_ptr<ManifestList>& manifest_list,
         const std::shared_ptr<ManifestFile>& manifest_file,
@@ -200,12 +152,9 @@ class FileStoreTable : public Table {
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
         const ScanContext* context) const = 0;
 
-    /// Builds the split generator of this kind of table, Java Paimon's `splitGenerator()`.
     virtual Result<std::unique_ptr<SplitGenerator>> NewSplitGenerator(
         const CoreOptions& core_options) const = 0;
 
-    /// Builds the manifest entry scan supplier of this kind of table. `NewCommit` hands it the
-    /// manifest list and the manifest file it built.
     virtual CommitScanner::ScanSupplier NewCommitScanSupplier(
         const std::shared_ptr<SnapshotManager>& snapshot_manager,
         const std::shared_ptr<ManifestList>& manifest_list,
@@ -214,23 +163,16 @@ class FileStoreTable : public Table {
         const std::shared_ptr<Executor>& executor,
         const std::shared_ptr<MemoryPool>& pool) const = 0;
 
-    /// The storage this table reads and writes through. See `FileStore`.
     std::shared_ptr<FileStore> store_;
 
-    /// The dynamic options the table was loaded with, over the ones its schema stored. `Copy`
-    /// accumulates them into the copy it derives. They stay separate from the schema they were
-    /// merged into because a fallback reader needs them on their own: it serves another branch's
-    /// schema and merges the same options over it again.
+    /// Accumulated overrides kept separately so fallback reads can apply them to another schema.
     std::map<std::string, std::string> dynamic_options_;
 
-    /// The file system the caller opened this table through, as the options were resolved with -
-    /// null when the load had none. A copy and a branch switch resolve their own options, and the
-    /// resolution that built this table's store is one-way: neither the file system it produced
-    /// nor the options hand the inputs back, so they are kept here for the next resolution.
+    /// Original explicit file system, or null for option-based resolution; reused by Copy and
+    /// SwitchToBranch.
     std::shared_ptr<FileSystem> specified_file_system_;
 
-    /// The scheme-to-identifier map the options were resolved with, kept for the same next
-    /// resolution `specified_file_system_` is kept for.
+    /// Original URI scheme routing, reused by Copy and SwitchToBranch.
     std::map<std::string, std::string> fs_scheme_map_;
 };
 

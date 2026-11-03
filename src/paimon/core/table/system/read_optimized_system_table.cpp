@@ -26,6 +26,7 @@
 #include "arrow/c/bridge.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/source/read_optimized_scan_options.h"
 #include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
@@ -70,8 +71,7 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
         data_table_fs = GetFileSystem();
     }
-    builder.SetOptions(options)
-        .WithStreamingMode(context->IsStreamingMode())
+    builder.WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
         .WithFileSystem(data_table_fs)
@@ -94,26 +94,21 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
         builder.SetTableSchema(context->GetSpecificTableSchema().value());
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> base_context, builder.Finish());
-    return TableScan::Create(std::move(base_context));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStoreTable> data_table,
+        CreateDataTable(table_schema_, options, base_context->GetSpecificFileSystem(),
+                        base_context->GetFileSystemSchemeToIdentifierMap()));
+    return data_table->NewScan(std::move(base_context));
 }
 
 Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadContext(
     const std::shared_ptr<ReadContext>& context) const {
-    auto options = options_;
-    std::string branch = context->GetBranch();
-    // SystemTableLoader injects Options::BRANCH when parsing paths such as `T$branch_dev$ro`.
-    auto branch_iter = options.find(Options::BRANCH);
-    if (branch_iter != options.end()) {
-        branch = branch_iter->second;
-    }
     ReadContextBuilder builder(table_path_);
     std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
     if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
         data_table_fs = GetFileSystem();
     }
-    builder.SetOptions(options)
-        .WithBranch(branch)
-        .SetPredicate(context->GetPredicate())
+    builder.SetPredicate(context->GetPredicate())
         .EnablePredicateFilter(context->EnablePredicateFilter())
         .EnablePrefetch(context->EnablePrefetch())
         .SetPrefetchBatchCount(context->GetPrefetchBatchCount())
@@ -150,7 +145,11 @@ Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> base_context,
                            CreateDataReadContext(context));
-    return TableRead::Create(std::move(base_context));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStoreTable> data_table,
+        CreateDataTable(table_schema_, options_, base_context->GetSpecificFileSystem(),
+                        base_context->GetFileSystemSchemeToIdentifierMap()));
+    return data_table->NewRead(std::move(base_context));
 }
 
 }  // namespace paimon

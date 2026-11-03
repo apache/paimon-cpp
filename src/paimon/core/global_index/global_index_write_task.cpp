@@ -173,16 +173,18 @@ Result<std::unique_ptr<BatchReader>> CreateBatchReader(
     const std::string& table_path, const std::vector<std::string>& read_field_names,
     const std::shared_ptr<IndexedSplit>& indexed_split, const CoreOptions& core_options,
     const std::shared_ptr<MemoryPool>& pool) {
+    std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder(table_path);
-    read_context_builder.SetOptions(core_options.ToMap())
-        .WithFileSystem(core_options.GetFileSystem())
+    read_context_builder_options = core_options.ToMap();
+    read_context_builder.WithFileSystem(core_options.GetFileSystem())
         .EnablePrefetch(true)
         .WithMemoryPool(pool)
         .SetReadFieldNames(read_field_names);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           TableRead::Create(std::move(read_context)));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<TableRead> table_read,
+        TableRead::Create(std::move(read_context), read_context_builder_options));
     return table_read->CreateReader(indexed_split);
 }
 

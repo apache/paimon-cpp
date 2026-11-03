@@ -75,21 +75,9 @@ namespace paimon {
 namespace {
 
 constexpr char kDeletionVectorsMergeOnRead[] = "deletion-vectors.merge-on-read";
+constexpr char kDeletionVectorsModifiable[] = "deletion-vectors.modifiable";
 
-/// The options a copy is refused to change, mirroring the Java `SchemaManagerUtils#
-/// checkAlterTableOption` over the immutable options the C++ side has constants for. They name
-/// the physical layout the data on the table's path was written by: a `bucket-key` the options
-/// rename, say, re-hashes the bucket pruning while the files stay hashed by the old key, so the
-/// scans a copy serves would filter out the buckets its rows are actually in. The check runs over
-/// every option the call gives, before the merge, so it holds on every path that merges options
-/// into a table. Unlike the Java set, `merge-engine`, `bucket`, `row-tracking.enabled` and
-/// `data-evolution.enabled` stay servable as dynamic options here, and `type`/`branch` are dropped
-/// by `Copy` before this point.
-// TODO(yonghao.fyh): refuse the rest of Java's immutable set, which this list does not cover yet:
-// `blob-descriptor-field` (only its deprecated `blob.stored-descriptor-fields` fallback is above),
-// `data-file.path-directory`, `sequence.snapshot-ordering`, `rowkind.field`, `primary-key`,
-// `primary-key.nullable`, `partition`, `dynamic-bucket.initial-buckets`, `video-frame-field`, and
-// the four servable keys named above, should the C++ side stop serving them as dynamic options.
+// Layout options protected by both operator factories and table copies.
 const char* const kImmutableOptions[] = {
     Options::BUCKET_KEY,
     Options::BUCKET_FUNCTION_TYPE,
@@ -102,6 +90,23 @@ const char* const kImmutableOptions[] = {
     Options::FALLBACK_BLOB_DESCRIPTOR_FIELD,
     Options::BLOB_VIEW_FIELD,
     Options::PK_CLUSTERING_OVERRIDE,
+};
+
+// Copy-only immutable options; low-level factories retain their initialization semantics.
+const char* const kCopyImmutableOptions[] = {
+    Options::BLOB_DESCRIPTOR_FIELD,
+    Options::MERGE_ENGINE,
+    Options::ROW_TRACKING_ENABLED,
+    Options::DATA_EVOLUTION_ENABLED,
+    "bucket-function.provider",
+    "data-file.path-directory",
+    "sequence.snapshot-ordering",
+    "rowkind.field",
+    "primary-key",
+    "primary-key.nullable",
+    "partition",
+    "dynamic-bucket.initial-buckets",
+    "video-frame-field",
 };
 
 bool ContainsBlobField(const std::shared_ptr<arrow::Field>& field) {
@@ -394,7 +399,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateBucket(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateRealtime(schema, options));
     // PAIMON_RETURN_NOT_OK(ValidateDefaultValues(schema));
-    // PAIMON_RETURN_NOT_OK(ValidateStartupMode(options));
+    PAIMON_RETURN_NOT_OK(ValidateStartupMode(options));
     PAIMON_RETURN_NOT_OK(ValidateFieldsPrefix(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateSequenceField(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateSequenceGroup(schema, options));
@@ -432,10 +437,10 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
 
 Status SchemaValidation::CheckImmutableOptions(
     const TableSchema& schema, const std::map<std::string, std::string>& dynamic_options) {
-    const std::map<std::string, std::string>& schema_options = schema.Options();
+    const auto& schema_options = schema.Options();
     for (const auto& [key, value] : dynamic_options) {
-        auto schema_option = schema_options.find(key);
-        if (schema_option != schema_options.end() && schema_option->second == value) {
+        auto old_value = schema_options.find(key);
+        if (old_value != schema_options.end() && old_value->second == value) {
             continue;
         }
         if (std::find(std::begin(kImmutableOptions), std::end(kImmutableOptions), key) !=
@@ -451,6 +456,97 @@ Status SchemaValidation::CheckImmutableOptions(
                 return Status::Invalid("Cannot change ignore-delete from true to false.");
             }
         }
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::CheckCopyOptions(
+    const TableSchema& schema, const std::map<std::string, std::string>& dynamic_options) {
+    PAIMON_RETURN_NOT_OK(CheckImmutableOptions(schema, dynamic_options));
+    const std::map<std::string, std::string>& schema_options = schema.Options();
+    for (const auto& [key, value] : dynamic_options) {
+        auto schema_option = schema_options.find(key);
+        if (schema_option != schema_options.end() && schema_option->second == value) {
+            continue;
+        }
+        if (schema_option == schema_options.end() && (key == "primary-key" || key == "partition")) {
+            std::vector<std::string> keys;
+            for (const auto& item : StringUtils::Split(value, ",")) {
+                std::string trimmed = item;
+                StringUtils::Trim(&trimmed);
+                if (!trimmed.empty()) {
+                    keys.push_back(trimmed);
+                }
+            }
+            if (keys == (key == "primary-key" ? schema.PrimaryKeys() : schema.PartitionKeys())) {
+                continue;
+            }
+        }
+        if (std::find(std::begin(kCopyImmutableOptions), std::end(kCopyImmutableOptions), key) !=
+            std::end(kCopyImmutableOptions)) {
+            return Status::Invalid(fmt::format("Change '{}' is not supported yet.", key));
+        }
+        if (key == Options::BUCKET) {
+            PAIMON_ASSIGN_OR_RAISE(int32_t old_bucket,
+                                   OptionsUtils::GetValueFromMap<int32_t>(schema_options, key, -1));
+            PAIMON_ASSIGN_OR_RAISE(int32_t new_bucket,
+                                   OptionsUtils::GetValueFromMap<int32_t>(dynamic_options, key));
+            if (old_bucket == -1) {
+                return Status::Invalid("Cannot change bucket when it is -1.");
+            }
+            if (new_bucket == -1) {
+                return Status::Invalid("Cannot change bucket to -1.");
+            }
+        }
+        if (key == Options::DELETION_VECTORS_ENABLED) {
+            PAIMON_ASSIGN_OR_RAISE(bool modifiable,
+                                   OptionsUtils::GetValueFromMap<bool>(
+                                       schema_options, kDeletionVectorsModifiable, false));
+            PAIMON_ASSIGN_OR_RAISE(bool old_enabled,
+                                   OptionsUtils::GetValueFromMap<bool>(schema_options, key, false));
+            PAIMON_ASSIGN_OR_RAISE(bool new_enabled,
+                                   OptionsUtils::GetValueFromMap<bool>(dynamic_options, key));
+            if (!modifiable && old_enabled != new_enabled) {
+                return Status::Invalid(fmt::format(
+                    "Cannot change deletion vectors mode from {} to {}. Set '{}' to true on the "
+                    "table before changing deletion vectors mode.",
+                    old_enabled, new_enabled, kDeletionVectorsModifiable));
+            }
+        }
+        if (key == "ignore-update-before") {
+            PAIMON_ASSIGN_OR_RAISE(bool old_ignore_delete,
+                                   OptionsUtils::GetValueFromMap<bool>(schema_options, key, false));
+            PAIMON_ASSIGN_OR_RAISE(bool new_ignore_delete,
+                                   OptionsUtils::GetValueFromMap<bool>(dynamic_options, key));
+            if (old_ignore_delete && !new_ignore_delete) {
+                return Status::Invalid(fmt::format("Cannot change {} from true to false.", key));
+            }
+        }
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateStartupMode(const CoreOptions& options) {
+    const auto& values = options.ToMap();
+    const bool snapshot = values.count(Options::SCAN_SNAPSHOT_ID) != 0;
+    const bool tag = values.count(Options::SCAN_TAG_NAME) != 0;
+    const bool timestamp = values.count(Options::SCAN_TIMESTAMP) != 0;
+    const bool timestamp_millis = values.count(Options::SCAN_TIMESTAMP_MILLIS) != 0;
+    const int32_t selectors = snapshot + tag + timestamp + timestamp_millis;
+    const StartupMode mode = options.GetStartupMode();
+    bool valid = selectors == 0;
+    if (mode == StartupMode::FromSnapshot()) {
+        valid = selectors == 1 && (snapshot || tag);
+    } else if (mode == StartupMode::FromSnapshotFull()) {
+        valid = selectors == 1 && snapshot;
+    } else if (mode == StartupMode::FromTimestamp()) {
+        valid = selectors == 1 && (timestamp || timestamp_millis);
+    }
+    if (!valid) {
+        return Status::Invalid(fmt::format(
+            "Invalid time travel options for scan.mode '{}': set exactly one compatible selector "
+            "for from-snapshot/from-snapshot-full/from-timestamp, and none for latest/latest-full.",
+            mode.ToString()));
     }
     return Status::OK();
 }

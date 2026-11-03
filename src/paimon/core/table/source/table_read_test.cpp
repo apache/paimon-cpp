@@ -61,7 +61,7 @@ TEST(TableReadTest, TestReadWithInvalidContext) {
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0", "f1", "non-exist"});
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), {}),
                             "Get field non-exist failed: not exist in table schema");
     }
     {
@@ -72,7 +72,7 @@ TEST(TableReadTest, TestReadWithInvalidContext) {
         context_builder.SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         ASSERT_NOK_WITH_MSG(
-            TableRead::Create(std::move(read_context)),
+            TableRead::Create(std::move(read_context), {}),
             "field f3 has field type BIGINT in literal, mismatch field type DOUBLE in predicate");
     }
     {
@@ -82,7 +82,7 @@ TEST(TableReadTest, TestReadWithInvalidContext) {
         ReadContextBuilder context_builder(path);
         context_builder.SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), {}),
                             "schema type double mismatches predicate field type BIGINT");
     }
     {
@@ -94,7 +94,7 @@ TEST(TableReadTest, TestReadWithInvalidContext) {
         context_builder.SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         ASSERT_NOK_WITH_MSG(
-            TableRead::Create(std::move(read_context)),
+            TableRead::Create(std::move(read_context), {}),
             "field f3 has field idx 0 in input schema, mismatch field idx 2 in predicate");
     }
     {
@@ -104,7 +104,7 @@ TEST(TableReadTest, TestReadWithInvalidContext) {
         ReadContextBuilder context_builder(path);
         context_builder.SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), {}),
                             "literal cannot be null in predicate, field name f3");
     }
     {
@@ -112,7 +112,7 @@ TEST(TableReadTest, TestReadWithInvalidContext) {
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f3", "f1", "f3"});
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), {}),
                             "validate schema failed: read schema has duplicate field f3");
     }
 }
@@ -122,7 +122,7 @@ TEST(TableReadTest, TestReadWithSpecifiedInvalidSchema) {
     ReadContextBuilder context_builder(path);
     context_builder.SetReadFieldNames({"field_no_exist"});
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context), {}),
                         "Get field field_no_exist failed: not exist in table schema");
 }
 
@@ -145,14 +145,14 @@ TEST(TableReadTest, TestFullTextMatchExecutionIsNotImplemented) {
         builder.SetReadFieldNames({"f0", "f1"}).SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
         auto result = table_entry ? table->NewRead(std::move(context))
-                                  : TableRead::Create(std::move(context));
+                                  : TableRead::Create(std::move(context), {});
         ASSERT_NOK_WITH_MSG(result, "FullTextMatch predicate execution is not implemented yet");
         ASSERT_TRUE(result.status().IsNotImplemented());
 
         builder.SetReadFieldNames({"f0", "f1", "_f0_INDEX_SCORE"}).SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(context, builder.Finish());
         result = table_entry ? table->NewRead(std::move(context))
-                             : TableRead::Create(std::move(context));
+                             : TableRead::Create(std::move(context), {});
         ASSERT_NOK_WITH_MSG(result, "Score-producing FullTextMatch cannot appear under OR");
     }
 }
@@ -174,7 +174,7 @@ TEST(TableReadTest, TestPerFieldScoreExecutionIsNotImplemented) {
         builder.SetFullTextSearch(search).SetReadFieldNames({"f1", "_f0_INDEX_SCORE"});
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
         auto result = table_entry ? table->NewRead(std::move(context))
-                                  : TableRead::Create(std::move(context));
+                                  : TableRead::Create(std::move(context), {});
         ASSERT_NOK_WITH_MSG(result, "Per-field index score output is not implemented yet");
         ASSERT_TRUE(result.status().IsNotImplemented());
     }
@@ -183,12 +183,16 @@ TEST(TableReadTest, TestPerFieldScoreExecutionIsNotImplemented) {
 TEST(TableReadTest, TestCreateKeyValueTableRead) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality/";
+    std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder(path);
     context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-    context_builder.AddOption("read.batch-size", "2");
-    context_builder.AddOption("orc.read.enable-lazy-decoding", "true");
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["orc.read.enable-lazy-decoding"] = "true";
+
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(std::move(read_context), context_builder_options));
     auto key_value_table_read = dynamic_cast<KeyValueTableRead*>(table_read.get());
     ASSERT_TRUE(key_value_table_read);
 }
@@ -201,7 +205,7 @@ TEST(TableReadTest, TestCreateCountReaderRejectsFileIndexSearch) {
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context), {}));
         ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}), "VectorSearch or FullTextSearch");
     }
     {
@@ -213,7 +217,7 @@ TEST(TableReadTest, TestCreateCountReaderRejectsFileIndexSearch) {
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0"}).SetVectorSearch(search);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context), {}));
         ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}), "VectorSearch or FullTextSearch");
     }
 }
@@ -227,7 +231,8 @@ TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
     ReadContextBuilder context_builder(path);
     context_builder.SetReadFieldNames({"f0"}).SetVectorSearch(search);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> reader, TableRead::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> reader,
+                         TableRead::Create(std::move(context), {}));
 
     BinaryRow partition = BinaryRowGenerator::GenerateRow({10}, GetDefaultPool().get());
     DataSplitImpl::Builder builder(partition, /*bucket=*/0, /*bucket_path=*/"", /*data_files=*/{});
@@ -247,12 +252,16 @@ TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
 
 TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder(path);
     context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-    context_builder.AddOption("read.batch-size", "2");
-    context_builder.AddOption("orc.read.enable-lazy-decoding", "true");
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["orc.read.enable-lazy-decoding"] = "true";
+
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(std::move(read_context), context_builder_options));
     auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
     ASSERT_TRUE(append_only_table_read);
 }
@@ -260,12 +269,16 @@ TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
 TEST(TableReadTest, TestMergeOptions) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     {
+        std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-        context_builder.AddOption("read.batch-size", "2");
-        context_builder.AddOption("orc.read.enable-lazy-decoding", "true");
+        context_builder_options["read.batch-size"] = "2";
+
+        context_builder_options["orc.read.enable-lazy-decoding"] = "true";
+
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(std::move(read_context), context_builder_options));
         auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
         ASSERT_TRUE(append_only_table_read);
         auto* typed_split_read =
@@ -282,11 +295,14 @@ TEST(TableReadTest, TestMergeOptions) {
         ASSERT_EQ(expected_options, core_options.ToMap());
     }
     {
+        std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-        context_builder.AddOption("bucket", "10");
+        context_builder_options["bucket"] = "10";
+
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(std::move(read_context), context_builder_options));
         auto append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
         ASSERT_TRUE(append_only_table_read);
         auto* typed_split_read =
@@ -307,15 +323,16 @@ TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {
     ASSERT_OK_AND_ASSIGN(std::string schema_json, table_schema->ToJsonString());
 
     for (bool explicit_header : {false, true}) {
+        std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder("warehouse/db.db/table");
         builder.SetTableSchema(schema_json);
         if (explicit_header) {
-            builder.AddOption(read_via_option, "read-view");
+            builder_options[read_via_option] = "read-view";
         }
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, builder.Finish());
         // Exercise the actual table/read merge before creating the dependency context.
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                             TableRead::Create(std::move(read_context)));
+                             TableRead::Create(std::move(read_context), builder_options));
         auto* append_only_table_read = dynamic_cast<AppendOnlyTableRead*>(table_read.get());
         ASSERT_NE(append_only_table_read, nullptr);
         const auto& internal_context = append_only_table_read->context_;

@@ -74,17 +74,10 @@ class BranchManager {
         return branch == DEFAULT_MAIN_BRANCH;
     }
 
-    /// Returns the branch an operation is aimed at, which the table identifier, the `branch`
-    /// option and `explicit_branch` may each name.
-    ///
-    /// An absent name and a name which `NormalizeBranch` maps to `main` both mean the main
-    /// branch. Names which disagree are refused rather than silently chosen between, with
-    /// `operation` naming the operation in that error. Every name is put through
-    /// `CheckValidBranch` before it is compared, so neither the branch this returns nor a
-    /// branch it names in an error is one that would leave the table root.
+    /// Resolves and validates the identifier's branch and the branch option.
+    /// Rejects conflicting names and invalid branch paths; operation labels errors.
     static Result<std::string> ResolveBranch(const std::optional<Identifier>& identifier,
                                              const std::map<std::string, std::string>& options,
-                                             const std::optional<std::string>& explicit_branch,
                                              const std::string& operation);
 
     /// Fails when the branch object name `Identifier` builds, as `tbl$branch_dev`, does not read
