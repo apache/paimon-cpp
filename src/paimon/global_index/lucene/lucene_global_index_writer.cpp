@@ -65,6 +65,8 @@ Result<std::shared_ptr<LuceneGlobalIndexWriter>> LuceneGlobalIndexWriter::Create
                                                         options, std::string(kLuceneWriteTmpDir)));
         std::string tmp_path = PathUtil::JoinPath(tmp_dir, "paimon-lucene-" + uuid);
 
+        // FSDirectory calls Directory::setLockFactory(), which mutates lockPrefix. Use a separate
+        // factory per directory to avoid racing on the NoLockFactory singleton across writers.
         auto lucene_dir = Lucene::FSDirectory::open(LuceneUtils::StringToWstring(tmp_path),
                                                     Lucene::newLucene<Lucene::NoLockFactory>());
         // TODO(xinyu.lxy): support other tokenizer

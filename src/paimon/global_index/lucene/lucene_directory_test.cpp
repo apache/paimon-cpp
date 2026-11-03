@@ -24,7 +24,6 @@
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "lucene++/FileUtils.h"
-#include "lucene++/Lock.h"
 #include "lucene++/LuceneHeaders.h"
 #include "lucene++/MiscUtils.h"
 #include "paimon/common/utils/path_util.h"
