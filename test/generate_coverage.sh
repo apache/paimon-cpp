@@ -29,14 +29,17 @@ lcov --capture --directory src/paimon --directory test --output-file coverage.in
 # Keep only project implementation code in the report: drop system headers,
 # third-party dependencies from the build tree and third_party/, and test
 # sources (*_test.cpp, test helpers, mocks).
+# PWD is the build directory; do not match checkout ancestors such as /builds/.
+# Exclusion patterns can overlap or be absent, so unused patterns are nonfatal.
 lcov --remove coverage.info \
     '/usr/*' \
-    '*/build*/*' \
+    "$PWD/*" \
     '*/third_party/*' \
     '*_test.cpp' \
     '*/test/*' \
     '*/testing/*' \
     '*mock*' \
+    --ignore-errors unused \
     --output-file coverage_filtered.info
 mv coverage_filtered.info coverage.info
 genhtml coverage.info --output-directory coverage
