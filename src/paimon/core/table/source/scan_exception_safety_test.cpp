@@ -301,7 +301,7 @@ TEST(ScanExceptionSafetyTest, RefusedArrowReallocationPreservesExistingBuffer) {
     uint8_t* original = data;
     pool->fail_at = pool->calls.load();
     auto status = arrow_pool->Reallocate(16, 32, 64, &data);
-    ASSERT_NOK(ToPaimonStatus(status));
+    EXPECT_NOK(ToPaimonStatus(status));
     EXPECT_TRUE(status.IsOutOfMemory());
     EXPECT_TRUE(pool->rejected);
     EXPECT_EQ(data, original);
