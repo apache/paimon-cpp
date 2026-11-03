@@ -423,6 +423,7 @@ set(PAIMON_CORE_SRCS
     core/realtime/data_file_key_offset_index_writer.cpp
     core/realtime/key_offset_index_utils.cpp
     core/realtime/realtime_key_offset_index.cpp
+    core/realtime/realtime_file_schema.cpp
     core/realtime/realtime_offset_file_index_lookup.cpp
     core/realtime/realtime_deduplicate_state.cpp
     core/realtime/realtime_deduplicate_writer.cpp
@@ -907,6 +908,7 @@ if(PAIMON_BUILD_TESTS)
                     core/realtime/key_offset_index_utils_test.cpp
                     core/realtime/primary_key_realtime_store_test.cpp
                     core/realtime/realtime_deduplicate_state_test.cpp
+                    core/realtime/realtime_file_schema_test.cpp
                     core/realtime/realtime_key_offset_index_test.cpp
                     core/realtime/realtime_offset_batch_reader_test.cpp
                     core/realtime/realtime_offset_file_index_lookup_test.cpp

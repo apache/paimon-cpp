@@ -187,8 +187,7 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
 
     std::map<std::string, std::string> spill_options = valid_options;
     spill_options[Options::REALTIME_SPILL_ENABLED] = "true";
-    ASSERT_NOK_WITH_MSG(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, spill_options),
-                        "does not support 'realtime.spill-enabled=true'");
+    ASSERT_OK(CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, spill_options));
 
     std::map<std::string, std::string> bitmap64_options = valid_options;
     bitmap64_options[Options::DELETION_VECTOR_BITMAP64] = "true";
@@ -207,13 +206,66 @@ TEST(SchemaValidationTest, TestRealtimeDeduplicate) {
     no_offset_index_options.erase("file-index.bitmap.columns");
     ASSERT_NOK_WITH_MSG(
         CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, no_offset_index_options),
-        "requires file-index.bitmap.columns to include _REALTIME_OFFSET");
+        "requires an index supporting exact BIGINT IN and NOT_IN row positions on "
+        "_REALTIME_OFFSET");
+
+    for (const std::string type : {"bsi", "range-bitmap", "bloom-filter"}) {
+        std::map<std::string, std::string> index_options = no_offset_index_options;
+        index_options["file-index." + type + ".columns"] = "_REALTIME_OFFSET";
+        if (type == "bloom-filter") {
+            ASSERT_NOK(CreateAndValidateTableSchema(schema, {}, index_options));
+        } else {
+            ASSERT_OK(CreateAndValidateTableSchema(schema, {}, index_options));
+        }
+    }
 
     std::map<std::string, std::string> disabled_file_index_read_options = valid_options;
     disabled_file_index_read_options[Options::FILE_INDEX_READ_ENABLED] = "false";
     ASSERT_NOK_WITH_MSG(
         CreateAndValidateTableSchema(schema, /*primary_keys=*/{}, disabled_file_index_read_options),
         "requires 'file-index.read.enabled=true'");
+}
+
+TEST(SchemaValidationTest, TestRealtimeDeduplicateBucketKey) {
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(
+        {arrow::field("id", arrow::int64(), /*nullable=*/false),
+         arrow::field("payload", arrow::utf8()), arrow::field("pt", arrow::utf8()),
+         arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64(), /*nullable=*/false)});
+    for (const std::vector<std::string>& partition_keys :
+         {std::vector<std::string>{}, std::vector<std::string>{"pt"}}) {
+        for (const std::string buckets : {"1", "2"}) {
+            std::map<std::string, std::string> options = {
+                {Options::BUCKET, buckets},
+                {Options::BUCKET_KEY, "id"},
+                {Options::REALTIME_ENABLED, "true"},
+                {Options::REALTIME_DEDUPLICATE_KEY_FIELDS, "id"},
+                {Options::DELETION_VECTORS_ENABLED, "true"},
+                {"file-index.bitmap.columns", SpecialFields::RealtimeOffset().Name()}};
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                                 TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
+                                                     /*primary_keys=*/{}, options));
+            ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+            for (const std::string bucket_key : {"payload", "id,payload", "_REALTIME_OFFSET"}) {
+                SCOPED_TRACE(bucket_key);
+                options[Options::BUCKET_KEY] = bucket_key;
+                ASSERT_OK_AND_ASSIGN(table_schema,
+                                     TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
+                                                         /*primary_keys=*/{}, options));
+                ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+                ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateRealtime(*table_schema, core_options),
+                                    "bucket-key to use only deduplicate key fields");
+                ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                                    "bucket-key to use only deduplicate key fields");
+            }
+            options.erase(Options::BUCKET_KEY);
+            ASSERT_OK_AND_ASSIGN(table_schema,
+                                 TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
+                                                     /*primary_keys=*/{}, options));
+            ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+            ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateRealtime(*table_schema, core_options),
+                                "bucket-key to use only deduplicate key fields");
+        }
+    }
 }
 
 TEST(SchemaValidationTest, TestStartupMode) {

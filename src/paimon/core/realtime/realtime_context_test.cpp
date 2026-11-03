@@ -17,6 +17,7 @@
  */
 
 #include <chrono>
+#include <future>
 #include <map>
 #include <memory>
 #include <optional>
@@ -28,16 +29,22 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "arrow/ipc/json_simple.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/realtime/arrow_deduplicate_realtime_store.h"
+#include "paimon/core/realtime/data_file_key_offset_index_writer.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_deduplicate_state.h"
 #include "paimon/core/realtime/realtime_offset_file_index_lookup.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/realtime/arrow_realtime_store_factory.h"
+#include "paimon/testing/utils/blocking_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -165,6 +172,138 @@ Result<RealtimeStoreState> GetOrCreateAppendStore(
 }
 
 }  // namespace
+
+class RealtimeRefreshTest : public testing::Test {
+ protected:
+    void SetUp() override {
+        directory_ = UniqueTestDirectory::Create();
+        ASSERT_NE(nullptr, directory_);
+        fs_ = std::make_shared<BlockingFileSystem>(directory_->GetFileSystem());
+        path_factory_ = std::make_shared<DataFilePathFactory>();
+        ASSERT_OK(path_factory_->Init(directory_->Str(), "parquet", "data-", nullptr));
+        schema_ = MakeDeduplicateSchema();
+        ASSERT_OK_AND_ASSIGN(context_,
+                             CreateContext(std::make_shared<ArrowRealtimeStoreFactory>()));
+        ASSERT_OK_AND_ASSIGN(state_, CreateStore(0));
+        ASSERT_OK(context_->AdvanceCommittedProgress(1, {{bucket_, 0}}, {}));
+    }
+
+    Result<RealtimeStoreState> CreateStore(int32_t bucket) const {
+        RealtimeStoreCreateRequest request{ExportSchema(schema_), options_, GetDefaultPool(),
+                                           RealtimeStoreMode::DEDUPLICATE};
+        request.deduplicate_key_fields = {"id"};
+        PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState state,
+                               context_->GetOrCreateRealtimeStore(
+                                   std::move(request), RealtimePartitionBucket({}, bucket)));
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(options_, fs_));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<RealtimeOffsetFileIndexLookup> lookup,
+            RealtimeOffsetFileIndexLookup::Create(schema_, 0, schema_->field(1), {}, path_factory_,
+                                                  fs_, options, nullptr, GetDefaultPool()));
+        PAIMON_RETURN_NOT_OK(state.deduplicate_state->AttachFileIndexLookup(lookup, state.store));
+        return state;
+    }
+
+    Result<std::shared_ptr<DataFileMeta>> CreateFile(const std::string& name,
+                                                     const std::string& json) const {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> array,
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema_->fields()), json));
+        const auto batch = checked_pointer_cast<arrow::StructArray>(array);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<DataFileMeta> file,
+            DataFileMeta::ForAppend(name, 0, batch->length(), SimpleStats::EmptyStats(), 0, 0, 0,
+                                    std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                                    std::nullopt));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<DataFileKeyOffsetIndexWriter> writer,
+            DataFileKeyOffsetIndexWriter::Create(schema_->field(1), fs_, GetDefaultPool()));
+        PAIMON_RETURN_NOT_OK(writer->AddBatch(batch));
+        PAIMON_ASSIGN_OR_RAISE(std::string sidecar,
+                               writer->Finish(path_factory_->ToPath(file), file->row_count));
+        return file->CopyWithExtraFiles({sidecar});
+    }
+
+    const RealtimePartitionBucket bucket_{{}, 0};
+    const std::map<std::string, std::string> options_ = {
+        {"file-index.bitmap.columns", SpecialFields::RealtimeOffset().Name()}};
+    std::unique_ptr<UniqueTestDirectory> directory_;
+    std::shared_ptr<BlockingFileSystem> fs_;
+    std::shared_ptr<DataFilePathFactory> path_factory_;
+    std::shared_ptr<arrow::Schema> schema_;
+    std::shared_ptr<RealtimeContextImpl> context_;
+    RealtimeStoreState state_;
+};
+
+TEST_F(RealtimeRefreshTest, TestRechecksProgressForStoresCreatedDuringPreparation) {
+    const RealtimePartitionBucket second_bucket({}, 1);
+    ASSERT_OK(context_->AdvanceCommittedProgress(2, {{bucket_, 0}, {second_bucket, 10}}, {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> file,
+                         CreateFile("first.parquet", R"([[0, 1, "old"]])"));
+    auto open_gate = fs_->BlockNext(BlockingFileSystem::Operation::OPEN,
+                                    path_factory_->ToPath(file) + ".offset");
+    auto refreshing = std::async(std::launch::async, [&]() {
+        return context_->AdvanceCommittedProgress(3, {{bucket_, 1}, {second_bucket, 5}},
+                                                  {{bucket_, {file}}});
+    });
+    std::future<Result<RealtimeStoreState>> registering;
+    ScopeGuard finish([&]() {
+        open_gate->Release();
+        if (registering.valid()) {
+            registering.wait();
+        }
+        if (refreshing.valid()) {
+            refreshing.wait();
+        }
+    });
+    ASSERT_TRUE(open_gate->WaitForArrival());
+    registering = std::async(std::launch::async, [&]() { return CreateStore(1); });
+    ASSERT_EQ(std::future_status::ready, registering.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK_AND_ASSIGN(RealtimeStoreState added, registering.get());
+    ASSERT_EQ(10, added.initial_offset);
+    open_gate->Release();
+    ASSERT_NOK_WITH_MSG(refreshing.get(), "recreate RealtimeContext");
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState unchanged, context_->AcquireReadState());
+    ASSERT_EQ(0, unchanged.committed_offsets.at(bucket_));
+    ASSERT_EQ(10, unchanged.committed_offsets.at(second_bucket));
+    ASSERT_TRUE(state_.deduplicate_state->committed_file_lookup_->DataFiles().empty());
+}
+
+TEST_F(RealtimeRefreshTest, TestSerializesConcurrentRefreshes) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> first,
+                         CreateFile("first.parquet", R"([[0, 1, "old"]])"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> second,
+                         CreateFile("second.parquet", R"([[1, 1, "new"]])"));
+    auto open_gate = fs_->BlockNext(BlockingFileSystem::Operation::OPEN,
+                                    path_factory_->ToPath(first) + ".offset");
+    auto refreshing = std::async(std::launch::async, [&]() {
+        return context_->AdvanceCommittedProgress(2, {{bucket_, 1}}, {{bucket_, {first}}});
+    });
+    std::future<Status> next;
+    ScopeGuard finish([&]() {
+        open_gate->Release();
+        if (next.valid()) {
+            next.wait();
+        }
+        if (refreshing.valid()) {
+            refreshing.wait();
+        }
+    });
+    ASSERT_TRUE(open_gate->WaitForArrival());
+    next = std::async(std::launch::async, [&]() {
+        return context_->AdvanceCommittedProgress(3, {{bucket_, 2}}, {{bucket_, {second}}});
+    });
+    ASSERT_EQ(std::future_status::timeout, next.wait_for(std::chrono::milliseconds(100)));
+    open_gate->Release();
+    ASSERT_OK(refreshing.get());
+    ASSERT_OK(next.get());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState after, context_->AcquireReadState());
+    ASSERT_EQ(2, after.committed_offsets.at(bucket_));
+    ASSERT_EQ(std::vector<std::shared_ptr<DataFileMeta>>{second},
+              state_.deduplicate_state->committed_file_lookup_->DataFiles());
+    ASSERT_NOK_WITH_MSG(context_->AdvanceCommittedProgress(2, {{bucket_, 1}}, {{bucket_, {first}}}),
+                        "committed snapshot cannot move backwards");
+}
 
 TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
     auto factory = std::make_shared<TestingRealtimeStoreFactory>();
@@ -393,6 +532,38 @@ TEST(RealtimeContextTest, TestDeduplicateStoreWrapsAppendDelegateFromFactory) {
     ASSERT_NE(nullptr, read_state.views[0].offset_deletions);
 }
 
+TEST(RealtimeContextTest, TestDeduplicateSpillRequiresTwoPhaseDelegate) {
+    const auto directory = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, directory);
+    const auto schema = MakeDeduplicateSchema();
+    for (bool use_default_factory : {false, true}) {
+        SCOPED_TRACE(use_default_factory);
+        std::shared_ptr<RealtimeStoreFactory> factory;
+        if (use_default_factory) {
+            factory = std::make_shared<ArrowRealtimeStoreFactory>();
+        } else {
+            factory = std::make_shared<TestingRealtimeStoreFactory>();
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+        RealtimeStoreCreateRequest request{ExportSchema(schema),
+                                           {{Options::REALTIME_SPILL_ENABLED, "true"}},
+                                           GetDefaultPool(),
+                                           RealtimeStoreMode::DEDUPLICATE};
+        request.deduplicate_key_fields = {"id"};
+        request.temp_directory = directory->Str();
+        request.file_system = directory->GetFileSystem();
+        auto result = context->GetOrCreateRealtimeStore(
+            std::move(request), RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0));
+        if (use_default_factory) {
+            ASSERT_OK_AND_ASSIGN(RealtimeStoreState state, std::move(result));
+            ASSERT_NE(nullptr,
+                      std::dynamic_pointer_cast<ArrowDeduplicateRealtimeStore>(state.store));
+        } else {
+            ASSERT_NOK_WITH_MSG(result, "requires a delegate with two-phase sealing");
+        }
+    }
+}
+
 TEST(RealtimeContextTest, TestNewDeduplicateSnapshotRefreshesLookupAtSameOffset) {
     auto factory = std::make_shared<ArrowRealtimeStoreFactory>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
@@ -410,11 +581,11 @@ TEST(RealtimeContextTest, TestNewDeduplicateSnapshotRefreshesLookupAtSameOffset)
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
     auto path_factory = std::make_shared<DataFilePathFactory>();
     auto file_system = std::make_shared<LocalFileSystem>();
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
-        RealtimeOffsetFileIndexLookup::Create(
-            schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
-            /*data_files=*/{}, path_factory, file_system, GetDefaultPool(), core_options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
+                         RealtimeOffsetFileIndexLookup::Create(
+                             schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
+                             /*data_files=*/{}, path_factory, file_system, core_options,
+                             /*schema_manager=*/nullptr, GetDefaultPool()));
     ASSERT_OK(
         store_state.deduplicate_state->AttachFileIndexLookup(initial_lookup, store_state.store));
 

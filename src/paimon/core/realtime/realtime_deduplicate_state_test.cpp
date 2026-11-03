@@ -67,16 +67,16 @@ TEST(RealtimeDeduplicateStateTest, TestAttachAndInstallSnapshot) {
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
                          CoreOptions::FromMap({{"file-index.bitmap.columns",
                                                 SpecialFields::RealtimeOffset().Name()}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
-        RealtimeOffsetFileIndexLookup::Create(
-            schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
-            /*data_files=*/{}, path_factory, directory->GetFileSystem(), pool, options));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<RealtimeOffsetFileIndexLookup> ignored_lookup,
-        RealtimeOffsetFileIndexLookup::Create(
-            schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
-            /*data_files=*/{}, path_factory, directory->GetFileSystem(), pool, options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> initial_lookup,
+                         RealtimeOffsetFileIndexLookup::Create(
+                             schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
+                             /*data_files=*/{}, path_factory, directory->GetFileSystem(), options,
+                             /*schema_manager=*/nullptr, pool));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeOffsetFileIndexLookup> ignored_lookup,
+                         RealtimeOffsetFileIndexLookup::Create(
+                             schema, /*data_schema_id=*/0, schema->GetFieldByName("id"),
+                             /*data_files=*/{}, path_factory, directory->GetFileSystem(), options,
+                             /*schema_manager=*/nullptr, pool));
 
     RealtimeDeduplicateState state;
     ASSERT_EQ(nullptr, state.committed_file_lookup_);
@@ -113,16 +113,25 @@ TEST(RealtimeDeduplicateStateTest, TestAttachAndInstallSnapshot) {
         sidecar_writer->Finish(path_factory->ToPath(first_file), first_file->row_count));
     first_file = first_file->CopyWithExtraFiles({sidecar});
 
-    ASSERT_NOK_WITH_MSG(state.InstallCommittedSnapshot(-1, {}, store),
-                        "invalid deduplicate committed advancement");
-    ASSERT_NOK_WITH_MSG(state.InstallCommittedSnapshot(1, {}, delegate),
-                        "requires ArrowDeduplicateRealtimeStore");
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> old_keys,
                          store->AcquireKeyOffsetLookup());
     ASSERT_OK_AND_ASSIGN(RoaringBitmap64 old_offsets, old_keys->LookupOffsets(keys));
     ASSERT_TRUE(old_offsets.IsEmpty());
 
-    ASSERT_OK(state.InstallCommittedSnapshot(/*committed_end_offset=*/1, {first_file}, store));
+    ASSERT_OK_AND_ASSIGN(RealtimeDeduplicateState::PreparedSnapshot prepared,
+                         state.PrepareCommittedSnapshot({first_file}));
+    ASSERT_NOK_WITH_MSG(state.InstallPreparedSnapshot(-1, prepared, store),
+                        "invalid deduplicate committed advancement");
+    ASSERT_NOK_WITH_MSG(state.InstallPreparedSnapshot(1, prepared, delegate),
+                        "requires ArrowDeduplicateRealtimeStore");
+    ASSERT_EQ(initial_lookup, state.committed_file_lookup_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<const KeyOffsetLookup> before_install,
+                         store->AcquireKeyOffsetLookup());
+    ASSERT_OK_AND_ASSIGN(old_offsets, before_install->LookupOffsets(keys));
+    ASSERT_TRUE(old_offsets.IsEmpty());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<RealtimeReadView> retired,
+        state.InstallPreparedSnapshot(/*committed_end_offset=*/1, prepared, store));
     const std::shared_ptr<RealtimeOffsetFileIndexLookup> installed = state.committed_file_lookup_;
     ASSERT_NE(initial_lookup, installed);
     ASSERT_EQ(initial_lookup->cache_manager_, installed->cache_manager_);
@@ -134,9 +143,15 @@ TEST(RealtimeDeduplicateStateTest, TestAttachAndInstallSnapshot) {
     ASSERT_EQ("{0}", new_offsets.ToString());
     ASSERT_OK_AND_ASSIGN(old_offsets, old_keys->LookupOffsets(keys));
     ASSERT_TRUE(old_offsets.IsEmpty());
+    ASSERT_NOK_WITH_MSG(state.InstallPreparedSnapshot(1, prepared, store),
+                        "committed lookup changed during refresh preparation");
+    ASSERT_NOK_WITH_MSG(state.PrepareCommittedSnapshot({first_file->CopyWithExtraFiles({})}),
+                        "required .offset sidecar");
+    ASSERT_EQ(installed, state.committed_file_lookup_);
 
     // A new snapshot may replace its active file set without advancing the durable offset.
-    ASSERT_OK(state.InstallCommittedSnapshot(/*committed_end_offset=*/1, {}, store));
+    ASSERT_OK_AND_ASSIGN(prepared, state.PrepareCommittedSnapshot({}));
+    ASSERT_OK(state.InstallPreparedSnapshot(/*committed_end_offset=*/1, prepared, store));
     ASSERT_TRUE(state.committed_file_lookup_->DataFiles().empty());
     ASSERT_EQ(installed->cache_manager_, state.committed_file_lookup_->cache_manager_);
     ASSERT_EQ(std::vector<std::shared_ptr<DataFileMeta>>{first_file}, installed->DataFiles());

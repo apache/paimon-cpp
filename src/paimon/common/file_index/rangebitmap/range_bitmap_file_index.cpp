@@ -40,6 +40,41 @@ namespace paimon {
 RangeBitmapFileIndex::RangeBitmapFileIndex(const std::map<std::string, std::string>& options)
     : options_(options) {}
 
+bool RangeBitmapFileIndex::SupportsExactPredicate(Function::Type function,
+                                                  FieldType field_type) const {
+    switch (field_type) {
+        case FieldType::BOOLEAN:
+        case FieldType::TINYINT:
+        case FieldType::SMALLINT:
+        case FieldType::INT:
+        case FieldType::BIGINT:
+        case FieldType::FLOAT:
+        case FieldType::DOUBLE:
+        case FieldType::STRING:
+        case FieldType::DATE:
+        case FieldType::TIMESTAMP:
+        case FieldType::DECIMAL:
+            break;
+        default:
+            return false;
+    }
+    switch (function) {
+        case Function::Type::EQUAL:
+        case Function::Type::NOT_EQUAL:
+        case Function::Type::IN:
+        case Function::Type::NOT_IN:
+        case Function::Type::IS_NULL:
+        case Function::Type::IS_NOT_NULL:
+        case Function::Type::GREATER_THAN:
+        case Function::Type::GREATER_OR_EQUAL:
+        case Function::Type::LESS_THAN:
+        case Function::Type::LESS_OR_EQUAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
 Result<std::shared_ptr<FileIndexReader>> RangeBitmapFileIndex::CreateReader(
     ::ArrowSchema* arrow_schema, const int64_t start, const int64_t length,
     const std::shared_ptr<InputStream>& input_stream,

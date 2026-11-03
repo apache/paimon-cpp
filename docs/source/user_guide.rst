@@ -36,6 +36,7 @@ User Guide
    user_guide/format_table
    user_guide/system_tables
    user_guide/write
+   user_guide/realtime
    user_guide/commit
    user_guide/compaction
    user_guide/read

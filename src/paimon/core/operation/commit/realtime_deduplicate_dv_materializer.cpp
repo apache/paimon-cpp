@@ -26,6 +26,7 @@
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/operation/commit/commit_scanner.h"
 #include "paimon/core/realtime/realtime_offset_file_index_lookup.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/fs/file_system.h"
@@ -40,6 +41,8 @@ RealtimeDeduplicateDvMaterializer::RealtimeDeduplicateDvMaterializer(
       path_factory_(std::move(path_factory)),
       scanner_(std::move(scanner)),
       options_(options),
+      schema_manager_(std::make_shared<SchemaManager>(
+          options.GetFileSystem(), path_factory_->RootPath(), options.GetBranch())),
       pool_(std::move(pool)) {}
 
 Result<RealtimeDeduplicateDvMaterializer::SnapshotBuckets>
@@ -107,7 +110,8 @@ RealtimeDeduplicateDvMaterializer::LookupFilePositions(const BinaryRow& partitio
             std::shared_ptr<RealtimeOffsetFileIndexLookup> lookup,
             RealtimeOffsetFileIndexLookup::Create(
                 schema, table_schema_->Id(), schema->GetFieldByName(key_fields.front()),
-                update.lookup_files, paths, options_.GetFileSystem(), pool_, options_));
+                update.lookup_files, paths, options_.GetFileSystem(), options_, schema_manager_,
+                pool_));
         PAIMON_ASSIGN_OR_RAISE(positions, lookup->LookupFilePositions(update.deleted_offsets));
     }
 

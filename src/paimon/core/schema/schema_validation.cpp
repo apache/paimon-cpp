@@ -689,14 +689,14 @@ Status SchemaValidation::ValidateRealtime(const TableSchema& schema, const CoreO
     PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
         !options.DeletionVectorsBitmap64(),
         "Real-time deduplicate mode does not support 'deletion-vectors.bitmap64=true'."));
-    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
-        !options.RealtimeSpillEnabled(),
-        "Real-time deduplicate mode does not support 'realtime.spill-enabled=true'."));
-
     const std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(schema.Fields());
     PAIMON_RETURN_NOT_OK(
         RealtimeUtils::ValidateDeduplicateSchema(arrow_schema, deduplicate_key_fields));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        !schema.BucketKeys().empty() &&
+            ObjectUtils::ContainsAll(deduplicate_key_fields, schema.BucketKeys()),
+        "Real-time deduplicate mode requires bucket-key to use only deduplicate key fields."));
     return RealtimeUtils::ValidateDeduplicateFileIndex(options);
 }
 

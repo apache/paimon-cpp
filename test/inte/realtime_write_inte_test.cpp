@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -88,6 +89,8 @@
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_index_path_factory.h"
+#include "paimon/testing/utils/blocking_file_system.h"
+#include "paimon/testing/utils/dict_array_converter.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
@@ -530,6 +533,11 @@ class RealtimeWriteInteTest : public ::testing::Test {
     }
 
     void ConfigureRealtimeDeduplicateTable(const std::vector<std::string>& partition_keys = {}) {
+        ConfigureRealtimeDeduplicateTable(partition_keys, "bitmap");
+    }
+
+    void ConfigureRealtimeDeduplicateTable(const std::vector<std::string>& partition_keys,
+                                           const std::string& offset_index_type) {
         fields_ = {
             arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64(),
                          /*nullable=*/false),
@@ -541,7 +549,8 @@ class RealtimeWriteInteTest : public ::testing::Test {
         options_[Options::FILE_FORMAT] = "parquet";
         options_[Options::DELETION_VECTORS_ENABLED] = "true";
         options_[Options::REALTIME_DEDUPLICATE_KEY_FIELDS] = "id";
-        options_["file-index.bitmap.columns"] = SpecialFields::RealtimeOffset().Name();
+        options_["file-index." + offset_index_type + ".columns"] =
+            SpecialFields::RealtimeOffset().Name();
         CreateTable(partition_keys);
     }
 
@@ -980,6 +989,9 @@ class RealtimeWriteInteTest : public ::testing::Test {
         std::shared_ptr<arrow::Array> expected =
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields), expected_json)
                 .ValueOrDie();
+        // Match the dictionary and nullability normalization applied by ReadResultCollector.
+        ASSERT_OK_AND_ASSIGN(
+            expected, DictArrayConverter::ConvertDictArray(expected, arrow::default_memory_pool()));
         ASSERT_NE(nullptr, result);
         ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
             << result->ToString();
@@ -1462,6 +1474,174 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateRollingRestoresEveryOffsetS
     ASSERT_EQ(expected, rows);
 }
 
+TEST_F(RealtimeWriteInteTest, TestRefreshPreparationAllowsScanWriteAndStoreRegistration) {
+    options_[Options::BUCKET] = "2";
+    ConfigureRealtimeDeduplicateTable();
+    auto fs = std::make_shared<BlockingFileSystem>(dir_->GetFileSystem());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    WriteContextBuilder builder(table_path_, commit_user_);
+    builder.SetOptions(options_)
+        .WithStreamingMode(true)
+        .WithRealtimeContext(context)
+        .WithFileSystem(fs);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         FileStoreWrite::Create(std::move(write_context)));
+    const std::vector<Row> initial = {{1, "old", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(initial, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    const auto files = NewFiles(progress);
+    ASSERT_EQ(1, files.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> pinned, CreatePlan(context, /*predicate=*/nullptr));
+
+    // Commit the second bucket from a separate context before this writer registers its store.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> seed_context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> seed_writer,
+                         CreateRealtimeWriter(seed_context));
+    ASSERT_OK_AND_ASSIGN(batch,
+                         MakeBatch({{2, "second", "p0"}}, /*partitioned=*/false, /*bucket=*/1));
+    ASSERT_OK(seed_writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> seeded,
+                         seed_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    progress.insert(progress.end(), seeded.begin(), seeded.end());
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(progress, /*commit_identifier=*/0));
+    ASSERT_OK(seed_writer->Close());
+
+    auto open_gate = fs->BlockNext(
+        BlockingFileSystem::Operation::OPEN,
+        PathUtil::JoinPath(table_path_, "bucket-0/" + files[0]->file_name + ".offset"));
+    auto refreshing = std::async(std::launch::async,
+                                 [&]() { return writer->RefreshCommittedSnapshot(snapshot); });
+    std::future<Result<std::vector<Row>>> reading;
+    std::future<Status> writing;
+    std::future<Status> registering;
+    ScopeGuard finish([&]() {
+        open_gate->Release();
+        if (reading.valid()) {
+            reading.wait();
+        }
+        if (writing.valid()) {
+            writing.wait();
+        }
+        if (registering.valid()) {
+            registering.wait();
+        }
+        if (refreshing.valid()) {
+            refreshing.wait();
+        }
+    });
+    ASSERT_TRUE(open_gate->WaitForArrival());
+    reading = std::async(std::launch::async, [&]() { return ReadRows(context); });
+    ASSERT_EQ(std::future_status::ready, reading.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> visible, reading.get());
+    std::sort(visible.begin(), visible.end());
+    ASSERT_EQ((std::vector<Row>{{1, "old", "p0"}, {2, "second", "p0"}}), visible);
+    writing = std::async(std::launch::async, [&]() -> Status {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> update,
+                               MakeBatch({{1, "new", "p0"}}, /*partitioned=*/false));
+        return writer->Write(std::move(update));
+    });
+    ASSERT_EQ(std::future_status::ready, writing.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK(writing.get());
+    registering = std::async(std::launch::async, [&]() -> Status {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> update,
+                               MakeBatch({{2, "new", "p0"}}, /*partitioned=*/false, /*bucket=*/1));
+        return writer->Write(std::move(update));
+    });
+    ASSERT_EQ(std::future_status::ready, registering.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK(registering.get());
+    const std::vector<Row> expected = {{1, "new", "p0"}, {2, "new", "p0"}};
+    reading = std::async(std::launch::async, [&]() { return ReadRows(context); });
+    ASSERT_EQ(std::future_status::ready, reading.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK_AND_ASSIGN(visible, reading.get());
+    std::sort(visible.begin(), visible.end());
+    ASSERT_EQ(expected, visible);
+
+    open_gate->Release();
+    ASSERT_OK(refreshing.get());
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues usage, ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(0, usage.sealed_rows);
+    ASSERT_EQ(2, usage.building_rows);
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows(pinned, context));
+    ASSERT_EQ(initial, visible);
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows(context));
+    std::sort(visible.begin(), visible.end());
+    ASSERT_EQ(expected, visible);
+
+    ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(2, progress.size());
+    for (const auto& item : progress) {
+        ASSERT_EQ(OffsetRange(1, 2), item.offset_range);
+        ASSERT_NE(nullptr, item.deleted_offsets);
+        ASSERT_EQ("{0}", item.deleted_offsets->ToString());
+    }
+    ASSERT_OK_AND_ASSIGN(snapshot, Commit(progress, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows());
+    std::sort(visible.begin(), visible.end());
+    ASSERT_EQ(expected, visible);
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestRefreshPreparationFailureKeepsProgressAndCanRetry) {
+    ConfigureRealtimeDeduplicateTable();
+    auto fs = std::make_shared<BlockingFileSystem>(dir_->GetFileSystem());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    WriteContextBuilder builder(table_path_, commit_user_);
+    builder.SetOptions(options_)
+        .WithStreamingMode(true)
+        .WithRealtimeContext(context)
+        .WithFileSystem(fs);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         FileStoreWrite::Create(std::move(write_context)));
+    const std::vector<Row> initial = {{1, "old", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(initial, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    const auto files = NewFiles(progress);
+    ASSERT_EQ(1, files.size());
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(progress, /*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues before, ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(1, before.sealed_rows);
+
+    auto open_gate = fs->BlockNext(
+        BlockingFileSystem::Operation::OPEN,
+        PathUtil::JoinPath(table_path_, "bucket-0/" + files[0]->file_name + ".offset"));
+    open_gate->Release(Status::IOError("injected sidecar open failure"));
+    ASSERT_NOK_WITH_MSG(writer->RefreshCommittedSnapshot(snapshot),
+                        "injected sidecar open failure");
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues failed, ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(before.sealed_rows, failed.sealed_rows);
+    ASSERT_EQ(before.total_memory, failed.total_memory);
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> visible, ReadRows(context));
+    ASSERT_EQ(initial, visible);
+
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues after, ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(0, after.sealed_rows);
+    ASSERT_EQ(0, after.total_rows);
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows(context));
+    ASSERT_EQ(initial, visible);
+    ASSERT_OK_AND_ASSIGN(batch, MakeBatch({{1, "new", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_EQ(OffsetRange(1, 2), progress[0].offset_range);
+    ASSERT_NE(nullptr, progress[0].deleted_offsets);
+    ASSERT_EQ("{0}", progress[0].deleted_offsets->ToString());
+    ASSERT_OK_AND_ASSIGN(snapshot, Commit(progress, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows());
+    ASSERT_EQ((std::vector<Row>{{1, "new", "p0"}}), visible);
+    ASSERT_OK(writer->Close());
+}
+
 TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWritesDeletionVector) {
     ConfigureRealtimeDeduplicateTable();
 
@@ -1532,6 +1712,82 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateWritesDeletionVector) {
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
     ASSERT_EQ(expected_rows, disk_rows);
+}
+
+TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateRestoresHistoricalSchemas) {
+    ConfigureRealtimeDeduplicateTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    ASSERT_OK(WriteCommitAndRefresh({{1, "old-one", "p0"}, {2, "old-two", "p0"}},
+                                    /*partitioned=*/false, /*bucket=*/0, {}, 0, writer.get()));
+    ASSERT_OK(WriteCommitAndRefresh({{3, "three", "p0"}}, /*partitioned=*/false,
+                                    /*bucket=*/0, {}, 1, writer.get()));
+    ASSERT_OK(writer->Close());
+    writer.reset();
+    context.reset();
+
+    // Keep field IDs while renaming the deduplicate key and a regular column, moving the offset
+    // column, and adding a nullable column. Restore old files and their .offset sidecars by ID.
+    const auto renamed_key = fields_[1]->WithName("renamed_id");
+    const auto renamed_payload = fields_[2]->WithName("renamed_payload");
+    const auto extra = arrow::field("extra", arrow::utf8());
+    options_[Options::REALTIME_DEDUPLICATE_KEY_FIELDS] = renamed_key->name();
+    options_[Options::BUCKET_KEY] = renamed_key->name();
+    ASSERT_OK(TestHelper::WriteNextSchema(
+        dir_->GetFileSystem(), table_path_,
+        {DataField(1, renamed_key), DataField(2, renamed_payload), DataField(3, fields_[3]),
+         DataField(0, fields_[0]), DataField(4, extra)},
+        /*highest_field_id=*/4, options_));
+    fields_ = {renamed_key, renamed_payload, fields_[3], fields_[0], extra};
+    schema_ = arrow::schema(fields_);
+    ASSERT_OK_AND_ASSIGN(context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(context));
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema_->fields()), R"([
+                         [1, "new-one", "p0", 3, "x"],
+                         [2, "deleted", "p0", 4, null],
+                         [4, "four", "p0", 5, "y"]
+                     ])")
+                     .ValueOrDie();
+    ArrowArray c_array;
+    ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        RecordBatchBuilder(&c_array)
+            .SetBucket(0)
+            .SetRowKinds({RecordBatch::RowKind::INSERT, RecordBatch::RowKind::DELETE,
+                          RecordBatch::RowKind::INSERT})
+            .Finish());
+    ASSERT_OK(writer->Write(std::move(batch)));
+
+    const auto projection = arrow::schema({fields_[0], fields_[1], fields_[4]});
+    const std::string expected = R"([
+        [0, 3, "three", null],
+        [0, 1, "new-one", "x"],
+        [0, 4, "four", "y"]
+    ])";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, /*predicate=*/nullptr));
+    ReadPlanWithSchemaAndCheck(plan, context, projection, expected);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(2));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(progress, 2));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_OK(writer->Close());
+    writer.reset();
+    context.reset();
+
+    // Persisted file-position DVs must still hide the overwritten/deleted historical rows.
+    ASSERT_OK_AND_ASSIGN(context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(context));
+    ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, /*predicate=*/nullptr));
+    ReadPlanWithSchemaAndCheck(plan, context, projection, expected);
+
+    ASSERT_OK_AND_ASSIGN(Snapshot compact_snapshot, CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                                                     /*commit_identifier=*/3));
+    ASSERT_EQ(Snapshot::CommitKind::Compact(), compact_snapshot.GetCommitKind());
+    ASSERT_OK(writer->RefreshCommittedSnapshot(compact_snapshot.Id()));
+    ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, /*predicate=*/nullptr));
+    ReadPlanWithSchemaAndCheck(plan, context, projection, expected);
+    ASSERT_OK(writer->Close());
 }
 
 TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateCommitRetryMergesLatestDv) {
@@ -3145,9 +3401,13 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateUpdateBeforeAndAfter) {
     ASSERT_EQ(expected_rows, disk_rows);
 }
 
-TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateAcrossMultipleFileIndexStorageForms) {
+class RealtimeDeduplicateExactIndexInteTest : public RealtimeWriteInteTest,
+                                              public ::testing::WithParamInterface<std::string> {};
+
+TEST_P(RealtimeDeduplicateExactIndexInteTest,
+       TestRealtimeDeduplicateAcrossMultipleFileIndexStorageForms) {
     options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1MB";
-    ConfigureRealtimeDeduplicateTable();
+    ConfigureRealtimeDeduplicateTable({}, GetParam());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
 
@@ -3181,7 +3441,7 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateAcrossMultipleFileIndexStor
     std::vector<std::shared_ptr<DataFileMeta>> external_files = NewFiles(external_progress);
     ASSERT_EQ(1, external_files.size());
     ASSERT_EQ(nullptr, external_files[0]->embedded_index);
-    // The external bitmap index precedes the deduplicate key-offset sidecar.
+    // The external file index precedes the deduplicate key-offset sidecar.
     ASSERT_EQ(2, external_files[0]->extra_files.size());
     ASSERT_OK_AND_ASSIGN(int64_t external_snapshot_id,
                          Commit(external_progress, /*commit_identifier=*/1));
@@ -3223,6 +3483,9 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateAcrossMultipleFileIndexStor
     ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows, ReadRows());
     ASSERT_EQ(expected_rows, disk_rows);
 }
+
+INSTANTIATE_TEST_SUITE_P(ExactIndex, RealtimeDeduplicateExactIndexInteTest,
+                         ::testing::Values("bitmap", "bsi", "range-bitmap"));
 
 TEST_F(RealtimeWriteInteTest, TestRealtimeDeduplicateReadViewIsStableAcrossWriteAndRefresh) {
     ConfigureRealtimeDeduplicateTable();
@@ -6745,6 +7008,99 @@ TEST_F(RealtimeWriteInteTest, TestReaderPinsMemoryAcrossRefresh) {
     ASSERT_OK(writer->Close());
 }
 
+class RealtimePrepareSpillInteTest
+    : public RealtimeWriteInteTest,
+      public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {};
+
+TEST_P(RealtimePrepareSpillInteTest, TestPrepareFreezesWithoutSpilling) {
+    const auto [primary_key, deletion_vectors, seal_before_prepare] = GetParam();
+    const bool deduplicate = !primary_key && deletion_vectors;
+    const bool merge_versions = primary_key || deduplicate;
+    options_[Options::FILE_FORMAT] = "parquet";
+    options_[Options::DELETION_VECTORS_ENABLED] = deletion_vectors ? "true" : "false";
+    options_[Options::REALTIME_SPILL_ENABLED] = "true";
+    if (primary_key) {
+        CreatePkTable();
+    } else if (deduplicate) {
+        ConfigureRealtimeDeduplicateTable();
+    } else {
+        CreateTable(/*partition_keys=*/{});
+    }
+    const std::string temp_directory = PathUtil::JoinPath(dir_->Str(), "prepare-without-spill");
+    ASSERT_OK(dir_->GetFileSystem()->Mkdirs(temp_directory));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(context, temp_directory));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> initial,
+                         MakeBatch({{1, "old", "p0"}, {2, "two", "p0"}},
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(initial)));
+    if (seal_before_prepare) {
+        ASSERT_OK(writer->Seal());
+    }
+    const int64_t expected_spill_files = seal_before_prepare ? 1 : 0;
+    ASSERT_EQ(expected_spill_files,
+              TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+
+    const std::vector<Row> next_rows =
+        merge_versions ? std::vector<Row>{{1, "new", "p0"}, {3, "three", "p0"}}
+                       : std::vector<Row>{{3, "three", "p0"}, {4, "four", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> next,
+                         MakeBatch(next_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(next)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_EQ(OffsetRange(0, 4), progress[0].offset_range);
+    if (deduplicate) {
+        ASSERT_NE(nullptr, progress[0].deleted_offsets);
+        ASSERT_EQ("{0}", progress[0].deleted_offsets->ToString());
+    }
+    ASSERT_EQ(expected_spill_files,
+              TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues usage, ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(0, usage.building_rows);
+    ASSERT_EQ(4, usage.sealed_rows);
+    ASSERT_GT(usage.sealed_memory, 0);
+    const std::vector<Row> expected =
+        merge_versions
+            ? std::vector<Row>{{1, "new", "p0"}, {2, "two", "p0"}, {3, "three", "p0"}}
+            : std::vector<Row>{
+                  {1, "old", "p0"}, {2, "two", "p0"}, {3, "three", "p0"}, {4, "four", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> visible, ReadRows(context));
+    std::sort(visible.begin(), visible.end());
+    ASSERT_EQ(expected, visible);
+    ASSERT_OK(writer->Seal());
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> empty,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_TRUE(empty.empty());
+    ASSERT_EQ(expected_spill_files,
+              TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(progress, /*commit_identifier=*/1));
+    std::shared_ptr<RealtimeContext> disk_context;
+    if (primary_key && deletion_vectors) {
+        // Ordinary PK DV scans skip L0; an empty context reads it without any memory tail.
+        ASSERT_OK_AND_ASSIGN(disk_context, RealtimeContext::Create());
+    }
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows(disk_context));
+    std::sort(visible.begin(), visible.end());
+    ASSERT_EQ(expected, visible);
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_TRUE(WaitForChannelFileCount(temp_directory, /*expected_count=*/0));
+    ASSERT_OK_AND_ASSIGN(usage, ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(0, usage.sealed_memory);
+    ASSERT_EQ(0, usage.total_rows);
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows(context));
+    std::sort(visible.begin(), visible.end());
+    ASSERT_EQ(expected, visible);
+    ASSERT_OK(writer->Close());
+}
+
+INSTANTIATE_TEST_SUITE_P(Prepare, RealtimePrepareSpillInteTest,
+                         ::testing::Combine(::testing::Bool(), ::testing::Bool(),
+                                            ::testing::Bool()));
+
 TEST_F(RealtimeWriteInteTest, TestAppendRealtimeSpillFileLifecycle) {
     options_[Options::REALTIME_SPILL_ENABLED] = "true";
     CreateTable(/*partition_keys=*/{});
@@ -6825,6 +7181,58 @@ TEST_F(RealtimeWriteInteTest, TestAppendRealtimeSpillFileLifecycle) {
     expected_rows.insert(expected_rows.end(), second_rows.begin(), second_rows.end());
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, actual_rows);
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestDeduplicateRealtimeSpillFileLifecycle) {
+    options_[Options::REALTIME_SPILL_ENABLED] = "true";
+    ConfigureRealtimeDeduplicateTable();
+    const std::string temp_directory = PathUtil::JoinPath(dir_->Str(), "deduplicate-spill");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(context, temp_directory));
+    const std::vector<Row> initial_rows = {{1, "old", "p0"}, {2, "two", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> initial,
+                         MakeBatch(initial_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(initial)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> pinned, CreatePlan(context, /*predicate=*/nullptr));
+    ASSERT_OK(writer->Seal());
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues sealed_usage,
+                         ReadRealtimeMetrics(writer->GetMetrics()));
+    // Arrow payloads have spilled, but the sealed key index still occupies memory.
+    ASSERT_GT(sealed_usage.sealed_memory, 0);
+    ASSERT_GT(sealed_usage.building_memory, 0);
+    ASSERT_EQ(2, sealed_usage.sealed_rows);
+    ASSERT_EQ(0, sealed_usage.building_rows);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> updates,
+                         MakeBatch({{1, "new", "p0"}, {2, "deleted", "p0"}, {3, "three", "p0"}},
+                                   /*partitioned=*/false, /*bucket=*/0,
+                                   {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::DELETE,
+                                    RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(writer->Write(std::move(updates)));
+    const std::vector<Row> expected = {{1, "new", "p0"}, {3, "three", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> visible, ReadRows(context));
+    ASSERT_EQ(expected, visible);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_EQ("{0,1}", progress[0].deleted_offsets->ToString());
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows(context));
+    ASSERT_EQ(expected, visible);
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues reclaimed_usage,
+                         ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(0, reclaimed_usage.sealed_memory);
+    ASSERT_EQ(0, reclaimed_usage.total_rows);
+    // The current, empty building key index retains its allocated buckets.
+    ASSERT_GT(reclaimed_usage.building_memory, 0);
+    ASSERT_EQ(reclaimed_usage.building_memory, reclaimed_usage.total_memory);
+    ASSERT_OK_AND_ASSIGN(visible, ReadRows(pinned, context));
+    ASSERT_EQ(initial_rows, visible);
+    ASSERT_TRUE(WaitForChannelFileCount(temp_directory, /*expected_count=*/0));
     ASSERT_OK(writer->Close());
 }
 

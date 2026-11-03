@@ -44,6 +44,8 @@ class PAIMON_EXPORT RangeBitmapFileIndex final : public FileIndexer {
 
     ~RangeBitmapFileIndex() override = default;
 
+    bool SupportsExactPredicate(Function::Type function, FieldType field_type) const override;
+
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
         ::ArrowSchema* arrow_schema, int64_t start, int64_t length,
         const std::shared_ptr<InputStream>& input_stream,

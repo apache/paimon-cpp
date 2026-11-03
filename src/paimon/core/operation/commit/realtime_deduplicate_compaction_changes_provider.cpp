@@ -79,10 +79,10 @@ Status CollectDeletedOffsets(const ManifestEntry& source, const std::shared_ptr<
         [](const std::string&) -> Result<std::shared_ptr<DeletionVector>> {
         return std::shared_ptr<DeletionVector>();
     };
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<BatchReader> reader,
-        read->CreateReader(source.Partition(), source.Bucket(), {source.File()}, no_deletions,
-                           ranges, offset_schema, /*predicate=*/nullptr));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
+                           read->CreateReader(source.Partition(), source.Bucket(), {source.File()},
+                                              no_deletions, ranges, offset_schema,
+                                              /*predicate=*/nullptr));
     ScopeGuard reader_guard([&]() { reader->Close(); });
     const std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
     int64_t emitted_rows = 0;

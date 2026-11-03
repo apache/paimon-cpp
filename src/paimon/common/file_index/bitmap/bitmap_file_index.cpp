@@ -46,6 +46,37 @@ class MemoryPool;
 BitmapFileIndex::BitmapFileIndex(const std::map<std::string, std::string>& options)
     : options_(options) {}
 
+bool BitmapFileIndex::SupportsExactPredicate(Function::Type function, FieldType field_type) const {
+    switch (field_type) {
+        case FieldType::BOOLEAN:
+        case FieldType::TINYINT:
+        case FieldType::SMALLINT:
+        case FieldType::INT:
+        case FieldType::BIGINT:
+        case FieldType::FLOAT:
+        case FieldType::DOUBLE:
+        case FieldType::STRING:
+        case FieldType::DATE:
+            break;
+        case FieldType::TIMESTAMP:
+            // Nanosecond timestamps are truncated to microseconds.
+            return function == Function::Type::IS_NULL || function == Function::Type::IS_NOT_NULL;
+        default:
+            return false;
+    }
+    switch (function) {
+        case Function::Type::EQUAL:
+        case Function::Type::NOT_EQUAL:
+        case Function::Type::IN:
+        case Function::Type::NOT_IN:
+        case Function::Type::IS_NULL:
+        case Function::Type::IS_NOT_NULL:
+            return true;
+        default:
+            return false;
+    }
+}
+
 Result<Literal> BitmapFileIndex::ConvertLiteral(
     const Literal& literal, const std::shared_ptr<arrow::DataType>& arrow_type) {
     if (literal.GetType() != FieldType::TIMESTAMP) {
