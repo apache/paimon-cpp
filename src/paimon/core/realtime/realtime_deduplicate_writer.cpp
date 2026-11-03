@@ -170,10 +170,10 @@ Status RealtimeDeduplicateWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return Status::OK();
 }
 
-Status RealtimeDeduplicateWriter::SealCurrentSegment(bool spill) {
+Status RealtimeDeduplicateWriter::SealCurrentSegment(bool allow_spill) {
     PAIMON_ASSIGN_OR_RAISE(
         std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
-        spill ? realtime_store_->SealForCommit() : realtime_store_->FreezeBuildingSegment());
+        allow_spill ? realtime_store_->SealForCommit() : realtime_store_->FreezeBuildingSegment());
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
     if (!segment) {
         return Status::OK();
@@ -188,12 +188,12 @@ Status RealtimeDeduplicateWriter::SealCurrentSegment(bool spill) {
 
 Status RealtimeDeduplicateWriter::Seal() {
     std::lock_guard<std::mutex> lock(prepare_mutex_);
-    return SealCurrentSegment(/*spill=*/true);
+    return SealCurrentSegment(/*allow_spill=*/true);
 }
 
 Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compaction) {
     std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*spill=*/false));
+    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*allow_spill=*/false));
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
     {
         std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);

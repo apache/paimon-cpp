@@ -43,7 +43,7 @@ class PAIMON_EXPORT FileIndexer {
     /// Whether this indexer returns exact file-local matching row positions for the field type.
     /// Supported evaluations return BitmapIndexResult (or Skip), never Remain or false positives.
     /// The schema and values must satisfy the index's writer constraints.
-    virtual bool SupportsExactPredicate(Function::Type, FieldType) const {
+    virtual bool SupportsExactPredicate(Function::Type function, FieldType field_type) const {
         return false;
     }
 

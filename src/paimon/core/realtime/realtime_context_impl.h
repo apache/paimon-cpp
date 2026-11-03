@@ -129,9 +129,21 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
         int64_t materialized_max_sequence_number = -1;
     };
 
+    struct RefreshNotification;
+    struct RefreshState;
+
     explicit RealtimeContextImpl(const std::shared_ptr<RealtimeStoreFactory>& factory);
 
     Status Start();
+
+    Status PrepareCommittedRefresh(int64_t snapshot_id, const RealtimeOffsetMap& committed_offsets,
+                                   const RealtimeDataFileMap& committed_data_files,
+                                   RefreshState* refresh);
+
+    // The caller holds progress_mutex_ while collecting notifications or installing a refresh.
+    Result<std::vector<RefreshNotification*>> CollectRefreshNotifications(int64_t snapshot_id,
+                                                                          RefreshState* refresh);
+    Status InstallCommittedRefresh(int64_t snapshot_id, RefreshState* refresh);
 
     void CleanupReadViews();
 

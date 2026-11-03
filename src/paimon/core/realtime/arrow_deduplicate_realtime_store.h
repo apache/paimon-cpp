@@ -127,7 +127,8 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
     Result<std::shared_ptr<arrow::StructArray>> ExtractKeys(
         const std::shared_ptr<arrow::StructArray>& data) const;
     Status EnsureMutableDeletionBitmap();
-    Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> SealCurrentSegment(bool spill);
+    Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> SealCurrentSegment(
+        bool allow_spill);
 
     std::shared_ptr<arrow::Schema> write_schema_;
     int32_t key_field_position_;

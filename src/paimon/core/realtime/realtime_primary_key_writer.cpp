@@ -206,11 +206,11 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return Status::OK();
 }
 
-Status RealtimePrimaryKeyWriter::SealCurrentSegment(bool spill) {
+Status RealtimePrimaryKeyWriter::SealCurrentSegment(bool allow_spill) {
     auto* two_phase = dynamic_cast<RealtimeStoreTwoPhaseSeal*>(realtime_store_.get());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
-                           !spill && two_phase ? two_phase->FreezeBuildingSegment()
-                                               : realtime_store_->SealForCommit());
+                           !allow_spill && two_phase ? two_phase->FreezeBuildingSegment()
+                                                     : realtime_store_->SealForCommit());
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
     if (!segment) {
         return Status::OK();
@@ -225,12 +225,12 @@ Status RealtimePrimaryKeyWriter::SealCurrentSegment(bool spill) {
 
 Status RealtimePrimaryKeyWriter::Seal() {
     std::lock_guard<std::mutex> lock(prepare_mutex_);
-    return SealCurrentSegment(/*spill=*/true);
+    return SealCurrentSegment(/*allow_spill=*/true);
 }
 
 Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommit(bool wait_compaction) {
     std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*spill=*/false));
+    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*allow_spill=*/false));
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
     {
         std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);

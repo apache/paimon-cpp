@@ -42,7 +42,7 @@ class MemoryPool;
 class PredicateFilter;
 
 /// Internal Arrow-backed implementation of the default `RealtimeStore`.
-class ArrowRealtimeStore final : public RealtimeStore, public RealtimeStoreTwoPhaseSeal {
+class ArrowRealtimeStore final : public RealtimeStoreTwoPhaseSeal {
  public:
     ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
                        StatisticsMode statistics_mode, const std::string& temp_directory,

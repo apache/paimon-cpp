@@ -394,16 +394,16 @@ Status ArrowDeduplicateRealtimeStore::WriteAndLookup(
 
 Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>
 ArrowDeduplicateRealtimeStore::SealForCommit() {
-    return SealCurrentSegment(/*spill=*/true);
+    return SealCurrentSegment(/*allow_spill=*/true);
 }
 
 Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>
 ArrowDeduplicateRealtimeStore::FreezeBuildingSegment() {
-    return SealCurrentSegment(/*spill=*/false);
+    return SealCurrentSegment(/*allow_spill=*/false);
 }
 
 Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>
-ArrowDeduplicateRealtimeStore::SealCurrentSegment(bool spill) {
+ArrowDeduplicateRealtimeStore::SealCurrentSegment(bool allow_spill) {
     std::lock_guard<std::mutex> seal_lock(seal_mutex_);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MutableKeyOffsetIndex> next_building_index,
                            MutableKeyOffsetIndex::Create(key_field_, memory_pool_));
@@ -433,7 +433,7 @@ ArrowDeduplicateRealtimeStore::SealCurrentSegment(bool spill) {
     // The frozen keys remain discoverable while another thread writes the new building segment.
     // Both the row-count calculation and all spill I/O use only this immutable checkpoint.
     RoaringBitmap64 live_rows = RoaringBitmap64::AndNot(row_offsets, *checkpoint);
-    if (spill && two_phase && delegate_segment) {
+    if (allow_spill && two_phase && delegate_segment) {
         PAIMON_ASSIGN_OR_RAISE(delegate_segment.value(),
                                two_phase->SpillFrozenSegment(delegate_segment.value()));
     }

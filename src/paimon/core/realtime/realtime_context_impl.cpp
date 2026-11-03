@@ -67,6 +67,22 @@ std::string PartitionToString(const std::map<std::string, std::string>& partitio
 
 }  // namespace
 
+struct RealtimeContextImpl::RefreshNotification {
+    std::shared_ptr<RealtimeStore> store;
+    std::shared_ptr<RealtimeDeduplicateState> deduplicate_state;
+    int64_t committed_end_offset;
+    std::vector<std::shared_ptr<DataFileMeta>> active_data_files;
+    std::optional<RealtimeDeduplicateState::PreparedSnapshot> prepared;
+};
+
+struct RealtimeContextImpl::RefreshState {
+    RealtimeOffsetMap next_offsets;
+    RealtimeDataFileMap next_data_files;
+    std::map<RealtimePartitionBucket, RefreshNotification> notifications;
+    // Keep retired storage alive until the caller releases progress_mutex_.
+    std::vector<std::shared_ptr<RealtimeReadView>> retired_views;
+};
+
 RealtimeContextImpl::RealtimeContextImpl(const std::shared_ptr<RealtimeStoreFactory>& factory)
     : factory_(factory) {}
 
@@ -377,99 +393,18 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(
         return Status::Invalid("real-time refresh snapshot id must not be negative");
     }
     std::lock_guard<std::mutex> refresh_lock(refresh_mutex_);
-    RealtimeOffsetMap next_offsets;
-    RealtimeDataFileMap next_data_files;
-    {
-        std::lock_guard<std::mutex> progress_lock(progress_mutex_);
-        if (last_refreshed_snapshot_id_ && snapshot_id < last_refreshed_snapshot_id_.value()) {
-            return Status::Invalid("real-time committed snapshot cannot move backwards");
-        }
-        const bool retry = last_refreshed_snapshot_id_ == snapshot_id;
-        next_offsets = retry ? committed_offsets_ : committed_offsets;
-        next_data_files = retry ? committed_data_files_ : committed_data_files;
-    }
-    for (const auto& [partition_bucket, committed_end_offset] : next_offsets) {
-        if (partition_bucket.bucket < 0 || committed_end_offset < 0) {
-            return Status::Invalid("invalid partition-bucket committed offset");
-        }
-    }
-    struct Notification {
-        std::shared_ptr<RealtimeStore> store;
-        std::shared_ptr<RealtimeDeduplicateState> deduplicate_state;
-        int64_t committed_end_offset;
-        std::vector<std::shared_ptr<DataFileMeta>> active_data_files;
-        std::optional<RealtimeDeduplicateState::PreparedSnapshot> prepared;
-    };
-    std::map<RealtimePartitionBucket, Notification> notifications;
-    std::vector<std::shared_ptr<RealtimeReadView>> retired_views;
+    RefreshState refresh;
+    PAIMON_RETURN_NOT_OK(
+        PrepareCommittedRefresh(snapshot_id, committed_offsets, committed_data_files, &refresh));
     while (true) {
         PAIMON_RETURN_NOT_OK(CheckUsable());
-        std::vector<Notification*> pending;
         std::unique_lock<std::mutex> progress_lock(progress_mutex_);
-        {
-            std::lock_guard<std::mutex> registry_lock(mutex_);
-            for (const auto& store_entry : stores_) {
-                const RealtimePartitionBucket& partition_bucket = store_entry.first;
-                auto previous = committed_offsets_.find(partition_bucket);
-                if (previous == committed_offsets_.end()) {
-                    continue;
-                }
-                auto next = next_offsets.find(partition_bucket);
-                if (next == next_offsets.end()) {
-                    return Status::Invalid(
-                        "real-time committed progress removed an active partition-bucket; recreate "
-                        "RealtimeContext");
-                }
-                if (next->second < previous->second) {
-                    return Status::Invalid(
-                        "real-time committed offset moved backwards for an active "
-                        "partition-bucket; "
-                        "recreate RealtimeContext");
-                }
-            }
-            for (const auto& [partition_bucket, committed_end_offset] : next_offsets) {
-                auto store_iter = stores_.find(partition_bucket);
-                if (store_iter == stores_.end()) {
-                    continue;
-                }
-                const StoreEntry& entry = store_iter->second;
-                if (entry.deduplicate_state) {
-                    // Compaction can change lookup files without advancing the committed offset.
-                    auto installed = installed_snapshot_ids_.find(partition_bucket);
-                    if (installed != installed_snapshot_ids_.end() &&
-                        installed->second >= snapshot_id) {
-                        continue;
-                    }
-                } else {
-                    auto reclaimed = reclaimed_offsets_.find(partition_bucket);
-                    if (reclaimed != reclaimed_offsets_.end() &&
-                        reclaimed->second >= committed_end_offset) {
-                        continue;
-                    }
-                }
-                if (notifications.find(partition_bucket) != notifications.end()) {
-                    continue;
-                }
-                auto files = next_data_files.find(partition_bucket);
-                auto iter =
-                    notifications
-                        .emplace(
-                            partition_bucket,
-                            Notification{entry.store, entry.deduplicate_state, committed_end_offset,
-                                         files == next_data_files.end()
-                                             ? std::vector<std::shared_ptr<DataFileMeta>>()
-                                             : files->second,
-                                         std::nullopt})
-                        .first;
-                if (entry.deduplicate_state) {
-                    pending.push_back(&iter->second);
-                }
-            }
-        }
+        PAIMON_ASSIGN_OR_RAISE(std::vector<RefreshNotification*> pending,
+                               CollectRefreshNotifications(snapshot_id, &refresh));
         if (!pending.empty()) {
             // Open sidecars outside the progress lock to avoid blocking scans on I/O.
             progress_lock.unlock();
-            for (Notification* notification : pending) {
+            for (RefreshNotification* notification : pending) {
                 PAIMON_ASSIGN_OR_RAISE(RealtimeDeduplicateState::PreparedSnapshot prepared,
                                        notification->deduplicate_state->PrepareCommittedSnapshot(
                                            notification->active_data_files));
@@ -478,45 +413,129 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(
             // Recheck stores registered while sidecars were opened.
             continue;
         }
+        return InstallCommittedRefresh(snapshot_id, &refresh);
+    }
+}
 
-        committed_offsets_ = std::move(next_offsets);
-        committed_data_files_ = std::move(next_data_files);
-        last_refreshed_snapshot_id_ = snapshot_id;
-        Status first_error = Status::OK();
-        for (const auto& [partition_bucket, notification] : notifications) {
-            Status status;
-            if (notification.deduplicate_state) {
-                Result<std::shared_ptr<RealtimeReadView>> retired =
-                    notification.deduplicate_state->InstallPreparedSnapshot(
-                        notification.committed_end_offset, notification.prepared.value(),
-                        notification.store);
-                status = retired.status();
-                if (status.ok()) {
-                    retired_views.push_back(std::move(retired).value());
-                }
-            } else if (auto* two_phase =
-                           dynamic_cast<RealtimeStoreTwoPhaseSeal*>(notification.store.get())) {
-                Result<std::shared_ptr<RealtimeReadView>> retired =
-                    two_phase->RetireCommittedSegments(notification.committed_end_offset);
-                status = retired.status();
-                if (status.ok()) {
-                    retired_views.push_back(std::move(retired).value());
-                }
-            } else {
-                status =
-                    notification.store->AdvanceCommittedOffset(notification.committed_end_offset);
+Status RealtimeContextImpl::PrepareCommittedRefresh(int64_t snapshot_id,
+                                                    const RealtimeOffsetMap& committed_offsets,
+                                                    const RealtimeDataFileMap& committed_data_files,
+                                                    RefreshState* refresh) {
+    {
+        std::lock_guard<std::mutex> progress_lock(progress_mutex_);
+        if (last_refreshed_snapshot_id_ && snapshot_id < last_refreshed_snapshot_id_.value()) {
+            return Status::Invalid("real-time committed snapshot cannot move backwards");
+        }
+        const bool retry = last_refreshed_snapshot_id_ == snapshot_id;
+        refresh->next_offsets = retry ? committed_offsets_ : committed_offsets;
+        refresh->next_data_files = retry ? committed_data_files_ : committed_data_files;
+    }
+    for (const auto& [partition_bucket, committed_end_offset] : refresh->next_offsets) {
+        if (partition_bucket.bucket < 0 || committed_end_offset < 0) {
+            return Status::Invalid("invalid partition-bucket committed offset");
+        }
+    }
+    return Status::OK();
+}
+
+Result<std::vector<RealtimeContextImpl::RefreshNotification*>>
+RealtimeContextImpl::CollectRefreshNotifications(int64_t snapshot_id, RefreshState* refresh) {
+    std::vector<RefreshNotification*> pending;
+    std::lock_guard<std::mutex> registry_lock(mutex_);
+    for (const auto& store_entry : stores_) {
+        const RealtimePartitionBucket& partition_bucket = store_entry.first;
+        auto previous = committed_offsets_.find(partition_bucket);
+        if (previous == committed_offsets_.end()) {
+            continue;
+        }
+        auto next = refresh->next_offsets.find(partition_bucket);
+        if (next == refresh->next_offsets.end()) {
+            return Status::Invalid(
+                "real-time committed progress removed an active partition-bucket; recreate "
+                "RealtimeContext");
+        }
+        if (next->second < previous->second) {
+            return Status::Invalid(
+                "real-time committed offset moved backwards for an active partition-bucket; "
+                "recreate RealtimeContext");
+        }
+    }
+    for (const auto& [partition_bucket, committed_end_offset] : refresh->next_offsets) {
+        auto store_iter = stores_.find(partition_bucket);
+        if (store_iter == stores_.end()) {
+            continue;
+        }
+        const StoreEntry& entry = store_iter->second;
+        if (entry.deduplicate_state) {
+            // Compaction can change lookup files without advancing the committed offset.
+            auto installed = installed_snapshot_ids_.find(partition_bucket);
+            if (installed != installed_snapshot_ids_.end() && installed->second >= snapshot_id) {
+                continue;
             }
-            if (status.ok()) {
-                reclaimed_offsets_[partition_bucket] = notification.committed_end_offset;
-                if (notification.deduplicate_state) {
-                    installed_snapshot_ids_[partition_bucket] = snapshot_id;
-                }
-            } else if (first_error.ok()) {
-                first_error = std::move(status);
+        } else {
+            auto reclaimed = reclaimed_offsets_.find(partition_bucket);
+            if (reclaimed != reclaimed_offsets_.end() &&
+                reclaimed->second >= committed_end_offset) {
+                continue;
             }
         }
-        return first_error;
+        if (refresh->notifications.find(partition_bucket) != refresh->notifications.end()) {
+            continue;
+        }
+        auto files = refresh->next_data_files.find(partition_bucket);
+        auto iter = refresh->notifications
+                        .emplace(partition_bucket,
+                                 RefreshNotification{
+                                     entry.store, entry.deduplicate_state, committed_end_offset,
+                                     files == refresh->next_data_files.end()
+                                         ? std::vector<std::shared_ptr<DataFileMeta>>()
+                                         : files->second,
+                                     std::nullopt})
+                        .first;
+        if (entry.deduplicate_state) {
+            pending.push_back(&iter->second);
+        }
     }
+    return pending;
+}
+
+Status RealtimeContextImpl::InstallCommittedRefresh(int64_t snapshot_id, RefreshState* refresh) {
+    committed_offsets_ = std::move(refresh->next_offsets);
+    committed_data_files_ = std::move(refresh->next_data_files);
+    last_refreshed_snapshot_id_ = snapshot_id;
+    Status first_error = Status::OK();
+    for (const auto& [partition_bucket, notification] : refresh->notifications) {
+        Status status;
+        if (notification.deduplicate_state) {
+            Result<std::shared_ptr<RealtimeReadView>> retired =
+                notification.deduplicate_state->InstallPreparedSnapshot(
+                    notification.committed_end_offset, notification.prepared.value(),
+                    notification.store);
+            status = retired.status();
+            if (status.ok()) {
+                refresh->retired_views.push_back(std::move(retired).value());
+            }
+        } else if (auto* two_phase =
+                       dynamic_cast<RealtimeStoreTwoPhaseSeal*>(notification.store.get())) {
+            Result<std::shared_ptr<RealtimeReadView>> retired =
+                two_phase->RetireCommittedSegments(notification.committed_end_offset);
+            status = retired.status();
+            if (status.ok()) {
+                refresh->retired_views.push_back(std::move(retired).value());
+            }
+        } else {
+            status = notification.store->AdvanceCommittedOffset(notification.committed_end_offset);
+        }
+        if (status.ok()) {
+            reclaimed_offsets_[partition_bucket] = notification.committed_end_offset;
+            if (notification.deduplicate_state) {
+                installed_snapshot_ids_[partition_bucket] = snapshot_id;
+            }
+        } else if (first_error.ok()) {
+            first_error = std::move(status);
+        }
+    }
+    return first_error;
 }
 
 void RealtimeContextImpl::CleanupReadViews() {

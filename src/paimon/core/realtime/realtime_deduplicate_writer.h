@@ -78,7 +78,7 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
                               std::shared_ptr<arrow::Field> deduplicate_key_field,
                               int64_t next_offset, std::shared_ptr<MemoryPool> memory_pool);
 
-    Status SealCurrentSegment(bool spill);
+    Status SealCurrentSegment(bool allow_spill);
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
