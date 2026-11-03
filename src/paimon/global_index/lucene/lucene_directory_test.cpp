@@ -17,13 +17,20 @@
  */
 #include "paimon/global_index/lucene/lucene_directory.h"
 
+#include <future>
+#include <set>
+#include <thread>
+
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "lucene++/FileUtils.h"
+#include "lucene++/Lock.h"
 #include "lucene++/LuceneHeaders.h"
 #include "lucene++/MiscUtils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/global_index/lucene/lucene_utils.h"
+#include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::lucene::test {
 class LuceneDirectoryTest : public ::testing::Test, public ::testing::WithParamInterface<int32_t> {
@@ -31,6 +38,42 @@ class LuceneDirectoryTest : public ::testing::Test, public ::testing::WithParamI
     void SetUp() override {}
     void TearDown() override {}
 };
+
+TEST_P(LuceneDirectoryTest, TestLockFactoryIsolation) {
+    constexpr int32_t kThreadCount = 8;
+    int32_t read_buffer_size = GetParam();
+    std::vector<std::unique_ptr<LuceneDirectory>> directories(kThreadCount);
+    std::vector<std::promise<void>> ready_signals(kThreadCount);
+    std::promise<void> start_signal;
+    std::shared_future<void> start_future = start_signal.get_future().share();
+    std::vector<std::thread> threads;
+    threads.reserve(kThreadCount);
+    for (int32_t i = 0; i < kThreadCount; ++i) {
+        threads.emplace_back([&, i]() {
+            auto input = std::make_shared<paimon::test::MockInputStream>();
+            std::map<std::string, std::pair<int64_t, int64_t>> files;
+            ready_signals[i].set_value();
+            start_future.wait();
+            directories[i] = std::make_unique<LuceneDirectory>(fmt::format("directory-{}", i),
+                                                               files, input, read_buffer_size);
+        });
+    }
+    for (auto& ready_signal : ready_signals) {
+        ready_signal.get_future().wait();
+    }
+    start_signal.set_value();
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    std::set<Lucene::String> lock_prefixes;
+    for (const auto& directory : directories) {
+        ASSERT_TRUE(directory);
+        auto prefix = directory->getLockFactory()->getLockPrefix();
+        ASSERT_EQ(prefix, directory->getLockID());
+        ASSERT_TRUE(lock_prefixes.insert(prefix).second);
+    }
+}
 
 TEST_P(LuceneDirectoryTest, TestSimple) {
     int32_t read_buffer_size = GetParam();

@@ -66,7 +66,7 @@ Result<std::shared_ptr<LuceneGlobalIndexWriter>> LuceneGlobalIndexWriter::Create
         std::string tmp_path = PathUtil::JoinPath(tmp_dir, "paimon-lucene-" + uuid);
 
         auto lucene_dir = Lucene::FSDirectory::open(LuceneUtils::StringToWstring(tmp_path),
-                                                    Lucene::NoLockFactory::getNoLockFactory());
+                                                    Lucene::newLucene<Lucene::NoLockFactory>());
         // TODO(xinyu.lxy): support other tokenizer
         // open lucene index writer
         PAIMON_ASSIGN_OR_RAISE(
