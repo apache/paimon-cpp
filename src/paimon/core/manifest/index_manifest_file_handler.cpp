@@ -260,7 +260,9 @@ IndexManifestFileHandler::GetIndexManifestFileCombine(const std::string& index_t
         return std::make_unique<GlobalFileNameCombiner>();
     }
     // A dynamic bucket primary key table also has bucket=-1, but keeps one deletion vector index
-    // per bucket, so only BUCKET_UNAWARE combines deletion vectors by data file name.
+    // per (partition, bucket), so it uses the bucketed combiner. Only BUCKET_UNAWARE merges
+    // deletion vector index entries by index file name, using data file names to reject a data
+    // file covered by more than one deletion vector.
     if (index_type == DeletionVectorsIndexFile::DELETION_VECTORS_INDEX &&
         bucket_mode == BucketMode::BUCKET_UNAWARE) {
         return std::make_unique<GlobalDeletionVectorCombiner>();

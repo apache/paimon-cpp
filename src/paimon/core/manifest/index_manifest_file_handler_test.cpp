@@ -352,22 +352,21 @@ TEST_F(IndexManifestFileHandlerTest, DynamicBucketDvUsesBucketedCombiner) {
     std::vector<IndexManifestEntry> previous_entries = {
         MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-0", {"data-0.orc"}, 1),
         MakeDvEntry(FileKind::Add(), partition, /*bucket=*/1, "dv-1", {"data-1.orc"}, 1)};
-    ASSERT_OK_AND_ASSIGN(std::string previous_manifest,
-                         IndexManifestFileHandler::Write(
-                             /*previous_index_manifest=*/std::nullopt, previous_entries,
-                             BucketMode::HASH_DYNAMIC, index_manifest_file.get()));
+    ASSERT_OK_AND_ASSIGN(std::optional<std::string> previous_manifest,
+                         index_manifest_file->WriteIndexFiles(
+                             /*previous_index_manifest=*/std::nullopt, previous_entries));
+    ASSERT_TRUE(previous_manifest.has_value());
 
     // a dynamic bucket table rewrites the whole index file of a bucket, so the added entry
     // replaces dv-0 by (partition, bucket) although it is not deleted by name
     std::vector<IndexManifestEntry> new_entries = {MakeDvEntry(
         FileKind::Add(), partition, /*bucket=*/0, "dv-0-new", {"data-0.orc", "data-2.orc"}, 2)};
-    ASSERT_OK_AND_ASSIGN(
-        std::string current_manifest,
-        IndexManifestFileHandler::Write(previous_manifest, new_entries, BucketMode::HASH_DYNAMIC,
-                                        index_manifest_file.get()));
+    ASSERT_OK_AND_ASSIGN(std::optional<std::string> current_manifest,
+                         index_manifest_file->WriteIndexFiles(previous_manifest, new_entries));
+    ASSERT_TRUE(current_manifest.has_value());
 
     std::vector<IndexManifestEntry> written_entries;
-    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr,
+    ASSERT_OK(index_manifest_file->Read(current_manifest.value(), /*filter=*/nullptr,
                                         /*file_size=*/std::nullopt, &written_entries));
     std::set<std::string> written_file_names;
     for (const auto& entry : written_entries) {
@@ -376,8 +375,10 @@ TEST_F(IndexManifestFileHandlerTest, DynamicBucketDvUsesBucketedCombiner) {
     ASSERT_EQ(written_file_names, (std::set<std::string>{"dv-0-new", "dv-1"}));
 
     // the same delta in bucket unaware mode covers data-0.orc twice
-    ASSERT_NOK(IndexManifestFileHandler::Write(
-        previous_manifest, new_entries, BucketMode::BUCKET_UNAWARE, index_manifest_file.get()));
+    ASSERT_OK_AND_ASSIGN(auto unaware_manifest_file,
+                         CreateManifestFile(BucketMode::BUCKET_UNAWARE));
+    ASSERT_NOK_WITH_MSG(unaware_manifest_file->WriteIndexFiles(previous_manifest, new_entries),
+                        "Trying to add a second deletion vector for data file data-0.orc");
 }
 
 TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerRejectsInconsistentDelta) {

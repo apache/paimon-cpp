@@ -35,6 +35,7 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
@@ -81,8 +82,7 @@ class IndexFileHandlerTest : public testing::Test {
                                IndexManifestFile::Create(
                                    core_options.GetFileSystem(), core_options.GetManifestFormat(),
                                    core_options.GetManifestCompression(), path_factory,
-                                   core_options.GetBucket() == -1 ? BucketMode::BUCKET_UNAWARE
-                                                                  : BucketMode::HASH_FIXED,
+                                   ResolveBucketMode(core_options.GetBucket(), table_schema),
                                    memory_pool_, core_options));
         auto path_factories = std::make_shared<IndexFilePathFactories>(path_factory);
         return std::make_unique<IndexFileHandler>(
