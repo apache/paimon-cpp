@@ -37,6 +37,7 @@
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/field_type_utils.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/io/file_index_options.h"
@@ -323,6 +324,13 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
                 return metas;
             };
             std::vector<std::future<Result<std::vector<ManifestFileMeta>>>> futures;
+            ScopeGuard drain([&futures] {
+                for (auto& future : futures) {
+                    if (future.valid()) {
+                        future.wait();
+                    }
+                }
+            });
             futures.reserve(2);
             futures.push_back(
                 Via(executor_.get(), [read_list]() { return read_list(/*base=*/true); }));
@@ -352,6 +360,14 @@ Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manif
                                       bool apply_scan_filter,
                                       std::vector<ManifestEntry>* manifest_entries) const {
     std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
+    ScopeGuard drain([&futures] {
+        for (auto& future : futures) {
+            if (future.valid()) {
+                future.wait();
+            }
+        }
+    });
+    futures.reserve(manifest_metas.size());
     for (const auto& meta : manifest_metas) {
         auto read_meta_task = [this, meta,
                                apply_scan_filter]() -> Result<std::vector<ManifestEntry>> {
@@ -511,6 +527,13 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
     const bool inferred_bucket = !bucket_filter_ && bucket_selector_ != nullptr;
     if (core_options_.ScanManifestEntryLazyDecodeEnabled()) {
         std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
+        ScopeGuard drain([&futures] {
+            for (auto& future : futures) {
+                if (future.valid()) {
+                    future.wait();
+                }
+            }
+        });
         futures.reserve(manifest_metas.size());
         for (const auto& meta : manifest_metas) {
             auto read_meta_task = [this, meta, bucket,
