@@ -18,10 +18,15 @@
 #include "paimon/global_index/lucene/lucene_global_index.h"
 
 #include <cmath>
+#include <future>
+#include <set>
+#include <thread>
 
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/api.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "lucene++/LockFactory.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
@@ -151,6 +156,57 @@ class LuceneGlobalIndexTest : public ::testing::Test,
     std::shared_ptr<arrow::DataType> data_type_ =
         arrow::struct_({arrow::field("f0", arrow::utf8())});
 };
+
+TEST_F(LuceneGlobalIndexTest, TestConcurrentWriterCreation) {
+    constexpr int32_t kThreadCount = 8;
+    auto test_root_dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(test_root_dir);
+    auto tmp_dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(tmp_dir);
+    std::map<std::string, std::string> options = {{kLuceneWriteTmpDir, tmp_dir->Str()}};
+    std::vector<std::shared_ptr<GlobalIndexFileWriter>> file_writers;
+    file_writers.reserve(kThreadCount);
+    for (int32_t i = 0; i < kThreadCount; ++i) {
+        auto index_root = PathUtil::JoinPath(test_root_dir->Str(), fmt::format("writer-{}", i));
+        ASSERT_OK(fs_->Mkdirs(index_root));
+        auto path_factory = std::make_shared<FakeIndexPathFactory>(index_root);
+        file_writers.push_back(std::make_shared<GlobalIndexFileManager>(
+            fs_, path_factory, /*checkpoint_path_factory=*/nullptr));
+    }
+
+    std::vector<std::shared_ptr<LuceneGlobalIndexWriter>> writers(kThreadCount);
+    std::vector<std::promise<void>> ready_signals(kThreadCount);
+    std::promise<void> start_signal;
+    std::shared_future<void> start_future = start_signal.get_future().share();
+    std::vector<std::thread> threads;
+    threads.reserve(kThreadCount);
+    for (int32_t i = 0; i < kThreadCount; ++i) {
+        threads.emplace_back([&, i]() {
+            ready_signals[i].set_value();
+            start_future.wait();
+            ASSERT_OK_AND_ASSIGN(
+                writers[i],
+                LuceneGlobalIndexWriter::Create("f0", data_type_, file_writers[i], options, pool_));
+        });
+    }
+    for (auto& ready_signal : ready_signals) {
+        ready_signal.get_future().wait();
+    }
+    start_signal.set_value();
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    // Keep all writers alive so sharing a factory fails even if the race did not crash.
+    std::set<Lucene::String> lock_prefixes;
+    for (const auto& writer : writers) {
+        ASSERT_TRUE(writer);
+        const auto& directory = writer->write_context_.lucene_dir;
+        auto prefix = directory->getLockFactory()->getLockPrefix();
+        ASSERT_EQ(prefix, directory->getLockID());
+        ASSERT_TRUE(lock_prefixes.insert(prefix).second);
+    }
+}
 
 TEST_P(LuceneGlobalIndexTest, TestSimple) {
     int32_t read_buffer_size = GetParam();
