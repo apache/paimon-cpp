@@ -39,8 +39,8 @@ Paimon C++ currently provides:
 - **File formats**: file format abstraction with built-in Parquet, Blob, ORC, and Avro support, plus optional Lance and Mosaic formats.
 - **Runtime utilities**: memory pool and thread pool abstractions with default implementations.
 - **AI-oriented features**: row tracking and data evolution modes, plus global index
-  capabilities including B-tree indexing, DiskANN-based vector search with Lumina, and Lucene-based
-  full-text search.
+  capabilities including B-tree and bitmap indexing, vector search with Lumina, and
+  full-text search with Lucene or Paimon's Tantivy-based implementation.
 - **Compatibility**: compatibility with Apache Paimon Java format and communication protocols,
   including commit messages, data splits, and manifests.
 
