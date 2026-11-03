@@ -116,13 +116,27 @@ master_doc = "index"
 
 version = "0.3.0"
 
+# The website sets "stable" for docs/cpp/ or "X.Y" for an archived series.
+# Local builds of this release branch default to the stable channel.
+docs_channel = os.environ.get("PAIMON_DOCS_VERSION", "stable")
+switcher_version = "" if docs_channel == "stable" else docs_channel
+release = f"{version}.dev" if docs_channel == "main" else version
+
 html_theme_options = {
     "show_toc_level": 2,
     "show_nav_level": 2,
     "use_edit_page_button": True,
     "header_links_before_dropdown": 4,
     "navbar_align": "left",
-    "navbar_end": ["theme-switcher", "navbar-icon-links"],
+    "navbar_end": ["version-switcher", "theme-switcher", "navbar-icon-links"],
+    "switcher": {
+        # Share the version list maintained on main, including future releases.
+        "json_url": os.environ.get(
+            "PAIMON_DOCS_VERSIONS_URL",
+            "https://paimon.apache.org/docs/cpp/main/_static/versions.json",
+        ),
+        "version_match": switcher_version,
+    },
     "icon_links": [
         {
             "name": "GitHub",
@@ -133,13 +147,13 @@ html_theme_options = {
     "logo": {
         "text": "Apache Paimon C++",
     },
-    "show_version_warning_banner": True,
+    "show_version_warning_banner": docs_channel != "stable",
 }
 
 html_context = {
     "github_user": "apache",
     "github_repo": "paimon-cpp",
-    "github_version": "main",
+    "github_version": "release-0.3",
     "doc_path": "docs/source",
 }
 
