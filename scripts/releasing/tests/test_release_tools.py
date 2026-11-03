@@ -534,6 +534,59 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             )
             self.assertIn("Git ref reproducibility: valid", result.stdout)
 
+    def test_source_creator_checks_documentation_from_git_ref(self) -> None:
+        for docs_version, expected_returncode in [("1.1.0", 0), ("9.9.9", 1)]:
+            with self.subTest(docs_version=docs_version), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                root = directory / "source"
+                self.create_version_tree(root)
+                docs_path = root / "docs/source/conf.py"
+                docs_path.write_text(f'version = "{docs_version}"\n', encoding="utf-8")
+                releasing_dir = root / "scripts/releasing"
+                releasing_dir.mkdir(parents=True)
+                for script in ("create_source_release.sh", "bump_version.py"):
+                    shutil.copy2(RELEASING_DIR / script, releasing_dir / script)
+                for name in ("LICENSE", "NOTICE"):
+                    (root / name).write_text("Apache Paimon\n", encoding="utf-8")
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+                subprocess.run(
+                    [
+                        "git", "-C", str(root),
+                        "-c", "user.name=Release Test",
+                        "-c", "user.email=release-test@example.com",
+                        "-c", "commit.gpgsign=false",
+                        "-c", "core.hooksPath=/dev/null",
+                        "commit", "-qm", "Release metadata",
+                    ],
+                    check=True,
+                )
+                # The working tree must not affect validation of the committed metadata.
+                docs_path.write_text('version = "1.2.3"\n', encoding="utf-8")
+                result = subprocess.run(
+                    [
+                        "bash", str(releasing_dir / "create_source_release.sh"),
+                        "--version", "1.2.3", "--git-ref", "HEAD",
+                        "--output-dir", str(directory / "release"),
+                    ],
+                    universal_newlines=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                self.assertEqual(
+                    result.returncode, expected_returncode, msg=result.stdout + result.stderr
+                )
+                artifact = directory / "release/apache-paimon-cpp-1.2.3-src.tgz"
+                if expected_returncode == 0:
+                    with tarfile.open(artifact) as archive:
+                        member = archive.extractfile("paimon-cpp-1.2.3/docs/source/conf.py")
+                        self.assertIsNotNone(member)
+                        self.assertIn(docs_version, member.read().decode("utf-8"))
+                else:
+                    self.assertIn("documentation version", result.stderr)
+                    self.assertFalse(artifact.exists())
+
     def test_source_creator_rejects_non_gnu_gzip(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
