@@ -91,12 +91,13 @@ def check_version_list(versions: List[Dict[str, object]]) -> None:
     dev = versions[0]
     if (
         dev.get("version") != MAIN_ENTRY_VERSION
-        or dev.get("name") != "main (development)"
+        # Older Git refs retain the previous display label.
+        or dev.get("name") not in ("main", "main (development)")
         or dev.get("url") != f"{DOCS_URL}main/"
     ):
         raise VersionError(
             "the first versions.json entry must be the main-branch docs: "
-            f"name 'main (development)', version {MAIN_ENTRY_VERSION!r}, "
+            f"name 'main', version {MAIN_ENTRY_VERSION!r}, "
             f"url {DOCS_URL}main/"
         )
     stable = versions[1]

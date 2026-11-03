@@ -107,7 +107,7 @@ class ReleaseToolTest(unittest.TestCase):
             ),
             "docs/source/conf.py": b'version = "1.2.3"\n',
             "docs/source/_static/versions.json": (
-                b'[{"name": "main (development)", "version": "main", '
+                b'[{"name": "main", "version": "main", '
                 b'"url": "https://paimon.apache.org/docs/cpp/main/"}, '
                 b'{"name": "1.1.0 (stable)", "version": "", '
                 b'"url": "https://paimon.apache.org/docs/cpp/", '
@@ -361,7 +361,7 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                 "NOTICE": "Apache Paimon\n",
                 "docs/source/conf.py": 'version = "1.2.3"\n',
                 "docs/source/_static/versions.json": (
-                    '[{"name": "main (development)", "version": "main", '
+                    '[{"name": "main", "version": "main", '
                     '"url": "https://paimon.apache.org/docs/cpp/main/"}, '
                     '{"name": "1.1.0 (stable)", "version": "", '
                     '"url": "https://paimon.apache.org/docs/cpp/", '
@@ -671,7 +671,7 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             json.dumps(
                 [
                     {
-                        "name": "main (development)",
+                        "name": "main",
                         "version": "main",
                         "url": "https://paimon.apache.org/docs/cpp/main/",
                     },
@@ -705,7 +705,7 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                 versions,
                 [
                     {
-                        "name": "main (development)",
+                        "name": "main",
                         "version": "main",
                         "url": "https://paimon.apache.org/docs/cpp/main/",
                     },
