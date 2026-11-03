@@ -132,7 +132,7 @@ class CommitScannerTest : public testing::Test {
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<IndexManifestFile> index_manifest_file,
             IndexManifestFile::Create(dir_->GetFileSystem(), file_format, "zstd", path_factory,
-                                      /*bucket_mode=*/2, GetDefaultPool(), core_options_));
+                                      BucketMode::HASH_FIXED, GetDefaultPool(), core_options_));
         return std::shared_ptr<IndexManifestFile>(std::move(index_manifest_file));
     }
 

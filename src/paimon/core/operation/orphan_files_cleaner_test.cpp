@@ -456,10 +456,12 @@ TEST(OrphanFilesCleanerTest, TestTableWithIndexManifest) {
             options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
             options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
             global_index_external_path, options.IndexFileInDataFileDir(), memory_pool));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexManifestFile> index_manifest_file,
-                         IndexManifestFile::Create(file_system, options.GetManifestFormat(),
-                                                   options.GetManifestCompression(), path_factory,
-                                                   options.GetBucket(), memory_pool, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<IndexManifestFile> index_manifest_file,
+        IndexManifestFile::Create(file_system, options.GetManifestFormat(),
+                                  options.GetManifestCompression(), path_factory,
+                                  ResolveBucketMode(options.GetBucket(), table_schema), memory_pool,
+                                  options));
     ASSERT_OK_AND_ASSIGN(BinaryRow partition,
                          path_factory->ToBinaryRow({{"p0", "0"}, {"p1", "0"}}));
 

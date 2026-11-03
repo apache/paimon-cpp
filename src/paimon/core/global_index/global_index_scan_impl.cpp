@@ -33,6 +33,7 @@
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
 #include "paimon/core/global_index/global_index_live_row_filter.h"
 #include "paimon/core/index/index_file_handler.h"
+#include "paimon/core/table/bucket_mode.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/global_index/global_indexer_factory.h"
@@ -97,7 +98,8 @@ Result<std::unique_ptr<GlobalIndexScanImpl>> GlobalIndexScanImpl::Create(
         std::unique_ptr<IndexManifestFile> index_manifest_file,
         IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                   options.GetManifestCompression(), file_store_path_factory,
-                                  options.GetBucket(), pool, options));
+                                  ResolveBucketMode(options.GetBucket(), table_schema), pool,
+                                  options));
     auto index_file_handler = std::make_unique<IndexFileHandler>(
         options.GetFileSystem(), std::move(index_manifest_file),
         std::make_shared<IndexFilePathFactories>(file_store_path_factory),

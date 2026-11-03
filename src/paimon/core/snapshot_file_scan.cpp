@@ -395,11 +395,12 @@ Result<std::set<std::string>> SnapshotFileScan::ListFiles(
                              core_options.GetManifestCompression(), path_factory,
                              core_options.GetManifestTargetFileSize(), pool, core_options,
                              partition_schema));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<IndexManifestFile> index_manifest_file,
-        IndexManifestFile::Create(core_options.GetFileSystem(), core_options.GetManifestFormat(),
-                                  core_options.GetManifestCompression(), path_factory,
-                                  core_options.GetBucket(), pool, core_options));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
+                           IndexManifestFile::Create(
+                               core_options.GetFileSystem(), core_options.GetManifestFormat(),
+                               core_options.GetManifestCompression(), path_factory,
+                               ResolveBucketMode(core_options.GetBucket(), latest_schema.value()),
+                               pool, core_options));
     auto index_file_handler = std::make_unique<IndexFileHandler>(
         core_options.GetFileSystem(), std::move(index_manifest_file),
         std::make_shared<IndexFilePathFactories>(path_factory),
