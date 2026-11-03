@@ -76,11 +76,8 @@ Result<std::shared_ptr<LuceneGlobalIndexWriter>> LuceneGlobalIndexWriter::Create
             std::string tokenize_mode,
             OptionsUtils::GetValueFromMap(options, kJiebaTokenizeMode,
                                           std::string(kDefaultJiebaTokenizeMode)));
-        PAIMON_ASSIGN_OR_RAISE(std::string dictionary_dir, LuceneUtils::GetJiebaDictionaryDir());
-        auto jieba = std::make_shared<cppjieba::Jieba>(
-            dictionary_dir + "/jieba.dict.utf8", dictionary_dir + "/hmm_model.utf8",
-            dictionary_dir + "/user.dict.utf8", dictionary_dir + "/idf.utf8",
-            dictionary_dir + "/stop_words.utf8");
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const cppjieba::Jieba> jieba,
+                               LuceneUtils::GetJieba());
         JiebaTokenizerContext jieba_context(tokenize_mode,
                                             /*with_position=*/!omit_term_freq_and_positions, jieba,
                                             pool);

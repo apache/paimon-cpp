@@ -24,6 +24,7 @@
 
 #include "paimon/core/core_options.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
+#include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/objects_file.h"
 #include "paimon/format/file_format.h"
@@ -49,7 +50,7 @@ class IndexManifestFile : public ObjectsFile<IndexManifestEntry> {
     static Result<std::unique_ptr<IndexManifestFile>> Create(
         const std::shared_ptr<FileSystem>& file_system,
         const std::shared_ptr<FileFormat>& file_format, const std::string& compression,
-        const std::shared_ptr<FileStorePathFactory>& path_factory, int32_t bucket_mode,
+        const std::shared_ptr<FileStorePathFactory>& path_factory, BucketMode bucket_mode,
         const std::shared_ptr<MemoryPool>& pool, const CoreOptions& options);
 
     /// Write new index files to index manifest.
@@ -62,8 +63,9 @@ class IndexManifestFile : public ObjectsFile<IndexManifestEntry> {
                       const std::shared_ptr<ReaderBuilder>& reader_builder,
                       const std::shared_ptr<WriterBuilder>& writer_builder,
                       const std::string& file_format_identifier, const std::string& compression,
-                      const std::shared_ptr<PathFactory>& path_factory, int32_t bucket_mode,
+                      const std::shared_ptr<PathFactory>& path_factory, BucketMode bucket_mode,
                       const std::shared_ptr<Cache>& cache, const std::shared_ptr<MemoryPool>& pool);
-    const int32_t bucket_mode_;
+
+    const BucketMode bucket_mode_;
 };
 }  // namespace paimon

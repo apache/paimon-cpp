@@ -64,12 +64,14 @@ struct PAIMON_EXPORT MapSharedShreddingFieldMeta {
 ///
 /// Example: read keys "age" and "score" from MAP column `attributes`:
 ///
-///     auto builder = MapSharedShreddingAccessBuilder::Create(attributes_field);
-///     builder->AddKey("age");
-///     builder->AddKey("score");
-///     auto field = builder->Build();
+///     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<MapSharedShreddingAccessBuilder> builder,
+///                            MapSharedShreddingAccessBuilder::Create(attributes_field));
+///     PAIMON_RETURN_NOT_OK(builder->AddKey("age"));
+///     PAIMON_RETURN_NOT_OK(builder->AddKey("score"));
+///     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<struct ArrowSchema> field, builder->Build());
 ///
-/// Use the returned field in `ReadContextBuilder::SetReadSchema`.
+/// Use the resulting field in `ReadContextBuilder::SetReadSchema`. Both macros require the
+/// enclosing function to return `Status` or `Result<T>`.
 class PAIMON_EXPORT MapSharedShreddingAccessBuilder {
  public:
     /// Creates a builder bound to the original MAP field.

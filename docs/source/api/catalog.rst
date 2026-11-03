@@ -30,3 +30,12 @@ Interface
 .. doxygenclass:: paimon::Identifier
    :members:
    :undoc-members:
+
+.. doxygenclass:: paimon::Database
+   :members:
+
+.. doxygenclass:: paimon::Table
+   :members:
+
+.. doxygenstruct:: paimon::CatalogOptions
+   :members:
