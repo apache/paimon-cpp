@@ -39,6 +39,14 @@ Result<int64_t> OffsetOutputStream::GetPos() const {
     return position - start_;
 }
 
+Result<int64_t> OffsetOutputStream::GetUnderlyingPos() const {
+    const OutputStream* output = output_;
+    while (const auto* offset_output = dynamic_cast<const OffsetOutputStream*>(output)) {
+        output = offset_output->output_;
+    }
+    return output->GetPos();
+}
+
 Result<std::string> OffsetOutputStream::GetUri() const {
     return output_->GetUri();
 }

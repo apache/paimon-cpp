@@ -39,6 +39,8 @@ class PAIMON_EXPORT OffsetOutputStream : public OutputStream {
 
     Result<int64_t> Write(const char* buffer, int64_t size) override;
     Result<int64_t> GetPos() const override;
+    /// Returns the current position of the innermost stream, unwrapping nested OffsetOutputStreams.
+    Result<int64_t> GetUnderlyingPos() const;
     Result<std::string> GetUri() const override;
     Status Flush() override;
     Status Close() override;
