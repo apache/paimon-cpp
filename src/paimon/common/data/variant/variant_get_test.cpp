@@ -155,6 +155,18 @@ TEST_F(VariantGetTest, ScalarTargets) {
     ASSERT_EQ(elem->GetValue<int64_t>(), 4);
 }
 
+TEST_F(VariantGetTest, DecimalWithTrailingZerosCastsToScalarTargets) {
+    ASSERT_OK_AND_ASSIGN(auto variant, GenericVariant::FromJson("100.00", pool_));
+    ASSERT_OK_AND_ASSIGN(auto literal,
+                         VariantGetExecutor::Get(variant, "$", arrow::int64(), cast_args_));
+    ASSERT_TRUE(literal.has_value());
+    ASSERT_EQ(literal->GetValue<int64_t>(), 100);
+    ASSERT_OK_AND_ASSIGN(auto array, VariantGetExecutor::GetAsArrow(
+                                         variant, "$", arrow::field("x", arrow::decimal128(10, 2)),
+                                         cast_args_, pool_, arrow_pool_));
+    ASSERT_EQ(static_cast<const arrow::Decimal128Array&>(*array).FormatValue(0), "100.00");
+}
+
 TEST_F(VariantGetTest, ContainerToJsonString) {
     ASSERT_EQ(GetString("$.object", arrow::utf8()),
               "{\"address\":{\"city\":\"Hangzhou\",\"street\":\"Main St\"},\"age\":2,\"name\":"

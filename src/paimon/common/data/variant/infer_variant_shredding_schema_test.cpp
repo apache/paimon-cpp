@@ -21,6 +21,7 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
@@ -532,6 +533,106 @@ TEST_F(InferVariantShreddingSchemaTest, ObjectWithAllRareFieldsStaysUnshredded) 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::DataType> inferred,
                          InferColumn(strict_infer, samples));
     ASSERT_EQ(inferred, nullptr);
+}
+
+TEST_F(InferVariantShreddingSchemaTest, AdaptiveScalingPreservesNestedFieldRatios) {
+    auto samples =
+        Samples({R"({"items":[{"a":1}],"missing":null})", R"({"items":[{"a":2}],"missing":null})",
+                 R"({"items":[{"a":3}],"missing":null})", R"({"items":[{"a":4}],"missing":null})"});
+    auto max_fields = infer_.CreateMaxFieldsBudget();
+    ASSERT_OK_AND_ASSIGN(
+        auto initial, infer_.InferInitialColumn(samples, /*effective_sample_size=*/2, &max_fields));
+    auto expected = arrow::struct_(
+        {arrow::field("items", arrow::list(arrow::struct_({arrow::field("a", arrow::int64())}))),
+         arrow::field("missing", arrow::null())});
+    ASSERT_TRUE(initial.selected_schema->Equals(*expected)) << initial.selected_schema->ToString();
+    ASSERT_EQ(initial.evidence.root_value_count, 2);
+
+    auto current =
+        Samples({R"({"items":[{"a":5}],"new":true})", R"({"items":[{"a":6}],"new":true})"});
+    max_fields = infer_.CreateMaxFieldsBudget();
+    ASSERT_OK_AND_ASSIGN(auto updated, infer_.InferAdaptiveColumn(
+                                           initial.evidence, initial.selected_schema, current,
+                                           /*effective_sample_size=*/2, /*admission_ratio=*/0.6,
+                                           /*retention_ratio=*/0.2, &max_fields));
+    // The old null field is retained at 50%; the new field is below its admission threshold.
+    ASSERT_TRUE(updated.selected_schema->Equals(*expected)) << updated.selected_schema->ToString();
+    ASSERT_EQ(updated.evidence.root_value_count, 2);
+}
+
+TEST_F(InferVariantShreddingSchemaTest, AdaptiveDecimalMergingAndTypeChanges) {
+    struct TestCase {
+        const char* previous;
+        const char* current;
+        std::shared_ptr<arrow::DataType> expected;
+    };
+    const std::vector<TestCase> cases = {
+        {"1.25", "2.125", arrow::decimal128(19, 3)},
+        {"1.25", "1000000000000000000", arrow::decimal128(21, 2)},
+        {R"("old")", "1.25", arrow::decimal128(18, 2)},
+        {R"("old")", "1234567890123456789.125", arrow::decimal128(38, 3)},
+    };
+    for (const auto& test_case : cases) {
+        SCOPED_TRACE(std::string(test_case.previous) + " -> " + test_case.current);
+        auto max_fields = infer_.CreateMaxFieldsBudget();
+        ASSERT_OK_AND_ASSIGN(auto initial,
+                             infer_.InferInitialColumn(Samples({test_case.previous}),
+                                                       /*effective_sample_size=*/10, &max_fields));
+        max_fields = infer_.CreateMaxFieldsBudget();
+        ASSERT_OK_AND_ASSIGN(auto updated,
+                             infer_.InferAdaptiveColumn(
+                                 initial.evidence, initial.selected_schema,
+                                 Samples({test_case.current}), /*effective_sample_size=*/10,
+                                 /*admission_ratio=*/0.1, /*retention_ratio=*/0.05, &max_fields));
+        ASSERT_TRUE(updated.selected_schema->Equals(*test_case.expected))
+            << updated.selected_schema->ToString();
+    }
+}
+
+TEST_F(InferVariantShreddingSchemaTest, AdaptiveArraySelectionSurvivesMixedHistoryAndEmptyBatch) {
+    auto max_fields = infer_.CreateMaxFieldsBudget();
+    ASSERT_OK_AND_ASSIGN(
+        auto previous,
+        infer_.InferInitialColumn(Samples({"1"}), /*effective_sample_size=*/10, &max_fields));
+    auto expected = arrow::list(arrow::int64());
+    const std::vector<std::vector<const char*>> batches = {{"[1]"}, {"[2]"}, {}};
+    for (const auto& batch : batches) {
+        max_fields = infer_.CreateMaxFieldsBudget();
+        ASSERT_OK_AND_ASSIGN(
+            auto updated,
+            infer_.InferAdaptiveColumn(previous.evidence, previous.selected_schema, Samples(batch),
+                                       /*effective_sample_size=*/10, /*admission_ratio=*/0.1,
+                                       /*retention_ratio=*/0.05, &max_fields));
+        ASSERT_TRUE(updated.selected_schema->Equals(*expected))
+            << updated.selected_schema->ToString();
+        previous = std::move(updated);
+    }
+}
+
+TEST_F(InferVariantShreddingSchemaTest, AdaptiveEmptyAndNullSamplesStayUnshredded) {
+    const std::vector<std::vector<const char*>> batches = {{}, {nullptr}, {"null", "null"}};
+    for (const auto& batch : batches) {
+        auto max_fields = infer_.CreateMaxFieldsBudget();
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             infer_.InferAdaptiveColumn(
+                                 /*previous_evidence=*/{}, /*previous_selected=*/nullptr,
+                                 Samples(batch), /*effective_sample_size=*/1,
+                                 /*admission_ratio=*/0.1, /*retention_ratio=*/0.05, &max_fields));
+        ASSERT_TRUE(result.selected_schema->Equals(*arrow::null()));
+    }
+}
+
+TEST_F(InferVariantShreddingSchemaTest, AdaptiveWidthLimitLeavesColumnUnshredded) {
+    InferVariantShreddingSchema narrow_infer{empty_logical_schema_, pool_,
+                                             /*max_schema_width=*/1, /*max_schema_depth=*/50,
+                                             /*min_field_cardinality_ratio=*/0.1};
+    auto max_fields = narrow_infer.CreateMaxFieldsBudget();
+    ASSERT_OK_AND_ASSIGN(
+        auto result, narrow_infer.InferAdaptiveColumn(
+                         /*previous_evidence=*/{}, /*previous_selected=*/nullptr, Samples({"1"}),
+                         /*effective_sample_size=*/10,
+                         /*admission_ratio=*/0.1, /*retention_ratio=*/0.05, &max_fields));
+    ASSERT_TRUE(result.selected_schema->Equals(*arrow::null()));
 }
 
 }  // namespace paimon::test
