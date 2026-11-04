@@ -70,6 +70,12 @@ TEST(FileIndexReaderTest, TestDefaultIndexReader) {
     ASSERT_TRUE(reader.VisitIn({lit0, lit1}).value()->IsRemain().value());
     ASSERT_TRUE(reader.VisitNotIn({lit0, lit1}).value()->IsRemain().value());
 
+    Literal text(FieldType::STRING, "abc", 3);
+    ASSERT_TRUE(reader.VisitStartsWith(text).value()->IsRemain().value());
+    ASSERT_TRUE(reader.VisitEndsWith(text).value()->IsRemain().value());
+    ASSERT_TRUE(reader.VisitContains(text).value()->IsRemain().value());
+    ASSERT_TRUE(reader.VisitLike(text).value()->IsRemain().value());
+
     std::shared_ptr<VectorSearch> vector_search =
         std::make_shared<VectorSearch>("embedding", 1, std::vector<float>{1.0f}, nullptr, nullptr,
                                        std::nullopt, std::map<std::string, std::string>{});

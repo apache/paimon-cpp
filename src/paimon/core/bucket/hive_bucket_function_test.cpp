@@ -142,6 +142,28 @@ TEST_F(HiveBucketFunctionTest, TestHiveBucketFunction) {
     ASSERT_EQ(1, func->Bucket(row, 8));
 }
 
+TEST_F(HiveBucketFunctionTest, TestDecimalHighBitsCompatibleWithJava) {
+    std::vector<HiveFieldInfo> field_infos = {HiveFieldInfo(FieldType::DECIMAL, 10, 0)};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<HiveBucketFunction> func,
+                         HiveBucketFunction::Create(field_infos));
+    auto pool = GetDefaultPool();
+    struct TestCase {
+        int64_t unscaled;
+        int32_t expected_bucket;
+    };
+    // Verified with Java's normalized decimal hash and (hash & INT32_MAX) % 1000.
+    const TestCase cases[] = {{1, 31},
+                              {4294967296LL, 961},
+                              {-4294967296LL, 687},
+                              {4294967297LL, 992},
+                              {8589934593LL, 953}};
+    for (const auto& test_case : cases) {
+        BinaryRow row = BinaryRowGenerator::GenerateRow(
+            {Decimal::FromUnscaledLong(test_case.unscaled, 10, 0)}, pool.get());
+        ASSERT_EQ(func->Bucket(row, 1000), test_case.expected_bucket) << test_case.unscaled;
+    }
+}
+
 /// Test matching Java: testHiveBucketFunctionWithNulls
 TEST_F(HiveBucketFunctionTest, TestHiveBucketFunctionWithNulls) {
     std::vector<FieldType> field_types = {FieldType::INT, FieldType::STRING};
