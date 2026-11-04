@@ -87,6 +87,70 @@ TEST(FileSystemCatalogTest, TestDatabaseExists) {
     ASSERT_EQ(db_location, PathUtil::JoinPath(dir->Str(), "db1.db"));
 }
 
+TEST(FileSystemCatalogTest, TestGlobalSystemTableDiscoveryAndSchema) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_EQ(options, catalog.GetOptions());
+    ASSERT_OK_AND_ASSIGN(bool exists, catalog.DatabaseExists("sys"));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(bool system_table, catalog.IsSystemTable(Identifier("sys", "tables")));
+    ASSERT_TRUE(system_table);
+    ASSERT_OK_AND_ASSIGN(exists, catalog.TableExists(Identifier("sys", "tables")));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, catalog.TableExists(Identifier("sys", "missing")));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, catalog.TableExists(Identifier("sys", "catalog_options")));
+    ASSERT_FALSE(exists);
+
+    options[CatalogOptionsSystemTable::kEnabledOption] = "true";
+    FileSystemCatalog enabled_catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK_AND_ASSIGN(exists, enabled_catalog.TableExists(Identifier("sys", "catalog_options")));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Schema> schema,
+                         enabled_catalog.LoadTableSchema(Identifier("sys", "catalog_options")));
+    ASSERT_NE(nullptr, std::dynamic_pointer_cast<SystemTableSchema>(schema));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_schema, schema->GetArrowSchema());
+    auto arrow_schema = arrow::ImportSchema(c_schema.get());
+    ASSERT_TRUE(arrow_schema.ok()) << arrow_schema.status().ToString();
+    ASSERT_TRUE(arrow_schema.ValueOrDie()->Equals(*arrow::schema(
+        {arrow::field("key", arrow::utf8(), false), arrow::field("value", arrow::utf8(), false)})));
+}
+
+TEST(FileSystemCatalogTest, TestTableDiscoveryWithoutSchemaZero) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<FileSystem> fs = core_options.GetFileSystem();
+    FileSystemCatalog catalog(fs, dir->Str(), options);
+    ASSERT_OK(catalog.CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "evolved");
+    ASSERT_OK_AND_ASSIGN(std::string table_path, catalog.GetTableLocation(identifier));
+    SchemaManager schema_manager(fs, table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                         TableSchema::Create(3, arrow::schema({arrow::field("id", arrow::int32())}),
+                                             {}, {}, options));
+    ASSERT_OK_AND_ASSIGN(std::string json, schema->ToJsonString());
+    ASSERT_OK(fs->AtomicStore(schema_manager.ToSchemaPath(3), json));
+    // An incomplete table directory must not appear in listings alongside the evolved table.
+    std::string incomplete_path = PathUtil::JoinPath(dir->Str(), "db1.db/incomplete");
+    ASSERT_OK(fs->Mkdirs(incomplete_path));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> tables, catalog.ListTables("db1"));
+    ASSERT_EQ((std::vector<std::string>{"evolved"}), tables);
+    ASSERT_OK_AND_ASSIGN(bool exists, catalog.TableExists(identifier));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Schema> loaded, catalog.LoadTableSchema(identifier));
+    std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(loaded);
+    ASSERT_NE(nullptr, data_schema);
+    ASSERT_EQ(3, data_schema->Id());
+    ASSERT_OK(catalog.DropTable(Identifier("db1", "incomplete"), true));
+    ASSERT_OK_AND_ASSIGN(exists, fs->Exists(incomplete_path));
+    ASSERT_TRUE(exists);
+}
+
 TEST(FileSystemCatalogTest, TestInvalidCreateDatabase) {
     {
         std::map<std::string, std::string> options;

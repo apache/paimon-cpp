@@ -20,11 +20,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "gtest/gtest.h"
@@ -178,6 +180,63 @@ TEST_F(RestCredentialProviderTest, RefreshesWithinTheSafeTime) {
     ASSERT_OK_AND_ASSIGN(Credentials credentials, provider->GetCredentials());
     ASSERT_EQ("ak-2", credentials.at("fs.oss.accessKeyId"));
     ASSERT_EQ(2, state_->request_count.load());
+}
+
+TEST_F(RestCredentialProviderTest, ConcurrentRefreshReusesTheTokenLoadedByAnotherCaller) {
+    std::atomic<int32_t> load_count{0};
+    std::mutex mutex;
+    std::condition_variable readers_arrived;
+    int32_t clock_calls = 0;
+    bool readers_synchronized = true;
+    const int64_t refreshed_expiration =
+        kExpiresAtMillis + 10 * RestApi::kTokenExpirationSafeTimeMillis;
+    RestCredentialProvider provider(
+        [&]() -> Result<GetTableTokenResponse> {
+            if (load_count.fetch_add(1) == 0) {
+                return GetTableTokenResponse({{"fs.oss.accessKeyId", "ak-1"}}, kExpiresAtMillis);
+            }
+            return GetTableTokenResponse({{"fs.oss.accessKeyId", "ak-2"}}, refreshed_expiration);
+        },
+        Identifier("db1", "t1"),
+        [&]() {
+            std::unique_lock<std::mutex> lock(mutex);
+            // Both callers must observe the expired token under their shared locks before
+            // either can obtain the write lock and refresh it.
+            if (++clock_calls <= 2) {
+                readers_arrived.notify_all();
+                if (!readers_arrived.wait_for(lock, std::chrono::seconds(10),
+                                              [&]() { return clock_calls >= 2; })) {
+                    readers_synchronized = false;
+                }
+            }
+            return std::chrono::system_clock::time_point(
+                std::chrono::milliseconds(kExpiresAtMillis));
+        });
+
+    // An absent token loads without consulting the clock. The seeded token is already
+    // expired at the injected time, so both concurrent callers will need a refresh.
+    ASSERT_OK_AND_ASSIGN(RestToken initial, provider.ValidToken());
+    ASSERT_EQ("ak-1", initial.token.at("fs.oss.accessKeyId"));
+    ASSERT_EQ(1, load_count.load());
+
+    std::optional<Result<RestToken>> first;
+    std::optional<Result<RestToken>> second;
+    std::thread first_caller([&]() { first.emplace(provider.ValidToken()); });
+    std::thread second_caller([&]() { second.emplace(provider.ValidToken()); });
+    first_caller.join();
+    second_caller.join();
+
+    ASSERT_TRUE(readers_synchronized);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    ASSERT_OK(first->status());
+    ASSERT_OK(second->status());
+    ASSERT_EQ("ak-2", first->value().token.at("fs.oss.accessKeyId"));
+    ASSERT_EQ("ak-2", second->value().token.at("fs.oss.accessKeyId"));
+    ASSERT_EQ(refreshed_expiration, first->value().expires_at_millis);
+    ASSERT_EQ(refreshed_expiration, second->value().expires_at_millis);
+    // One initial load and one refresh, even though both callers observed expiration.
+    ASSERT_EQ(2, load_count.load());
 }
 
 TEST_F(RestCredentialProviderTest, ExpiredTokenReloadsOnEveryCall) {
