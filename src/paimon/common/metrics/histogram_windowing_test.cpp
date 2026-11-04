@@ -35,7 +35,7 @@ class HistogramWindowingImplTest : public ::testing::Test {
 };
 
 TEST_F(HistogramWindowingImplTest, TestAdvanceAndAggregateAcrossWindows) {
-    auto h = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
+    auto h = CreateHistogram(/*num_windows=*/2, /*micros_per_window=*/1000,
                              /*min_num_per_window=*/1);
     h.Add(1);
     now_micros_ += 1000;
@@ -46,25 +46,37 @@ TEST_F(HistogramWindowingImplTest, TestAdvanceAndAggregateAcrossWindows) {
     EXPECT_DOUBLE_EQ(s.min, 1);
     EXPECT_DOUBLE_EQ(s.max, 2);
     EXPECT_NEAR(s.average, 1.5, 1e-12);
+
+    now_micros_ += 1000;
+    h.Add(3);
+    ASSERT_EQ(h.GetStats().count, 2);
+    ASSERT_DOUBLE_EQ(h.GetStats().sum, 5);
 }
 
-TEST_F(HistogramWindowingImplTest, TestResetWhenBeyondMaxSpan) {
-    auto h = CreateHistogram(/*num_windows=*/2, /*micros_per_window=*/1000,
-                             /*min_num_per_window=*/1);
-    h.Add(1);
-    now_micros_ += 1000;
-    h.Add(2);
-    ASSERT_EQ(h.GetStats().count, 2);
+TEST_F(HistogramWindowingImplTest, TestResetAtOrBeyondMaxSpan) {
+    for (const uint64_t elapsed_micros : {2000, 3000}) {
+        SCOPED_TRACE(elapsed_micros);
+        auto h = CreateHistogram(/*num_windows=*/2, /*micros_per_window=*/1000,
+                                 /*min_num_per_window=*/1);
+        h.Add(1);
+        now_micros_ += 1000;
+        h.Add(2);
+        ASSERT_EQ(h.GetStats().count, 2);
 
-    // Move beyond max_span relative to the current window start.
-    now_micros_ += 3000;
-    h.Add(3);
+        // Reach or exceed max_span (2ms) after advancing to the second window.
+        now_micros_ += elapsed_micros;
+        h.Add(3);
 
-    HistogramStats s = h.GetStats();
-    EXPECT_EQ(s.count, 1);
-    EXPECT_DOUBLE_EQ(s.min, 3);
-    EXPECT_DOUBLE_EQ(s.max, 3);
-    EXPECT_NEAR(s.average, 3.0, 1e-12);
+        HistogramStats s = h.GetStats();
+        EXPECT_EQ(s.count, 1);
+        EXPECT_DOUBLE_EQ(s.min, 3);
+        EXPECT_DOUBLE_EQ(s.max, 3);
+        EXPECT_NEAR(s.average, 3.0, 1e-12);
+
+        // The new sample expires relative to the reset time.
+        now_micros_ += 1000;
+        ASSERT_EQ(h.GetStats().count, 1);
+    }
 }
 
 TEST_F(HistogramWindowingImplTest, TestExpiresAtMaxSpan) {
@@ -84,20 +96,25 @@ TEST_F(HistogramWindowingImplTest, TestExpiresAtMaxSpan) {
 }
 
 TEST_F(HistogramWindowingImplTest, TestMergeSameParams) {
-    auto h1 = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
-                              /*min_num_per_window=*/1);
-    auto h2 = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
-                              /*min_num_per_window=*/1);
-    h1.Add(1);
-    h1.Add(2);
-    h2.Add(3);
+    auto source = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
+                                  /*min_num_per_window=*/1);
+    source.Add(3);
+    now_micros_ += 1000;
+    auto target = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
+                                  /*min_num_per_window=*/1);
+    target.Add(1);
+    target.Add(2);
 
-    h1.Merge(h2);
-    HistogramStats s = h1.GetStats();
+    target.Merge(source);
+    HistogramStats s = target.GetStats();
     EXPECT_EQ(s.count, 3);
     EXPECT_DOUBLE_EQ(s.sum, 6);
     EXPECT_DOUBLE_EQ(s.min, 1);
     EXPECT_DOUBLE_EQ(s.max, 3);
+
+    now_micros_ += 3000;
+    ASSERT_EQ(target.GetStats().count, 2);
+    ASSERT_DOUBLE_EQ(target.GetStats().sum, 3);
 }
 
 TEST_F(HistogramWindowingImplTest, TestMergeDifferentParamsFallback) {
@@ -131,6 +148,63 @@ TEST_F(HistogramWindowingImplTest, TestMergePlainHistogram) {
     EXPECT_DOUBLE_EQ(s.max, 20);
 }
 
+TEST_F(HistogramWindowingImplTest, TestClockRollback) {
+    auto h = CreateHistogram(/*num_windows=*/3, /*micros_per_window=*/1000,
+                             /*min_num_per_window=*/1);
+    h.Add(1);
+    HistogramImpl plain;
+    plain.Add(2);
+    auto same = CreateHistogram(/*num_windows=*/3, /*micros_per_window=*/1000,
+                                /*min_num_per_window=*/1);
+    same.Add(3);
+    auto different = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
+                                     /*min_num_per_window=*/1);
+    different.Add(4);
+
+    now_micros_ -= 1000;
+    h.Add(5);
+    h.Merge(plain);
+    h.Merge(same);
+    h.Merge(different);
+    now_micros_ += 1000;
+    ASSERT_EQ(h.GetStats().count, 1);
+    ASSERT_DOUBLE_EQ(h.GetStats().sum, 1);
+    h.Add(6);
+    ASSERT_EQ(h.GetStats().count, 2);
+    ASSERT_DOUBLE_EQ(h.GetStats().sum, 7);
+}
+
+TEST_F(HistogramWindowingImplTest, TestZeroWindows) {
+    auto h = CreateHistogram(/*num_windows=*/0, /*micros_per_window=*/1000,
+                             /*min_num_per_window=*/1);
+    h.Add(1);
+    HistogramImpl source;
+    source.Add(2);
+    h.Merge(source);
+    ASSERT_EQ(h.GetStats().count, 0);
+    ASSERT_DOUBLE_EQ(h.GetStats().sum, 0);
+    auto cloned = h.Clone();
+    ASSERT_TRUE(cloned);
+    cloned->Add(3);
+    ASSERT_EQ(cloned->GetStats().count, 0);
+}
+
+TEST_F(HistogramWindowingImplTest, TestZeroDuration) {
+    auto h = CreateHistogram(/*num_windows=*/3, /*micros_per_window=*/0,
+                             /*min_num_per_window=*/1);
+    h.Add(1);
+    now_micros_ += 1000000;
+    h.Add(2);
+    HistogramImpl source;
+    source.Add(3);
+    h.Merge(source);
+    ASSERT_EQ(h.GetStats().count, 3);
+    ASSERT_DOUBLE_EQ(h.GetStats().sum, 6);
+    now_micros_ += 1000000;
+    ASSERT_EQ(h.GetStats().count, 3);
+    ASSERT_DOUBLE_EQ(h.GetStats().sum, 6);
+}
+
 TEST_F(HistogramWindowingImplTest, TestMinNumPerWindow100Case) {
     // Validate min_num_per_window behavior:
     // - window advancement is gated by sample count
@@ -152,9 +226,14 @@ TEST_F(HistogramWindowingImplTest, TestMinNumPerWindow100Case) {
     EXPECT_DOUBLE_EQ(s1.min, 1);
     EXPECT_DOUBLE_EQ(s1.max, 2);
 
+    h.Add(3);
+    now_micros_ += 75000;
+    ASSERT_EQ(h.GetStats().count, 1);
+    ASSERT_DOUBLE_EQ(h.GetStats().sum, 3);
+
     // Cross enough time so that aligned_now - current_window_start >= max_span
     // (max_span = num_windows * micros_per_window = 150ms here).
-    now_micros_ += 175000;
+    now_micros_ += 100000;
     h.Add(1000);
 
     HistogramStats s2 = h.GetStats();
@@ -180,32 +259,12 @@ TEST_F(HistogramWindowingImplTest, TestLargeDatasetInSingleWindow) {
     EXPECT_NEAR(s.average, (static_cast<double>(n) + 1.0) / 2.0, 1e-12);
 }
 
-TEST_F(HistogramWindowingImplTest, TestCrossMaxSpanAfterAdvance) {
-    // Build multiple windows, then cross max_span so that all previous windows are dropped.
-    auto h = CreateHistogram(/*num_windows=*/2, /*micros_per_window=*/2000,
-                             /*min_num_per_window=*/1);
-
-    h.Add(1);
-    now_micros_ += 2000;
-    h.Add(2);  // should advance to next window.
-    ASSERT_EQ(h.GetStats().count, 2);
-
-    // Reach max_span (4ms) relative to the current window start.
-    now_micros_ += 4000;
-    h.Add(3);  // should reset.
-
-    HistogramStats s = h.GetStats();
-    EXPECT_EQ(s.count, 1);
-    EXPECT_DOUBLE_EQ(s.min, 3);
-    EXPECT_DOUBLE_EQ(s.max, 3);
-    EXPECT_DOUBLE_EQ(s.sum, 3);
-}
-
 TEST_F(HistogramWindowingImplTest, TestCloneConsistencyAndIndependence) {
     auto h = CreateHistogram(/*num_windows=*/4, /*micros_per_window=*/1000,
-                             /*min_num_per_window=*/1);
+                             /*min_num_per_window=*/2);
     h.Add(1);
     h.Add(2);
+    now_micros_ += 1000;
     h.Add(3);
     h.Add(4);
 
@@ -228,6 +287,7 @@ TEST_F(HistogramWindowingImplTest, TestCloneConsistencyAndIndependence) {
     EXPECT_DOUBLE_EQ(cloned_before.p99, before.p99);
     EXPECT_DOUBLE_EQ(cloned_before.p999, before.p999);
 
+    now_micros_ += 1000;
     // Mutating original should not affect cloned.
     h.Add(100);
     const HistogramStats after_original = h.GetStats();
@@ -242,8 +302,14 @@ TEST_F(HistogramWindowingImplTest, TestCloneConsistencyAndIndependence) {
     EXPECT_EQ(after_original2.count, after_original.count);
     EXPECT_EQ(after_clone2.count, cloned_before.count + 1);
 
+    now_micros_ += 3000;
+    ASSERT_EQ(h.GetStats().count, 1);
+    ASSERT_DOUBLE_EQ(h.GetStats().sum, 100);
+    ASSERT_EQ(cloned->GetStats().count, 1);
+    ASSERT_DOUBLE_EQ(cloned->GetStats().sum, 200);
+
     // Clones share the same time source, while keeping independent samples.
-    now_micros_ += 4000;
+    now_micros_ += 1000;
     EXPECT_EQ(h.GetStats().count, 0);
     EXPECT_EQ(cloned->GetStats().count, 0);
 }

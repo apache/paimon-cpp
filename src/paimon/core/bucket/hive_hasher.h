@@ -52,7 +52,8 @@ class HiveHasher {
     }
 
     /// Normalize a Decimal value for Hive-compatible hashing.
-    /// This implements the same logic as HiveHasher.normalizeDecimal in Java.
+    /// This follows HiveHasher.normalizeDecimal in Java, except that integer-precision overflow
+    /// returns 0 here while Java normalization returns null.
     ///
     /// The normalization process:
     /// 1. Strip trailing zeros
@@ -61,12 +62,9 @@ class HiveHasher {
     /// 4. Round if necessary using HALF_UP
     ///
     /// @param decimal The decimal value to normalize.
-    /// @return The hash code of the normalized decimal, computed as Java BigDecimal.hashCode().
+    /// @return Java BigDecimal.hashCode() for the normalized decimal, or 0 if integer precision
+    /// exceeds Hive's 38-digit limit.
     static uint32_t HashDecimal(const Decimal& decimal) {
-        // Java BigDecimal.hashCode() = unscaledValue.intValue() * 31 + scale
-        // For compact decimals (precision <= 18), we can use the long value directly.
-        // For non-compact decimals, we need to handle the 128-bit value.
-
         // First normalize: strip trailing zeros and limit scale
         int32_t scale = decimal.Scale();
         auto value = decimal.Value();
@@ -106,7 +104,7 @@ class HiveHasher {
         int32_t int_digits = total_digits - scale;
 
         if (int_digits > HIVE_DECIMAL_MAX_PRECISION) {
-            // Overflow, return 0 (null equivalent)
+            // Preserve C++'s zero fallback when Java normalization would return null.
             return 0;
         }
 
@@ -119,17 +117,19 @@ class HiveHasher {
         }
 
         if (scale > max_scale) {
-            // Need to round: scale down with HALF_UP rounding
+            // Discard lower digits without rounding, then apply HALF_UP once at the
+            // final discarded digit. Rounding each digit can introduce a second carry.
             int32_t scale_diff = scale - max_scale;
-            for (int32_t i = 0; i < scale_diff; i++) {
-                auto quotient = value / 10;
-                auto remainder = value - quotient * 10;
-                if (remainder < 0) remainder = -remainder;
-                if (remainder >= 5) {
-                    value = quotient + (value < 0 ? -1 : 1);
-                } else {
-                    value = quotient;
-                }
+            for (int32_t i = 1; i < scale_diff && value != 0; i++) {
+                value /= 10;
+            }
+            auto quotient = value / 10;
+            auto remainder = value - quotient * 10;
+            if (remainder < 0) remainder = -remainder;
+            if (remainder >= 5) {
+                value = quotient + (value < 0 ? -1 : 1);
+            } else {
+                value = quotient;
             }
             scale = max_scale;
 
@@ -150,10 +150,24 @@ class HiveHasher {
         }
 
         // Compute Java BigDecimal.hashCode():
-        // hashCode = intValue(unscaledValue) * 31 + scale
-        // intValue() returns the low 32 bits of the value
-        auto int_value = static_cast<uint32_t>(value);
-        return int_value * 31U + static_cast<uint32_t>(scale);
+        // 1. Split the absolute unscaled value into 32-bit words, from most to least significant.
+        // 2. Starting at h = 0, fold each word with h = h * 31 + word (BigInteger hash).
+        // 3. Apply the original sign, then return h * 31 + the normalized scale.
+        // All arithmetic wraps modulo 2^32, preserving Java int hash bits.
+        // Leading zero words have no effect. For a 64-bit magnitude, the formula is
+        // sign * (high32 * 31 + low32) * 31 + scale.
+        // Example: unscaled = 2^32, scale = 0 -> (1 * 31 + 0) * 31 = 961.
+        abs_value = value < 0
+                        ? static_cast<unsigned __int128>(0) - static_cast<unsigned __int128>(value)
+                        : static_cast<unsigned __int128>(value);
+        uint32_t unscaled_hash = 0;
+        for (int32_t i = 3; i >= 0; i--) {
+            unscaled_hash = unscaled_hash * 31U + static_cast<uint32_t>(abs_value >> (i * 32));
+        }
+        if (value < 0) {
+            unscaled_hash = 0U - unscaled_hash;
+        }
+        return unscaled_hash * 31U + static_cast<uint32_t>(scale);
     }
 
  private:

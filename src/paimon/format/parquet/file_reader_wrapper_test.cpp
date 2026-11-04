@@ -23,6 +23,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -65,8 +66,9 @@ namespace paimon::parquet::test {
 // Tracks positional reads (Read at offset / ReadAsync) issued through the stream.
 class ReadTrackingInputStream : public InputStream {
  public:
-    explicit ReadTrackingInputStream(std::shared_ptr<InputStream> input)
-        : input_(std::move(input)) {}
+    explicit ReadTrackingInputStream(std::shared_ptr<InputStream> input,
+                                     bool fail_first_async_read = false)
+        : input_(std::move(input)), fail_first_async_read_(fail_first_async_read) {}
 
     Status Seek(int64_t offset, SeekOrigin origin) override {
         return input_->Seek(offset, origin);
@@ -88,6 +90,13 @@ class ReadTrackingInputStream : public InputStream {
     void ReadAsync(char* buffer, int64_t size, int64_t offset,
                    std::function<void(Status)>&& callback) override {
         RecordPositionalRead(offset, size);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (++async_read_calls_ == 1 && fail_first_async_read_) {
+                // Exercise the synchronous exception path in Parquet prebuffering.
+                throw std::runtime_error("injected prebuffer read failure");
+            }
+        }
         input_->ReadAsync(buffer, size, offset, std::move(callback));
     }
 
@@ -108,6 +117,11 @@ class ReadTrackingInputStream : public InputStream {
         return positional_read_bytes_;
     }
 
+    int64_t GetAsyncReadCalls() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return async_read_calls_;
+    }
+
  private:
     void RecordPositionalRead(int64_t offset, int64_t size) {
         (void)offset;
@@ -118,6 +132,8 @@ class ReadTrackingInputStream : public InputStream {
     std::shared_ptr<InputStream> input_;
     mutable std::mutex mutex_;
     int64_t positional_read_bytes_ = 0;
+    int64_t async_read_calls_ = 0;
+    bool fail_first_async_read_;
 };
 
 class FileReaderWrapperTest : public ::testing::Test {
@@ -295,6 +311,10 @@ TEST_F(FileReaderWrapperTest, PredicateReadsOnlyItsPageIndexesAndKeepsPayloadRea
     ASSERT_TRUE(index_ranges.column_index.has_value());
     ASSERT_TRUE(index_ranges.offset_index.has_value());
     int64_t bytes_before = tracking_input->GetPositionalReadBytes();
+    ASSERT_OK_AND_ASSIGN(auto all_ranges, reader->CalculateFilteredRowRanges(0, nullptr, {}));
+    ASSERT_EQ((std::vector<RowRanges::Range>{{0, 999}}), all_ranges.GetRanges());
+    ASSERT_EQ(bytes_before, tracking_input->GetPositionalReadBytes());
+
     auto predicate = PredicateBuilder::Equal(1, "col2", FieldType::INT, Literal(25));
     ASSERT_OK_AND_ASSIGN(auto ranges, reader->CalculateFilteredRowRanges(
                                           0, predicate, {{"col1", 0}, {"col2", 1}, {"col3", 2}}));
@@ -305,6 +325,30 @@ TEST_F(FileReaderWrapperTest, PredicateReadsOnlyItsPageIndexesAndKeepsPayloadRea
     // The predicate's read hint must not restrict subsequent payload offset-index reads.
     ASSERT_OK(reader->PrepareForReading(
         {TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, ranges)}, {0, 1, 2}));
+    ASSERT_OK_AND_ASSIGN(auto batch, reader->Next());
+    ASSERT_TRUE(batch);
+    auto expected = PrepareArray(PrepareArrowSchema().second, /*record_batch_size=*/10,
+                                 /*offset=*/20);
+    auto expected_batch = arrow::RecordBatch::FromStructArray(expected);
+    ASSERT_TRUE(expected_batch.ok());
+    ASSERT_TRUE(batch->Equals(*expected_batch.ValueOrDie()));
+    ASSERT_OK_AND_ASSIGN(auto end, reader->Next());
+    ASSERT_FALSE(end);
+}
+
+TEST_F(FileReaderWrapperTest, PreBufferExceptionFallsBackToReadableData) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "prebuffer-failure.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/200, /*enable_page_index=*/true);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path));
+    auto failing_input =
+        std::make_shared<ReadTrackingInputStream>(input, /*fail_first_async_read=*/true);
+    ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapperOnStream(failing_input));
+    ASSERT_EQ(0, failing_input->GetAsyncReadCalls());
+    RowRanges ranges(RowRanges::Range(20, 29));
+    ASSERT_OK(reader->PrepareForReading(
+        {TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, ranges)}, {0, 1, 2}));
+    ASSERT_EQ(1, failing_input->GetAsyncReadCalls());
+
     ASSERT_OK_AND_ASSIGN(auto batch, reader->Next());
     ASSERT_TRUE(batch);
     auto expected = PrepareArray(PrepareArrowSchema().second, /*record_batch_size=*/10,

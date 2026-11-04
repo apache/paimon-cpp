@@ -21,6 +21,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/common/utils/rapidjson_util.h"
@@ -73,6 +74,18 @@ TEST(RestMessagesTest, ConfigResponseMerge) {
     ASSERT_EQ(0, merged.count("unset-absent"));
 }
 
+TEST(RestMessagesTest, ConfigResponseMissingOrNullMaps) {
+    const std::vector<std::string> inputs = {"{}", R"({"defaults": null, "overrides": null})"};
+    const std::map<std::string, std::string> client = {{"client", "client-value"}};
+    for (const auto& json : inputs) {
+        SCOPED_TRACE(json);
+        ASSERT_OK_AND_ASSIGN(ConfigResponse config, ConfigResponse::FromJsonString(json));
+        ASSERT_TRUE(config.GetDefaults().empty());
+        ASSERT_TRUE(config.GetOverrides().empty());
+        ASSERT_EQ(client, config.Merge(client));
+    }
+}
+
 TEST(RestMessagesTest, ListResponsesParse) {
     ASSERT_OK_AND_ASSIGN(ListDatabasesResponse databases,
                          ListDatabasesResponse::FromJsonString(
@@ -92,7 +105,7 @@ TEST(RestMessagesTest, ListResponsesParse) {
     ASSERT_FALSE(null_token.NextPageToken().has_value());
 }
 
-TEST(RestMessagesTest, ListSnapshotsResponseParse) {
+TEST(RestMessagesTest, ListSnapshotsResponseRoundTrip) {
     std::string json = R"({
         "snapshots": [{
             "version": 3,
@@ -137,9 +150,15 @@ TEST(RestMessagesTest, ListSnapshotsResponseParse) {
     SnapshotInfo compact_info = response.Data()[1].ToSnapshotInfo();
     ASSERT_EQ(SnapshotInfo::CommitKind::COMPACT, compact_info.commit_kind);
     ASSERT_FALSE(compact_info.watermark.has_value());
+
+    ASSERT_OK_AND_ASSIGN(std::string written, response.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(ListSnapshotsResponse round_tripped,
+                         ListSnapshotsResponse::FromJsonString(written));
+    ASSERT_EQ(response.Data(), round_tripped.Data());
+    ASSERT_EQ(response.NextPageToken(), round_tripped.NextPageToken());
 }
 
-TEST(RestMessagesTest, GetDatabaseResponseParse) {
+TEST(RestMessagesTest, GetDatabaseResponseRoundTrip) {
     std::string json = R"({
         "id": "10",
         "name": "db1",
@@ -160,9 +179,18 @@ TEST(RestMessagesTest, GetDatabaseResponseParse) {
     ASSERT_EQ("owner1", options.at("owner"));
     ASSERT_EQ("100", options.at("createdAt"));
     ASSERT_EQ("updater", options.at("updatedBy"));
+
+    ASSERT_OK_AND_ASSIGN(std::string written, response.ToJsonString());
+    rapidjson::Document expected;
+    expected.Parse(json.c_str());
+    ASSERT_FALSE(expected.HasParseError());
+    rapidjson::Document doc;
+    doc.Parse(written.c_str());
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_TRUE(expected == doc) << written;
 }
 
-TEST(RestMessagesTest, GetTableResponseParse) {
+TEST(RestMessagesTest, GetTableResponseRoundTrip) {
     std::string json = R"({
         "id": "42",
         "database": "db1",
@@ -195,6 +223,15 @@ TEST(RestMessagesTest, GetTableResponseParse) {
     ASSERT_FALSE(schema.HasParseError());
     ASSERT_EQ(2u, schema["fields"].Size());
     ASSERT_STREQ("f0", schema["fields"][0]["name"].GetString());
+
+    ASSERT_OK_AND_ASSIGN(std::string written, response.ToJsonString());
+    rapidjson::Document expected;
+    expected.Parse(json.c_str());
+    ASSERT_FALSE(expected.HasParseError());
+    rapidjson::Document doc;
+    doc.Parse(written.c_str());
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_TRUE(expected == doc) << written;
 }
 
 TEST(RestMessagesTest, GetTableTokenResponseParse) {

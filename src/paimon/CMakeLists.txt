@@ -612,6 +612,7 @@ if(PAIMON_BUILD_TESTS)
                     common/data/columnar/columnar_utils_test.cpp
                     common/data/data_define_test.cpp
                     common/data/decimal_test.cpp
+                    common/data/generic_array_test.cpp
                     common/data/generic_row_test.cpp
                     common/data/internal_row_test.cpp
                     common/data/record_batch_test.cpp
@@ -827,6 +828,7 @@ if(PAIMON_BUILD_TESTS)
                     core/bucket/bucket_select_converter_test.cpp
                     core/bucket/default_bucket_function_test.cpp
                     core/bucket/hive_bucket_function_test.cpp
+                    core/bucket/hive_hasher_test.cpp
                     core/bucket/bucket_id_calculator_test.cpp
                     core/bucket/mod_bucket_function_test.cpp
                     core/casting/cast_executor_factory_test.cpp

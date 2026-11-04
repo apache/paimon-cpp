@@ -25,6 +25,8 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -121,13 +123,30 @@ TEST(ObjectStoreFileSystemTest, TestObjectWinsOverPrefix) {
     ASSERT_FALSE(statuses[0].IsDir());
 }
 
+TEST(ObjectStoreFileSystemTest, TestExistsAndDirectoryStatus) {
+    auto client = std::make_shared<MockObjectStoreClient>();
+    ObjectStoreFileSystem fs("s3", client);
+    ASSERT_OK_AND_ASSIGN(bool root_exists, fs.Exists("s3://bucket/"));
+    ASSERT_TRUE(root_exists);
+    client->objects_["dir/file"] = "data";
+    ASSERT_OK_AND_ASSIGN(bool file_exists, fs.Exists("s3://bucket/dir/file"));
+    ASSERT_TRUE(file_exists);
+    ASSERT_OK_AND_ASSIGN(bool directory_exists, fs.Exists("s3://bucket/dir"));
+    ASSERT_TRUE(directory_exists);
+    ASSERT_OK_AND_ASSIGN(bool missing_exists, fs.Exists("s3://bucket/missing"));
+    ASSERT_FALSE(missing_exists);
+    ASSERT_OK_AND_ASSIGN(FileStatus status, fs.GetFileStatus("s3://bucket/dir"));
+    ASSERT_TRUE(status.IsDir());
+    ASSERT_EQ("s3://bucket/dir/", status.GetPath());
+    ASSERT_NOK_WITH_MSG(fs.Open("s3://bucket/dir"), "is a directory");
+}
+
 TEST(ObjectStoreFileSystemTest, TestHeadErrorIsNotMasked) {
     auto client = std::make_shared<MockObjectStoreClient>();
     client->head_error_ = Status::IOError("access denied");
     client->objects_["foo/bar"] = "child";
     ObjectStoreFileSystem fs("s3", client);
-    auto status = fs.GetFileStatus("s3://bucket/foo");
-    ASSERT_TRUE(status.status().IsIOError());
+    ASSERT_NOK_WITH_MSG(fs.GetFileStatus("s3://bucket/foo"), "access denied");
     ASSERT_EQ(client->list_calls_, 0);
 }
 
@@ -148,6 +167,14 @@ TEST(ObjectStoreFileSystemTest, TestPaginationAndDirectoryMarker) {
     ASSERT_EQ(statuses.size(), 2);
     ASSERT_EQ(statuses[0].GetPath(), "s3://bucket/dir/a");
     ASSERT_TRUE(statuses[1].IsDir());
+
+    std::vector<BasicFileStatus> basic_statuses;
+    ASSERT_OK(fs.ListDir("s3://bucket/dir/", &basic_statuses));
+    ASSERT_EQ(2u, basic_statuses.size());
+    ASSERT_EQ("s3://bucket/dir/a", basic_statuses[0].GetPath());
+    ASSERT_FALSE(basic_statuses[0].IsDir());
+    ASSERT_EQ("s3://bucket/dir/sub/", basic_statuses[1].GetPath());
+    ASSERT_TRUE(basic_statuses[1].IsDir());
 }
 
 TEST(ObjectStoreFileSystemTest, TestTruncatedPageRequiresContinuationToken) {
@@ -158,14 +185,15 @@ TEST(ObjectStoreFileSystemTest, TestTruncatedPageRequiresContinuationToken) {
     client->pages_[""] = page;
     ObjectStoreFileSystem fs("s3", client);
     std::vector<FileStatus> statuses;
-    ASSERT_TRUE(fs.ListFileStatus("s3://bucket/dir/", &statuses).IsIOError());
+    ASSERT_NOK_WITH_MSG(fs.ListFileStatus("s3://bucket/dir/", &statuses),
+                        "did not include a continuation token");
     ASSERT_TRUE(statuses.empty());
 }
 
 TEST(ObjectStoreFileSystemTest, TestOpenBucketRootIsDirectory) {
     auto client = std::make_shared<MockObjectStoreClient>();
     ObjectStoreFileSystem fs("s3", client);
-    ASSERT_TRUE(fs.Open("s3://bucket/").status().IsInvalid());
+    ASSERT_NOK_WITH_MSG(fs.Open("s3://bucket/"), "is a directory");
     ASSERT_EQ(client->head_calls_, 0);
     ASSERT_EQ(client->list_calls_, 0);
 }
@@ -187,6 +215,32 @@ TEST(ObjectStoreFileSystemTest, TestPathWithLeadingSlashes) {
     ASSERT_EQ(status.GetPath(), "s3://bucket/file");
 }
 
+TEST(ObjectStoreInputStreamTest, TestSeekAndEmptyRead) {
+    auto client = std::make_shared<MockObjectStoreClient>();
+    client->objects_["file"] = "data";
+    ObjectStoreFileSystem fs("s3", client);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> stream, fs.Open("s3://bucket/file"));
+    ASSERT_OK_AND_ASSIGN(std::string uri, stream->GetUri());
+    ASSERT_EQ("s3://bucket/file", uri);
+    ASSERT_OK(stream->Seek(1, FS_SEEK_SET));
+    ASSERT_OK(stream->Seek(1, FS_SEEK_CUR));
+    std::array<char, 2> buffer{};
+    ASSERT_OK_AND_ASSIGN(int64_t bytes_read, stream->Read(buffer.data(), buffer.size()));
+    ASSERT_EQ(2, bytes_read);
+    ASSERT_EQ("ta", std::string(buffer.data(), buffer.size()));
+    ASSERT_OK_AND_ASSIGN(int64_t position, stream->GetPos());
+    ASSERT_EQ(4, position);
+    ASSERT_OK_AND_ASSIGN(int64_t eof_read, stream->Read(buffer.data(), buffer.size()));
+    ASSERT_EQ(0, eof_read);
+    bool called = false;
+    stream->ReadAsync(nullptr, 0, position, [&called](Status status) {
+        called = true;
+        ASSERT_OK(status);
+    });
+    ASSERT_TRUE(called);
+    ASSERT_EQ(1u, client->ranges_.size());
+}
+
 TEST(ObjectStoreInputStreamTest, TestBoundsCloseAndSeekOverflow) {
     auto client = std::make_shared<MockObjectStoreClient>();
     client->objects_["file"] = std::string(128 * 1024, 'x');
@@ -196,16 +250,17 @@ TEST(ObjectStoreInputStreamTest, TestBoundsCloseAndSeekOverflow) {
     bool called = false;
     stream->ReadAsync(data, 4, 128 * 1024 - 2, [&called](Status status) {
         called = true;
-        ASSERT_TRUE(status.IsInvalid());
+        ASSERT_NOK_WITH_MSG(status, "exceeds length");
     });
     ASSERT_TRUE(called);
-    ASSERT_TRUE(stream->Seek(std::numeric_limits<int64_t>::max(), FS_SEEK_END).IsInvalid());
+    ASSERT_NOK_WITH_MSG(stream->Seek(std::numeric_limits<int64_t>::max(), FS_SEEK_END),
+                        "object store input position overflows");
     ASSERT_OK(stream->Close());
     called = false;
     stream->ReadAsync(data, 1, 0, [&called, &stream](Status status) {
         called = true;
-        ASSERT_TRUE(status.IsIOError());
-        ASSERT_TRUE(stream->GetPos().status().IsIOError());
+        ASSERT_NOK_WITH_MSG(status, "is closed");
+        ASSERT_NOK_WITH_MSG(stream->GetPos(), "is closed");
     });
     ASSERT_TRUE(called);
 }
@@ -217,7 +272,8 @@ TEST(ObjectStoreInputStreamTest, TestShortReadFails) {
     ObjectStoreFileSystem fs("s3", client);
     ASSERT_OK_AND_ASSIGN(auto stream, fs.Open("s3://bucket/file"));
     char data[4];
-    ASSERT_TRUE(stream->Read(data, sizeof(data)).status().IsIOError());
+    ASSERT_NOK_WITH_MSG(stream->Read(data, sizeof(data)),
+                        "range read for s3://bucket/file returned");
 }
 
 TEST(ObjectStoreInputStreamTest, TestSequentialReadAheadGrows) {
