@@ -213,8 +213,8 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithWriteSchema(const std::vector<std::string>& write_schema);
 
-    /// Sets a custom file system instance to be used for all file operations in this write context.
-    /// This bypasses the global file system registry and uses the provided implementation directly.
+    /// Sets the file system for table loading through static Create().
+    /// Table::NewWrite() uses the table's bound file system.
     ///
     /// @param file_system The file system to use.
     /// @return Reference to this builder for method chaining.
@@ -229,8 +229,9 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// for that branch. Its schema is read from the branch directory rather than from the catalog,
     /// just as a read of that branch reads it.
     /// Data, manifests and historical metadata remain on the file system. The catalog supplies
-    /// that file system unless overridden by `WithFileSystem()` or
-    /// `WithFileSystemSchemeToIdentifierMap()`.
+    /// that file system when static Create() loads the table, unless overridden by
+    /// `WithFileSystem()` or `WithFileSystemSchemeToIdentifierMap()`. Table::NewWrite() uses
+    /// the table's bound schema and file system.
     /// @param catalog Non-null catalog, kept alive while the writer uses its snapshot loader.
     /// @param identifier The native table to write to.
     /// @return Reference to this builder for method chaining.

@@ -206,12 +206,6 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         PAIMON_RETURN_NOT_OK(
             CatalogUtils::CheckNotSystemTable(impl_->identifier_.value(), "write"));
     }
-    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr &&
-        impl_->fs_scheme_to_identifier_map_.empty()) {
-        // A scheme map takes precedence over catalog-issued per-table credentials.
-        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
-                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
-    }
     bool enable_multi_thread_spill = impl_->spill_thread_number_ > 0;
     if (enable_multi_thread_spill) {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(

@@ -42,7 +42,8 @@ class SystemTable;
 class FileSystemCatalog : public Catalog, public std::enable_shared_from_this<FileSystemCatalog> {
  public:
     FileSystemCatalog(const std::shared_ptr<FileSystem>& fs, const std::string& warehouse,
-                      const std::map<std::string, std::string>& catalog_options);
+                      const std::map<std::string, std::string>& catalog_options,
+                      const std::map<std::string, std::string>& fs_scheme_map = {});
 
     Status CreateDatabase(const std::string& db_name,
                           const std::map<std::string, std::string>& options,
@@ -107,6 +108,7 @@ class FileSystemCatalog : public Catalog, public std::enable_shared_from_this<Fi
     std::shared_ptr<FileSystem> fs_;
     std::string warehouse_;
     std::map<std::string, std::string> catalog_options_;
+    std::map<std::string, std::string> fs_scheme_map_;
 
     std::shared_ptr<Logger> logger_;
 };

@@ -96,9 +96,7 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     /// Builds the data table using this view's schema, including one selected by time travel.
     Result<std::shared_ptr<FileStoreTable>> CreateDataTable(
         const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<FileSystem>& specific_file_system,
-        const std::map<std::string, std::string>& fs_scheme_map) const;
+        const std::map<std::string, std::string>& options) const;
 
     friend class SystemTableLoader;
     friend class GlobalSystemTableLoader;
@@ -110,6 +108,7 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
         /// Data table schema the view was loaded with. Null for a global system table.
         std::shared_ptr<TableSchema> table_schema;
         std::map<std::string, std::string> dynamic_options;
+        std::map<std::string, std::string> fs_scheme_map;
         /// Logical data table name, including its branch; empty uses the directory name.
         std::string data_table_name;
         /// Global table context; null for table-scoped views.
@@ -131,7 +130,8 @@ class SystemTableLoader {
         const std::string& system_table_name, const std::shared_ptr<FileSystem>& fs,
         const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
         const std::map<std::string, std::string>& dynamic_options,
-        const std::string& data_table_name);
+        const std::string& data_table_name,
+        const std::map<std::string, std::string>& fs_scheme_map = {});
 
     static Result<std::optional<SystemTablePath>> TryParsePath(const std::string& path);
 

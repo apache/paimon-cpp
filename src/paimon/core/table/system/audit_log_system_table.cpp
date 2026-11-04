@@ -398,15 +398,10 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
     }
     std::shared_ptr<ScanFilter> scan_filter = context->GetScanFilters();
     ScanContextBuilder builder(table_path_);
-    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
-    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
-        data_table_fs = GetFileSystem();
-    }
     builder.WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(data_table_fs)
-        .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
+        .WithFileSystem(GetFileSystem())
         .WithCache(context->GetCache());
     if (scan_filter) {
         if (scan_filter->GetBucketFilter()) {
@@ -420,10 +415,8 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
         builder.SetLimit(context->GetLimit().value());
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> data_context, builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStoreTable> data_table,
-        CreateDataTable(table_schema_, options_, data_context->GetSpecificFileSystem(),
-                        data_context->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, options_));
     return data_table->NewScan(std::move(data_context));
 }
 
@@ -450,10 +443,8 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> data_context,
                            CreateDataReadContext(context, read_options));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStoreTable> data_table,
-        CreateDataTable(table_schema_, read_options, data_context->GetSpecificFileSystem(),
-                        data_context->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, read_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> data_read,
                            data_table->NewRead(std::move(data_context)));
     auto* key_value_read = dynamic_cast<KeyValueTableRead*>(data_read.get());
@@ -474,15 +465,10 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema, BaseReadSchema());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     ReadContextBuilder builder(table_path_);
-    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
-    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
-        data_table_fs = GetFileSystem();
-    }
     builder.SetReadFieldNames(base_read_schema->field_names())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(data_table_fs)
-        .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
+        .WithFileSystem(GetFileSystem())
         .EnablePrefetch(context->EnablePrefetch())
         .SetPrefetchBatchCount(context->GetPrefetchBatchCount())
         .SetPrefetchMaxParallelNum(context->GetPrefetchMaxParallelNum())

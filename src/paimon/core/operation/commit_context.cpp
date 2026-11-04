@@ -193,12 +193,6 @@ Result<std::unique_ptr<CommitContext>> CommitContextBuilder::Finish() {
             "a commit either goes to the catalog of WithCatalog() or is handed back as a request "
             "for the caller to send, which is what UseRESTCatalogCommit() asks for");
     }
-    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr &&
-        impl_->fs_scheme_to_identifier_map_.empty()) {
-        // A scheme map takes precedence over catalog-issued per-table credentials.
-        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
-                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
-    }
     PAIMON_ASSIGN_OR_RAISE(impl_->root_path_, PathUtil::NormalizePath(impl_->root_path_));
     if (impl_->root_path_.empty()) {
         return Status::Invalid("root path is empty");

@@ -155,7 +155,7 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
 
 Result<std::shared_ptr<TableSchema>> FileStoreTable::CopyTableSchema(
     const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
-    const std::string& current_branch, const std::shared_ptr<TableSchema>& schema,
+    const std::shared_ptr<TableSchema>& schema,
     const std::map<std::string, std::string>& applied_options,
     const std::map<std::string, std::string>& dynamic_options) {
     std::map<std::string, std::string> overrides = dynamic_options;
@@ -180,11 +180,12 @@ Result<std::shared_ptr<TableSchema>> FileStoreTable::CopyTableSchema(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged, schema->MergeOptions(overrides));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(merged->Options(), fs));
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateStartupMode(options));
+    const std::string target_branch = BranchManager::NormalizeBranch(options.GetBranch());
 
     // Snapshot lookup failures defer to scanning; a resolved snapshot with a missing schema
     // fails Copy.
     const std::shared_ptr<FileSystem> resolved_fs = options.GetFileSystem();
-    SnapshotManager snapshots(resolved_fs, root_path, current_branch);
+    SnapshotManager snapshots(resolved_fs, root_path, target_branch);
     auto resolve_snapshot = [&]() -> Result<std::optional<Snapshot>> {
         const int32_t selectors = options.GetScanSnapshotId().has_value() +
                                   options.GetScanTagName().has_value() +
@@ -198,7 +199,7 @@ Result<std::shared_ptr<TableSchema>> FileStoreTable::CopyTableSchema(
             return std::optional<Snapshot>(std::move(snapshot));
         }
         if (options.GetScanTagName()) {
-            TagManager tags(resolved_fs, root_path, current_branch);
+            TagManager tags(resolved_fs, root_path, target_branch);
             PAIMON_ASSIGN_OR_RAISE(Tag tag, tags.GetOrThrow(*options.GetScanTagName()));
             PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, tag.TrimToSnapshot());
             return std::optional<Snapshot>(std::move(snapshot));
@@ -207,7 +208,7 @@ Result<std::shared_ptr<TableSchema>> FileStoreTable::CopyTableSchema(
     };
     auto snapshot = resolve_snapshot();
     if (snapshot.ok() && snapshot.value()) {
-        SchemaManager schemas(resolved_fs, root_path, current_branch);
+        SchemaManager schemas(resolved_fs, root_path, target_branch);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> historical,
                                schemas.ReadSchema(snapshot.value()->SchemaId()));
         auto historical_options = merged->Options();
@@ -243,10 +244,10 @@ Result<std::shared_ptr<TableSchema>> FileStoreTable::CopyTableSchema(
 
 Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     const std::map<std::string, std::string>& dynamic_options) const {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> copied_schema,
-                           CopyTableSchema(file_system_, root_path_, CurrentBranch(),
-                                           std::static_pointer_cast<TableSchema>(schema_),
-                                           dynamic_options_, dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<TableSchema> copied_schema,
+        CopyTableSchema(file_system_, root_path_, std::static_pointer_cast<TableSchema>(schema_),
+                        dynamic_options_, dynamic_options));
     auto accumulated = dynamic_options_;
     for (const auto& [key, value] : dynamic_options) {
         if (key != Options::TYPE) {
@@ -554,7 +555,7 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> internal_context,
         InternalReadContext::CreateForTable(read_context, loaded_schema, store_->GetOptions(),
-                                            root_path_, dynamic_options_));
+                                            root_path_, dynamic_options_, fs_scheme_map_));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
                            CreateTableRead(internal_context, read_context->GetMemoryPool(),
@@ -570,7 +571,7 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> fallback_context,
                            InternalReadContext::CreateForFallbackBranch(
                                read_context, /*branch=*/scan_fallback_branch.value(), file_system_,
-                               root_path_, dynamic_options_));
+                               root_path_, dynamic_options_, fs_scheme_map_));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> fallback_table_read,
                            CreateTableRead(fallback_context, read_context->GetMemoryPool(),

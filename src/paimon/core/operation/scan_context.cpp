@@ -195,12 +195,6 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         return Status::Invalid(
             "WithFileSystem() and WithFileSystemSchemeToIdentifierMap() cannot be used together");
     }
-    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr &&
-        impl_->fs_scheme_to_identifier_map_.empty()) {
-        // A scheme map takes precedence over catalog-issued per-table credentials.
-        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
-                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
-    }
     std::shared_ptr<Executor> executor =
         impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
     auto ctx = std::make_unique<ScanContext>(

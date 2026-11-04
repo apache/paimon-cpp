@@ -687,7 +687,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithPartitionAndMultiBuckets) {
                                         /*is_streaming_mode=*/true));
     int64_t commit_identifier = 0;
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
 
     DataGenerator gen(table_schema.value(), pool_);
@@ -997,7 +997,7 @@ TEST_P(WriteInteTest, TestPkTableStreamWrite) {
                                         /*is_streaming_mode=*/true));
     int64_t commit_identifier = 0;
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
 
     // round 1 write
@@ -1275,7 +1275,7 @@ TEST_P(WriteInteTest, TestPkTableBatchWrite) {
                                         /*is_streaming_mode=*/false));
     int64_t commit_identifier = 0;
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
 
     DataGenerator gen(table_schema.value(), pool_);
@@ -1438,7 +1438,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
                                         /*is_streaming_mode=*/true));
     int64_t commit_identifier = 0;
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
 
     DataGenerator gen(table_schema.value(), pool_);
@@ -1853,7 +1853,7 @@ TEST_P(WriteInteTest, TestPkTableForceLookup) {
                                         /*is_streaming_mode=*/true));
     int64_t commit_identifier = 0;
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
 
     DataGenerator gen(table_schema.value(), pool_);
@@ -1917,7 +1917,7 @@ TEST_P(WriteInteTest, TestPkTableEnableDeletionVector) {
                                         /*is_streaming_mode=*/true));
     int64_t commit_identifier = 0;
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
 
     DataGenerator gen(table_schema.value(), pool_);
@@ -3515,7 +3515,7 @@ TEST_P(WriteInteTest, TestPkTablePostponeBucket) {
                                                          /*is_streaming_mode=*/false));
     int64_t commit_identifier = 0;
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
 
     std::string data = R"([

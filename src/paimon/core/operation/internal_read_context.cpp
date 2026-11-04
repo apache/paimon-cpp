@@ -47,6 +47,7 @@
 #include "paimon/core/schema/arrow_schema_validator.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/compound_predicate.h"
@@ -280,12 +281,14 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForTable(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
     CoreOptions core_options, const std::string& root_path,
-    const std::map<std::string, std::string>& dynamic_options) {
+    const std::map<std::string, std::string>& dynamic_options,
+    const std::map<std::string, std::string>& fs_scheme_map) {
     core_options.WithCache(context->GetCache());
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<InternalReadContext> result,
         CreateFromCoreOptions(context, table_schema, std::move(core_options), root_path));
     result->dynamic_options_ = dynamic_options;
+    result->fs_scheme_map_ = fs_scheme_map;
     return result;
 }
 
@@ -305,10 +308,16 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromOpti
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
     const std::map<std::string, std::string>& options,
     const std::shared_ptr<FileSystem>& file_system, std::optional<std::string> path) {
+    std::shared_ptr<FileSystem> resolved_file_system = file_system;
+    if (resolved_file_system == nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(resolved_file_system,
+                               ContextUtils::ResolveFileSystemForLoad(*context));
+    }
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions core_options,
-        CoreOptions::FromMap(
-            options, file_system != nullptr ? file_system : context->GetSpecificFileSystem()));
+        CoreOptions::FromMap(options, resolved_file_system,
+                             file_system ? std::map<std::string, std::string>{}
+                                         : context->GetFileSystemSchemeToIdentifierMap()));
     core_options.WithCache(context->GetCache());
     return CreateFromCoreOptions(context, table_schema, std::move(core_options), std::move(path));
 }
@@ -316,23 +325,16 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromOpti
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallbackBranch(
     const std::shared_ptr<ReadContext>& context, const std::string& branch,
     const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-    const std::map<std::string, std::string>& table_dynamic_options) {
-    std::shared_ptr<TableSchema> table_schema;
-    const auto& specific_table_schema = context->GetSpecificTableSchema();
-    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema) {
-        PAIMON_ASSIGN_OR_RAISE(table_schema,
-                               TableSchema::CreateFromJson(specific_table_schema.value()));
-    } else {
-        auto schema_manager = std::make_shared<SchemaManager>(file_system, root_path, branch);
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                               schema_manager->Latest());
-        if (!latest_schema) {
-            return Status::Invalid(
-                fmt::format("schema file not found in path {}, branch {}", root_path, branch));
-        }
-        table_schema = latest_schema.value();
+    const std::map<std::string, std::string>& table_dynamic_options,
+    const std::map<std::string, std::string>& fs_scheme_map) {
+    SchemaManager schema_manager(file_system, root_path, branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                           schema_manager.Latest());
+    if (!latest_schema) {
+        return Status::Invalid(
+            fmt::format("schema file not found in path {}, branch {}", root_path, branch));
     }
-    assert(table_schema);
+    std::shared_ptr<TableSchema> table_schema = latest_schema.value();
     auto options = table_schema->Options();
     for (const auto& [key, value] : table_dynamic_options) {
         if (key != Options::TYPE) {
@@ -348,6 +350,7 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallb
         std::unique_ptr<InternalReadContext> result,
         CreateFromOptions(context, table_schema, options, file_system, root_path));
     result->dynamic_options_ = table_dynamic_options;
+    result->fs_scheme_map_ = fs_scheme_map;
     return result;
 }
 
@@ -552,6 +555,7 @@ InternalReadContext::InternalReadContext(const std::shared_ptr<ReadContext>& rea
       read_schema_(read_schema),
       arrow_pool_(arrow_pool),
       options_(options),
+      fs_scheme_map_(read_context->GetFileSystemSchemeToIdentifierMap()),
       path_(std::move(path)) {}
 
 Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSchema(
@@ -564,9 +568,12 @@ Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSche
     }
     // Create a new InternalReadContext sharing all properties except read_schema.
     // The new read_schema is the minimal column set for COUNT(*).
-    return std::shared_ptr<InternalReadContext>(
+    auto result = std::shared_ptr<InternalReadContext>(
         new InternalReadContext(original->read_context_, original->table_schema_, new_read_schema,
                                 original->options_, original->path_, original->arrow_pool_));
+    result->dynamic_options_ = original->dynamic_options_;
+    result->fs_scheme_map_ = original->fs_scheme_map_;
+    return result;
 }
 
 }  // namespace paimon

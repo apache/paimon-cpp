@@ -138,6 +138,8 @@ TEST(CommitContextTest, TestWithCatalog) {
     ASSERT_TRUE(ctx->GetIdentifier().has_value());
     ASSERT_EQ(ctx->GetIdentifier().value(), Identifier("db1", "t1"));
     ASSERT_EQ(ctx->GetTableId(), std::optional<std::string>("table-uuid"));
+    ASSERT_FALSE(ctx->GetSpecificFileSystem());
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
 
     CommitContextBuilder null_catalog_builder("table_root_path", "commit_user_1");
     ASSERT_NOK_WITH_MSG(null_catalog_builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),

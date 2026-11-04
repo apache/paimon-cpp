@@ -83,13 +83,14 @@ class FileStoreTable : public Table {
     /// Applies dynamic options to the current schema, retaining the table's identifier. Time
     /// travel selects the schema of the requested snapshot. Use SwitchToBranch to load another
     /// branch's latest schema.
+    /// Snapshot/tag lookup and historical schema loading may perform metadata I/O.
     Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     /// Shared schema-copy semantics for managed tables and their system-table views.
     static Result<std::shared_ptr<TableSchema>> CopyTableSchema(
         const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
-        const std::string& current_branch, const std::shared_ptr<TableSchema>& schema,
+        const std::shared_ptr<TableSchema>& schema,
         const std::map<std::string, std::string>& applied_options,
         const std::map<std::string, std::string>& dynamic_options);
 

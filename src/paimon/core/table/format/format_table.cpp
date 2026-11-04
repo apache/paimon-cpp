@@ -221,7 +221,7 @@ Result<std::shared_ptr<Table>> FormatTable::Copy(
 }
 
 const std::vector<std::string>& FormatTable::PartitionKeys() const {
-    return LatestSchema()->PartitionKeys();
+    return GetSchema()->PartitionKeys();
 }
 
 Result<std::unique_ptr<::ArrowSchema>> FormatTable::GetArrowSchema() const {

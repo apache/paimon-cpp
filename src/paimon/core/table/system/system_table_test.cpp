@@ -61,6 +61,7 @@
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
+#include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/write_context.h"
@@ -313,6 +314,43 @@ TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
 // defaults, so a setting that is not copied across silently reverts: a caller that asked for NONE
 // or DECODED would get RAW back. `$ro` has its own builder chain and `$audit_log` and `$binlog`
 // share one, so all three are pinned here.
+TEST(SystemTableTest, TestDataReadContextsUseBoundStorage) {
+    const std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                        {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, CreateTableSchemaForTest(options));
+    auto fs = std::make_shared<MockFileSystem>();
+    auto caller_fs = std::make_shared<MockFileSystem>();
+    ReadOptimizedSystemTable ro(fs, "/table", schema, "table", options);
+    AuditLogSystemTable audit(fs, "/table", schema, "table", options);
+    BinlogSystemTable binlog(fs, "/table", schema, "table", options);
+    for (bool use_scheme_map : {false, true}) {
+        ReadContextBuilder builder("another-table");
+        builder.SetTableSchema("invalid schema").SetWarmupLevel(WarmupLevel::DECODED);
+        if (use_scheme_map) {
+            builder.WithFileSystemSchemeToIdentifierMap({{"file", "missing"}});
+        } else {
+            builder.WithFileSystem(caller_fs);
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> ro_context,
+                             ro.CreateDataReadContext(context));
+        ASSERT_OK_AND_ASSIGN(auto audit_options, audit.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_context,
+                             audit.CreateDataReadContext(context, audit_options));
+        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context,
+                             binlog.CreateDataReadContext(context, binlog_options));
+        for (const ReadContext* effective :
+             {ro_context.get(), audit_context.get(), binlog_context.get()}) {
+            ASSERT_EQ(effective->GetSpecificFileSystem(), fs);
+            ASSERT_TRUE(effective->GetFileSystemSchemeToIdentifierMap().empty());
+            ASSERT_FALSE(effective->GetSpecificTableSchema());
+            ASSERT_EQ(effective->GetPath(), "/table");
+            ASSERT_EQ(effective->GetWarmupLevel(), WarmupLevel::DECODED);
+        }
+    }
+}
+
 TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};

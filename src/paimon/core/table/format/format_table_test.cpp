@@ -754,11 +754,10 @@ TEST(FormatTableTest, TestCatalogManagedPartitionsAreRejected) {
     // And the same refusal when it arrives at the call rather than in the schema. Validating the
     // schema's own options alone would let this one through and then drop it, leaving a caller
     // who asked for catalog-managed partitions with a scan that read the directories anyway.
-    Result<std::shared_ptr<FormatTable>> dynamic_table =
-        FormatTable::Create(off_dir->GetFileSystem(), off_dir->Str(), Identifier("db", "tbl"),
-                            off_table->LatestSchema(),
-                            /*location_carries_paimon_metadata=*/true,
-                            {{Options::METASTORE_PARTITIONED_TABLE, "true"}});
+    Result<std::shared_ptr<FormatTable>> dynamic_table = FormatTable::Create(
+        off_dir->GetFileSystem(), off_dir->Str(), Identifier("db", "tbl"), off_table->GetSchema(),
+        /*location_carries_paimon_metadata=*/true,
+        {{Options::METASTORE_PARTITIONED_TABLE, "true"}});
     ASSERT_FALSE(dynamic_table.ok());
     ASSERT_TRUE(dynamic_table.status().IsNotImplemented()) << dynamic_table.status().ToString();
 }
@@ -2693,7 +2692,7 @@ TEST(FormatTableTest, TestAFormatTableIsWrittenCommittedAndReadBack) {
                         "a format table sends no commit table request");
 
     auto format_catalog = std::make_shared<MockVersionManagedCatalog>();
-    format_catalog->SetTableSchema(table->LatestSchema());
+    format_catalog->SetTableSchema(table->GetSchema());
     CommitContextBuilder catalog_builder(dir->Str(), "test-user");
     catalog_builder.WithCatalog(format_catalog, Identifier("db", "fmt"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> catalog_context, catalog_builder.Finish());
@@ -2745,7 +2744,7 @@ TEST(FormatTableTest, TestACatalogInTheContextIsRefusedAlikeByWriteAndCommit) {
                          CreateTable(dir->GetFileSystem(), dir->Str(), {"dt"}));
 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableSchema(table->LatestSchema());
+    catalog->SetTableSchema(table->GetSchema());
     Identifier identifier("db", "fmt");
 
     WriteContextBuilder write_builder(dir->Str(), "test-user");
@@ -2934,7 +2933,7 @@ TEST(FormatTableTest, TestTheTableEntryPointsRefuseWhatAFormatTableCannotHonour)
                         "not supported for format tables");
 
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableSchema(format_table->LatestSchema());
+    catalog->SetTableSchema(format_table->GetSchema());
 
     auto catalog_write_context = [&dir, &catalog]() -> Result<std::unique_ptr<WriteContext>> {
         WriteContextBuilder builder(dir->Str(), "test-user");

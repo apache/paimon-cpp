@@ -44,6 +44,9 @@ class WriteContext;
 
 /// Common interface for managed, format and system tables.
 /// Create operators with NewScan/NewRead/NewWrite/NewCommit; unsupported operations return errors.
+/// Operators use the table's bound path, schema and file system. Context loading parameters apply
+/// to static Create() factories; write and commit contexts must still identify this table.
+/// Contexts supply execution parameters and optional catalog services for snapshot operations.
 class PAIMON_EXPORT Table {
  public:
     virtual ~Table() = default;
@@ -76,13 +79,16 @@ class PAIMON_EXPORT Table {
         return uuid_.empty() ? std::nullopt : std::optional<std::string>(uuid_);
     }
 
-    /// Loads the latest schema of table.
-    std::shared_ptr<Schema> LatestSchema() const {
+    /// Returns the schema bound to this table instance without metadata I/O.
+    /// A time-travel copy exposes its historical schema. Reload through the catalog to obtain
+    /// the latest schema; this accessor does not refresh it.
+    std::shared_ptr<Schema> GetSchema() const {
         return schema_;
     }
 
     /// Copies this table with dynamic_options overriding its current options.
     /// The table type is structural and cannot be changed by these options.
+    /// This may perform metadata I/O, including snapshot/tag lookup and schema loading.
     virtual Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const = 0;
 

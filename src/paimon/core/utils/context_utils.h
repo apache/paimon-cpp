@@ -18,7 +18,11 @@
 
 #pragma once
 
+#include <memory>
+
 #include "fmt/format.h"
+#include "paimon/catalog/catalog.h"
+#include "paimon/result.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -28,6 +32,18 @@ class ContextUtils {
  public:
     ContextUtils() = delete;
     ~ContextUtils() = delete;
+
+    template <typename Context>
+    static Result<std::shared_ptr<FileSystem>> ResolveFileSystemForLoad(const Context& context) {
+        if (context.GetSpecificFileSystem() != nullptr || context.GetCatalog() == nullptr ||
+            !context.GetFileSystemSchemeToIdentifierMap().empty()) {
+            return context.GetSpecificFileSystem();
+        }
+        if (!context.GetIdentifier()) {
+            return Status::Invalid("a catalog requires a table identifier");
+        }
+        return context.GetCatalog()->GetTableFileSystem(context.GetIdentifier().value());
+    }
 
     /// Requires a context, memory pool and executor; kind labels errors.
     template <typename ContextPointer>

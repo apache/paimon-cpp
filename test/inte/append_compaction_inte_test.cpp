@@ -224,7 +224,7 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompaction) {
         auto helper, TestHelper::Create(dir->Str(), schema, partition_keys, primary_keys, options,
                                         /*is_streaming_mode=*/true));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
     auto gen = std::make_shared<DataGenerator>(table_schema.value(), pool_);
     int64_t commit_identifier = 0;
@@ -551,7 +551,7 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompactionWithDv)
         auto helper, TestHelper::Create(dir->Str(), schema, partition_keys, primary_keys, options,
                                         /*is_streaming_mode=*/true));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
     auto gen = std::make_shared<DataGenerator>(table_schema.value(), pool_);
     int64_t commit_identifier = 0;
@@ -637,7 +637,7 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteBestEffortCompaction)
         auto helper, TestHelper::Create(dir->Str(), schema, partition_keys, primary_keys, options,
                                         /*is_streaming_mode=*/true));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
     auto gen = std::make_shared<DataGenerator>(table_schema.value(), pool_);
     int64_t commit_identifier = 0;
@@ -728,7 +728,7 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteCompactionWithExterna
         auto helper, TestHelper::Create(dir->Str(), schema, partition_keys, primary_keys, options,
                                         /*is_streaming_mode=*/true));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                         helper->LatestSchema());
+                         helper->GetSchema());
     ASSERT_TRUE(table_schema);
     auto gen = std::make_shared<DataGenerator>(table_schema.value(), pool_);
     int64_t commit_identifier = 0;
@@ -816,7 +816,7 @@ TEST_F(AppendCompactionInteTest, TestAppendTableCompactionWithIOException) {
                              TestHelper::Create(dir->Str(), schema, partition_keys, primary_keys,
                                                 options, /*is_streaming_mode=*/true));
         ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                             helper->LatestSchema());
+                             helper->GetSchema());
         ASSERT_TRUE(table_schema);
 
         auto gen = std::make_shared<DataGenerator>(table_schema.value(), pool_);

@@ -331,7 +331,7 @@ class TestHelper {
         return commit_impl->snapshot_manager_->LatestSnapshotOfUser(commit_user_);
     }
 
-    Result<std::optional<std::shared_ptr<TableSchema>>> LatestSchema() const {
+    Result<std::optional<std::shared_ptr<TableSchema>>> GetSchema() const {
         auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit_.get());
         return commit_impl->schema_manager_->Latest();
     }

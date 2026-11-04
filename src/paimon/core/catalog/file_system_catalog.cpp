@@ -56,10 +56,12 @@ struct ArrowSchema;
 namespace paimon {
 FileSystemCatalog::FileSystemCatalog(const std::shared_ptr<FileSystem>& fs,
                                      const std::string& warehouse,
-                                     const std::map<std::string, std::string>& catalog_options)
+                                     const std::map<std::string, std::string>& catalog_options,
+                                     const std::map<std::string, std::string>& fs_scheme_map)
     : fs_(fs),
       warehouse_(warehouse),
       catalog_options_(catalog_options),
+      fs_scheme_map_(fs_scheme_map),
       logger_(Logger::GetLogger("FileSystemCatalog")) {}
 
 Status FileSystemCatalog::CreateDatabase(const std::string& db_name,
@@ -294,7 +296,7 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             GlobalSystemTableLoader::LoadForSchema(identifier.GetObjectName(), context));
-        return system_table->LatestSchema();
+        return system_table->GetSchema();
     }
     // The system table suffix is dropped when the data table identifier is rebuilt below, so the
     // identifier is validated as a whole here.
@@ -303,7 +305,7 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
     if (is_system_table) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                LoadSystemTable(identifier));
-        return system_table->LatestSchema();
+        return system_table->GetSchema();
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                            TableSchemaExists(identifier));
@@ -361,7 +363,7 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
                                                              "FileSystemCatalog::GetTable"));
     PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
     return FileStoreTable::Create(fs_, table_path, *latest_schema, identifier, /*uuid=*/"", branch,
-                                  /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
+                                  fs_scheme_map_, /*dynamic_options=*/{});
 }
 
 Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(
@@ -387,7 +389,7 @@ Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
     return SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
                                    latest_schema.value(), dynamic_options,
-                                   data_identifier.GetObjectName());
+                                   data_identifier.GetObjectName(), fs_scheme_map_);
 }
 
 Status FileSystemCatalog::DropDatabase(const std::string& name, bool ignore_if_not_exists,

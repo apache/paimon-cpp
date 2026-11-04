@@ -927,8 +927,7 @@ TEST_F(RestCatalogTest, TableOperations) {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_EQ(requests_before_get_table + 1, state_->get_table_requests);
     }
-    std::shared_ptr<DataSchema> schema =
-        std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    std::shared_ptr<DataSchema> schema = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, schema);
     ASSERT_EQ((std::vector<std::string>{"f0", "f1"}), schema->FieldNames());
     ASSERT_EQ((std::vector<std::string>{"f0"}), schema->PrimaryKeys());
@@ -946,7 +945,7 @@ TEST_F(RestCatalogTest, TableOperations) {
     // timeMillis is backed by the server's audit "updatedAt" instead of the current
     // time, keeping the conversion deterministic
     std::shared_ptr<TableSchema> table_schema =
-        std::dynamic_pointer_cast<TableSchema>(table->LatestSchema());
+        std::dynamic_pointer_cast<TableSchema>(table->GetSchema());
     ASSERT_NE(nullptr, table_schema);
     ASSERT_EQ(123, table_schema->TimeMillis());
 
@@ -968,7 +967,7 @@ TEST_F(RestCatalogTest, TableOperations) {
     }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> commented_table,
                          catalog->GetTable(Identifier("db1", "commented")));
-    ASSERT_EQ("a table comment", commented_table->LatestSchema()->Comment().value_or(""));
+    ASSERT_EQ("a table comment", commented_table->GetSchema()->Comment().value_or(""));
 
     ASSERT_OK(catalog->RenameTable(identifier, Identifier("db1", "t2"),
                                    /*ignore_if_not_exists=*/false));
@@ -1073,7 +1072,7 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
     std::shared_ptr<SystemTable> system_table = std::dynamic_pointer_cast<SystemTable>(table);
     ASSERT_NE(nullptr, system_table);
     ASSERT_EQ("t1$options", system_table->Name());
-    ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->LatestSchema()->FieldNames());
+    ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->GetSchema()->FieldNames());
     ASSERT_EQ("t1$options", table->Uuid());
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
@@ -1116,8 +1115,7 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(branch_identifier));
     ASSERT_EQ("t1$branch_b1", table->Name());
-    std::shared_ptr<DataSchema> schema =
-        std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    std::shared_ptr<DataSchema> schema = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, schema);
     // the branch's own schema and schema id, not the main table's
     ASSERT_EQ((std::vector<std::string>{"b0"}), schema->FieldNames());
@@ -1129,7 +1127,7 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> main_table,
                          catalog->GetTable(Identifier("db1", "t1$branch_main")));
     std::shared_ptr<DataSchema> main_schema =
-        std::dynamic_pointer_cast<DataSchema>(main_table->LatestSchema());
+        std::dynamic_pointer_cast<DataSchema>(main_table->GetSchema());
     ASSERT_NE(nullptr, main_schema);
     ASSERT_EQ((std::vector<std::string>{"f0", "f1"}), main_schema->FieldNames());
     ASSERT_EQ(0, main_schema->Options().count(Options::BRANCH));
@@ -1139,7 +1137,7 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> main_case_table,
                          catalog->GetTable(Identifier("db1", "t1$branch_MAIN")));
     std::shared_ptr<DataSchema> main_case_schema =
-        std::dynamic_pointer_cast<DataSchema>(main_case_table->LatestSchema());
+        std::dynamic_pointer_cast<DataSchema>(main_case_table->GetSchema());
     ASSERT_NE(nullptr, main_case_schema);
     ASSERT_EQ((std::vector<std::string>{"f0", "f1"}), main_case_schema->FieldNames());
     ASSERT_EQ(0, main_case_schema->Options().count(Options::BRANCH));
@@ -1395,8 +1393,7 @@ TEST_F(RestCatalogTest, NestedSchemaHighestFieldId) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                          catalog->GetTable(Identifier("db1", "nested")));
-    std::shared_ptr<DataSchema> schema =
-        std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    std::shared_ptr<DataSchema> schema = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, schema);
     ASSERT_EQ(5, schema->Id());
     // 9 lives inside the value row of the map: ROW, ARRAY element and MAP key/value
@@ -1490,8 +1487,7 @@ TEST_F(RestCatalogTest, PartitionKeysRoundTrip) {
                                    /*ignore_if_exists=*/false));
     // the partition keys survive both the create request and the load response conversion
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(Identifier("db1", "pt")));
-    std::shared_ptr<DataSchema> loaded =
-        std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    std::shared_ptr<DataSchema> loaded = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, loaded);
     ASSERT_EQ((std::vector<std::string>{"f1"}), loaded->PartitionKeys());
 }

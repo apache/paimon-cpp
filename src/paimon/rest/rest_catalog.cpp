@@ -391,7 +391,7 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             GlobalSystemTableLoader::LoadForSchema(identifier.GetObjectName(), context));
-        return system_table->LatestSchema();
+        return system_table->GetSchema();
     }
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
@@ -403,7 +403,7 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         if (table_path != nullptr) {
             *table_path = system_table->GetRootPath();
         }
-        return system_table->LatestSchema();
+        return system_table->GetSchema();
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
                            LoadDataTableSchema(load_identifier, branch, table_path, table_id));
@@ -433,7 +433,8 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
         Identifier data_identifier,
         CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
     return SystemTableLoader::Load(system_table_name.value(), table_file_system, data_table_path,
-                                   latest_schema, dynamic_options, data_identifier.GetObjectName());
+                                   latest_schema, dynamic_options, data_identifier.GetObjectName(),
+                                   fs_scheme_to_identifier_map_);
 }
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
@@ -489,7 +490,7 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
                            GetTableFileSystem(identifier));
     return FileStoreTable::Create(table_file_system, table_path, schema, identifier, uuid,
                                   branch.value_or(Identifier::kDefaultMainBranch),
-                                  /*fs_scheme_map=*/{}, /*dynamic_options=*/{});
+                                  fs_scheme_to_identifier_map_, /*dynamic_options=*/{});
 }
 
 std::string RestCatalog::GetRootPath() const {

@@ -67,15 +67,10 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     }
     auto options = ReadOptimizedOptions();
     ScanContextBuilder builder(table_path_);
-    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
-    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
-        data_table_fs = GetFileSystem();
-    }
     builder.WithStreamingMode(context->IsStreamingMode())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(data_table_fs)
-        .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
+        .WithFileSystem(GetFileSystem())
         .WithCache(context->GetCache());
     if (context->GetLimit().has_value()) {
         builder.SetLimit(context->GetLimit().value());
@@ -90,24 +85,15 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     if (context->GetGlobalIndexResult()) {
         builder.SetGlobalIndexResult(context->GetGlobalIndexResult());
     }
-    if (context->GetSpecificTableSchema().has_value()) {
-        builder.SetTableSchema(context->GetSpecificTableSchema().value());
-    }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> base_context, builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStoreTable> data_table,
-        CreateDataTable(table_schema_, options, base_context->GetSpecificFileSystem(),
-                        base_context->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, options));
     return data_table->NewScan(std::move(base_context));
 }
 
 Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadContext(
     const std::shared_ptr<ReadContext>& context) const {
     ReadContextBuilder builder(table_path_);
-    std::shared_ptr<FileSystem> data_table_fs = context->GetSpecificFileSystem();
-    if (data_table_fs == nullptr && context->GetFileSystemSchemeToIdentifierMap().empty()) {
-        data_table_fs = GetFileSystem();
-    }
     builder.SetPredicate(context->GetPredicate())
         .EnablePredicateFilter(context->EnablePredicateFilter())
         .EnablePrefetch(context->EnablePrefetch())
@@ -117,8 +103,7 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(data_table_fs)
-        .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
+        .WithFileSystem(GetFileSystem())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
         .SetWarmupLevel(context->GetWarmupLevel())
@@ -132,9 +117,6 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, c_read_schema.get()));
         builder.SetReadSchema(std::move(c_read_schema));
     }
-    if (context->GetSpecificTableSchema().has_value()) {
-        builder.SetTableSchema(context->GetSpecificTableSchema().value());
-    }
     return builder.Finish();
 }
 
@@ -145,10 +127,8 @@ Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> base_context,
                            CreateDataReadContext(context));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStoreTable> data_table,
-        CreateDataTable(table_schema_, options_, base_context->GetSpecificFileSystem(),
-                        base_context->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, options_));
     return data_table->NewRead(std::move(base_context));
 }
 

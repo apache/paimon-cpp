@@ -144,8 +144,8 @@ class PAIMON_EXPORT FormatTable : public Table, public std::enable_shared_from_t
         return options_;
     }
 
-    /// Returns the data schema, including partition columns.
-    std::shared_ptr<DataSchema> LatestSchema() const {
+    /// Returns the bound data schema, including partition columns, without metadata I/O.
+    std::shared_ptr<DataSchema> GetSchema() const {
         return std::static_pointer_cast<DataSchema>(schema_);
     }
 

@@ -240,8 +240,7 @@ TEST(FileSystemCatalogTest, TestOptionsSystemTableCatalog) {
     ASSERT_EQ("tbl1$options", system_table->Name());
     ASSERT_EQ("tbl1$options", system_table->FullName());
     ASSERT_EQ(system_table->GetRootPath(), table_path);
-    ASSERT_EQ((std::vector<std::string>{"key", "value"}),
-              system_table->LatestSchema()->FieldNames());
+    ASSERT_EQ((std::vector<std::string>{"key", "value"}), system_table->GetSchema()->FieldNames());
     ASSERT_NOK_WITH_MSG(catalog.LoadTableSchema(Identifier("db1", "tbl1$unknown")), "not exist");
     ASSERT_NOK_WITH_MSG(catalog.LoadTableSchema(Identifier("db1", "missing$options")), "not exist");
 
@@ -621,7 +620,7 @@ TEST(FileSystemCatalogTest, TestBranchTableLoadsBranchSchema) {
     ASSERT_TRUE(exists);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(branch_identifier));
-    data_schema = std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    data_schema = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, data_schema);
     ASSERT_EQ((std::vector<std::string>{"b1_c0"}), data_schema->FieldNames());
     ASSERT_EQ(3, data_schema->Id());
@@ -955,7 +954,7 @@ TEST(FileSystemCatalogTest, TestCreateTableWithBlob) {
     ASSERT_TRUE(typed_schema.Equals(loaded_schema));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(Identifier("db1", "tbl1")));
-    ASSERT_OK_AND_ASSIGN(auto arrow_schema_from_get_table, table->LatestSchema()->GetArrowSchema());
+    ASSERT_OK_AND_ASSIGN(auto arrow_schema_from_get_table, table->GetSchema()->GetArrowSchema());
     auto schema_from_get_table =
         arrow::ImportSchema(arrow_schema_from_get_table.get()).ValueOrDie();
     ASSERT_TRUE(typed_schema.Equals(schema_from_get_table));

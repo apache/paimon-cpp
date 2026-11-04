@@ -451,7 +451,7 @@ class PAIMON_EXPORT ReadContextBuilder {
     ReadContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);
 
-    /// Set the table schema as a string to avoid schema loading I/O operations.
+    /// Sets the table schema for static Create() to avoid schema loading I/O.
     ///
     /// This optimization allows the reader to use a pre-loaded schema instead of
     /// reading it from the table metadata, which can improve performance especially
@@ -482,19 +482,18 @@ class PAIMON_EXPORT ReadContextBuilder {
     ReadContextBuilder& WithFileSystemSchemeToIdentifierMap(
         const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
 
-    /// Sets a custom file system instance to be used for all file operations in this read context.
-    /// This bypasses the global file system registry and uses the provided implementation directly.
+    /// Sets the file system for table loading through static Create().
+    /// Table::NewRead() uses the table's bound file system.
     ///
     /// @param file_system The file system to use.
     /// @return Reference to this builder for method chaining.
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ReadContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
 
-    /// Reads a native table through its own file system - including the per-table temporary
-    /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.
-    /// This is a shorthand for `WithFileSystem(catalog->GetTableFileSystem(identifier))`; an
-    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked.
-    /// @param catalog Non-null catalog, read when `Finish()` builds the context.
+    /// Sets the catalog used for snapshot operations and table loading.
+    /// Static Create() resolves per-table credentials when loading the table; explicit file systems
+    /// and scheme maps take precedence. Table::NewRead() uses the table's bound file system.
+    /// @param catalog Non-null catalog, retained by the context.
     /// @param identifier The native table to read.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,

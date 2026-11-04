@@ -39,6 +39,7 @@
 #include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/read_context.h"
@@ -135,9 +136,11 @@ Result<std::shared_ptr<Table>> ManagedTable(const Context& ctx,
                             kind, branch));
         }
     }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
-                           CoreOptions::FromMap(options, ctx.GetSpecificFileSystem(),
-                                                ctx.GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> file_system,
+                           ContextUtils::ResolveFileSystemForLoad(ctx));
+    PAIMON_ASSIGN_OR_RAISE(
+        CoreOptions tmp_options,
+        CoreOptions::FromMap(options, file_system, ctx.GetFileSystemSchemeToIdentifierMap()));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(ctx.GetPath()));
     if (system_table_path) {
@@ -155,9 +158,9 @@ Result<std::shared_ptr<Table>> ManagedTable(const Context& ctx,
             catalog_table_schema,
             CatalogMainBranchSchemaJson(ctx.GetCatalog(), catalog_identifier, branch, kind));
     }
-    return ManagedTableOf(tmp_options.GetFileSystem(), ctx.GetSpecificFileSystem(), ctx.GetPath(),
-                          branch, options, catalog_table_schema, ctx.GetIdentifier(),
-                          ctx.GetTableId().value_or(""), ctx.GetFileSystemSchemeToIdentifierMap());
+    return ManagedTableOf(tmp_options.GetFileSystem(), file_system, ctx.GetPath(), branch, options,
+                          catalog_table_schema, ctx.GetIdentifier(), ctx.GetTableId().value_or(""),
+                          ctx.GetFileSystemSchemeToIdentifierMap());
 }
 
 }  // namespace

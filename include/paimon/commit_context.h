@@ -161,7 +161,8 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// @return Reference to this builder for method chaining.
     CommitContextBuilder& UseRESTCatalogCommit(bool use_rest_catalog_commit);
 
-    /// Loads the current schema from `catalog`. Catalogs with version management also load and
+    /// Static Create() loads the table from `catalog`; Table::NewCommit() uses its bound schema
+    /// and file system. Catalogs with version management also load and
     /// commit snapshots, rebasing on conflicts. Other catalogs use file-system snapshot commits.
     /// Mutually exclusive with `UseRESTCatalogCommit()`.
     ///
@@ -203,9 +204,8 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// @return Reference to this builder for method chaining.
     CommitContextBuilder& WithExecutor(const std::shared_ptr<Executor>& executor);
 
-    /// Sets a custom file system instance to be used for all file operations in this commit
-    /// context.
-    /// This bypasses the global file system registry and uses the provided implementation directly.
+    /// Sets the file system for table loading through static Create().
+    /// Table::NewCommit() uses the table's bound file system.
     ///
     /// @param file_system The file system to use.
     /// @return Reference to this builder for method chaining.

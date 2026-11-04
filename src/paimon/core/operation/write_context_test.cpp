@@ -69,24 +69,22 @@ TEST(WriteContextTest, TestWithCatalog) {
                         "cannot write through a null catalog");
 }
 
-TEST(WriteContextTest, TestWithCatalogResolvesTableFileSystem) {
-    // Finish() resolves the per-table file system once.
+TEST(WriteContextTest, TestWithCatalogDefersTableFileSystem) {
     auto table_fs = std::make_shared<MockFileSystem>();
     auto catalog = std::make_shared<MockVersionManagedCatalog>();
     catalog->SetTableFileSystem(table_fs);
 
     WriteContextBuilder builder("table_root_path", "commit_user_1");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
-    ASSERT_EQ(ctx->GetSpecificFileSystem(), table_fs);
-    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
-    ASSERT_EQ(catalog->TableFileSystemRequests().front(), Identifier("db1", "t1"));
+    ASSERT_FALSE(ctx->GetSpecificFileSystem());
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
 
     WriteContextBuilder map_builder("table_root_path", "commit_user_1");
     ASSERT_OK_AND_ASSIGN(auto map_ctx, map_builder.WithCatalog(catalog, Identifier("db1", "t1"))
                                            .WithFileSystemSchemeToIdentifierMap({{"file", "local"}})
                                            .Finish());
     ASSERT_FALSE(map_ctx->GetSpecificFileSystem());
-    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
 }
 
 TEST(WriteContextTest, TestSetContent) {

@@ -48,6 +48,50 @@
 
 namespace paimon::test {
 
+TEST(InternalReadContext, TestBoundReadIgnoresContextLoadingParameters) {
+    const std::string path = GetDataDir() + "/orc/append_09.db/append_09";
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SchemaManager schema_manager(file_system, path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    const std::map<std::string, std::string> table_scheme_map = {{"file", "local"}};
+    const std::map<std::string, std::string> dynamic_options = {{Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                         ReadContextBuilder("another-table")
+                             .WithCatalog(catalog, Identifier("db", "tbl"))
+                             .WithFileSystemSchemeToIdentifierMap({{"file", "missing"}})
+                             .SetTableSchema("invalid schema")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                         CoreOptions::FromMap(table_schema->Options(), file_system));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<InternalReadContext> bound,
+        InternalReadContext::CreateForTable(std::move(context), table_schema, core_options, path,
+                                            dynamic_options, table_scheme_map));
+    ASSERT_EQ(bound->GetTableSchema(), table_schema);
+    ASSERT_EQ(bound->GetPath(), path);
+    ASSERT_EQ(bound->GetCoreOptions().GetFileSystem(), file_system);
+    ASSERT_EQ(bound->GetFileSystemSchemeToIdentifierMap(), table_scheme_map);
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> replaced,
+                         InternalReadContext::CreateWithSchema(bound, bound->GetReadSchema()));
+    ASSERT_EQ(replaced->GetFileSystemSchemeToIdentifierMap(), table_scheme_map);
+}
+
+TEST(InternalReadContext, TestFallbackToMainIgnoresContextSchema) {
+    const std::string path = GetDataDir() + "/orc/append_09.db/append_09";
+    auto file_system = std::make_shared<LocalFileSystem>();
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ReadContext> context,
+        ReadContextBuilder("another-table").SetTableSchema("invalid schema").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InternalReadContext> fallback,
+                         InternalReadContext::CreateForFallbackBranch(std::move(context), "main",
+                                                                      file_system, path, {}, {}));
+    ASSERT_EQ(fallback->GetPath(), path);
+    ASSERT_EQ(fallback->GetTableSchema()->Fields().size(), 4U);
+    ASSERT_EQ(fallback->GetCoreOptions().GetFileSystem(), file_system);
+}
+
 TEST(InternalReadContext, TestReadWithUnspecifiedSchema) {
     // no read schema is specified, read all fields
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";

@@ -33,6 +33,14 @@ Managed table copies retain the current schema and identifier when ``branch``
 changes. ``FileStoreTable::SwitchToBranch`` loads the target branch's latest schema.
 Physical layout options such as ``merge-engine``, ``row-tracking.enabled`` and
 ``data-evolution.enabled`` cannot be changed by a copy.
+
+``table->GetSchema()`` returns the schema bound to that table instance without
+metadata I/O. It does not refresh when the stored schema changes. Load a new
+table through ``catalog->GetTable(identifier)`` to obtain the latest schema.
+``Copy(options)`` derives a table from the current instance; time-travel options
+may trigger snapshot/tag lookup and historical schema loading. These operations
+can perform metadata I/O and fail, as indicated by the returned ``Result``.
+
 Changing ``deletion-vectors.enabled`` requires the table's existing options to
 contain ``deletion-vectors.modifiable=true``. Set that option before copying with
 a different deletion-vectors mode.
@@ -354,10 +362,9 @@ so its restored file references are visible to the expiration operation.
 
 Reading through the catalog
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-To read a native table with the per-table temporary credentials a catalog issues,
-pass the catalog and table identifier to ``ReadContextBuilder::WithCatalog`` or
-``ScanContextBuilder::WithCatalog``. This is a shorthand for asking the catalog
-for that table's file system and passing it in through ``WithFileSystem``:
+Load a table with ``Catalog::GetTable`` to bind its schema, location and file
+system, including any per-table temporary credentials. ``WithCatalog`` supplies
+catalog services for snapshot operations and dependency reads:
 
 .. code-block:: cpp
 
@@ -377,15 +384,16 @@ for that table's file system and passing it in through ``WithFileSystem``:
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
                           table->NewRead(std::move(read_context)));
 
-When ``Finish()`` builds the context, it asks the catalog for the table's file
-system through ``Catalog::GetTableFileSystem`` and uses it as-is for the schema,
-snapshots, manifests and data under the table path, so it signs every access with
-the table's credentials and reloads them as they expire. An explicit
-``WithFileSystem`` takes precedence, so the catalog is not asked. A catalog that
-issues no per-table credentials returns its catalog-level file system, so this is
-also how you read with the catalog's own object-store credentials. A format table
-is read through the table's own ``NewRead`` or ``NewScan`` instead; see
-:doc:`format_table`.
+``Finish()`` builds a context without fetching a file system. Operators created
+through ``Table::NewScan/NewRead/NewWrite/NewCommit`` use the table's bound path,
+schema and file system. Contexts provide execution settings such as filters,
+projections, caches and executors; write and commit identity checks still apply.
+
+The legacy static ``Create(context, options)`` factories load a native table from
+the context's loading parameters. They resolve ``Catalog::GetTableFileSystem``
+at that point, unless an explicit ``WithFileSystem`` or scheme map takes
+precedence. These loading parameters do not override an already loaded table.
+Format tables also use their own ``NewRead`` and ``NewScan``; see :doc:`format_table`.
 
 The C++ REST catalog covers the database, table, snapshot and commit operations
 of the ``Catalog`` API. The parts of the Java REST catalog that have no C++

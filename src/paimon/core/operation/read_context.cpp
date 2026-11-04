@@ -325,12 +325,6 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot read through a null catalog");
     }
-    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
-        // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the read uses the credentials of this table.
-        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
-                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
-    }
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0");
     }

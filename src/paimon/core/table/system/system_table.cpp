@@ -224,16 +224,14 @@ Status SystemTable::AdoptOwnSchema() {
 
 Result<std::shared_ptr<FileStoreTable>> SystemTable::CreateDataTable(
     const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options,
-    const std::shared_ptr<FileSystem>& specific_file_system,
-    const std::map<std::string, std::string>& fs_scheme_map) const {
+    const std::map<std::string, std::string>& options) const {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
                            table_schema->MergeOptions(options));
     const std::string branch = BranchManager::NormalizeBranch(LoadBranch(merged_schema->Options()));
-    return FileStoreTable::Create(specific_file_system, GetRootPath(),
-                                  std::shared_ptr<TableSchema>(std::move(merged_schema)),
-                                  CatalogUtils::IdentifierFromPath(GetRootPath(), branch), "",
-                                  branch, fs_scheme_map, options);
+    return FileStoreTable::Create(
+        GetFileSystem(), GetRootPath(), std::shared_ptr<TableSchema>(std::move(merged_schema)),
+        CatalogUtils::IdentifierFromPath(GetRootPath(), branch), "", branch,
+        origin_ ? origin_->fs_scheme_map : std::map<std::string, std::string>{}, options);
 }
 
 Result<std::shared_ptr<Table>> SystemTable::Copy(
@@ -258,10 +256,9 @@ Result<std::shared_ptr<Table>> SystemTable::Copy(
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> current_schema,
                            origin_->table_schema->MergeOptions(origin_->dynamic_options));
-    const std::string current_branch = LoadBranch(current_schema->Options());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<TableSchema> copied_schema,
-        FileStoreTable::CopyTableSchema(GetFileSystem(), GetRootPath(), current_branch,
+        FileStoreTable::CopyTableSchema(GetFileSystem(), GetRootPath(),
                                         std::shared_ptr<TableSchema>(std::move(current_schema)),
                                         origin_->dynamic_options, dynamic_options));
     auto accumulated = origin_->dynamic_options;
@@ -271,7 +268,7 @@ Result<std::shared_ptr<Table>> SystemTable::Copy(
         }
     }
     return SystemTableLoader::Load(origin_->kind, GetFileSystem(), GetRootPath(), copied_schema,
-                                   accumulated, origin_->data_table_name);
+                                   accumulated, origin_->data_table_name, origin_->fs_scheme_map);
 }
 
 Result<std::unique_ptr<FileStoreWrite>> SystemTable::NewWrite(
@@ -292,7 +289,8 @@ bool SystemTableLoader::IsSupported(const std::string& system_table_name) {
 Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
     const std::string& system_table_name, const std::shared_ptr<FileSystem>& fs,
     const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& dynamic_options, const std::string& data_table_name) {
+    const std::map<std::string, std::string>& dynamic_options, const std::string& data_table_name,
+    const std::map<std::string, std::string>& fs_scheme_map) {
     std::optional<SystemTableFactory> factory = FindSystemTableFactory(system_table_name);
     if (factory) {
         const std::string effective_name =
@@ -304,6 +302,7 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
         origin.kind = StringUtils::ToLowerCase(system_table_name);
         origin.table_schema = table_schema;
         origin.dynamic_options = dynamic_options;
+        origin.fs_scheme_map = fs_scheme_map;
         origin.data_table_name = data_table_name;
         system_table->origin_.emplace(std::move(origin));
         PAIMON_RETURN_NOT_OK(system_table->AdoptOwnSchema());
