@@ -67,6 +67,7 @@
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
+#include "paimon/core/operation/commit/row_id_column_conflict_checker.h"
 #include "paimon/core/operation/metrics/commit_metrics.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -1137,6 +1138,39 @@ TEST_F(FileStoreCommitImplTest, TestCatalogSchemaIsRereadOnEveryCommit) {
     }
 }
 
+TEST_F(FileStoreCommitImplTest, TestStatisticsAreInheritedOnlyForTheSameSchema) {
+    for (int64_t next_schema_id : {7, 8}) {
+        SCOPED_TRACE(next_schema_id);
+        auto catalog = CreateCatalogServingSchemaId(7);
+        catalog->CheckBaseSnapshotUuid();
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
+        ASSERT_OK(commit->Commit(CommitMessagesOfRound(1), 1));
+        ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+        const Snapshot& first = catalog->AcceptedSnapshots().front();
+        Snapshot with_statistics(
+            first.Version(), first.Id(), first.SchemaId(), first.BaseManifestList(),
+            first.BaseManifestListSize(), first.DeltaManifestList(), first.DeltaManifestListSize(),
+            first.ChangelogManifestList(), first.ChangelogManifestListSize(), first.IndexManifest(),
+            first.CommitUser(), first.CommitIdentifier(), first.GetCommitKind(), first.TimeMillis(),
+            first.TotalRecordCount(), first.DeltaRecordCount(), first.ChangelogRecordCount(),
+            first.Watermark(), std::string("statistics-1"), first.Properties(), first.NextRowId(),
+            first.Uuid());
+        catalog->SetHeldSnapshot(with_statistics);
+        catalog->SetTableSchema(TableSchemaWithId(next_schema_id));
+
+        ASSERT_OK(commit->Commit(CommitMessagesOfRound(2), 2));
+        ASSERT_EQ(catalog->CommitCalls().size(), 2u);
+        const Snapshot& second = catalog->AcceptedSnapshots().back();
+        ASSERT_EQ(second.Id(), 2);
+        ASSERT_EQ(second.SchemaId(), next_schema_id);
+        if (next_schema_id == with_statistics.SchemaId()) {
+            ASSERT_EQ(second.Statistics(), std::optional<std::string>("statistics-1"));
+        } else {
+            ASSERT_FALSE(second.Statistics().has_value());
+        }
+    }
+}
+
 TEST_F(FileStoreCommitImplTest, TestCatalogSchemaWhichIsNotADataTableSchemaIsRefused) {
     std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(catalog));
@@ -1705,6 +1739,44 @@ TEST_F(FileStoreCommitImplTest, TestRealtimeCommitIsIdempotentThroughTheCatalog)
     ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
 }
 
+TEST_F(FileStoreCommitImplTest, TestCommitRestoresAlreadyCommittedRealtimeSnapshot) {
+    ASSERT_OK(PrepareFirstCommitMessageFiles());
+    auto catalog = CreateCatalog();
+    catalog->CheckBaseSnapshotUuid();
+    CatalogCommitSpec spec;
+    spec.catalog = catalog;
+    spec.commit_user = "realtime_commit_user";
+    spec.options = {{Options::REALTIME_ENABLED, "true"}, {Options::BUCKET, "2"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    auto* commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+    const auto messages = CommitMessagesOfRound(1);
+    std::vector<RealtimeCommitProgress> progress;
+    ASSERT_NO_FATAL_FAILURE(BuildRealtimeProgress(commit_impl, messages, &progress));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id,
+                         commit_impl->CommitWithProgress(progress, 1, std::nullopt));
+    ASSERT_EQ(snapshot_id, 1);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> restored, CreateCatalogCommit(spec));
+    auto* restored_impl = dynamic_cast<FileStoreCommitImpl*>(restored.get());
+    ASSERT_TRUE(restored_impl);
+    std::map<RealtimePartitionBucket, OffsetRange> ranges;
+    for (const auto& entry : progress) {
+        ranges.emplace(entry.partition_bucket, entry.offset_range);
+    }
+    auto committable = restored_impl->CreateManifestCommittable(1, messages, std::nullopt, {});
+    ASSERT_OK(restored_impl->Commit(committable, /*check_append_files=*/false,
+                                    /*retry_on_conflict=*/true, ranges));
+    ASSERT_EQ(catalog->AcceptedSnapshots().size(), 1u);
+    ASSERT_EQ(catalog->CommitCalls().size(), 1u);
+    ASSERT_OK_AND_ASSIGN(uint64_t generated, restored_impl->GetCommitMetrics()->GetCounter(
+                                                 CommitMetrics::LAST_GENERATED_SNAPSHOTS));
+    ASSERT_EQ(generated, 0);
+    ASSERT_OK_AND_ASSIGN(uint64_t restored_id, restored_impl->GetCommitMetrics()->GetCounter(
+                                                   CommitMetrics::LAST_COMMITTED_SNAPSHOT_ID));
+    ASSERT_EQ(restored_id, snapshot_id);
+}
+
 TEST_F(FileStoreCommitImplTest, TestRealtimeCommitReportsAnUnpublishedHistory) {
     ASSERT_OK(PrepareFirstCommitMessageFiles());
     auto catalog = CreateCatalog();
@@ -1826,6 +1898,80 @@ TEST_F(FileStoreCommitImplTest, TestRowIdChecksUseCatalogLatestAndPublishedHisto
     ASSERT_NOK_WITH_MSG(concurrent_commit->Commit({concurrent_message}, 3),
                         "updating the same file");
     ASSERT_EQ(catalog->AcceptedSnapshots().size(), 2u);
+}
+
+TEST_F(FileStoreCommitImplTest, TestRowIdConflictChecksSnapshotBoundsAndHistory) {
+    CatalogCommitSpec spec;
+    spec.catalog = CreateCatalog();
+    spec.options = {{Options::DATA_EVOLUTION_ENABLED, "true"},
+                    {Options::ROW_TRACKING_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, CreateCatalogCommit(spec));
+    auto* impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(impl);
+    auto& detection = impl->conflict_detection_;
+    const BinaryRow partition = CreateIntRow(10);
+    auto make_entry = [&](const std::string& name, const FileKind& kind,
+                          std::optional<int64_t> row_id, const std::string& column) {
+        auto file = CreateAppendDataFileMeta(name, 10);
+        file->schema_id = 0;
+        file->first_row_id = row_id;
+        file->write_cols = std::vector<std::string>{column};
+        return ManifestEntry(kind, partition, /*bucket=*/0, /*total_buckets=*/2, file);
+    };
+    const ManifestEntry update = make_entry("update", FileKind::Add(), 0, "f2");
+    ASSERT_OK_AND_ASSIGN(auto checker, RowIdColumnConflictChecker::FromDataFiles(
+                                           impl->schema_manager_, {update.File()}));
+    auto make_snapshot = [&](int64_t id, const Snapshot::CommitKind& kind,
+                             const std::vector<ManifestEntry>& entries) -> Result<Snapshot> {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestFileMeta> manifests,
+                               impl->manifest_file_->Write(entries));
+        std::pair<std::string, int64_t> delta_list;
+        PAIMON_ASSIGN_OR_RAISE(delta_list, impl->manifest_list_->Write(manifests));
+        return Snapshot(id, /*schema_id=*/0, /*base_manifest_list=*/"", std::nullopt,
+                        delta_list.first, delta_list.second, std::nullopt, std::nullopt,
+                        std::nullopt, "history-writer", id, kind, /*time_millis=*/0,
+                        /*total_record_count=*/100,
+                        /*delta_record_count=*/0, std::nullopt, std::nullopt, std::nullopt,
+                        std::nullopt, /*next_row_id=*/100);
+    };
+    std::vector<ManifestEntry> history = {
+        make_entry("deleted", FileKind::Delete(), 0, "f2"),
+        make_entry("untracked", FileKind::Add(), std::nullopt, "f2"),
+        make_entry("new-rows", FileKind::Add(), 100, "f2"),
+        make_entry("other-column", FileKind::Add(), 0, "f3")};
+    for (int64_t id : {-1, 1, 2}) {
+        ASSERT_OK_AND_ASSIGN(
+            Snapshot snapshot,
+            make_snapshot(
+                id, id == 2 ? Snapshot::CommitKind::Compact() : Snapshot::CommitKind::Append(),
+                id == 1 ? history : std::vector<ManifestEntry>{}));
+        ASSERT_OK_AND_ASSIGN(std::string json, snapshot.ToJsonString());
+        ASSERT_OK(file_system_->AtomicStore(impl->snapshot_manager_->SnapshotPath(id), json));
+    }
+    for (bool conflicts : {false, true}) {
+        SCOPED_TRACE(conflicts);
+        ASSERT_OK_AND_ASSIGN(
+            Snapshot latest,
+            make_snapshot(3, Snapshot::CommitKind::Append(),
+                          {make_entry("latest", FileKind::Add(), 0, conflicts ? "f2" : "f3")}));
+        for (int64_t from_snapshot : {-1, 1}) {
+            SCOPED_TRACE(from_snapshot);
+            detection.SetRowIdCheckFromSnapshot(from_snapshot);
+            Status status = detection.CheckForRowIdFromSnapshot(latest, {update}, {}, checker);
+            if (conflicts) {
+                ASSERT_NOK_WITH_MSG(status, "updating the same file");
+            } else {
+                ASSERT_OK(status);
+            }
+        }
+        for (int64_t from_snapshot : {3, 4}) {
+            detection.SetRowIdCheckFromSnapshot(from_snapshot);
+            ASSERT_OK(detection.CheckForRowIdFromSnapshot(latest, {update}, {}, checker));
+        }
+        detection.SetRowIdCheckFromSnapshot(1);
+        ASSERT_OK(detection.CheckForRowIdFromSnapshot(latest, {}, {}, checker));
+        ASSERT_OK(detection.CheckForRowIdFromSnapshot(latest, {update}, {}, std::nullopt));
+    }
 }
 
 TEST_F(FileStoreCommitImplTest, TestCatalogSnapshotLoaderFailurePropagates) {
