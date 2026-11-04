@@ -53,23 +53,53 @@ brew install gzip
 export PAIMON_GZIP="$(brew --prefix gzip)/bin/gzip"
 ```
 
-For example, update all version locations and review the diff:
+During release preparation, check the release version metadata:
 
 ```bash
-scripts/releasing/bump_version.py 0.2.0 0.3.0
-scripts/releasing/bump_version.py --check 0.3.0
+scripts/releasing/bump_version.py --check 0.4.0
 ```
 
-The target version becomes the stable documentation label (for example,
-`0.3.0 (stable)`). If its major.minor series differs from the previous stable
-series, the previous release is moved to an archived entry. Archived labels
-also show the full version, while their identifiers and URLs retain the
-major.minor series. Patch releases update the stable label without adding
-an archive. The documentation version may track the latest stable release
-while the CMake version advances; release preparation updates both to the
-target version. Use this command for release
-preparation; it also promotes documentation and is not a development-only
-version bump.
+After publishing `0.4.0`, start the next development cycle and review the diff:
+
+```bash
+scripts/releasing/bump_version.py 0.4.0 0.5.0
+scripts/releasing/bump_version.py --check 0.5.0
+```
+
+This single operation updates CMake and `docs/source/conf.py` to `0.5.0` and
+updates the documentation version switcher:
+
+- `main` points to `main/`, keeping both its display name and identifier `main`.
+  The documentation release string becomes `0.5.0.dev`.
+- `0.4.0 (stable)` points to the site root. The old version argument is the
+  release just published; the new development version is never promoted here.
+- If the previous stable belongs to a different major.minor series, it is
+  archived. Archived labels show the full version, while their identifiers and
+  URLs use major.minor. Patch releases within the stable series only update its
+  label. If `0.4.0` is already stable, no additional archive is created.
+
+Run the two-version command after publishing the old version, since it marks
+that version stable. It updates local metadata; publishing documentation remains
+a separate step.
+
+To promote the current project version without starting a development cycle,
+use the independent operation:
+
+```bash
+scripts/releasing/bump_version.py --promote-stable 0.4.0
+```
+
+This only updates `docs/source/_static/versions.json` and requires CMake and
+`docs/source/conf.py` to use `0.4.0`. Repeating it does not add an archive.
+
+Both update operations support `--dry-run`, which validates the inputs and lists
+the files that would be written without modifying them. `--root PATH` selects a
+different source tree. `--check VERSION` remains a read-only consistency check:
+CMake must match `VERSION`, and the documentation version may match either CMake
+or the current stable version for compatibility with older refs. It validates
+the version-list structure but does not require stable to equal `VERSION`.
+The development entry is named `main`; the legacy `main (development)` label
+remains accepted for older refs.
 
 ### Signing key setup and security
 
@@ -232,8 +262,9 @@ than ASF's general one-hour minimum.
 
 ## Individual tools
 
-- `bump_version.py`: consistently check or update CMake and documentation
-  version metadata.
+- `bump_version.py`: check version metadata, start the next development cycle
+  while marking the released version stable, or independently promote stable
+  documentation.
 - `create_source_release.sh`: deterministically create an archive with GNU
   gzip, a SHA-512 checksum, and an optional detached signature from an immutable
   Git ref.
