@@ -28,10 +28,14 @@ Result<MemorySegment> CacheManager::GetPage(
     auto supplier =
         [&](const std::shared_ptr<CacheKey>& key) -> Result<std::shared_ptr<CacheValue>> {
         PAIMON_ASSIGN_OR_RAISE(MemorySegment segment, reader(key));
-        return std::make_shared<CacheValue>(segment, std::move(eviction_callback));
+        return std::make_shared<MemorySegmentCacheValue>(segment, std::move(eviction_callback));
     };
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CacheValue> cache_value, cache->Get(key, supplier));
-    return cache_value->GetSegment();
+    auto segment = CacheValue::Get<const MemorySegment>(cache_value);
+    if (!segment) {
+        return Status::Invalid("Page cache returned an invalid value type");
+    }
+    return *segment;
 }
 
 void CacheManager::InvalidPage(const std::shared_ptr<CacheKey>& key) {

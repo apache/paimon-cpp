@@ -552,7 +552,7 @@ TEST_F(RowRangeManifestFileTest, CacheChargesRetainedArrowCapacity) {
                        return Status::Invalid("manifest was not cached");
                    }));
     ASSERT_TRUE(cached);
-    const int64_t logical_size = cached->GetSegment().Size();
+    const int64_t logical_size = CacheValue::Get<const MemorySegment>(cached)->Size();
     ASSERT_GT(cached->GetMemoryUsage(), logical_size);
     ASSERT_EQ(pool->CurrentUsage(), cached->GetMemoryUsage());
     cached.reset();

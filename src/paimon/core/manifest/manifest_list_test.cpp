@@ -153,9 +153,10 @@ TEST_F(ManifestListTest, DecodedCacheReusesIpcAcrossReaders) {
                        return Status::Invalid("manifest list was not cached");
                    }));
     ASSERT_TRUE(cached);
-    const auto& segment = cached->GetSegment();
-    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
-                                                  segment.Size());
+    auto segment = CacheValue::Get<const MemorySegment>(cached);
+    ASSERT_TRUE(segment);
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment->Data()),
+                                                  segment->Size());
     // The existing cache key contains IPC, not source-format bytes.
     auto ipc = arrow::ipc::RecordBatchStreamReader::Open(
         std::make_shared<arrow::io::BufferReader>(buffer));

@@ -30,6 +30,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
+#include "paimon/cache/cache.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -175,20 +176,20 @@ Result<std::vector<std::shared_ptr<FileIndexReader>>> OpenSearchReaders(
     return format_reader->ReadColumnIndex(field_name, &c_schema);
 }
 
-Result<std::shared_ptr<ScoredFileIndexResult>> ExecuteVectorSearch(
+Result<std::shared_ptr<FileIndexReader>> GetVectorSearchReader(
     const std::vector<std::shared_ptr<FileIndexReader>>& readers,
-    const std::shared_ptr<VectorSearch>& vector_search) {
+    const std::string& field_name) {
     if (readers.empty()) {
         return Status::NotImplemented(
             fmt::format("No File Index reader supports vector search for field '{}'",
-                        vector_search->field_name));
+                        field_name));
     }
     if (readers.size() != 1) {
         return Status::Invalid(
             fmt::format("Multiple File Index readers exist for vector search field '{}'",
-                        vector_search->field_name));
+                        field_name));
     }
-    return readers[0]->VisitVectorSearch(vector_search);
+    return readers[0];
 }
 
 Result<std::shared_ptr<FileIndexResult>> ExecuteFullTextSearch(
@@ -291,14 +292,47 @@ Result<std::shared_ptr<ScoredFileIndexResult>> FileIndexEvaluator::EvaluateVecto
     const std::shared_ptr<VectorSearch>& vector_search,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<Cache>& cache) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
                            ExtractIndexInputStream(/*only_use_embedding_index=*/false, path_factory,
                                                    file_meta, file_system));
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
-                           OpenSearchReaders(data_schema, vector_search->field_name, options,
-                                             file_meta, input_stream, pool));
-    return ExecuteVectorSearch(readers, vector_search);
+    auto open_reader = [&]() -> Result<std::shared_ptr<FileIndexReader>> {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
+                               OpenSearchReaders(data_schema, vector_search->field_name, options,
+                                                 file_meta, input_stream, pool));
+        return GetVectorSearchReader(readers, vector_search->field_name);
+    };
+    std::string uri;
+    if (cache && input_stream) {
+        auto uri_result = input_stream->GetUri();
+        if (uri_result.ok()) {
+            uri = std::move(uri_result).value();
+        }
+    }
+    if (uri.empty()) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexReader> reader, open_reader());
+        return reader->VisitVectorSearch(vector_search);
+    }
+    std::shared_ptr<arrow::Field> field = data_schema->GetFieldByName(vector_search->field_name);
+    if (!field) {
+        return Status::Invalid(fmt::format("Search field '{}' does not exist in data schema",
+                                           vector_search->field_name));
+    }
+    auto key = CacheKey::ForIndexReader(uri, vector_search->field_name);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<CacheValue> value,
+        cache->Get(
+            key, [&](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                PAIMON_ASSIGN_OR_RAISE(int64_t length, input_stream->Length());
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexReader> reader, open_reader());
+                return std::make_shared<ObjectCacheValue<FileIndexReader>>(std::move(reader),
+                                                                           nullptr, length);
+            }));
+    auto reader = CacheValue::Get<FileIndexReader>(value);
+    if (!reader) {
+        return Status::Invalid("Vector index reader cache returned an invalid value");
+    }
+    return reader->VisitVectorSearch(vector_search);
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateFullTextSearch(

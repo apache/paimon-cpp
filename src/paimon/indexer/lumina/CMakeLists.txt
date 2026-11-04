@@ -57,6 +57,7 @@ if(PAIMON_ENABLE_LUMINA)
                         test_utils_static
                         ${PAIMON_LUMINA_INDEX_STATIC_LINK_LIBS}
                         ${PAIMON_LOCAL_FILE_SYSTEM_STATIC_LINK_LIBS}
+                        paimon_mock_file_format_static
                         lumina::interface
                         ${GTEST_LINK_TOOLCHAIN})
     endif()

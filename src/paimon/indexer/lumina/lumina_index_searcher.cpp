@@ -79,6 +79,7 @@ Result<::lumina::api::LuminaSearcher::SearchResult> LuminaIndexSearcher::Search(
     PAIMON_ASSIGN_OR_RAISE(::lumina::api::SearchOptions search_options,
                            LuminaIndexOptions::CreateSearchOptions(*vector_search, index_info_));
     ::lumina::api::Query query(vector_search->query.data(), vector_search->query.size());
+    LuminaMemoryPool session_pool(pool_->GetPaimonPool());
 
     if (vector_search->predicate) {
         if (!searcher_with_tag_) {
@@ -89,7 +90,7 @@ Result<::lumina::api::LuminaSearcher::SearchResult> LuminaIndexSearcher::Search(
         if (!vector_search->pre_filter) {
             PAIMON_ASSIGN_OR_RAISE_FROM_LUMINA(
                 ::lumina::api::LuminaSearcher::SearchResult search_result,
-                searcher_with_tag_->SearchWithTag(query, tag_filter, search_options, *pool_));
+                searcher_with_tag_->SearchWithTag(query, tag_filter, search_options, session_pool));
             return std::move(search_result);
         }
         auto filter = [pre_filter = vector_search->pre_filter](
@@ -97,14 +98,14 @@ Result<::lumina::api::LuminaSearcher::SearchResult> LuminaIndexSearcher::Search(
         PAIMON_ASSIGN_OR_RAISE_FROM_LUMINA(
             ::lumina::api::LuminaSearcher::SearchResult search_result,
             searcher_with_tag_->SearchWithTagAndFilter(query, tag_filter, filter, search_options,
-                                                       *pool_));
+                                                       session_pool));
         return std::move(search_result);
     }
 
     if (!vector_search->pre_filter) {
         PAIMON_ASSIGN_OR_RAISE_FROM_LUMINA(
             ::lumina::api::LuminaSearcher::SearchResult search_result,
-            searcher_->Search(query, search_options, *pool_));
+            searcher_->Search(query, search_options, session_pool));
         return std::move(search_result);
     }
     auto filter = [pre_filter = vector_search->pre_filter](::lumina::core::vector_id_t id) -> bool {
@@ -112,7 +113,7 @@ Result<::lumina::api::LuminaSearcher::SearchResult> LuminaIndexSearcher::Search(
     };
     PAIMON_ASSIGN_OR_RAISE_FROM_LUMINA(
         ::lumina::api::LuminaSearcher::SearchResult search_result,
-        searcher_with_filter_->SearchWithFilter(query, filter, search_options, *pool_));
+        searcher_with_filter_->SearchWithFilter(query, filter, search_options, session_pool));
     return std::move(search_result);
 }
 

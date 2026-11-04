@@ -165,15 +165,16 @@ class ParquetReaderBuilder : public ReaderBuilder {
             PAIMON_ASSIGN_OR_RAISE(
                 MemorySegment segment,
                 SerializeParquetMetadataFooter(input_stream, reader_properties, arrow_pool));
-            return std::make_shared<CacheValue>(segment, CacheCallback());
+            return std::make_shared<MemorySegmentCacheValue>(segment, CacheCallback());
         };
 
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CacheValue> cache_value,
                                cache_->Get(cache_key, supplier));
-        if (cache_value == nullptr) {
-            return Status::Invalid("Parquet metadata cache returned nullptr value");
+        auto segment = CacheValue::Get<const MemorySegment>(cache_value);
+        if (!segment) {
+            return Status::Invalid("Parquet metadata cache returned an invalid value type");
         }
-        return ParseParquetMetadataFooter(cache_value->GetSegment(), reader_properties);
+        return ParseParquetMetadataFooter(*segment, reader_properties);
     }
 
     int32_t batch_size_ = -1;
