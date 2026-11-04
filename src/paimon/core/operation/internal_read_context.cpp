@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "arrow/api.h"
@@ -47,6 +48,7 @@
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/rest/rest_api.h"
 #include "paimon/status.h"
@@ -378,6 +380,15 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     }
     // validate predicate
     if (context->GetPredicate()) {
+        std::set<std::string> field_names;
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(context->GetPredicate(), &field_names));
+        for (const auto& field_name : field_names) {
+            if (field_name == SpecialFields::IndexScore().Name() ||
+                SpecialFields::ParseIndexScoreFieldName(field_name)) {
+                return Status::Invalid(fmt::format(
+                    "Predicates on virtual index score column '{}' are not supported", field_name));
+            }
+        }
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
             *read_schema, context->GetPredicate(), /*validate_field_idx=*/true));
     }

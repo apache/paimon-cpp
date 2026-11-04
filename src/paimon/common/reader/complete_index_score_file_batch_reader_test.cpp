@@ -249,7 +249,7 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestMultipleScoresFollowSelectedRo
 TEST_F(CompleteIndexScoreFileBatchReaderTest, TestMultipleScoresWithEmptyResult) {
     auto type = arrow::struct_(
         {arrow::field("score_a", arrow::float32()), arrow::field("score_b", arrow::float32())});
-    for (const std::string& json : {"[]", "[[null, null]]"}) {
+    for (const std::string json : {"[]", "[[null, null]]"}) {
         auto data = arrow::ipc::internal::json::ArrayFromJSON(type, json).ValueOrDie();
         auto inner = std::make_unique<MockFileBatchReader>(data, type, RoaringBitmap32(),
                                                            /*read_batch_size=*/1);
@@ -267,7 +267,7 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestRejectsTooFewScoresForEachFiel
         {arrow::field("score_a", arrow::float32()), arrow::field("score_b", arrow::float32())});
     auto data = arrow::ipc::internal::json::ArrayFromJSON(type, "[[null, null], [null, null]]")
                     .ValueOrDie();
-    for (const std::string& field_name : {"score_a", "score_b"}) {
+    for (const std::string field_name : {"score_a", "score_b"}) {
         auto inner = std::make_unique<MockFileBatchReader>(data, type, /*read_batch_size=*/1);
         std::map<std::string, std::vector<float>> scores = {{"score_a", {1.0f, 2.0f}},
                                                             {"score_b", {3.0f, 4.0f}}};
@@ -287,7 +287,7 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestRejectsUnusedScoresForEachFiel
     auto type = arrow::struct_(
         {arrow::field("score_a", arrow::float32()), arrow::field("score_b", arrow::float32())});
     auto data = arrow::ipc::internal::json::ArrayFromJSON(type, "[[null, null]]").ValueOrDie();
-    for (const std::string& field_name : {"score_a", "score_b"}) {
+    for (const std::string field_name : {"score_a", "score_b"}) {
         auto inner = std::make_unique<MockFileBatchReader>(data, type, /*read_batch_size=*/1);
         std::map<std::string, std::vector<float>> scores = {{"score_a", {1.0f}},
                                                             {"score_b", {3.0f}}};

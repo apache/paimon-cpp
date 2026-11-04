@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include "paimon/core/operation/file_index_read_executor.h"
+#include "paimon/core/operation/precise_file_index_read.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,6 +32,7 @@
 #include "fmt/format.h"
 #include "paimon/common/reader/complete_index_score_file_batch_reader.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
+#include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -72,76 +73,12 @@ Result<std::string> ResolveSearchFieldName(
     return iter->second;
 }
 
-}  // namespace
-
-Result<std::unique_ptr<FileIndexReadExecutor>> FileIndexReadExecutor::Create(
-    const RawFileSplitRead& split_read, const BinaryRow& partition,
-    const std::shared_ptr<DataFileMeta>& file, const FieldMappingBuilder* field_mapping_builder,
-    const std::shared_ptr<DataFilePathFactory>& path_factory,
-    const std::map<std::string, std::string>& extra_format_options) {
-    std::unique_ptr<FileIndexReadExecutor> executor(new FileIndexReadExecutor(
-        split_read, partition, file, field_mapping_builder, path_factory, extra_format_options));
-    PAIMON_RETURN_NOT_OK(executor->Prepare());
-    return executor;
-}
-
-FileIndexReadExecutor::FileIndexReadExecutor(
-    const RawFileSplitRead& split_read, const BinaryRow& partition,
-    const std::shared_ptr<DataFileMeta>& file, const FieldMappingBuilder* field_mapping_builder,
-    const std::shared_ptr<DataFilePathFactory>& path_factory,
-    const std::map<std::string, std::string>& extra_format_options)
-    : split_read_(split_read),
-      partition_(partition),
-      file_(file),
-      field_mapping_builder_(field_mapping_builder),
-      path_factory_(path_factory),
-      extra_format_options_(extra_format_options) {}
-
-Status FileIndexReadExecutor::Prepare() {
-    std::shared_ptr<TableSchema> table_schema = split_read_.context_->GetTableSchema();
-    if (file_->schema_id != table_schema->Id()) {
-        PAIMON_ASSIGN_OR_RAISE(table_schema,
-                               split_read_.schema_manager_->ReadSchema(file_->schema_id));
-    }
-    const auto data_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
-    if (file_->row_count < 0 || file_->row_count > RoaringBitmap32::MAX_VALUE) {
-        return Status::NotImplemented(
-            "Precise file-index evaluation requires bitmap32 physical row positions");
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> data_fields,
-                           DataField::ConvertArrowSchemaToDataFields(data_schema));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<DataField> read_fields,
-        DataField::ConvertArrowSchemaToDataFields(split_read_.context_->GetReadSchema()));
-    auto field_names = FieldMappingBuilder::CreateFieldNameMapping(
-        split_read_.context_->GetTableSchema()->Fields(), data_fields);
-    std::map<std::string, std::string> index_options;
-    PAIMON_ASSIGN_OR_RAISE(index_options,
-                           FileIndexOptions::RewriteFieldNames(
-                               split_read_.context_->GetCoreOptions().ToMap(), field_names));
-    PAIMON_ASSIGN_OR_RAISE(indexes_, FileIndexEvaluator::Create(
-                                         data_schema, index_options, path_factory_, file_,
-                                         split_read_.context_->GetCoreOptions().GetFileSystem(),
-                                         /*only_use_embedding_index=*/false, split_read_.pool_));
-
-    std::map<std::string, DataField> read_by_name;
-    for (const auto& field : read_fields) {
-        read_by_name.emplace(field.Name(), field);
-    }
-    std::map<int32_t, std::pair<int32_t, DataField>> data_by_id;
-    for (size_t i = 0; i < data_fields.size(); ++i) {
-        data_by_id.emplace(data_fields[i].Id(), std::make_pair(i, data_fields[i]));
-    }
-    // Precheck the entire tree before an empty candidate set can short-circuit it.
-    PAIMON_RETURN_NOT_OK(
-        PreparePredicate(split_read_.context_->GetPredicate(), read_by_name, data_by_id));
-    return PrepareSearch(field_names);
-}
-
-Status FileIndexReadExecutor::PreparePredicate(
+Status PreparePredicate(
     const std::shared_ptr<Predicate>& predicate,
     const std::map<std::string, DataField>& read_by_name,
-    const std::map<int32_t, std::pair<int32_t, DataField>>& data_by_id) {
+    const std::map<int32_t, std::pair<int32_t, DataField>>& data_by_id,
+    const std::vector<std::string>& partition_keys, FileIndexEvaluator* indexes,
+    std::map<std::shared_ptr<LeafPredicate>, std::shared_ptr<LeafPredicate>>* mapped_leaves) {
     if (!predicate) {
         return Status::OK();
     }
@@ -152,7 +89,8 @@ Status FileIndexReadExecutor::PreparePredicate(
                 fmt::format("unsupported compound file predicate {}", predicate->ToString()));
         }
         for (const auto& child : compound->Children()) {
-            PAIMON_RETURN_NOT_OK(PreparePredicate(child, read_by_name, data_by_id));
+            PAIMON_RETURN_NOT_OK(PreparePredicate(child, read_by_name, data_by_id, partition_keys,
+                                                  indexes, mapped_leaves));
         }
         return Status::OK();
     }
@@ -161,9 +99,8 @@ Status FileIndexReadExecutor::PreparePredicate(
         return Status::Invalid("File predicate must contain leaf or compound predicates");
     }
     bool full_text = leaf->GetFunction().GetType() == Function::Type::FULL_TEXT_MATCH;
-    if (!full_text &&
-        ObjectUtils::Contains(split_read_.context_->GetPartitionKeys(), leaf->FieldName())) {
-        mapped_leaves_.emplace(leaf, nullptr);
+    if (!full_text && ObjectUtils::Contains(partition_keys, leaf->FieldName())) {
+        mapped_leaves->emplace(leaf, nullptr);
         return Status::OK();
     }
     PAIMON_ASSIGN_OR_RAISE(
@@ -178,40 +115,120 @@ Status FileIndexReadExecutor::PreparePredicate(
         if (full_text) {
             PAIMON_ASSIGN_OR_RAISE(
                 [[maybe_unused]] std::shared_ptr<FileIndexReader> reader,
-                indexes_->GetSearchReader(mapped_leaf->FieldName(),
-                                          FileIndexReader::SearchType::FULL_TEXT_MATCH));
+                indexes->GetSearchReader(mapped_leaf->FieldName(),
+                                         FileIndexReader::SearchType::FULL_TEXT_MATCH));
         }
     }
-    mapped_leaves_.emplace(leaf, std::move(mapped_leaf));
+    mapped_leaves->emplace(leaf, std::move(mapped_leaf));
     return Status::OK();
 }
 
-Status FileIndexReadExecutor::PrepareSearch(const std::map<std::string, std::string>& field_names) {
-    if (split_read_.context_->GetVectorSearch()) {
-        vector_search_ = std::make_shared<VectorSearch>(*split_read_.context_->GetVectorSearch());
+Status PrepareSearch(const std::shared_ptr<InternalReadContext>& context,
+                     const std::map<std::string, std::string>& field_names,
+                     const std::string& file_name, FileIndexEvaluator* indexes,
+                     std::shared_ptr<VectorSearch>* vector_search,
+                     std::shared_ptr<FullTextSearch>* full_text_search) {
+    if (context->GetVectorSearch()) {
+        *vector_search = std::make_shared<VectorSearch>(*context->GetVectorSearch());
         PAIMON_ASSIGN_OR_RAISE(
-            vector_search_->field_name,
-            ResolveSearchFieldName(vector_search_->field_name, field_names, file_->file_name));
+            (*vector_search)->field_name,
+            ResolveSearchFieldName((*vector_search)->field_name, field_names, file_name));
         PAIMON_ASSIGN_OR_RAISE(
             [[maybe_unused]] std::shared_ptr<FileIndexReader> reader,
-            indexes_->GetSearchReader(vector_search_->field_name,
-                                      FileIndexReader::SearchType::VECTOR_SEARCH));
+            indexes->GetSearchReader((*vector_search)->field_name,
+                                     FileIndexReader::SearchType::VECTOR_SEARCH));
     }
-    if (split_read_.context_->GetFullTextSearch()) {
-        full_text_search_ =
-            std::make_shared<FullTextSearch>(*split_read_.context_->GetFullTextSearch());
+    if (context->GetFullTextSearch()) {
+        *full_text_search = std::make_shared<FullTextSearch>(*context->GetFullTextSearch());
         PAIMON_ASSIGN_OR_RAISE(
-            full_text_search_->field_name,
-            ResolveSearchFieldName(full_text_search_->field_name, field_names, file_->file_name));
+            (*full_text_search)->field_name,
+            ResolveSearchFieldName((*full_text_search)->field_name, field_names, file_name));
         PAIMON_ASSIGN_OR_RAISE(
             [[maybe_unused]] std::shared_ptr<FileIndexReader> reader,
-            indexes_->GetSearchReader(full_text_search_->field_name,
-                                      FileIndexReader::SearchType::FULL_TEXT_SEARCH));
+            indexes->GetSearchReader((*full_text_search)->field_name,
+                                     FileIndexReader::SearchType::FULL_TEXT_SEARCH));
     }
     return Status::OK();
 }
 
-Result<RoaringBitmap32> FileIndexReadExecutor::CreateCandidates(
+}  // namespace
+
+Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
+    const RawFileSplitRead& split_read, const BinaryRow& partition,
+    const std::shared_ptr<DataFileMeta>& file, const FieldMappingBuilder* field_mapping_builder,
+    const std::shared_ptr<DataFilePathFactory>& path_factory,
+    const std::map<std::string, std::string>& extra_format_options) {
+    std::shared_ptr<TableSchema> table_schema = split_read.context_->GetTableSchema();
+    if (file->schema_id != table_schema->Id()) {
+        PAIMON_ASSIGN_OR_RAISE(table_schema,
+                               split_read.schema_manager_->ReadSchema(file->schema_id));
+    }
+    const auto data_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+    if (file->row_count < 0 || file->row_count > RoaringBitmap32::MAX_VALUE) {
+        return Status::NotImplemented(
+            "Precise file-index evaluation requires bitmap32 physical row positions");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> data_fields,
+                           DataField::ConvertArrowSchemaToDataFields(data_schema));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<DataField> read_fields,
+        DataField::ConvertArrowSchemaToDataFields(split_read.context_->GetReadSchema()));
+    auto field_names = FieldMappingBuilder::CreateFieldNameMapping(
+        split_read.context_->GetTableSchema()->Fields(), data_fields);
+    std::map<std::string, std::string> index_options;
+    PAIMON_ASSIGN_OR_RAISE(index_options,
+                           FileIndexOptions::RewriteFieldNames(
+                               split_read.context_->GetCoreOptions().ToMap(), field_names));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<FileIndexEvaluator> indexes,
+        FileIndexEvaluator::Create(data_schema, index_options, path_factory, file,
+                                   split_read.context_->GetCoreOptions().GetFileSystem(),
+                                   split_read.pool_));
+
+    std::map<std::string, DataField> read_by_name;
+    for (const auto& field : read_fields) {
+        read_by_name.emplace(field.Name(), field);
+    }
+    // Field ID -> (zero-based position in data_fields, field definition from the file's schema).
+    std::map<int32_t, std::pair<int32_t, DataField>> data_by_id;
+    for (size_t i = 0; i < data_fields.size(); ++i) {
+        data_by_id.emplace(data_fields[i].Id(), std::make_pair(i, data_fields[i]));
+    }
+    std::map<std::shared_ptr<LeafPredicate>, std::shared_ptr<LeafPredicate>> mapped_leaves;
+    // Precheck the entire tree before an empty candidate set can short-circuit it.
+    PAIMON_RETURN_NOT_OK(PreparePredicate(split_read.context_->GetPredicate(), read_by_name,
+                                          data_by_id, split_read.context_->GetPartitionKeys(),
+                                          indexes.get(), &mapped_leaves));
+    std::shared_ptr<VectorSearch> vector_search;
+    std::shared_ptr<FullTextSearch> full_text_search;
+    PAIMON_RETURN_NOT_OK(PrepareSearch(split_read.context_, field_names, file->file_name,
+                                       indexes.get(), &vector_search, &full_text_search));
+    return std::unique_ptr<PreciseFileIndexRead>(new PreciseFileIndexRead(
+        split_read, partition, file, field_mapping_builder, path_factory, extra_format_options,
+        std::move(indexes), mapped_leaves, vector_search, full_text_search));
+}
+
+PreciseFileIndexRead::PreciseFileIndexRead(
+    const RawFileSplitRead& split_read, const BinaryRow& partition,
+    const std::shared_ptr<DataFileMeta>& file, const FieldMappingBuilder* field_mapping_builder,
+    const std::shared_ptr<DataFilePathFactory>& path_factory,
+    const std::map<std::string, std::string>& extra_format_options,
+    std::unique_ptr<FileIndexEvaluator> indexes,
+    const std::map<std::shared_ptr<LeafPredicate>, std::shared_ptr<LeafPredicate>>& mapped_leaves,
+    const std::shared_ptr<VectorSearch>& vector_search,
+    const std::shared_ptr<FullTextSearch>& full_text_search)
+    : split_read_(split_read),
+      partition_(partition),
+      file_(file),
+      field_mapping_builder_(field_mapping_builder),
+      path_factory_(path_factory),
+      extra_format_options_(extra_format_options),
+      indexes_(std::move(indexes)),
+      mapped_leaves_(mapped_leaves),
+      vector_search_(vector_search),
+      full_text_search_(full_text_search) {}
+
+Result<RoaringBitmap32> PreciseFileIndexRead::CreateCandidates(
     const DeletionVector::Factory& dv_factory,
     const std::optional<std::vector<Range>>& row_ranges) const {
     RoaringBitmap32 candidates;
@@ -225,10 +242,6 @@ Result<RoaringBitmap32> FileIndexReadExecutor::CreateCandidates(
     }
     if (dv_factory) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DeletionVector> dv, dv_factory(file_->file_name));
-        if (dynamic_cast<Bitmap64DeletionVector*>(dv.get())) {
-            return Status::NotImplemented(
-                "Precise file-index evaluation does not support bitmap64 deletion vectors");
-        }
         if (auto bitmap = dynamic_cast<BitmapDeletionVector*>(dv.get())) {
             candidates -= *bitmap->GetBitmap();
         } else if (dv) {
@@ -239,7 +252,7 @@ Result<RoaringBitmap32> FileIndexReadExecutor::CreateCandidates(
     return candidates;
 }
 
-Result<FileIndexReadExecutor::Evaluation> FileIndexReadExecutor::Evaluate(
+Result<PreciseFileIndexRead::Evaluation> PreciseFileIndexRead::Evaluate(
     const std::shared_ptr<Predicate>& predicate, const RoaringBitmap32& candidates) const {
     if (!predicate || candidates.IsEmpty()) {
         return Evaluation{candidates, {}};
@@ -253,7 +266,7 @@ Result<FileIndexReadExecutor::Evaluation> FileIndexReadExecutor::Evaluate(
     return Status::Invalid(fmt::format("unsupported file predicate {}", predicate->ToString()));
 }
 
-Result<FileIndexReadExecutor::Evaluation> FileIndexReadExecutor::EvaluateCompound(
+Result<PreciseFileIndexRead::Evaluation> PreciseFileIndexRead::EvaluateCompound(
     const std::shared_ptr<CompoundPredicate>& predicate, const RoaringBitmap32& candidates) const {
     const Function::Type type = predicate->GetFunction().GetType();
     if (type == Function::Type::OR) {
@@ -300,7 +313,7 @@ Result<FileIndexReadExecutor::Evaluation> FileIndexReadExecutor::EvaluateCompoun
     return result;
 }
 
-Result<std::optional<double>> FileIndexReadExecutor::EstimateSelectivity(
+Result<std::optional<double>> PreciseFileIndexRead::EstimateSelectivity(
     const std::shared_ptr<Predicate>& predicate) const {
     if (!predicate) {
         return std::optional<double>();
@@ -343,7 +356,7 @@ Result<std::optional<double>> FileIndexReadExecutor::EstimateSelectivity(
     return estimate;
 }
 
-Result<std::optional<double>> FileIndexReadExecutor::EstimateLeafSelectivity(
+Result<std::optional<double>> PreciseFileIndexRead::EstimateLeafSelectivity(
     const std::shared_ptr<LeafPredicate>& predicate) const {
     auto iter = mapped_leaves_.find(predicate);
     if (iter == mapped_leaves_.end()) {
@@ -355,7 +368,7 @@ Result<std::optional<double>> FileIndexReadExecutor::EstimateLeafSelectivity(
     return indexes_->EstimateSelectivity(iter->second);
 }
 
-Result<FileIndexReadExecutor::Evaluation> FileIndexReadExecutor::EvaluateLeaf(
+Result<PreciseFileIndexRead::Evaluation> PreciseFileIndexRead::EvaluateLeaf(
     const std::shared_ptr<LeafPredicate>& predicate, const RoaringBitmap32& candidates) const {
     bool is_full_text = predicate->GetFunction().GetType() == Function::Type::FULL_TEXT_MATCH;
     bool needs_scores =
@@ -368,6 +381,9 @@ Result<FileIndexReadExecutor::Evaluation> FileIndexReadExecutor::EvaluateLeaf(
         return Status::Invalid("File predicate mapping was not prepared");
     }
     if (iter->second) {
+        // TODO(lisizhuo.lsz): Pass candidates through FileIndexEvaluator::EvaluateLeaf to index
+        // readers so they can skip rows excluded by earlier predicates, row ranges, or deletion
+        // vectors.
         PAIMON_ASSIGN_OR_RAISE(index_result, indexes_->EvaluateLeaf(iter->second, needs_scores));
     }
     if (!index_result) {
@@ -407,7 +423,7 @@ Result<FileIndexReadExecutor::Evaluation> FileIndexReadExecutor::EvaluateLeaf(
     return result;
 }
 
-Result<std::unique_ptr<FileBatchReader>> FileIndexReadExecutor::CreateSelectedFileReader(
+Result<std::unique_ptr<FileBatchReader>> PreciseFileIndexRead::CreateSelectedFileReader(
     const RoaringBitmap32& selection, const FieldMappingBuilder* field_mapping_builder) const {
     PAIMON_ASSIGN_OR_RAISE(std::string format, file_->FileFormat());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> builder,
@@ -417,13 +433,15 @@ Result<std::unique_ptr<FileBatchReader>> FileIndexReadExecutor::CreateSelectedFi
                                                 std::nullopt, path_factory_, &selection);
 }
 
-Result<RoaringBitmap32> FileIndexReadExecutor::ScanScalar(
+Result<RoaringBitmap32> PreciseFileIndexRead::ScanScalar(
     const std::shared_ptr<LeafPredicate>& predicate, const RoaringBitmap32& input) const {
     auto field = split_read_.context_->GetReadSchema()->GetFieldByName(predicate->FieldName());
     if (!field) {
         return Status::Invalid(fmt::format(
             "Scalar predicate field '{}' is missing from the read schema", predicate->FieldName()));
     }
+    // TODO(lisizhuo.lsz): Push the scalar predicate to use min/max statistics for pruning row
+    // groups/pages.
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
         FieldMappingBuilder::Create(arrow::schema({field}),
@@ -443,6 +461,8 @@ Result<RoaringBitmap32> FileIndexReadExecutor::ScanScalar(
         if (BatchReader::IsEofBatch(batch)) {
             break;
         }
+        ScopeGuard release_batch(
+            [&batch]() { ReaderUtils::ReleaseReadBatch(std::move(batch.first)); });
         for (auto iter = batch.second.Begin(); iter != batch.second.End(); ++iter) {
             int32_t batch_row = *iter;
             if (batch_row < 0 || batch_row >= batch.first.first->length) {
@@ -458,7 +478,7 @@ Result<RoaringBitmap32> FileIndexReadExecutor::ScanScalar(
     return matches;
 }
 
-Status FileIndexReadExecutor::ApplyRootSearch(Evaluation* evaluated) const {
+Status PreciseFileIndexRead::ApplyRootSearch(Evaluation* evaluated) const {
     std::shared_ptr<ScoredFileIndexResult> root_scores;
     std::string field_name;
     if (vector_search_) {
@@ -489,7 +509,7 @@ Status FileIndexReadExecutor::ApplyRootSearch(Evaluation* evaluated) const {
     return Status::OK();
 }
 
-Result<std::vector<float>> FileIndexReadExecutor::AlignScores(
+Result<std::vector<float>> PreciseFileIndexRead::AlignScores(
     const std::shared_ptr<ScoredFileIndexResult>& source, const RoaringBitmap32& rows) {
     if (!source) {
         return Status::Invalid("Projected search source did not return scores");
@@ -509,7 +529,7 @@ Result<std::vector<float>> FileIndexReadExecutor::AlignScores(
     return aligned;
 }
 
-Result<std::map<std::string, std::vector<float>>> FileIndexReadExecutor::CreateOutputScores(
+Result<std::map<std::string, std::vector<float>>> PreciseFileIndexRead::CreateOutputScores(
     const Evaluation& evaluated) const {
     std::map<std::string, std::vector<float>> output_scores;
     for (const auto& [position, source] : split_read_.context_->GetIndexScoreBindings()) {
@@ -526,7 +546,7 @@ Result<std::map<std::string, std::vector<float>>> FileIndexReadExecutor::CreateO
     return output_scores;
 }
 
-Result<std::unique_ptr<FileBatchReader>> FileIndexReadExecutor::CreateReader(
+Result<std::unique_ptr<FileBatchReader>> PreciseFileIndexRead::CreateReader(
     const DeletionVector::Factory& dv_factory,
     const std::optional<std::vector<Range>>& row_ranges) const {
     PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 candidates, CreateCandidates(dv_factory, row_ranges));

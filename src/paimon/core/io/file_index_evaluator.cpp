@@ -66,12 +66,11 @@ Result<std::unique_ptr<FileIndexEvaluator>> FileIndexEvaluator::Create(
     const std::map<std::string, std::string>& options,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
-    bool only_use_embedding_index, const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<MemoryPool>& pool) {
     std::unique_ptr<FileIndexFormat::Reader> format_reader;
     if (file_meta->row_count >= 0 && file_meta->row_count <= RoaringBitmap32::MAX_VALUE) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
-                               ExtractIndexInputStream(only_use_embedding_index, path_factory,
-                                                       file_meta, file_system));
+                               ExtractIndexInputStream(path_factory, file_meta, file_system));
         if (input_stream) {
             PAIMON_ASSIGN_OR_RAISE(format_reader,
                                    FileIndexFormat::CreateReader(input_stream, pool, options));
@@ -214,7 +213,6 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
 }
 
 Result<std::shared_ptr<InputStream>> FileIndexEvaluator::ExtractIndexInputStream(
-    bool only_use_embedding_index,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta,
     const std::shared_ptr<FileSystem>& file_system) {
@@ -223,9 +221,6 @@ Result<std::shared_ptr<InputStream>> FileIndexEvaluator::ExtractIndexInputStream
         // inline index
         return std::make_shared<ByteArrayInputStream>(embedded_index->data(),
                                                       embedded_index->size());
-    }
-    if (only_use_embedding_index) {
-        return std::shared_ptr<InputStream>();
     }
     if (!data_file_path_factory || !file_system) {
         return Status::Invalid(

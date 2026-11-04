@@ -56,10 +56,10 @@ class DataFilePathFactory;
 class DataSplitImpl;
 class Executor;
 class FieldMappingBuilder;
-class FileIndexReadExecutor;
 class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
+class PreciseFileIndexRead;
 class Predicate;
 struct BlobReadContext;
 struct DataFileMeta;
@@ -86,10 +86,6 @@ class AbstractSplitRead : public SplitRead {
         const std::map<std::string, std::string>& extra_format_options) const;
 
  protected:
-    virtual bool EnablePreciseFileIndexEvaluate() const {
-        return false;
-    }
-
     virtual Result<std::unique_ptr<FileBatchReader>> CreatePreciseFileIndexReader(
         const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
@@ -157,7 +153,7 @@ class AbstractSplitRead : public SplitRead {
         const std::optional<std::vector<std::string>>& write_cols);
 
  private:
-    friend class FileIndexReadExecutor;
+    friend class PreciseFileIndexRead;
 
     Result<std::vector<RawFileReaderWithMeta>> CreateRawFileReadersWithMetaImpl(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
@@ -195,7 +191,7 @@ class AbstractSplitRead : public SplitRead {
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const RoaringBitmap32* exact_selection = nullptr) const;
+        const RoaringBitmap32* exact_selection) const;
 
     /// The returned field ID set contains MAP fields handled by shredding read plans. It tells
     /// FieldMappingReader to skip its generic selected-key filtering because the plans have already

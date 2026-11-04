@@ -38,7 +38,7 @@ class Literal;
 /// Vector and full-text searches return no matches.
 class EmptyFileIndexReader : public FileIndexReader {
  public:
-    explicit EmptyFileIndexReader(std::vector<SearchType> search_types = {})
+    explicit EmptyFileIndexReader(std::vector<SearchType> search_types)
         : search_types_(std::move(search_types)) {}
 
     bool SupportsSearch(SearchType search_type) const override {
@@ -47,7 +47,7 @@ class EmptyFileIndexReader : public FileIndexReader {
     }
 
     Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
-        const std::shared_ptr<FullTextMatch>&, bool needs_scores = false) override {
+        const std::shared_ptr<FullTextMatch>&, bool needs_scores) override {
         if (needs_scores) {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredFileIndexResult> result,
                                    ScoredFileIndexResult::Create(RoaringBitmap32(), {}));

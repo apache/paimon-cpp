@@ -126,8 +126,7 @@ Result<bool> FileStoreScan::TestFileIndex(const std::shared_ptr<Predicate>& pred
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FileIndexEvaluator> evaluator,
         FileIndexEvaluator::Create(data_arrow_schema, file_index_options, /*path_factory=*/nullptr,
-                                   meta, /*file_system=*/nullptr, /*only_use_embedding_index=*/true,
-                                   pool_));
+                                   meta, /*file_system=*/nullptr, pool_));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
                            evaluator->Evaluate(data_predicate));
     return index_result->IsRemain();

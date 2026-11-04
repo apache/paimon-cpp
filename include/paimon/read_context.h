@@ -360,8 +360,11 @@ class PAIMON_EXPORT ReadContextBuilder {
     ///
     /// All referenced fields, including full-text match fields, must be projected in the read
     /// schema.
-    /// TODO(lisizhuo.lsz): The behavior here will be aligned with Java Paimon.
+    /// TODO(lisizhuo.lsz): Align with Java Paimon so fields referenced by predicates no longer need
+    /// to appear in the projection.
     /// Full-text matches can be combined with scalar predicates using PredicateBuilder::And/Or.
+    /// Predicates on virtual index score columns (_INDEX_SCORE or _<field>_INDEX_SCORE) are not
+    /// supported.
     ///
     /// @param predicate Shared pointer to the predicate for data filtering.
     /// @return Reference to this builder for method chaining.

@@ -114,7 +114,8 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
                                FileIndexerFactory::Get(index_type, indexer_options));
         if (offset_and_length.first == FileIndexFormat::EMPTY_INDEX_FLAG) {
             return file_indexer ? file_indexer->CreateEmptyReader()
-                                : std::make_shared<EmptyFileIndexReader>();
+                                : std::make_shared<EmptyFileIndexReader>(
+                                      std::vector<FileIndexReader::SearchType>{});
         }
         // assert(file_indexer);
         if (!file_indexer) {

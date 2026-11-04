@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include "paimon/core/operation/file_index_read_executor.h"
+#include "paimon/core/operation/precise_file_index_read.h"
 
 #include <limits>
 #include <map>
@@ -111,7 +111,7 @@ class RecordingDoubleFunction final : public LeafFunction {
 
 }  // namespace
 
-class FileIndexReadExecutorTest : public ::testing::Test {
+class PreciseFileIndexReadTest : public ::testing::Test {
  protected:
     void SetUp() override {
         auto factory = std::make_unique<MockFullTextSearchFileIndexFactory>(statistics_);
@@ -183,9 +183,9 @@ class FileIndexReadExecutorTest : public ::testing::Test {
                                                            context->GetPartitionKeys(), nullptr));
         const BinaryRow partition = BinaryRowGenerator::GenerateRow({10, 0}, pool_.get());
         PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<FileIndexReadExecutor> executor,
-            FileIndexReadExecutor::Create(*split_read, partition, file, field_mapping_builder.get(),
-                                          path_factory, {}));
+            std::unique_ptr<PreciseFileIndexRead> precise_read,
+            PreciseFileIndexRead::Create(*split_read, partition, file, field_mapping_builder.get(),
+                                         path_factory, {}));
         if (!deletion_vector) {
             deletion_vector = std::make_shared<BitmapDeletionVector>(deleted_rows);
         }
@@ -194,7 +194,7 @@ class FileIndexReadExecutorTest : public ::testing::Test {
             return deletion_vector;
         };
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
-                               executor->CreateReader(dv_factory, row_ranges));
+                               precise_read->CreateReader(dv_factory, row_ranges));
         if (!reader) {
             return std::shared_ptr<arrow::ChunkedArray>();
         }
@@ -225,12 +225,12 @@ class FileIndexReadExecutorTest : public ::testing::Test {
     }
 
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
-    const std::string statistics_index_type_ = "executor-statistics-full-text";
+    const std::string statistics_index_type_ = "precise-read-statistics-full-text";
     std::shared_ptr<MockSearchFileIndex::Statistics> statistics_ =
         std::make_shared<MockSearchFileIndex::Statistics>();
 };
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateNestedAndOrWithPartitionConstants) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateNestedAndOrWithPartitionConstants) {
     const std::string first_query = R"({"match":{"query":"first"}})";
     const std::string second_query = R"({"match":{"query":"second"}})";
     ASSERT_OK_AND_ASSIGN(
@@ -278,7 +278,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateNestedAndOrWithPartitionCons
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateReordersQueries) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateReordersQueries) {
     const std::string wide_query = R"({"match":{"query":"wide"}})";
     const std::string narrow_query = R"({"match":{"query":"narrow"}})";
     auto wide_match =
@@ -313,7 +313,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateReordersQueries) {
     ASSERT_EQ(wide_match->include_row_ids, RoaringBitmap64::From({1, 2}));
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateSelectivityOrder) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateSelectivityOrder) {
     const std::vector<std::string> queries = {
         R"({"match":{"query":"a"}})", R"({"match":{"query":"b"}})", R"({"match":{"query":"c"}})",
         R"({"match":{"query":"d"}})", R"({"match":{"query":"e"}})"};
@@ -355,7 +355,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateSelectivityOrder) {
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateZeroEstimateOnlyChangesOrder) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateZeroEstimateOnlyChangesOrder) {
     const std::string a_query = R"({"match":{"query":"a"}})";
     const std::string b_query = R"({"match":{"query":"b"}})";
     ASSERT_OK_AND_ASSIGN(
@@ -379,7 +379,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateZeroEstimateOnlyChangesOrder
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateCompoundSelectivity) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateCompoundSelectivity) {
     const std::string a_query = R"({"match":{"query":"a"}})";
     const std::string b_query = R"({"match":{"query":"b"}})";
     const std::string c_query = R"({"match":{"query":"c"}})";
@@ -435,7 +435,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateCompoundSelectivity) {
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateEmptyRowsShortCircuitExecution) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateEmptyRowsShortCircuitExecution) {
     const std::string empty_query = R"({"match":{"query":"empty"}})";
     const std::string all_query = R"({"match":{"query":"all"}})";
     ASSERT_OK_AND_ASSIGN(
@@ -469,7 +469,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateEmptyRowsShortCircuitExecuti
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateOrEvaluatesAllBranches) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateOrEvaluatesAllBranches) {
     const std::string all_query = R"({"match":{"query":"all"}})";
     const std::string one_query = R"({"match":{"query":"one"}})";
     ASSERT_OK_AND_ASSIGN(
@@ -490,7 +490,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateOrEvaluatesAllBranches) {
     ASSERT_EQ(statistics_->executions[1].query, one_query);
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateIndexedLeafSkipsUnselectedScalarBatches) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateIndexedLeafSkipsUnselectedScalarBatches) {
     const std::string query = R"({"match":{"query":"selected"}})";
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Predicate> indexed,
@@ -525,7 +525,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateIndexedLeafSkipsUnselectedSc
     ASSERT_EQ(statistics_->executions.size(), 1);
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateRechecksScalarIndexCandidates) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRechecksScalarIndexCandidates) {
     auto field = arrow::field("f3", arrow::float64());
     ASSERT_OK_AND_ASSIGN(auto writer, BitmapFileIndexWriter::Create(field, {}, pool_));
     // Include Bob as a false positive: the data file contains 12.1 for row 0.
@@ -570,7 +570,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateRechecksScalarIndexCandidate
     ASSERT_TRUE(statistics_->executions.front().needs_scores);
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicatePrechecksSearchBeforeEmptyCandidates) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicatePrechecksSearchBeforeEmptyCandidates) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Predicate> text,
         PredicateBuilder::FullTextMatch(
@@ -592,7 +592,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicatePrechecksSearchBeforeEmptyCa
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateRenamedTextAndMissingScalarColumn) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRenamedTextAndMissingScalarColumn) {
     SchemaManager schemas(std::make_shared<LocalFileSystem>(), SearchTablePath());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> original, schemas.ReadSchema(0));
     auto fields = original->Fields();
@@ -645,7 +645,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateRenamedTextAndMissingScalarC
     ASSERT_TRUE(!empty || empty->length() == 0);
 }
 
-TEST_F(FileIndexReadExecutorTest, TestMixedPredicateFullTextAndVectorScoresAfterFiltering) {
+TEST_F(PreciseFileIndexReadTest, TestMixedPredicateFullTextAndVectorScoresAfterFiltering) {
     const std::string query = R"({"match":{"query":"all"}})";
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Predicate> text,
@@ -690,7 +690,7 @@ TEST_F(FileIndexReadExecutorTest, TestMixedPredicateFullTextAndVectorScoresAfter
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestFullTextRootScoresAndLimitAfterScalarDvAndRanges) {
+TEST_F(PreciseFileIndexReadTest, TestFullTextRootScoresAndLimitAfterScalarDvAndRanges) {
     const std::string query = R"({"match":{"query":"ranked"}})";
     auto search = std::make_shared<FullTextSearch>("f0", query, 1, RoaringBitmap64::From({0, 2}));
     ReadContextBuilder builder(SearchTablePath());
@@ -715,7 +715,7 @@ TEST_F(FileIndexReadExecutorTest, TestFullTextRootScoresAndLimitAfterScalarDvAnd
     ASSERT_EQ(search->include_row_ids, RoaringBitmap64::From({0, 2}));
 }
 
-TEST_F(FileIndexReadExecutorTest, TestPreciseEvaluationRejectsBitmap64DeletionVectors) {
+TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsBitmap64DeletionVectors) {
     const std::string query = R"({"match":{"query":"all"}})";
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Bytes> text,
@@ -759,13 +759,13 @@ TEST_F(FileIndexReadExecutorTest, TestPreciseEvaluationRejectsBitmap64DeletionVe
                     empty_candidates ? std::make_optional(std::vector<Range>()) : std::nullopt;
                 ASSERT_NOK_WITH_MSG(
                     ReadWithFileIndex(context, index, RoaringBitmap32(), nullptr, ranges, dv),
-                    "Precise file-index evaluation does not support bitmap64 deletion vectors");
+                    "Precise file-index evaluation requires bitmap32 deletion vectors");
             }
         }
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestPreciseEvaluationRejectsRowsAboveBitmap32Limit) {
+TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsRowsAboveBitmap32Limit) {
     for (const std::string& search_type :
          std::vector<std::string>{"none", "scalar", "match", "full-text", "vector"}) {
         ReadContextBuilder builder(SearchTablePath());
@@ -796,7 +796,7 @@ TEST_F(FileIndexReadExecutorTest, TestPreciseEvaluationRejectsRowsAboveBitmap32L
     }
 }
 
-TEST_F(FileIndexReadExecutorTest, TestPreciseEvaluationAtBitmap32Limit) {
+TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationAtBitmap32Limit) {
     for (bool has_predicate : {false, true}) {
         ReadContextBuilder builder(SearchTablePath());
         builder.SetReadFieldNames({"f0", "f3"}).EnablePreciseFileIndexEvaluate(true);

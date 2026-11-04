@@ -32,8 +32,8 @@
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/file_index_evaluator.h"
-#include "paimon/core/operation/file_index_read_executor.h"
 #include "paimon/core/operation/internal_read_context.h"
+#include "paimon/core/operation/precise_file_index_read.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -161,9 +161,9 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReaderWithPredicate
         std::make_unique<ConcatBatchReader>(std::move(raw_readers), arrow_pool_);
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<BatchReader> batch_reader,
-        ApplyPredicateFilterIfNeeded(std::move(concat_batch_reader),
-                                     EnablePreciseFileIndexEvaluate() ? nullptr
-                                                                      : residual_predicate));
+        ApplyPredicateFilterIfNeeded(
+            std::move(concat_batch_reader),
+            context_->EnablePreciseFileIndexEvaluate() ? nullptr : residual_predicate));
     return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), arrow_pool_);
 }
 
@@ -212,10 +212,6 @@ Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,
     return matched;
 }
 
-bool RawFileSplitRead::EnablePreciseFileIndexEvaluate() const {
-    return context_->EnablePreciseFileIndexEvaluate();
-}
-
 Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::CreatePreciseFileIndexReader(
     const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
     const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
@@ -223,10 +219,10 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::CreatePreciseFileInde
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::map<std::string, std::string>& extra_format_options) const {
     PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<FileIndexReadExecutor> executor,
-        FileIndexReadExecutor::Create(*this, partition, file, field_mapping_builder, path_factory,
-                                      extra_format_options));
-    return executor->CreateReader(dv_factory, row_ranges);
+        std::unique_ptr<PreciseFileIndexRead> precise_read,
+        PreciseFileIndexRead::Create(*this, partition, file, field_mapping_builder, path_factory,
+                                     extra_format_options));
+    return precise_read->CreateReader(dv_factory, row_ranges);
 }
 
 }  // namespace paimon

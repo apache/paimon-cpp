@@ -52,15 +52,14 @@ struct VectorSearch;
 class FileIndexEvaluator {
  public:
     /// Open one index container and reuse its field readers throughout a single file read.
-    /// Scan planning uses only embedded indexes; file reads also allow external indexes.
+    /// Uses the embedded index when present; otherwise, loads the external index if available.
     /// Files whose row counts cannot be represented by bitmap32 skip index loading.
     static Result<std::unique_ptr<FileIndexEvaluator>> Create(
         const std::shared_ptr<arrow::Schema>& data_schema,
         const std::map<std::string, std::string>& options,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::shared_ptr<DataFileMeta>& file_meta,
-        const std::shared_ptr<FileSystem>& file_system, bool only_use_embedding_index,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
 
     /// Evaluates a predicate tree for index pruning, reusing the cached field readers.
     /// This does not perform exact scalar filtering or reorder children by selectivity.
@@ -89,7 +88,6 @@ class FileIndexEvaluator {
     Result<std::vector<std::shared_ptr<FileIndexReader>>> GetReaders(const std::string& field_name);
 
     static Result<std::shared_ptr<InputStream>> ExtractIndexInputStream(
-        bool only_use_embedding_index,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const std::shared_ptr<DataFileMeta>& file_meta,
         const std::shared_ptr<FileSystem>& file_system);

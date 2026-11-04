@@ -168,8 +168,9 @@ AbstractSplitRead::CreateRawFileReadersWithMetaImpl(
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> predicate, predicate_provider(file));
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
-            FieldMappingBuilder::Create(read_schema, context_->GetPartitionKeys(),
-                                        EnablePreciseFileIndexEvaluate() ? nullptr : predicate));
+            FieldMappingBuilder::Create(
+                read_schema, context_->GetPartitionKeys(),
+                context_->EnablePreciseFileIndexEvaluate() ? nullptr : predicate));
         return CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
                                    row_ranges, data_file_path_factory, extra_format_options,
                                    attach_blob_context);
@@ -236,13 +237,12 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
             "vectors in existing data files");
     }
     std::shared_ptr<FileIndexResult> file_index_result;
-    if (options_.FileIndexReadEnabled() &&
+    if (predicate && options_.FileIndexReadEnabled() &&
         dynamic_cast<Bitmap64DeletionVector*>(deletion_vector.get()) == nullptr) {
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileIndexEvaluator> evaluator,
             FileIndexEvaluator::Create(data_schema, file_index_options, data_file_path_factory,
-                                       file, options_.GetFileSystem(),
-                                       /*only_use_embedding_index=*/false, pool_));
+                                       file, options_.GetFileSystem(), pool_));
         PAIMON_ASSIGN_OR_RAISE(file_index_result, evaluator->Evaluate(predicate));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {
@@ -323,7 +323,7 @@ Result<AbstractSplitRead::RawFileReaderWithMeta> AbstractSplitRead::CreateRawFil
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::map<std::string, std::string>& extra_format_options,
     bool attach_blob_context) const {
-    if (EnablePreciseFileIndexEvaluate()) {
+    if (context_->EnablePreciseFileIndexEvaluate()) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
                                CreatePreciseFileIndexReader(
                                    partition, file, field_mapping_builder, std::move(dv_factory),
@@ -348,7 +348,7 @@ Result<AbstractSplitRead::RawFileReaderWithMeta> AbstractSplitRead::CreateRawFil
         std::unique_ptr<FileBatchReader> reader,
         CreateFieldMappingReader(data_file_path, file, partition, std::move(reader_builder),
                                  field_mapping_builder, dv_factory, row_ranges,
-                                 data_file_path_factory));
+                                 data_file_path_factory, /*exact_selection=*/nullptr));
     return RawFileReaderWithMeta{file, std::move(reader), std::move(blob_context)};
 }
 

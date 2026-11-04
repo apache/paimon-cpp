@@ -39,6 +39,7 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
@@ -776,6 +777,53 @@ TEST_F(InternalReadContextScoreTest, RejectsAmbiguousOrConditionalScoreProjectio
             }
         }
     }
+}
+
+TEST_F(InternalReadContextScoreTest, RejectsPredicatesOnFullTextMatchScores) {
+    auto match = std::make_shared<FullTextMatch>("F1", R"({"match":{"query":"apple"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> text,
+                         PredicateBuilder::FullTextMatch(0, match));
+    const std::vector<std::shared_ptr<Predicate>> score_predicates = {
+        PredicateBuilder::GreaterThan(1, "_F1_INDEX_SCORE", FieldType::FLOAT, Literal(0.5f)),
+        PredicateBuilder::IsNull(1, "_F1_INDEX_SCORE", FieldType::FLOAT),
+        PredicateBuilder::IsNotNull(1, "_F1_INDEX_SCORE", FieldType::FLOAT)};
+    for (const auto& score_predicate : score_predicates) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::And({text, score_predicate}));
+        ReadContextBuilder builder("/tmp/unused-table-path");
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames({"F1", "_F1_INDEX_SCORE"})
+            .SetPredicate(predicate);
+        ASSERT_NOK_WITH_MSG(
+            Create(&builder),
+            "Predicates on virtual index score column '_F1_INDEX_SCORE' are not supported");
+    }
+}
+
+TEST_F(InternalReadContextScoreTest, RejectsNestedPredicatesOnRootSearchScores) {
+    auto search =
+        std::make_shared<FullTextSearch>("F1", R"({"match":{"query":"apple"}})", /*limit=*/2);
+    auto scalar = PredicateBuilder::IsNotNull(0, "F1", FieldType::STRING);
+    auto score = PredicateBuilder::IsNull(1, "_F1_INDEX_SCORE", FieldType::FLOAT);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> child, PredicateBuilder::Or({scalar, score}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({scalar, child}));
+    ReadContextBuilder builder("/tmp/unused-table-path");
+    builder.EnablePreciseFileIndexEvaluate(true)
+        .SetFullTextSearch(search)
+        .SetReadFieldNames({"F1", "_F1_INDEX_SCORE"})
+        .SetPredicate(predicate);
+    ASSERT_NOK_WITH_MSG(
+        Create(&builder),
+        "Predicates on virtual index score column '_F1_INDEX_SCORE' are not supported");
+}
+
+TEST_F(InternalReadContextScoreTest, RejectsPredicatesOnUnnamedIndexScores) {
+    ReadContextBuilder builder("/tmp/unused-table-path");
+    builder.SetPredicate(PredicateBuilder::IsNull(0, "_INDEX_SCORE", FieldType::FLOAT));
+    ASSERT_NOK_WITH_MSG(
+        Create(&builder),
+        "Predicates on virtual index score column '_INDEX_SCORE' are not supported");
 }
 
 TEST_F(InternalReadContextScoreTest, RejectsMissingScoreSource) {

@@ -21,8 +21,17 @@ File Index
 Full-text predicates and root TopK
 ----------------------------------
 
-Enable ``ReadContextBuilder::EnablePreciseFileIndexEvaluate(true)`` to evaluate
-complete predicates within each data file. The option defaults to ``false``.
+Enable ``ReadContextBuilder::EnablePreciseFileIndexEvaluate(true)`` to precisely
+filter rows at the file-index-query stage, before reading all columns requested by
+the query from each data file. It evaluates the complete predicate to compute
+exact matching row positions within that file.
+
+For a root full-text or vector TopK request, predicate filtering, row-range
+restrictions and deletion vectors are applied before the TopK limit. Filtering after
+TopK truncation could discard selected rows. The final row positions are then passed
+to the data-file reader to restrict the read of all requested columns.
+
+The option defaults to ``false`` and requires ``file-index.read.enabled=true``.
 Full-text predicates and root TopK requests require this option; configuring
 them while it is disabled is rejected by ``ReadContextBuilder::Finish()``.
 

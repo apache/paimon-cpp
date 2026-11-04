@@ -19,12 +19,14 @@
 
 #include "paimon/file_index/file_indexer.h"
 
+#include <vector>
+
 #include "paimon/common/file_index/empty/empty_file_index_reader.h"
 
 namespace paimon {
 
 std::shared_ptr<FileIndexReader> FileIndexer::CreateEmptyReader() const {
-    return std::make_shared<EmptyFileIndexReader>();
+    return std::make_shared<EmptyFileIndexReader>(std::vector<FileIndexReader::SearchType>{});
 }
 
 }  // namespace paimon

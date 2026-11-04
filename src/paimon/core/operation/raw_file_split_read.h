@@ -52,12 +52,13 @@ struct DeletionFile;
 /// If the class name below is enclosed in parentheses, it might be present in the read path;
 /// otherwise, it must be present in the read path.
 ///
-/// Readers Overview: (ConcatBatchReader across splits) -> CompleteRowKindBatchReader ->
-/// (PredicateBatchReader) -> ConcatBatchReader across files -> (CompleteIndexScoreFileBatchReader)
-/// -> FieldMappingReader -> (ApplyDeletionVectorBatchReader) -> (ApplyBitmapIndexBatchReader)
-/// -> (CompleteRowTrackingFieldsBatchReader) -> (ShreddingFileReader) -> (VectorFileBatchReader) ->
-/// (DelegatingPrefetchReader) ->
-/// (PrefetchFileBatchReader) -> (LateMaterializingFileBatchReader) -> FormatReader
+/// Readers Overview: (ConcatBatchReader across splits) -> CompleteRowKindBatchReader
+/// -> (PredicateBatchReader) -> ConcatBatchReader across files
+/// -> (CompleteIndexScoreFileBatchReader) -> FieldMappingReader
+/// -> (ApplyDeletionVectorBatchReader) -> (ApplyBitmapIndexBatchReader)
+/// -> (CompleteRowTrackingFieldsBatchReader) -> (ShreddingFileReader)
+/// -> (VectorFileBatchReader) -> (DelegatingPrefetchReader) -> (PrefetchFileBatchReader)
+/// -> (LateMaterializingFileBatchReader) -> FormatReader
 
 class RawFileSplitRead : public AbstractSplitRead {
  public:
@@ -103,8 +104,6 @@ class RawFileSplitRead : public AbstractSplitRead {
     Result<bool> Match(const std::shared_ptr<Split>& split, bool force_keep_delete) const override;
 
  protected:
-    bool EnablePreciseFileIndexEvaluate() const override;
-
     Result<std::unique_ptr<FileBatchReader>> CreatePreciseFileIndexReader(
         const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,

@@ -51,8 +51,11 @@ class PAIMON_EXPORT FileIndexReader : public FunctionVisitor<std::shared_ptr<Fil
     /// Whether this reader can execute the requested search without probing it with a query.
     virtual bool SupportsSearch(SearchType search_type) const;
 
-    /// Estimated matching fraction in [0, 1], or unknown. Estimates only affect execution order.
-    /// Existing scalar indexes use the default unknown estimate.
+    /// Estimates the fraction of rows in the data file expected to match the predicate.
+    /// Returns a value in [0, 1], or std::nullopt if no estimate is available.
+    /// Values outside [0, 1] are also treated as unknown.
+    /// The estimate only guides predicate execution order; it is not used to filter rows.
+    /// TODO(lisizhuo.lsz): Add selectivity estimates for scalar indexes such as bitmap indexes.
     virtual std::optional<double> EstimateSelectivity(
         const std::shared_ptr<LeafPredicate>& predicate) const;
 

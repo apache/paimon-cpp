@@ -98,10 +98,10 @@ class FileIndexEvaluatorTest : public ::testing::Test {
 
     void CheckResult(const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
                      const std::shared_ptr<DataFileMeta>& data_file_meta) const {
-        ASSERT_OK_AND_ASSIGN(auto evaluator,
-                             FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                        data_file_path_factory, data_file_meta, fs_,
-                                                        /*only_use_embedding_index=*/false, pool_));
+        ASSERT_OK_AND_ASSIGN(
+            auto evaluator,
+            FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), data_file_path_factory,
+                                       data_file_meta, fs_, pool_));
         {
             auto predicate =
                 PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
@@ -368,8 +368,7 @@ TEST_F(FileIndexEvaluatorTest, TestTimestampType) {
     ASSERT_OK_AND_ASSIGN(
         auto evaluator,
         FileIndexEvaluator::Create(data_schema, core_options_.ToMap(), data_file_path_factory,
-                                   data_file_meta, /*file_system=*/fs_,
-                                   /*only_use_embedding_index=*/false, pool_));
+                                   data_file_meta, /*file_system=*/fs_, pool_));
     ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
     CheckResult(file_index_result, {0, 6});
 }
@@ -391,9 +390,9 @@ TEST_F(FileIndexEvaluatorTest, TestCreateRequiresExternalIndexDependencies) {
         /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
         /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_NOK_WITH_MSG(
-        FileIndexEvaluator::Create(
-            data_schema_, core_options_.ToMap(), /*data_file_path_factory=*/nullptr, data_file_meta,
-            /*file_system=*/nullptr, /*only_use_embedding_index=*/false, pool_),
+        FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                   /*data_file_path_factory=*/nullptr, data_file_meta,
+                                   /*file_system=*/nullptr, pool_),
         "read process for FileIndexEvaluator must have data_file_path_factory and file_system");
 }
 
@@ -459,10 +458,9 @@ class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
 
     void CheckSearchError(SearchIndexType index_type, const std::shared_ptr<DataFileMeta>& meta,
                           const std::string& field, const std::string& message) const {
-        ASSERT_OK_AND_ASSIGN(
-            auto evaluator,
-            FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), path_factory_, meta,
-                                       fs_, /*only_use_embedding_index=*/false, pool_));
+        ASSERT_OK_AND_ASSIGN(auto evaluator,
+                             FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                        path_factory_, meta, fs_, pool_));
         if (index_type == SearchIndexType::VECTOR) {
             ASSERT_NOK_WITH_MSG(evaluator->SearchVector(MakeVectorSearch(field)), message);
         } else {
@@ -531,9 +529,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestVectorSearchReadsIndexWithScores) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
                          MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
                          evaluator->SearchVector(MakeVectorSearch("embedding")));
     ASSERT_TRUE(result);
@@ -550,9 +548,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestFullTextSearchReadsIndexWithScores) {
         MockSearchFileIndex::MakeIndex("title", MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
                                        {{3, 0.75f}, {1, 0.25f}}, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
                          evaluator->SearchFullText(MakeFullTextSearch("title")));
     ASSERT_TRUE(result);
@@ -566,9 +564,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyVectorSearchIndex) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
                          MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> vector_result,
                          evaluator->SearchVector(MakeVectorSearch("embedding")));
     ASSERT_TRUE(vector_result);
@@ -582,9 +580,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyFullTextSearchIndex) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
                          MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> text_result,
                          evaluator->SearchFullText(MakeFullTextSearch("title")));
     ASSERT_TRUE(text_result);
@@ -605,18 +603,17 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEvaluateNullPredicateAndMissingIndex) {
     indexes["title"]["bitmap"] = nullptr;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->Evaluate(nullptr));
     ASSERT_EQ(result, FileIndexResult::Remain());
 
     meta->embedded_index.reset();
     meta->extra_files.clear();
     auto missing = PredicateBuilder::IsNull(2, "missing", FieldType::INT);
-    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(
-                                        data_schema_, core_options_.ToMap(), path_factory_, meta,
-                                        fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                               path_factory_, meta, fs_, pool_));
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(missing));
     ASSERT_EQ(result, FileIndexResult::Remain());
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(nullptr));
@@ -628,9 +625,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEvaluateValidatesFieldsBeforeAndShortCi
     indexes["title"]["bitmap"] = nullptr;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     auto empty = PredicateBuilder::IsNotNull(1, "title", FieldType::STRING);
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->Evaluate(empty));
     ASSERT_OK_AND_ASSIGN(bool remain, result->IsRemain());
@@ -648,9 +645,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionReturnsQueryScores) {
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::MakeQueryIndex(
                                          "title", statistics_index_type_, queries, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_SEARCH));
     ASSERT_TRUE(statistics_->executions.empty());
@@ -726,9 +723,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionScalarAndSearchReadersCanCoexist
     indexes["title"][statistics_index_type_] = search_payload;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::VECTOR_SEARCH),
@@ -758,9 +755,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::MakeIndex("title", statistics_index_type_,
                                                                     {{1, 0.5f}}, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("embedding", FileIndexReader::SearchType::VECTOR_SEARCH),
         "No File Index reader supports");
@@ -779,9 +776,8 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
 
     meta->embedded_index.reset();
     meta->extra_files.clear();
-    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(
-                                        data_schema_, core_options_.ToMap(), path_factory_, meta,
-                                        fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                               path_factory_, meta, fs_, pool_));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH),
         "has no File Index");
@@ -794,9 +790,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyScalarIndexDoesNotProvideSearchCap
     indexes["title"]["bitmap"] = nullptr;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH),
         "No File Index reader supports");
@@ -811,9 +807,8 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyScalarIndexDoesNotProvideSearchCap
                          MockSearchFileIndex::MakePayload({{1, 0.5f}}, pool_));
     ASSERT_OK_AND_ASSIGN(bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(
-                                        data_schema_, core_options_.ToMap(), path_factory_, meta,
-                                        fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                               path_factory_, meta, fs_, pool_));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH));
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->SearchFullText(MakeFullTextSearch("title")));
     ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1}));
@@ -826,9 +821,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptySearchIndexPreservesCapabilityAndS
     indexes["embedding"][MockSearchFileIndex::VECTOR_IDENTIFIER] = nullptr;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
-                                             data_schema_, core_options_.ToMap(), path_factory_,
-                                             meta, fs_, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, pool_));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_SEARCH));
     ASSERT_NOK_WITH_MSG(
@@ -875,19 +870,17 @@ TEST_F(FileIndexEvaluatorTest, TestUnsupportedRowCountSkips32BitIndex) {
         /*column_max_sequence_numbers=*/std::nullopt);
     auto predicate =
         PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
-    ASSERT_OK_AND_ASSIGN(
-        auto evaluator,
-        FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr, data_file_meta,
-                                   nullptr, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr,
+                                                    data_file_meta, nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->Evaluate(predicate));
     ASSERT_TRUE(result->IsRemain().value());
     ASSERT_EQ(dynamic_cast<BitmapIndexResult*>(result.get()), nullptr);
 
     data_file_meta->row_count = -1;
-    ASSERT_OK_AND_ASSIGN(
-        evaluator,
-        FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr, data_file_meta,
-                                   nullptr, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr,
+                                                    data_file_meta, nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(predicate));
     ASSERT_EQ(result, FileIndexResult::Remain());
 
@@ -895,10 +888,9 @@ TEST_F(FileIndexEvaluatorTest, TestUnsupportedRowCountSkips32BitIndex) {
     indexes["f2"]["bitmap"] = nullptr;
     ASSERT_OK_AND_ASSIGN(data_file_meta->embedded_index,
                          MockSearchFileIndex::Serialize(indexes, pool_));
-    ASSERT_OK_AND_ASSIGN(
-        evaluator,
-        FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr, data_file_meta,
-                                   nullptr, /*only_use_embedding_index=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr,
+                                                    data_file_meta, nullptr, pool_));
     auto missing = PredicateBuilder::IsNull(4, "missing", FieldType::INT);
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(missing));
     ASSERT_EQ(result, FileIndexResult::Remain());

@@ -36,7 +36,6 @@
 namespace paimon {
 class BinaryRow;
 class CompoundPredicate;
-class DataField;
 class DataFilePathFactory;
 class FieldMappingBuilder;
 class FileIndexEvaluator;
@@ -49,15 +48,15 @@ struct FullTextSearch;
 struct VectorSearch;
 
 /// Evaluates a file predicate and root search before opening the selected output rows.
-class FileIndexReadExecutor {
+class PreciseFileIndexRead {
  public:
-    static Result<std::unique_ptr<FileIndexReadExecutor>> Create(
+    static Result<std::unique_ptr<PreciseFileIndexRead>> Create(
         const RawFileSplitRead& split_read, const BinaryRow& partition,
         const std::shared_ptr<DataFileMeta>& file, const FieldMappingBuilder* field_mapping_builder,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::map<std::string, std::string>& extra_format_options);
 
-    /// Finishes evaluation synchronously. The returned reader does not retain this executor.
+    /// Finishes evaluation synchronously. The returned reader does not retain this instance.
     Result<std::unique_ptr<FileBatchReader>> CreateReader(
         const DeletionVector::Factory& dv_factory,
         const std::optional<std::vector<Range>>& row_ranges) const;
@@ -69,17 +68,17 @@ class FileIndexReadExecutor {
         std::map<std::string, std::shared_ptr<ScoredFileIndexResult>> scores;
     };
 
-    FileIndexReadExecutor(const RawFileSplitRead& split_read, const BinaryRow& partition,
-                          const std::shared_ptr<DataFileMeta>& file,
-                          const FieldMappingBuilder* field_mapping_builder,
-                          const std::shared_ptr<DataFilePathFactory>& path_factory,
-                          const std::map<std::string, std::string>& extra_format_options);
+    PreciseFileIndexRead(const RawFileSplitRead& split_read, const BinaryRow& partition,
+                         const std::shared_ptr<DataFileMeta>& file,
+                         const FieldMappingBuilder* field_mapping_builder,
+                         const std::shared_ptr<DataFilePathFactory>& path_factory,
+                         const std::map<std::string, std::string>& extra_format_options,
+                         std::unique_ptr<FileIndexEvaluator> indexes,
+                         const std::map<std::shared_ptr<LeafPredicate>,
+                                        std::shared_ptr<LeafPredicate>>& mapped_leaves,
+                         const std::shared_ptr<VectorSearch>& vector_search,
+                         const std::shared_ptr<FullTextSearch>& full_text_search);
 
-    Status Prepare();
-    Status PreparePredicate(const std::shared_ptr<Predicate>& predicate,
-                            const std::map<std::string, DataField>& read_by_name,
-                            const std::map<int32_t, std::pair<int32_t, DataField>>& data_by_id);
-    Status PrepareSearch(const std::map<std::string, std::string>& field_names);
     Result<RoaringBitmap32> CreateCandidates(
         const DeletionVector::Factory& dv_factory,
         const std::optional<std::vector<Range>>& row_ranges) const;

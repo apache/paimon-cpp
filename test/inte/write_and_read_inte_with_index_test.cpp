@@ -2313,6 +2313,42 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
         ASSERT_TRUE(array_status.ok());
         CheckResult(path, {split}, predicate, expected_array);
     }
+    {
+        // f1 evolved from INT to BIGINT. The second literal overflows the old file's INT type,
+        // so its predicate cannot use the index and must be evaluated against the data.
+        auto predicate =
+            PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f1", FieldType::BIGINT,
+                                 {Literal(10l), Literal(int64_t{2147483648})});
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .EnablePredicateFilter(false)
+            .SetPredicate(predicate)
+            .AddOption("read.batch-size", "2")
+            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
+            .EnableLateMaterializing(false);
+        if (enable_prefetch_) {
+            builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             TableRead::Create(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        std::shared_ptr<arrow::ChunkedArray> expected;
+        ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
+            [0, 10, "Alice", 11.1, null],
+            [0, 10, "Bob", 12.1, null],
+            [0, 10, "Emily", 13.1, null],
+            [0, 10, "Tony", 14.1, null],
+            [0, 10, "Bob", 16.1, null],
+            [0, 10, "Bob", 23.1, 100]
+        ])"},
+                                                                     &expected)
+                        .ok());
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(actual->Equals(expected)) << actual->ToString();
+    }
 }
 
 TEST_P(WriteAndReadInteWithIndexTest, TestWithBsiIndex) {
