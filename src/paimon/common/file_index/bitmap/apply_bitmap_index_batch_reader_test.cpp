@@ -18,8 +18,11 @@
 
 #include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
 
+#include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
@@ -48,6 +51,31 @@ class FileSystem;
 }  // namespace paimon
 
 namespace paimon::test {
+namespace {
+
+class OffsetFileBatchReader : public MockFileBatchReader {
+ public:
+    OffsetFileBatchReader(const std::shared_ptr<arrow::Array>& data, uint64_t offset)
+        : MockFileBatchReader(data, data->type(), /*batch_size=*/2), offset_(offset) {
+        EnableRandomizeBatchSize(false);
+    }
+
+    Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override {
+        PAIMON_ASSIGN_OR_RAISE(uint64_t row_id,
+                               MockFileBatchReader::GetPreviousBatchFileRowId(batch_row_id));
+        return offset_ + row_id;
+    }
+
+    Result<uint64_t> GetNumberOfRows() const override {
+        return offset_ + static_cast<uint64_t>(data_->length());
+    }
+
+ private:
+    uint64_t offset_;
+};
+
+}  // namespace
+
 class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
                                         public ::testing::WithParamInterface<bool> {
  public:
@@ -206,6 +234,46 @@ TEST(ApplyBitmapIndexBatchReaderWarmupTest, WarmupForwardsToInnerReader) {
     ASSERT_EQ(0, inner_reader->GetWarmupCount());
     reader.Warmup();
     ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
+TEST(ApplyBitmapIndexBatchReaderMetadataTest, ForwardsFileMetadata) {
+    auto type = arrow::struct_({arrow::field("f1", arrow::int32())});
+    auto data =
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[10], [11], [12], [13]]").ValueOrDie();
+    ApplyBitmapIndexBatchReader reader(
+        std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/2),
+        RoaringBitmap32::From({1, 3}));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_schema, reader.GetFileSchema());
+    auto schema_result = arrow::ImportSchema(c_schema.get());
+    ASSERT_TRUE(schema_result.ok()) << schema_result.status().ToString();
+    auto schema = schema_result.ValueOrDie();
+    ASSERT_TRUE(schema->Equals(*arrow::schema(type->fields())));
+    ASSERT_OK_AND_ASSIGN(uint64_t row_count, reader.GetNumberOfRows());
+    ASSERT_EQ(row_count, 4);
+    ASSERT_FALSE(reader.SupportPreciseBitmapSelection());
+}
+
+TEST(ApplyBitmapIndexBatchReaderBoundaryTest, FiltersAtBitmapRowIdLimit) {
+    auto type = arrow::struct_({arrow::field("f1", arrow::int32())});
+    auto data =
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[10], [11], [12], [13]]").ValueOrDie();
+    const uint64_t max_row_id = RoaringBitmap32::MAX_VALUE;
+    for (uint64_t offset : {max_row_id - 1, max_row_id + 1}) {
+        SCOPED_TRACE(offset);
+        auto reader = std::make_unique<ApplyBitmapIndexBatchReader>(
+            std::make_unique<OffsetFileBatchReader>(data, offset),
+            RoaringBitmap32::From({RoaringBitmap32::MAX_VALUE - 1, RoaringBitmap32::MAX_VALUE}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        if (offset > max_row_id) {
+            ASSERT_FALSE(result);
+        } else {
+            ASSERT_TRUE(result);
+            ASSERT_TRUE(result->Equals(arrow::ChunkedArray(data->Slice(0, 2))))
+                << result->ToString();
+        }
+    }
 }
 
 INSTANTIATE_TEST_SUITE_P(EnablePrefetch, ApplyBitmapIndexBatchReaderTest,

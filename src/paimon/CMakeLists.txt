@@ -674,6 +674,7 @@ if(PAIMON_BUILD_TESTS)
                     common/global_index/btree/btree_global_index_integration_test.cpp
                     common/global_index/btree/btree_compatibility_test.cpp
                     common/global_index/sorted_file_meta_selector_test.cpp
+                    common/global_index/sorted_file_global_index_reader_test.cpp
                     common/global_index/btree/lazy_filtered_btree_reader_test.cpp
                     common/global_index/rangebitmap/range_bitmap_global_index_test.cpp
                     common/global_index/wrap/file_index_reader_wrapper_test.cpp
@@ -865,6 +866,7 @@ if(PAIMON_BUILD_TESTS)
                     core/index/index_file_handler_test.cpp
                     core/io/compact_increment_test.cpp
                     core/io/infer_shredding_file_writer_test.cpp
+                    core/io/shredding_key_value_data_file_writer_factory_test.cpp
                     core/io/concat_key_value_record_reader_test.cpp
                     core/io/data_file_meta_serializer_test.cpp
                     core/io/data_file_path_factory_test.cpp
@@ -872,6 +874,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/field_mapping_reader_test.cpp
                     core/io/key_value_data_file_record_reader_test.cpp
                     core/io/key_value_projection_reader_test.cpp
+                    core/io/row_to_arrow_array_converter_test.cpp
                     core/io/key_value_in_memory_record_reader_test.cpp
                     core/io/merged_key_value_record_reader_test.cpp
                     core/io/complete_row_tracking_fields_reader_test.cpp
@@ -922,6 +925,7 @@ if(PAIMON_BUILD_TESTS)
                     core/mergetree/lookup_file_test.cpp
                     core/mergetree/lookup_levels_test.cpp
                     core/mergetree/compact/aggregate/aggregate_merge_function_test.cpp
+                    core/mergetree/compact/aggregate/field_aggregate_utils_test.cpp
                     core/mergetree/compact/aggregate/field_aggregator_factory_test.cpp
                     core/mergetree/compact/aggregate/field_bool_agg_test.cpp
                     core/mergetree/compact/aggregate/field_collect_agg_test.cpp

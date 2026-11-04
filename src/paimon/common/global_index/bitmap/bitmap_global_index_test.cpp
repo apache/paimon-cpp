@@ -112,6 +112,8 @@ TEST_F(BitmapGlobalIndexTest, WriteAndReadStringPredicates) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapIndexReader> reader,
                          CreateReader(field->type(), metas[0]));
+    ASSERT_FALSE(reader->IsThreadSafe());
+    ASSERT_EQ(reader->GetIndexType(), "bitmap");
     CheckResult(reader->VisitIsNull(), {2, 6});
     CheckResult(reader->VisitIsNotNull(), {0, 1, 3, 4, 5});
     CheckResult(reader->VisitEqual(StringLiteral("apple")), {0, 1});
@@ -152,6 +154,31 @@ TEST_F(BitmapGlobalIndexTest, WriteAndReadStringPredicates) {
     CheckResult(PredicateUtils::VisitPredicate<IndexResult>(
                     std::dynamic_pointer_cast<LeafPredicate>(like), reader),
                 {3});
+
+    CheckResult(reader->VisitEqual(StringLiteral("aardvark")), {});
+    CheckResult(reader->VisitStartsWith(StringLiteral("")), {0, 1, 3, 4, 5});
+    CheckResult(reader->VisitEndsWith(StringLiteral("")), {0, 1, 3, 4, 5});
+    CheckResult(reader->VisitContains(StringLiteral("")), {0, 1, 3, 4, 5});
+
+    // NULL operands do not match rows; IN ignores NULL while NOT IN with NULL matches nothing.
+    Literal null_literal(FieldType::STRING);
+    CheckResult(reader->VisitEqual(null_literal), {});
+    CheckResult(reader->VisitNotEqual(null_literal), {});
+    CheckResult(reader->VisitLessThan(null_literal), {});
+    CheckResult(reader->VisitLessOrEqual(null_literal), {});
+    CheckResult(reader->VisitGreaterThan(null_literal), {});
+    CheckResult(reader->VisitGreaterOrEqual(null_literal), {});
+    CheckResult(reader->VisitStartsWith(null_literal), {});
+    CheckResult(reader->VisitEndsWith(null_literal), {});
+    CheckResult(reader->VisitContains(null_literal), {});
+    CheckResult(reader->VisitLike(null_literal), {});
+    CheckResult(reader->VisitIn({null_literal, StringLiteral("apple"), null_literal}), {0, 1});
+    CheckResult(reader->VisitNotIn({StringLiteral("apple"), null_literal}), {});
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> empty_read, reader->Read(metas[0].file_size, 0));
+    ASSERT_TRUE(empty_read);
+    ASSERT_EQ(empty_read->size(), 0);
+
     ASSERT_NOK_WITH_MSG(reader->VisitVectorSearch(nullptr),
                         "Vector search is not supported in BitmapIndexReader");
     ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(nullptr),
@@ -177,8 +204,49 @@ TEST_F(BitmapGlobalIndexTest, WriteAndReadLogicalIntegerOrder) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapIndexReader> reader,
                          CreateReader(field->type(), metas[0]));
     CheckResult(reader->VisitEqual(Literal(static_cast<int32_t>(256))), {4});
+    CheckResult(reader->VisitEqual(Literal(static_cast<int32_t>(-258))), {});
     CheckResult(reader->VisitLessThan(Literal(static_cast<int32_t>(1))), {0, 1, 2});
     CheckResult(reader->VisitGreaterOrEqual(Literal(static_cast<int32_t>(0))), {2, 3, 4, 5});
+    // LIKE does not match non-string dictionary values.
+    CheckResult(reader->VisitLike(StringLiteral("%")), {});
+}
+
+TEST_F(BitmapGlobalIndexTest, StringPrefixBoundaries) {
+    auto field = arrow::field("f0", arrow::utf8());
+    // Exercise the same queries with entries spread across blocks and grouped in one block.
+    for (int32_t dictionary_block_size : {1, 4096}) {
+        SCOPED_TRACE(dictionary_block_size);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexWriter> writer,
+                             CreateWriter(field, dictionary_block_size));
+        std::vector<std::string> values = {"a",        "ba",          "bb", "c",
+                                           "c\xFF",    "c\xFFtail",   "d",  "\xFF\xFE",
+                                           "\xFF\xFF", "\xFF\xFFtail"};
+        arrow::StringBuilder value_builder;
+        for (const auto& value : values) {
+            ASSERT_TRUE(value_builder.Append(value).ok());
+        }
+        ASSERT_TRUE(value_builder.AppendNull().ok());
+        std::shared_ptr<arrow::Array> value_array;
+        ASSERT_TRUE(value_builder.Finish(&value_array).ok());
+        auto array = arrow::StructArray::Make({value_array}, {field}).ValueOrDie();
+        ArrowArray c_array;
+        ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+        std::vector<int64_t> row_ids(array->length());
+        std::iota(row_ids.begin(), row_ids.end(), 0);
+        ASSERT_OK(writer->AddBatch(&c_array, std::move(row_ids)));
+        ASSERT_OK_AND_ASSIGN(std::vector<GlobalIndexIOMeta> metas, writer->Finish());
+        ASSERT_EQ(metas.size(), 1);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapIndexReader> reader,
+                             CreateReader(field->type(), metas[0]));
+
+        CheckResult(reader->VisitStartsWith(StringLiteral("b")), {1, 2});
+        CheckResult(reader->VisitStartsWith(StringLiteral("0")), {});
+        CheckResult(reader->VisitStartsWith(StringLiteral("bbbb")), {});
+        // A trailing 0xFF carries into the preceding byte; an all-0xFF prefix has no upper bound.
+        CheckResult(reader->VisitStartsWith(StringLiteral("c\xFF")), {4, 5});
+        CheckResult(reader->VisitStartsWith(StringLiteral("\xFF\xFF")), {8, 9});
+        CheckResult(reader->VisitStartsWith(StringLiteral("\xFF\xFFz")), {});
+    }
 }
 
 TEST_F(BitmapGlobalIndexTest, WriteAndReadTimestamp) {

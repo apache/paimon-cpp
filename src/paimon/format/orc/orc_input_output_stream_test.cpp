@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <list>
 #include <memory>
 #include <string>
@@ -73,6 +74,16 @@ TEST(OrcInputOutputStreamTest, TestInOutStream) {
     char ret[10];
     in_stream->read(ret, data.length(), /*offset=*/0);
     ASSERT_EQ(data, std::string(ret, data.length()));
+
+    std::string full_data(data.size(), '\0');
+    std::string partial_data(3, '\0');
+    auto full_read = in_stream->readAsync(full_data.data(), full_data.size(), /*offset=*/0);
+    auto partial_read =
+        in_stream->readAsync(partial_data.data(), partial_data.size(), /*offset=*/1);
+    full_read.get();
+    partial_read.get();
+    ASSERT_EQ(full_data, data);
+    ASSERT_EQ(partial_data, data.substr(1, partial_data.size()));
 }
 
 TEST(OrcInputOutputStreamTest, TestSimple) {

@@ -319,7 +319,7 @@ TEST_F(MosaicFileFormatTest, ExtractStatistics) {
     std::map<std::string, std::string> options = {
         {"file.format", "mosaic"},
         {Options::FILE_BLOCK_SIZE, "1 B"},
-        {MOSAIC_STATS_COLUMNS, " id, name, ts, amount, all_null "},
+        {MOSAIC_STATS_COLUMNS, " id, name, ts, amount, all_null, flag, f, d "},
     };
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> configured_format,
                          FileFormatFactory::Get("mosaic", options));
@@ -331,18 +331,24 @@ TEST_F(MosaicFileFormatTest, ExtractStatistics) {
         arrow::field("amount", arrow::decimal128(10, 2)),
         arrow::field("untracked", arrow::int64()),
         arrow::field("all_null", arrow::int32()),
+        arrow::field("flag", arrow::boolean()),
+        arrow::field("f", arrow::float32()),
+        arrow::field("d", arrow::float64()),
     };
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::shared_ptr<arrow::Array> data =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
-          [3,"three","1970-01-01 00:00:00.000000003","3.30",30,null],
-          [1,"one","1970-01-01 00:00:00.000000001","1.10",10,null],
-          [null,null,null,null,null,null],
-          [5,"five","1970-01-01 00:00:00.000000005","5.50",50,null],
-          [2,"","1970-01-01 00:00:00.000000002","2.20",20,null]
+          [3,"three","1970-01-01 00:00:00.000000003","3.30",30,null,true,1.0,1.0],
+          [1,"one","1970-01-01 00:00:00.000000001","1.10",10,null,true,3.0,3.0],
+          [null,null,null,null,null,null,false,-2.0,-2.0],
+          [5,"five","1970-01-01 00:00:00.000000005","5.50",50,null,false,null,null],
+          [2,"","1970-01-01 00:00:00.000000002","2.20",20,null,null,10.0,10.0]
         ])")
             .ValueOrDie();
     ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2, configured_format));
+    ASSERT_OK_AND_ASSIGN(FooterLayout footer_layout, ReadFooterLayout(path));
+    ASSERT_EQ(footer_layout.second, 3);
+    AssertReadWithBatchSizes(path, schema, data, {2, 5});
 
     ::ArrowSchema ffi_schema = {};
     ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
@@ -357,6 +363,9 @@ TEST_F(MosaicFileFormatTest, ExtractStatistics) {
         "min 1.10, max 5.50, null count 1",
         "min null, max null, null count null",
         "min null, max null, null count 5",
+        "min false, max true, null count 1",
+        "min -2, max 10, null count 1",
+        "min -2, max 10, null count 1",
     };
     ASSERT_EQ(result.first.size(), expected_stats.size());
     for (size_t i = 0; i < expected_stats.size(); ++i) {
