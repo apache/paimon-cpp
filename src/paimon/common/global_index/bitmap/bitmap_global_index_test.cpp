@@ -34,6 +34,8 @@
 #include "paimon/core/global_index/global_index_file_manager.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
+#include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/testing/mock/mock_index_path_factory.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -125,10 +127,31 @@ TEST_F(BitmapGlobalIndexTest, WriteAndReadStringPredicates) {
     CheckResult(reader->VisitGreaterThan(StringLiteral("banana")), {4, 5});
     CheckResult(reader->VisitGreaterOrEqual(StringLiteral("banana")), {3, 4, 5});
 
-    CheckResult(reader->VisitStartsWith(StringLiteral("ban")), {3, 4});
-    CheckResult(reader->VisitEndsWith(StringLiteral("le")), {0, 1});
-    CheckResult(reader->VisitContains(StringLiteral("an")), {3, 4});
-    CheckResult(reader->VisitLike(StringLiteral("ban_n_")), {3});
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> starts,
+        PredicateBuilder::StartsWith(0, "f0", FieldType::STRING, StringLiteral("ban")));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> ends,
+        PredicateBuilder::EndsWith(0, "f0", FieldType::STRING, StringLiteral("le")));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> contains,
+        PredicateBuilder::Contains(0, "f0", FieldType::STRING, StringLiteral("an")));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> like,
+        PredicateBuilder::Like(0, "f0", FieldType::STRING, StringLiteral("ban_n_")));
+    using IndexResult = std::shared_ptr<GlobalIndexResult>;
+    CheckResult(PredicateUtils::VisitPredicate<IndexResult>(
+                    std::dynamic_pointer_cast<LeafPredicate>(starts), reader),
+                {3, 4});
+    CheckResult(PredicateUtils::VisitPredicate<IndexResult>(
+                    std::dynamic_pointer_cast<LeafPredicate>(ends), reader),
+                {0, 1});
+    CheckResult(PredicateUtils::VisitPredicate<IndexResult>(
+                    std::dynamic_pointer_cast<LeafPredicate>(contains), reader),
+                {3, 4});
+    CheckResult(PredicateUtils::VisitPredicate<IndexResult>(
+                    std::dynamic_pointer_cast<LeafPredicate>(like), reader),
+                {3});
     ASSERT_NOK_WITH_MSG(reader->VisitVectorSearch(nullptr),
                         "Vector search is not supported in BitmapIndexReader");
     ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(nullptr),
