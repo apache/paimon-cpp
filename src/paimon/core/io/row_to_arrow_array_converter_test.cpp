@@ -51,8 +51,8 @@ TEST(RowToArrowArrayConverterTest, AppendStringWithoutView) {
                                           /*use_view=*/false, &builder, &reserve_count));
 
     const std::string embedded_null("a\0b", 3);
-    auto row =
-        BinaryRowGenerator::GenerateRow({"paimon", "", NullType(), embedded_null}, pool.get());
+    auto row = BinaryRowGenerator::GenerateRow(
+        {std::string("paimon"), std::string(), NullType(), embedded_null}, pool.get());
     for (int32_t i = 0; i < row.GetFieldCount(); ++i) {
         ASSERT_TRUE(append(row, i).ok());
     }
@@ -79,8 +79,8 @@ TEST(RowToArrowArrayConverterTest, AppendBinaryWithoutView) {
                                           /*use_view=*/false, &builder, &reserve_count));
 
     const std::string binary_value("\0\xff\x01", 3);
-    auto row =
-        BinaryRowGenerator::GenerateRow({"paimon", "", NullType(), binary_value}, pool.get());
+    auto row = BinaryRowGenerator::GenerateRow(
+        {std::string("paimon"), std::string(), NullType(), binary_value}, pool.get());
     for (int32_t i = 0; i < row.GetFieldCount(); ++i) {
         ASSERT_TRUE(append(row, i).ok());
     }
