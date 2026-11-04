@@ -306,8 +306,10 @@ include(san-config)
 
 # Code coverage
 if("${PAIMON_GENERATE_COVERAGE}")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --coverage -DCOVERAGE_BUILD")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage -DCOVERAGE_BUILD")
+    set(CMAKE_C_FLAGS
+        "${CMAKE_C_FLAGS} --coverage -fprofile-update=atomic -DCOVERAGE_BUILD")
+    set(CMAKE_CXX_FLAGS
+        "${CMAKE_CXX_FLAGS} --coverage -fprofile-update=atomic -DCOVERAGE_BUILD")
 endif()
 
 # CMAKE_CXX_FLAGS now fully assembled
