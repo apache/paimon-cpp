@@ -56,7 +56,7 @@ namespace {
 class OffsetFileBatchReader : public MockFileBatchReader {
  public:
     OffsetFileBatchReader(const std::shared_ptr<arrow::Array>& data, uint64_t offset)
-        : MockFileBatchReader(data, data->type(), /*batch_size=*/2), offset_(offset) {
+        : MockFileBatchReader(data, data->type(), /*read_batch_size=*/2), offset_(offset) {
         EnableRandomizeBatchSize(false);
     }
 
