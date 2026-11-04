@@ -108,6 +108,8 @@ class HiveHasher {
             return 0;
         }
 
+        // Valid production decimals never have scale > HIVE_DECIMAL_MAX_PRECISION (38).
+        // The scale limiting and rounding below only defend against unchecked, out-of-range inputs.
         int32_t max_scale = HIVE_DECIMAL_MAX_SCALE;
         if (HIVE_DECIMAL_MAX_PRECISION - int_digits < max_scale) {
             max_scale = HIVE_DECIMAL_MAX_PRECISION - int_digits;
