@@ -75,18 +75,21 @@ struct vx_input_callbacks {
     vx_release_fn release_fn;
 };
 
-/// Create a data source that reads through `callbacks`. `size` is the total file length in bytes.
-/// Returns null and sets `err` on failure.
-const vx_data_source* vx_data_source_new_callback(const vx_session* session,
-                                                  vx_input_callbacks callbacks, uint64_t size,
-                                                  vx_error** err);
-
-/// Create a callback data source with explicit I/O coalescing. max_size must be positive and
-/// max_gap must not exceed max_size. The callback context is released exactly once, even on error.
+/// Create a callback data source with explicit I/O coalescing. `size` is the total file length
+/// in bytes. max_size must be positive and max_gap must not exceed max_size. Returns null and
+/// sets `err` on failure. The callback context is released exactly once, even on error.
 const vx_data_source* vx_data_source_new_callback_with_coalesce(const vx_session* session,
                                                                 vx_input_callbacks callbacks,
                                                                 uint64_t size, uint64_t max_gap,
                                                                 uint64_t max_size, vx_error** err);
+
+/// Export standard Arrow batches with at most `batch_size` rows, slicing encoded arrays before
+/// materializing string/binary data. `batch_size` must be positive. Consumes `partition` on both
+/// success and error; do not free or reuse it afterwards. Returns 0 on success, or 1 and sets
+/// `err`.
+int vx_partition_scan_arrow_with_batch_size(const vx_session* session, vx_partition* partition,
+                                            size_t batch_size, FFI_ArrowArrayStream* stream,
+                                            vx_error** err);
 
 /// Append `length` bytes from `src` to the host sink. Returns 0 on success and non-zero on failure;
 /// a partial write must be reported as a failure. Writes for one sink are sequential, never
@@ -134,11 +137,13 @@ enum vx_time_unit {
 };
 
 /// Create a timestamp literal in `unit` since the Unix epoch. `timezone` is an IANA zone name,
-/// or null for wall-clock time. Returns null and sets `err` on failure; free with vx_scalar_free.
+/// or null for wall-clock time. Returns null without an error when a valid value exceeds the
+/// native temporal range; other failures return null and set `err`. Free with vx_scalar_free.
 vx_scalar* vx_scalar_new_timestamp(int64_t value, vx_time_unit unit, const char* timezone,
                                    bool is_nullable, vx_error** err);
 
-/// Create a date scalar literal: `days` days since the Unix epoch (1970-01-01). Returns null and
-/// sets `err` on failure; free the result with `vx_scalar_free`.
+/// Create a date scalar literal: `days` days since the Unix epoch (1970-01-01). Returns null
+/// without an error outside the native civil-date range; other failures return null and set `err`.
+/// Free the result with `vx_scalar_free`.
 vx_scalar* vx_scalar_new_date(int32_t days, bool is_nullable, vx_error** err);
 }

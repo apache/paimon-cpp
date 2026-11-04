@@ -22,6 +22,8 @@
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/options_utils.h"
+#include "paimon/format/vortex/vortex_defs.h"
 #include "paimon/format/vortex/vortex_predicate_converter.h"
 #include "paimon/format/vortex/vortex_reader_builder.h"
 #include "paimon/format/vortex/vortex_stats_extractor.h"
@@ -31,33 +33,32 @@ namespace paimon::vortex {
 
 Result<std::unique_ptr<ReaderBuilder>> VortexFileFormat::CreateReaderBuilder(
     int32_t batch_size) const {
-    VortexPredicateOptions predicate_options;
-    const auto membership_mode = options_.find("vortex.read.membership-pushdown");
-    if (membership_mode != options_.end()) {
-        if (membership_mode->second == "auto") {
-            predicate_options.membership_pushdown = MembershipPushdownMode::AUTO;
-        } else if (membership_mode->second == "force") {
-            predicate_options.membership_pushdown = MembershipPushdownMode::FORCE;
-        } else if (membership_mode->second == "off") {
-            predicate_options.membership_pushdown = MembershipPushdownMode::OFF;
-        } else {
-            return Status::Invalid(
-                fmt::format("vortex.read.membership-pushdown must be auto, force or off, got: {}",
-                            membership_mode->second));
-        }
+    PAIMON_ASSIGN_OR_RAISE(uint32_t max_in_values, OptionsUtils::GetValueFromMap<uint32_t>(
+                                                       options_, kVortexReadInPushdownMaxValues,
+                                                       kDefaultVortexReadInPushdownMaxValues));
+    const VortexPredicateOptions predicate_options{max_in_values};
+    PAIMON_ASSIGN_OR_RAISE(int64_t max_gap,
+                           OptionsUtils::GetValueFromMap<int64_t>(
+                               options_, kVortexReadIoCoalesceMaxGap,
+                               static_cast<int64_t>(kDefaultVortexReadIoCoalesceMaxGap)));
+    PAIMON_ASSIGN_OR_RAISE(int64_t max_size,
+                           OptionsUtils::GetValueFromMap<int64_t>(
+                               options_, kVortexReadIoCoalesceMaxSize,
+                               static_cast<int64_t>(kDefaultVortexReadIoCoalesceMaxSize)));
+    if (max_gap < 0) {
+        return Status::Invalid(fmt::format("{} must be non-negative", kVortexReadIoCoalesceMaxGap));
     }
-    VortexIoCoalesceMode coalesce_mode = VortexIoCoalesceMode::OBJECT_STORAGE;
-    const auto coalesce = options_.find("vortex.read.io-coalesce");
-    if (coalesce != options_.end()) {
-        if (coalesce->second == "local") {
-            coalesce_mode = VortexIoCoalesceMode::LOCAL;
-        } else if (coalesce->second != "object-storage") {
-            return Status::Invalid(
-                fmt::format("vortex.read.io-coalesce must be object-storage or local, got: {}",
-                            coalesce->second));
-        }
+    if (max_size <= 0) {
+        return Status::Invalid(fmt::format("{} must be positive", kVortexReadIoCoalesceMaxSize));
     }
-    return std::make_unique<VortexReaderBuilder>(batch_size, predicate_options, coalesce_mode);
+    if (max_gap > max_size) {
+        return Status::Invalid(fmt::format("{} must not exceed {}, got {} > {}",
+                                           kVortexReadIoCoalesceMaxGap,
+                                           kVortexReadIoCoalesceMaxSize, max_gap, max_size));
+    }
+    return std::make_unique<VortexReaderBuilder>(
+        batch_size, predicate_options,
+        VortexIoCoalesceOptions{static_cast<uint64_t>(max_gap), static_cast<uint64_t>(max_size)});
 }
 
 Result<std::unique_ptr<WriterBuilder>> VortexFileFormat::CreateWriterBuilder(

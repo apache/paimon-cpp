@@ -18,10 +18,11 @@
 
 #pragma once
 
-#include <cstdint>
 #include <memory>
 
+#include "paimon/format/vortex/vortex_defs.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
+#include "paimon/result.h"
 
 namespace arrow {
 class Schema;
@@ -33,14 +34,6 @@ class Predicate;
 
 namespace paimon::vortex {
 
-enum class MembershipPushdownMode { AUTO, FORCE, OFF };
-
-struct VortexPredicateOptions {
-    MembershipPushdownMode membership_pushdown = MembershipPushdownMode::AUTO;
-    // Per-leaf comparison and boolean node budget after deduplication/range compression.
-    uint32_t max_membership_nodes = 64;
-};
-
 /// Converts Paimon predicates into Vortex scan filters, leaving unsupported conditions to the
 /// caller's residual filter.
 class VortexPredicateConverter {
@@ -50,11 +43,12 @@ class VortexPredicateConverter {
 
     /// @param predicate The predicate to convert.
     /// @param file_schema Stored column types, including timestamp units and zones.
-    /// @param options Membership pushdown policy and expression budget.
-    /// @return An owned expression, or nullptr if no condition can be pushed.
-    static VxExpressionPtr Convert(const std::shared_ptr<Predicate>& predicate,
-                                   const std::shared_ptr<arrow::Schema>& file_schema,
-                                   const VortexPredicateOptions& options = {});
+    /// @param options Maximum input list length for IN and NOT IN pushdown.
+    /// @return An owned expression, nullptr if no condition can be pushed, or an error if
+    /// the predicate is malformed, types do not match, or native expression construction fails.
+    static Result<VxExpressionPtr> Convert(const std::shared_ptr<Predicate>& predicate,
+                                           const std::shared_ptr<arrow::Schema>& file_schema,
+                                           const VortexPredicateOptions& options);
 };
 
 }  // namespace paimon::vortex

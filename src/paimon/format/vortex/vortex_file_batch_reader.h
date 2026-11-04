@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "arrow/type_fwd.h"
+#include "paimon/format/vortex/vortex_defs.h"
 #include "paimon/format/vortex/vortex_ffi.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
 #include "paimon/format/vortex/vortex_io_callbacks.h"
@@ -52,14 +53,16 @@ class VortexFileBatchReader : public FileBatchReader {
  public:
     static Result<std::unique_ptr<VortexFileBatchReader>> Create(
         const std::shared_ptr<InputStream>& input, int32_t batch_size,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-        const VortexPredicateOptions& predicate_options = {},
-        VortexIoCoalesceMode coalesce_mode = VortexIoCoalesceMode::OBJECT_STORAGE);
+        const VortexPredicateOptions& predicate_options,
+        const VortexIoCoalesceOptions& coalesce_options,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~VortexFileBatchReader() override;
 
     Result<ReadBatch> NextBatch() override;
     Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override;
+    /// Read fields must be unique and present in the file, including nested projections.
+    /// Schema validation failures leave the active scan and row positions unchanged.
     Status SetReadSchema(::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
                          const std::optional<RoaringBitmap32>& selection_bitmap) override;
     Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override;
@@ -71,17 +74,69 @@ class VortexFileBatchReader : public FileBatchReader {
     }
 
  private:
+    // Bitmap selection owns the smaller side and maps selected ranks to physical rows.
+    class SelectionState {
+     public:
+        static Result<SelectionState> Create(const std::optional<RoaringBitmap32>& bitmap,
+                                             uint64_t total_rows);
+
+        bool IsEmpty() const {
+            return has_selection_ && selected_row_count_ == 0;
+        }
+        uint64_t SelectedRowCount() const {
+            return selected_row_count_;
+        }
+        uint64_t IndexCount() const {
+            return indices_.size();
+        }
+        void ApplyToScan(vx_scan_options* options) const;
+        Result<uint64_t> GetPhysicalRowId(uint64_t selected_rank) const;
+
+     private:
+        bool has_selection_ = false;
+        bool excludes_ = false;
+        uint64_t selected_row_count_ = 0;
+        std::vector<uint64_t> indices_;
+    };
+
+    // Track output positions and retain native row ids when a pushed filter removes rows.
+    class RowPositionState {
+     public:
+        void Reset() {
+            *this = RowPositionState{};
+        }
+        void EnableFilterRowIds() {
+            has_filter_ = true;
+        }
+        void SetEof() {
+            previous_batch_row_count_ = 0;
+        }
+        Status CaptureRowIndices(const std::shared_ptr<arrow::Array>& array);
+        void RecordBatch(uint64_t row_count);
+        Result<uint64_t> GetPhysicalRowId(uint64_t batch_row_id,
+                                          const SelectionState& selection) const;
+
+     private:
+        uint64_t rows_emitted_ = 0;
+        uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
+        uint64_t previous_batch_row_count_ = 0;
+        bool has_filter_ = false;
+        std::shared_ptr<arrow::Array> previous_batch_row_idx_;
+    };
+
     VortexFileBatchReader(const std::shared_ptr<InputStream>& input, int32_t batch_size,
                           std::shared_ptr<VortexInputContext> input_context, VxSessionPtr session,
                           VxDataSourcePtr data_source, VxScanPtr scan,
                           const std::shared_ptr<arrow::Schema>& file_schema, uint64_t total_rows,
-                          const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-                          const VortexPredicateOptions& predicate_options);
+                          const VortexPredicateOptions& predicate_options,
+                          const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     /// Pull the next Arrow array from the current partition stream, opening the next partition's
     /// stream when the current one is exhausted. Returns nullptr at end of scan.
     Result<std::shared_ptr<arrow::Array>> ReadNextArray();
-    /// Open the next partition and fill `current_stream_` via `vx_partition_scan_arrow`.
+    /// Create the single-use scan with the current projection, selection and predicate.
+    Status CreateScan();
+    /// Open the next partition and fill `current_stream_` with bounded Arrow batches.
     /// Returns false when there are no more partitions.
     Result<bool> OpenNextPartitionStream();
     /// Reshape a scanned batch to `read_schema_`, selecting columns by name and recursing into
@@ -114,21 +169,8 @@ class VortexFileBatchReader : public FileBatchReader {
     std::shared_ptr<arrow::Array> current_batch_;
     int64_t current_batch_offset_ = 0;
 
-    uint64_t rows_emitted_ = 0;
-    uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
-    uint64_t previous_batch_row_count_ = 0;
-
-    // Keep the smaller side of the bitmap. Dense selections store excluded physical row ids,
-    // avoiding an O(file rows) index list both here and in the native scan's copy.
-    bool has_selection_ = false;
-    bool selection_excludes_ = false;
-    uint64_t selected_row_count_ = 0;
-    std::vector<uint64_t> selection_indices_;
-
-    // A pushed filter returns physical row ids in a hidden _row_idx column. Retain the last
-    // batch's column because emitted offsets no longer identify physical rows after filtering.
-    bool has_filter_ = false;
-    std::shared_ptr<arrow::Array> previous_batch_row_idx_;
+    SelectionState selection_;
+    RowPositionState row_position_;
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     VortexPredicateOptions predicate_options_;

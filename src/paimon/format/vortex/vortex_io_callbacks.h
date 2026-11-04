@@ -36,10 +36,6 @@ class OutputStream;
 
 namespace paimon::vortex {
 
-/// I/O coalescing policy. Low-latency sources must explicitly opt into LOCAL;
-/// the reader does not infer filesystem semantics from InputStream URIs.
-enum class VortexIoCoalesceMode { OBJECT_STORAGE, LOCAL };
-
 /// Bridges Vortex's positional reads to a paimon `InputStream`.
 class VortexInputContext {
  public:
@@ -56,7 +52,7 @@ class VortexInputContext {
     /// reader has dropped its own reference.
     ///
     /// @param context The context to forward callbacks to; a shared reference is retained.
-    /// @return The callback struct to hand to `vx_data_source_new_callback`.
+    /// @return The callback struct for `vx_data_source_new_callback_with_coalesce`.
     static vx_input_callbacks MakeCallbacks(const std::shared_ptr<VortexInputContext>& context);
 
     /// `vx_read_at_fn`: fills `length` bytes at `offset` from the paimon stream.

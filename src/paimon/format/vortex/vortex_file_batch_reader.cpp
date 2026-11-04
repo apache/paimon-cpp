@@ -36,6 +36,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/math.h"
+#include "paimon/core/schema/arrow_schema_validator.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
 #include "paimon/format/vortex/vortex_predicate_converter.h"
@@ -48,6 +49,41 @@ namespace {
 
 // Must match the physical row index column appended by vortex-ffi scan.rs.
 constexpr char kRowIdxColumn[] = "_row_idx";
+
+// Validate field references without changing read-side types or metadata. Type conversion
+// remains the responsibility of AlignToReadSchema.
+Status ValidateReadFieldReferences(const std::shared_ptr<arrow::DataType>& file_type,
+                                   const std::shared_ptr<arrow::DataType>& read_type) {
+    if (file_type->id() != read_type->id()) {
+        return Status::OK();
+    }
+    switch (read_type->id()) {
+        case arrow::Type::STRUCT: {
+            PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> projection,
+                                   ArrowUtils::CreateProjection(arrow::schema(file_type->fields()),
+                                                                read_type->fields()));
+            for (int32_t i = 0; i < read_type->num_fields(); ++i) {
+                PAIMON_RETURN_NOT_OK(ValidateReadFieldReferences(
+                    file_type->field(projection[i])->type(), read_type->field(i)->type()));
+            }
+            return Status::OK();
+        }
+        case arrow::Type::LIST:
+        case arrow::Type::FIXED_SIZE_LIST:
+            // Container field names (for example item/element) need not match.
+            return ValidateReadFieldReferences(file_type->field(0)->type(),
+                                               read_type->field(0)->type());
+        case arrow::Type::MAP: {
+            const auto& file_map = checked_cast<const arrow::MapType&>(*file_type);
+            const auto& read_map = checked_cast<const arrow::MapType&>(*read_type);
+            PAIMON_RETURN_NOT_OK(
+                ValidateReadFieldReferences(file_map.key_type(), read_map.key_type()));
+            return ValidateReadFieldReferences(file_map.item_type(), read_map.item_type());
+        }
+        default:
+            return Status::OK();
+    }
+}
 
 // Vortex reports the file's zone and paimon asks for the reader's; the instants are the same.
 std::shared_ptr<arrow::ArrayData> AlignTimestampTimezones(
@@ -113,12 +149,136 @@ std::shared_ptr<arrow::ArrayData> AlignTimestampTimezones(
 
 }  // namespace
 
+Result<VortexFileBatchReader::SelectionState> VortexFileBatchReader::SelectionState::Create(
+    const std::optional<RoaringBitmap32>& bitmap, uint64_t total_rows) {
+    SelectionState state;
+    state.has_selection_ = bitmap.has_value();
+    state.selected_row_count_ = total_rows;
+    if (bitmap) {
+        const int32_t cardinality = bitmap->Cardinality();
+        if (cardinality < 0 || static_cast<uint64_t>(cardinality) > total_rows) {
+            return Status::Invalid("Vortex selection cardinality exceeds the file row count");
+        }
+        state.selected_row_count_ = static_cast<uint64_t>(cardinality);
+        state.excludes_ = state.selected_row_count_ > total_rows / 2;
+        state.indices_.reserve(static_cast<size_t>(
+            state.excludes_ ? total_rows - state.selected_row_count_ : state.selected_row_count_));
+        uint64_t next_row = 0;
+        const auto end = bitmap->End();
+        for (auto iter = bitmap->Begin(); iter != end; ++iter) {
+            const auto row_id = static_cast<uint64_t>(*iter);
+            if (row_id >= total_rows) {
+                return Status::Invalid(
+                    fmt::format("Vortex selected row {} is out of range {}", row_id, total_rows));
+            }
+            if (state.excludes_) {
+                // Enumerate gaps directly instead of first expanding all selected rows.
+                for (; next_row < row_id; ++next_row) {
+                    state.indices_.push_back(next_row);
+                }
+                next_row = row_id + 1;
+            } else {
+                state.indices_.push_back(row_id);
+            }
+        }
+        if (state.excludes_) {
+            for (; next_row < total_rows; ++next_row) {
+                state.indices_.push_back(next_row);
+            }
+        }
+    }
+    return state;
+}
+
+void VortexFileBatchReader::SelectionState::ApplyToScan(vx_scan_options* options) const {
+    // A dense bitmap sends excluded rows; all-selected uses the default INCLUDE_ALL mode.
+    if (has_selection_ && !indices_.empty()) {
+        options->selection.idx = indices_.data();
+        options->selection.idx_len = indices_.size();
+        options->selection.include =
+            excludes_ ? VX_SELECTION_EXCLUDE_RANGE : VX_SELECTION_INCLUDE_RANGE;
+    }
+}
+
+Result<uint64_t> VortexFileBatchReader::SelectionState::GetPhysicalRowId(
+    uint64_t selected_rank) const {
+    // Ordered scans emit selected rows in physical order, regardless of which side is stored.
+    if (has_selection_) {
+        if (selected_rank >= selected_row_count_) {
+            return Status::Invalid(fmt::format("emitted row offset {} exceeds selection size {}",
+                                               selected_rank, selected_row_count_));
+        }
+        if (!excludes_) {
+            return indices_[selected_rank];
+        }
+        // For excluded row i, excluded[i] - i is the number of selected rows before it.
+        // Count exclusions at or before this selected rank without expanding a row mapping.
+        size_t begin = 0;
+        size_t end = indices_.size();
+        while (begin < end) {
+            const size_t middle = begin + (end - begin) / 2;
+            if (indices_[middle] - middle <= selected_rank) {
+                begin = middle + 1;
+            } else {
+                end = middle;
+            }
+        }
+        return selected_rank + begin;
+    }
+    return selected_rank;
+}
+
+Status VortexFileBatchReader::RowPositionState::CaptureRowIndices(
+    const std::shared_ptr<arrow::Array>& array) {
+    if (has_filter_) {
+        // Capture physical row indices before AlignToReadSchema removes the hidden column.
+        const auto& struct_type = checked_cast<const arrow::StructType&>(*array->type());
+        const int32_t row_idx_pos = struct_type.num_fields() - 1;
+        if (row_idx_pos < 0 || struct_type.field(row_idx_pos)->name() != kRowIdxColumn) {
+            return Status::Invalid("Vortex scan did not append the _row_idx column");
+        }
+        previous_batch_row_idx_ =
+            checked_cast<const arrow::StructArray&>(*array).field(row_idx_pos);
+    }
+    return Status::OK();
+}
+
+void VortexFileBatchReader::RowPositionState::RecordBatch(uint64_t row_count) {
+    previous_first_row_ = rows_emitted_;
+    previous_batch_row_count_ = row_count;
+    rows_emitted_ += row_count;
+}
+
+Result<uint64_t> VortexFileBatchReader::RowPositionState::GetPhysicalRowId(
+    uint64_t batch_row_id, const SelectionState& selection) const {
+    if (previous_batch_row_count_ == 0) {
+        return Status::Invalid(previous_first_row_ == std::numeric_limits<uint64_t>::max()
+                                   ? "no Vortex batch has been read yet"
+                                   : "last Vortex batch was EOF");
+    }
+    if (batch_row_id >= previous_batch_row_count_) {
+        return Status::Invalid(fmt::format("batch row id {} is out of range {}", batch_row_id,
+                                           previous_batch_row_count_));
+    }
+    // The hidden column accounts for both filtering and selection; emitted offsets do not.
+    if (has_filter_) {
+        if (previous_batch_row_idx_ == nullptr ||
+            batch_row_id >= static_cast<uint64_t>(previous_batch_row_idx_->length())) {
+            return Status::Invalid(
+                fmt::format("Vortex filter row index unavailable for row {}", batch_row_id));
+        }
+        return checked_cast<const arrow::UInt64Array&>(*previous_batch_row_idx_)
+            .Value(static_cast<int64_t>(batch_row_id));
+    }
+    return selection.GetPhysicalRowId(previous_first_row_ + batch_row_id);
+}
+
 VortexFileBatchReader::VortexFileBatchReader(
     const std::shared_ptr<InputStream>& input, int32_t batch_size,
     std::shared_ptr<VortexInputContext> input_context, VxSessionPtr session,
     VxDataSourcePtr data_source, VxScanPtr scan, const std::shared_ptr<arrow::Schema>& file_schema,
-    uint64_t total_rows, const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-    const VortexPredicateOptions& predicate_options)
+    uint64_t total_rows, const VortexPredicateOptions& predicate_options,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : input_(input),
       batch_size_(batch_size),
       input_context_(std::move(input_context)),
@@ -133,8 +293,9 @@ VortexFileBatchReader::VortexFileBatchReader(
 
 Result<std::unique_ptr<VortexFileBatchReader>> VortexFileBatchReader::Create(
     const std::shared_ptr<InputStream>& input, int32_t batch_size,
-    const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-    const VortexPredicateOptions& predicate_options, VortexIoCoalesceMode coalesce_mode) {
+    const VortexPredicateOptions& predicate_options,
+    const VortexIoCoalesceOptions& coalesce_options,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (input == nullptr || arrow_pool == nullptr || batch_size <= 0) {
         return Status::Invalid(
             "Vortex reader requires non-null input and Arrow memory pool, and positive batch size");
@@ -149,17 +310,10 @@ Result<std::unique_ptr<VortexFileBatchReader>> VortexFileBatchReader::Create(
         return Status::IOError("failed to create Vortex session");
     }
     vx_error* error = nullptr;
-    const bool local_coalesce = coalesce_mode == VortexIoCoalesceMode::LOCAL;
-    // Smaller gaps limit read amplification for explicitly selected low-latency sources.
-    constexpr uint64_t kLocalMaxGap = 64ULL << 10;
-    constexpr uint64_t kLocalMaxSize = 4ULL << 20;
     VxDataSourcePtr data_source(
-        local_coalesce
-            ? vx_data_source_new_callback_with_coalesce(
-                  session.get(), VortexInputContext::MakeCallbacks(input_context), length,
-                  kLocalMaxGap, kLocalMaxSize, &error)
-            : vx_data_source_new_callback(
-                  session.get(), VortexInputContext::MakeCallbacks(input_context), length, &error),
+        vx_data_source_new_callback_with_coalesce(
+            session.get(), VortexInputContext::MakeCallbacks(input_context), length,
+            coalesce_options.max_gap, coalesce_options.max_size, &error),
         vx_data_source_free);
     if (data_source == nullptr) {
         return VortexCallbackError("open Vortex callback data source", error,
@@ -193,84 +347,67 @@ Result<std::unique_ptr<VortexFileBatchReader>> VortexFileBatchReader::Create(
     // scan may be consumed only once.
     return std::unique_ptr<VortexFileBatchReader>(new VortexFileBatchReader(
         input, batch_size, std::move(input_context), std::move(session), std::move(data_source),
-        VxScanPtr(nullptr, vx_scan_free), file_schema, total_rows, arrow_pool, predicate_options));
+        VxScanPtr(nullptr, vx_scan_free), file_schema, total_rows, predicate_options, arrow_pool));
 }
 
 VortexFileBatchReader::~VortexFileBatchReader() {
     CloseInternal();
 }
 
+Status VortexFileBatchReader::CreateScan() {
+    vx_error* error = nullptr;
+    // Scan in storage order: Vortex defaults to ordered=false and may emit chunks out of order,
+    // which would misalign the physical row positions NextBatch assigns.
+    vx_scan_options options{};
+    options.ordered = true;
+    // The scan clones the projection, so these expressions need only outlive scan creation.
+    VxExpressionPtr root(nullptr, vx_expression_free);
+    VxExpressionPtr projection(nullptr, vx_expression_free);
+    std::vector<const char*> name_ptrs;
+    if (read_schema_ != nullptr && read_schema_->num_fields() > 0) {
+        name_ptrs.reserve(read_schema_->num_fields());
+        // The schema owns these names; Vortex copies them when creating the projection.
+        for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
+            name_ptrs.push_back(field->name().c_str());
+        }
+        root = VxExpressionPtr(vx_expression_root(), vx_expression_free);
+        projection =
+            VxExpressionPtr(vx_expression_select(name_ptrs.data(), name_ptrs.size(), root.get()),
+                            vx_expression_free);
+        options.projection = projection.get();
+    }
+    selection_.ApplyToScan(&options);
+    // Filtering drops rows; include_row_idx preserves their original physical positions.
+    // The scan clones the filter, so it can be freed after scan creation.
+    VxExpressionPtr filter(nullptr, vx_expression_free);
+    // SetReadSchema validates requested fields against the file schema, so checking the
+    // file alone also protects the hidden index from collisions with requested fields.
+    const bool has_row_idx_column = !file_schema_->GetAllFieldIndices(kRowIdxColumn).empty();
+    if (!has_row_idx_column) {
+        PAIMON_ASSIGN_OR_RAISE(filter, VortexPredicateConverter::Convert(
+                                           predicate_filter_, file_schema_, predicate_options_));
+    }
+    if (filter != nullptr) {
+        options.filter = filter.get();
+        options.include_row_idx = true;
+        row_position_.EnableFilterRowIds();
+    }
+    VxScanPtr scan(vx_data_source_scan(data_source_.get(), &options, /*estimate=*/nullptr, &error),
+                   vx_scan_free);
+    if (scan == nullptr) {
+        return VortexCallbackError("create Vortex scan", error,
+                                   input_context_->GetCallbackStatus());
+    }
+    scan_ = std::move(scan);
+    return Status::OK();
+}
+
 Result<bool> VortexFileBatchReader::OpenNextPartitionStream() {
-    if (has_selection_ && selected_row_count_ == 0) {
+    if (selection_.IsEmpty()) {
         return false;
     }
     if (scan_ == nullptr) {
-        vx_error* error = nullptr;
-        // Scan in storage order: Vortex defaults to ordered=false and may emit chunks out of order,
-        // which would misalign the physical row positions NextBatch assigns.
-        vx_scan_options options{};
-        options.ordered = true;
-        // Missing fields are null-filled by AlignToReadSchema and cannot be selected here.
-        // The scan clones the projection, so these expressions need only outlive scan creation.
-        VxExpressionPtr root(nullptr, vx_expression_free);
-        VxExpressionPtr projection(nullptr, vx_expression_free);
-        std::vector<std::string> names;
-        std::vector<const char*> name_ptrs;
-        if (read_schema_ != nullptr) {
-            names.reserve(read_schema_->num_fields());
-            // Native merge requires distinct fields; output alignment restores repeated columns.
-            std::vector<uint8_t> selected_columns(file_schema_->num_fields(), 0);
-            for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
-                const int32_t field_index = file_schema_->GetFieldIndex(field->name());
-                if (field_index >= 0 && selected_columns[field_index] == 0) {
-                    names.push_back(field->name());
-                    selected_columns[field_index] = 1;
-                }
-            }
-            if (!names.empty()) {
-                name_ptrs.reserve(names.size());
-                for (const std::string& name : names) {
-                    name_ptrs.push_back(name.c_str());
-                }
-                root = VxExpressionPtr(vx_expression_root(), vx_expression_free);
-                projection = VxExpressionPtr(
-                    vx_expression_select(name_ptrs.data(), name_ptrs.size(), root.get()),
-                    vx_expression_free);
-                options.projection = projection.get();
-            }
-        }
-        // These FFI modes take individual indices. A dense bitmap sends only excluded rows;
-        // an all-selected bitmap needs no indices and uses the default INCLUDE_ALL mode.
-        if (has_selection_ && !selection_indices_.empty()) {
-            options.selection.idx = selection_indices_.data();
-            options.selection.idx_len = selection_indices_.size();
-            options.selection.include =
-                selection_excludes_ ? VX_SELECTION_EXCLUDE_RANGE : VX_SELECTION_INCLUDE_RANGE;
-        }
-        // Filtering drops rows; include_row_idx preserves their original physical positions.
-        // The scan clones the filter, so it can be freed after scan creation.
-        VxExpressionPtr filter(nullptr, vx_expression_free);
-        // The hidden index must not collide with a file field or a requested missing field.
-        const bool has_row_idx_column =
-            file_schema_->GetFieldIndex(kRowIdxColumn) >= 0 ||
-            (read_schema_ != nullptr && !read_schema_->GetAllFieldIndices(kRowIdxColumn).empty());
-        if (!has_row_idx_column) {
-            filter = VortexPredicateConverter::Convert(predicate_filter_, file_schema_,
-                                                       predicate_options_);
-        }
-        if (filter != nullptr) {
-            options.filter = filter.get();
-            options.include_row_idx = true;
-            has_filter_ = true;
-        }
-        VxScanPtr scan(
-            vx_data_source_scan(data_source_.get(), &options, /*estimate=*/nullptr, &error),
-            vx_scan_free);
-        if (scan == nullptr) {
-            return VortexCallbackError("create Vortex scan", error,
-                                       input_context_->GetCallbackStatus());
-        }
-        scan_ = std::move(scan);
+        PAIMON_RETURN_NOT_OK(CreateScan());
     }
     vx_error* error = nullptr;
     VxPartitionPtr partition(vx_scan_next_partition(scan_.get(), &error), vx_partition_free);
@@ -281,10 +418,12 @@ Result<bool> VortexFileBatchReader::OpenNextPartitionStream() {
     if (partition == nullptr) {
         return false;  // Scan exhausted.
     }
-    // vx_partition_scan_arrow consumes the partition (even on error), so release ownership here.
+    // Arrow stream export consumes the partition (even on error), so release ownership here.
     ::ArrowArrayStream stream{};
     error = nullptr;
-    if (vx_partition_scan_arrow(session_.get(), partition.release(), &stream, &error) != 0) {
+    if (vx_partition_scan_arrow_with_batch_size(session_.get(), partition.release(),
+                                                static_cast<size_t>(batch_size_), &stream,
+                                                &error) != 0) {
         return VortexCallbackError("scan Vortex partition to Arrow", error,
                                    input_context_->GetCallbackStatus());
     }
@@ -364,7 +503,7 @@ Result<BatchReader::ReadBatch> VortexFileBatchReader::NextBatch() {
         current_batch_offset_ = 0;
     }
     if (current_batch_ == nullptr) {
-        previous_batch_row_count_ = 0;
+        row_position_.SetEof();
         return BatchReader::MakeEofBatch();
     }
 
@@ -374,22 +513,11 @@ Result<BatchReader::ReadBatch> VortexFileBatchReader::NextBatch() {
         current_batch_->Slice(current_batch_offset_, row_count);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized_array,
                            ArrowUtils::NormalizeArrayOffsets(sliced_array, arrow_pool_.get()));
-    if (has_filter_) {
-        // Capture physical row indices before AlignToReadSchema removes the hidden column.
-        const auto& struct_type = checked_cast<const arrow::StructType&>(*normalized_array->type());
-        const int32_t row_idx_pos = struct_type.num_fields() - 1;
-        if (row_idx_pos < 0 || struct_type.field(row_idx_pos)->name() != kRowIdxColumn) {
-            return Status::Invalid("Vortex scan did not append the _row_idx column");
-        }
-        previous_batch_row_idx_ =
-            checked_cast<const arrow::StructArray&>(*normalized_array).field(row_idx_pos);
-    }
+    PAIMON_RETURN_NOT_OK(row_position_.CaptureRowIndices(normalized_array));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> projected_array,
                            AlignToReadSchema(normalized_array));
 
-    previous_first_row_ = rows_emitted_;
-    previous_batch_row_count_ = static_cast<uint64_t>(row_count);
-    rows_emitted_ += static_cast<uint64_t>(row_count);
+    row_position_.RecordBatch(static_cast<uint64_t>(row_count));
     current_batch_offset_ += row_count;
 
     auto ffi_array = std::make_unique<::ArrowArray>();
@@ -415,110 +543,31 @@ Status VortexFileBatchReader::SetReadSchema(
     if (read_schema == nullptr) {
         return Status::Invalid("Vortex read schema is nullptr");
     }
-    std::vector<uint64_t> selection_indices;
-    bool selection_excludes = false;
-    uint64_t selected_row_count = total_rows_;
-    if (selection_bitmap) {
-        const int32_t cardinality = selection_bitmap->Cardinality();
-        if (cardinality < 0 || static_cast<uint64_t>(cardinality) > total_rows_) {
-            return Status::Invalid("Vortex selection cardinality exceeds the file row count");
-        }
-        selected_row_count = static_cast<uint64_t>(cardinality);
-        selection_excludes = selected_row_count > total_rows_ / 2;
-        selection_indices.reserve(static_cast<size_t>(
-            selection_excludes ? total_rows_ - selected_row_count : selected_row_count));
-        uint64_t next_row = 0;
-        const auto end = selection_bitmap->End();
-        for (auto iter = selection_bitmap->Begin(); iter != end; ++iter) {
-            const auto row_id = static_cast<uint64_t>(*iter);
-            if (row_id >= total_rows_) {
-                return Status::Invalid(
-                    fmt::format("Vortex selected row {} is out of range {}", row_id, total_rows_));
-            }
-            if (selection_excludes) {
-                // Enumerate gaps directly instead of first expanding all selected rows.
-                for (; next_row < row_id; ++next_row) {
-                    selection_indices.push_back(next_row);
-                }
-                next_row = row_id + 1;
-            } else {
-                selection_indices.push_back(row_id);
-            }
-        }
-        if (selection_excludes) {
-            for (; next_row < total_rows_; ++next_row) {
-                selection_indices.push_back(next_row);
-            }
-        }
-    }
+    PAIMON_ASSIGN_OR_RAISE(SelectionState selection,
+                           SelectionState::Create(selection_bitmap, total_rows_));
     // Leave the active scan and its row mapping unchanged if validation or import fails.
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> imported_read_schema,
                                       arrow::ImportSchema(read_schema));
+    PAIMON_RETURN_NOT_OK(
+        ArrowSchemaValidator::ValidateNoRedundantFields(imported_read_schema->fields()));
+    PAIMON_RETURN_NOT_OK(ValidateReadFieldReferences(
+        arrow::struct_(file_schema_->fields()), arrow::struct_(imported_read_schema->fields())));
     // Recreate the single-use scan on the next read with the new projection and predicates.
     read_schema_ = std::move(imported_read_schema);
     predicate_filter_ = std::dynamic_pointer_cast<PredicateFilter>(predicate);
-    has_selection_ = selection_bitmap.has_value();
-    selection_excludes_ = selection_excludes;
-    selected_row_count_ = selected_row_count;
-    selection_indices_ = std::move(selection_indices);
-    metrics_->SetCounter("vortex.selection-index-count", selection_indices_.size());
+    selection_ = std::move(selection);
+    metrics_->SetCounter(VortexMetrics::kSelectionRowCount, selection_.SelectedRowCount());
+    metrics_->SetCounter(VortexMetrics::kSelectionBufferRowCount, selection_.IndexCount());
     ReleaseStream();
     current_batch_.reset();
     current_batch_offset_ = 0;
     scan_.reset();
-    rows_emitted_ = 0;
-    previous_first_row_ = std::numeric_limits<uint64_t>::max();
-    previous_batch_row_count_ = 0;
-    has_filter_ = false;
-    previous_batch_row_idx_.reset();
+    row_position_.Reset();
     return Status::OK();
 }
 
 Result<uint64_t> VortexFileBatchReader::GetPreviousBatchFileRowId(uint64_t batch_row_id) const {
-    if (previous_batch_row_count_ == 0) {
-        return Status::Invalid(previous_first_row_ == std::numeric_limits<uint64_t>::max()
-                                   ? "no Vortex batch has been read yet"
-                                   : "last Vortex batch was EOF");
-    }
-    if (batch_row_id >= previous_batch_row_count_) {
-        return Status::Invalid(fmt::format("batch row id {} is out of range {}", batch_row_id,
-                                           previous_batch_row_count_));
-    }
-    // The hidden column accounts for both filtering and selection; emitted offsets do not.
-    if (has_filter_) {
-        if (previous_batch_row_idx_ == nullptr ||
-            batch_row_id >= static_cast<uint64_t>(previous_batch_row_idx_->length())) {
-            return Status::Invalid(
-                fmt::format("Vortex filter row index unavailable for row {}", batch_row_id));
-        }
-        return checked_cast<const arrow::UInt64Array&>(*previous_batch_row_idx_)
-            .Value(static_cast<int64_t>(batch_row_id));
-    }
-    const uint64_t emitted_offset = previous_first_row_ + batch_row_id;
-    // Ordered scans emit selected rows in physical order, regardless of which side is stored.
-    if (has_selection_) {
-        if (emitted_offset >= selected_row_count_) {
-            return Status::Invalid(fmt::format("emitted row offset {} exceeds selection size {}",
-                                               emitted_offset, selected_row_count_));
-        }
-        if (!selection_excludes_) {
-            return selection_indices_[emitted_offset];
-        }
-        // For excluded row i, excluded[i] - i is the number of selected rows before it.
-        // Count exclusions at or before this selected rank without expanding a row mapping.
-        size_t begin = 0;
-        size_t end = selection_indices_.size();
-        while (begin < end) {
-            const size_t middle = begin + (end - begin) / 2;
-            if (selection_indices_[middle] - middle <= emitted_offset) {
-                begin = middle + 1;
-            } else {
-                end = middle;
-            }
-        }
-        return emitted_offset + begin;
-    }
-    return emitted_offset;
+    return row_position_.GetPhysicalRowId(batch_row_id, selection_);
 }
 
 Result<uint64_t> VortexFileBatchReader::GetNumberOfRows() const {

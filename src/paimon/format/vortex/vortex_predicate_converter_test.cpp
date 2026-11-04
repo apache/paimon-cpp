@@ -33,12 +33,18 @@
 #include "arrow/ipc/json_simple.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/common/predicate/and.h"
+#include "paimon/common/predicate/compound_predicate_impl.h"
+#include "paimon/common/predicate/leaf_predicate_impl.h"
+#include "paimon/common/predicate/or.h"
+#include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
+#include "paimon/format/vortex/vortex_defs.h"
 #include "paimon/format/vortex/vortex_io_callbacks.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -67,8 +73,47 @@ std::shared_ptr<arrow::Schema> TestSchema() {
 bool Pushed(const std::shared_ptr<Predicate>& predicate,
             const std::shared_ptr<arrow::Schema>& schema,
             const VortexPredicateOptions& options = {}) {
-    return VortexPredicateConverter::Convert(predicate, schema, options) != nullptr;
+    const Result<VxExpressionPtr> result =
+        VortexPredicateConverter::Convert(predicate, schema, options);
+    EXPECT_OK(result.status());
+    return result.ok() && result.value() != nullptr;
 }
+
+void AssertInvalidConversion(const std::shared_ptr<Predicate>& predicate,
+                             const std::shared_ptr<arrow::Schema>& schema,
+                             const std::vector<std::string>& message_parts,
+                             const VortexPredicateOptions& options = {}) {
+    const Result<VxExpressionPtr> result =
+        VortexPredicateConverter::Convert(predicate, schema, options);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsInvalid()) << result.status().ToString();
+    for (const std::string& part : message_parts) {
+        ASSERT_NE(result.status().ToString().find(part), std::string::npos)
+            << result.status().ToString();
+    }
+}
+
+// Simulate a malformed external Predicate whose function disagrees with its node shape.
+class FunctionOnlyPredicate : public Predicate {
+ public:
+    explicit FunctionOnlyPredicate(const Function& function) : function_(function) {}
+
+    bool operator==(const Predicate& other) const override {
+        return this == &other;
+    }
+    const Function& GetFunction() const override {
+        return function_;
+    }
+    std::shared_ptr<Predicate> Negate() const override {
+        return nullptr;
+    }
+    std::string ToString() const override {
+        return "FunctionOnlyPredicate";
+    }
+
+ private:
+    const Function& function_;
+};
 
 struct NativeInCase {
     const char* name;
@@ -91,7 +136,8 @@ std::string NativeErrorMessage(const vx_error* error) {
 void AssertNativeRows(const NativeInCase& test_case, const std::shared_ptr<Predicate>& predicate,
                       const std::vector<int64_t>& expected_rows, bool project_rowid_only = false,
                       const VortexPredicateOptions& options = {}, bool expect_native_filter = true,
-                      const vx_expression* native_filter_override = nullptr) {
+                      const vx_expression* native_filter_override = nullptr,
+                      const std::vector<int64_t>* expected_residual_rows = nullptr) {
     SCOPED_TRACE(test_case.name);
     auto values_result =
         arrow::ipc::internal::json::ArrayFromJSON(test_case.type, test_case.values_json);
@@ -171,13 +217,15 @@ void AssertNativeRows(const NativeInCase& test_case, const std::shared_ptr<Predi
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system.Open(path));
     ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
     auto input_context = std::make_shared<VortexInputContext>(input);
-    VxDataSourcePtr source(
-        vx_data_source_new_callback(session.get(), VortexInputContext::MakeCallbacks(input_context),
-                                    static_cast<uint64_t>(length), &error),
-        vx_data_source_free);
+    VxDataSourcePtr source(vx_data_source_new_callback_with_coalesce(
+                               session.get(), VortexInputContext::MakeCallbacks(input_context),
+                               static_cast<uint64_t>(length), kDefaultVortexReadIoCoalesceMaxGap,
+                               kDefaultVortexReadIoCoalesceMaxSize, &error),
+                           vx_data_source_free);
     ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
     ASSERT_NE(source, nullptr);
-    VxExpressionPtr filter = VortexPredicateConverter::Convert(predicate, schema, options);
+    ASSERT_OK_AND_ASSIGN(VxExpressionPtr filter,
+                         VortexPredicateConverter::Convert(predicate, schema, options));
     ASSERT_EQ(filter != nullptr, expect_native_filter);
     vx_scan_options scan_options{};
     scan_options.filter = native_filter_override == nullptr ? filter.get() : native_filter_override;
@@ -196,6 +244,7 @@ void AssertNativeRows(const NativeInCase& test_case, const std::shared_ptr<Predi
     ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
     ASSERT_NE(scan, nullptr);
     std::vector<int64_t> row_ids;
+    std::vector<int64_t> residual_row_ids;
     while (true) {
         VxPartitionPtr partition(vx_scan_next_partition(scan.get(), &error), vx_partition_free);
         ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
@@ -228,14 +277,55 @@ void AssertNativeRows(const NativeInCase& test_case, const std::shared_ptr<Predi
             ASSERT_NE(ids, nullptr);
             ASSERT_EQ(ids->type_id(), arrow::Type::INT64);
             const auto& typed_ids = checked_cast<const arrow::Int64Array&>(*ids);
+            std::vector<char> mask;
+            if (expected_residual_rows != nullptr) {
+                ASSERT_FALSE(project_rowid_only);
+                const std::shared_ptr<PredicateFilter> residual =
+                    std::dynamic_pointer_cast<PredicateFilter>(predicate);
+                ASSERT_NE(residual, nullptr);
+                const auto rows =
+                    arrow::StructArray::Make(batch->columns(), batch->schema()->fields());
+                ASSERT_TRUE(rows.ok()) << rows.status().ToString();
+                ASSERT_OK_AND_ASSIGN(
+                    mask, residual->Test(*rows.ValueOrDie(), arrow::default_memory_pool()));
+                ASSERT_EQ(mask.size(), static_cast<size_t>(batch->num_rows()));
+            }
             for (int64_t row = 0; row < batch->num_rows(); ++row) {
                 ASSERT_FALSE(typed_ids.IsNull(row));
-                row_ids.push_back(typed_ids.Value(row));
+                const int64_t row_id = typed_ids.Value(row);
+                row_ids.push_back(row_id);
+                if (expected_residual_rows != nullptr) {
+                    ASSERT_GE(row_id, 0);
+                    ASSERT_LT(row_id, values_result.ValueOrDie()->length());
+                    const auto actual = batch->column(1)->GetScalar(row);
+                    const auto expected = values_result.ValueOrDie()->GetScalar(row_id);
+                    ASSERT_TRUE(actual.ok());
+                    ASSERT_TRUE(expected.ok());
+                    ASSERT_TRUE(actual.ValueOrDie()->Equals(*expected.ValueOrDie()));
+                    if (mask[row] != 0) {
+                        residual_row_ids.push_back(row_id);
+                    }
+                }
             }
         }
     }
     std::sort(row_ids.begin(), row_ids.end());
     ASSERT_EQ(row_ids, expected_rows);
+    if (expected_residual_rows != nullptr) {
+        std::sort(residual_row_ids.begin(), residual_row_ids.end());
+        ASSERT_EQ(residual_row_ids, *expected_residual_rows);
+    }
+}
+
+void AssertNativeAndResidualRows(const NativeInCase& test_case,
+                                 const std::shared_ptr<Predicate>& predicate,
+                                 const std::vector<int64_t>& expected_candidates,
+                                 const std::vector<int64_t>& expected_matches,
+                                 const VortexPredicateOptions& options = {},
+                                 bool expect_native_filter = true) {
+    ASSERT_NO_FATAL_FAILURE(AssertNativeRows(test_case, predicate, expected_candidates, false,
+                                             options, expect_native_filter, nullptr,
+                                             &expected_matches));
 }
 
 // Compare an unsafe direct native expression with the converter's conservative fallback.
@@ -347,15 +437,329 @@ TEST(VortexPredicateConverterTest, ComparisonsRequireMatchingFileAndLiteralTypes
          {PredicateBuilder::Equal, PredicateBuilder::NotEqual, PredicateBuilder::LessThan,
           PredicateBuilder::LessOrEqual, PredicateBuilder::GreaterThan,
           PredicateBuilder::GreaterOrEqual}) {
-        ASSERT_FALSE(Pushed(build(0, "i", FieldType::INT, Literal(int64_t{1})), TestSchema()));
-        ASSERT_FALSE(Pushed(build(0, "i", FieldType::BIGINT, Literal(int64_t{1})), TestSchema()));
-        ASSERT_FALSE(Pushed(build(0, "dt", FieldType::INT, Literal(int32_t{1})), TestSchema()));
-        ASSERT_FALSE(Pushed(build(0, "dec_compact", FieldType::DECIMAL,
-                                  Literal(Decimal::FromUnscaledLong(12345, 19, 2))),
-                            TestSchema()));
+        ASSERT_NO_FATAL_FAILURE(
+            AssertInvalidConversion(build(0, "i", FieldType::INT, Literal(int64_t{1})),
+                                    TestSchema(), {"i", "expected INT", "actual BIGINT"}));
+        ASSERT_NO_FATAL_FAILURE(
+            AssertInvalidConversion(build(0, "i", FieldType::BIGINT, Literal(int64_t{1})),
+                                    TestSchema(), {"i", "expected INT", "actual BIGINT"}));
+        ASSERT_NO_FATAL_FAILURE(
+            AssertInvalidConversion(build(0, "dt", FieldType::INT, Literal(int32_t{1})),
+                                    TestSchema(), {"dt", "expected DATE", "actual INT"}));
+        ASSERT_TRUE(Pushed(build(0, "dec_compact", FieldType::DECIMAL,
+                                 Literal(Decimal::FromUnscaledLong(12345, 19, 2))),
+                           TestSchema()));
         ASSERT_FALSE(Pushed(build(0, "dec_compact", FieldType::DECIMAL,
                                   Literal(Decimal::FromUnscaledLong(12345, 10, 3))),
                             TestSchema()));
+    }
+}
+
+TEST(VortexPredicateConverterTest, LosslessDecimalComparisonsNormalizeToFileType) {
+    using ComparisonBuilder = decltype(&PredicateBuilder::Equal);
+    const std::vector<ComparisonBuilder> builders = {
+        PredicateBuilder::Equal,       PredicateBuilder::NotEqual,
+        PredicateBuilder::LessThan,    PredicateBuilder::LessOrEqual,
+        PredicateBuilder::GreaterThan, PredicateBuilder::GreaterOrEqual};
+    const std::vector<std::vector<int64_t>> positive_rows = {{3},       {0, 2}, {0, 2},
+                                                             {0, 2, 3}, {},     {3}};
+    struct DecimalCase {
+        NativeInCase native;
+        std::vector<std::vector<int64_t>> expected_rows;
+    };
+    Decimal::int128_t maximum = 1;
+    for (int32_t digit = 0; digit < 37; ++digit) {
+        maximum *= 10;
+    }
+    --maximum;
+    const std::vector<DecimalCase> cases = {
+        {{"precision_only",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","1.20"])",
+          {Literal(Decimal(19, 2, 120))}},
+         positive_rows},
+        {{"scale_down",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","1.20"])",
+          {Literal(Decimal(20, 4, 12000))}},
+         positive_rows},
+        {{"scale_up",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","1.20"])",
+          {Literal(Decimal(10, 1, 12))}},
+         positive_rows},
+        {{"negative_scale_down",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","1.20"])",
+          {Literal(Decimal(20, 4, -12000))}},
+         {{0}, {2, 3}, {}, {0}, {2, 3}, {0, 2, 3}}},
+        {{"zero_scale_down",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","1.20"])",
+          {Literal(Decimal(38, 38, 0))}},
+         {{2}, {0, 3}, {0}, {0, 2}, {3}, {2, 3}}},
+        {{"compact_to_wide",
+          arrow::decimal128(19, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","1.20"])",
+          {Literal(Decimal(18, 1, 12))}},
+         positive_rows},
+        {{"38_digit_unscaled_value",
+          arrow::decimal128(37, 0),
+          FieldType::DECIMAL,
+          R"(["-9999999999999999999999999999999999999",null,"0","9999999999999999999999999999999999999"])",
+          {Literal(Decimal(38, 1, maximum * 10))}},
+         positive_rows},
+    };
+    for (const DecimalCase& test_case : cases) {
+        for (size_t operation = 0; operation < builders.size(); ++operation) {
+            SCOPED_TRACE(operation);
+            const std::shared_ptr<Predicate> predicate =
+                builders[operation](1, "value", FieldType::DECIMAL, test_case.native.literals[0]);
+            ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(
+                test_case.native, predicate, test_case.expected_rows[operation],
+                test_case.expected_rows[operation]));
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, LosslessDecimalMembershipNormalizesEachLiteral) {
+    struct DecimalCase {
+        NativeInCase native;
+        std::vector<int64_t> in_rows;
+        std::vector<int64_t> not_in_rows;
+    };
+    Decimal::int128_t maximum = 1;
+    for (int32_t digit = 0; digit < 37; ++digit) {
+        maximum *= 10;
+    }
+    --maximum;
+    const std::vector<DecimalCase> cases = {
+        {{"mixed_parameters",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","4.56"])",
+          {Literal(Decimal(19, 1, -12)), Literal(Decimal(20, 4, 45600))}},
+         {0, 3},
+         {2}},
+        {{"zero",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","4.56"])",
+          {Literal(Decimal(38, 38, 0))}},
+         {2},
+         {0, 3}},
+        {{"compact_and_wide",
+          arrow::decimal128(19, 2),
+          FieldType::DECIMAL,
+          R"(["-1.20",null,"0.00","1.20"])",
+          {Literal(Decimal(18, 1, -12)), Literal(Decimal(38, 4, 12000))}},
+         {0, 3},
+         {2}},
+        {{"38_digit_unscaled_values",
+          arrow::decimal128(37, 0),
+          FieldType::DECIMAL,
+          R"(["-9999999999999999999999999999999999999",null,"0","9999999999999999999999999999999999999"])",
+          {Literal(Decimal(38, 1, -maximum * 10)), Literal(Decimal(38, 1, maximum * 10))}},
+         {0, 3},
+         {2}},
+    };
+    for (const DecimalCase& test_case : cases) {
+        for (bool negate : {false, true}) {
+            const std::shared_ptr<Predicate> predicate =
+                negate ? PredicateBuilder::NotIn(1, "value", FieldType::DECIMAL,
+                                                 test_case.native.literals)
+                       : PredicateBuilder::In(1, "value", FieldType::DECIMAL,
+                                              test_case.native.literals);
+            const std::vector<int64_t>& expected =
+                negate ? test_case.not_in_rows : test_case.in_rows;
+            ASSERT_NO_FATAL_FAILURE(
+                AssertNativeAndResidualRows(test_case.native, predicate, expected, expected));
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, UnrepresentableDecimalsPreserveNativeCandidatesAndResidualRows) {
+    using ComparisonBuilder = decltype(&PredicateBuilder::Equal);
+    const std::vector<ComparisonBuilder> builders = {
+        PredicateBuilder::Equal,       PredicateBuilder::NotEqual,
+        PredicateBuilder::LessThan,    PredicateBuilder::LessOrEqual,
+        PredicateBuilder::GreaterThan, PredicateBuilder::GreaterOrEqual};
+    struct DecimalCase {
+        NativeInCase native;
+        std::vector<std::vector<int64_t>> expected_rows;
+    };
+    Decimal::int128_t maximum = 1;
+    for (int32_t digit = 0; digit < 38; ++digit) {
+        maximum *= 10;
+    }
+    --maximum;
+    const std::vector<DecimalCase> cases = {
+        {{"lossy_positive",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.23",null,"1.23","1.24"])",
+          {Literal(Decimal(10, 3, 1234))}},
+         {{}, {0, 2, 3}, {0, 2}, {0, 2}, {3}, {3}}},
+        {{"lossy_negative",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.23",null,"1.23","1.24"])",
+          {Literal(Decimal(10, 3, -1234))}},
+         {{}, {0, 2, 3}, {}, {}, {0, 2, 3}, {0, 2, 3}}},
+        {{"precision_overflow",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.23",null,"1.23","1.24"])",
+          {Literal(Decimal(19, 2, 10000000000LL))}},
+         {{}, {0, 2, 3}, {0, 2, 3}, {0, 2, 3}, {}, {}}},
+        {{"wide_value_cannot_be_truncated_to_compact",
+          arrow::decimal128(10, 2),
+          FieldType::DECIMAL,
+          R"(["-1.23",null,"1.23","1.24"])",
+          // Its low 64 bits look like 1.23; the full source value must be checked first.
+          {Literal(Decimal(20, 2, (static_cast<Decimal::int128_t>(1) << 64) + 123))}},
+         {{}, {0, 2, 3}, {0, 2, 3}, {0, 2, 3}, {}, {}}},
+        {{"128_bit_scale_overflow",
+          arrow::decimal128(38, 38),
+          FieldType::DECIMAL,
+          R"(["-0.12000000000000000000000000000000000000",null,"0.12000000000000000000000000000000000000","0.99000000000000000000000000000000000000"])",
+          {Literal(Decimal(38, 0, maximum))}},
+         {{}, {0, 2, 3}, {0, 2, 3}, {0, 2, 3}, {}, {}}},
+    };
+    const std::vector<int64_t> all_rows = {0, 1, 2, 3};
+    for (const DecimalCase& test_case : cases) {
+        for (size_t operation = 0; operation < builders.size(); ++operation) {
+            SCOPED_TRACE(operation);
+            const std::shared_ptr<Predicate> predicate =
+                builders[operation](1, "value", FieldType::DECIMAL, test_case.native.literals[0]);
+            // Rounding +/-1.234 to +/-1.23 would lose rows in strict inequalities.
+            ASSERT_NO_FATAL_FAILURE(
+                AssertNativeAndResidualRows(test_case.native, predicate, all_rows,
+                                            test_case.expected_rows[operation], {}, false));
+        }
+        const auto& column_type =
+            checked_cast<const arrow::Decimal128Type&>(*test_case.native.type);
+        const std::vector<Literal> literals = {
+            Literal(Decimal(column_type.precision(), column_type.scale(), 0)),
+            test_case.native.literals[0]};
+        for (bool negate : {false, true}) {
+            const std::shared_ptr<Predicate> predicate =
+                negate ? PredicateBuilder::NotIn(1, "value", FieldType::DECIMAL, literals)
+                       : PredicateBuilder::In(1, "value", FieldType::DECIMAL, literals);
+            const std::vector<int64_t> expected =
+                negate ? std::vector<int64_t>{0, 2, 3} : std::vector<int64_t>{};
+            ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(test_case.native, predicate,
+                                                                all_rows, expected, {}, false));
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, DecimalNormalizationRejectsInvalidLiteralMetadata) {
+    const std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("value", arrow::decimal128(10, 2))});
+    const std::vector<Literal> literals = {
+        Literal(Decimal(0, 0, 0)),     Literal(Decimal(39, 2, 123)),
+        Literal(Decimal(10, -1, 123)), Literal(Decimal(10, 11, 123)),
+        Literal(Decimal(2, 0, 123)),   Literal(Decimal(10, 2, 10000000000LL)),
+    };
+    for (const Literal& literal : literals) {
+        ASSERT_FALSE(
+            Pushed(PredicateBuilder::Equal(0, "value", FieldType::DECIMAL, literal), schema));
+        ASSERT_FALSE(
+            Pushed(PredicateBuilder::In(0, "value", FieldType::DECIMAL, {literal}), schema));
+        ASSERT_FALSE(
+            Pushed(PredicateBuilder::NotIn(0, "value", FieldType::DECIMAL, {literal}), schema));
+    }
+}
+
+TEST(VortexPredicateConverterTest, SameParameterDecimalOverflowPreservesNativeCandidates) {
+    const NativeInCase test_case = {"same-parameter-wide-overflow",
+                                    arrow::decimal128(10, 2),
+                                    FieldType::DECIMAL,
+                                    R"(["-1.23",null,"1.23","1.24"])",
+                                    {}};
+    // The low 64 bits are 123, but the full value does not fit the advertised compact precision.
+    const Decimal::int128_t unscaled = (static_cast<Decimal::int128_t>(1) << 64) + 123;
+    const Literal invalid(Decimal(10, 2, unscaled));
+    using ComparisonBuilder = decltype(&PredicateBuilder::Equal);
+    for (ComparisonBuilder build :
+         {PredicateBuilder::Equal, PredicateBuilder::NotEqual, PredicateBuilder::LessThan,
+          PredicateBuilder::LessOrEqual, PredicateBuilder::GreaterThan,
+          PredicateBuilder::GreaterOrEqual}) {
+        ASSERT_NO_FATAL_FAILURE(AssertNativeRows(test_case,
+                                                 build(1, "value", FieldType::DECIMAL, invalid),
+                                                 {0, 1, 2, 3}, false, {}, false));
+    }
+    for (const std::shared_ptr<Predicate>& predicate :
+         {PredicateBuilder::In(1, "value", FieldType::DECIMAL, {invalid}),
+          PredicateBuilder::NotIn(1, "value", FieldType::DECIMAL, {invalid})}) {
+        ASSERT_NO_FATAL_FAILURE(
+            AssertNativeRows(test_case, predicate, {0, 1, 2, 3}, false, {}, false));
+    }
+}
+
+TEST(VortexPredicateConverterTest, DecimalMembershipMaximumPrecedesNormalization) {
+    const NativeInCase test_case = {"decimal_raw_length",
+                                    arrow::decimal128(10, 2),
+                                    FieldType::DECIMAL,
+                                    R"(["-1.23",null,"1.23","1.24"])",
+                                    {}};
+    const std::vector<Literal> literals(33, Literal(Decimal(38, 4, 12300)));
+    for (bool negate : {false, true}) {
+        const std::shared_ptr<Predicate> predicate =
+            negate ? PredicateBuilder::NotIn(1, "value", FieldType::DECIMAL, literals)
+                   : PredicateBuilder::In(1, "value", FieldType::DECIMAL, literals);
+        const std::vector<int64_t> expected =
+            negate ? std::vector<int64_t>{0, 3} : std::vector<int64_t>{2};
+        ASSERT_NO_FATAL_FAILURE(
+            AssertNativeAndResidualRows(test_case, predicate, {0, 1, 2, 3}, expected, {}, false));
+        ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(test_case, predicate, expected,
+                                                            expected, VortexPredicateOptions{33}));
+    }
+}
+
+TEST(VortexPredicateConverterTest, MismatchedBasicTypesReturnInvalid) {
+    struct TypeCase {
+        std::shared_ptr<arrow::DataType> arrow_type;
+        FieldType field_type;
+        const char* type_name;
+    };
+    const std::vector<TypeCase> cases = {
+        {arrow::boolean(), FieldType::BOOLEAN, "BOOLEAN"},
+        {arrow::int8(), FieldType::TINYINT, "TINYINT"},
+        {arrow::int16(), FieldType::SMALLINT, "SMALLINT"},
+        {arrow::int32(), FieldType::INT, "INT"},
+        {arrow::int64(), FieldType::BIGINT, "BIGINT"},
+        {arrow::float32(), FieldType::FLOAT, "FLOAT"},
+        {arrow::float64(), FieldType::DOUBLE, "DOUBLE"},
+        {arrow::utf8(), FieldType::STRING, "STRING"},
+        {arrow::binary(), FieldType::BINARY, "BINARY"},
+        {arrow::date32(), FieldType::DATE, "DATE"},
+        {arrow::decimal128(10, 2), FieldType::DECIMAL, "DECIMAL"},
+        {arrow::timestamp(arrow::TimeUnit::MILLI), FieldType::TIMESTAMP, "TIMESTAMP"},
+    };
+    for (const TypeCase& test_case : cases) {
+        SCOPED_TRACE(test_case.type_name);
+        const std::shared_ptr<arrow::Schema> schema =
+            arrow::schema({arrow::field("value", test_case.arrow_type)});
+        const bool int_field = test_case.field_type == FieldType::INT;
+        const FieldType wrong_type = int_field ? FieldType::BIGINT : FieldType::INT;
+        const Literal wrong_literal = int_field ? Literal(int64_t{1}) : Literal(int32_t{1});
+        const std::string expected = fmt::format("expected {}", test_case.type_name);
+        const std::string actual = int_field ? "actual BIGINT" : "actual INT";
+        // Both the leaf-to-file contract and the literal-to-leaf contract are errors.
+        ASSERT_NO_FATAL_FAILURE(
+            AssertInvalidConversion(PredicateBuilder::Equal(0, "value", wrong_type, wrong_literal),
+                                    schema, {"value", expected, actual}));
+        ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+            PredicateBuilder::Equal(0, "value", test_case.field_type, wrong_literal), schema,
+            {"value", expected, actual}));
     }
 }
 
@@ -365,7 +769,6 @@ TEST(VortexPredicateConverterTest, UnboundPredicatesPreserveNativeCandidateRows)
         PredicateBuilder::Equal(2, "missing", FieldType::INT, Literal(int32_t{1})),
         PredicateBuilder::IsNull(2, "missing", FieldType::INT),
         PredicateBuilder::IsNotNull(2, "missing", FieldType::INT),
-        PredicateBuilder::Equal(1, "value", FieldType::BIGINT, Literal(int64_t{1})),
     };
     for (const std::shared_ptr<Predicate>& predicate : predicates) {
         ASSERT_NO_FATAL_FAILURE(
@@ -437,14 +840,14 @@ TEST(VortexPredicateConverterTest, RandomizedIntegerMembershipMatchesIndependent
                         expected.push_back(row_ids[row]);
                     }
                 }
-                for (MembershipPushdownMode mode :
-                     {MembershipPushdownMode::AUTO, MembershipPushdownMode::FORCE}) {
-                    const VortexPredicateOptions options{mode, 64};
-                    const bool pushed = Pushed(predicate, schema, options);
+                for (uint32_t maximum : {uint32_t{32}, uint32_t{80}}) {
+                    const VortexPredicateOptions options{maximum};
+                    const bool pushed = literals.size() <= maximum;
+                    ASSERT_EQ(Pushed(predicate, schema, options), pushed);
                     const std::vector<int64_t> candidates =
                         pushed ? expected : std::vector<int64_t>{0, 1, 2, 3};
-                    ASSERT_NO_FATAL_FAILURE(
-                        AssertNativeRows(test_case, predicate, candidates, false, options, pushed));
+                    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(
+                        test_case, predicate, candidates, expected, options, pushed));
                 }
             }
         }
@@ -533,6 +936,61 @@ TEST(VortexPredicateConverterTest, LosslessTimestampComparisonsFilterNativeFiles
                              PredicateBuilder::GreaterOrEqual(1, "value", FieldType::TIMESTAMP,
                                                               test_case.literals[0]),
                              {2, 3}));
+    }
+}
+
+TEST(VortexPredicateConverterTest, TimestampComparisonsPreserveBoundaryDecisionsAndNativeValues) {
+    const std::vector<NativeInCase> cases = {
+        {"micros_calendar_limits",
+         arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"),
+         FieldType::TIMESTAMP,
+         "[-1,null,7,2]",
+         {Literal(Timestamp::FromEpochMillis(253402207200999, 999000)),
+          Literal(Timestamp::FromEpochMillis(-62167219200000)),
+          Literal(Timestamp::FromEpochMillis(-1, 999000)),
+          Literal(Timestamp::FromEpochMillis(9223372036854775, 808000)),
+          Literal(Timestamp::FromEpochMillis(-9223372036854776, 192000)),
+          Literal(Timestamp::FromEpochMillis(0, 2000))}},
+        {"nanos_boundaries",
+         arrow::timestamp(arrow::TimeUnit::NANO),
+         FieldType::TIMESTAMP,
+         "[-1,null,7,2]",
+         {Literal(Timestamp::FromEpochMillis(9223372036854, 775807)),
+          Literal(Timestamp::FromEpochMillis(-9223372036854)),
+          Literal(Timestamp::FromEpochMillis(-1, 999999)),
+          Literal(Timestamp::FromEpochMillis(9223372036854, 775808)),
+          Literal(Timestamp::FromEpochMillis(-9223372036855, 224192)),
+          Literal(Timestamp::FromEpochMillis(0, 2))}},
+    };
+    for (const NativeInCase& test_case : cases) {
+        SCOPED_TRACE(test_case.name);
+        const std::shared_ptr<arrow::Schema> schema =
+            arrow::schema({arrow::field("value", test_case.type)});
+        // Accepted expressions must also fit the native calendar range.
+        // The microsecond values cover year 0000 through Jiff's year 9999 limit.
+        ASSERT_TRUE(
+            Pushed(PredicateBuilder::Equal(0, "value", FieldType::TIMESTAMP, test_case.literals[0]),
+                   schema));
+        ASSERT_TRUE(Pushed(
+            PredicateBuilder::LessOrEqual(0, "value", FieldType::TIMESTAMP, test_case.literals[1]),
+            schema));
+        ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
+            test_case,
+            PredicateBuilder::Equal(1, "value", FieldType::TIMESTAMP, test_case.literals[2]), {0}));
+        ASSERT_NO_FATAL_FAILURE(
+            AssertNativeRows(test_case,
+                             PredicateBuilder::GreaterOrEqual(1, "value", FieldType::TIMESTAMP,
+                                                              test_case.literals[5]),
+                             {2, 3}));
+        // One unit beyond INT64_MAX must fall back rather than overflow.
+        ASSERT_FALSE(
+            Pushed(PredicateBuilder::Equal(0, "value", FieldType::TIMESTAMP, test_case.literals[3]),
+                   schema));
+        // Although the final value is INT64_MIN, the intermediate millisecond product
+        // overflows. Preserve the existing fallback before calling the common utility.
+        ASSERT_FALSE(
+            Pushed(PredicateBuilder::Equal(0, "value", FieldType::TIMESTAMP, test_case.literals[4]),
+                   schema));
     }
 }
 
@@ -655,14 +1113,17 @@ TEST(VortexPredicateConverterTest, UnsupportedFunctionsAndLiteralsAreNotPushed) 
         Pushed(PredicateBuilder::Equal(0, "i", FieldType::INT, Literal(FieldType::INT)), schema));
 }
 
-TEST(VortexPredicateConverterTest, InSmallAndLargeListsArePushed) {
+TEST(VortexPredicateConverterTest, InSmallAndLargeListsRespectConfiguredMaximum) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
     for (const int32_t size : {1, 2, 20, 21, 1024}) {
         std::vector<Literal> literals;
         for (int32_t value = 0; value < size; ++value) {
             literals.emplace_back(value);
         }
-        ASSERT_TRUE(Pushed(PredicateBuilder::In(0, "i", FieldType::INT, literals), schema));
+        const std::shared_ptr<Predicate> predicate =
+            PredicateBuilder::In(0, "i", FieldType::INT, literals);
+        ASSERT_EQ(Pushed(predicate, schema), size <= 32);
+        ASSERT_TRUE(Pushed(predicate, schema, {1024}));
     }
     ASSERT_TRUE(Pushed(
         PredicateBuilder::In(0, "i", FieldType::INT, {Literal(int32_t{1}), Literal(int32_t{1})}),
@@ -808,13 +1269,20 @@ TEST(VortexPredicateConverterTest, NotInSmallAndLargeListsFilterNativeFiles) {
         }
         const std::vector<int64_t> expected_rows =
             size == 1 ? std::vector<int64_t>{2, 3} : std::vector<int64_t>{2};
-        ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
-            test_case, PredicateBuilder::NotIn(1, "value", FieldType::INT, literals),
-            expected_rows));
+        const std::shared_ptr<Predicate> predicate =
+            PredicateBuilder::NotIn(1, "value", FieldType::INT, literals);
+        const bool pushed = size <= 32;
+        ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(
+            test_case, predicate, pushed ? expected_rows : std::vector<int64_t>{0, 1, 2, 3},
+            expected_rows, {}, pushed));
+        if (size <= 100) {
+            ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(
+                test_case, predicate, expected_rows, expected_rows, {static_cast<uint32_t>(size)}));
+        }
     }
 }
 
-TEST(VortexPredicateConverterTest, IntegerRangesAtTypeLimitsFilterNativeFiles) {
+TEST(VortexPredicateConverterTest, IntegerListsAtTypeLimitsFilterNativeFiles) {
     const std::vector<NativeInCase> cases = {
         IntegerRangeBoundaryCase<int8_t>("tinyint_range_limits", arrow::int8(), FieldType::TINYINT,
                                          "[-128,null,0,127]"),
@@ -835,7 +1303,7 @@ TEST(VortexPredicateConverterTest, IntegerRangesAtTypeLimitsFilterNativeFiles) {
     }
 }
 
-TEST(VortexPredicateConverterTest, IntegerRangesPreserveGapsAndSingletonsInNativeFiles) {
+TEST(VortexPredicateConverterTest, IntegerListsPreserveGapsAndSingletonsInNativeFiles) {
     NativeInCase test_case = {
         "integer_ranges_with_gap", arrow::int32(), FieldType::INT, "[-7,null,0,6]", {}};
     for (int32_t value = -8; value <= -1; ++value) {
@@ -867,12 +1335,12 @@ TEST(VortexPredicateConverterTest, FullIntegerDomainAndDuplicateSingletonFilterN
          value <= std::numeric_limits<int8_t>::max(); ++value) {
         test_case.literals.emplace_back(static_cast<int8_t>(value));
     }
-    ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
+    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(
         test_case, PredicateBuilder::In(1, "value", FieldType::TINYINT, test_case.literals),
-        {0, 2, 3}));
-    ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
+        {0, 1, 2, 3}, {0, 2, 3}, {}, false));
+    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(
         test_case, PredicateBuilder::NotIn(1, "value", FieldType::TINYINT, test_case.literals),
-        {}));
+        {0, 1, 2, 3}, {}, {}, false));
     test_case.name = "duplicate_singleton";
     test_case.literals = std::vector<Literal>(8, Literal(int8_t{-128}));
     ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
@@ -882,7 +1350,7 @@ TEST(VortexPredicateConverterTest, FullIntegerDomainAndDuplicateSingletonFilterN
         {2, 3}));
 }
 
-TEST(VortexPredicateConverterTest, IntegerRangesComposeWithNativePredicatesAndProjection) {
+TEST(VortexPredicateConverterTest, IntegerListsComposeWithNativePredicatesAndProjection) {
     NativeInCase test_case = {
         "integer_range_compound", arrow::int32(), FieldType::INT, "[-4,null,8,4]", {}};
     for (int32_t value = -4; value <= 4; ++value) {
@@ -915,7 +1383,7 @@ TEST(VortexPredicateConverterTest, IntegerRangesComposeWithNativePredicatesAndPr
     ASSERT_NO_FATAL_FAILURE(AssertNativeRows(test_case, not_in, {2}, true));
 }
 
-TEST(VortexPredicateConverterTest, CompressibleIntegerListsStillValidateEveryLiteral) {
+TEST(VortexPredicateConverterTest, IntegerListsValidateEveryLiteral) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
     std::vector<Literal> safe;
     for (int32_t value = 0; value < 16; ++value) {
@@ -925,14 +1393,28 @@ TEST(VortexPredicateConverterTest, CompressibleIntegerListsStillValidateEveryLit
         for (size_t position : {size_t{0}, size_t{8}, safe.size()}) {
             std::vector<Literal> literals = safe;
             literals.insert(literals.begin() + position, unsafe);
-            ASSERT_FALSE(Pushed(PredicateBuilder::In(0, "i", FieldType::INT, literals), schema));
-            ASSERT_FALSE(Pushed(PredicateBuilder::NotIn(0, "i", FieldType::INT, literals), schema));
+            for (bool negate : {false, true}) {
+                const std::shared_ptr<Predicate> predicate =
+                    negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, literals)
+                           : PredicateBuilder::In(0, "i", FieldType::INT, literals);
+                if (unsafe.IsNull()) {
+                    ASSERT_FALSE(Pushed(predicate, schema));
+                } else {
+                    ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                        predicate, schema, {"i", "expected INT", "actual BIGINT"}));
+                }
+            }
         }
     }
-    ASSERT_FALSE(Pushed(PredicateBuilder::In(0, "i", FieldType::INT, safe),
-                        arrow::schema({arrow::field("i", arrow::int64())})));
-    ASSERT_FALSE(Pushed(PredicateBuilder::NotIn(0, "i", FieldType::INT, safe),
-                        arrow::schema({arrow::field("i", arrow::int64())})));
+    const std::shared_ptr<arrow::Schema> bigint_schema =
+        arrow::schema({arrow::field("i", arrow::int64())});
+    for (bool negate : {false, true}) {
+        const std::shared_ptr<Predicate> predicate =
+            negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, safe)
+                   : PredicateBuilder::In(0, "i", FieldType::INT, safe);
+        ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(predicate, bigint_schema,
+                                                        {"i", "expected BIGINT", "actual INT"}));
+    }
 }
 
 TEST(VortexPredicateConverterTest, NotInDuplicatesMissesAndAllExcludedFilterNativeFiles) {
@@ -991,7 +1473,7 @@ TEST(VortexPredicateConverterTest, NotInCompoundPredicatesAndProjectionFilterNat
                                                    arrow::field("value", arrow::int32())})));
 }
 
-TEST(VortexPredicateConverterTest, NotInUnsafeLiteralsAreNotPushed) {
+TEST(VortexPredicateConverterTest, NotInUnsafeLiteralsFallBackAndTypeMismatchesFail) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
     ASSERT_FALSE(Pushed(PredicateBuilder::NotIn(0, "i", FieldType::INT, {}), schema));
     ASSERT_FALSE(
@@ -999,11 +1481,12 @@ TEST(VortexPredicateConverterTest, NotInUnsafeLiteralsAreNotPushed) {
     ASSERT_FALSE(Pushed(PredicateBuilder::NotIn(0, "i", FieldType::INT,
                                                 {Literal(int32_t{1}), Literal(FieldType::INT)}),
                         schema));
-    ASSERT_FALSE(Pushed(
+    ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
         PredicateBuilder::NotIn(0, "i", FieldType::INT, {Literal(int32_t{1}), Literal(int64_t{2})}),
-        schema));
-    ASSERT_FALSE(
-        Pushed(PredicateBuilder::NotIn(0, "i", FieldType::BIGINT, {Literal(int64_t{1})}), schema));
+        schema, {"i", "expected INT", "actual BIGINT"}));
+    ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+        PredicateBuilder::NotIn(0, "i", FieldType::BIGINT, {Literal(int64_t{1})}), schema,
+        {"i", "expected INT", "actual BIGINT"}));
     ASSERT_FALSE(Pushed(PredicateBuilder::NotIn(0, "absent", FieldType::INT, {Literal(int32_t{1})}),
                         schema));
     ASSERT_FALSE(
@@ -1033,7 +1516,7 @@ TEST(VortexPredicateConverterTest, NotInUnsafeLiteralsAreNotPushed) {
                             "ts", arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai"))})));
 }
 
-TEST(VortexPredicateConverterTest, InUnsupportedOrInconsistentLiteralsAreNotPushed) {
+TEST(VortexPredicateConverterTest, InUnsafeLiteralsFallBackAndTypeMismatchesFail) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
     ASSERT_FALSE(Pushed(PredicateBuilder::In(0, "i", FieldType::INT, {}), schema));
     ASSERT_FALSE(
@@ -1041,11 +1524,12 @@ TEST(VortexPredicateConverterTest, InUnsupportedOrInconsistentLiteralsAreNotPush
     ASSERT_FALSE(Pushed(PredicateBuilder::In(0, "i", FieldType::INT,
                                              {Literal(int32_t{1}), Literal(FieldType::INT)}),
                         schema));
-    ASSERT_FALSE(Pushed(
+    ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
         PredicateBuilder::In(0, "i", FieldType::INT, {Literal(int32_t{1}), Literal(int64_t{2})}),
-        schema));
-    ASSERT_FALSE(
-        Pushed(PredicateBuilder::In(0, "i", FieldType::BIGINT, {Literal(int64_t{1})}), schema));
+        schema, {"i", "expected INT", "actual BIGINT"}));
+    ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+        PredicateBuilder::In(0, "i", FieldType::BIGINT, {Literal(int64_t{1})}), schema,
+        {"i", "expected INT", "actual BIGINT"}));
     ASSERT_FALSE(
         Pushed(PredicateBuilder::In(0, "absent", FieldType::INT, {Literal(int32_t{1})}), schema));
     ASSERT_FALSE(
@@ -1063,9 +1547,9 @@ TEST(VortexPredicateConverterTest, InUnsupportedOrInconsistentLiteralsAreNotPush
                                              {Literal(Decimal::FromUnscaledLong(123, 10, 2)),
                                               Literal(Decimal::FromUnscaledLong(123, 10, 3))}),
                         decimal_schema));
-    ASSERT_FALSE(Pushed(PredicateBuilder::In(0, "dec", FieldType::DECIMAL,
-                                             {Literal(Decimal::FromUnscaledLong(123, 11, 2))}),
-                        decimal_schema));
+    ASSERT_TRUE(Pushed(PredicateBuilder::In(0, "dec", FieldType::DECIMAL,
+                                            {Literal(Decimal::FromUnscaledLong(123, 11, 2))}),
+                       decimal_schema));
 }
 
 TEST(VortexPredicateConverterTest, InTimestampsRequireMatchingUnitsAndLosslessValues) {
@@ -1153,86 +1637,486 @@ TEST(VortexPredicateConverterTest, AndDropsUnsupportedChildrenButOrRejects) {
     ASSERT_FALSE(Pushed(or_partial, schema));
 }
 
-TEST(VortexPredicateConverterTest, MembershipListBudgetCountsBooleanNodesAndNullGuards) {
+TEST(VortexPredicateConverterTest, CompoundPredicatesPropagateTypeErrorsRegardlessOfBranchOrder) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
-    std::vector<Literal> literals;
-    for (int32_t value = 0; value < 33; ++value) {
-        const std::string text = fmt::format("value-{}", value);
-        literals.emplace_back(FieldType::STRING, text.data(), text.size());
+    const std::shared_ptr<Predicate> supported =
+        PredicateBuilder::Equal(0, "i", FieldType::INT, Literal(int32_t{1}));
+    const std::shared_ptr<Predicate> invalid =
+        PredicateBuilder::Equal(0, "i", FieldType::INT, Literal(int64_t{1}));
+    const std::shared_ptr<Predicate> unsupported =
+        PredicateBuilder::In(0, "i", FieldType::INT, {Literal(FieldType::INT)});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> and_predicate,
+                         PredicateBuilder::And({supported, invalid}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_predicate,
+                         PredicateBuilder::Or({supported, invalid}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> and_after_fallback,
+                         PredicateBuilder::And({unsupported, invalid}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_before_fallback,
+                         PredicateBuilder::Or({invalid, unsupported}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_after_fallback,
+                         PredicateBuilder::Or({unsupported, invalid}));
+    for (const std::shared_ptr<Predicate>& predicate :
+         {and_predicate, or_predicate, and_after_fallback, or_before_fallback, or_after_fallback}) {
+        ASSERT_NO_FATAL_FAILURE(
+            AssertInvalidConversion(predicate, schema, {"i", "expected INT", "actual BIGINT"}));
     }
-    for (bool negate : {false, true}) {
-        const std::shared_ptr<Predicate> predicate =
-            negate ? PredicateBuilder::NotIn(1, "s", FieldType::STRING, literals)
-                   : PredicateBuilder::In(1, "s", FieldType::STRING, literals);
-        // ListContains lowers to 33 EQ + 32 OR nodes. NOT IN adds NOT plus the 3-node null guard.
-        const uint32_t nodes = 65 + (negate ? 4 : 0);
-        ASSERT_FALSE(Pushed(predicate, schema));
-        ASSERT_FALSE(Pushed(predicate, schema, {MembershipPushdownMode::AUTO, nodes - 1}));
-        ASSERT_TRUE(Pushed(predicate, schema, {MembershipPushdownMode::AUTO, nodes}));
-        ASSERT_TRUE(Pushed(predicate, schema, {MembershipPushdownMode::FORCE, 0}));
-        ASSERT_FALSE(Pushed(predicate, schema, {MembershipPushdownMode::OFF, nodes}));
-    }
-    literals.erase(literals.begin() + 32, literals.end());
-    ASSERT_TRUE(Pushed(PredicateBuilder::In(1, "s", FieldType::STRING, literals), schema));
-    ASSERT_FALSE(Pushed(PredicateBuilder::NotIn(1, "s", FieldType::STRING, literals), schema));
-    literals.erase(literals.begin() + 31, literals.end());
-    ASSERT_FALSE(Pushed(PredicateBuilder::NotIn(1, "s", FieldType::STRING, literals), schema));
-    literals.erase(literals.begin() + 30, literals.end());
-    ASSERT_TRUE(Pushed(PredicateBuilder::NotIn(1, "s", FieldType::STRING, literals), schema));
-    literals.erase(literals.begin() + 21, literals.end());
-    ASSERT_TRUE(Pushed(PredicateBuilder::In(1, "s", FieldType::STRING, literals), schema));
-    ASSERT_TRUE(Pushed(PredicateBuilder::NotIn(1, "s", FieldType::STRING, literals), schema));
 }
 
-TEST(VortexPredicateConverterTest, MembershipDeduplicatesBeforeApplyingBudget) {
+TEST(VortexPredicateConverterTest, MalformedPredicateStructuresReturnInvalid) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
-    std::vector<Literal> strings(4096, Literal(FieldType::STRING, "same", 4));
-    strings.emplace_back(FieldType::STRING, "other", 5);
-    const std::shared_ptr<Predicate> in = PredicateBuilder::In(1, "s", FieldType::STRING, strings);
-    const std::shared_ptr<Predicate> not_in =
-        PredicateBuilder::NotIn(1, "s", FieldType::STRING, strings);
-    ASSERT_FALSE(Pushed(in, schema, {MembershipPushdownMode::AUTO, 2}));
-    ASSERT_TRUE(Pushed(in, schema, {MembershipPushdownMode::AUTO, 3}));
-    ASSERT_FALSE(Pushed(not_in, schema, {MembershipPushdownMode::AUTO, 6}));
-    ASSERT_TRUE(Pushed(not_in, schema, {MembershipPushdownMode::AUTO, 7}));
-
-    // Raw list length is not the decision: 4096 duplicates do not consume native nodes.
-    for (int32_t unique_count : {21, 32, 33}) {
-        std::vector<Literal> repeated(4096, Literal(FieldType::STRING, "same", 4));
-        for (int32_t value = 1; value < unique_count; ++value) {
-            const std::string text = fmt::format("value-{}", value);
-            repeated.emplace_back(FieldType::STRING, text.data(), text.size());
+    const std::shared_ptr<Predicate> unsupported =
+        PredicateBuilder::In(0, "i", FieldType::INT, {Literal(FieldType::INT)});
+    const std::vector<const CompoundFunction*> functions = {&And::Instance(), &Or::Instance()};
+    for (const CompoundFunction* function : functions) {
+        ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+            std::make_shared<FunctionOnlyPredicate>(*function), schema, {"CompoundPredicate"}));
+        ASSERT_NO_FATAL_FAILURE(
+            AssertInvalidConversion(std::make_shared<CompoundPredicateImpl>(
+                                        *function, std::vector<std::shared_ptr<Predicate>>{}),
+                                    schema, {"at least one child"}));
+        for (const std::vector<std::shared_ptr<Predicate>>& children :
+             {std::vector<std::shared_ptr<Predicate>>{nullptr, unsupported},
+              std::vector<std::shared_ptr<Predicate>>{unsupported, nullptr}}) {
+            ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                std::make_shared<CompoundPredicateImpl>(*function, children), schema,
+                {"null child"}));
         }
-        ASSERT_EQ(Pushed(PredicateBuilder::In(1, "s", FieldType::STRING, repeated), schema),
-                  unique_count <= 32);
-        ASSERT_EQ(Pushed(PredicateBuilder::NotIn(1, "s", FieldType::STRING, repeated), schema),
-                  unique_count <= 30);
     }
-
-    const std::vector<Literal> integers(4096, Literal(int32_t{7}));
-    ASSERT_TRUE(Pushed(PredicateBuilder::In(0, "i", FieldType::INT, integers), schema,
-                       {MembershipPushdownMode::AUTO, 1}));
-    // The integer complement is one NEQ plus the 3-node null guard.
-    ASSERT_TRUE(Pushed(PredicateBuilder::NotIn(0, "i", FieldType::INT, integers), schema,
-                       {MembershipPushdownMode::AUTO, 4}));
+    const std::shared_ptr<Predicate> comparison =
+        PredicateBuilder::Equal(0, "i", FieldType::INT, Literal(int32_t{1}));
+    ASSERT_NO_FATAL_FAILURE(
+        AssertInvalidConversion(std::make_shared<FunctionOnlyPredicate>(comparison->GetFunction()),
+                                schema, {"LeafPredicate"}));
 }
 
-TEST(VortexPredicateConverterTest, MembershipKeepsHugeContinuousSetsButBoundsManyRanges) {
+TEST(VortexPredicateConverterTest, ComparisonArityReturnsInvalid) {
+    using ComparisonBuilder = decltype(&PredicateBuilder::Equal);
+    for (ComparisonBuilder build :
+         {PredicateBuilder::Equal, PredicateBuilder::NotEqual, PredicateBuilder::LessThan,
+          PredicateBuilder::LessOrEqual, PredicateBuilder::GreaterThan,
+          PredicateBuilder::GreaterOrEqual}) {
+        const auto valid = std::dynamic_pointer_cast<LeafPredicateImpl>(
+            build(0, "i", FieldType::INT, Literal(int32_t{1})));
+        ASSERT_NE(valid, nullptr);
+        for (const std::vector<Literal>& literals :
+             {std::vector<Literal>{},
+              std::vector<Literal>{Literal(int32_t{1}), Literal(int32_t{2})}}) {
+            const std::shared_ptr<Predicate> malformed = std::make_shared<LeafPredicateImpl>(
+                valid->GetLeafFunction(), 0, "i", FieldType::INT, literals);
+            ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(malformed, TestSchema(),
+                                                            {"i", "requires exactly one literal"}));
+            const std::shared_ptr<Predicate> unsupported =
+                PredicateBuilder::In(0, "i", FieldType::INT, {Literal(FieldType::INT)});
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
+                                 PredicateBuilder::Or({unsupported, malformed}));
+            ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(disjunction, TestSchema(),
+                                                            {"i", "requires exactly one literal"}));
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, NestedCompoundsPreserveNativeCandidatesAndPropagateErrors) {
+    const NativeInCase test_case = {
+        "nested-fallback", arrow::utf8(), FieldType::STRING, R"(["aa",null,"ab","ba"])", {}};
+    const Literal ab(FieldType::STRING, "ab", 2);
+    const std::shared_ptr<Predicate> supported =
+        PredicateBuilder::GreaterOrEqual(1, "value", FieldType::STRING, ab);
+    const std::shared_ptr<Predicate> equal =
+        PredicateBuilder::Equal(1, "value", FieldType::STRING, Literal(FieldType::STRING, "aa", 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> unsupported,
+                         PredicateBuilder::StartsWith(1, "value", FieldType::STRING,
+                                                      Literal(FieldType::STRING, "a", 1)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> partial_and,
+                         PredicateBuilder::And({supported, unsupported}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> fallback_or,
+                         PredicateBuilder::Or({unsupported, supported}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> nested_and,
+                         PredicateBuilder::And({fallback_or, equal}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> nested_or,
+                         PredicateBuilder::Or({partial_and, equal}));
+    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(test_case, partial_and, {2, 3}, {2}));
+    ASSERT_NO_FATAL_FAILURE(
+        AssertNativeAndResidualRows(test_case, fallback_or, {0, 1, 2, 3}, {0, 2, 3}, {}, false));
+    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(test_case, nested_and, {0}, {0}));
+    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(test_case, nested_or, {0, 2, 3}, {0, 2}));
+
+    const std::shared_ptr<Predicate> invalid =
+        PredicateBuilder::Equal(1, "value", FieldType::STRING, Literal(int64_t{1}));
+    using CompoundBuilder = decltype(&PredicateBuilder::And);
+    const std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("value", arrow::utf8())});
+    for (CompoundBuilder outer : {PredicateBuilder::And, PredicateBuilder::Or}) {
+        for (CompoundBuilder inner : {PredicateBuilder::And, PredicateBuilder::Or}) {
+            for (bool invalid_first : {false, true}) {
+                ASSERT_OK_AND_ASSIGN(
+                    std::shared_ptr<Predicate> nested,
+                    inner(invalid_first
+                              ? std::vector<std::shared_ptr<Predicate>>{invalid, unsupported}
+                              : std::vector<std::shared_ptr<Predicate>>{unsupported, invalid}));
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                                     outer({unsupported, nested}));
+                ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                    predicate, schema, {"value", "expected STRING", "actual BIGINT"}));
+            }
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, NativeScalarErrorsPropagateThroughAllPredicateBranches) {
+    const Literal invalid_utf8(FieldType::STRING, "\xff", 1);
+    std::vector<std::shared_ptr<Predicate>> invalid;
+    using ComparisonBuilder = decltype(&PredicateBuilder::Equal);
+    for (ComparisonBuilder build :
+         {PredicateBuilder::Equal, PredicateBuilder::NotEqual, PredicateBuilder::LessThan,
+          PredicateBuilder::LessOrEqual, PredicateBuilder::GreaterThan,
+          PredicateBuilder::GreaterOrEqual}) {
+        invalid.push_back(build(1, "s", FieldType::STRING, invalid_utf8));
+    }
+    invalid.push_back(PredicateBuilder::In(1, "s", FieldType::STRING,
+                                           {Literal(FieldType::STRING, "valid", 5), invalid_utf8}));
+    invalid.push_back(PredicateBuilder::NotIn(
+        1, "s", FieldType::STRING, {Literal(FieldType::STRING, "valid", 5), invalid_utf8}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> unsupported,
+                         PredicateBuilder::StartsWith(1, "s", FieldType::STRING,
+                                                      Literal(FieldType::STRING, "v", 1)));
+    for (const std::shared_ptr<Predicate>& predicate : invalid) {
+        ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+            predicate, TestSchema(), {"create Vortex predicate scalar", "invalid utf-8"}));
+        using CompoundBuilder = decltype(&PredicateBuilder::And);
+        for (CompoundBuilder build : {PredicateBuilder::And, PredicateBuilder::Or}) {
+            for (bool invalid_first : {false, true}) {
+                ASSERT_OK_AND_ASSIGN(
+                    std::shared_ptr<Predicate> compound,
+                    build(invalid_first
+                              ? std::vector<std::shared_ptr<Predicate>>{predicate, unsupported}
+                              : std::vector<std::shared_ptr<Predicate>>{unsupported, predicate}));
+                ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                    compound, TestSchema(), {"create Vortex predicate scalar", "invalid utf-8"}));
+            }
+        }
+    }
+    // The list budget is still checked before inspecting a declined native scalar.
+    std::vector<Literal> over_budget(33, invalid_utf8);
+    ASSERT_FALSE(
+        Pushed(PredicateBuilder::In(1, "s", FieldType::STRING, over_budget), TestSchema()));
+    ASSERT_FALSE(
+        Pushed(PredicateBuilder::NotIn(1, "s", FieldType::STRING, over_budget), TestSchema()));
+    ASSERT_TRUE(Pushed(
+        PredicateBuilder::Equal(1, "s", FieldType::STRING, Literal(FieldType::STRING, "valid", 5)),
+        TestSchema()));
+}
+
+TEST(VortexPredicateConverterTest, NativeTemporalScalarBoundsFallBackWithoutErrors) {
+    const int64_t maximum = std::numeric_limits<int64_t>::max();
+    struct TemporalCase {
+        const char* name;
+        std::shared_ptr<arrow::DataType> type;
+        FieldType field_type;
+        Literal literal;
+    };
+    const std::vector<TemporalCase> cases = {
+        {"maximum-micros", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"), FieldType::TIMESTAMP,
+         Literal(Timestamp::FromEpochMillis(maximum / 1000,
+                                            static_cast<int32_t>((maximum % 1000) * 1000)))},
+        {"minimum-micros", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"), FieldType::TIMESTAMP,
+         Literal(Timestamp::FromEpochMillis(std::numeric_limits<int64_t>::min() / 1000))},
+        {"paimon-calendar-limit", arrow::timestamp(arrow::TimeUnit::MICRO), FieldType::TIMESTAMP,
+         Literal(Timestamp::FromEpochMillis(253402300799999, 999000))},
+        {"native-epoch-seconds", arrow::timestamp(arrow::TimeUnit::SECOND, "UTC"),
+         FieldType::TIMESTAMP, Literal(Timestamp::FromEpochMillis(253402207201000))},
+        {"native-epoch-millis", arrow::timestamp(arrow::TimeUnit::MILLI), FieldType::TIMESTAMP,
+         Literal(Timestamp::FromEpochMillis(253402207201000))},
+        {"maximum-date", arrow::date32(), FieldType::DATE,
+         Literal(FieldType::DATE, std::numeric_limits<int32_t>::max())},
+        {"minimum-date", arrow::date32(), FieldType::DATE,
+         Literal(FieldType::DATE, std::numeric_limits<int32_t>::min())}};
+    using ComparisonBuilder = decltype(&PredicateBuilder::Equal);
+    for (const TemporalCase& test_case : cases) {
+        SCOPED_TRACE(test_case.name);
+        const std::shared_ptr<arrow::Schema> schema =
+            arrow::schema({arrow::field("value", test_case.type)});
+        for (ComparisonBuilder build :
+             {PredicateBuilder::Equal, PredicateBuilder::NotEqual, PredicateBuilder::LessThan,
+              PredicateBuilder::LessOrEqual, PredicateBuilder::GreaterThan,
+              PredicateBuilder::GreaterOrEqual}) {
+            ASSERT_FALSE(
+                Pushed(build(0, "value", test_case.field_type, test_case.literal), schema));
+        }
+        for (const std::shared_ptr<Predicate>& predicate :
+             {PredicateBuilder::In(0, "value", test_case.field_type, {test_case.literal}),
+              PredicateBuilder::NotIn(0, "value", test_case.field_type, {test_case.literal})}) {
+            ASSERT_FALSE(Pushed(predicate, schema));
+        }
+    }
+    const std::shared_ptr<arrow::Schema> nanos_schema =
+        arrow::schema({arrow::field("value", arrow::timestamp(arrow::TimeUnit::NANO, "UTC"))});
+    // INT64_MAX nanoseconds is in year 2262 and remains a valid native timestamp.
+    ASSERT_TRUE(Pushed(
+        PredicateBuilder::Equal(0, "value", FieldType::TIMESTAMP,
+                                Literal(Timestamp::FromEpochMillis(
+                                    maximum / 1000000, static_cast<int32_t>(maximum % 1000000)))),
+        nanos_schema));
+}
+
+TEST(VortexPredicateConverterTest, TemporalRangeFallbacksDoNotHideRealErrors) {
+    const std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("date", arrow::date32()), arrow::field("name", arrow::utf8())});
+    const Literal extreme(FieldType::DATE, std::numeric_limits<int32_t>::max());
+    const Literal wrong_type(int64_t{1});
+    const std::shared_ptr<Predicate> unsupported =
+        PredicateBuilder::LessThan(0, "date", FieldType::DATE, extreme);
+    for (bool negate : {false, true}) {
+        for (bool extreme_first : {false, true}) {
+            const std::vector<Literal> literals = extreme_first
+                                                      ? std::vector<Literal>{extreme, wrong_type}
+                                                      : std::vector<Literal>{wrong_type, extreme};
+            const std::shared_ptr<Predicate> predicate =
+                negate ? PredicateBuilder::NotIn(0, "date", FieldType::DATE, literals)
+                       : PredicateBuilder::In(0, "date", FieldType::DATE, literals);
+            ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                predicate, schema, {"date", "expected DATE", "actual BIGINT"}));
+        }
+    }
+    const auto valid =
+        PredicateBuilder::Equal(0, "date", FieldType::DATE, Literal(FieldType::DATE, 0));
+    const auto valid_leaf = std::dynamic_pointer_cast<LeafPredicateImpl>(valid);
+    ASSERT_NE(valid_leaf, nullptr);
+    const auto malformed = std::make_shared<LeafPredicateImpl>(
+        valid_leaf->GetLeafFunction(), 0, "date", FieldType::DATE, std::vector<Literal>{});
+    const std::vector<std::pair<std::shared_ptr<Predicate>, std::string>> errors = {
+        {PredicateBuilder::Equal(0, "date", FieldType::DATE, wrong_type), "Literal type mismatch"},
+        {PredicateBuilder::Equal(1, "name", FieldType::STRING,
+                                 Literal(FieldType::STRING, "\xff", 1)),
+         "invalid utf-8"},
+        {malformed, "requires exactly one literal"}};
+    using CompoundBuilder = decltype(&PredicateBuilder::And);
+    for (const auto& [invalid, message] : errors) {
+        for (CompoundBuilder build : {PredicateBuilder::And, PredicateBuilder::Or}) {
+            for (bool invalid_first : {false, true}) {
+                ASSERT_OK_AND_ASSIGN(
+                    std::shared_ptr<Predicate> compound,
+                    build(invalid_first
+                              ? std::vector<std::shared_ptr<Predicate>>{invalid, unsupported}
+                              : std::vector<std::shared_ptr<Predicate>>{unsupported, invalid}));
+                ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(compound, schema, {message}));
+            }
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, MembershipFallbacksDoNotHideTypeErrors) {
+    const Literal null_value(FieldType::INT);
+    const Literal wrong_type(int64_t{1});
+    const Literal valid(int32_t{1});
+    for (bool negate : {false, true}) {
+        for (bool invalid_first : {false, true}) {
+            const std::vector<Literal> literals =
+                invalid_first ? std::vector<Literal>{wrong_type, null_value}
+                              : std::vector<Literal>{null_value, wrong_type};
+            const std::shared_ptr<Predicate> predicate =
+                negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, literals)
+                       : PredicateBuilder::In(0, "i", FieldType::INT, literals);
+            ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                predicate, TestSchema(), {"i", "expected INT", "actual BIGINT"}));
+        }
+        const std::shared_ptr<Predicate> fallback =
+            negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, {null_value, valid})
+                   : PredicateBuilder::In(0, "i", FieldType::INT, {null_value, valid});
+        ASSERT_FALSE(Pushed(fallback, TestSchema()));
+    }
+}
+
+TEST(VortexPredicateConverterTest, MembershipTypeErrorsAreIndependentOfMaximum) {
+    struct TypeCase {
+        std::shared_ptr<arrow::DataType> type;
+        FieldType field_type;
+        Literal valid;
+        const char* expected_type;
+    };
+    const std::vector<TypeCase> cases = {
+        {arrow::int32(), FieldType::INT, Literal(int32_t{1}), "INT"},
+        {arrow::decimal128(10, 2), FieldType::DECIMAL, Literal(Decimal(38, 4, 12300)), "DECIMAL"}};
+    for (const TypeCase& test_case : cases) {
+        const std::shared_ptr<arrow::Schema> schema =
+            arrow::schema({arrow::field("value", test_case.type)});
+        for (int32_t position : {0, 16, 32}) {
+            std::vector<Literal> literals(33, test_case.valid);
+            literals[position] = Literal(int64_t{2});
+            for (uint32_t maximum : {uint32_t{0}, uint32_t{32}, uint32_t{33}}) {
+                SCOPED_TRACE(fmt::format("type={}, maximum={}, position={}",
+                                         test_case.expected_type, maximum, position));
+                for (bool negate : {false, true}) {
+                    SCOPED_TRACE(negate);
+                    const std::shared_ptr<Predicate> predicate =
+                        negate ? PredicateBuilder::NotIn(0, "value", test_case.field_type, literals)
+                               : PredicateBuilder::In(0, "value", test_case.field_type, literals);
+                    ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                        predicate, schema,
+                        {"value", fmt::format("expected {}", test_case.expected_type),
+                         "actual BIGINT"},
+                        {maximum}));
+                }
+            }
+        }
+    }
+
+    // File/predicate mismatches must also be independent of the membership maximum.
+    const std::shared_ptr<arrow::Schema> bigint_schema =
+        arrow::schema({arrow::field("i", arrow::int64())});
+    const std::vector<Literal> literals(33, Literal(int32_t{1}));
+    for (uint32_t maximum : {uint32_t{0}, uint32_t{32}, uint32_t{33}}) {
+        for (bool negate : {false, true}) {
+            const std::shared_ptr<Predicate> predicate =
+                negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, literals)
+                       : PredicateBuilder::In(0, "i", FieldType::INT, literals);
+            ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                predicate, bigint_schema, {"i", "expected BIGINT", "actual INT"}, {maximum}));
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, OversizedMembershipFallbacksDoNotHideTypeErrors) {
+    struct TypeCase {
+        std::shared_ptr<arrow::DataType> type;
+        FieldType field_type;
+        Literal valid;
+        Literal first;
+        const char* expected_type;
+    };
+    const std::vector<TypeCase> cases = {
+        {arrow::int32(), FieldType::INT, Literal(int32_t{1}), Literal(FieldType::INT), "INT"},
+        {arrow::float32(), FieldType::FLOAT, Literal(1.0f), Literal(1.0f), "FLOAT"},
+        {arrow::float64(), FieldType::DOUBLE, Literal(1.0), Literal(1.0), "DOUBLE"}};
+    for (const TypeCase& test_case : cases) {
+        const std::shared_ptr<arrow::Schema> schema =
+            arrow::schema({arrow::field("value", test_case.type)});
+        std::vector<Literal> literals(33, test_case.valid);
+        literals.front() = test_case.first;
+        literals.back() = Literal(int64_t{2});
+        for (uint32_t maximum : {uint32_t{0}, uint32_t{32}, uint32_t{33}}) {
+            SCOPED_TRACE(fmt::format("type={}, maximum={}", test_case.expected_type, maximum));
+            for (bool negate : {false, true}) {
+                const std::shared_ptr<Predicate> predicate =
+                    negate ? PredicateBuilder::NotIn(0, "value", test_case.field_type, literals)
+                           : PredicateBuilder::In(0, "value", test_case.field_type, literals);
+                ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                    predicate, schema,
+                    {"value", fmt::format("expected {}", test_case.expected_type), "actual BIGINT"},
+                    {maximum}));
+            }
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, MembershipTimestampValueChecksRemainWithinMaximum) {
+    const std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("value", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"))});
+    const int64_t maximum = std::numeric_limits<int64_t>::max();
+    const Literal native_out_of_range(
+        Timestamp::FromEpochMillis(maximum / 1000, static_cast<int32_t>((maximum % 1000) * 1000)));
+    const Literal precision_loss(Timestamp::FromEpochMillis(0, 1));
+    for (bool negate : {false, true}) {
+        for (bool unsafe_first : {false, true}) {
+            std::vector<Literal> literals(33, native_out_of_range);
+            literals[unsafe_first ? 0 : 32] = precision_loss;
+            const std::shared_ptr<Predicate> predicate =
+                negate ? PredicateBuilder::NotIn(0, "value", FieldType::TIMESTAMP, literals)
+                       : PredicateBuilder::In(0, "value", FieldType::TIMESTAMP, literals);
+            for (uint32_t limit : {uint32_t{0}, uint32_t{32}, uint32_t{33}}) {
+                ASSERT_FALSE(Pushed(predicate, schema, {limit}));
+            }
+        }
+        const std::vector<Literal> literals(33, native_out_of_range);
+        const std::shared_ptr<Predicate> predicate =
+            negate ? PredicateBuilder::NotIn(0, "value", FieldType::TIMESTAMP, literals)
+                   : PredicateBuilder::In(0, "value", FieldType::TIMESTAMP, literals);
+        ASSERT_FALSE(Pushed(predicate, schema));
+        ASSERT_FALSE(Pushed(predicate, schema, {33}));
+    }
+}
+
+TEST(VortexPredicateConverterTest, MembershipMaximumCountsRawValuesForInAndNotIn) {
+    const std::shared_ptr<arrow::Schema> schema = TestSchema();
+    for (uint32_t maximum : {uint32_t{1}, uint32_t{7}, uint32_t{32}, uint32_t{64}}) {
+        for (uint32_t size : {maximum - 1, maximum, maximum + 1}) {
+            SCOPED_TRACE(fmt::format("maximum={}, size={}", maximum, size));
+            std::vector<Literal> literals;
+            for (uint32_t value = 0; value < size; ++value) {
+                const std::string text = fmt::format("value-{}", value);
+                literals.emplace_back(FieldType::STRING, text.data(), text.size());
+            }
+            for (bool negate : {false, true}) {
+                const std::shared_ptr<Predicate> predicate =
+                    negate ? PredicateBuilder::NotIn(1, "s", FieldType::STRING, literals)
+                           : PredicateBuilder::In(1, "s", FieldType::STRING, literals);
+                ASSERT_EQ(Pushed(predicate, schema, {maximum}), size != 0 && size <= maximum);
+                ASSERT_EQ(Pushed(predicate, schema), size != 0 && size <= 32);
+                ASSERT_FALSE(Pushed(predicate, schema, {0}));
+            }
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest, MembershipMaximumAppliesIndependentlyToEachLeaf) {
+    const std::shared_ptr<arrow::Schema> schema = TestSchema();
+    std::vector<Literal> integers;
+    std::vector<Literal> longs;
+    for (int32_t value = 0; value < 32; ++value) {
+        integers.emplace_back(value);
+        longs.emplace_back(static_cast<int64_t>(value));
+    }
+    const auto in = PredicateBuilder::In(0, "i", FieldType::INT, integers);
+    const auto not_in = PredicateBuilder::NotIn(4, "l", FieldType::BIGINT, longs);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> and_predicate,
+                         PredicateBuilder::And({in, not_in}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_predicate,
+                         PredicateBuilder::Or({in, not_in}));
+    ASSERT_TRUE(Pushed(and_predicate, schema));
+    ASSERT_TRUE(Pushed(or_predicate, schema));
+    ASSERT_FALSE(Pushed(and_predicate, schema, {31}));
+    ASSERT_FALSE(Pushed(or_predicate, schema, {31}));
+}
+
+TEST(VortexPredicateConverterTest, DuplicateValuesCountTowardMembershipMaximum) {
+    const std::shared_ptr<arrow::Schema> schema = TestSchema();
+    for (uint32_t size : {uint32_t{31}, uint32_t{32}, uint32_t{33}, uint32_t{4096}}) {
+        const std::vector<Literal> strings(size, Literal(FieldType::STRING, "same", 4));
+        const std::vector<Literal> integers(size, Literal(int32_t{7}));
+        for (bool negate : {false, true}) {
+            const std::shared_ptr<Predicate> string_predicate =
+                negate ? PredicateBuilder::NotIn(1, "s", FieldType::STRING, strings)
+                       : PredicateBuilder::In(1, "s", FieldType::STRING, strings);
+            const std::shared_ptr<Predicate> integer_predicate =
+                negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, integers)
+                       : PredicateBuilder::In(0, "i", FieldType::INT, integers);
+            ASSERT_EQ(Pushed(string_predicate, schema), size <= 32);
+            ASSERT_EQ(Pushed(integer_predicate, schema), size <= 32);
+            ASSERT_FALSE(Pushed(string_predicate, schema, {size - 1}));
+            ASSERT_FALSE(Pushed(integer_predicate, schema, {size - 1}));
+            if (size <= 33) {
+                ASSERT_TRUE(Pushed(string_predicate, schema, {size}));
+                ASSERT_TRUE(Pushed(integer_predicate, schema, {size}));
+            }
+        }
+    }
+}
+
+TEST(VortexPredicateConverterTest,
+     HugeContinuousMembershipListsAreRejectedBeforeNativeConstruction) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
     std::vector<Literal> literals;
     for (int32_t value = 0; value < 65536; ++value) {
         literals.emplace_back(value);
     }
-    const std::shared_ptr<Predicate> in = PredicateBuilder::In(0, "i", FieldType::INT, literals);
-    const std::shared_ptr<Predicate> not_in =
-        PredicateBuilder::NotIn(0, "i", FieldType::INT, literals);
-    ASSERT_TRUE(Pushed(in, schema));
-    ASSERT_TRUE(Pushed(not_in, schema));
-    ASSERT_FALSE(Pushed(in, schema, {MembershipPushdownMode::AUTO, 2}));
-    ASSERT_TRUE(Pushed(in, schema, {MembershipPushdownMode::AUTO, 3}));
-    ASSERT_FALSE(Pushed(not_in, schema, {MembershipPushdownMode::AUTO, 5}));
-    ASSERT_TRUE(Pushed(not_in, schema, {MembershipPushdownMode::AUTO, 6}));
-
+    // Do not construct a giant native expression even though the list is one continuous range.
+    for (bool negate : {false, true}) {
+        const std::shared_ptr<Predicate> predicate =
+            negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, literals)
+                   : PredicateBuilder::In(0, "i", FieldType::INT, literals);
+        ASSERT_FALSE(Pushed(predicate, schema));
+        ASSERT_FALSE(Pushed(predicate, schema, {65535}));
+        ASSERT_FALSE(Pushed(predicate, schema, {0}));
+    }
     literals.clear();
     for (int32_t start = 0; start < 200; start += 10) {
         for (int32_t value = start; value < start + 8; ++value) {
@@ -1243,36 +2127,31 @@ TEST(VortexPredicateConverterTest, MembershipKeepsHugeContinuousSetsButBoundsMan
         const std::shared_ptr<Predicate> predicate =
             negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, literals)
                    : PredicateBuilder::In(0, "i", FieldType::INT, literals);
-        // 20 ranges, each 3 nodes, joined by 19 connectives; NOT IN adds the null guard.
-        const uint32_t nodes = 79 + (negate ? 3 : 0);
         ASSERT_FALSE(Pushed(predicate, schema));
-        ASSERT_FALSE(Pushed(predicate, schema, {MembershipPushdownMode::AUTO, nodes - 1}));
-        ASSERT_TRUE(Pushed(predicate, schema, {MembershipPushdownMode::AUTO, nodes}));
-        ASSERT_TRUE(Pushed(predicate, schema, {MembershipPushdownMode::FORCE, 0}));
+        ASSERT_FALSE(Pushed(predicate, schema, {159}));
+        ASSERT_TRUE(Pushed(predicate, schema, {160}));
     }
 }
 
-TEST(VortexPredicateConverterTest, MembershipBudgetCountsMixedRangesAndSingletons) {
+TEST(VortexPredicateConverterTest, MixedRangesAndSingletonsUseRawMembershipLength) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
     std::vector<Literal> literals = {Literal(int32_t{20}), Literal(int32_t{50})};
     for (int32_t value = 1; value <= 10; ++value) {
         literals.emplace_back(value);
         literals.emplace_back(value + 29);
     }
-    // Two ranges + two singletons + three connectives = 11 nodes.
     for (bool negate : {false, true}) {
         const std::shared_ptr<Predicate> predicate =
             negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, literals)
                    : PredicateBuilder::In(0, "i", FieldType::INT, literals);
-        const uint32_t nodes = 11 + (negate ? 3 : 0);
-        ASSERT_FALSE(Pushed(predicate, schema, {MembershipPushdownMode::AUTO, nodes - 1}));
-        ASSERT_TRUE(Pushed(predicate, schema, {MembershipPushdownMode::AUTO, nodes}));
+        ASSERT_FALSE(Pushed(predicate, schema, {21}));
+        ASSERT_TRUE(Pushed(predicate, schema, {22}));
     }
 }
 
-TEST(VortexPredicateConverterTest, ForceMembershipStillRejectsUnsafeLiterals) {
+TEST(VortexPredicateConverterTest, LargerMembershipMaximumStillRejectsUnsafeLiterals) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
-    const VortexPredicateOptions force{MembershipPushdownMode::FORCE, 0};
+    const VortexPredicateOptions larger_maximum{2048};
     std::vector<Literal> literals;
     for (int32_t value = 0; value < 1024; ++value) {
         literals.emplace_back(value);
@@ -1280,12 +2159,22 @@ TEST(VortexPredicateConverterTest, ForceMembershipStillRejectsUnsafeLiterals) {
     for (const Literal& unsafe : {Literal(FieldType::INT), Literal(int64_t{1024})}) {
         std::vector<Literal> invalid = literals;
         invalid.push_back(unsafe);
-        ASSERT_FALSE(Pushed(PredicateBuilder::In(0, "i", FieldType::INT, invalid), schema, force));
-        ASSERT_FALSE(
-            Pushed(PredicateBuilder::NotIn(0, "i", FieldType::INT, invalid), schema, force));
+        for (bool negate : {false, true}) {
+            const std::shared_ptr<Predicate> predicate =
+                negate ? PredicateBuilder::NotIn(0, "i", FieldType::INT, invalid)
+                       : PredicateBuilder::In(0, "i", FieldType::INT, invalid);
+            if (unsafe.IsNull()) {
+                ASSERT_FALSE(Pushed(predicate, schema, larger_maximum));
+            } else {
+                ASSERT_NO_FATAL_FAILURE(AssertInvalidConversion(
+                    predicate, schema, {"i", "expected INT", "actual BIGINT"}, larger_maximum));
+            }
+        }
     }
-    ASSERT_FALSE(Pushed(PredicateBuilder::In(0, "i", FieldType::INT, literals),
-                        arrow::schema({arrow::field("i", arrow::int64())}), force));
+    ASSERT_NO_FATAL_FAILURE(
+        AssertInvalidConversion(PredicateBuilder::In(0, "i", FieldType::INT, literals),
+                                arrow::schema({arrow::field("i", arrow::int64())}),
+                                {"i", "expected BIGINT", "actual INT"}, larger_maximum));
     for (bool negate : {false, true}) {
         const std::vector<Literal> timestamps = {
             Literal(Timestamp::FromEpochMillis(0)),
@@ -1295,13 +2184,13 @@ TEST(VortexPredicateConverterTest, ForceMembershipStillRejectsUnsafeLiterals) {
                    : PredicateBuilder::In(0, "ts", FieldType::TIMESTAMP, timestamps);
         ASSERT_FALSE(Pushed(
             predicate, arrow::schema({arrow::field("ts", arrow::timestamp(arrow::TimeUnit::NANO))}),
-            force));
+            larger_maximum));
     }
 }
 
-TEST(VortexPredicateConverterTest, MembershipOffPreservesOtherNativePredicates) {
+TEST(VortexPredicateConverterTest, ZeroMembershipMaximumPreservesOtherNativePredicates) {
     const std::shared_ptr<arrow::Schema> schema = TestSchema();
-    const VortexPredicateOptions off{MembershipPushdownMode::OFF, 0};
+    const VortexPredicateOptions off{0};
     const std::shared_ptr<Predicate> equal =
         PredicateBuilder::Equal(0, "i", FieldType::INT, Literal(int32_t{1}));
     const std::shared_ptr<Predicate> in =
@@ -1319,7 +2208,7 @@ TEST(VortexPredicateConverterTest, MembershipOffPreservesOtherNativePredicates) 
     ASSERT_FALSE(Pushed(or_predicate, schema, off));
 }
 
-TEST(VortexPredicateConverterTest, SparseMembershipModesReturnNativeOrCandidateRows) {
+TEST(VortexPredicateConverterTest, SparseMembershipMaximumReturnsNativeOrCandidateRows) {
     NativeInCase test_case = {"sparse_budget", arrow::int32(), FieldType::INT, "[0,null,63,2]", {}};
     for (int32_t value = 0; value <= 64; value += 2) {
         test_case.literals.emplace_back(value);
@@ -1331,15 +2220,15 @@ TEST(VortexPredicateConverterTest, SparseMembershipModesReturnNativeOrCandidateR
         const std::vector<int64_t> expected =
             negate ? std::vector<int64_t>{2} : std::vector<int64_t>{0, 3};
         ASSERT_NO_FATAL_FAILURE(
-            AssertNativeRows(test_case, predicate, {0, 1, 2, 3}, true, {}, false));
-        ASSERT_NO_FATAL_FAILURE(AssertNativeRows(test_case, predicate, expected, true,
-                                                 {MembershipPushdownMode::FORCE, 0}));
-        ASSERT_NO_FATAL_FAILURE(AssertNativeRows(test_case, predicate, {0, 1, 2, 3}, true,
-                                                 {MembershipPushdownMode::OFF}, false));
+            AssertNativeAndResidualRows(test_case, predicate, {0, 1, 2, 3}, expected, {}, false));
+        ASSERT_NO_FATAL_FAILURE(
+            AssertNativeAndResidualRows(test_case, predicate, expected, expected, {33}));
+        ASSERT_NO_FATAL_FAILURE(
+            AssertNativeAndResidualRows(test_case, predicate, {0, 1, 2, 3}, expected, {0}, false));
     }
 }
 
-TEST(VortexPredicateConverterTest, StringMembershipModesAndPartialAndOrUseSafeCandidates) {
+TEST(VortexPredicateConverterTest, StringMembershipMaximumAndPartialAndOrUseSafeCandidates) {
     NativeInCase test_case = {
         "string_budget", arrow::utf8(), FieldType::STRING, R"(["s0",null,"absent","s32"])", {}};
     for (int32_t value = 0; value < 33; ++value) {
@@ -1348,9 +2237,9 @@ TEST(VortexPredicateConverterTest, StringMembershipModesAndPartialAndOrUseSafeCa
     }
     const std::shared_ptr<Predicate> in =
         PredicateBuilder::In(1, "value", FieldType::STRING, test_case.literals);
-    ASSERT_NO_FATAL_FAILURE(AssertNativeRows(test_case, in, {0, 1, 2, 3}, true, {}, false));
     ASSERT_NO_FATAL_FAILURE(
-        AssertNativeRows(test_case, in, {0, 3}, true, {MembershipPushdownMode::FORCE, 0}));
+        AssertNativeAndResidualRows(test_case, in, {0, 1, 2, 3}, {0, 3}, {}, false));
+    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(test_case, in, {0, 3}, {0, 3}, {33}));
     const std::shared_ptr<Predicate> less_than_three =
         PredicateBuilder::LessThan(0, "rowid", FieldType::BIGINT, Literal(int64_t{3}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> and_predicate,
@@ -1358,10 +2247,10 @@ TEST(VortexPredicateConverterTest, StringMembershipModesAndPartialAndOrUseSafeCa
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_predicate,
                          PredicateBuilder::Or({in, less_than_three}));
     // AND keeps the other child, so the residual receives a safe superset, including null rows.
-    ASSERT_NO_FATAL_FAILURE(AssertNativeRows(test_case, and_predicate, {0, 1, 2}, true));
+    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(test_case, and_predicate, {0, 1, 2}, {0}));
     // Dropping only the IN child of OR would lose row 3; reject the entire native OR instead.
-    ASSERT_NO_FATAL_FAILURE(
-        AssertNativeRows(test_case, or_predicate, {0, 1, 2, 3}, true, {}, false));
+    ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(test_case, or_predicate, {0, 1, 2, 3},
+                                                        {0, 1, 2, 3}, {}, false));
 }
 
 TEST(VortexPredicateConverterTest, NullPredicateIsNotPushed) {

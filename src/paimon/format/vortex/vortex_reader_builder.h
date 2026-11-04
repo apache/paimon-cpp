@@ -23,6 +23,7 @@
 
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/reader_builder.h"
+#include "paimon/format/vortex/vortex_defs.h"
 #include "paimon/format/vortex/vortex_file_batch_reader.h"
 #include "paimon/format/vortex/vortex_predicate_converter.h"
 #include "paimon/memory/memory_pool.h"
@@ -31,12 +32,12 @@ namespace paimon::vortex {
 
 class VortexReaderBuilder : public ReaderBuilder {
  public:
-    explicit VortexReaderBuilder(
-        int32_t batch_size, const VortexPredicateOptions& predicate_options = {},
-        VortexIoCoalesceMode coalesce_mode = VortexIoCoalesceMode::OBJECT_STORAGE)
+    explicit VortexReaderBuilder(int32_t batch_size,
+                                 const VortexPredicateOptions& predicate_options,
+                                 const VortexIoCoalesceOptions& coalesce_options)
         : batch_size_(batch_size),
           predicate_options_(predicate_options),
-          coalesce_mode_(coalesce_mode),
+          coalesce_options_(coalesce_options),
           pool_(GetDefaultPool()),
           arrow_pool_(GetArrowPool(pool_)) {}
 
@@ -55,14 +56,14 @@ class VortexReaderBuilder : public ReaderBuilder {
         if (pool_ == nullptr) {
             return Status::Invalid("Vortex reader memory pool is nullptr");
         }
-        return VortexFileBatchReader::Create(input, batch_size_, arrow_pool_, predicate_options_,
-                                             coalesce_mode_);
+        return VortexFileBatchReader::Create(input, batch_size_, predicate_options_,
+                                             coalesce_options_, arrow_pool_);
     }
 
  private:
     int32_t batch_size_;
     VortexPredicateOptions predicate_options_;
-    VortexIoCoalesceMode coalesce_mode_;
+    VortexIoCoalesceOptions coalesce_options_;
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
