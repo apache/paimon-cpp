@@ -166,6 +166,12 @@ class PAIMON_EXPORT MemorySegment {
 
     bool EqualTo(const MemorySegment& seg2, int32_t offset1, int32_t offset2, int32_t length) const;
 
+    /// Returns existing heap memory or copies a non-owning view into heap memory.
+    /// @return The existing Bytes object for an owning segment, including an empty one.
+    /// For a non-owning view with non-null data, returns a new Bytes object;
+    /// WrapView("", 0) returns a non-null, empty Bytes object.
+    /// Returns nullptr when there is no backing data, as with WrapView(nullptr, 0)
+    /// or a default-constructed segment.
     std::shared_ptr<Bytes> GetOrCreateHeapMemory(MemoryPool* pool) const {
         if (heap_memory_) {
             return heap_memory_;
@@ -175,7 +181,7 @@ class PAIMON_EXPORT MemorySegment {
         }
         auto copy = std::make_shared<Bytes>(size_, pool);
         if (size_ > 0) {
-            std::memcpy(const_cast<char*>(copy->data()), data_, size_);
+            std::memcpy(copy->data(), data_, size_);
         }
         return copy;
     }

@@ -19,6 +19,8 @@
 
 #include "paimon/io/byte_array_input_stream.h"
 
+#include <chrono>
+#include <future>
 #include <memory>
 #include <utility>
 
@@ -99,12 +101,13 @@ TEST(ByteArrayInputStreamTest, TestZeroLengthRead) {
     ASSERT_OK_AND_ASSIGN(position, input_stream.GetPos());
     ASSERT_EQ(1, position);
 
-    bool read_finished = false;
-    input_stream.ReadAsync(empty_bytes.data(), 0, /*offset=*/3, [&](Status status) {
-        ASSERT_OK(status);
-        read_finished = true;
+    auto read_promise = std::make_shared<std::promise<Status>>();
+    std::future<Status> read_result = read_promise->get_future();
+    input_stream.ReadAsync(empty_bytes.data(), 0, /*offset=*/3, [read_promise](Status status) {
+        read_promise->set_value(std::move(status));
     });
-    ASSERT_TRUE(read_finished);
+    ASSERT_EQ(std::future_status::ready, read_result.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK(read_result.get());
     ASSERT_OK_AND_ASSIGN(position, input_stream.GetPos());
     ASSERT_EQ(1, position);
 
