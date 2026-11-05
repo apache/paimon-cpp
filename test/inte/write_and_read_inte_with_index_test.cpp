@@ -1752,8 +1752,10 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
             auto embedded_index = std::make_shared<Bytes>(embedded_bytes.size(), pool_.get());
             memcpy(embedded_index->data(), reinterpret_cast<const void*>(embedded_bytes.data()),
                    embedded_bytes.size());
+            EXPECT_OK_AND_ASSIGN(FileStatus file_status,
+                                 LocalFileSystem().GetFileStatus(path + "bucket-0/" + file_name));
             return std::make_shared<DataFileMeta>(
-                file_name, /*file_size=*/10,
+                file_name, file_status.GetLen(),
                 /*row_count=*/10, /*min_key=*/BinaryRow::EmptyRow(),
                 /*max_key=*/BinaryRow::EmptyRow(),
                 /*key_stats=*/SimpleStats::EmptyStats(),
@@ -2431,8 +2433,10 @@ TEST_P(WriteAndReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
         }
         // each record is a stripe
 
+        ASSERT_OK_AND_ASSIGN(FileStatus file_status,
+                             LocalFileSystem().GetFileStatus(path + "bucket-0/" + file_name));
         auto data_file_meta = std::make_shared<DataFileMeta>(
-            file_name, /*file_size=*/2637,
+            file_name, file_status.GetLen(),
             /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
             /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
             /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,

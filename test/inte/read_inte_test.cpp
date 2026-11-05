@@ -172,8 +172,12 @@ class ReadInteTest : public testing::Test, public ::testing::WithParamInterface<
             EXPECT_TRUE(schema_ids.empty() || schema_ids.size() == data_files.size());
             for (uint32_t j = 0; j < data_files.size(); j++) {
                 const auto& data_file = data_files[j];
+                EXPECT_OK_AND_ASSIGN(
+                    FileStatus file_status,
+                    LocalFileSystem().GetFileStatus(PathUtil::JoinPath(bucket_path, data_file)));
                 data_file_metas.push_back(std::make_shared<DataFileMeta>(
-                    data_file, /*file_size=*/1, /*row_count=*/1, /*min_key=*/BinaryRow::EmptyRow(),
+                    data_file, file_status.GetLen(), /*row_count=*/1,
+                    /*min_key=*/BinaryRow::EmptyRow(),
                     /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
                     /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
                     /*max_sequence_number=*/0, /*schema_id=*/schema_ids.empty() ? 0 : schema_ids[j],
@@ -549,11 +553,10 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     ASSERT_TRUE(result_array);
     ASSERT_EQ(result_array->length(), 2);
 
-    // Verify the read-ahead cache metrics are surfaced through the reader chain. The prefetch
-    // reader merges the cache counters into its reader metrics only when a cache is created,
-    // so the counters must be present and effective exactly in that case.
+    // Cache counters must be present and effective whenever a cache is created, including
+    // synchronous reads with prefetch disabled.
     ASSERT_TRUE(read_metrics);
-    if (param.enable_prefetch && param.read_ahead_cache_enabled) {
+    if (param.read_ahead_cache_enabled) {
         ASSERT_OK_AND_ASSIGN(uint64_t read_count,
                              read_metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
         ASSERT_GT(read_count, 0u);
@@ -568,7 +571,7 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
         ASSERT_GT(hit_bytes, 0u);
         ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
         ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
-        // Serving hits requires prefetch IOs issued to the underlying stream.
+        // Serving hits requires cache IOs issued to the underlying stream.
         ASSERT_OK_AND_ASSIGN(uint64_t io_count,
                              read_metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
         ASSERT_GT(io_count, 0u);
