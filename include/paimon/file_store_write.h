@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -144,6 +145,18 @@ class PAIMON_EXPORT FileStoreWrite {
     /// coordinate them with active writers; skipping the resetting snapshot and continuing to use
     /// an old context is unsupported.
     virtual Status RefreshCommittedSnapshot(int64_t snapshot_id);
+
+    /// Returns the base snapshot for an existing partition-bucket writer without storage I/O.
+    ///
+    /// Initialized from the bucket's restore snapshot and advanced after a successful real-time
+    /// refresh of this bucket. A failed refresh leaves the bucket's value unchanged.
+    ///
+    /// @param partition Logical partition values.
+    /// @param bucket Bucket id of an existing writer.
+    /// @return The snapshot id, or nullopt if no snapshot has been used. Returns an error for a
+    ///         missing bucket writer or a format table.
+    virtual Result<std::optional<int64_t>> GetBaseSnapshotId(
+        const std::map<std::string, std::string>& partition, int32_t bucket) const = 0;
 
     virtual std::shared_ptr<Metrics> GetMetrics() const = 0;
 

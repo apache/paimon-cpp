@@ -1616,6 +1616,8 @@ TEST_F(RealtimeWriteInteTest, TestRefreshPreparationFailureKeepsProgressAndCanRe
     open_gate->Release(Status::IOError("injected sidecar open failure"));
     ASSERT_NOK_WITH_MSG(writer->RefreshCommittedSnapshot(snapshot),
                         "injected sidecar open failure");
+    ASSERT_OK_AND_ASSIGN(auto base_snapshot_id, writer->GetBaseSnapshotId({}, 0));
+    ASSERT_EQ(base_snapshot_id, std::nullopt);
     ASSERT_OK_AND_ASSIGN(RealtimeMetricValues failed, ReadRealtimeMetrics(writer->GetMetrics()));
     ASSERT_EQ(before.sealed_rows, failed.sealed_rows);
     ASSERT_EQ(before.total_memory, failed.total_memory);
@@ -1623,6 +1625,8 @@ TEST_F(RealtimeWriteInteTest, TestRefreshPreparationFailureKeepsProgressAndCanRe
     ASSERT_EQ(initial, visible);
 
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({}, 0));
+    ASSERT_EQ(base_snapshot_id, snapshot);
     ASSERT_OK_AND_ASSIGN(RealtimeMetricValues after, ReadRealtimeMetrics(writer->GetMetrics()));
     ASSERT_EQ(0, after.sealed_rows);
     ASSERT_EQ(0, after.total_rows);
