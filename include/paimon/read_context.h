@@ -414,7 +414,8 @@ class PAIMON_EXPORT ReadContextBuilder {
     ///
     /// A read-ahead cache is used to prebuffer data ranges before they are needed,
     /// which can improve read performance by reducing redundant I/O operations.
-    /// For Parquet and ORC it also works when batch prefetch is disabled.
+    /// It also works without batch prefetch for readers exposing byte ranges through
+    /// PrefetchFileBatchReader, including Parquet and ORC.
     /// @param enabled Whether to enable the read-ahead cache (default: true)
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetReadAheadCacheEnabled(bool enabled);

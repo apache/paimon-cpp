@@ -23,6 +23,7 @@
 #include <string>
 #include <utility>
 
+#include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/format/orc/orc_file_batch_reader.h"
 #include "paimon/format/orc/orc_format_defs.h"
@@ -58,10 +59,16 @@ class OrcReaderBuilder : public ReaderBuilder {
             return Status::Invalid("natural read size should be greater than zero");
         }
 
+        // Enable before parsing the footer so metadata reads also use the shared block cache.
+        auto cache_stream = std::dynamic_pointer_cast<CacheInputStream>(path);
+        if (cache_stream) {
+            PAIMON_RETURN_NOT_OK(cache_stream->EnableCache().status());
+        }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OrcInputStreamImpl> input_stream,
                                OrcInputStreamImpl::Create(path, natural_read_size));
         return OrcFileBatchReader::Create(std::move(input_stream), read_memory_, options_,
-                                          batch_size_);
+                                          batch_size_,
+                                          cache_stream ? cache_stream->GetReadAhead() : nullptr);
     }
 
  private:

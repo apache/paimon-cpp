@@ -92,8 +92,11 @@ context and always uses the default level.
   read-ahead cache without decoding them. It has no effect when the read-ahead
   cache is disabled with ``ReadContextBuilder::SetReadAheadCacheEnabled()``.
 
-Warmup and the read-ahead cache work independently of batch prefetch for
-Parquet and ORC. With ``EnablePrefetch(false)``, ``RAW`` still warms the cache
+Warmup and the read-ahead cache work independently of batch prefetch for readers
+implementing the ``PrefetchFileBatchReader`` byte-range interface, including
+Parquet and ORC. Support is determined by the reader's capabilities rather than
+the format name; other readers keep their plain read path. With
+``EnablePrefetch(false)``, ``RAW`` still warms the cache
 and batches are read synchronously. The same behavior applies when the format
 or the adaptive strategy decides against prefetching. Warmup only fetches raw
 bytes; it never decodes batches. When batch prefetch is active, the first
@@ -119,3 +122,20 @@ on top of the file being read. It may also fetch data from a file that the
 reader never consumes: a read that stops early, for example because of a LIMIT,
 may already have warmed the next file, and closing it waits for that file's
 in-flight fetches.
+
+For synchronous reads, including adaptive fallback, the pre-buffer limit also
+bounds retained range buffers. Completed buffers outside the current window can
+be evicted; later reads can fetch them again. In-flight I/O and buffers retained
+by callbacks count against that budget, so a full budget can temporarily cause a
+read to bypass range caching. The block cache has its separate limit. Parallel
+prefetch retains its existing range-buffer retention policy.
+
+ORC discovers byte ranges one stripe at a time and reports later stripes as
+reading advances. Preparing the first batch does not require warmup to parse
+every stripe footer.
+
+Late-materialization payloads and later ORC stripes prepare their ranges through
+the same internal cache context. Format readers expose their initial ranges
+through ``PreBufferRange()``; the public prefetch reader has no range callback
+setter. Plugins overriding the former callback setter must remove that override
+and rebuild against the updated interface.

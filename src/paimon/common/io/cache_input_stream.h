@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -27,11 +28,49 @@
 
 namespace paimon {
 
+class FileReadAhead;
+
 class CacheInputStream : public InputStream {
  public:
+    using CacheFactory = std::function<Result<std::shared_ptr<ReadAheadCache>>()>;
+
     CacheInputStream(std::unique_ptr<InputStream> input_stream,
                      const std::shared_ptr<ReadAheadCache>& cache)
-        : cache_(cache), input_stream_(std::move(input_stream)) {}
+        : CacheInputStream(std::move(input_stream), cache, CacheFactory(), nullptr) {}
+
+    CacheInputStream(std::unique_ptr<InputStream> input_stream,
+                     const std::shared_ptr<ReadAheadCache>& cache, CacheFactory cache_factory)
+        : CacheInputStream(std::move(input_stream), cache, std::move(cache_factory), nullptr) {}
+
+    CacheInputStream(std::unique_ptr<InputStream> input_stream,
+                     const std::shared_ptr<ReadAheadCache>& cache, CacheFactory cache_factory,
+                     const std::shared_ptr<FileReadAhead>& read_ahead)
+        : cache_(cache),
+          input_stream_(std::move(input_stream)),
+          cache_factory_(std::move(cache_factory)),
+          read_ahead_(read_ahead) {}
+
+    const std::shared_ptr<FileReadAhead>& GetReadAhead() const {
+        return read_ahead_;
+    }
+
+    // Configure before the reader starts consuming data. Capable builders may enable the cache
+    // early to coordinate their own buffering; otherwise the factory enables it after Build().
+    Result<bool> EnableCache() {
+        if (cache_) {
+            return true;
+        }
+        if (!cache_factory_) {
+            return false;
+        }
+        PAIMON_ASSIGN_OR_RAISE(cache_, cache_factory_());
+        cache_factory_ = nullptr;
+        return cache_ != nullptr;
+    }
+
+    void ClearCacheFactory() {
+        cache_factory_ = nullptr;
+    }
 
     Status Seek(int64_t offset, SeekOrigin origin) override {
         return input_stream_->Seek(offset, origin);
@@ -96,6 +135,8 @@ class CacheInputStream : public InputStream {
  private:
     std::shared_ptr<ReadAheadCache> cache_;
     std::unique_ptr<InputStream> input_stream_;
+    CacheFactory cache_factory_;
+    std::shared_ptr<FileReadAhead> read_ahead_;
 };
 
 }  // namespace paimon

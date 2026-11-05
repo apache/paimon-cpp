@@ -24,9 +24,12 @@
 #include <future>
 #include <utility>
 
+#include "fmt/format.h"
 #include "paimon/common/executor/future.h"
 #include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/reader/warmup_file_batch_reader.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/format/reader_builder.h"
 
 namespace paimon {
@@ -163,6 +166,11 @@ class MetricsInputStream : public InputStream {
 
 }  // namespace
 
+std::shared_ptr<FileReadAhead> FileReadAhead::Create(const std::shared_ptr<ReadAheadCache>& cache,
+                                                     const std::string& path) {
+    return std::shared_ptr<FileReadAhead>(new FileReadAhead(cache, path));
+}
+
 Result<FileReadAhead::OpenedReaders> FileReadAhead::Open(
     const std::string& path, int64_t file_size, const ReaderBuilder* builder,
     const std::shared_ptr<FileSystem>& fs, uint32_t reader_count,
@@ -221,6 +229,8 @@ Result<FileReadAhead::OpenedReaders> FileReadAhead::Open(
         cache = std::make_shared<ReadAheadCache>(input_stream, cache_config,
                                                  static_cast<uint64_t>(file_size), pool);
     }
+    auto state = Create(cache, path);
+    state->io_metrics_ = io_metrics;
     // Wave two builds the readers, which reads each file's footer and so still needs the cache
     // above to exist. The builds are concurrent, like the opens were.
     std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
@@ -228,15 +238,15 @@ Result<FileReadAhead::OpenedReaders> FileReadAhead::Open(
     for (uint32_t i = 0; i < reader_count; i++) {
         futures.push_back(RunOrSubmit(
             executor.get(),
-            [&builder, &cache, &streams, i, next_stream,
-             io_metrics]() -> Result<std::unique_ptr<FileBatchReader>> {
+            [&builder, &cache, &streams, i, next_stream, io_metrics,
+             state]() -> Result<std::unique_ptr<FileBatchReader>> {
                 std::unique_ptr<InputStream> input_stream = std::move(streams[next_stream + i]);
                 if (io_metrics) {
                     input_stream =
                         std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics);
                 }
-                auto cache_input_stream =
-                    std::make_shared<CacheInputStream>(std::move(input_stream), cache);
+                auto cache_input_stream = std::make_shared<CacheInputStream>(
+                    std::move(input_stream), cache, CacheInputStream::CacheFactory(), state);
                 return builder->Build(cache_input_stream);
             }));
     }
@@ -254,17 +264,57 @@ Result<FileReadAhead::OpenedReaders> FileReadAhead::Open(
         }
         readers.emplace_back(prefetch_file_batch_reader);
     }
-    auto state = std::shared_ptr<FileReadAhead>(new FileReadAhead(cache, io_metrics));
-    for (const auto& reader : readers) {
-        std::weak_ptr<FileReadAhead> weak_state = state;
-        reader->SetPreBufferRangeCallback(
-            [weak_state](std::vector<std::pair<uint64_t, uint64_t>>&& ranges) {
-                if (auto shared_state = weak_state.lock()) {
-                    shared_state->RegisterLateRanges(std::move(ranges));
-                }
-            });
-    }
     return OpenedReaders{std::move(readers), std::move(state)};
+}
+
+Result<std::unique_ptr<FileBatchReader>> FileReadAhead::OpenSynchronous(
+    const std::string& path, int64_t file_size, const ReaderBuilder* builder,
+    const std::shared_ptr<FileSystem>& fs, bool cache_enabled, const CacheConfig& cache_config,
+    bool enable_io_metrics, WarmupLevel level, const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    if (file_size < 0 || !builder || !fs) {
+        return Status::Invalid("invalid synchronous file read-ahead open arguments");
+    }
+    std::shared_ptr<PrefetchIoMetricsState> io_metrics;
+    if (enable_io_metrics) {
+        io_metrics = std::make_shared<PrefetchIoMetricsState>();
+    }
+    auto state = Create(nullptr, path);
+    state->io_metrics_ = io_metrics;
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
+                           fs->Open(FileStatus(path, file_size)));
+    if (io_metrics) {
+        input_stream = std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics);
+    }
+    CacheInputStream::CacheFactory cache_factory;
+    if (cache_enabled) {
+        cache_factory = [state, fs, path, file_size, cache_config,
+                         pool]() -> Result<std::shared_ptr<ReadAheadCache>> {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> cache_stream,
+                                   fs->Open(FileStatus(path, file_size)));
+            if (state->io_metrics_) {
+                cache_stream =
+                    std::make_shared<MetricsInputStream>(cache_stream, state->io_metrics_);
+            }
+            state->cache_ = std::make_shared<ReadAheadCache>(
+                cache_stream, cache_config, static_cast<uint64_t>(file_size), pool);
+            return state->cache_;
+        };
+    }
+    auto stream = std::make_shared<CacheInputStream>(std::move(input_stream), nullptr,
+                                                     std::move(cache_factory), state);
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader, builder->Build(stream));
+    // The byte-range interface, rather than the format name, determines cache/warmup support.
+    if (!dynamic_cast<PrefetchFileBatchReader*>(reader.get())) {
+        stream->ClearCacheFactory();
+        return reader;
+    }
+    PAIMON_RETURN_NOT_OK(stream->EnableCache().status());
+    state->SetSynchronous(true);
+    std::shared_ptr<PrefetchFileBatchReader> capable_reader =
+        checked_pointer_cast<PrefetchFileBatchReader>(std::move(reader));
+    return std::make_unique<WarmupFileBatchReader>(std::move(capable_reader), std::move(state),
+                                                   level, arrow_pool);
 }
 
 Status FileReadAhead::Warmup(PrefetchFileBatchReader* reader) {
@@ -273,7 +323,33 @@ Status FileReadAhead::Warmup(PrefetchFileBatchReader* reader) {
         return status_;
     }
     warmed_ = true;
-    auto ranges = reader->PreBufferRange();
+    return PrepareRangesLocked(reader->PreBufferRange(), true);
+}
+
+Status FileReadAhead::PrepareRanges(PrefetchFileBatchReader* reader) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!cache_ || !warmed_) {
+            return Status::OK();
+        }
+        if (!status_.ok()) {
+            return status_;
+        }
+    }
+    // Range discovery may read remote metadata. Keep it outside the context lock so parallel
+    // format readers can discover their stripes concurrently. Reset/Close stop reader tasks first.
+    Result<ByteRanges> ranges = reader->PreBufferRange();
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!cache_ || !warmed_) {
+        return Status::OK();
+    }
+    if (!status_.ok()) {
+        return status_;
+    }
+    return PrepareRangesLocked(std::move(ranges), false);
+}
+
+Status FileReadAhead::PrepareRangesLocked(Result<ByteRanges>&& ranges, bool initial) {
     if (!ranges.ok()) {
         status_ = ranges.status();
         ++error_count_;
@@ -285,29 +361,22 @@ Status FileReadAhead::Warmup(PrefetchFileBatchReader* reader) {
     }
     auto added = cache_->AddRanges(std::move(byte_ranges));
     if (!added.ok()) {
-        status_ = added.status();
+        status_ = Status(added.status().code(), fmt::format("read-ahead ranges for file '{}': {}",
+                                                            path_, added.status().ToString()));
         ++error_count_;
         return status_;
     }
-    cache_->Warmup();
+    if (initial) {
+        cache_->Warmup();
+    } else if (added.value()) {
+        cache_->Warmup(added.value().value());
+    }
     return Status::OK();
 }
 
-void FileReadAhead::RegisterLateRanges(std::vector<std::pair<uint64_t, uint64_t>>&& ranges) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!cache_ || !warmed_ || ranges.empty() || !status_.ok()) {
-        return;
-    }
-    std::vector<ByteRange> byte_ranges;
-    for (const auto& range : ranges) {
-        byte_ranges.emplace_back(range.first, range.second);
-    }
-    auto added = cache_->AddRanges(std::move(byte_ranges));
-    if (!added.ok()) {
-        status_ = added.status();
-        ++error_count_;
-    } else if (added.value()) {
-        cache_->Warmup(added.value().value());
+void FileReadAhead::SetSynchronous(bool synchronous) {
+    if (cache_) {
+        cache_->SetBoundedRetention(synchronous);
     }
 }
 

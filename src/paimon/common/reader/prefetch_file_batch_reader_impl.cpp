@@ -169,7 +169,6 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
 
 PrefetchFileBatchReaderImpl::~PrefetchFileBatchReaderImpl() {
     (void)CleanUp();
-    ClearPreBufferRangeCallbacks();
 }
 
 Status PrefetchFileBatchReaderImpl::SetReadSchema(
@@ -214,6 +213,7 @@ Status PrefetchFileBatchReaderImpl::RefreshReadRangesAfterCleanUp() {
         prefetch_metrics_->adaptive_disabled_count.fetch_add(1, kMetricsMemoryOrder);
     }
     need_prefetch_ = need_prefetch;
+    read_ahead_->SetSynchronous(!need_prefetch_);
     prefetch_metrics_->enabled.store(need_prefetch_, kMetricsMemoryOrder);
     prefetch_metrics_->read_ranges_total.fetch_add(read_ranges.size(), kMetricsMemoryOrder);
     std::vector<std::pair<uint64_t, uint64_t>> filtered_ranges =
@@ -577,14 +577,6 @@ void PrefetchFileBatchReaderImpl::WarmCacheOnce() {
     (void)read_ahead_->Warmup(readers_[0].get());
 }
 
-void PrefetchFileBatchReaderImpl::ClearPreBufferRangeCallbacks() {
-    // CleanUp() has joined the background thread. Detach the weak state callbacks so retained
-    // sub-readers cannot report more byte ranges after this reader releases its generation.
-    for (const auto& sub_reader : readers_) {
-        sub_reader->SetPreBufferRangeCallback(nullptr);
-    }
-}
-
 void PrefetchFileBatchReaderImpl::Warmup() {
     if (warmup_level_ != WarmupLevel::RAW) {
         return;
@@ -763,7 +755,7 @@ Result<uint64_t> PrefetchFileBatchReaderImpl::GetNextRowToRead() const {
 }
 
 void PrefetchFileBatchReaderImpl::SetReadStatus(const Status& status) {
-    if (!status.ok()) {
+    if (!status.ok() && status != read_ahead_->GetStatus()) {
         prefetch_metrics_->errors.fetch_add(1, kMetricsMemoryOrder);
     }
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
@@ -795,7 +787,6 @@ void PrefetchFileBatchReaderImpl::Close() {
     for (size_t i = 1; i < readers_.size(); ++i) {
         readers_[i]->Close();
     }
-    ClearPreBufferRangeCallbacks();
 }
 
 }  // namespace paimon

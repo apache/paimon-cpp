@@ -22,6 +22,7 @@
 #include <memory>
 #include <utility>
 
+#include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/reader/late_materializing_file_batch_reader.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/memory/memory_pool.h"
@@ -55,9 +56,11 @@ class LateMaterializingReaderBuilder : public ReaderBuilder {
         const std::shared_ptr<InputStream>& stream) const override {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> format_reader,
                                inner_->Build(stream));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<LateMaterializingFileBatchReader> reader,
-            LateMaterializingFileBatchReader::Create(std::move(format_reader), arrow_pool_));
+        auto cache_stream = std::dynamic_pointer_cast<CacheInputStream>(stream);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LateMaterializingFileBatchReader> reader,
+                               LateMaterializingFileBatchReader::Create(
+                                   std::move(format_reader), arrow_pool_,
+                                   cache_stream ? cache_stream->GetReadAhead() : nullptr));
         return std::unique_ptr<FileBatchReader>(std::move(reader));
     }
 

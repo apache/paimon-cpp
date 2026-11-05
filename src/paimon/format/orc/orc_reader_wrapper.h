@@ -104,15 +104,40 @@ class OrcReaderWrapper {
     }
 
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange(
-        const std::vector<uint64_t>& target_column_ids) {
-        uint64_t stripe_number = reader_->getNumberOfStripes();
-        std::vector<uint32_t> stripes;
-        for (uint64_t i = 0; i < stripe_number; i++) {
-            stripes.push_back(static_cast<uint32_t>(i));
-        }
-        std::list<uint64_t> include_types(target_column_ids.begin(), target_column_ids.end());
+        const std::vector<uint64_t>& target_column_ids, std::pair<uint64_t, uint64_t>* row_range) {
         try {
-            return reader_->preBufferRange(stripes, include_types);
+            if (stripe_row_ends_.empty()) {
+                uint64_t row_end = 0;
+                std::vector<uint64_t> stripe_row_ends;
+                for (uint64_t i = 0; i < reader_->getNumberOfStripes(); ++i) {
+                    // Stripe row counts are in the file footer; inspecting them reads no stripe
+                    // footers. Only preBufferRange() below parses the selected stripe's footer.
+                    uint64_t rows = reader_->getStripe(i)->getNumberOfRows();
+                    if (rows > std::numeric_limits<uint64_t>::max() - row_end) {
+                        return Status::Invalid("ORC stripe row counts overflow");
+                    }
+                    row_end += rows;
+                    stripe_row_ends.push_back(row_end);
+                }
+                stripe_row_ends_ = std::move(stripe_row_ends);
+            }
+            auto stripe =
+                std::upper_bound(stripe_row_ends_.begin(), stripe_row_ends_.end(), next_row_);
+            if (stripe == stripe_row_ends_.end()) {
+                if (row_range) {
+                    *row_range = {next_row_, next_row_};
+                }
+                return std::vector<std::pair<uint64_t, uint64_t>>();
+            }
+            uint64_t index = std::distance(stripe_row_ends_.begin(), stripe);
+            if (index > std::numeric_limits<uint32_t>::max()) {
+                return Status::Invalid("ORC stripe index exceeds uint32 bound");
+            }
+            if (row_range) {
+                *row_range = {index == 0 ? 0 : stripe_row_ends_[index - 1], *stripe};
+            }
+            std::list<uint64_t> include_types(target_column_ids.begin(), target_column_ids.end());
+            return reader_->preBufferRange({static_cast<uint32_t>(index)}, include_types);
         } catch (const std::exception& e) {
             return Status::Invalid(fmt::format(
                 "orc pre buffer range failed for file {}, with {} error", file_name_, e.what()));
@@ -137,6 +162,7 @@ class OrcReaderWrapper {
     std::unique_ptr<::orc::RowReader> row_reader_;
 
     std::unique_ptr<ReadRangeGenerator> range_generator_;
+    std::vector<uint64_t> stripe_row_ends_;
 
     const std::string file_name_;
     const int32_t batch_size_;

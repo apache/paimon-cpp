@@ -27,6 +27,11 @@
 
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/reader/prefetch_file_batch_reader.h"
+#include "paimon/visibility.h"
+
+namespace arrow {
+class MemoryPool;
+}  // namespace arrow
 
 namespace paimon {
 
@@ -34,14 +39,18 @@ class Executor;
 class ReaderBuilder;
 struct PrefetchIoMetricsState;
 
-/// Per-file byte caching and I/O instrumentation, shared by synchronous and parallel readers.
+/// Internal per-file cache context, shared by streams, format readers and LM wrappers.
+/// It owns no readers, so builders can pass it through CacheInputStream without ownership cycles.
 /// Callers must stop their reader tasks before resetting or releasing a generation.
-class FileReadAhead {
+class PAIMON_EXPORT FileReadAhead {
  public:
     struct OpenedReaders {
         std::vector<std::shared_ptr<PrefetchFileBatchReader>> readers;
         std::shared_ptr<FileReadAhead> read_ahead;
     };
+
+    static std::shared_ptr<FileReadAhead> Create(const std::shared_ptr<ReadAheadCache>& cache,
+                                                 const std::string& path);
 
     static Result<OpenedReaders> Open(const std::string& path, int64_t file_size,
                                       const ReaderBuilder* builder,
@@ -50,7 +59,17 @@ class FileReadAhead {
                                       const CacheConfig& cache_config, bool enable_io_metrics,
                                       const std::shared_ptr<MemoryPool>& pool);
 
+    static Result<std::unique_ptr<FileBatchReader>> OpenSynchronous(
+        const std::string& path, int64_t file_size, const ReaderBuilder* builder,
+        const std::shared_ptr<FileSystem>& fs, bool cache_enabled, const CacheConfig& cache_config,
+        bool enable_io_metrics, WarmupLevel level, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+
     Status Warmup(PrefetchFileBatchReader* reader);
+    /// Prepare ranges as a format advances or LM switches projections. Inactive contexts and
+    /// disabled caches do nothing, including skipping the reader's range query.
+    Status PrepareRanges(PrefetchFileBatchReader* reader);
+    void SetSynchronous(bool synchronous);
     Status GetStatus() const;
     uint64_t GetErrorCount() const;
     void EndGeneration();
@@ -59,14 +78,15 @@ class FileReadAhead {
     std::shared_ptr<Metrics> GetMetrics() const;
 
  private:
-    FileReadAhead(const std::shared_ptr<ReadAheadCache>& cache,
-                  const std::shared_ptr<PrefetchIoMetricsState>& io_metrics)
-        : cache_(cache), io_metrics_(io_metrics) {}
+    FileReadAhead(const std::shared_ptr<ReadAheadCache>& cache, const std::string& path)
+        : cache_(cache), path_(path) {}
 
-    void RegisterLateRanges(std::vector<std::pair<uint64_t, uint64_t>>&& ranges);
+    using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
+    Status PrepareRangesLocked(Result<ByteRanges>&& ranges, bool initial);
 
     std::shared_ptr<ReadAheadCache> cache_;
     std::shared_ptr<PrefetchIoMetricsState> io_metrics_;
+    std::string path_;
     mutable std::mutex mutex_;
     bool warmed_ = false;
     Status status_;

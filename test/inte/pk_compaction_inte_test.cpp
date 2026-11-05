@@ -140,10 +140,6 @@ class HighPositionFileBatchReader : public PrefetchFileBatchReader {
         return reader_->PreBufferRange();
     }
 
-    void SetPreBufferRangeCallback(PreBufferRangeCallback callback) override {
-        reader_->SetPreBufferRangeCallback(std::move(callback));
-    }
-
     bool SupportPreciseBitmapSelection() const override {
         return false;
     }

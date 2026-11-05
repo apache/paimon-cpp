@@ -30,6 +30,8 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
+#include "paimon/common/io/cache_input_stream.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/defs.h"
@@ -212,6 +214,208 @@ class OrcFileBatchReaderTest : public ::testing::Test,
 INSTANTIATE_TEST_SUITE_P(TestParam, OrcFileBatchReaderTest,
                          ::testing::Values(TestParam{128 * 1024, false}, TestParam{16, false},
                                            TestParam{16, true}));
+
+TEST_F(OrcFileBatchReaderTest, BuilderEnablesCacheBeforeReadingMetadata) {
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    std::string file_path = dir->Str() + "/test.orc";
+    auto schema = arrow::schema(struct_array_->type()->fields());
+    WriteArray(fs, file_path, struct_array_, schema, /*options=*/{});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, fs->Open(file_path));
+    ASSERT_OK_AND_ASSIGN(int64_t file_size, input->Length());
+    uint32_t factory_calls = 0;
+    std::shared_ptr<ReadAheadCache> cache;
+    auto stream = std::make_shared<CacheInputStream>(
+        std::move(input), nullptr, [&]() -> Result<std::shared_ptr<ReadAheadCache>> {
+            ++factory_calls;
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> cache_stream, fs->Open(file_path));
+            cache = std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), file_size, pool_);
+            return cache;
+        });
+    OrcReaderBuilder builder(/*options=*/{}, batch_size_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder.Build(stream));
+    ASSERT_EQ(factory_calls, 1);
+    ASSERT_NE(cache, nullptr);
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t block_fetches,
+                         metrics->GetCounter(ReadAheadCacheMetrics::BLOCK_FETCHES));
+    ASSERT_GT(block_fetches, 0);
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    auto actual_result = arrow::ImportArray(batch.first.get(), batch.second.get());
+    ASSERT_TRUE(actual_result.ok()) << actual_result.status().ToString();
+    ASSERT_TRUE(actual_result.ValueOrDie()->Equals(struct_array_));
+    reader->Close();
+}
+
+TEST_F(OrcFileBatchReaderTest, DiscoverStripeRangesOnDemand) {
+    using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
+    class CountingStream : public ::orc::InputStream {
+     public:
+        explicit CountingStream(std::unique_ptr<::orc::InputStream> inner)
+            : inner_(std::move(inner)) {}
+        uint64_t getLength() const override {
+            return inner_->getLength();
+        }
+        uint64_t getNaturalReadSize() const override {
+            return inner_->getNaturalReadSize();
+        }
+        const std::string& getName() const override {
+            return inner_->getName();
+        }
+        void read(void* data, uint64_t size, uint64_t offset) override {
+            reads.emplace_back(offset, size);
+            inner_->read(data, size, offset);
+        }
+        std::vector<std::pair<uint64_t, uint64_t>> reads;
+
+     private:
+        std::unique_ptr<::orc::InputStream> inner_;
+    };
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::string path = dir->Str() + "/stripes.orc";
+    {
+        auto output = ::orc::writeLocalFile(path);
+        auto type = ::orc::Type::buildTypeFromString("struct<a:int,b:int>");
+        auto writer = ::orc::createWriter(*type, output.get(), ::orc::WriterOptions());
+        for (int64_t stripe = 0; stripe < 4; ++stripe) {
+            auto batch = writer->createRowBatch(4);
+            auto* root = dynamic_cast<::orc::StructVectorBatch*>(batch.get());
+            ASSERT_NE(root, nullptr);
+            root->numElements = 4;
+            for (uint32_t column = 0; column < 2; ++column) {
+                auto* values = dynamic_cast<::orc::LongVectorBatch*>(root->fields[column]);
+                ASSERT_NE(values, nullptr);
+                values->numElements = 4;
+                for (int64_t row = 0; row < 4; ++row) {
+                    values->data[row] = stripe * 4 + row;
+                }
+            }
+            writer->add(*batch);
+            writer->writeIntermediateFooter();
+        }
+        writer->close();
+    }
+    auto metadata = ::orc::createReader(::orc::readLocalFile(path), ::orc::ReaderOptions());
+    ASSERT_EQ(metadata->getNumberOfStripes(), 4);
+    std::vector<std::pair<uint64_t, uint64_t>> stripe_bounds;
+    std::vector<uint64_t> footer_offsets;
+    for (uint64_t i = 0; i < 4; ++i) {
+        auto stripe = metadata->getStripe(i);
+        uint64_t footer = stripe->getOffset() + stripe->getIndexLength() + stripe->getDataLength();
+        stripe_bounds.emplace_back(stripe->getOffset(), footer);
+        footer_offsets.push_back(footer);
+    }
+    auto input = std::make_unique<CountingStream>(::orc::readLocalFile(path));
+    auto* observed = input.get();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> cache_stream,
+                         dir->GetFileSystem()->Open(path));
+    CacheConfig config;
+    config.SetBlockSize(0);
+    auto cache =
+        std::make_shared<ReadAheadCache>(cache_stream, config, observed->getLength(), pool_);
+    auto context = FileReadAhead::Create(cache, path);
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<OrcFileBatchReader> reader,
+        OrcFileBatchReader::Create(std::move(input), std::make_shared<OrcReadMemory>(pool_), {}, 2,
+                                   context));
+    observed->reads.clear();
+    ASSERT_OK_AND_ASSIGN(ByteRanges initial, reader->PreBufferRange());
+    ASSERT_FALSE(initial.empty());
+    auto assert_ranges_in_stripe = [&](const auto& ranges, uint64_t stripe) {
+        ASSERT_LT(stripe, stripe_bounds.size());
+        ASSERT_FALSE(ranges.empty());
+        for (const auto& range : ranges) {
+            ASSERT_GE(range.first, stripe_bounds[stripe].first);
+            ASSERT_LE(range.first + range.second, stripe_bounds[stripe].second);
+        }
+    };
+    auto assert_no_later_footers = [&]() {
+        for (const auto& read : observed->reads) {
+            for (uint64_t i = 1; i < footer_offsets.size(); ++i) {
+                ASSERT_FALSE(read.first <= footer_offsets[i] &&
+                             footer_offsets[i] < read.first + read.second);
+            }
+        }
+    };
+    assert_ranges_in_stripe(initial, 0);
+    assert_no_later_footers();
+    ASSERT_OK(context->Warmup(reader.get()));
+    assert_no_later_footers();
+    ASSERT_OK_AND_ASSIGN(uint64_t prepared_bytes,
+                         context->GetMetrics()->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
+    ASSERT_GT(prepared_bytes, 0);
+    for (int64_t batch_index = 0; batch_index < 8; ++batch_index) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+        ASSERT_TRUE(imported.ok());
+        auto root = std::dynamic_pointer_cast<arrow::StructArray>(imported.ValueOrDie());
+        ASSERT_NE(root, nullptr);
+        auto values = std::dynamic_pointer_cast<arrow::Int32Array>(root->field(0));
+        ASSERT_NE(values, nullptr);
+        ASSERT_EQ(values->length(), 2);
+        ASSERT_EQ(values->Value(0), batch_index * 2);
+        ASSERT_OK_AND_ASSIGN(uint64_t file_row, reader->GetPreviousBatchFileRowId(0));
+        ASSERT_EQ(file_row, batch_index * 2);
+        ASSERT_OK_AND_ASSIGN(uint64_t bytes,
+                             context->GetMetrics()->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
+        if (batch_index > 0 && batch_index % 2 == 0) {
+            ASSERT_GT(bytes, prepared_bytes);
+        } else {
+            ASSERT_EQ(bytes, prepared_bytes);
+        }
+        prepared_bytes = bytes;
+        if (batch_index == 0) {
+            assert_no_later_footers();
+        }
+    }
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+    context->EndGeneration();
+    ASSERT_OK(reader->SeekToRow(4));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch after_seek, reader->NextBatch());
+    ASSERT_OK_AND_ASSIGN(uint64_t file_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(file_row, 4);
+    after_seek.first->release(after_seek.first.get());
+    after_seek.second->release(after_seek.second.get());
+    ASSERT_OK_AND_ASSIGN(uint64_t after_end,
+                         context->GetMetrics()->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
+    ASSERT_EQ(after_end, prepared_bytes);
+    context->Reset();
+    auto projection = arrow::schema({arrow::field("a", arrow::int32())});
+    ArrowSchema projected_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*projection, &projected_schema).ok());
+    auto predicate = PredicateBuilder::GreaterOrEqual(0, "a", FieldType::INT, Literal(8));
+    ASSERT_OK(reader->SetReadSchema(&projected_schema, predicate, std::nullopt));
+    observed->reads.clear();
+    ASSERT_OK_AND_ASSIGN(ByteRanges projected_ranges, reader->PreBufferRange());
+    assert_ranges_in_stripe(projected_ranges, 0);
+    assert_no_later_footers();
+    ASSERT_OK(context->Warmup(reader.get()));
+    uint64_t projected_rows = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+        ASSERT_TRUE(imported.ok());
+        auto root = std::dynamic_pointer_cast<arrow::StructArray>(imported.ValueOrDie());
+        ASSERT_NE(root, nullptr);
+        ASSERT_EQ(root->num_fields(), 1);
+        auto values = std::dynamic_pointer_cast<arrow::Int32Array>(root->field(0));
+        ASSERT_NE(values, nullptr);
+        for (int64_t i = 0; i < values->length(); ++i) {
+            ASSERT_EQ(values->Value(i), 8 + projected_rows++);
+        }
+    }
+    ASSERT_EQ(projected_rows, 8);
+    reader->Close();
+    context->ReleaseBuffers();
+}
 
 TEST_F(OrcFileBatchReaderTest, TestReadBinaryWrittenFromBinaryAndLargeBinary) {
     auto dir = paimon::test::UniqueTestDirectory::Create();

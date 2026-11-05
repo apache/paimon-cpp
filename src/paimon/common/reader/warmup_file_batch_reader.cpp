@@ -35,7 +35,6 @@ WarmupFileBatchReader::WarmupFileBatchReader(std::shared_ptr<PrefetchFileBatchRe
 
 WarmupFileBatchReader::~WarmupFileBatchReader() {
     ResetReadState();
-    reader_->SetPreBufferRangeCallback(nullptr);
     read_ahead_->ReleaseBuffers();
 }
 
@@ -135,7 +134,6 @@ void WarmupFileBatchReader::Close() {
     }
     ResetReadState();
     closed_ = true;
-    reader_->SetPreBufferRangeCallback(nullptr);
     read_ahead_->ReleaseBuffers();
     reader_->Close();
 }

@@ -27,6 +27,8 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/io/cache_input_stream.h"
+#include "paimon/common/reader/data_file_reader_factory.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -48,6 +50,9 @@ class ObservedReader : public MockFileBatchReader {
                    const std::shared_ptr<InputStream>& stream)
         : MockFileBatchReader(data, data->type(), /*read_batch_size=*/2), stream_(stream) {
         EnableRandomizeBatchSize(false);
+        if (auto cache_stream = std::dynamic_pointer_cast<CacheInputStream>(stream)) {
+            read_ahead_ = cache_stream->GetReadAhead();
+        }
     }
 
     Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
@@ -58,29 +63,30 @@ class ObservedReader : public MockFileBatchReader {
 
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
         PAIMON_RETURN_NOT_OK(range_status);
-        return std::vector<std::pair<uint64_t, uint64_t>>{{0, 4}};
+        return std::vector<std::pair<uint64_t, uint64_t>>{{range_offset_, range_length}};
     }
 
-    void SetPreBufferRangeCallback(PreBufferRangeCallback callback) override {
-        callback_ = std::move(callback);
-    }
-
-    void ReportLateRanges(uint64_t offset) {
-        if (callback_) {
-            callback_({{offset, 4}});
-        }
+    Status PrepareLateRanges(uint64_t offset) {
+        uint64_t previous_offset = range_offset_;
+        range_offset_ = offset;
+        Status status = read_ahead_ ? read_ahead_->PrepareRanges(this) : Status::OK();
+        range_offset_ = previous_offset;
+        return status;
     }
 
     uint32_t read_count = 0;
     std::thread::id last_read_thread;
     bool read_bytes = false;
+    uint64_t range_length = 4;
+    uint64_t read_stride = 0;
     Status range_status;
 
  private:
     Result<ReadBatchWithBitmap> Read() {
         if (read_bytes) {
             char bytes[4];
-            PAIMON_ASSIGN_OR_RAISE(int64_t size, stream_->Read(bytes, 4, 0));
+            PAIMON_ASSIGN_OR_RAISE(int64_t size,
+                                   stream_->Read(bytes, 4, (read_count - 1) * read_stride));
             if (size != 4) {
                 return Status::IOError("short observed read");
             }
@@ -89,7 +95,8 @@ class ObservedReader : public MockFileBatchReader {
     }
 
     std::shared_ptr<InputStream> stream_;
-    PreBufferRangeCallback callback_;
+    std::shared_ptr<FileReadAhead> read_ahead_;
+    uint64_t range_offset_ = 0;
 };
 
 class ObservedBuilder : public ReaderBuilder {
@@ -102,8 +109,12 @@ class ObservedBuilder : public ReaderBuilder {
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& stream) const override {
-        return std::make_unique<ObservedReader>(data_, stream);
+        auto reader = std::make_unique<ObservedReader>(data_, stream);
+        last_reader = reader.get();
+        return reader;
     }
+
+    mutable ObservedReader* last_reader = nullptr;
 
  private:
     std::shared_ptr<arrow::Array> data_;
@@ -314,23 +325,90 @@ TEST_F(WarmupFileBatchReaderTest, RawRangeAndAsyncFailuresAreDeferredUntilRead) 
     ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), "async warmup failed");
 }
 
+TEST_F(WarmupFileBatchReaderTest, SynchronousAndAdaptiveFallbackBoundRetainedBytes) {
+    constexpr uint64_t kMiB = 1024 * 1024;
+    for (bool adaptive_fallback : {false, true}) {
+        for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW}) {
+            auto pool = std::shared_ptr<MemoryPool>(GetMemoryPool());
+            ObservedBuilder builder(data_);
+            DataFileReadOptions options;
+            options.warmup_level = level;
+            options.prefetch_enabled = adaptive_fallback;
+            options.adaptive_prefetch_strategy = true;
+            options.prefetch_max_parallel_num = 1;
+            options.prefetch_batch_count = 1;
+            options.read_batch_size = 1;
+            options.cache_config.SetRangeSizeLimit(kMiB);
+            options.cache_config.SetHoleSizeLimit(0);
+            options.cache_config.SetPreBufferLimit(2 * kMiB);
+            options.cache_config.SetBlockSize(0);
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<FileBatchReader> reader,
+                DataFileReaderFactory::Open("parquet", "bounded-sync", 32 * kMiB, &builder, options,
+                                            std::make_shared<MockFileSystem>(), executor_, pool,
+                                            GetArrowPool(pool)));
+            ASSERT_NE(builder.last_reader, nullptr);
+            builder.last_reader->range_length = 32 * kMiB;
+            builder.last_reader->read_stride = 8 * kMiB;
+            builder.last_reader->read_bytes = true;
+            ASSERT_OK(Configure(reader.get()));
+            reader->Warmup();
+            uint64_t row_count = 0;
+            while (true) {
+                ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch,
+                                     reader->NextBatchWithBitmap());
+                if (BatchReader::IsEofBatch(batch)) {
+                    break;
+                }
+                row_count += batch.first.first->length;
+                ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+            }
+            ASSERT_EQ(row_count, 6);
+            ASSERT_LE(pool->MaxMemoryUsage(), 2 * kMiB);
+            reader->Close();
+            ASSERT_EQ(pool->CurrentUsage(), 0);
+        }
+    }
+}
+
+TEST_F(WarmupFileBatchReaderTest, InvalidInitialAndLateRangesReportFileOnRead) {
+    for (bool late : {false, true}) {
+        ObservedBuilder builder(data_);
+        ASSERT_OK_AND_ASSIGN(FileReadAhead::OpenedReaders opened,
+                             FileReadAhead::Open("range-bounds-file", late ? 4 : 2, &builder,
+                                                 std::make_shared<MockFileSystem>(), 1, nullptr,
+                                                 true, CacheConfig(), false, pool_));
+        auto reader = std::make_unique<WarmupFileBatchReader>(
+            opened.readers[0], opened.read_ahead, WarmupLevel::RAW, GetArrowPool(pool_));
+        ASSERT_OK(Configure(reader.get()));
+        reader->Warmup();
+        if (late) {
+            ASSERT_NOK_WITH_MSG(builder.last_reader->PrepareLateRanges(2), "exceeds file size");
+        }
+        ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), "range-bounds-file");
+        ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), "exceeds file size");
+        ASSERT_EQ(builder.last_reader->read_count, 0);
+        reader->Close();
+    }
+}
+
 TEST_F(WarmupFileBatchReaderTest, LateRangesAreRegisteredOnlyInActiveGeneration) {
     ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::RAW, true));
     ASSERT_OK(Configure(reader.get()));
-    observed_->ReportLateRanges(16);
+    ASSERT_OK(observed_->PrepareLateRanges(16));
     ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 0);
     reader->Warmup();
-    observed_->ReportLateRanges(16);
+    ASSERT_OK(observed_->PrepareLateRanges(16));
     ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 2);
-    observed_->ReportLateRanges(16);
+    ASSERT_OK(observed_->PrepareLateRanges(16));
     ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 2);
     ASSERT_OK(Configure(reader.get()));
-    observed_->ReportLateRanges(32);
+    ASSERT_OK(observed_->PrepareLateRanges(32));
     ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 0);
     reader->Warmup();
     ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 1);
     reader->Close();
-    observed_->ReportLateRanges(32);
+    ASSERT_OK(observed_->PrepareLateRanges(32));
     ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 1);
 }
 

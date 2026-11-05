@@ -21,6 +21,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,6 +30,7 @@
 #include "arrow/type.h"
 #include "orc/OrcFile.hh"
 #include "orc/Reader.hh"
+#include "paimon/common/reader/file_read_ahead.h"
 #include "paimon/format/orc/orc_format_defs.h"
 #include "paimon/format/orc/orc_reader_wrapper.h"
 #include "paimon/predicate/predicate.h"
@@ -47,6 +49,11 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
         std::unique_ptr<::orc::InputStream>&& input_stream,
         const std::shared_ptr<OrcReadMemory>& read_memory,
         const std::map<std::string, std::string>& options, int32_t batch_size);
+    static Result<std::unique_ptr<OrcFileBatchReader>> Create(
+        std::unique_ptr<::orc::InputStream>&& input_stream,
+        const std::shared_ptr<OrcReadMemory>& read_memory,
+        const std::map<std::string, std::string>& options, int32_t batch_size,
+        const std::shared_ptr<FileReadAhead>& read_ahead);
 
     // For timestamp type, precision info is missing from file
     Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override;
@@ -98,6 +105,8 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
 
     void Close() override {
         metrics_ = GetReaderMetrics();
+        read_ahead_.reset();
+        pre_buffered_row_range_.reset();
         reader_.reset();
         reader_metrics_.reset();
     }
@@ -111,7 +120,8 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
  private:
     OrcFileBatchReader(std::unique_ptr<::orc::ReaderMetrics>&& reader_metrics,
                        std::unique_ptr<OrcReaderWrapper>&& reader,
-                       const std::map<std::string, std::string>& options);
+                       const std::map<std::string, std::string>& options,
+                       const std::shared_ptr<FileReadAhead>& read_ahead);
 
     static Result<::orc::RowReaderOptions> CreateRowReaderOptions(
         const ::orc::Type* src_type, const ::orc::Type* target_type,
@@ -129,6 +139,8 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
     std::shared_ptr<Metrics> metrics_;
     std::vector<uint64_t> target_column_ids_;
     std::vector<std::pair<uint64_t, uint64_t>> cache_ranges_;
+    std::shared_ptr<FileReadAhead> read_ahead_;
+    std::optional<std::pair<uint64_t, uint64_t>> pre_buffered_row_range_;
 
     uint64_t previous_batch_row_count_ = 0;
 };
