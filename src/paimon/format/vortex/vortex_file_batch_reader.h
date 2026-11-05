@@ -139,6 +139,7 @@ class VortexFileBatchReader : public FileBatchReader {
     /// Open the next partition and fill `current_stream_` with bounded Arrow batches.
     /// Returns false when there are no more partitions.
     Result<bool> OpenNextPartitionStream();
+    Status ImportCurrentStreamSchema();
     /// Reshape a scanned batch to `read_schema_`, selecting columns by name and recursing into
     /// nested fields. Returns `array` unchanged when SetReadSchema has not been called.
     Result<std::shared_ptr<arrow::Array>> AlignToReadSchema(

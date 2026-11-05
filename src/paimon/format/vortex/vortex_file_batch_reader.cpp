@@ -161,29 +161,45 @@ Result<VortexFileBatchReader::SelectionState> VortexFileBatchReader::SelectionSt
         }
         state.selected_row_count_ = static_cast<uint64_t>(cardinality);
         state.excludes_ = state.selected_row_count_ > total_rows / 2;
+
+        // Seek to the first invalid row without enumerating a dense selection. Bitmap values
+        // above INT32_MAX appear as negative int32_t values and remain invalid for this reader.
+        const uint64_t max_bitmap_row = std::numeric_limits<int32_t>::max();
+        const auto first_invalid_row = static_cast<int32_t>(std::min(total_rows, max_bitmap_row));
+        const auto end = bitmap->End();
+        auto invalid_row = bitmap->EqualOrLarger(first_invalid_row);
+        if (total_rows > max_bitmap_row && invalid_row != end &&
+            *invalid_row == std::numeric_limits<int32_t>::max()) {
+            ++invalid_row;
+        }
+        if (invalid_row != end) {
+            return Status::Invalid(fmt::format("Vortex selected row {} is out of range {}",
+                                               static_cast<uint64_t>(*invalid_row), total_rows));
+        }
+        if (state.selected_row_count_ == total_rows) {
+            return state;
+        }
+
         state.indices_.reserve(static_cast<size_t>(
             state.excludes_ ? total_rows - state.selected_row_count_ : state.selected_row_count_));
-        uint64_t next_row = 0;
-        const auto end = bitmap->End();
-        for (auto iter = bitmap->Begin(); iter != end; ++iter) {
-            const auto row_id = static_cast<uint64_t>(*iter);
-            if (row_id >= total_rows) {
-                return Status::Invalid(
-                    fmt::format("Vortex selected row {} is out of range {}", row_id, total_rows));
-            }
-            if (state.excludes_) {
-                // Enumerate gaps directly instead of first expanding all selected rows.
-                for (; next_row < row_id; ++next_row) {
-                    state.indices_.push_back(next_row);
-                }
-                next_row = row_id + 1;
-            } else {
-                state.indices_.push_back(row_id);
-            }
-        }
         if (state.excludes_) {
-            for (; next_row < total_rows; ++next_row) {
-                state.indices_.push_back(next_row);
+            RoaringBitmap32 excluded;
+            excluded.AddRange(0, static_cast<int32_t>(std::min(total_rows, max_bitmap_row)));
+            if (total_rows > max_bitmap_row) {
+                excluded.Add(std::numeric_limits<int32_t>::max());
+            }
+            excluded -= *bitmap;
+            const auto excluded_end = excluded.End();
+            for (auto iter = excluded.Begin(); iter != excluded_end; ++iter) {
+                state.indices_.push_back(static_cast<uint64_t>(*iter));
+            }
+            // Rows beyond the bitmap's nonnegative int32_t domain are all excluded.
+            for (uint64_t row = max_bitmap_row + 1; row < total_rows; ++row) {
+                state.indices_.push_back(row);
+            }
+        } else {
+            for (auto iter = bitmap->Begin(); iter != end; ++iter) {
+                state.indices_.push_back(static_cast<uint64_t>(*iter));
             }
         }
     }
@@ -364,16 +380,18 @@ Status VortexFileBatchReader::CreateScan() {
     VxExpressionPtr root(nullptr, vx_expression_free);
     VxExpressionPtr projection(nullptr, vx_expression_free);
     std::vector<const char*> name_ptrs;
-    if (read_schema_ != nullptr && read_schema_->num_fields() > 0) {
+    if (read_schema_ != nullptr) {
         name_ptrs.reserve(read_schema_->num_fields());
         // The schema owns these names; Vortex copies them when creating the projection.
         for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
             name_ptrs.push_back(field->name().c_str());
         }
         root = VxExpressionPtr(vx_expression_root(), vx_expression_free);
-        projection =
-            VxExpressionPtr(vx_expression_select(name_ptrs.data(), name_ptrs.size(), root.get()),
-                            vx_expression_free);
+        // The FFI requires non-null names even for an explicit zero-column projection.
+        const char* empty_name = nullptr;
+        const char* const* names = name_ptrs.empty() ? &empty_name : name_ptrs.data();
+        projection = VxExpressionPtr(vx_expression_select(names, name_ptrs.size(), root.get()),
+                                     vx_expression_free);
         options.projection = projection.get();
     }
     selection_.ApplyToScan(&options);
@@ -429,19 +447,26 @@ Result<bool> VortexFileBatchReader::OpenNextPartitionStream() {
     }
     current_stream_ = stream;
     stream_active_ = true;
+    PAIMON_RETURN_NOT_OK(ImportCurrentStreamSchema());
+    return true;
+}
+
+Status VortexFileBatchReader::ImportCurrentStreamSchema() {
     // Import batches with the scan's actual output schema (projected columns, standard types).
     ::ArrowSchema ffi_schema = {};
     if (current_stream_.get_schema(&current_stream_, &ffi_schema) != 0) {
+        const char* message = current_stream_.get_last_error(&current_stream_);
+        std::string message_copy = message == nullptr ? "unknown" : message;
         Status callback_status = input_context_->GetCallbackStatus();
         ReleaseStream();
         if (!callback_status.ok()) {
             return callback_status.WithMessage("read Vortex stream schema", ": ",
                                                callback_status.message());
         }
-        return Status::IOError("Vortex Arrow stream get_schema failed");
+        return Status::IOError("Vortex Arrow stream get_schema failed: ", message_copy);
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(current_stream_schema_, arrow::ImportSchema(&ffi_schema));
-    return true;
+    return Status::OK();
 }
 
 Result<std::shared_ptr<arrow::Array>> VortexFileBatchReader::ReadNextArray() {
@@ -600,6 +625,8 @@ void VortexFileBatchReader::CloseInternal() {
     ReleaseStream();
     current_batch_.reset();
     scan_.reset();
+    selection_ = SelectionState{};
+    row_position_.Reset();
     data_source_.reset();
     session_.reset();
     input_context_.reset();

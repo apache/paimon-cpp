@@ -257,9 +257,10 @@ Result<VxExpressionPtr> MakeLiteralExpr(const Literal& literal,
 }
 
 // Type mismatches violate the predicate contract; valid but unsafe conversions fall back.
-Result<bool> LiteralMatchesColumn(const Literal& literal,
-                                  const std::shared_ptr<LeafPredicate>& leaf,
-                                  const std::shared_ptr<arrow::DataType>& arrow_type) {
+// True passes basic type eligibility only; scalar construction still checks value safety.
+Result<bool> CheckLiteralTypePushdownEligibility(
+    const Literal& literal, const std::shared_ptr<LeafPredicate>& leaf,
+    const std::shared_ptr<arrow::DataType>& arrow_type) {
     if (literal.IsNull() || arrow_type == nullptr) {
         return false;
     }
@@ -303,17 +304,19 @@ Result<bool> LiteralMatchesColumn(const Literal& literal,
 }
 
 // Check every basic type even when a value or the list budget requires fallback.
-Result<bool> ValidateMembershipLiteralTypes(const std::shared_ptr<LeafPredicate>& leaf,
-                                            const std::shared_ptr<arrow::DataType>& arrow_type) {
-    bool valid = true;
+Result<bool> CheckMembershipTypePushdownEligibility(
+    const std::shared_ptr<LeafPredicate>& leaf,
+    const std::shared_ptr<arrow::DataType>& arrow_type) {
+    bool all_literal_types_eligible = true;
     for (const Literal& literal : leaf->Literals()) {
-        PAIMON_ASSIGN_OR_RAISE(bool matches, LiteralMatchesColumn(literal, leaf, arrow_type));
-        if (!matches) {
-            valid = false;
+        PAIMON_ASSIGN_OR_RAISE(bool type_eligible,
+                               CheckLiteralTypePushdownEligibility(literal, leaf, arrow_type));
+        if (!type_eligible) {
+            all_literal_types_eligible = false;
             continue;
         }
     }
-    return valid;
+    return all_literal_types_eligible;
 }
 
 Result<VxExpressionPtr> ConvertInList(const std::vector<Literal>& literals,
@@ -352,10 +355,12 @@ Result<VxExpressionPtr> ConvertMembership(const std::shared_ptr<LeafPredicate>& 
                                           const vx_expression* column, bool negate,
                                           const VortexPredicateOptions& options) {
     const std::vector<Literal>& literals = leaf->Literals();
-    PAIMON_ASSIGN_OR_RAISE(bool valid, ValidateMembershipLiteralTypes(leaf, arrow_type));
+    PAIMON_ASSIGN_OR_RAISE(bool all_literal_types_eligible,
+                           CheckMembershipTypePushdownEligibility(leaf, arrow_type));
     // The query engine owns deduplication and integer-range rewrites. Apply value conversions
     // and create native scalars only within the original-list limit, after type validation.
-    if (!valid || literals.empty() || literals.size() > options.max_in_values) {
+    if (!all_literal_types_eligible || literals.empty() ||
+        literals.size() > options.max_in_values) {
         return NullExpr();
     }
     if (leaf->GetFieldType() == FieldType::TIMESTAMP) {
@@ -446,9 +451,9 @@ Result<VxExpressionPtr> ConvertLeaf(const std::shared_ptr<LeafPredicate>& leaf,
     if (!is_comparison) {
         return NullExpr();
     }
-    PAIMON_ASSIGN_OR_RAISE(bool matches,
-                           LiteralMatchesColumn(leaf->Literals()[0], leaf, arrow_type));
-    if (!matches) {
+    PAIMON_ASSIGN_OR_RAISE(bool type_eligible, CheckLiteralTypePushdownEligibility(
+                                                   leaf->Literals()[0], leaf, arrow_type));
+    if (!type_eligible) {
         return NullExpr();
     }
     PAIMON_ASSIGN_OR_RAISE(VxExpressionPtr literal_expr,

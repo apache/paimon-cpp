@@ -81,6 +81,25 @@ safety checks. ``0`` disables only IN/NOT IN pushdown. A list exceeding the limi
 is not pushed down and is never truncated. Other eligible predicates may still
 be pushed down; an OR expression requires every branch to be convertible.
 
+Increasing the membership limit does not bypass these fallback conditions:
+
+- ``FLOAT``/``DOUBLE`` comparisons and IN/NOT IN are not pushed down, including
+  predicates with finite constants, because native NaN ordering differs from
+  Paimon's comparisons.
+- Timestamp constants must convert to the file's timestamp unit without precision
+  loss or integer overflow and remain within the supported native temporal range.
+  This checks the predicate constant; stored values are not truncated.
+- Timestamp value predicates require an empty stored timezone or the exact
+  timezone label ``UTC``. Other stored labels fall back, independently of the
+  timezone requested by the reader.
+- Decimal constants must normalize to the file's precision and scale without
+  rounding or overflow. Empty or NULL-containing IN/NOT IN lists also fall back.
+
+``IS NULL`` and ``IS NOT NULL`` remain eligible for floating-point and timestamp
+fields. If the file contains a top-level user column named ``_row_idx``, however,
+the reader disables all native predicate filtering, even when that column is not
+projected. Projection and bitmap selection remain available.
+
 The Vortex adapter does not deduplicate lists or compress consecutive integer
 values into ranges. The query engine is responsible for these optimizations.
 To allow up to 128 entries per IN/NOT IN predicate:
@@ -111,3 +130,14 @@ For example, configure a 64 KiB gap and a 4 MiB merging threshold:
 
     read_context_builder.AddOption("vortex.read.io-coalesce.max-gap", "65536");
     read_context_builder.AddOption("vortex.read.io-coalesce.max-size", "4194304");
+
+Vortex Timestamp Storage
+========================
+
+For newly written ``TIMESTAMP_LTZ`` fields, the writer normalizes non-empty
+timezone metadata to ``UTC``, including timestamps nested in supported struct,
+list and fixed-size-list types. Epoch values and timestamp units are unchanged;
+the represented instants are not shifted. Timestamp fields without a timezone
+retain empty timezone metadata. This changes the observable stored file schema;
+existing files are not rewritten. Value predicates on existing timestamp fields
+with other stored timezone labels follow the fallback rules above.
