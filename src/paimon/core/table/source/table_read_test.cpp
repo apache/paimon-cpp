@@ -27,13 +27,12 @@
 #include <utility>
 #include <vector>
 
+#include "arrow/api.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/identifier.h"
 #include "paimon/catalog/table.h"
 #include "paimon/common/catalog/catalog_context.h"
-#include "arrow/api.h"
-#include "gtest/gtest.h"
-#include "paimon/catalog/identifier.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
