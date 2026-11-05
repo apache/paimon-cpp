@@ -294,15 +294,46 @@ TEST_F(RealtimeRefreshTest, TestSerializesConcurrentRefreshes) {
         return context_->AdvanceCommittedProgress(3, {{bucket_, 2}}, {{bucket_, {second}}});
     });
     ASSERT_EQ(std::future_status::timeout, next.wait_for(std::chrono::milliseconds(100)));
+    ASSERT_OK_AND_ASSIGN(auto snapshot_id, context_->GetRefreshedSnapshotId(bucket_));
+    ASSERT_EQ(snapshot_id, 1);
     open_gate->Release();
     ASSERT_OK(refreshing.get());
     ASSERT_OK(next.get());
+    ASSERT_OK_AND_ASSIGN(snapshot_id, context_->GetRefreshedSnapshotId(bucket_));
+    ASSERT_EQ(snapshot_id, 3);
     ASSERT_OK_AND_ASSIGN(RealtimeReadState after, context_->AcquireReadState());
     ASSERT_EQ(2, after.committed_offsets.at(bucket_));
     ASSERT_EQ(std::vector<std::shared_ptr<DataFileMeta>>{second},
               state_.deduplicate_state->committed_file_lookup_->DataFiles());
     ASSERT_NOK_WITH_MSG(context_->AdvanceCommittedProgress(2, {{bucket_, 1}}, {{bucket_, {first}}}),
                         "committed snapshot cannot move backwards");
+}
+
+TEST_F(RealtimeRefreshTest, TestBaseSnapshotTracksCompactionRefreshAndRetry) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> original,
+                         CreateFile("original.parquet", R"([[0, 1, "value"]])"));
+    ASSERT_OK(context_->AdvanceCommittedProgress(2, {{bucket_, 1}}, {{bucket_, {original}}}));
+    ASSERT_OK_AND_ASSIGN(auto snapshot_id, context_->GetRefreshedSnapshotId(bucket_));
+    ASSERT_EQ(snapshot_id, 2);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> compacted,
+                         CreateFile("compacted.parquet", R"([[0, 1, "value"]])"));
+    auto open_gate = fs_->BlockNext(BlockingFileSystem::Operation::OPEN,
+                                    path_factory_->ToPath(compacted) + ".offset");
+    open_gate->Release(Status::IOError("injected compaction sidecar failure"));
+    ASSERT_NOK_WITH_MSG(
+        context_->AdvanceCommittedProgress(3, {{bucket_, 1}}, {{bucket_, {compacted}}}),
+        "injected compaction sidecar failure");
+    ASSERT_OK_AND_ASSIGN(snapshot_id, context_->GetRefreshedSnapshotId(bucket_));
+    ASSERT_EQ(snapshot_id, 2);
+    ASSERT_EQ(std::vector<std::shared_ptr<DataFileMeta>>{original},
+              state_.deduplicate_state->committed_file_lookup_->DataFiles());
+
+    ASSERT_OK(context_->AdvanceCommittedProgress(3, {{bucket_, 1}}, {{bucket_, {compacted}}}));
+    ASSERT_OK_AND_ASSIGN(snapshot_id, context_->GetRefreshedSnapshotId(bucket_));
+    ASSERT_EQ(snapshot_id, 3);
+    ASSERT_EQ(std::vector<std::shared_ptr<DataFileMeta>>{compacted},
+              state_.deduplicate_state->committed_file_lookup_->DataFiles());
 }
 
 TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
@@ -634,6 +665,7 @@ TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
     auto factory = std::make_shared<TestingRealtimeStoreFactory>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     const std::map<std::string, std::string> partition = {{"dt", "2026-08-02"}};
+    ASSERT_OK(context->AdvanceCommittedProgress(4, {}, {}));
 
     ASSERT_OK(
         GetOrCreateAppendStore(context, partition, 0, MakeWriteSchema(), {}, GetDefaultPool()));
@@ -654,6 +686,11 @@ TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
     ASSERT_EQ(std::vector<int64_t>({7}), factory->stores[0]->committed_offsets);
     ASSERT_TRUE(factory->stores[1]->committed_offsets.empty());
     ASSERT_EQ(std::vector<int64_t>({9}), factory->stores[2]->committed_offsets);
+    for (int32_t bucket = 0; bucket < 3; ++bucket) {
+        ASSERT_OK_AND_ASSIGN(auto snapshot_id, context->GetRefreshedSnapshotId(
+                                                   RealtimePartitionBucket(partition, bucket)));
+        ASSERT_EQ(snapshot_id, bucket == 1 ? 4 : 5);
+    }
 
     ASSERT_OK_AND_ASSIGN(
         RealtimeStoreState failed_store_state,
@@ -665,6 +702,21 @@ TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
     ASSERT_EQ(2, factory->stores[1]->advance_count);
     ASSERT_EQ(1, factory->stores[2]->advance_count);
     ASSERT_EQ(std::vector<int64_t>({8}), factory->stores[1]->committed_offsets);
+    for (int32_t bucket = 0; bucket < 3; ++bucket) {
+        ASSERT_OK_AND_ASSIGN(auto snapshot_id, context->GetRefreshedSnapshotId(
+                                                   RealtimePartitionBucket(partition, bucket)));
+        ASSERT_EQ(snapshot_id, 5);
+    }
+    // A snapshot with unchanged offsets still becomes the current base without re-retiring rows.
+    ASSERT_OK(context->AdvanceCommittedProgress(6, committed_offsets, {}));
+    ASSERT_EQ(1, factory->stores[0]->advance_count);
+    ASSERT_EQ(2, factory->stores[1]->advance_count);
+    ASSERT_EQ(1, factory->stores[2]->advance_count);
+    for (int32_t bucket = 0; bucket < 3; ++bucket) {
+        ASSERT_OK_AND_ASSIGN(auto snapshot_id, context->GetRefreshedSnapshotId(
+                                                   RealtimePartitionBucket(partition, bucket)));
+        ASSERT_EQ(snapshot_id, 6);
+    }
 }
 
 TEST(RealtimeContextTest, TestRequiresReopenWhenCommittedProgressMovesBackwards) {
