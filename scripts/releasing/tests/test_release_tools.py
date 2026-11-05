@@ -745,6 +745,36 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                 json.loads(versions_path.read_text(encoding="utf-8")), versions
             )
 
+    def test_version_tool_bumps_dev_without_promoting_stable(self) -> None:
+        for docs_version in ("1.2.3", "1.1.0"):
+            with self.subTest(docs_version=docs_version), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                self.create_version_tree(root)
+                docs_path = root / "docs/source/conf.py"
+                docs_path.write_text(f'version = "{docs_version}"\n', encoding="utf-8")
+                versions_path = root / "docs/source/_static/versions.json"
+                versions = json.loads(versions_path.read_text(encoding="utf-8"))
+                versions[0]["name"] = "main (development)"
+                versions.append({
+                    "name": "1.0.0",
+                    "version": "1.0",
+                    "url": "https://paimon.apache.org/docs/cpp/1.0/",
+                })
+                # Preserve existing labels, archives, and formatting byte for byte.
+                versions_path.write_text(json.dumps(versions), encoding="utf-8")
+                before = versions_path.read_bytes()
+                result = self.run_tool(
+                    VERSION_TOOL, "--root", str(root), "--dev-only", "1.2.3", "1.3.0"
+                )
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [f"Updated {root / path}" for path in ("CMakeLists.txt", "docs/source/conf.py")],
+                )
+                self.assertIn("VERSION 1.3.0", (root / "CMakeLists.txt").read_text())
+                self.assertEqual(docs_path.read_text(), 'version = "1.3.0"\n')
+                self.assertEqual(versions_path.read_bytes(), before)
+                self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.0")
+
     def test_version_tool_promotes_series_on_patch_release(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -820,6 +850,7 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                 ["CMakeLists.txt", "docs/source/conf.py", "docs/source/_static/versions.json"],
             ),
             (("--promote-stable", "1.2.3"), ["docs/source/_static/versions.json"]),
+            (("--dev-only", "1.2.3", "1.3.0"), ["CMakeLists.txt", "docs/source/conf.py"]),
         ]:
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
@@ -841,6 +872,13 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             (("--promote-stable", "1.2"), 1),
             (("--promote-stable", "1.2.3", "1.2.3", "1.3.0"), 1),
             (("--check", "1.2.3", "--promote-stable", "1.2.3"), 2),
+            (("--dev-only", "--check", "1.2.3"), 2),
+            (("--dev-only", "--promote-stable", "1.2.3"), 2),
+            (("--dev-only",), 1),
+            (("--dev-only", "1.2.3"), 1),
+            (("--dev-only", "1.2.3", "1.2.3"), 1),
+            (("--dev-only", "1.2.3", "1.3"), 1),
+            (("--dev-only", "1.2.4", "1.3.0"), 1),
             (("1.2.3", "1.2.3"), 1),
             (("1.2.3", "1.3"), 1),
             (("1.2.4", "1.3.0"), 1),

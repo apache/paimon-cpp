@@ -16,7 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Check versions or start the next development cycle after a release."""
+"""Check versions, start the next development cycle, or promote stable docs."""
 
 import argparse
 import json
@@ -162,8 +162,10 @@ def checked_files(root: Path, expected: str) -> Dict[Path, str]:
     }
 
 
-def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
-    """Promote the released version and start the next development cycle."""
+def updated_files(
+    root: Path, current: str, new: str, *, dev_only: bool = False
+) -> Dict[Path, str]:
+    """Start the next development cycle, optionally promoting the released version."""
     files = checked_files(root, current)
     cmake_path = root / "CMakeLists.txt"
     docs_path = root / "docs/source/conf.py"
@@ -180,6 +182,9 @@ def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
         f'version = "{new}"',
         f"documentation version {current}",
     )
+
+    if dev_only:
+        return {cmake_path: files[cmake_path], docs_path: files[docs_path]}
 
     versions_path = root / "docs/source/_static/versions.json"
     versions = load_versions(versions_path)
@@ -211,10 +216,17 @@ def promoted_files(root: Path, version: str) -> Dict[Path, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("current_version", nargs="?", help="just-released project version")
+    parser.add_argument(
+        "current_version", nargs="?", help="current project version (released unless --dev-only)"
+    )
     parser.add_argument("new_version", nargs="?", help="next development version")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", metavar="VERSION", help="validate version metadata")
+    mode.add_argument(
+        "--dev-only",
+        action="store_true",
+        help="update development versions without promoting stable docs",
+    )
     mode.add_argument(
         "--promote-stable",
         metavar="VERSION",
@@ -249,7 +261,8 @@ def main() -> int:
             if args.current_version == args.new_version:
                 raise VersionError("current and new versions must differ")
             files = updated_files(
-                args.root.resolve(), args.current_version, args.new_version
+                args.root.resolve(), args.current_version, args.new_version,
+                dev_only=args.dev_only,
             )
         for path, content in files.items():
             if args.dry_run:

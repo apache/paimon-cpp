@@ -61,7 +61,21 @@ version; replace these illustrative values with the versions for your release:
 scripts/releasing/bump_version.py --check 0.2.0
 ```
 
-After publishing a release, start the next development cycle and review the diff:
+After cutting a release branch, advance the main branch before publishing the
+release with:
+
+```bash
+scripts/releasing/bump_version.py --dev-only 0.2.0 0.3.0
+scripts/releasing/bump_version.py --check 0.3.0
+```
+
+This updates only CMake and `docs/source/conf.py` to the next development
+version. It leaves `docs/source/_static/versions.json` unchanged, including the
+stable release and archived versions. Cutting a release branch does not make
+that version stable.
+
+After publishing a release, you can instead start the next development cycle
+and promote the released version together:
 
 ```bash
 scripts/releasing/bump_version.py 0.2.0 0.3.0
@@ -83,9 +97,9 @@ development version and updates the documentation version switcher:
   label. If the released version is already stable, no additional archive is
   created.
 
-Run the two-version command after publishing the old version, since it marks
-that version stable. It updates local metadata; publishing documentation remains
-a separate step.
+Without `--dev-only`, run the two-version command after publishing the old
+version, since it marks that version stable. It updates local metadata;
+publishing documentation remains a separate step.
 
 To promote the current project version without starting a development cycle,
 use the independent operation:
@@ -98,7 +112,11 @@ This only updates `docs/source/_static/versions.json` and requires CMake and
 `docs/source/conf.py` to use the version being promoted. Repeating it does not
 add an archive.
 
-Both update operations support `--dry-run`, which validates the inputs and lists
+If main was already advanced with `--dev-only`, run `--promote-stable` on the
+release branch after publication, then carry the `versions.json` update back to
+main.
+
+All update modes support `--dry-run`, which validates the inputs and lists
 the files that would be written without modifying them. `--root PATH` selects a
 different source tree. `--check VERSION` remains a read-only consistency check:
 CMake must match `VERSION`, and the documentation version may match either CMake
@@ -269,8 +287,8 @@ than ASF's general one-hour minimum.
 ## Individual tools
 
 - `bump_version.py`: check version metadata, start the next development cycle
-  while marking the released version stable, or independently promote stable
-  documentation.
+  with or without promoting the released version, or independently promote
+  stable documentation.
 - `create_source_release.sh`: deterministically create an archive with GNU
   gzip, a SHA-512 checksum, and an optional detached signature from an immutable
   Git ref.
