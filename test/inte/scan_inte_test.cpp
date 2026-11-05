@@ -1730,7 +1730,7 @@ TEST_P(ScanInteTest, TestScanPKWithInvalidOptions) {
     context_builder.AddOption(Options::BUCKET, "-1").WithStreamingMode(true);
     ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(context_builder));
     ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)),
-                        "do not support pk table bucket=-1 in scan process");
+                        "do not support pk table bucket=-1 in streaming scan process");
 }
 
 TEST_P(ScanInteTest, TestReadWithNoSnapshot) {
