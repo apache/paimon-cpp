@@ -16,7 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Check or update the Apache Paimon C++ project and documentation version."""
+"""Check versions or start the next development cycle after a release."""
 
 import argparse
 import json
@@ -163,10 +163,10 @@ def checked_files(root: Path, expected: str) -> Dict[Path, str]:
 
 
 def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
+    """Promote the released version and start the next development cycle."""
     files = checked_files(root, current)
     cmake_path = root / "CMakeLists.txt"
     docs_path = root / "docs/source/conf.py"
-    versions_path = root / "docs/source/_static/versions.json"
 
     files[cmake_path] = replace_once(
         files[cmake_path],
@@ -181,23 +181,45 @@ def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
         f"documentation version {current}",
     )
 
+    versions_path = root / "docs/source/_static/versions.json"
     versions = load_versions(versions_path)
-    previous_version = versions[1]["name"].split(" ")[0]
-    if series(previous_version) != series(new):
-        # Release preparation promotes the target series, even when the
-        # project version already belongs to that series. Archive the
-        # previous stable series only when it changes.
-        versions.insert(2, series_entry(previous_version))
-    versions[1] = stable_entry(new)
+    promote_stable(versions, current)
+    versions[0]["name"] = "main"
     files[versions_path] = json.dumps(versions, indent=4) + "\n"
     return files
 
 
+def promote_stable(versions: List[Dict[str, object]], version: str) -> None:
+    """Update the stable label, archiving the previous stable series if needed."""
+    previous_version = versions[1]["name"].split(" ")[0]
+    if series(previous_version) != series(version):
+        versions.insert(2, series_entry(previous_version))
+    versions[1] = stable_entry(version)
+
+
+def promoted_files(root: Path, version: str) -> Dict[Path, str]:
+    """Promote the current project version without changing project metadata."""
+    files = checked_files(root, version)
+    docs = files[root / "docs/source/conf.py"]
+    if re.findall(r'^version = "(\d+\.\d+\.\d+)"$', docs, re.MULTILINE) != [version]:
+        raise VersionError("documentation version must match the version being promoted")
+    versions_path = root / "docs/source/_static/versions.json"
+    versions = load_versions(versions_path)
+    promote_stable(versions, version)
+    return {versions_path: json.dumps(versions, indent=4) + "\n"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("current_version", nargs="?")
-    parser.add_argument("new_version", nargs="?")
-    parser.add_argument("--check", metavar="VERSION")
+    parser.add_argument("current_version", nargs="?", help="just-released project version")
+    parser.add_argument("new_version", nargs="?", help="next development version")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", metavar="VERSION", help="validate version metadata")
+    mode.add_argument(
+        "--promote-stable",
+        metavar="VERSION",
+        help="promote the current project version to stable docs",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--root", type=Path, default=Path(__file__).resolve().parents[2]
@@ -205,24 +227,30 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        if args.check:
+        if args.check or args.promote_stable:
             if args.current_version or args.new_version:
-                raise VersionError("--check cannot be combined with version arguments")
+                raise VersionError(
+                    "--check and --promote-stable cannot be combined with version arguments"
+                )
+        if args.check:
             require_version(args.check)
             checked_files(args.root.resolve(), args.check)
             print(f"Release version metadata is consistent: {args.check}")
             return 0
 
-        if not args.current_version or not args.new_version:
-            raise VersionError("CURRENT_VERSION and NEW_VERSION are required")
-        require_version(args.current_version)
-        require_version(args.new_version)
-        if args.current_version == args.new_version:
-            raise VersionError("current and new versions must differ")
-
-        files = updated_files(
-            args.root.resolve(), args.current_version, args.new_version
-        )
+        if args.promote_stable:
+            require_version(args.promote_stable)
+            files = promoted_files(args.root.resolve(), args.promote_stable)
+        else:
+            if not args.current_version or not args.new_version:
+                raise VersionError("CURRENT_VERSION and NEW_VERSION are required")
+            require_version(args.current_version)
+            require_version(args.new_version)
+            if args.current_version == args.new_version:
+                raise VersionError("current and new versions must differ")
+            files = updated_files(
+                args.root.resolve(), args.current_version, args.new_version
+            )
         for path, content in files.items():
             if args.dry_run:
                 print(f"Would update {path}")

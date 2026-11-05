@@ -688,10 +688,11 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             encoding="utf-8",
         )
 
-    def test_version_tool_checks_and_updates_all_metadata(self) -> None:
+    def test_version_tool_bumps_dev_and_promotes_released_version(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self.create_version_tree(root)
+            versions_path = root / "docs/source/_static/versions.json"
             self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.2.3")
             self.run_tool(VERSION_TOOL, "--root", str(root), "1.2.3", "1.3.0")
             self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.0")
@@ -699,7 +700,6 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             self.assertIn(
                 'version = "1.3.0"', (root / "docs/source/conf.py").read_text()
             )
-            versions_path = root / "docs/source/_static/versions.json"
             versions = json.loads(versions_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 versions,
@@ -710,7 +710,7 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                         "url": "https://paimon.apache.org/docs/cpp/main/",
                     },
                     {
-                        "name": "1.3.0 (stable)",
+                        "name": "1.2.3 (stable)",
                         "version": "",
                         "url": "https://paimon.apache.org/docs/cpp/",
                         "preferred": True,
@@ -722,9 +722,24 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                     },
                 ],
             )
-            # A patch release updates the label without adding an archive.
+            # The next cycle promotes the version just released, not the new dev version.
             self.run_tool(VERSION_TOOL, "--root", str(root), "1.3.0", "1.3.1")
             self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.1")
+            versions[1]["name"] = "1.3.0 (stable)"
+            versions.insert(
+                2,
+                {
+                    "name": "1.2.3",
+                    "version": "1.2",
+                    "url": "https://paimon.apache.org/docs/cpp/1.2/",
+                },
+            )
+            self.assertEqual(
+                json.loads(versions_path.read_text(encoding="utf-8")), versions
+            )
+            # A patch release updates stable without adding another archive.
+            self.run_tool(VERSION_TOOL, "--root", str(root), "1.3.1", "1.3.2")
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.2")
             versions[1]["name"] = "1.3.1 (stable)"
             self.assertEqual(
                 json.loads(versions_path.read_text(encoding="utf-8")), versions
@@ -739,7 +754,8 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             versions = json.loads(
                 (root / "docs/source/_static/versions.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(versions[1]["name"], "1.2.4 (stable)")
+            self.assertEqual(versions[0]["name"], "main")
+            self.assertEqual(versions[1]["name"], "1.2.3 (stable)")
             self.assertEqual(versions[2]["version"], "1.1")
             self.assertEqual(len(versions), 3)
 
@@ -753,6 +769,106 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
             self.run_tool(VERSION_TOOL, "--root", str(root), "1.2.3", "1.3.0")
             self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.0")
             self.assertIn('version = "1.3.0"', docs_path.read_text(encoding="utf-8"))
+
+    def test_version_tool_promotes_existing_project_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.create_version_tree(root)
+            project_files = [root / "CMakeLists.txt", root / "docs/source/conf.py"]
+            project_before = [path.read_bytes() for path in project_files]
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--promote-stable", "1.2.3")
+            self.assertEqual([path.read_bytes() for path in project_files], project_before)
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.2.3")
+            versions_path = root / "docs/source/_static/versions.json"
+            versions = json.loads(versions_path.read_text(encoding="utf-8"))
+            self.assertEqual(versions[1]["name"], "1.2.3 (stable)")
+            self.assertEqual(versions[2]["name"], "1.1.0")
+            promoted = versions_path.read_bytes()
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--promote-stable", "1.2.3")
+            self.assertEqual(versions_path.read_bytes(), promoted)
+            self.run_tool(VERSION_TOOL, "--root", str(root), "1.2.3", "1.3.0")
+            self.run_tool(VERSION_TOOL, "--root", str(root), "--check", "1.3.0")
+            self.assertEqual(
+                json.loads(versions_path.read_text(encoding="utf-8")), versions
+            )
+
+    def test_version_tool_validates_dev_label_and_accepts_legacy_labels(self) -> None:
+        for name, returncode in [
+            ("main", 0),
+            ("main (development)", 0),
+            ("1.2.3 (dev)", 1),
+            ("1.3.0 (dev)", 1),
+            ("1.2 (dev)", 1),
+            ("1.2.3 (stable)", 1),
+        ]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                self.create_version_tree(root)
+                versions_path = root / "docs/source/_static/versions.json"
+                versions = json.loads(versions_path.read_text(encoding="utf-8"))
+                versions[0]["name"] = name
+                versions_path.write_text(json.dumps(versions), encoding="utf-8")
+                self.run_tool(
+                    VERSION_TOOL, "--root", str(root), "--check", "1.2.3",
+                    expected_returncode=returncode,
+                )
+
+    def test_version_tool_dry_run_leaves_all_files_unchanged(self) -> None:
+        for arguments, expected_files in [
+            (
+                ("1.2.3", "1.3.0"),
+                ["CMakeLists.txt", "docs/source/conf.py", "docs/source/_static/versions.json"],
+            ),
+            (("--promote-stable", "1.2.3"), ["docs/source/_static/versions.json"]),
+        ]:
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                self.create_version_tree(root)
+                paths = [path for path in root.rglob("*") if path.is_file()]
+                before = {path: path.read_bytes() for path in paths}
+                result = self.run_tool(
+                    VERSION_TOOL, "--root", str(root), "--dry-run", *arguments
+                )
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [f"Would update {root / path}" for path in expected_files],
+                )
+                self.assertEqual({path: path.read_bytes() for path in paths}, before)
+
+    def test_version_tool_rejects_invalid_operations_without_writes(self) -> None:
+        for arguments, returncode in [
+            (("--promote-stable", "1.3.0"), 1),
+            (("--promote-stable", "1.2"), 1),
+            (("--promote-stable", "1.2.3", "1.2.3", "1.3.0"), 1),
+            (("--check", "1.2.3", "--promote-stable", "1.2.3"), 2),
+            (("1.2.3", "1.2.3"), 1),
+            (("1.2.3", "1.3"), 1),
+            (("1.2.4", "1.3.0"), 1),
+        ]:
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                self.create_version_tree(root)
+                paths = [path for path in root.rglob("*") if path.is_file()]
+                before = {path: path.read_bytes() for path in paths}
+                self.run_tool(
+                    VERSION_TOOL, "--root", str(root), *arguments,
+                    expected_returncode=returncode,
+                )
+                self.assertEqual({path: path.read_bytes() for path in paths}, before)
+
+    def test_version_tool_requires_matching_docs_for_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.create_version_tree(root)
+            docs_path = root / "docs/source/conf.py"
+            docs_path.write_text('version = "1.1.0"\n', encoding="utf-8")
+            versions_path = root / "docs/source/_static/versions.json"
+            before = versions_path.read_bytes()
+            self.run_tool(
+                VERSION_TOOL, "--root", str(root), "--promote-stable", "1.2.3",
+                expected_returncode=1,
+            )
+            self.assertEqual(versions_path.read_bytes(), before)
 
     def test_docs_channels_configure_version_warning(self) -> None:
         for channel, match, warning in [
