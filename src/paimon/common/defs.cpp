@@ -91,6 +91,7 @@ const char Options::COMMIT_MAX_RETRY_WAIT[] = "commit.max-retry-wait";
 const char Options::COMMIT_DISCARD_DUPLICATE_FILES[] = "commit.discard-duplicate-files";
 const char Options::REST_COMMIT_LOCK_ENABLED[] = "rest.commit.lock-enabled";
 const char Options::REST_COMMIT_ACQUIRE_LOCK[] = "rest.commit.acquire-lock";
+const char Options::QUERY_AUTH_ENABLED[] = "query-auth.enabled";
 const char Options::SEQUENCE_FIELD[] = "sequence.field";
 const char Options::SEQUENCE_FIELD_SORT_ORDER[] = "sequence.field.sort-order";
 const char Options::MERGE_ENGINE[] = "merge-engine";

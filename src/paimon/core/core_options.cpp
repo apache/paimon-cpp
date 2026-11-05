@@ -489,6 +489,7 @@ struct CoreOptions::Impl {
     bool commit_discard_duplicate_files = false;
     bool rest_commit_lock_enabled = false;
     bool rest_commit_acquire_lock = false;
+    bool query_auth_enabled = false;
     bool dynamic_partition_overwrite = true;
     bool overwrite_upgrade = true;
     bool compaction_force_rewrite_all_files = false;
@@ -725,6 +726,8 @@ struct CoreOptions::Impl {
         // Parse rest.commit.acquire-lock - whether this writer acquires a commit lease
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::REST_COMMIT_ACQUIRE_LOCK, &rest_commit_acquire_lock));
+        // Parse query-auth.enabled - whether the catalog enforces row filters and column masks
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::QUERY_AUTH_ENABLED, &query_auth_enabled));
         // Parse dynamic-partition-overwrite - whether overwrite only dynamic partitions
         // for partitioned table overwrite.
         PAIMON_RETURN_NOT_OK(
@@ -1372,6 +1375,10 @@ bool CoreOptions::RestCommitLockEnabled() const {
 
 bool CoreOptions::RestCommitAcquireLock() const {
     return impl_->rest_commit_acquire_lock;
+}
+
+bool CoreOptions::QueryAuthEnabled() const {
+    return impl_->query_auth_enabled;
 }
 
 bool CoreOptions::DynamicPartitionOverwrite() const {

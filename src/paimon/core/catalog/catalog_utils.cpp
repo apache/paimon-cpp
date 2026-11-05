@@ -75,6 +75,27 @@ Result<Identifier> CatalogUtils::BranchIdentifier(const Identifier& identifier,
     return Identifier(identifier.GetDatabaseName(), data_table_name, branch);
 }
 
+Result<Identifier> CatalogUtils::ResolvedBranchIdentifier(const Identifier& identifier,
+                                                          const std::string& branch) {
+    if (IsSystemDatabase(identifier.GetDatabaseName())) {
+        return identifier;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
+                           identifier.GetBranchName());
+    if (identifier_branch) {
+        return identifier;
+    }
+    PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier, BranchIdentifier(identifier, branch));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table,
+                           identifier.GetSystemTableName());
+    if (!system_table) {
+        return branch_identifier;
+    }
+    return Identifier(branch_identifier.GetDatabaseName(),
+                      fmt::format("{}{}{}", branch_identifier.GetObjectName(),
+                                  Identifier::kSystemTableSplitter, system_table.value()));
+}
+
 Status CatalogUtils::CheckNotBranch(const Identifier& identifier, const std::string& action) {
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
     if (branch) {

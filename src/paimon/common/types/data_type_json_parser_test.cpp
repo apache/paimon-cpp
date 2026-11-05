@@ -228,8 +228,21 @@ TEST(DataTypeJsonParserTest, ParseTypeRowTypeGeneratesMissingFieldIds) {
     }
 }
 
+TEST(DataTypeJsonParserTest, ParseTypeRejectsEmbeddedNul) {
+    for (const char* json :
+         {R"("INT\u0000suffix")", R"({"type": "ARRAY\u0000suffix", "element": "INT"})",
+          R"({"type": "ARRAY", "element": "STRING\u0000suffix"})"}) {
+        rapidjson::Document doc;
+        doc.Parse(json);
+        ASSERT_FALSE(doc.HasParseError());
+        ASSERT_NOK(DataTypeJsonParser::ParseType("field", doc));
+    }
+}
+
 TEST(DataTypeJsonParserTest, ParseTypeComplexTypeFailure) {
     const std::vector<std::pair<const char*, const char*>> test_cases = {
+        {R"({"type":123})", "complex data type must have a string type"},
+        {R"({"element":"INT"})", "complex data type must have a string type"},
         {R"({"type":"ROW"})", "row data type must have fields"},
         {R"({"type":"ROW","fields":{}})", "row data type must have fields"},
         {R"({"type":"ROW","fields":[null]})", "data field must be an object"},

@@ -58,6 +58,13 @@ class CatalogUtils {
     static Result<Identifier> BranchIdentifier(const Identifier& identifier,
                                                const std::string& branch);
 
+    /// Returns `identifier` naming `branch`, the branch resolved for an operation on it, so that
+    /// every catalog request of the operation goes to that branch: an identifier of the system
+    /// database or one already naming a branch is returned as it is, and any other keeps its
+    /// system table suffix, as `tbl$branch_dev$files`.
+    static Result<Identifier> ResolvedBranchIdentifier(const Identifier& identifier,
+                                                       const std::string& branch);
+
     /// Fails when `db_name` cannot be used as a single path component, which is required to
     /// keep the database path under the warehouse.
     static Status CheckValidDatabaseName(const std::string& db_name);

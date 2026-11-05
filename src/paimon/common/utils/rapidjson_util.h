@@ -23,8 +23,10 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/status.h"
@@ -76,6 +78,10 @@ class RapidJsonUtil {
         if (!obj) {
             return Status::Invalid("deserialize failed: obj is nullptr");
         }
+        // RapidJSON treats an unescaped NUL as end-of-input, even with an explicit length.
+        if (json_str.find('\0') != std::string::npos) {
+            return Status::Invalid("deserialize failed: JSON contains an unescaped NUL byte");
+        }
         if constexpr (std::is_same_v<T, std::map<std::string, std::string>>) {
             PAIMON_ASSIGN_OR_RAISE(*obj, MapFromJsonString(json_str));
         } else {
@@ -114,6 +120,10 @@ class RapidJsonUtil {
 
     template <typename T>
     static T DeserializeValue(const rapidjson::Value& value);
+
+    // Fails when an object in `value`, at any depth, names a member twice: RapidJSON keeps both
+    // and a lookup finds the first.
+    static Status CheckNoDuplicateMembers(const rapidjson::Value& value);
 
  private:
     static inline bool ToJson(const rapidjson::Value& value, std::string* json_str) {
@@ -189,6 +199,25 @@ class RapidJsonUtil {
     }
 };
 
+inline Status RapidJsonUtil::CheckNoDuplicateMembers(const rapidjson::Value& value) {
+    if (value.IsArray()) {
+        for (const rapidjson::Value& item : value.GetArray()) {
+            PAIMON_RETURN_NOT_OK(CheckNoDuplicateMembers(item));
+        }
+    } else if (value.IsObject()) {
+        std::set<std::string_view> names;
+        for (auto it = value.MemberBegin(); it != value.MemberEnd(); ++it) {
+            std::string_view name(it->name.GetString(), it->name.GetStringLength());
+            if (!names.insert(name).second) {
+                return Status::Invalid("JSON object names member '", std::string(name),
+                                       "' more than once");
+            }
+            PAIMON_RETURN_NOT_OK(CheckNoDuplicateMembers(it->value));
+        }
+    }
+    return Status::OK();
+}
+
 template <typename T>
 inline rapidjson::Value RapidJsonUtil::SerializeValue(
     const T& obj, rapidjson::Document::AllocatorType* allocator) {
@@ -202,7 +231,8 @@ inline rapidjson::Value RapidJsonUtil::SerializeValue(
         }
     } else {
         if constexpr (std::is_same_v<T, std::string>) {
-            return rapidjson::Value(obj.c_str(), *allocator);
+            return rapidjson::Value(obj.data(), static_cast<rapidjson::SizeType>(obj.size()),
+                                    *allocator);
         } else if constexpr (std::is_arithmetic_v<T>) {
             return rapidjson::Value(obj);
         } else if constexpr (is_map<T>::value) {

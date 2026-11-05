@@ -70,6 +70,72 @@ TEST(ScanContextTest, TestWithFileSystemOverridesCatalog) {
     ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
 }
 
+TEST(ScanContextTest, TestWithCatalogResolvesTheBranch) {
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+
+    for (const std::string branch : {"MAIN", "Main"}) {
+        const std::string message =
+            "a catalog names branch '" + branch + "' as it names the main branch";
+        ASSERT_NOK_WITH_MSG(ScanContextBuilder("table_root_path")
+                                .WithCatalog(catalog, Identifier("db1", "t1"))
+                                .AddOption(Options::BRANCH, branch)
+                                .Finish(),
+                            message);
+        ASSERT_NOK_WITH_MSG(ScanContextBuilder("table_root_path")
+                                .WithCatalog(catalog, Identifier("db1", "t1$branch_" + branch))
+                                .Finish(),
+                            message);
+    }
+    ASSERT_NOK_WITH_MSG(ScanContextBuilder("table_root_path")
+                            .WithCatalog(catalog, Identifier("db1", "t1"))
+                            .AddOption(Options::BRANCH, "dev$options")
+                            .Finish(),
+                        "a branch a catalog addresses cannot contain '$'");
+    ASSERT_NOK_WITH_MSG(ScanContextBuilder("table_root_path")
+                            .WithCatalog(catalog, Identifier("db1", "t1", "dev"))
+                            .AddOption(Options::BRANCH, "test")
+                            .Finish(),
+                        "a scan is aimed at one branch, but both 'dev' and 'test' were named");
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
+    ASSERT_EQ(0u, catalog->LoadTableSchemaCalls());
+    ASSERT_OK_AND_ASSIGN(
+        auto path_ctx,
+        ScanContextBuilder("table_root_path").AddOption(Options::BRANCH, "MAIN").Finish());
+    ASSERT_EQ("MAIN", path_ctx->GetOptions().at(Options::BRANCH));
+
+    ASSERT_OK_AND_ASSIGN(auto ctx, ScanContextBuilder("table_root_path")
+                                       .WithCatalog(catalog, Identifier("db1", "t1", "dev"))
+                                       .Finish());
+    ASSERT_EQ("dev", ctx->GetOptions().at(Options::BRANCH));
+    ASSERT_OK_AND_ASSIGN(auto option_ctx, ScanContextBuilder("table_root_path")
+                                              .WithCatalog(catalog, Identifier("db1", "t1"))
+                                              .AddOption(Options::BRANCH, "dev")
+                                              .Finish());
+    ASSERT_EQ("dev", option_ctx->GetOptions().at(Options::BRANCH));
+    ASSERT_EQ(Identifier("db1", "t1$branch_dev"), option_ctx->GetIdentifier().value());
+    ASSERT_OK_AND_ASSIGN(auto system_ctx, ScanContextBuilder("table_root_path")
+                                              .WithCatalog(catalog, Identifier("db1", "t1$files"))
+                                              .AddOption(Options::BRANCH, "dev")
+                                              .Finish());
+    ASSERT_EQ(Identifier("db1", "t1$branch_dev$files"), system_ctx->GetIdentifier().value());
+    ASSERT_OK_AND_ASSIGN(auto sys_ctx, ScanContextBuilder("table_root_path")
+                                           .WithCatalog(catalog, Identifier("sys", "tables"))
+                                           .AddOption(Options::BRANCH, "dev")
+                                           .Finish());
+    ASSERT_EQ(Identifier("sys", "tables"), sys_ctx->GetIdentifier().value());
+    ASSERT_OK_AND_ASSIGN(auto main_ctx, ScanContextBuilder("table_root_path")
+                                            .WithCatalog(catalog, Identifier("db1", "t1"))
+                                            .Finish());
+    ASSERT_EQ(0u, main_ctx->GetOptions().count(Options::BRANCH));
+    ASSERT_EQ(Identifier("db1", "t1"), main_ctx->GetIdentifier().value());
+    ASSERT_EQ(std::vector<Identifier>({Identifier("db1", "t1$branch_dev"),
+                                       Identifier("db1", "t1$branch_dev"),
+                                       Identifier("db1", "t1$branch_dev$files"),
+                                       Identifier("sys", "tables"), Identifier("db1", "t1")}),
+              catalog->TableFileSystemRequests());
+}
+
 TEST(ScanContextTest, TestWithCatalogNullRejected) {
     ScanContextBuilder builder("table_root_path");
     ASSERT_NOK_WITH_MSG(builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),
@@ -91,6 +157,7 @@ TEST(ScanContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetGlobalIndexResult());
     ASSERT_FALSE(ctx->GetSpecificFileSystem());
+    ASSERT_FALSE(ctx->GetReadFieldNames());
 }
 
 TEST(ScanContextTest, TestSetContent) {
@@ -117,6 +184,7 @@ TEST(ScanContextTest, TestSetContent) {
     builder.SetTableSchema("table-schema-json");
     auto manifest_cache = std::make_shared<LruCache>(1024);
     builder.WithCache(manifest_cache);
+    builder.SetReadFieldNames({"f1", "f2"});
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
     ASSERT_EQ(ctx->GetPath(), "table_root_path");
     ASSERT_TRUE(ctx->IsStreamingMode());
@@ -134,6 +202,8 @@ TEST(ScanContextTest, TestSetContent) {
     ASSERT_EQ(expected_options, ctx->GetOptions());
     ASSERT_EQ(fs, ctx->GetSpecificFileSystem());
     ASSERT_TRUE(ctx->GetCache());
+    ASSERT_EQ(std::optional<std::vector<std::string>>(std::vector<std::string>{"f1", "f2"}),
+              ctx->GetReadFieldNames());
 }
 
 TEST(ScanContextTest, TestSetOptionsOverridesAddedOptions) {

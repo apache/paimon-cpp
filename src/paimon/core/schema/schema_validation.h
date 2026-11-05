@@ -27,6 +27,7 @@
 
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/visibility.h"
 
@@ -54,6 +55,20 @@ class SchemaValidation {
     /// Validates real-time options after operation-specific options have been merged with the
     /// table schema options.
     static Status ValidateRealtime(const TableSchema& schema, const CoreOptions& options);
+
+    /// Returns whether a read given `dynamic_options` of a table whose schema has
+    /// `schema_options` enables `query-auth.enabled`. Fails when `dynamic_options` disable what
+    /// `schema_options` enable.
+    static Result<bool> QueryAuthReadEnabled(
+        const std::map<std::string, std::string>& schema_options,
+        const std::map<std::string, std::string>& dynamic_options);
+
+    /// Refuses `what`, a way of reading a table that does not apply the catalog's row filters and
+    /// column masks, when the schema or `dynamic_options` enable `query-auth.enabled`.
+    /// `dynamic_options` cannot disable what the schema enables.
+    static Status RejectQueryAuth(const TableSchema& schema,
+                                  const std::map<std::string, std::string>& dynamic_options,
+                                  const std::string& what);
 
     /// Checks the deliberately limited dedicated-vector write path, including runtime overrides.
     static Status ValidateVectorStore(const TableSchema& schema, const CoreOptions& options);

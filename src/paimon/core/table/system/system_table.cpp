@@ -26,11 +26,13 @@
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/system/audit_log_system_table.h"
 #include "paimon/core/table/system/binlog_system_table.h"
@@ -174,6 +176,23 @@ std::optional<SystemTableFactory> FindSystemTableFactory(const std::string& syst
     return std::nullopt;
 }
 
+// The system tables that read the rows or the file statistics of a query-auth table are refused
+// as soon as they are loaded: `$files` and `$binlog` as in Java, and `$audit_log` and `$ro`, whose
+// reads would not apply the rules. The other system tables report only metadata.
+Status ValidateQueryAuthSystemTable(const std::string& system_table_name,
+                                    const std::shared_ptr<TableSchema>& table_schema,
+                                    const std::map<std::string, std::string>& dynamic_options) {
+    std::string normalized_name = StringUtils::ToLowerCase(system_table_name);
+    if (table_schema == nullptr || (normalized_name != FilesSystemTable::kName &&
+                                    normalized_name != BinlogSystemTable::kName &&
+                                    normalized_name != AuditLogSystemTable::kName &&
+                                    normalized_name != ReadOptimizedSystemTable::kName)) {
+        return Status::OK();
+    }
+    return SchemaValidation::RejectQueryAuth(*table_schema, dynamic_options,
+                                             fmt::format("System table '{}'", normalized_name));
+}
+
 }  // namespace
 
 bool SystemTableLoader::IsSupported(const std::string& system_table_name) {
@@ -186,6 +205,8 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
     const std::map<std::string, std::string>& dynamic_options) {
     std::optional<SystemTableFactory> factory = FindSystemTableFactory(system_table_name);
     if (factory) {
+        PAIMON_RETURN_NOT_OK(
+            ValidateQueryAuthSystemTable(system_table_name, table_schema, dynamic_options));
         return factory.value()(fs, table_path, table_schema, dynamic_options);
     }
     return Status::NotImplemented("unsupported system table: ", system_table_name);
@@ -244,16 +265,18 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
         return GlobalSystemTableLoader::Load(parsed.system_table_name, context);
     }
 
-    SchemaManager schema_manager(fs, parsed.table_path,
-                                 parsed.branch.value_or(BranchManager::DEFAULT_MAIN_BRANCH));
+    PAIMON_ASSIGN_OR_RAISE(std::string branch, BranchManager::ResolveBranch(
+                                                   /*identifier=*/std::nullopt, dynamic_options,
+                                                   parsed.branch, "system table read"));
+    SchemaManager schema_manager(fs, parsed.table_path, branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                            schema_manager.Latest());
     if (!latest_schema) {
         return Status::NotExist("base table schema not found for system table path: ", path);
     }
     auto options = dynamic_options;
-    if (parsed.branch) {
-        options[Options::BRANCH] = parsed.branch.value();
+    if (parsed.branch || options.count(Options::BRANCH) > 0) {
+        options[Options::BRANCH] = branch;
     }
     return Load(parsed.system_table_name, fs, parsed.table_path, latest_schema.value(), options);
 }
