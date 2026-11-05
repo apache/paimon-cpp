@@ -405,9 +405,9 @@ Result<std::unique_ptr<MergeFileSplitRead>> MergeFileSplitRead::Create(
 
 Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateReader(
     const std::shared_ptr<Split>& split) {
-    if (context_->HasVectorOrFullTextSearch()) {
+    if (context_->EnablePreciseFileIndexEvaluate()) {
         return Status::NotImplemented(
-            "VectorSearch or FullTextSearch does not support merge file reads yet");
+            "Precise file-index evaluation does not support merge file reads");
     }
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
     if (!data_split) {

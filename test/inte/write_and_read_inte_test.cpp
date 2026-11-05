@@ -814,15 +814,16 @@ TEST_P(WriteAndReadInteTest, TestLuminaSearchAfterRenameAcrossSchemaVersions) {
                                                  std::map<std::string, std::string>{});
     ReadContextBuilder builder(path);
     builder.SetOptions(current_options)
-        .SetReadFieldNames({"id", "_INDEX_SCORE"})
-        .SetVectorSearch(search);
+        .SetReadFieldNames({"id", "_vec_INDEX_SCORE"})
+        .SetVectorSearch(search)
+        .EnablePreciseFileIndexEvaluate(true);
     ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(context)));
     ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
     auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
                                          arrow::field("id", arrow::int32()),
-                                         arrow::field("_INDEX_SCORE", arrow::float32())});
+                                         arrow::field("_vec_INDEX_SCORE", arrow::float32())});
     ASSERT_TRUE(actual);
     ASSERT_TRUE(actual->type()->Equals(expected_type));
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -903,7 +904,7 @@ TEST_P(WriteAndReadInteTest, TestLuminaVectorIndexAfterCompaction) {
     }
     auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
                                          arrow::field("id", arrow::int32()),
-                                         arrow::field("_INDEX_SCORE", arrow::float32())});
+                                         arrow::field("_embedding_INDEX_SCORE", arrow::float32())});
     auto read_search = [&](int32_t limit) -> Result<std::shared_ptr<arrow::ChunkedArray>> {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, InnerScan(options));
         auto search = std::make_shared<VectorSearch>(
@@ -911,8 +912,9 @@ TEST_P(WriteAndReadInteTest, TestLuminaVectorIndexAfterCompaction) {
             VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
         ReadContextBuilder builder(path);
         builder.SetOptions(options)
-            .SetReadFieldNames({"id", "_INDEX_SCORE"})
-            .SetVectorSearch(search);
+            .SetReadFieldNames({"id", "_embedding_INDEX_SCORE"})
+            .SetVectorSearch(search)
+            .EnablePreciseFileIndexEvaluate(true);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
                                TableRead::Create(std::move(context)));
@@ -1031,16 +1033,18 @@ TEST_P(WriteAndReadInteTest, TestAppendWithLuminaVectorIndex) {
             /*predicate=*/nullptr, VectorSearch::DistanceType::EUCLIDEAN,
             std::map<std::string, std::string>{});
         ReadContextBuilder builder(PathUtil::JoinPath(root, "foo.db/bar"));
-        builder.SetReadFieldNames({"id", "_INDEX_SCORE"}).SetVectorSearch(search);
+        builder.SetReadFieldNames({"id", "_embedding_INDEX_SCORE"})
+            .SetVectorSearch(search)
+            .EnablePreciseFileIndexEvaluate(true);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                              TableRead::Create(std::move(context)));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
                              ReadResultCollector::CollectResult(std::move(reader)));
-        auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                             arrow::field("id", arrow::int32()),
-                                             arrow::field("_INDEX_SCORE", arrow::float32())});
+        auto expected_type = arrow::struct_(
+            {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int32()),
+             arrow::field("_embedding_INDEX_SCORE", arrow::float32())});
         auto expected = arrow::ipc::internal::json::ArrayFromJSON(expected_type,
                                                                   R"([[0, 10, 4.0],
                                                                      [0, 12, 0.0],

@@ -23,13 +23,14 @@
 #include <string>
 
 #include "paimon/predicate/leaf_predicate.h"
+#include "paimon/visibility.h"
 
 namespace paimon {
 struct FullTextMatch;
 
 /// A full-text leaf evaluated by an index, rather than scalar PredicateFilter::Test.
 /// Use PredicateBuilder::FullTextMatch to construct it.
-class FullTextMatchPredicate : public LeafPredicate {
+class PAIMON_EXPORT FullTextMatchPredicate : public LeafPredicate {
  public:
     FullTextMatchPredicate(int32_t field_index, const std::shared_ptr<FullTextMatch>& match);
 

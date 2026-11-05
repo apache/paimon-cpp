@@ -47,6 +47,10 @@ class PAIMON_EXPORT FileIndexer {
         return false;
     }
 
+    /// Create a reader for an empty index entry without serialized bytes.
+    /// Scalar indexers use the default reader. Search indexers must preserve their capabilities.
+    virtual std::shared_ptr<FileIndexReader> CreateEmptyReader() const;
+
     /// Extra columns required while building this index, in addition to the indexed column.
     virtual Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const {
         return std::optional<std::vector<std::string>>(std::nullopt);
