@@ -70,7 +70,9 @@ Result<int64_t> ByteArrayInputStream::Read(char* buffer, int64_t size) {
                         "position {}, exceed length {}",
                         size, position_, length_));
     }
-    memcpy(buffer, buffer_ + position_, static_cast<size_t>(size));
+    if (size > 0) {
+        memcpy(buffer, buffer_ + position_, static_cast<size_t>(size));
+    }
     position_ += size;
     return size;
 }
@@ -82,7 +84,9 @@ Result<int64_t> ByteArrayInputStream::Read(char* buffer, int64_t size, int64_t o
                         "stream length {}",
                         size, offset, length_));
     }
-    memcpy(buffer, buffer_ + offset, static_cast<size_t>(size));
+    if (size > 0) {
+        memcpy(buffer, buffer_ + offset, static_cast<size_t>(size));
+    }
     return size;
 }
 
