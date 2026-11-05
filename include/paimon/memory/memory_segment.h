@@ -174,7 +174,9 @@ class PAIMON_EXPORT MemorySegment {
             return nullptr;
         }
         auto copy = std::make_shared<Bytes>(size_, pool);
-        std::memcpy(const_cast<char*>(copy->data()), data_, size_);
+        if (size_ > 0) {
+            std::memcpy(const_cast<char*>(copy->data()), data_, size_);
+        }
         return copy;
     }
 

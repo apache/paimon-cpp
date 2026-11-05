@@ -78,7 +78,9 @@ std::string_view MemorySlice::ReadStringView() const {
 
 std::shared_ptr<Bytes> MemorySlice::CopyBytes(MemoryPool* pool) const {
     auto bytes = std::make_shared<Bytes>(length_, pool);
-    std::memcpy(const_cast<char*>(bytes->data()), Data(), length_);
+    if (length_ > 0) {
+        std::memcpy(const_cast<char*>(bytes->data()), Data(), length_);
+    }
     return bytes;
 }
 

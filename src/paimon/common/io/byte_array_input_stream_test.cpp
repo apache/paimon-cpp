@@ -81,4 +81,53 @@ TEST(ByteArrayInputStreamTest, TestSimple) {
     ASSERT_OK(input_stream->Close());
 }
 
+TEST(ByteArrayInputStreamTest, TestZeroLengthRead) {
+    auto pool = GetDefaultPool();
+    Bytes empty_bytes(0, pool.get());
+    ByteArrayInputStream input_stream("abc", 3);
+    ASSERT_OK(input_stream.Seek(1, SeekOrigin::FS_SEEK_SET));
+
+    ASSERT_OK_AND_ASSIGN(int64_t read_size, input_stream.Read(empty_bytes.data(), 0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(int64_t position, input_stream.GetPos());
+    ASSERT_EQ(1, position);
+
+    ASSERT_OK_AND_ASSIGN(read_size, input_stream.Read(empty_bytes.data(), 0, /*offset=*/0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(read_size, input_stream.Read(empty_bytes.data(), 0, /*offset=*/3));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(position, input_stream.GetPos());
+    ASSERT_EQ(1, position);
+
+    bool read_finished = false;
+    input_stream.ReadAsync(empty_bytes.data(), 0, /*offset=*/3, [&](Status status) {
+        ASSERT_OK(status);
+        read_finished = true;
+    });
+    ASSERT_TRUE(read_finished);
+    ASSERT_OK_AND_ASSIGN(position, input_stream.GetPos());
+    ASSERT_EQ(1, position);
+
+    ASSERT_NOK_WITH_MSG(input_stream.Read(empty_bytes.data(), 0, /*offset=*/-1),
+                        "boundary check failed");
+    ASSERT_NOK_WITH_MSG(input_stream.Read(empty_bytes.data(), 0, /*offset=*/4),
+                        "boundary check failed");
+
+    ASSERT_OK(input_stream.Seek(3, SeekOrigin::FS_SEEK_SET));
+    ASSERT_OK_AND_ASSIGN(read_size, input_stream.Read(empty_bytes.data(), 0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(position, input_stream.GetPos());
+    ASSERT_EQ(3, position);
+}
+
+TEST(ByteArrayInputStreamTest, TestZeroLengthReadFromEmptyStream) {
+    ByteArrayInputStream input_stream("", 0);
+    ASSERT_OK_AND_ASSIGN(int64_t read_size, input_stream.Read(nullptr, 0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(read_size, input_stream.Read(nullptr, 0, /*offset=*/0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(int64_t position, input_stream.GetPos());
+    ASSERT_EQ(0, position);
+}
+
 }  // namespace paimon::test
