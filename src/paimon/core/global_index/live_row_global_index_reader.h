@@ -32,12 +32,13 @@
 
 namespace paimon {
 
-/// A GlobalIndexReader over one index shard that ranks only live rows in full-text searches, so
-/// rows deleted by deletion vectors do not take top-k slots. As Java
-/// `DataEvolutionFullTextRead#includeRowIds` does, the shard is searched with the live rows of its
-/// range, intersected with the include row ids if given, while BM25 statistics still come from the
-/// whole index. Predicate visits are delegated unchanged, as the read drops deleted rows from their
-/// untruncated results, and so are vector searches.
+/// A GlobalIndexReader over one index shard that ranks only live rows in full-text and vector
+/// searches, so rows deleted by deletion vectors do not take top-k slots. As Java
+/// `DataEvolutionFullTextRead#includeRowIds` does, a full-text search ranks the live rows of the
+/// shard range, intersected with the include row ids if given, while BM25 statistics still come
+/// from the whole index. As Java `AbstractDataEvolutionVectorRead#preFilters` does, a vector search
+/// restricts its pre-filter to those live rows. Predicate visits are delegated unchanged, as the
+/// read drops deleted rows from their untruncated results.
 class LiveRowGlobalIndexReader : public GlobalIndexReader {
  public:
     /// Supplies the global row ids of live rows, or null when every row is live.
@@ -48,18 +49,19 @@ class LiveRowGlobalIndexReader : public GlobalIndexReader {
     static LiveRowsSupplier CacheLiveRows(
         std::function<Result<std::optional<RoaringBitmap64>>()> load);
 
-    /// Creates a union of the shard readers of one index whose full-text searches rank only live
-    /// rows. Each shard reader is wrapped in a LiveRowGlobalIndexReader. When a search may rank
-    /// rows of a shard, live rows are loaded on the visiting thread before it fans out to the
-    /// shards, so a load that reads manifests on `executor` never waits for it from one of its own
-    /// threads.
+    /// Creates a union of the shard readers of one index whose full-text and vector searches rank
+    /// only live rows. Each shard reader is wrapped in a LiveRowGlobalIndexReader. When a search
+    /// may rank rows of a shard, live rows are loaded on the visiting thread before it fans out to
+    /// the shards, so a load that reads manifests on `executor` never waits for it from one of its
+    /// own threads.
     /// @param shard_readers      Readers of the shards. They take and return global row ids.
     /// @param shard_ranges       The global row id range (both ends inclusive) of each shard.
     /// @param search_ranges      The global row ids each shard ranks in a full-text search, as
     ///                           passed to UnionGlobalIndexReader.
     /// @param executor           Executor to search the shards in parallel, or null to search
     ///                           them one after another.
-    /// @param live_rows_supplier Supplies the live rows to full-text searches.
+    /// @param live_rows_supplier Supplies the live rows to full-text and vector searches. Only
+    ///                           those within `shard_ranges` are used.
     static std::shared_ptr<GlobalIndexReader> CreateUnion(
         std::vector<std::shared_ptr<GlobalIndexReader>>&& shard_readers,
         std::vector<Range>&& shard_ranges, std::vector<std::optional<Range>>&& search_ranges,
@@ -68,7 +70,7 @@ class LiveRowGlobalIndexReader : public GlobalIndexReader {
     /// Constructs a LiveRowGlobalIndexReader.
     /// @param wrapped            The reader of the shard. It takes and returns global row ids.
     /// @param shard_range        The global row id range (both ends inclusive) of the shard.
-    /// @param live_rows_supplier Supplies the live rows to full-text searches.
+    /// @param live_rows_supplier Supplies the live rows to full-text and vector searches.
     LiveRowGlobalIndexReader(std::shared_ptr<GlobalIndexReader>&& wrapped, const Range& shard_range,
                              LiveRowsSupplier live_rows_supplier);
 
@@ -89,6 +91,8 @@ class LiveRowGlobalIndexReader : public GlobalIndexReader {
     Result<std::shared_ptr<GlobalIndexResult>> VisitContains(const Literal& literal) override;
     Result<std::shared_ptr<GlobalIndexResult>> VisitLike(const Literal& literal) override;
 
+    /// Searches only the live rows of the shard that pass the pre-filter, if given. The search is
+    /// delegated unchanged when the whole shard is live.
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;
 

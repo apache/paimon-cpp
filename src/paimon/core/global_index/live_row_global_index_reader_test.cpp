@@ -20,16 +20,21 @@
 #include "paimon/core/global_index/live_row_global_index_reader.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/executor.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/testing/mock/mock_global_index_reader.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/range.h"
@@ -62,6 +67,27 @@ class LiveRowGlobalIndexReaderTest : public ::testing::Test {
         return std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"apple"}})",
                                                 /*limit=*/3, include_row_ids);
     }
+
+    static std::shared_ptr<VectorSearch> SearchVector(
+        VectorSearch::PreFilter pre_filter = nullptr) {
+        return std::make_shared<VectorSearch>(
+            "f1", /*limit=*/3, std::vector<float>({1.0f, 2.0f}), std::move(pre_filter),
+            PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT,
+                                    Literal(1)),
+            VectorSearch::DistanceType::COSINE,
+            std::map<std::string, std::string>({{"search.parallel", "2"}}));
+    }
+
+    static std::vector<int64_t> RowsPassingPreFilter(const VectorSearch& vector_search,
+                                                     const std::vector<int64_t>& row_ids) {
+        std::vector<int64_t> passed;
+        for (int64_t row_id : row_ids) {
+            if (vector_search.pre_filter(row_id)) {
+                passed.push_back(row_id);
+            }
+        }
+        return passed;
+    }
 };
 
 TEST_F(LiveRowGlobalIndexReaderTest, TestSearchUnchangedWhenEveryRowIsLive) {
@@ -75,6 +101,20 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestSearchUnchangedWhenEveryRowIsLive) {
     ASSERT_EQ(mock_reader->CapturedFullTextSearch(), search);
     ASSERT_EQ(result->ToString(), "row ids: {11,12}, scores: {0.50,0.90}");
     ASSERT_EQ(call_count, 1);
+
+    std::shared_ptr<VectorSearch> vector_search = SearchVector();
+    ASSERT_OK_AND_ASSIGN(result, reader.VisitVectorSearch(vector_search));
+    ASSERT_EQ(mock_reader->CapturedVectorSearch(), vector_search);
+    ASSERT_EQ(result->ToString(), "row ids: {11,12}, scores: {0.50,0.90}");
+    ASSERT_EQ(call_count, 2);
+
+    LiveRowGlobalIndexReader live_shard_reader(mock_reader, Range(10, 14),
+                                               Supply(LiveRows(0, 20, {9, 15}), &call_count));
+    ASSERT_OK(live_shard_reader.VisitFullTextSearch(search));
+    ASSERT_EQ(mock_reader->CapturedFullTextSearch(), search);
+    ASSERT_OK(live_shard_reader.VisitVectorSearch(vector_search));
+    ASSERT_EQ(mock_reader->CapturedVectorSearch(), vector_search);
+    ASSERT_EQ(call_count, 4);
 }
 
 TEST_F(LiveRowGlobalIndexReaderTest, TestSearchOnlyLiveRowsOfShard) {
@@ -94,6 +134,26 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestSearchOnlyLiveRowsOfShard) {
     ASSERT_TRUE(captured->include_row_ids);
     ASSERT_EQ(captured->include_row_ids.value(), RoaringBitmap64::From({10, 11, 13, 14}));
 
+    std::shared_ptr<VectorSearch> vector_search = SearchVector();
+    ASSERT_OK_AND_ASSIGN(result, reader.VisitVectorSearch(vector_search));
+    ASSERT_EQ(result->ToString(), "row ids: {11,13}, scores: {0.90,0.50}");
+    std::shared_ptr<VectorSearch> captured_vector = mock_reader->CapturedVectorSearch();
+    ASSERT_TRUE(captured_vector && captured_vector->pre_filter);
+    ASSERT_EQ(captured_vector->field_name, vector_search->field_name);
+    ASSERT_EQ(captured_vector->limit, vector_search->limit);
+    ASSERT_EQ(captured_vector->query, vector_search->query);
+    ASSERT_EQ(captured_vector->predicate, vector_search->predicate);
+    ASSERT_TRUE(captured_vector->distance_type == vector_search->distance_type);
+    ASSERT_EQ(captured_vector->options, vector_search->options);
+    std::vector<int64_t> row_ids = {1, 9, 10, 11, 12, 13, 14, 15};
+    ASSERT_EQ(RowsPassingPreFilter(*captured_vector, row_ids),
+              std::vector<int64_t>({10, 11, 13, 14}));
+
+    ASSERT_OK(reader.VisitVectorSearch(SearchVector([](int64_t row_id) { return row_id != 13; })));
+    captured_vector = mock_reader->CapturedVectorSearch();
+    ASSERT_TRUE(captured_vector && captured_vector->pre_filter);
+    ASSERT_EQ(RowsPassingPreFilter(*captured_vector, row_ids), std::vector<int64_t>({10, 11, 14}));
+
     constexpr int64_t kMax = RoaringBitmap64::MAX_VALUE;
     LiveRowGlobalIndexReader max_reader(mock_reader, Range(kMax - 1, kMax),
                                         Supply(RoaringBitmap64::From({kMax}), &call_count));
@@ -101,6 +161,11 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestSearchOnlyLiveRowsOfShard) {
     captured = mock_reader->CapturedFullTextSearch();
     ASSERT_TRUE(captured && captured->include_row_ids);
     ASSERT_EQ(captured->include_row_ids.value(), RoaringBitmap64::From({kMax}));
+    ASSERT_OK(max_reader.VisitVectorSearch(SearchVector()));
+    captured_vector = mock_reader->CapturedVectorSearch();
+    ASSERT_TRUE(captured_vector && captured_vector->pre_filter);
+    ASSERT_EQ(RowsPassingPreFilter(*captured_vector, {kMax - 1, kMax}),
+              std::vector<int64_t>({kMax}));
 }
 
 TEST_F(LiveRowGlobalIndexReaderTest, TestIncludeRowIdsClippedToShard) {
@@ -152,6 +217,16 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestCreateUnionLoadsLiveRowsBeforeSearching
     ASSERT_TRUE(first_search && first_search->include_row_ids);
     ASSERT_TRUE(first_search->include_row_ids->IsEmpty());
     ASSERT_EQ(second_shard->CapturedFullTextSearch(), search);
+    ASSERT_EQ(result->ToString(), "row ids: {4294967296}, scores: {0.50}");
+
+    loading_thread.reset();
+    std::shared_ptr<VectorSearch> vector_search = SearchVector();
+    ASSERT_OK_AND_ASSIGN(result, reader->VisitVectorSearch(vector_search));
+    ASSERT_TRUE(loading_thread == std::this_thread::get_id());
+    std::shared_ptr<VectorSearch> first_vector_search = first_shard->CapturedVectorSearch();
+    ASSERT_TRUE(first_vector_search && first_vector_search->pre_filter);
+    ASSERT_TRUE(RowsPassingPreFilter(*first_vector_search, {0, 1}).empty());
+    ASSERT_EQ(second_shard->CapturedVectorSearch(), vector_search);
     ASSERT_EQ(result->ToString(), "row ids: {4294967296}, scores: {0.50}");
 }
 
@@ -217,12 +292,15 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestLiveRowsErrorOnlyFailsSearchesThatRankR
     };
     LiveRowGlobalIndexReader reader(mock_reader, Range(0, 9), failing_supplier);
     ASSERT_NOK_WITH_MSG(reader.VisitFullTextSearch(Search()), "cannot read deletion vector");
+    ASSERT_NOK_WITH_MSG(reader.VisitVectorSearch(SearchVector()), "cannot read deletion vector");
     ASSERT_EQ(mock_reader->InvocationCount(), 0);
 
     std::shared_ptr<GlobalIndexReader> union_reader = LiveRowGlobalIndexReader::CreateUnion(
         std::vector<std::shared_ptr<GlobalIndexReader>>({mock_reader}), {Range(0, 9)},
         {Range(5, 9)}, /*executor=*/nullptr, failing_supplier);
     ASSERT_NOK_WITH_MSG(union_reader->VisitFullTextSearch(Search()), "cannot read deletion vector");
+    ASSERT_NOK_WITH_MSG(union_reader->VisitVectorSearch(SearchVector()),
+                        "cannot read deletion vector");
     ASSERT_NOK_WITH_MSG(union_reader->VisitFullTextSearch(std::make_shared<FullTextSearch>(
                             "f0", R"({"match":{"query":"apple"}})", /*limit=*/0)),
                         "full-text search requires a positive limit");

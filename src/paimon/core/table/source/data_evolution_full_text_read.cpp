@@ -187,7 +187,8 @@ Result<std::optional<RoaringBitmap64>> DataEvolutionFullTextRead::LiveRows(
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
                            LoadPlannedSnapshot(options_, root_path_, snapshot_id));
     return GlobalIndexLiveRowFilter::LiveRows(root_path_, table_schema_, snapshot,
-                                              partition_filter_, options_, executor_, pool_);
+                                              partition_filter_, /*row_range_index=*/std::nullopt,
+                                              options_, executor_, pool_);
 }
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::SearchSplit(
