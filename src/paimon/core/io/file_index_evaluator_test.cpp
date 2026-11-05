@@ -470,6 +470,8 @@ class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
 
     void CheckInvalidSearchIndexes(SearchIndexType index_type) const {
         const std::string field = index_type == SearchIndexType::VECTOR ? "embedding" : "title";
+        const std::string search_type =
+            index_type == SearchIndexType::VECTOR ? "VECTOR_SEARCH" : "FULL_TEXT_SEARCH";
         const std::string identifier = index_type == SearchIndexType::VECTOR
                                            ? MockSearchFileIndex::VECTOR_IDENTIFIER
                                            : MockSearchFileIndex::FULL_TEXT_IDENTIFIER;
@@ -484,7 +486,9 @@ class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
                              MockSearchFileIndex::MakeIndex("another-field", identifier,
                                                             {{3, 0.75f}, {1, 0.25f}}, pool_));
         ASSERT_OK_AND_ASSIGN(meta, MakeIndex(bytes));
-        CheckSearchError(index_type, meta, field, "No File Index reader supports");
+        CheckSearchError(index_type, meta, field,
+                         "No File Index reader supports " + search_type + " for field '" + field +
+                             "' in data file '" + meta->file_name + "'");
 
         FileIndexFormat::ColumnIndexes indexes;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> payload,
@@ -504,7 +508,9 @@ class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
         indexes[field][another_identifier] = nullptr;
         ASSERT_OK_AND_ASSIGN(bytes, MockSearchFileIndex::Serialize(indexes, pool_));
         ASSERT_OK_AND_ASSIGN(meta, MakeIndex(bytes));
-        CheckSearchError(index_type, meta, field, "Multiple File Index readers support");
+        CheckSearchError(index_type, meta, field,
+                         "Multiple File Index readers support " + search_type + " for field '" +
+                             field + "' in data file '" + meta->file_name + "'");
 
         meta->embedded_index.reset();
         meta->extra_files.clear();
@@ -795,13 +801,16 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyScalarIndexDoesNotProvideSearchCap
                                                     path_factory_, meta, fs_, pool_));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH),
-        "No File Index reader supports");
+        "No File Index reader supports FULL_TEXT_MATCH for field 'title' in data file "
+        "'data-search.orc'");
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_SEARCH),
-        "No File Index reader supports");
+        "No File Index reader supports FULL_TEXT_SEARCH for field 'title' in data file "
+        "'data-search.orc'");
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::VECTOR_SEARCH),
-        "No File Index reader supports");
+        "No File Index reader supports VECTOR_SEARCH for field 'title' in data file "
+        "'data-search.orc'");
 
     ASSERT_OK_AND_ASSIGN(indexes["title"][MockSearchFileIndex::FULL_TEXT_IDENTIFIER],
                          MockSearchFileIndex::MakePayload({{1, 0.5f}}, pool_));

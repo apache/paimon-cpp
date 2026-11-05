@@ -1497,8 +1497,7 @@ TEST_F(DataEvolutionSplitReadTest, TestFileIndexSelectionOnlyPushesDownNormalGro
             split_read.ApplyIndexAndDvReaderIfNeeded(
                 std::make_unique<MockFileBatchReader>(data, data->type(), 2), normal, index_schema,
                 index_schema, predicate, /*dv_factory=*/nullptr, row_ranges,
-                /*data_file_path_factory=*/nullptr, /*file_index_options=*/{},
-                /*index_scores=*/nullptr));
+                /*data_file_path_factory=*/nullptr, /*file_index_options=*/{}));
         if (expected_json.empty()) {
             ASSERT_FALSE(reader);
             return;

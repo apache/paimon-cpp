@@ -158,12 +158,12 @@ Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
     const std::shared_ptr<DataFileMeta>& file, const FieldMappingBuilder* field_mapping_builder,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::map<std::string, std::string>& extra_format_options) {
-    std::shared_ptr<TableSchema> table_schema = split_read.context_->GetTableSchema();
-    if (file->schema_id != table_schema->Id()) {
-        PAIMON_ASSIGN_OR_RAISE(table_schema,
+    std::shared_ptr<TableSchema> file_schema = split_read.context_->GetTableSchema();
+    if (file->schema_id != file_schema->Id()) {
+        PAIMON_ASSIGN_OR_RAISE(file_schema,
                                split_read.schema_manager_->ReadSchema(file->schema_id));
     }
-    const auto data_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+    const auto data_schema = DataField::ConvertDataFieldsToArrowSchema(file_schema->Fields());
     if (file->row_count < 0 || file->row_count > RoaringBitmap32::MAX_VALUE) {
         return Status::NotImplemented(
             "Precise file-index evaluation requires bitmap32 physical row positions");

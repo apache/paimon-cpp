@@ -54,6 +54,21 @@ namespace paimon {
 class MemoryPool;
 enum class FieldType;
 
+namespace {
+std::string SearchTypeToString(const FileIndexReader::SearchType& search_type) {
+    switch (search_type) {
+        case FileIndexReader::SearchType::FULL_TEXT_MATCH:
+            return "FULL_TEXT_MATCH";
+        case FileIndexReader::SearchType::FULL_TEXT_SEARCH:
+            return "FULL_TEXT_SEARCH";
+        case FileIndexReader::SearchType::VECTOR_SEARCH:
+            return "VECTOR_SEARCH";
+        default:
+            return "UNKNOWN";
+    }
+}
+}  // namespace
+
 FileIndexEvaluator::FileIndexEvaluator(std::shared_ptr<arrow::Schema> data_schema,
                                        std::shared_ptr<DataFileMeta> file_meta,
                                        std::unique_ptr<FileIndexFormat::Reader> format_reader)
@@ -120,13 +135,15 @@ Result<std::shared_ptr<FileIndexReader>> FileIndexEvaluator::GetSearchReader(
         }
         if (selected) {
             return Status::Invalid(fmt::format(
-                "Multiple File Index readers support requested search for field '{}'", field_name));
+                "Multiple File Index readers support {} for field '{}' in data file '{}'",
+                SearchTypeToString(search_type), field_name, file_meta_->file_name));
         }
         selected = reader;
     }
     if (!selected) {
-        return Status::NotImplemented(fmt::format(
-            "No File Index reader supports requested search for field '{}'", field_name));
+        return Status::NotImplemented(
+            fmt::format("No File Index reader supports {} for field '{}' in data file '{}'",
+                        SearchTypeToString(search_type), field_name, file_meta_->file_name));
     }
     return selected;
 }
