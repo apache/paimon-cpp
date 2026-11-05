@@ -40,7 +40,7 @@ class MemoryPool;
 class ReaderBuilder;
 
 /// Settings applied when a data file is opened, gathered from the read context and the table
-/// options. The defaults are a plain read: no cache, no prefetch.
+/// options. The defaults enable byte caching and raw warmup, with synchronous batch reads.
 struct DataFileReadOptions {
     /// Block cache the format reader may put what it reads into, or null for none.
     std::shared_ptr<Cache> cache;
@@ -52,10 +52,9 @@ struct DataFileReadOptions {
     /// Whether the shared read-ahead cache takes over reading ahead from the format itself.
     bool read_ahead_cache_enabled = true;
     CacheConfig cache_config;
-    /// Whether the prefetching reader records what its I/O costs.
+    /// Whether the file reader records what its I/O costs.
     bool prefetch_io_metrics_enabled = false;
-    /// How far the prefetching reader prepares a file before it is read. It only matters when
-    /// prefetching, because that reader is the one that can start work ahead of the read.
+    /// How far a reader prepares a file before it is read, independently of batch prefetch.
     WarmupLevel warmup_level = WarmupLevel::RAW;
 };
 

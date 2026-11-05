@@ -1239,7 +1239,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
                                                    pool_, options, batch_size, hints));
         ASSERT_EQ(arrow_props.pre_buffer(), true);
     }
-    // Only cache enabled (prefetch disabled): fall back to the option, which defaults to true.
+    // The shared cache also replaces parquet pre-buffering without batch prefetch.
     {
         std::map<std::string, std::string> options;
         ReadHints hints;
@@ -1247,7 +1247,10 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
         hints.read_ahead_cache_enabled = true;
         ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
                                                    pool_, options, batch_size, hints));
-        ASSERT_EQ(arrow_props.pre_buffer(), true);
+        ASSERT_EQ(arrow_props.pre_buffer(), false);
+        ASSERT_OK_AND_ASSIGN(auto reader_props,
+                             ParquetFileBatchReader::CreateReaderProperties(pool_, options, hints));
+        ASSERT_EQ(reader_props.is_buffered_stream_enabled(), false);
     }
     // Neither active and the option explicitly disabled: honor the option.
     {

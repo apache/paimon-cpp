@@ -414,11 +414,12 @@ class PAIMON_EXPORT ReadContextBuilder {
     ///
     /// A read-ahead cache is used to prebuffer data ranges before they are needed,
     /// which can improve read performance by reducing redundant I/O operations.
+    /// For Parquet and ORC it also works when batch prefetch is disabled.
     /// @param enabled Whether to enable the read-ahead cache (default: true)
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetReadAheadCacheEnabled(bool enabled);
 
-    /// Set the cache configuration for prefetch read operations.
+    /// Set the read-ahead cache configuration for synchronous and prefetch reads.
     ///
     /// @param config The cache configuration to use.
     /// @return Reference to this builder for method chaining.
@@ -434,6 +435,8 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @note WarmupLevel::RAW warms the read-ahead cache, so it has no effect and behaves like
     /// WarmupLevel::NONE when the cache is off (see SetReadAheadCacheEnabled()).
     /// WarmupLevel::DECODED does not depend on the cache.
+    /// Both levels work with EnablePrefetch(false). Without prefetch, DECODED prepares only the
+    /// first batch; subsequent batches are read synchronously.
     /// @see WarmupLevel
     ReadContextBuilder& SetWarmupLevel(WarmupLevel level);
 

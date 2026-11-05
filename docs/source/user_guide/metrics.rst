@@ -86,8 +86,9 @@ These metrics are C++-only and have no counterparts in Java Paimon.
 Prefetch I/O
 ------------
 
-``PrefetchIoMetrics`` describes only I/O that passes through the prefetch reader's instrumented
-input streams. It is not a whole-query or whole-table I/O total. All counters accumulate for the
+``PrefetchIoMetrics`` describes only I/O that passes through the instrumented
+file input streams, including synchronous reads with batch prefetch disabled.
+It is not a whole-query or whole-table I/O total. All counters accumulate for the
 reader lifetime and are retained across ``SetReadSchema()`` and cache reset. Latency uses relaxed
 atomic count and sum counters instead of per-I/O histograms to reduce hot-path cost. Collection is
 disabled by default; set ``prefetch.io-metrics.enabled`` to ``true`` in the read options to enable

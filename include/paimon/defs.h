@@ -236,8 +236,8 @@ struct PAIMON_EXPORT Options {
     /// Applies to supported manifest read paths with or without caching. Default value is true.
     static const char SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[];
 
-    /// "prefetch.io-metrics.enabled" - Whether to collect per-I/O metrics for prefetch reads.
-    /// Default value is false.
+    /// "prefetch.io-metrics.enabled" - Whether to collect per-I/O metrics for Parquet and ORC
+    /// reads, with or without batch prefetch. Default value is false.
     static const char PREFETCH_IO_METRICS_ENABLED[];
 
     /// "read.batch-size" - Read batch size for any file format if it supports.

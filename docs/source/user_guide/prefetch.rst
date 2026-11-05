@@ -94,14 +94,18 @@ context and always uses the default level.
 - ``WarmupLevel::DECODED``: also start decoding the next file, which hides the
   most latency but uses the most memory.
 
-Warmup goes through the prefetch reader, so it only applies to Parquet and ORC
-files that are actually read with prefetching, and enabling prefetch alone does
-not guarantee that. With the adaptive strategy, a file whose first read range
-holds more batches than one prefetch queue can buffer is read without
-prefetching, and so without warmup; the ``prefetch.adaptive-disabled-count``
-metric counts how often this happens. Append compaction uses a prefetch queue
-of three batches, so it only warms files whose first read range spans no more
-than three full batches, such as files with small row groups.
+Warmup and the read-ahead cache work independently of batch prefetch for
+Parquet and ORC. With ``EnablePrefetch(false)``, ``RAW`` still warms the cache,
+and ``DECODED`` prepares only the first batch on a background thread; later
+batches are read synchronously. The same behavior applies when the format or
+the adaptive strategy decides against prefetching. With batch prefetch active,
+``DECODED`` starts the normal parallel decode loop instead.
+
+The defaults are batch prefetch off, read-ahead cache on, and ``RAW`` warmup.
+``WarmupLevel::NONE`` disables early warmup while retaining byte caching during
+normal reads. Disabling the cache makes ``RAW`` a no-op but still permits
+``DECODED``. When the shared cache is active, Parquet disables its own
+pre-buffering to avoid buffering the same byte ranges twice.
 
 ``WarmupLevel::RAW`` issues its fetches from the reading thread through the
 file system's asynchronous read, so it only overlaps I/O when that read is

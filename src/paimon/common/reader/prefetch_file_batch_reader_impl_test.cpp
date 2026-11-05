@@ -25,7 +25,10 @@
 #include "arrow/compute/api.h"
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
+#include "paimon/common/reader/concat_batch_reader.h"
+#include "paimon/common/reader/data_file_reader_factory.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
+#include "paimon/common/reader/late_materializing_reader_builder.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
@@ -815,38 +818,42 @@ TEST_F(PrefetchFileBatchReaderImplTest, DelegatingPrefetchReaderWarmupForwardsWh
     ASSERT_TRUE(expected_array->Equals(array));
 }
 
-// With prefetching off the delegating layer hands the consumer readers_[0] directly, so forwarding
-// the warmup would start a Workloop that decodes readers_[0] on a background thread while the
-// consumer reads that same reader on its own thread. Warmup() must stay a no-op in that state and
-// the bypassed read must still return every row.
-TEST_F(PrefetchFileBatchReaderImplTest, DelegatingPrefetchReaderWarmupSkippedWhenPrefetchBypassed) {
-    auto data_array = PrepareArray(200);
-    int32_t batch_size = 10;
-    int32_t prefetch_max_parallel_num = 1;
-    ControlledMockFormatReaderBuilder reader_builder(data_array, data_type_, batch_size,
-                                                     /*read_ranges=*/{{0, 100}},
-                                                     /*need_prefetch=*/true,
-                                                     /*set_read_ranges_statuses=*/{});
-    ASSERT_OK_AND_ASSIGN(
-        auto reader,
-        PrefetchFileBatchReaderImpl::Create(
-            /*data_file_path=*/"", /*data_file_size=*/0, &reader_builder, mock_fs_,
-            prefetch_max_parallel_num, batch_size,
-            /*prefetch_batch_count=*/2,
-            /*enable_adaptive_prefetch_strategy=*/true, executor_,
-            /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
-    auto* prefetch_reader = reader.get();
-    ASSERT_FALSE(prefetch_reader->NeedPrefetch());
+// Without prefetch, the synchronous wrapper prepares one batch and joins that task before the
+// consumer reads the format reader again. The parallel Workloop must never start in this state.
+TEST_F(PrefetchFileBatchReaderImplTest, DelegatingPrefetchReaderWarmupWhenPrefetchBypassed) {
+    for (bool format_prefetch : {false, true}) {
+        auto data_array = PrepareArray(200);
+        int32_t batch_size = 10;
+        int32_t prefetch_max_parallel_num = 1;
+        ControlledMockFormatReaderBuilder reader_builder(data_array, data_type_, batch_size,
+                                                         /*read_ranges=*/{{0, 100}},
+                                                         /*need_prefetch=*/format_prefetch,
+                                                         /*set_read_ranges_statuses=*/{});
+        ASSERT_OK_AND_ASSIGN(
+            auto reader,
+            PrefetchFileBatchReaderImpl::Create(
+                /*data_file_path=*/"", /*data_file_size=*/0, &reader_builder, mock_fs_,
+                prefetch_max_parallel_num, batch_size,
+                /*prefetch_batch_count=*/2,
+                /*enable_adaptive_prefetch_strategy=*/true, executor_,
+                /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
+                /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
+        auto* prefetch_reader = reader.get();
+        ASSERT_FALSE(prefetch_reader->NeedPrefetch());
 
-    DelegatingPrefetchReader delegating_reader(std::move(reader));
-    delegating_reader.Warmup();
-    ASSERT_FALSE(DecodeThreadStarted(prefetch_reader));
+        DelegatingPrefetchReader delegating_reader(std::move(reader));
+        delegating_reader.Warmup();
+        ASSERT_FALSE(DecodeThreadStarted(prefetch_reader));
+        ASSERT_NE(prefetch_reader->synchronous_reader_->thread_, nullptr);
 
-    ASSERT_OK_AND_ASSIGN(auto array, ReadResultCollector::CollectResult(&delegating_reader));
-    auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
-    ASSERT_TRUE(expected_array->Equals(array));
-    ASSERT_FALSE(DecodeThreadStarted(prefetch_reader));
+        ASSERT_OK_AND_ASSIGN(auto array, ReadResultCollector::CollectResult(&delegating_reader));
+        auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
+        ASSERT_TRUE(expected_array->Equals(array));
+        ASSERT_FALSE(DecodeThreadStarted(prefetch_reader));
+        delegating_reader.Close();
+        delegating_reader.Warmup();
+        ASSERT_NOK(delegating_reader.NextBatchWithBitmap());
+    }
 }
 
 TEST_F(PrefetchFileBatchReaderImplTest, SetReadRanges) {
@@ -939,6 +946,9 @@ TEST_F(PrefetchFileBatchReaderImplTest, WorkloopSetReadStatusWhenCacheInitFailed
 
     ASSERT_NOK_WITH_MSG(prefetch_reader->GetReadStatus(),
                         "range size limit 4096 should be larger than hole size limit 8192");
+    ASSERT_OK_AND_ASSIGN(uint64_t errors,
+                         prefetch_reader->GetReaderMetrics()->GetCounter(PrefetchMetrics::ERRORS));
+    ASSERT_EQ(errors, 1);
 }
 
 TEST_F(PrefetchFileBatchReaderImplTest, DoReadBatchReturnOkWhenShutdown) {
@@ -1415,9 +1425,113 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestRowMapping) {
     }
 }
 
-// WarmupLevel::NONE makes Warmup() a complete no-op: it neither starts the background decode thread
-// nor warms the read-ahead cache. Reading still returns every row, starting cold on the first
-// NextBatch, which lazily starts the background loop.
+TEST_P(PrefetchFileBatchReaderImplTest, FactoryWarmupIsIndependentOfPrefetch) {
+    const auto [format, cache_enabled] = GetParam();
+    auto data = PrepareArray(90);
+    PrepareTestData(format, data, /*stripe_row_count=*/30, /*row_index_stride=*/30);
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "file." + format);
+    ASSERT_OK_AND_ASSIGN(auto file_status, local_fs_->GetFileStatus(path));
+
+    for (bool late_materializing : {false, true}) {
+        for (int32_t mode = 0; mode < 3; ++mode) {
+            std::vector<uint64_t> baseline_row_ids;
+            for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
+                SCOPED_TRACE(format + " mode=" + std::to_string(mode) +
+                             " level=" + std::to_string(static_cast<int32_t>(level)) +
+                             " late_materializing=" + std::to_string(late_materializing));
+                DataFileReadOptions options;
+                options.read_batch_size = 10;
+                options.prefetch_enabled = mode != 0;
+                // Synchronous reads must not validate or use these prefetch-only settings.
+                options.prefetch_max_parallel_num = mode == 0 ? 0 : 1;
+                options.prefetch_batch_count = mode == 0 ? 0 : (mode == 1 ? 6 : 1);
+                options.adaptive_prefetch_strategy = mode == 2;
+                options.read_ahead_cache_enabled = cache_enabled;
+                options.prefetch_io_metrics_enabled = true;
+                options.warmup_level = level;
+                ASSERT_OK_AND_ASSIGN(
+                    std::unique_ptr<ReaderBuilder> builder,
+                    DataFileReaderFactory::CreateReaderBuilder(format, {}, {}, options, pool_));
+                if (late_materializing) {
+                    builder = std::make_unique<LateMaterializingReaderBuilder>(std::move(builder),
+                                                                               GetArrowPool(pool_));
+                }
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
+                                     DataFileReaderFactory::Open(
+                                         format, path, file_status.GetLen(), builder.get(), options,
+                                         local_fs_, executor_, pool_, GetArrowPool(pool_)));
+                std::shared_ptr<Predicate> predicate;
+                std::optional<RoaringBitmap32> bitmap;
+                if (late_materializing) {
+                    predicate = PredicateBuilder::GreaterOrEqual(1, "f1", FieldType::BIGINT,
+                                                                 Literal(static_cast<int64_t>(35)));
+                    bitmap.emplace();
+                    bitmap->AddRange(15, 65);
+                }
+                ArrowSchema schema;
+                ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(fields_), &schema).ok());
+                reader->Warmup();
+                ASSERT_OK(reader->SetReadSchema(&schema, predicate, bitmap));
+                reader->Warmup();
+                reader->Warmup();
+                ASSERT_OK_AND_ASSIGN(auto result, CollectResultAndRowIds(reader.get()));
+                auto expected = std::make_shared<arrow::ChunkedArray>(
+                    late_materializing ? data->Slice(35, 30) : data);
+                ASSERT_TRUE(expected->Equals(result.first));
+                if (level == WarmupLevel::NONE) {
+                    baseline_row_ids = result.second;
+                } else {
+                    ASSERT_EQ(baseline_row_ids, result.second);
+                }
+                ASSERT_OK_AND_ASSIGN(
+                    double enabled, reader->GetReaderMetrics()->GetGauge(PrefetchMetrics::ENABLED));
+                ASSERT_EQ(enabled, mode == 1 ? 1.0 : 0.0);
+                if (cache_enabled) {
+                    ASSERT_OK_AND_ASSIGN(uint64_t hits, reader->GetReaderMetrics()->GetCounter(
+                                                            ReadAheadCacheMetrics::READ_HITS));
+                    ASSERT_GT(hits, 0);
+                }
+                reader->Close();
+                reader->Warmup();
+            }
+        }
+    }
+}
+
+TEST_P(PrefetchFileBatchReaderImplTest, SynchronousMultiFileWarmupPreservesRows) {
+    const auto [format, cache_enabled] = GetParam();
+    auto data = PrepareArray(30);
+    PrepareTestData(format, data, /*stripe_row_count=*/30, /*row_index_stride=*/10);
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "file." + format);
+    ASSERT_OK_AND_ASSIGN(auto file_status, local_fs_->GetFileStatus(path));
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
+        DataFileReadOptions options;
+        options.read_batch_size = 10;
+        options.read_ahead_cache_enabled = cache_enabled;
+        options.warmup_level = level;
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<ReaderBuilder> builder,
+            DataFileReaderFactory::CreateReaderBuilder(format, {}, {}, options, pool_));
+        std::vector<std::unique_ptr<BatchReader>> readers;
+        for (int32_t i = 0; i < 2; ++i) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
+                                 DataFileReaderFactory::Open(
+                                     format, path, file_status.GetLen(), builder.get(), options,
+                                     local_fs_, executor_, pool_, GetArrowPool(pool_)));
+            ArrowSchema schema;
+            ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(fields_), &schema).ok());
+            ASSERT_OK(reader->SetReadSchema(&schema, nullptr, std::nullopt));
+            readers.push_back(std::move(reader));
+        }
+        ConcatBatchReader concat(std::move(readers), GetArrowPool(pool_));
+        ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(&concat));
+        auto expected = std::make_shared<arrow::ChunkedArray>(arrow::ArrayVector{data, data});
+        ASSERT_TRUE(expected->Equals(result));
+        concat.Close();
+    }
+}
+
+// NONE leaves the first read to start the decode loop and populate the cache.
 TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupLevelNone) {
     auto [file_format, read_ahead_cache_enabled] = GetParam();
     auto data_array = PrepareArray(90);

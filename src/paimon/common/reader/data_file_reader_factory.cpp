@@ -22,7 +22,9 @@
 
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
+#include "paimon/common/reader/file_read_ahead.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
+#include "paimon/common/reader/warmup_file_batch_reader.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/format/read_hints.h"
@@ -44,6 +46,11 @@ bool FormatSupportsPrefetch(const std::string& format_identifier) {
     return format_identifier != "blob" && format_identifier != "avro" &&
            format_identifier != "lance" && format_identifier != "mosaic" &&
            format_identifier != "vortex";
+}
+
+bool FormatSupportsSynchronousWarmup(const std::string& format_identifier) {
+    // Other format plugins may expose only FileBatchReader. Keep their plain read path intact.
+    return format_identifier == "parquet" || format_identifier == "orc";
 }
 
 }  // namespace
@@ -69,7 +76,10 @@ Result<std::unique_ptr<ReaderBuilder>> DataFileReaderFactory::CreateReaderBuilde
     // off when the shared read-ahead cache is reading ahead.
     ReadHints read_hints;
     read_hints.prefetch_enabled = read_options.prefetch_enabled;
-    read_hints.read_ahead_cache_enabled = read_options.read_ahead_cache_enabled;
+    read_hints.read_ahead_cache_enabled =
+        read_options.read_ahead_cache_enabled &&
+        ((read_options.prefetch_enabled && FormatSupportsPrefetch(format_identifier)) ||
+         FormatSupportsSynchronousWarmup(format_identifier));
     reader_builder->WithReadHints(read_hints);
     return reader_builder;
 }
@@ -91,6 +101,17 @@ Result<std::unique_ptr<FileBatchReader>> DataFileReaderFactory::Open(
                 read_options.cache_config, read_options.prefetch_io_metrics_enabled,
                 read_options.warmup_level, pool, arrow_pool));
         return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
+    }
+    if (FormatSupportsSynchronousWarmup(format_identifier)) {
+        PAIMON_ASSIGN_OR_RAISE(
+            FileReadAhead::OpenedReaders opened,
+            FileReadAhead::Open(file_path, file_size, reader_builder, file_system,
+                                /*reader_count=*/1, /*executor=*/nullptr,
+                                read_options.read_ahead_cache_enabled, read_options.cache_config,
+                                read_options.prefetch_io_metrics_enabled, pool));
+        return std::make_unique<WarmupFileBatchReader>(std::move(opened.readers[0]),
+                                                       std::move(opened.read_ahead),
+                                                       read_options.warmup_level, arrow_pool);
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
                            file_system->Open(FileStatus(file_path, file_size)));

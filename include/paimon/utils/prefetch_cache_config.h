@@ -143,6 +143,7 @@ enum class PAIMON_EXPORT WarmupLevel {
     RAW,
     /// Fetch the raw bytes and start the background decode loop as well, so decoded batches are
     /// ready before the file is read. Hides the most latency but uses the most memory.
+    /// Without batch prefetch, prepares only the first batch and then continues synchronously.
     DECODED,
 };
 

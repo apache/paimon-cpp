@@ -48,7 +48,8 @@ class PAIMON_EXPORT PrefetchMetrics {
     static constexpr char CONSUMER_WAIT_LATENCY_US[] = "prefetch.consumer-wait-latency-us";
 };
 
-/// C++-only metric names for I/O observed by the prefetch reader's instrumented input streams.
+/// C++-only metric names for I/O observed by instrumented file input streams, with or without
+/// batch prefetch.
 /// Java Paimon has no corresponding metrics.
 /// These metrics do not represent whole-query or whole-table I/O.
 class PAIMON_EXPORT PrefetchIoMetrics {

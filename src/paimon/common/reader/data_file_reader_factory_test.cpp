@@ -36,6 +36,21 @@
 
 namespace paimon::test {
 
+TEST(DataFileReaderFactoryTest, OtherFormatsKeepTheirPlainReaderWithoutPrefetch) {
+    auto type = arrow::struct_({arrow::field("v", arrow::int32())});
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(type, "[[1],[2]]").ValueOrDie();
+    MockFormatReaderBuilder builder(data, type, /*read_batch_size=*/2);
+    auto fs = std::make_shared<MockFileSystem>();
+    auto pool = GetDefaultPool();
+    DataFileReadOptions options;
+    for (const char* format : {"custom", "avro", "blob", "lance", "mosaic", "vortex"}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
+                             DataFileReaderFactory::Open(format, "dummy", 0, &builder, options, fs,
+                                                         nullptr, pool, GetArrowPool(pool)));
+        ASSERT_NE(dynamic_cast<MockFileBatchReader*>(reader.get()), nullptr);
+    }
+}
+
 /// `Open()` is the one place a production read builds the prefetching reader, and a level that is
 /// not forwarded here fails nothing: the reader warms up however its own default says, and the only
 /// symptom is latency and memory a query never asked for.
