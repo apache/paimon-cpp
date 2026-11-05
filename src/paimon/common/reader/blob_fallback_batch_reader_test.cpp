@@ -324,6 +324,7 @@ TEST_F(BlobFallbackBatchReaderTest, TestRejectsBatchExceedingReadLimit) {
         // This mock ignores the context and returns two rows for a one-row read/skip request.
         auto oversized_reader =
             std::make_unique<MockFileBatchReader>(MakeBlobStruct({"b0", "b1"}), struct_type_, 1024);
+        oversized_reader->EnableRandomizeBatchSize(false);
         std::vector<std::vector<BlobFallbackBatchReader::Segment>> groups;
         groups.push_back(MakeGroup(
             {SegmentSpec::File(covered ? BlobRows{"u0", "u1"} : BlobRows{"PH", "PH"})}, 1024));

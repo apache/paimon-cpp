@@ -160,6 +160,13 @@ class RestApi {
     /// `RestErrorDetail`.
     Result<GetTableTokenResponse> LoadTableToken(const Identifier& identifier) const;
 
+    /// Loads the row filters and column masks a query of one table is subject to.
+    ///
+    /// @param identifier Table the query reads.
+    /// @param select Columns the query reads, or null for all of them.
+    Result<AuthTableQueryResponse> AuthTableQuery(
+        const Identifier& identifier, const std::optional<std::vector<std::string>>& select) const;
+
     /// Maps a non-successful http response to a status: 404 becomes `NotExist`, 409
     /// becomes `Exist`, 400 becomes `Invalid`, 501 becomes `NotImplemented` and the
     /// other codes become `IOError`. A redirect returned while `follow_redirects` is

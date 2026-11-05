@@ -113,8 +113,8 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override {
         ++get_table_calls_;
         // Serves the per-table file system when one was set, matching `GetTableFileSystem`
-        // without recording the request, so a test can still tell the two apart. No location:
-        // this mock's `GetTableLocation` is the unsupported stub.
+        // without recording the request, so a test can still tell the two apart. No location,
+        // even when `SetTableLocation()` set one.
         return std::make_shared<Table>(
             table_file_system_ != nullptr ? table_file_system_ : file_system_,
             /*root_path=*/"", table_schema_, identifier, table_uuid_);
@@ -235,8 +235,16 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     Result<std::string> GetDatabaseLocation(const std::string&) const override {
         return Unsupported();
     }
+    /// Serves the location set by `SetTableLocation()` for every identifier, or fails when none
+    /// was set.
     Result<std::string> GetTableLocation(const Identifier&) const override {
-        return Unsupported();
+        if (!table_location_) {
+            return Unsupported();
+        }
+        return table_location_.value();
+    }
+    void SetTableLocation(const std::string& location) {
+        table_location_ = location;
     }
     std::string GetRootPath() const override {
         return "";
@@ -294,6 +302,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
     Result<bool> answer_;
     std::string table_uuid_;
     std::shared_ptr<Schema> table_schema_;
+    std::optional<std::string> table_location_;
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<FileSystem> table_file_system_;
     mutable std::vector<Identifier> table_file_system_requests_;

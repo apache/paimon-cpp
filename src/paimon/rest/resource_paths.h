@@ -51,6 +51,9 @@ class ResourcePaths {
     /// Path of the temporary file system credentials of one table.
     std::string TableToken(const std::string& database_name, const std::string& table_name) const;
 
+    /// Endpoint returning the row filters and column masks a query of one table is subject to.
+    std::string AuthTable(const std::string& database_name, const std::string& table_name) const;
+
  private:
     /// "/v1" or "/v1/{encoded prefix}".
     std::string base_;

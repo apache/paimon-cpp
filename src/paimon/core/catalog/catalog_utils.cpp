@@ -26,6 +26,7 @@
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/options/table_type.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
@@ -40,6 +41,15 @@ namespace {
 Status SystemTableError(const Identifier& identifier, const std::string& action) {
     return Status::Invalid(fmt::format("Cannot '{}' for system table '{}', please use data table.",
                                        action, identifier.ToString()));
+}
+
+bool SameLocation(const Path& left, const Path& right) {
+    auto scheme = [](const Path& path) {
+        std::string lower = StringUtils::ToLowerCase(path.scheme);
+        return lower.empty() ? std::string("file") : lower;
+    };
+    return scheme(left) == scheme(right) && left.authority == right.authority &&
+           left.path == right.path;
 }
 
 }  // namespace
@@ -73,6 +83,53 @@ Result<Identifier> CatalogUtils::BranchIdentifier(const Identifier& identifier,
                                                   const std::string& branch) {
     PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
     return Identifier(identifier.GetDatabaseName(), data_table_name, branch);
+}
+
+Result<Identifier> CatalogUtils::ResolvedBranchIdentifier(const Identifier& identifier,
+                                                          const std::string& branch) {
+    if (IsSystemDatabase(identifier.GetDatabaseName())) {
+        return identifier;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> identifier_branch,
+                           identifier.GetBranchName());
+    if (identifier_branch) {
+        return identifier;
+    }
+    PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier, BranchIdentifier(identifier, branch));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table,
+                           identifier.GetSystemTableName());
+    if (!system_table) {
+        return branch_identifier;
+    }
+    return Identifier(branch_identifier.GetDatabaseName(),
+                      fmt::format("{}{}{}", branch_identifier.GetObjectName(),
+                                  Identifier::kSystemTableSplitter, system_table.value()));
+}
+
+Result<bool> CatalogUtils::SameTableLocation(const std::string& left, const std::string& right) {
+    PAIMON_ASSIGN_OR_RAISE(Path left_path, PathUtil::ToPath(left));
+    PAIMON_ASSIGN_OR_RAISE(Path right_path, PathUtil::ToPath(right));
+    return SameLocation(left_path, right_path);
+}
+
+Status CatalogUtils::CheckPathIsTableLocation(const Identifier& identifier,
+                                              const Result<std::string>& location,
+                                              const std::string& path,
+                                              const std::string& operation) {
+    if (!location.ok()) {
+        return location.status().WithMessage(fmt::format(
+            "Cannot check that {} is the location of table {}, whose query auth settings the {} "
+            "applies: {}",
+            path, identifier.GetFullName(), operation, location.status().message()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(bool same_location, SameTableLocation(location.value(), path));
+    if (!same_location) {
+        return Status::Invalid(fmt::format(
+            "The {} targets {}, but the catalog keeps table {}, whose query auth settings it would "
+            "apply, at {}. Use the location the catalog returns for the table.",
+            operation, path, identifier.GetFullName(), location.value()));
+    }
+    return Status::OK();
 }
 
 Status CatalogUtils::CheckNotBranch(const Identifier& identifier, const std::string& action) {

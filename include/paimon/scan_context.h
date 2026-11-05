@@ -62,6 +62,22 @@ class PAIMON_EXPORT ScanContext {
                 const std::shared_ptr<Catalog>& catalog,
                 const std::optional<Identifier>& identifier);
 
+    /// Also takes the columns the query reads, see `ScanContextBuilder::SetReadFieldNames()`.
+    ScanContext(const std::string& path, bool is_streaming_mode, std::optional<int32_t> limit,
+                const std::shared_ptr<ScanFilter>& scan_filter,
+                const std::shared_ptr<GlobalIndexResult>& global_index_result,
+                const std::shared_ptr<RealtimeContext>& realtime_context,
+                const std::shared_ptr<MemoryPool>& memory_pool,
+                const std::shared_ptr<Executor>& executor,
+                const std::shared_ptr<FileSystem>& specific_file_system,
+                const std::optional<std::string>& table_schema,
+                const std::map<std::string, std::string>& options,
+                const std::shared_ptr<Cache>& cache,
+                const std::shared_ptr<FormatTable>& format_table,
+                const std::shared_ptr<Catalog>& catalog,
+                const std::optional<Identifier>& identifier,
+                const std::optional<std::vector<std::string>>& read_field_names);
+
     ~ScanContext();
 
     const std::string& GetPath() const {
@@ -127,6 +143,10 @@ class PAIMON_EXPORT ScanContext {
         return identifier_;
     }
 
+    const std::optional<std::vector<std::string>>& GetReadFieldNames() const {
+        return read_field_names_;
+    }
+
  private:
     std::string path_;
     bool is_streaming_mode_;
@@ -143,6 +163,7 @@ class PAIMON_EXPORT ScanContext {
     std::shared_ptr<FormatTable> format_table_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
+    std::optional<std::vector<std::string>> read_field_names_;
 };
 
 /// Filter configuration for table scan operations
@@ -197,6 +218,11 @@ class PAIMON_EXPORT ScanContextBuilder {
         const std::vector<std::map<std::string, std::string>>& partition_filters);
     /// Set a predicate for filtering data.
     ScanContextBuilder& SetPredicate(const std::shared_ptr<Predicate>& predicate);
+    /// Set the columns the query reads. A table with `query-auth.enabled=true` asks its catalog
+    /// for the rules of these columns plus those of the predicate and the partition filter; by
+    /// default it asks for all columns. An empty list asks for no other column, unlike the empty
+    /// list of `ReadContextBuilder::SetReadFieldNames()`, which reads every column.
+    ScanContextBuilder& SetReadFieldNames(const std::vector<std::string>& read_field_names);
 
     /// Sets the result of a global index search (e.g., row ids (may with scores) from a distributed
     /// index lookup). This is used to push down index-filtered row ids into the scan for efficient
@@ -241,11 +267,23 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ScanContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
 
-    /// Plans a native table through its own file system - including the per-table temporary
-    /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.
-    /// This is a shorthand for `WithFileSystem(catalog->GetTableFileSystem(identifier))`; an
-    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked.
-    /// @param catalog Non-null catalog, read when `Finish()` builds the context.
+    /// Plans a native table through its catalog, which supplies its file system and, for a table
+    /// with `query-auth.enabled`, its rules. The file system is
+    /// `catalog->GetTableFileSystem(identifier)`, with any per-table temporary credentials; an
+    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked for one.
+    /// `TableScan::Create()` reads `query-auth.enabled` from the schema the catalog holds for the
+    /// branch scanned; the fields the scan plans with still come from `SetTableSchema()` on the
+    /// main branch or from the latest schema under the table path. The scan path must be
+    /// `catalog->GetTableLocation()` of the branch scanned, so the catalog's setting is taken only
+    /// for the table it keeps there. A `sys` identifier requires a global system table path.
+    /// A query-auth scan checks the location again on every plan, along with whether its selected
+    /// and rule columns keep their field ids in the catalog's current schema.
+    /// A branch the `branch` option or a system table path names is carried into the identifier,
+    /// as `tbl$branch_dev`, before requesting the table's file system; an
+    /// identifier naming another branch, or a branch the catalog would read as another object, such
+    /// as `MAIN` or one holding a `$`, is rejected before the catalog is asked for anything.
+    /// @param catalog Non-null catalog, read when `Finish()` builds the context and when
+    ///        `TableScan::Create()` runs.
     /// @param identifier The native table to scan.
     /// @return Reference to this builder for method chaining.
     ScanContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,

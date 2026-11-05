@@ -109,6 +109,50 @@ TEST(SchemaValidationTest, TestSimple) {
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 }
 
+TEST(SchemaValidationTest, TestQueryAuth) {
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
+    auto create = [&](const std::map<std::string, std::string>& options) {
+        return TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                   /*primary_keys=*/{}, options);
+    };
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> plain, create({}));
+    ASSERT_OK_AND_ASSIGN(bool plain_enabled,
+                         SchemaValidation::QueryAuthReadEnabled(plain->Options(), {}));
+    ASSERT_FALSE(plain_enabled);
+    ASSERT_OK_AND_ASSIGN(bool enabled_by_read,
+                         SchemaValidation::QueryAuthReadEnabled(
+                             plain->Options(), {{Options::QUERY_AUTH_ENABLED, "true"}}));
+    ASSERT_TRUE(enabled_by_read);
+    ASSERT_OK(SchemaValidation::RejectQueryAuth(*plain, {}, "Search"));
+    ASSERT_OK(SchemaValidation::RejectQueryAuth(*plain, {{Options::QUERY_AUTH_ENABLED, "false"}},
+                                                "Search"));
+    Status refused_by_read = SchemaValidation::RejectQueryAuth(
+        *plain, {{Options::QUERY_AUTH_ENABLED, "true"}}, "Search");
+    ASSERT_TRUE(refused_by_read.IsNotImplemented()) << refused_by_read.ToString();
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> query_auth,
+                         create({{Options::QUERY_AUTH_ENABLED, "true"}}));
+    ASSERT_OK(SchemaValidation::ValidateNewTableSchema(*query_auth, /*file_system=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(bool schema_enabled,
+                         SchemaValidation::QueryAuthReadEnabled(query_auth->Options(), {}));
+    ASSERT_TRUE(schema_enabled);
+    ASSERT_NOK_WITH_MSG(SchemaValidation::RejectQueryAuth(*query_auth, {}, "Search"),
+                        "NotImplemented: Search is not supported on a table with "
+                        "'query-auth.enabled=true'");
+    Status disabled = SchemaValidation::RejectQueryAuth(
+        *query_auth, {{Options::QUERY_AUTH_ENABLED, "false"}}, "Search");
+    ASSERT_TRUE(disabled.IsInvalid()) << disabled.ToString();
+    ASSERT_NOK_WITH_MSG(disabled, "is not allowed to be disabled dynamically");
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> format_table,
+        create({{Options::TYPE, "format-table"}, {Options::QUERY_AUTH_ENABLED, "true"}}));
+    ASSERT_NOK_WITH_MSG(
+        SchemaValidation::ValidateNewTableSchema(*format_table, /*file_system=*/nullptr),
+        "Invalid: query-auth.enabled is not supported on a format table");
+}
+
 TEST(SchemaValidationTest, TestRealtime) {
     const std::shared_ptr<arrow::Schema> schema =
         arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/false)});

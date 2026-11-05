@@ -145,6 +145,7 @@ class PAIMON_EXPORT CoreOptions {
     bool CommitDiscardDuplicateFiles() const;
     bool RestCommitLockEnabled() const;
     bool RestCommitAcquireLock() const;
+    bool QueryAuthEnabled() const;
     bool DynamicPartitionOverwrite() const;
     bool OverwriteUpgrade() const;
     int32_t GetCompactionMinFileNum() const;
