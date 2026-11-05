@@ -391,7 +391,7 @@ TEST_F(FileIndexEvaluatorTest, TestCreateRequiresExternalIndexDependencies) {
         /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_NOK_WITH_MSG(
         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                   /*data_file_path_factory=*/nullptr, data_file_meta,
+                                   /*path_factory=*/nullptr, data_file_meta,
                                    /*file_system=*/nullptr, pool_),
         "read process for FileIndexEvaluator must have data_file_path_factory and file_system");
 }

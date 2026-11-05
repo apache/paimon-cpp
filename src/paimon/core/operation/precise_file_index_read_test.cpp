@@ -335,8 +335,7 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateSelectivityOrder) {
         {{std::numeric_limits<double>::quiet_NaN(), -0.1, 1.1, 0.5,
           std::numeric_limits<double>::infinity()},
          {3, 0, 1, 2, 4}}};
-    for (size_t case_id = 0; case_id < cases.size(); ++case_id) {
-        const auto& test_case = cases[case_id];
+    for (const auto& test_case : cases) {
         MockSearchFileIndex::QueryMatches matches;
         for (size_t i = 0; i < queries.size(); ++i) {
             matches.emplace(queries[i],
@@ -411,8 +410,7 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateCompoundSelectivity) {
         {false, 0.2, std::nullopt, 0.6, {c_query, a_query, b_query}},
         {false, std::nullopt, 0.2, 0.6, {c_query, a_query, b_query}},
         {false, std::nullopt, std::nullopt, 0.6, {c_query, a_query, b_query}}};
-    for (size_t case_id = 0; case_id < cases.size(); ++case_id) {
-        const auto& test_case = cases[case_id];
+    for (const auto& test_case : cases) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> inner, test_case.inner_and
                                                                    ? PredicateBuilder::And({a, b})
                                                                    : PredicateBuilder::Or({a, b}));
