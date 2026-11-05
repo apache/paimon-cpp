@@ -284,7 +284,7 @@ PrefetchFileBatchReaderImpl::DispatchReadRanges(
 }
 
 Status PrefetchFileBatchReaderImpl::CleanUp() {
-    synchronous_reader_->ResetWarmup();
+    synchronous_reader_->ResetReadState();
     auto clean_prefetch_queue = [this]() {
         for (auto& prefetch_queue : prefetch_queues_) {
             while (true) {
@@ -336,9 +336,8 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
 void PrefetchFileBatchReaderImpl::Workloop() {
     std::vector<std::future<void>> futures;
     futures.resize(readers_.size());
-    // Warm the read-ahead cache before decoding. At DECODED this is the first warmup; at RAW
-    // Warmup() already ran it on the caller's thread and the guard makes this a no-op, so the
-    // cache is never Init'd twice.
+    // Register the file's byte ranges before decoding. An earlier RAW Warmup() may have already
+    // fetched them, in which case the shared state makes this a no-op.
     WarmCacheOnce();
 
     while (true) {
@@ -587,7 +586,7 @@ void PrefetchFileBatchReaderImpl::ClearPreBufferRangeCallbacks() {
 }
 
 void PrefetchFileBatchReaderImpl::Warmup() {
-    if (warmup_level_ == WarmupLevel::NONE) {
+    if (warmup_level_ != WarmupLevel::RAW) {
         return;
     }
     // Ranges that are not set mean the reader is either not configured yet or already cleaned up,
@@ -597,18 +596,7 @@ void PrefetchFileBatchReaderImpl::Warmup() {
     if (!read_ranges_freshed_) {
         return;
     }
-    if (!need_prefetch_) {
-        synchronous_reader_->Warmup();
-        return;
-    }
-    if (warmup_level_ == WarmupLevel::RAW) {
-        // Prefetch the raw bytes only, without starting the decoder. The first real read starts the
-        // background thread, whose Workloop() finds the cache already warmed and skips re-Init.
-        WarmCacheOnce();
-        return;
-    }
-    // DECODED: start the background decode loop now so decoded batches are ready before the read.
-    EnsureBackgroundThread();
+    WarmCacheOnce();
 }
 
 Result<BatchReader::ReadBatchWithBitmap> PrefetchFileBatchReaderImpl::NextBatchWithBitmap() {

@@ -425,18 +425,15 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& WithCacheConfig(const CacheConfig& config);
 
-    /// Set how far the reader prepares the next file before it is read.
+    /// Set whether the reader fetches the next file's raw bytes before it is read.
     ///
-    /// Warmup overlaps remote-storage latency with the read of the current file. Higher levels hide
-    /// more latency but use more memory, and may warm files that a query never reads (for example
-    /// when a LIMIT stops the scan early).
+    /// Warmup can overlap remote-storage latency with reading the current file. It may fetch bytes
+    /// for files that a query never reads, for example when a LIMIT stops the scan early.
     /// @param level The warmup level to use (default: WarmupLevel::RAW).
     /// @return Reference to this builder for method chaining.
     /// @note WarmupLevel::RAW warms the read-ahead cache, so it has no effect and behaves like
     /// WarmupLevel::NONE when the cache is off (see SetReadAheadCacheEnabled()).
-    /// WarmupLevel::DECODED does not depend on the cache.
-    /// Both levels work with EnablePrefetch(false). Without prefetch, DECODED prepares only the
-    /// first batch; subsequent batches are read synchronously.
+    /// RAW also works with EnablePrefetch(false) and never starts batch decoding.
     /// @see WarmupLevel
     ReadContextBuilder& SetWarmupLevel(WarmupLevel level);
 

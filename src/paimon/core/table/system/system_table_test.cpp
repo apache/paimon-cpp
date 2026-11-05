@@ -239,8 +239,8 @@ TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
 
 // A system table builds a fresh ReadContext for the data table underneath it, starting from the
 // defaults, so a setting that is not copied across silently reverts: a caller that asked for NONE
-// or DECODED would get RAW back. `$ro` has its own builder chain and `$audit_log` and `$binlog`
-// share one, so all three are pinned here.
+// would get RAW back. `$ro` has its own builder chain and `$audit_log` and `$binlog` share one,
+// so all three are pinned here.
 TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};
@@ -251,7 +251,7 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
     ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
 
-    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW}) {
         ReadContextBuilder builder("/tmp/table");
         builder.SetOptions(options).SetWarmupLevel(level);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> caller_unique_context, builder.Finish());

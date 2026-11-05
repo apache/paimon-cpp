@@ -64,9 +64,8 @@ class PAIMON_EXPORT FileBatchReader : public BatchReader {
     /// Get whether or not support read precisely while bitmap pushed down.
     virtual bool SupportPreciseBitmapSelection() const = 0;
 
-    /// Starts whatever background work this reader would otherwise start on its first read, so a
-    /// caller that knows this reader is next can pay that startup while still consuming the
-    /// previous one.
+    /// Fetches this file's raw bytes ahead of its first read, so a caller that knows this reader
+    /// is next can overlap the fetch with consuming the previous file.
     ///
     /// This is an optional hint and never changes what the reader returns: ordering, filtering and
     /// metrics are the same with or without it. A reader with nothing to start, or one that is not
@@ -78,8 +77,8 @@ class PAIMON_EXPORT FileBatchReader : public BatchReader {
     /// that cannot start its work leaves it to be started by the first read, which reports the
     /// failure itself.
     ///
-    /// What an implementation starts is up to the implementation - a reader that prefetches on a
-    /// background thread starts that thread, one that reads synchronously may do nothing at all.
+    /// A reader may fetch through its read-ahead cache using the filesystem's asynchronous I/O.
+    /// Warmup does not start batch decoding. A reader without byte-warmup support does nothing.
     /// @warning Whatever it starts, the call itself is not thread-safe: make it from the same
     /// thread that reads this reader, and not concurrently with any other call on it.
     virtual void Warmup() {}

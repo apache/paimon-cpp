@@ -154,7 +154,7 @@ TEST(ReadContextTest, TestSetContent) {
     builder.EnablePredicateFilter(true);
     builder.EnablePrefetch(true);
     builder.SetReadAheadCacheEnabled(false);
-    builder.SetWarmupLevel(WarmupLevel::DECODED);
+    builder.SetWarmupLevel(WarmupLevel::NONE);
     builder.SetPrefetchBatchCount(1200);
     builder.SetPrefetchMaxParallelNum(6);
     builder.EnableMultiThreadRowToBatch(true);
@@ -180,7 +180,7 @@ TEST(ReadContextTest, TestSetContent) {
     ASSERT_TRUE(ctx->EnablePredicateFilter());
     ASSERT_TRUE(ctx->EnablePrefetch());
     ASSERT_FALSE(ctx->ReadAheadCacheEnabled());
-    ASSERT_EQ(WarmupLevel::DECODED, ctx->GetWarmupLevel());
+    ASSERT_EQ(WarmupLevel::NONE, ctx->GetWarmupLevel());
     ASSERT_EQ(1200, ctx->GetPrefetchBatchCount());
     ASSERT_EQ(6, ctx->GetPrefetchMaxParallelNum());
     ASSERT_TRUE(ctx->EnableMultiThreadRowToBatch());
@@ -201,7 +201,7 @@ TEST(ReadContextTest, TestSetContent) {
 }
 
 TEST(ReadContextTest, TestSetWarmupLevel) {
-    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW}) {
         ReadContextBuilder builder("table_root_path");
         // The setter hands back the builder so it chains like every other setter on it.
         ASSERT_EQ(&builder, &builder.SetWarmupLevel(level));

@@ -706,7 +706,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, WorksAsInnerOfPrefetchReader) {
             /*prefetch_max_parallel_num=*/1, /*batch_size=*/3, /*prefetch_batch_count=*/2,
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
-            /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, WarmupLevel::RAW, pool_, GetArrowPool(pool_)));
     auto predicate =
         PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(4l));
     ::ArrowSchema c_schema;
@@ -742,7 +742,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerReentrantSetReadSchema
             /*prefetch_max_parallel_num=*/1, /*batch_size=*/3, /*prefetch_batch_count=*/2,
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
-            /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, WarmupLevel::RAW, pool_, GetArrowPool(pool_)));
 
     auto full_schema = arrow::schema(full_fields_);
     auto predicate1 =
@@ -805,7 +805,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerParallelReadersWithSee
             /*prefetch_max_parallel_num=*/3, /*batch_size=*/3, /*prefetch_batch_count=*/6,
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
-            /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, WarmupLevel::RAW, pool_, GetArrowPool(pool_)));
     auto predicate =
         PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
     ::ArrowSchema c_schema;
@@ -960,7 +960,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerRegistersPayloadPreBuf
             /*prefetch_max_parallel_num=*/1, /*batch_size=*/3, /*prefetch_batch_count=*/2,
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, WarmupLevel::RAW, pool_, GetArrowPool(pool_)));
     auto predicate =
         PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(4l));
     ::ArrowSchema c_schema;

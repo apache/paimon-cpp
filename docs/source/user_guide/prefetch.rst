@@ -83,7 +83,7 @@ the default ``loser-tree`` sort engine additionally warms the first file of
 every sorted run before merging. It applies to append-table reads and append
 compaction as well, but does not cross split boundaries.
 
-How far the next file is prepared is set with
+Whether the next file's raw bytes are fetched early is set with
 ``ReadContextBuilder::SetWarmupLevel()``. Append compaction builds its own read
 context and always uses the default level.
 
@@ -91,29 +91,26 @@ context and always uses the default level.
 - ``WarmupLevel::RAW`` (default): fetch the next file's raw bytes through the
   read-ahead cache without decoding them. It has no effect when the read-ahead
   cache is disabled with ``ReadContextBuilder::SetReadAheadCacheEnabled()``.
-- ``WarmupLevel::DECODED``: also start decoding the next file, which hides the
-  most latency but uses the most memory.
 
 Warmup and the read-ahead cache work independently of batch prefetch for
-Parquet and ORC. With ``EnablePrefetch(false)``, ``RAW`` still warms the cache,
-and ``DECODED`` prepares only the first batch on a background thread; later
-batches are read synchronously. The same behavior applies when the format or
-the adaptive strategy decides against prefetching. With batch prefetch active,
-``DECODED`` starts the normal parallel decode loop instead.
+Parquet and ORC. With ``EnablePrefetch(false)``, ``RAW`` still warms the cache
+and batches are read synchronously. The same behavior applies when the format
+or the adaptive strategy decides against prefetching. Warmup only fetches raw
+bytes; it never decodes batches. When batch prefetch is active, the first
+actual read starts the parallel decode loop.
 
 The defaults are batch prefetch off, read-ahead cache on, and ``RAW`` warmup.
 ``WarmupLevel::NONE`` disables early warmup while retaining byte caching during
-normal reads. Disabling the cache makes ``RAW`` a no-op but still permits
-``DECODED``. When the shared cache is active, Parquet disables its own
-pre-buffering to avoid buffering the same byte ranges twice.
+normal reads. Disabling the cache makes ``RAW`` a no-op. When the shared cache
+is active, Parquet disables its own pre-buffering to avoid buffering the same
+byte ranges twice.
 
 ``WarmupLevel::RAW`` issues its fetches from the reading thread through the
 file system's asynchronous read, so it only overlaps I/O when that read is
 really asynchronous. The local file system serves it synchronously, so there
 ``RAW`` warmup reads the next file on the reading thread before the current
 batch is returned, adding latency instead of hiding it. On such file systems,
-prefer ``WarmupLevel::DECODED``, which fetches on the background decode thread,
-or ``WarmupLevel::NONE``.
+use ``WarmupLevel::NONE`` to disable early fetching.
 
 Warmup preserves the returned rows and their order, but it costs memory: under
 ``WarmupLevel::RAW`` the next file may hold up to the read-ahead cache's

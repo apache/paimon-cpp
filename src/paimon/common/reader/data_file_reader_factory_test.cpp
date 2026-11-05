@@ -68,7 +68,7 @@ TEST(DataFileReaderFactoryTest, OpenForwardsWarmupLevelToPrefetchReader) {
             data_type->fields())
             .ValueOrDie();
 
-    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW}) {
         MockFormatReaderBuilder reader_builder(data, data_type, /*read_batch_size=*/10);
         DataFileReadOptions read_options;
         read_options.read_batch_size = 10;

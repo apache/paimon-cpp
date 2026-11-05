@@ -48,7 +48,7 @@ bool FormatSupportsPrefetch(const std::string& format_identifier) {
            format_identifier != "vortex";
 }
 
-bool FormatSupportsSynchronousWarmup(const std::string& format_identifier) {
+bool FormatSupportsReadAhead(const std::string& format_identifier) {
     // Other format plugins may expose only FileBatchReader. Keep their plain read path intact.
     return format_identifier == "parquet" || format_identifier == "orc";
 }
@@ -79,7 +79,7 @@ Result<std::unique_ptr<ReaderBuilder>> DataFileReaderFactory::CreateReaderBuilde
     read_hints.read_ahead_cache_enabled =
         read_options.read_ahead_cache_enabled &&
         ((read_options.prefetch_enabled && FormatSupportsPrefetch(format_identifier)) ||
-         FormatSupportsSynchronousWarmup(format_identifier));
+         FormatSupportsReadAhead(format_identifier));
     reader_builder->WithReadHints(read_hints);
     return reader_builder;
 }
@@ -102,7 +102,7 @@ Result<std::unique_ptr<FileBatchReader>> DataFileReaderFactory::Open(
                 read_options.warmup_level, pool, arrow_pool));
         return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
     }
-    if (FormatSupportsSynchronousWarmup(format_identifier)) {
+    if (FormatSupportsReadAhead(format_identifier)) {
         PAIMON_ASSIGN_OR_RAISE(
             FileReadAhead::OpenedReaders opened,
             FileReadAhead::Open(file_path, file_size, reader_builder, file_system,

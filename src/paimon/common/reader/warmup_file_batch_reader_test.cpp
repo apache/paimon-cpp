@@ -17,10 +17,7 @@
  */
 #include "paimon/common/reader/warmup_file_batch_reader.h"
 
-#include <atomic>
-#include <chrono>
 #include <functional>
-#include <future>
 #include <memory>
 #include <thread>
 #include <utility>
@@ -54,13 +51,9 @@ class ObservedReader : public MockFileBatchReader {
     }
 
     Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
-        const uint32_t count = ++read_count;
+        ++read_count;
         last_read_thread = std::this_thread::get_id();
-        auto result = Read();
-        if (count == 1) {
-            first_read_done.set_value();
-        }
-        return result;
+        return Read();
     }
 
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
@@ -78,8 +71,7 @@ class ObservedReader : public MockFileBatchReader {
         }
     }
 
-    std::atomic<uint32_t> read_count{0};
-    std::promise<void> first_read_done;
+    uint32_t read_count = 0;
     std::thread::id last_read_thread;
     bool read_bytes = false;
     Status range_status;
@@ -191,7 +183,7 @@ TEST_F(WarmupFileBatchReaderTest, RawWarmsBytesWithoutDecodingAndIsIdempotent) {
     reader->Warmup();
     reader->Warmup();
     ASSERT_EQ(fs->gated->AsyncReadCount(), 1);
-    ASSERT_EQ(observed_->read_count.load(), 0);
+    ASSERT_EQ(observed_->read_count, 0);
     fs->gated->ReleaseAll();
     observed_->read_bytes = true;
     ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatchWithBitmap());
@@ -209,7 +201,7 @@ TEST_F(WarmupFileBatchReaderTest, NoneAndRawWithoutCacheDoNotStartWork) {
         ASSERT_OK_AND_ASSIGN(auto reader, Open(config.first, config.second));
         ASSERT_OK(Configure(reader.get()));
         reader->Warmup();
-        ASSERT_EQ(observed_->read_count.load(), 0);
+        ASSERT_EQ(observed_->read_count, 0);
         if (config.second) {
             ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 0);
         }
@@ -221,48 +213,53 @@ TEST_F(WarmupFileBatchReaderTest, NoneAndRawWithoutCacheDoNotStartWork) {
     }
 }
 
-TEST_F(WarmupFileBatchReaderTest, DecodedPreparesOneBatchThenReadsSynchronously) {
-    for (bool cache_enabled : {false, true}) {
-        ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::DECODED, cache_enabled));
-        ASSERT_OK(Configure(reader.get()));
-        auto done = observed_->first_read_done.get_future();
-        reader->Warmup();
-        reader->Warmup();
-        ASSERT_EQ(done.wait_for(std::chrono::seconds(5)), std::future_status::ready);
-        ASSERT_EQ(observed_->read_count.load(), 1);
-        ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
-        ASSERT_OK_AND_ASSIGN(auto first, reader->NextBatchWithBitmap());
-        ASSERT_NE(observed_->last_read_thread, std::this_thread::get_id());
-        ASSERT_EQ(observed_->read_count.load(), 1);
-        ASSERT_OK_AND_ASSIGN(uint64_t row_id, reader->GetPreviousBatchFileRowId(1));
-        ASSERT_EQ(row_id, 1);
-        ReaderUtils::ReleaseReadBatch(std::move(first.first));
-        reader->Warmup();
-        ASSERT_OK_AND_ASSIGN(auto second, reader->NextBatchWithBitmap());
-        ASSERT_EQ(observed_->read_count.load(), 2);
-        ASSERT_EQ(observed_->last_read_thread, std::this_thread::get_id());
-        ASSERT_OK_AND_ASSIGN(row_id, reader->GetPreviousBatchFileRowId(0));
-        ASSERT_EQ(row_id, 2);
-        ReaderUtils::ReleaseReadBatch(std::move(second.first));
-        ASSERT_OK_AND_ASSIGN(double enabled,
-                             reader->GetReaderMetrics()->GetGauge(PrefetchMetrics::ENABLED));
-        ASSERT_EQ(enabled, 0.0);
+TEST_F(WarmupFileBatchReaderTest, WarmupNeverDecodesAndReadsStaySynchronous) {
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW}) {
+        for (bool cache_enabled : {false, true}) {
+            ASSERT_OK_AND_ASSIGN(auto reader, Open(level, cache_enabled));
+            ASSERT_OK(Configure(reader.get()));
+            reader->Warmup();
+            reader->Warmup();
+            ASSERT_EQ(observed_->read_count, 0);
+            ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
+            ASSERT_OK_AND_ASSIGN(auto first, reader->NextBatchWithBitmap());
+            ASSERT_EQ(observed_->last_read_thread, std::this_thread::get_id());
+            ASSERT_EQ(observed_->read_count, 1);
+            ASSERT_OK_AND_ASSIGN(uint64_t row_id, reader->GetPreviousBatchFileRowId(1));
+            ASSERT_EQ(row_id, 1);
+            ReaderUtils::ReleaseReadBatch(std::move(first.first));
+            reader->Warmup();
+            ASSERT_EQ(observed_->read_count, 1);
+            ASSERT_OK_AND_ASSIGN(auto second, reader->NextBatchWithBitmap());
+            ASSERT_EQ(observed_->last_read_thread, std::this_thread::get_id());
+            ASSERT_EQ(observed_->read_count, 2);
+            ASSERT_OK_AND_ASSIGN(row_id, reader->GetPreviousBatchFileRowId(0));
+            ASSERT_EQ(row_id, 2);
+            ReaderUtils::ReleaseReadBatch(std::move(second.first));
+            ASSERT_OK_AND_ASSIGN(double enabled,
+                                 reader->GetReaderMetrics()->GetGauge(PrefetchMetrics::ENABLED));
+            ASSERT_EQ(enabled, 0.0);
+        }
     }
 }
 
-TEST_F(WarmupFileBatchReaderTest, SchemaResetDiscardsFirstBatchAndRearmsWarmup) {
-    ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::DECODED, true));
+TEST_F(WarmupFileBatchReaderTest, SchemaResetRearmsRawWarmup) {
+    ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::RAW, true));
     ASSERT_OK(Configure(reader.get()));
     reader->Warmup();
+    ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 1);
+    ASSERT_EQ(observed_->read_count, 0);
     ASSERT_OK(Configure(reader.get()));
-    ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 0);
     reader->Warmup();
+    ASSERT_EQ(Counter(reader.get(), ReadAheadCacheMetrics::IO_COUNT), 1);
+    ASSERT_EQ(observed_->read_count, 0);
     ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(reader.get()));
     ASSERT_TRUE(result->Equals(std::make_shared<arrow::ChunkedArray>(data_)));
 }
 
-TEST_F(WarmupFileBatchReaderTest, WarmupFailureIsReturnedOnlyWhenConsumed) {
-    ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::DECODED, false));
+TEST_F(WarmupFileBatchReaderTest, ReadFailureIsTerminalUntilSchemaReset) {
+    ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::RAW, false));
     ASSERT_OK(Configure(reader.get()));
     observed_->SetNextBatchStatus(Status::IOError("first batch failed"));
     reader->Warmup();
@@ -274,12 +271,12 @@ TEST_F(WarmupFileBatchReaderTest, WarmupFailureIsReturnedOnlyWhenConsumed) {
     ASSERT_TRUE(result->Equals(std::make_shared<arrow::ChunkedArray>(data_)));
 }
 
-TEST_F(WarmupFileBatchReaderTest, EmptyFileAndUnconsumedWarmupCloseSafely) {
+TEST_F(WarmupFileBatchReaderTest, EmptyFileAndRawWarmupCloseSafely) {
     for (bool empty : {false, true}) {
         if (empty) {
             data_ = data_->Slice(0, 0);
         }
-        ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::DECODED, true));
+        ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::RAW, true));
         ASSERT_OK(Configure(reader.get()));
         reader->Warmup();
         if (empty) {
@@ -291,7 +288,7 @@ TEST_F(WarmupFileBatchReaderTest, EmptyFileAndUnconsumedWarmupCloseSafely) {
         reader->Warmup();
         ASSERT_NOK(reader->NextBatchWithBitmap());
     }
-    ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::DECODED, true));
+    ASSERT_OK_AND_ASSIGN(auto reader, Open(WarmupLevel::RAW, true));
     ASSERT_OK(Configure(reader.get()));
     reader->Warmup();
     reader.reset();
@@ -303,7 +300,7 @@ TEST_F(WarmupFileBatchReaderTest, RawRangeAndAsyncFailuresAreDeferredUntilRead) 
         ASSERT_OK(Configure(reader.get()));
         observed_->range_status = Status::IOError("range discovery failed");
         reader->Warmup();
-        ASSERT_EQ(observed_->read_count.load(), 0);
+        ASSERT_EQ(observed_->read_count, 0);
         ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), "range discovery failed");
     }
     auto fs = std::make_shared<GatedFileSystem>();

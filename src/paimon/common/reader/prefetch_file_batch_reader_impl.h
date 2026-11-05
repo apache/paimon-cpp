@@ -132,8 +132,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
 
     Status CleanUp();
     void Workloop();
-    /// Starts the background prefetch thread if it is not running yet. The first read does this
-    /// itself; Warmup() is the same call made earlier, so the two must not diverge.
+    /// Starts the background batch prefetch thread lazily on the first read.
     void EnsureBackgroundThread();
     /// Shares byte-range registration with the synchronous warmup path.
     void WarmCacheOnce();
