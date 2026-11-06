@@ -111,17 +111,19 @@ InMemorySystemTable::InMemorySystemTable(const std::shared_ptr<FileSystem>& fs,
     : SystemTable(fs, table_path, std::move(name)) {}
 
 Result<std::unique_ptr<TableScan>> InMemorySystemTable::NewScan(
-    std::unique_ptr<ScanContext> /*context*/) const {
+    std::unique_ptr<ScanContext> /*context*/,
+    const std::map<std::string, std::string>& dynamic_options) const {
     return std::make_unique<SystemTableScan>(GetRootPath());
 }
 
 Result<std::unique_ptr<TableRead>> InMemorySystemTable::NewRead(
-    std::unique_ptr<ReadContext> ctx) const {
+    std::unique_ptr<ReadContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     const std::shared_ptr<ReadContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const InMemorySystemTable> table,
-                           ForRead(context->GetOptions()));
+                           ForRead(dynamic_options));
     return std::make_unique<InMemorySystemTableRead>(std::move(table), context->GetMemoryPool());
 }
 

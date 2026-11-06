@@ -114,6 +114,9 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override {
         ++get_table_calls_;
+        if (table_ != nullptr) {
+            return table_;
+        }
         // Serves the per-table file system when one was set, matching `GetTableFileSystem`
         // without recording the request, so a test can still tell the two apart. No location:
         // this mock's `GetTableLocation` is the unsupported stub.
@@ -134,6 +137,13 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     void SetTableSchema(const std::shared_ptr<Schema>& table_schema) {
         table_schema_ = table_schema;
+    }
+
+    void SetTable(const std::shared_ptr<Table>& table) {
+        table_ = table;
+        table_uuid_ = table->CatalogUuid().value_or("");
+        table_schema_ = table->GetSchema();
+        table_file_system_ = table->GetFileSystem();
     }
 
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier) const override {
@@ -177,6 +187,10 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     size_t LoadSnapshotCalls() const {
         return load_snapshot_identifiers_.size();
+    }
+
+    void SetTableUuid(const std::string& table_uuid) {
+        table_uuid_ = table_uuid;
     }
 
     void CheckTableUuid() {
@@ -305,6 +319,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     Result<bool> answer_;
     std::string table_uuid_;
+    std::shared_ptr<Table> table_;
     std::shared_ptr<Schema> table_schema_;
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<FileSystem> table_file_system_;

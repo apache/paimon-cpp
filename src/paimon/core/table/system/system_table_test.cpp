@@ -31,6 +31,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/common/data/generic_row.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/core_options.h"
@@ -253,8 +254,8 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
                                             options);
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
-        ReadContextBuilder builder("/tmp/table");
-        builder.SetOptions(options).SetWarmupLevel(level);
+        ReadContextBuilder builder;
+        builder.SetWarmupLevel(level);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> caller_unique_context, builder.Finish());
         std::shared_ptr<ReadContext> caller_context(std::move(caller_unique_context));
         ASSERT_EQ(level, caller_context->GetWarmupLevel());

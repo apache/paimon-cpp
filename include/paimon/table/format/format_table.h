@@ -118,12 +118,18 @@ class PAIMON_EXPORT FormatTable : public Table {
 
     ~FormatTable() override;
 
-    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
-    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
+    Result<std::unique_ptr<TableScan>> NewScan(
+        std::unique_ptr<ScanContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(
+        std::unique_ptr<ReadContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
     Result<std::unique_ptr<FileStoreWrite>> NewWrite(
-        std::unique_ptr<WriteContext> context) const override;
+        std::unique_ptr<WriteContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
     Result<std::unique_ptr<FileStoreCommit>> NewCommit(
-        std::unique_ptr<CommitContext> context) const override;
+        std::unique_ptr<CommitContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
     /// Directory the data files live in.
     const std::string& Location() const {

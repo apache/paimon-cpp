@@ -33,6 +33,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/data_define.h"
 #include "paimon/common/utils/linked_hash_map.h"
@@ -1230,16 +1231,17 @@ TEST(CommitMessageTest, TestSerialize) {
                                    /*primary_keys=*/{}, options,
                                    /*ignore_if_exists=*/false));
 
-    WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
-                                        "commit_user1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.AddOption(Options::FILE_FORMAT, "mock_format")
-                             .AddOption(Options::TARGET_FILE_SIZE, "1024")
-                             .Finish());
+    TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user1");
+    context_builder_options[Options::FILE_FORMAT] = "mock_format";
+    context_builder_options[Options::TARGET_FILE_SIZE] = "1024";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
 
-    std::string root_path = write_context->GetRootPath();
+    std::string root_path = context_builder_load_options.path;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_options,
+                                                std::move(write_context), context_builder_options));
 
     for (size_t i = 0; i < 10240; i++) {
         auto f0_array = std::make_shared<arrow::Array>();

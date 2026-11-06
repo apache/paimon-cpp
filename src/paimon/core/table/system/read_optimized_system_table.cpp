@@ -58,7 +58,8 @@ std::map<std::string, std::string> ReadOptimizedSystemTable::ReadOptimizedOption
 }
 
 Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
-    std::unique_ptr<ScanContext> ctx) const {
+    std::unique_ptr<ScanContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     const std::shared_ptr<ScanContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     if (context->GetRealtimeContext() && !table_schema_->PrimaryKeys().empty()) {
@@ -66,12 +67,10 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
             "PK real-time union read does not support read-optimized scans");
     }
     auto options = ReadOptimizedOptions();
-    ScanContextBuilder builder(table_path_);
+    ScanContextBuilder builder;
     builder.WithStreamingMode(context->IsStreamingMode())
-        .SetOptions(context->GetOptions())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(GetFileSystem())
         .WithCache(context->GetCache());
     if (context->GetLimit().has_value()) {
         builder.SetLimit(context->GetLimit().value());
@@ -89,12 +88,12 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> base_context, builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
                            CreateDataTable(table_schema_, options));
-    return data_table->NewScan(std::move(base_context));
+    return data_table->NewScan(std::move(base_context), dynamic_options);
 }
 
 Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadContext(
     const std::shared_ptr<ReadContext>& context) const {
-    ReadContextBuilder builder(table_path_);
+    ReadContextBuilder builder;
     builder.SetPredicate(context->GetPredicate())
         .EnablePredicateFilter(context->EnablePredicateFilter())
         .EnablePrefetch(context->EnablePrefetch())
@@ -102,10 +101,8 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         .SetPrefetchMaxParallelNum(context->GetPrefetchMaxParallelNum())
         .EnableMultiThreadRowToBatch(context->EnableMultiThreadRowToBatch())
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
-        .SetOptions(context->GetOptions())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(GetFileSystem())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
         .SetWarmupLevel(context->GetWarmupLevel())
@@ -123,16 +120,16 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
 }
 
 Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
-    std::unique_ptr<ReadContext> ctx) const {
+    std::unique_ptr<ReadContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     const std::shared_ptr<ReadContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> base_context,
                            CreateDataReadContext(context));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStoreTable> data_table,
-        CreateDataTable(table_schema_, options_, context->GetFileSystemSchemeToIdentifierMap()));
-    return data_table->NewRead(std::move(base_context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, options_));
+    return data_table->NewRead(std::move(base_context), dynamic_options);
 }
 
 }  // namespace paimon

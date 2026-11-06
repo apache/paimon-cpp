@@ -41,6 +41,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/map_shredding_defs.h"
@@ -135,14 +136,17 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
                                                   /*primary_keys=*/{"f0"}, table_options,
                                                   /*ignore_if_exists=*/false));
 
-        WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"), "test");
+        TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder("test");
         if (with_temp_directory) {
             context_builder.WithTempDirectory(dir->Str());
         }
 
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context,
                                context_builder.Finish());
-        return FileStoreWrite::Create(std::move(write_context));
+        return FileStoreWrite::Create(context_builder_load_options, std::move(write_context),
+                                      context_builder_options);
     }
 
     Status WriteSingleStringRow(FileStoreWrite* file_store_write, int32_t bucket,
@@ -196,11 +200,15 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
         const std::string& table_path, const std::shared_ptr<arrow::Schema>& schema,
         const std::map<std::string, std::string>& options, const std::string& json,
         int64_t commit_identifier) const {
-        WriteContextBuilder builder(table_path, "test");
-        builder.SetOptions(options);
+        TableLoadOptions builder_load_options{table_path};
+        std::map<std::string, std::string> builder_options;
+        WriteContextBuilder builder("test");
+        builder_options = options;
+
         EXPECT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
         EXPECT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+                             FileStoreWrite::Create(builder_load_options, std::move(write_context),
+                                                    builder_options));
         EXPECT_OK(file_store_write->Write(MakeBatch(schema, json)));
         EXPECT_OK_AND_ASSIGN(auto commit_msgs, file_store_write->PrepareCommit(
                                                    /*wait_compaction=*/false, commit_identifier));
@@ -219,11 +227,15 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
 
     void Commit(const std::string& table_path, const std::map<std::string, std::string>& options,
                 const std::vector<std::shared_ptr<CommitMessage>>& commit_msgs) const {
-        CommitContextBuilder builder(table_path, "test");
-        builder.SetOptions(options);
+        TableLoadOptions builder_load_options{table_path};
+        std::map<std::string, std::string> builder_options;
+        CommitContextBuilder builder("test");
+        builder_options = options;
+
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto file_store_commit,
-                             FileStoreCommit::Create(std::move(commit_context)));
+                             FileStoreCommit::Create(builder_load_options,
+                                                     std::move(commit_context), builder_options));
         ASSERT_OK(file_store_commit->Commit(commit_msgs));
     }
 
@@ -337,10 +349,13 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriteWithInvalidBatch) {
                                        /*primary_keys=*/{"f1"}, /*options=*/{{"bucket", "1"}},
                                        /*ignore_if_exists=*/false));
 
-        WriteContextBuilder builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"), commit_user);
+        TableLoadOptions builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+        std::map<std::string, std::string> builder_options;
+        WriteContextBuilder builder(commit_user);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+                             FileStoreWrite::Create(builder_load_options, std::move(write_context),
+                                                    builder_options));
         ASSERT_NOK_WITH_MSG(file_store_write->Write(nullptr), "batch is null pointer");
     }
     {
@@ -355,11 +370,14 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriteWithInvalidBatch) {
                                        /*primary_keys=*/{"f1"}, /*options=*/{{"bucket", "-2"}},
                                        /*ignore_if_exists=*/false));
 
-        WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
-                                            commit_user);
+        TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder(commit_user);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+        ASSERT_OK_AND_ASSIGN(
+            auto file_store_write,
+            FileStoreWrite::Create(context_builder_load_options, std::move(write_context),
+                                   context_builder_options));
         auto array = std::make_shared<arrow::Array>();
         arrow::StringBuilder builder;
         for (size_t j = 0; j < 100; j++) {
@@ -387,11 +405,14 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriteWithInvalidBatch) {
                                        /*primary_keys=*/{"f1"}, /*options=*/{{"bucket", "2"}},
                                        /*ignore_if_exists=*/false));
 
-        WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"),
-                                            commit_user);
+        TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder(commit_user);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+        ASSERT_OK_AND_ASSIGN(
+            auto file_store_write,
+            FileStoreWrite::Create(context_builder_load_options, std::move(write_context),
+                                   context_builder_options));
         auto array = std::make_shared<arrow::Array>();
         arrow::StringBuilder builder;
         for (size_t j = 0; j < 100; j++) {
@@ -442,14 +463,17 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
-    WriteContextBuilder builder(table_path, "test");
-    builder.SetOptions(options)
-        .WithStreamingMode(true)
+    TableLoadOptions builder_load_options{table_path};
+    std::map<std::string, std::string> builder_options;
+    WriteContextBuilder builder("test");
+    builder_options = options;
+    builder.WithStreamingMode(true)
         .WithRealtimeContext(realtime_context)
         .WithTempDirectory(dir->Str());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                         FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> writer,
+        FileStoreWrite::Create(builder_load_options, std::move(write_context), builder_options));
 
     std::unique_ptr<RecordBatch> batch =
         MakeBatch(realtime_schema, R"([
@@ -505,15 +529,19 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
         SCOPED_TRACE(expected_error);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> invalid_context,
                              RealtimeContext::Create());
-        WriteContextBuilder invalid_builder(table_path, "invalid");
-        invalid_builder.SetOptions(options)
-            .WithStreamingMode(true)
+        TableLoadOptions invalid_builder_load_options{table_path};
+        std::map<std::string, std::string> invalid_builder_options;
+        WriteContextBuilder invalid_builder("invalid");
+        invalid_builder_options = options;
+        invalid_builder.WithStreamingMode(true)
             .WithRealtimeContext(invalid_context)
             .WithTempDirectory(dir->Str());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> invalid_write_context,
                              invalid_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> invalid_writer,
-                             FileStoreWrite::Create(std::move(invalid_write_context)));
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<FileStoreWrite> invalid_writer,
+            FileStoreWrite::Create(invalid_builder_load_options, std::move(invalid_write_context),
+                                   invalid_builder_options));
         ASSERT_OK(invalid_writer->Write(MakeBatch(realtime_schema, R"([[30, 1, "existing"]])")));
         ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> prepared,
                              invalid_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
@@ -544,14 +572,15 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
     std::shared_ptr<TestingMemoryPool> pool = std::make_shared<TestingMemoryPool>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
-    WriteContextBuilder builder(table_path, "test");
-    builder.SetOptions(options)
-        .WithStreamingMode(true)
-        .WithRealtimeContext(realtime_context)
-        .WithMemoryPool(pool);
+    TableLoadOptions builder_load_options{table_path};
+    std::map<std::string, std::string> builder_options;
+    WriteContextBuilder builder("test");
+    builder_options = options;
+    builder.WithStreamingMode(true).WithRealtimeContext(realtime_context).WithMemoryPool(pool);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                         FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> writer,
+        FileStoreWrite::Create(builder_load_options, std::move(write_context), builder_options));
 
     const int64_t allocations_before_write = pool->allocation_count;
     ASSERT_OK(writer->Write(MakeBatch(realtime_schema, R"([[0, 1, "one"]])")));
@@ -567,15 +596,19 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
     std::shared_ptr<TestingMemoryPool> rejecting_pool = std::make_shared<TestingMemoryPool>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> rejecting_context,
                          RealtimeContext::Create());
-    WriteContextBuilder rejecting_builder(table_path, "rejecting");
-    rejecting_builder.SetOptions(options)
-        .WithStreamingMode(true)
+    TableLoadOptions rejecting_builder_load_options{table_path};
+    std::map<std::string, std::string> rejecting_builder_options;
+    WriteContextBuilder rejecting_builder("rejecting");
+    rejecting_builder_options = options;
+    rejecting_builder.WithStreamingMode(true)
         .WithRealtimeContext(rejecting_context)
         .WithMemoryPool(rejecting_pool);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> rejecting_write_context,
                          rejecting_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> rejecting_writer,
-                         FileStoreWrite::Create(std::move(rejecting_write_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> rejecting_writer,
+        FileStoreWrite::Create(rejecting_builder_load_options, std::move(rejecting_write_context),
+                               rejecting_builder_options));
     ASSERT_OK(rejecting_writer->Write(MakeBatch(realtime_schema, "[]")));
     const int64_t rejecting_allocations_before_write = rejecting_pool->allocation_count;
     rejecting_pool->reject_allocations = true;
@@ -605,13 +638,17 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> initial_context,
                          RealtimeContext::Create());
-    WriteContextBuilder initial_builder(table_path, "initial");
-    initial_builder.SetOptions(options).WithStreamingMode(true).WithRealtimeContext(
-        initial_context);
+    TableLoadOptions initial_builder_load_options{table_path};
+    std::map<std::string, std::string> initial_builder_options;
+    WriteContextBuilder initial_builder("initial");
+    initial_builder_options = options;
+    initial_builder.WithStreamingMode(true).WithRealtimeContext(initial_context);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> initial_write_context,
                          initial_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> initial_writer,
-                         FileStoreWrite::Create(std::move(initial_write_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> initial_writer,
+        FileStoreWrite::Create(initial_builder_load_options, std::move(initial_write_context),
+                               initial_builder_options));
     ASSERT_OK(initial_writer->Write(MakeBatch(realtime_schema, R"([[0, 0, "initial"]])")));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> initial_progress,
                          initial_writer->PrepareCommitWithProgress(0));
@@ -623,22 +660,31 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
     initial_message->GetNewFilesIncrement().NewFiles()[0]->AssignSequenceNumber(max - 2, max - 2);
     initial_progress[0].offset_range = OffsetRange(0, max - 1);
 
-    CommitContextBuilder commit_builder(table_path, "initial");
-    commit_builder.SetOptions(options);
+    TableLoadOptions commit_builder_load_options{table_path};
+    std::map<std::string, std::string> commit_builder_options;
+    CommitContextBuilder commit_builder("initial");
+    commit_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> committer,
-                         FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> committer,
+        FileStoreCommit::Create(commit_builder_load_options, std::move(commit_context),
+                                commit_builder_options));
     ASSERT_OK_AND_ASSIGN(int64_t snapshot_id,
                          committer->CommitWithProgress(initial_progress, 0, std::nullopt));
     ASSERT_OK(initial_writer->Close());
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
-    WriteContextBuilder builder(table_path, "boundary");
-    builder.SetOptions(options).WithStreamingMode(true).WithRealtimeContext(realtime_context);
+    TableLoadOptions builder_load_options{table_path};
+    std::map<std::string, std::string> builder_options;
+    WriteContextBuilder builder("boundary");
+    builder_options = options;
+    builder.WithStreamingMode(true).WithRealtimeContext(realtime_context);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                         FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> writer,
+        FileStoreWrite::Create(builder_load_options, std::move(write_context), builder_options));
     ASSERT_OK(
         writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 1, "legal"]])", max - 1))));
     ASSERT_OK_AND_ASSIGN(auto store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
@@ -747,11 +793,15 @@ TEST_F(KeyValueFileStoreWriteTest, TestSpillSimple) {
                                     {Options::WRITE_BUFFER_SPILLABLE, "true"}},
                                    /*ignore_if_exists=*/false));
 
-    WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"), "test");
+    TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("test");
     context_builder.WithTempDirectory(dir->Str());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(context_builder_load_options,
+                                                std::move(write_context), context_builder_options));
     auto key_value_file_store_write = dynamic_cast<KeyValueFileStoreWrite*>(file_store_write.get());
     auto get_writer = [&](int32_t bucket) -> std::shared_ptr<paimon::BatchWriter> {
         auto partition_iter = key_value_file_store_write->writers_.find(BinaryRow::EmptyRow());
@@ -806,11 +856,17 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriterRestoreKeepsValueStats) {
                                    /*ignore_if_exists=*/false));
 
     std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
-    WriteContextBuilder first_context_builder(table_path, "first-writer");
-    first_context_builder.SetOptions(options);
+    TableLoadOptions first_context_builder_load_options{table_path};
+    std::map<std::string, std::string> first_context_builder_options;
+    WriteContextBuilder first_context_builder("first-writer");
+    first_context_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> first_context,
                          first_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto first_write, FileStoreWrite::Create(std::move(first_context)));
+    ASSERT_OK_AND_ASSIGN(
+        auto first_write,
+        FileStoreWrite::Create(first_context_builder_load_options, std::move(first_context),
+                               first_context_builder_options));
     ASSERT_OK(WriteSingleStringRow(first_write.get(), /*bucket=*/0, "alice"));
     ASSERT_OK_AND_ASSIGN(auto commit_messages,
                          first_write->PrepareCommit(/*wait_compaction=*/false, 1));
@@ -823,11 +879,17 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriterRestoreKeepsValueStats) {
                  SimpleStats::EmptyStats());
     Commit(table_path, options, commit_messages);
 
-    WriteContextBuilder restored_context_builder(table_path, "restored-writer");
-    restored_context_builder.SetOptions(options);
+    TableLoadOptions restored_context_builder_load_options{table_path};
+    std::map<std::string, std::string> restored_context_builder_options;
+    WriteContextBuilder restored_context_builder("restored-writer");
+    restored_context_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> restored_context,
                          restored_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto restored_write, FileStoreWrite::Create(std::move(restored_context)));
+    ASSERT_OK_AND_ASSIGN(
+        auto restored_write,
+        FileStoreWrite::Create(restored_context_builder_load_options, std::move(restored_context),
+                               restored_context_builder_options));
     auto key_value_write = dynamic_cast<KeyValueFileStoreWrite*>(restored_write.get());
     ASSERT_NE(nullptr, key_value_write);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RestoreFiles> restore_files,
@@ -856,11 +918,15 @@ TEST_F(KeyValueFileStoreWriteTest, TestSpillDiskQuotaExhaustedFallsBackToFlushDa
                                     {Options::WRITE_BUFFER_SPILL_MAX_DISK_SIZE, "1b"}},
                                    /*ignore_if_exists=*/false));
     ArrowSchemaRelease(&schema);
-    WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"), "test");
+    TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("test");
     context_builder.WithTempDirectory(dir->Str());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(context_builder_load_options,
+                                                std::move(write_context), context_builder_options));
 
     // Disk quota is 1 byte, so spill will exhaust quota immediately and fall back to
     // FlushWriteBuffer (writing data files directly instead of spill temp files).
@@ -904,11 +970,15 @@ TEST_F(KeyValueFileStoreWriteTest, TestMultiRoundSpillWithSameKeyDeduplication) 
                                     {Options::WRITE_BUFFER_SPILLABLE, "true"}},
                                    /*ignore_if_exists=*/false));
     ArrowSchemaRelease(&schema);
-    WriteContextBuilder context_builder(PathUtil::JoinPath(dir->Str(), "foo.db/bar"), "test");
+    TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("test");
     context_builder.WithTempDirectory(dir->Str()).WithStreamingMode(true);
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(context_builder_load_options,
+                                                std::move(write_context), context_builder_options));
 
     // Round 1: alice, bob, alice (duplicate key) → after dedup: alice + bob = 2 rows
     ASSERT_OK(WriteSingleStringRow(file_store_write.get(), /*bucket=*/0, "alice"));

@@ -91,10 +91,10 @@ Example:
        std::make_shared<MyDefaultCache>(),
        std::make_shared<MyParquetMetadataCache>());
 
-   paimon::ScanContextBuilder scan_builder(table_path);
+   paimon::ScanContextBuilder scan_builder;
    scan_builder.WithCache(cache);
 
-   paimon::ReadContextBuilder read_builder(table_path);
+   paimon::ReadContextBuilder read_builder;
    read_builder.WithCache(cache);
 
 Passing ``nullptr`` or omitting ``WithCache()`` leaves Parquet metadata caching

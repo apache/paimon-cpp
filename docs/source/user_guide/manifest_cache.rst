@@ -86,7 +86,7 @@ Example:
        std::make_shared<MyDefaultCache>(),
        std::make_shared<MyManifestCache>());
 
-   paimon::ScanContextBuilder scan_builder(table_path);
+   paimon::ScanContextBuilder scan_builder;
    scan_builder.WithCache(cache);
 
 Passing ``nullptr`` or omitting ``ScanContextBuilder::WithCache()`` leaves

@@ -217,27 +217,24 @@ Status SystemTable::AdoptOwnSchema() {
 
 Result<std::shared_ptr<FileStoreTable>> SystemTable::CreateDataTable(
     const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options,
-    const std::map<std::string, std::string>& fs_scheme_map_overrides) const {
-    auto fs_scheme_map = fs_scheme_map_;
-    for (const auto& [scheme, identifier] : fs_scheme_map_overrides) {
-        fs_scheme_map[scheme] = identifier;
-    }
+    const std::map<std::string, std::string>& options) const {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
                            table_schema->MergeOptions(options));
     const std::string branch = BranchManager::NormalizeBranch(LoadBranch(merged_schema->Options()));
     return FileStoreTable::Create(
         GetFileSystem(), GetRootPath(), std::shared_ptr<TableSchema>(std::move(merged_schema)),
-        CatalogUtils::IdentifierFromPath(GetRootPath(), branch), "", branch, fs_scheme_map);
+        CatalogUtils::IdentifierFromPath(GetRootPath(), branch), "", branch, fs_scheme_map_);
 }
 
 Result<std::unique_ptr<FileStoreWrite>> SystemTable::NewWrite(
-    std::unique_ptr<WriteContext> /*context*/) const {
+    std::unique_ptr<WriteContext> /*context*/,
+    const std::map<std::string, std::string>& dynamic_options) const {
     return Status::NotImplemented(Name(), " system table is read-only: writing is not supported");
 }
 
 Result<std::unique_ptr<FileStoreCommit>> SystemTable::NewCommit(
-    std::unique_ptr<CommitContext> /*context*/) const {
+    std::unique_ptr<CommitContext> /*context*/,
+    const std::map<std::string, std::string>& dynamic_options) const {
     return Status::NotImplemented(Name(),
                                   " system table is read-only: committing for it is not supported");
 }

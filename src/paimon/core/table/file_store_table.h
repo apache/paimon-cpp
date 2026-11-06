@@ -36,6 +36,7 @@
 
 namespace paimon {
 
+class Catalog;
 class InternalReadContext;
 class IOManager;
 class ManifestFile;
@@ -56,13 +57,21 @@ class FileStoreTable : public Table {
         const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
         const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
         const std::string& uuid, const std::string& branch,
-        const std::map<std::string, std::string>& fs_scheme_map = {});
+        const std::map<std::string, std::string>& fs_scheme_map = {},
+        const std::shared_ptr<Catalog>& catalog = nullptr,
+        const std::map<std::string, std::string>& dynamic_options = {});
 
     /// Binds a resolved store without replacing the loaded schema's options.
     static Result<std::shared_ptr<FileStoreTable>> Create(
         std::unique_ptr<FileStore> store, const std::shared_ptr<TableSchema>& schema,
         const Identifier& identifier, const std::string& uuid,
-        const std::map<std::string, std::string>& fs_scheme_map = {});
+        const std::map<std::string, std::string>& fs_scheme_map = {},
+        const std::shared_ptr<Catalog>& catalog = nullptr,
+        const std::map<std::string, std::string>& dynamic_options = {});
+
+    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
+        return fs_scheme_map_;
+    }
 
     std::string CurrentBranch() const {
         return store_->CurrentBranch();
@@ -84,26 +93,24 @@ class FileStoreTable : public Table {
         return identifier_.GetFullName();
     }
 
-    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
+    Result<std::unique_ptr<TableScan>> NewScan(
+        std::unique_ptr<ScanContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
-    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(
+        std::unique_ptr<ReadContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
     Result<std::unique_ptr<FileStoreWrite>> NewWrite(
-        std::unique_ptr<WriteContext> context) const override;
+        std::unique_ptr<WriteContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
     Result<std::unique_ptr<FileStoreCommit>> NewCommit(
-        std::unique_ptr<CommitContext> context) const override;
+        std::unique_ptr<CommitContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
  private:
     Result<CoreOptions> ResolveOptions(const std::map<std::string, std::string>& options) const;
-    /// Rejects paths, identifiers or UUIDs that contradict this table's identity.
-    /// Missing context fields are allowed.
-    /// @param kind Operation name used in errors.
-    /// @param context_table_id Catalog commit UUID; nullopt for writes.
-    Status CheckContextNamesThisTable(const std::string& kind, const std::string& context_root_path,
-                                      const std::optional<Identifier>& context_identifier,
-                                      const std::optional<std::string>& context_table_id) const;
-
     /// Creates a reader for the internal context's schema and primary keys.
     Result<std::unique_ptr<TableRead>> CreateTableRead(
         const std::shared_ptr<InternalReadContext>& internal_context,
@@ -151,6 +158,8 @@ class FileStoreTable : public Table {
         const std::shared_ptr<MemoryPool>& pool) const = 0;
 
     std::unique_ptr<FileStore> store_;
+    std::shared_ptr<Catalog> catalog_;
+    std::map<std::string, std::string> dynamic_options_;
 
     /// URI routing supplied when this table was loaded.
     std::map<std::string, std::string> fs_scheme_map_;

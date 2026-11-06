@@ -68,10 +68,12 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     virtual Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const = 0;
 
     Result<std::unique_ptr<FileStoreWrite>> NewWrite(
-        std::unique_ptr<WriteContext> context) const override;
+        std::unique_ptr<WriteContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
     Result<std::unique_ptr<FileStoreCommit>> NewCommit(
-        std::unique_ptr<CommitContext> context) const override;
+        std::unique_ptr<CommitContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
  protected:
     /// @param fs Data table file system.
@@ -92,8 +94,7 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     /// Builds the data table using this view's data schema and options.
     Result<std::shared_ptr<FileStoreTable>> CreateDataTable(
         const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& options,
-        const std::map<std::string, std::string>& fs_scheme_map_overrides = {}) const;
+        const std::map<std::string, std::string>& options) const;
 
     friend class SystemTableLoader;
     friend class GlobalSystemTableLoader;

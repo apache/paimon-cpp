@@ -222,11 +222,6 @@ Result<std::unique_ptr<::ArrowSchema>> FormatTable::GetArrowSchema() const {
 namespace {
 Result<std::unique_ptr<FileStoreWrite>> NewFormatTableWrite(
     const std::shared_ptr<FormatTable>& table, const WriteContext& ctx) {
-    if (ctx.GetCatalog() != nullptr) {
-        return Status::Invalid(
-            "WithCatalog() requires a native table; use WriteContextBuilder(FormatTable) for a "
-            "format table");
-    }
     if (ctx.IsStreamingMode()) {
         return Status::NotImplemented(
             "a format table has no snapshots, so there is nothing a streaming write could "
@@ -315,15 +310,6 @@ Result<std::unique_ptr<FileStoreCommit>> NewFormatTableCommit(
             "a format table commits by renaming files into place, not by sending a snapshot "
             "to a rest catalog");
     }
-    if (ctx.GetTableId()) {
-        return Status::NotImplemented(
-            "a format table sends no commit table request, so there is nowhere to put a table id");
-    }
-    if (ctx.GetCatalog() != nullptr) {
-        return Status::NotImplemented(
-            "a format table keeps no snapshot for a catalog to take, so it commits by renaming "
-            "files into place rather than through the catalog it was loaded from");
-    }
     if (ctx.AppendCommitCheckConflict()) {
         return Status::NotImplemented(
             "a format table has no manifests to check a concurrent commit against");
@@ -337,29 +323,35 @@ Result<std::shared_ptr<FormatTable>> FormatTable::ForContext(
     const std::map<std::string, std::string>& options) const {
     return Copy(std::make_shared<FormatTable>(*this), options);
 }
-Result<std::unique_ptr<TableScan>> FormatTable::NewScan(std::unique_ptr<ScanContext> ctx) const {
+Result<std::unique_ptr<TableScan>> FormatTable::NewScan(
+    std::unique_ptr<ScanContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "scan"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(ctx->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(dynamic_options));
     std::shared_ptr<ScanContext> context = std::move(ctx);
     return NewFormatTableScan(table, context);
 }
-Result<std::unique_ptr<TableRead>> FormatTable::NewRead(std::unique_ptr<ReadContext> ctx) const {
+Result<std::unique_ptr<TableRead>> FormatTable::NewRead(
+    std::unique_ptr<ReadContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "read"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(ctx->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(dynamic_options));
     std::shared_ptr<ReadContext> context = std::move(ctx);
     return NewFormatTableRead(table, context);
 }
 Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
-    std::unique_ptr<WriteContext> ctx) const {
+    std::unique_ptr<WriteContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "write"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(ctx->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(dynamic_options));
     std::shared_ptr<WriteContext> context = std::move(ctx);
     return NewFormatTableWrite(table, *context);
 }
 Result<std::unique_ptr<FileStoreCommit>> FormatTable::NewCommit(
-    std::unique_ptr<CommitContext> ctx) const {
+    std::unique_ptr<CommitContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "commit"));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(ctx->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(dynamic_options));
     std::shared_ptr<CommitContext> context = std::move(ctx);
     return NewFormatTableCommit(table, *context);
 }

@@ -40,8 +40,12 @@ class ReadOptimizedSystemTable : public SystemTable {
                              std::map<std::string, std::string> options);
 
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
-    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
-    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
+    Result<std::unique_ptr<TableScan>> NewScan(
+        std::unique_ptr<ScanContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(
+        std::unique_ptr<ReadContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
  private:
     /// Build the context for the data table underneath this read-optimized view.

@@ -60,8 +60,12 @@ class AuditLogSystemTable : public SystemTable {
                         std::map<std::string, std::string> options);
 
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
-    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
-    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
+    Result<std::unique_ptr<TableScan>> NewScan(
+        std::unique_ptr<ScanContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(
+        std::unique_ptr<ReadContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
  protected:
     /// Constructor for derived changelog views with a different system-table name.
@@ -71,7 +75,8 @@ class AuditLogSystemTable : public SystemTable {
 
     Result<std::unique_ptr<TableRead>> NewChangelogRead(
         const std::shared_ptr<ReadContext>& context,
-        std::shared_ptr<const ChangelogBatchConverter> converter) const;
+        std::shared_ptr<const ChangelogBatchConverter> converter,
+        const std::map<std::string, std::string>& dynamic_options) const;
     /// Build the context for the data table underneath this changelog view.
     ///
     /// The builder starts from the defaults, so every setting the caller configured has to be

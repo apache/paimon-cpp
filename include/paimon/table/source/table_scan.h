@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/result.h"
 #include "paimon/table/source/plan.h"
 #include "paimon/table/source/scan_metrics.h"
@@ -38,9 +39,13 @@ class PAIMON_EXPORT TableScan {
  public:
     /// Create an instance of `TableScan`.
     ///
+    /// @param load_options Table identity, metadata and file-system loading parameters.
+    /// @param dynamic_options Overrides merged on top of the table options.
     /// @param context A unique pointer to the `ScanContext` used for scan operations.
     /// @return A Result containing a unique pointer to the `TableScan` instance.
-    static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context);
+    static Result<std::unique_ptr<TableScan>> Create(
+        const TableLoadOptions& load_options, std::unique_ptr<ScanContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {});
 
     virtual ~TableScan() = default;
 

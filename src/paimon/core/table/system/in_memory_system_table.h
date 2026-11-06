@@ -41,8 +41,11 @@ class InMemorySystemTable : public SystemTable {
                         std::string name);
 
     Result<std::unique_ptr<TableScan>> NewScan(
-        std::unique_ptr<ScanContext> /*context*/) const override;
-    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
+        std::unique_ptr<ScanContext> /*context*/,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(
+        std::unique_ptr<ReadContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
     virtual Result<std::vector<GenericRow>> BuildRows() const = 0;
 
  protected:

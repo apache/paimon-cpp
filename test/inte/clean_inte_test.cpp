@@ -42,6 +42,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -204,11 +205,16 @@ TEST_F(CleanInteTest, TestExpireSnapshotFailover) {
         auto dir = UniqueTestDirectory::Create();
         std::string table_path = dir->Str();
         ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
-        CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
+        TableLoadOptions commit_context_builder_load_options{table_path};
+        std::map<std::string, std::string> commit_context_builder_options;
+        CommitContextBuilder commit_context_builder("commit_user_1");
+        commit_context_builder_options = clean_options;
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             commit_context_builder.IgnoreEmptyCommit(false).Finish());
         ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.SetOptions(clean_options).IgnoreEmptyCommit(false).Finish());
-        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+            auto commit,
+            FileStoreCommit::Create(commit_context_builder_load_options, std::move(commit_context),
+                                    commit_context_builder_options));
         ASSERT_OK_AND_ASSIGN(int32_t expired_items, commit->Expire());
         ASSERT_EQ(expired_items, 4);
     }
@@ -219,11 +225,16 @@ TEST_F(CleanInteTest, TestExpireSnapshotFailover) {
         ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
         ASSERT_OK(file_system_->Delete(PathUtil::JoinPath(
             table_path, "manifest/manifest-list-55a3b658-08e3-40aa-b692-29dc1e3ebbdc-1")));
-        CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
+        TableLoadOptions commit_context_builder_load_options{table_path};
+        std::map<std::string, std::string> commit_context_builder_options;
+        CommitContextBuilder commit_context_builder("commit_user_1");
+        commit_context_builder_options = clean_options;
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             commit_context_builder.IgnoreEmptyCommit(false).Finish());
         ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.SetOptions(clean_options).IgnoreEmptyCommit(false).Finish());
-        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+            auto commit,
+            FileStoreCommit::Create(commit_context_builder_load_options, std::move(commit_context),
+                                    commit_context_builder_options));
         ASSERT_OK_AND_ASSIGN(int32_t expired_items, commit->Expire());
         ASSERT_EQ(expired_items, 4);
     }
@@ -234,11 +245,16 @@ TEST_F(CleanInteTest, TestExpireSnapshotFailover) {
         ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
         ASSERT_OK(file_system_->Delete(PathUtil::JoinPath(
             table_path, "f1=10/bucket-1/data-7a912f84-04b7-4bbb-8dc6-53f4a292ea25-0.parquet")));
-        CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
+        TableLoadOptions commit_context_builder_load_options{table_path};
+        std::map<std::string, std::string> commit_context_builder_options;
+        CommitContextBuilder commit_context_builder("commit_user_1");
+        commit_context_builder_options = clean_options;
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             commit_context_builder.IgnoreEmptyCommit(false).Finish());
         ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.SetOptions(clean_options).IgnoreEmptyCommit(false).Finish());
-        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+            auto commit,
+            FileStoreCommit::Create(commit_context_builder_load_options, std::move(commit_context),
+                                    commit_context_builder_options));
         ASSERT_OK_AND_ASSIGN(int32_t expired_items, commit->Expire());
         ASSERT_EQ(expired_items, 4);
     }
@@ -248,11 +264,16 @@ TEST_F(CleanInteTest, TestExpireSnapshotFailover) {
         std::string table_path = dir->Str();
         ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
         ASSERT_OK(file_system_->Delete(PathUtil::JoinPath(table_path, "snapshot/snapshot-3")));
-        CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
+        TableLoadOptions commit_context_builder_load_options{table_path};
+        std::map<std::string, std::string> commit_context_builder_options;
+        CommitContextBuilder commit_context_builder("commit_user_1");
+        commit_context_builder_options = clean_options;
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             commit_context_builder.IgnoreEmptyCommit(false).Finish());
         ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.SetOptions(clean_options).IgnoreEmptyCommit(false).Finish());
-        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+            auto commit,
+            FileStoreCommit::Create(commit_context_builder_load_options, std::move(commit_context),
+                                    commit_context_builder_options));
         ASSERT_OK_AND_ASSIGN(int32_t expired_items, commit->Expire());
         ASSERT_EQ(expired_items, 1);
     }
@@ -282,12 +303,16 @@ TEST_F(CleanInteTest, TestDropPartitionAndExpireSnapshot) {
         CreateTestTable(dir->Str(), /*db_name=*/"foo", /*table_name=*/"bar", &arrow_schema,
                         /*partition_keys=*/{"f1"},
                         /*primary_keys=*/{}, options));
-    WriteContextBuilder context_builder(table_path, "commit_user_1");
+    TableLoadOptions context_builder_load_options{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user_1");
+    context_builder_options = options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).WithStreamingMode(true).Finish());
+                         context_builder.WithStreamingMode(true).Finish());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_options,
+                                                std::move(write_context), context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_0,
                          MakeRecordBatch({{"Alice", 10, 1, 11.1}}, {{"f1", "10"}}, 0));
@@ -303,18 +328,24 @@ TEST_F(CleanInteTest, TestDropPartitionAndExpireSnapshot) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> results,
                          file_store_write->PrepareCommit(/*wait_compaction=*/false, 0));
     ASSERT_EQ(3u, results.size());
-    CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
+    TableLoadOptions commit_context_builder_load_options{table_path};
+    std::map<std::string, std::string> commit_context_builder_options;
+    CommitContextBuilder commit_context_builder("commit_user_1");
+    commit_context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    commit_context_builder_load_options.file_system = file_system_;
+    commit_context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MAX] = "2";
+    commit_context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MIN] = "1";
+    commit_context_builder_options[Options::SNAPSHOT_TIME_RETAINED] = "1ms";
+    commit_context_builder_options[Options::MANIFEST_MERGE_MIN_COUNT] = "2";
+    commit_context_builder_options[Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         commit_context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .WithFileSystem(file_system_)
-                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MAX, "2")
-                             .AddOption(Options::SNAPSHOT_NUM_RETAINED_MIN, "1")
-                             .AddOption(Options::SNAPSHOT_TIME_RETAINED, "1ms")
-                             .AddOption(Options::MANIFEST_MERGE_MIN_COUNT, "2")
-                             .AddOption(Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true")
+                         commit_context_builder
+
                              .IgnoreEmptyCommit(false)
                              .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(commit_context_builder_load_options,
+                                                              std::move(commit_context),
+                                                              commit_context_builder_options));
     ASSERT_OK(commit->Commit(results, 0, 10));
 
     ASSERT_OK_AND_ASSIGN(
@@ -430,12 +461,17 @@ TEST_F(CleanInteTest, TestDropPartitionAndExpireSnapshotWithIOException) {
                                              /*table_name=*/"bar", &arrow_schema,
                                              /*partition_keys=*/{"f1"},
                                              /*primary_keys=*/{}, options));
-        WriteContextBuilder context_builder(table_path, "commit_user_1");
+        TableLoadOptions context_builder_load_options{table_path};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder("commit_user_1");
+        context_builder_options = options;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                             context_builder.SetOptions(options).WithStreamingMode(true).Finish());
+                             context_builder.WithStreamingMode(true).Finish());
 
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<FileStoreWrite> file_store_write,
+            FileStoreWrite::Create(context_builder_load_options, std::move(write_context),
+                                   context_builder_options));
 
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_0,
                              MakeRecordBatch({{"Alice", 10, 1, 11.1}}, {{"f1", "10"}}, 0));
@@ -451,19 +487,25 @@ TEST_F(CleanInteTest, TestDropPartitionAndExpireSnapshotWithIOException) {
         ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> results,
                              file_store_write->PrepareCommit(/*wait_compaction=*/false, 0));
         ASSERT_EQ(3u, results.size());
-        CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
+        TableLoadOptions commit_context_builder_load_options{table_path};
+        std::map<std::string, std::string> commit_context_builder_options;
+        CommitContextBuilder commit_context_builder("commit_user_1");
+        commit_context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+        commit_context_builder_load_options.file_system = file_system_;
+        commit_context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MAX] = "2";
+        commit_context_builder_options[Options::SNAPSHOT_NUM_RETAINED_MIN] = "1";
+        commit_context_builder_options[Options::SNAPSHOT_TIME_RETAINED] = "1ms";
+        commit_context_builder_options[Options::MANIFEST_MERGE_MIN_COUNT] = "2";
+        commit_context_builder_options[Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES] = "true";
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             commit_context_builder
+
+                                 .IgnoreEmptyCommit(false)
+                                 .Finish());
         ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                .WithFileSystem(file_system_)
-                .AddOption(Options::SNAPSHOT_NUM_RETAINED_MAX, "2")
-                .AddOption(Options::SNAPSHOT_NUM_RETAINED_MIN, "1")
-                .AddOption(Options::SNAPSHOT_TIME_RETAINED, "1ms")
-                .AddOption(Options::MANIFEST_MERGE_MIN_COUNT, "2")
-                .AddOption(Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true")
-                .IgnoreEmptyCommit(false)
-                .Finish());
-        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+            auto commit,
+            FileStoreCommit::Create(commit_context_builder_load_options, std::move(commit_context),
+                                    commit_context_builder_options));
         ASSERT_OK(commit->Commit(results, 0));
 
         ASSERT_OK_AND_ASSIGN(
@@ -588,12 +630,16 @@ TEST_F(CleanInteTest, TestOrphanFilesClean) {
                                          /*partition_keys=*/{"f1", "f2"},
                                          /*primary_keys=*/{}, options));
 
-    WriteContextBuilder context_builder(table_path, commit_user);
+    TableLoadOptions context_builder_load_options{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder(commit_user);
+    context_builder_options = options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).WithStreamingMode(true).Finish());
+                         context_builder.WithStreamingMode(true).Finish());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_options,
+                                                std::move(write_context), context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_0,
                          MakeRecordBatch({{"Alice", 10, 1, 11.1}}, {{"f1", "10"}, {"f2", "1"}}, 0));
@@ -609,13 +655,16 @@ TEST_F(CleanInteTest, TestOrphanFilesClean) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> results,
                          file_store_write->PrepareCommit(/*wait_compaction=*/false, 0));
     ASSERT_EQ(3u, results.size());
-    CommitContextBuilder commit_context_builder(table_path, commit_user);
+    TableLoadOptions commit_context_builder_load_options{table_path};
+    std::map<std::string, std::string> commit_context_builder_options;
+    CommitContextBuilder commit_context_builder(commit_user);
+    commit_context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    commit_context_builder_load_options.file_system = file_system_;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         commit_context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .WithFileSystem(file_system_)
-                             .IgnoreEmptyCommit(false)
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         commit_context_builder.IgnoreEmptyCommit(false).Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(commit_context_builder_load_options,
+                                                              std::move(commit_context),
+                                                              commit_context_builder_options));
     ASSERT_OK(commit->Commit(results, 0));
 
     ASSERT_OK_AND_ASSIGN(
@@ -702,12 +751,16 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithFileRetainCondition) {
                                          /*partition_keys=*/{"f1", "f2"},
                                          /*primary_keys=*/{}, options));
 
-    WriteContextBuilder context_builder(table_path, commit_user);
+    TableLoadOptions context_builder_load_options{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder(commit_user);
+    context_builder_options = options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).WithStreamingMode(true).Finish());
+                         context_builder.WithStreamingMode(true).Finish());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_options,
+                                                std::move(write_context), context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_0,
                          MakeRecordBatch({{"Alice", 10, 1, 11.1}}, {{"f1", "10"}, {"f2", "1"}}, 0));
@@ -723,13 +776,16 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithFileRetainCondition) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> results,
                          file_store_write->PrepareCommit(/*wait_compaction=*/false, 0));
     ASSERT_EQ(3u, results.size());
-    CommitContextBuilder commit_context_builder(table_path, commit_user);
+    TableLoadOptions commit_context_builder_load_options{table_path};
+    std::map<std::string, std::string> commit_context_builder_options;
+    CommitContextBuilder commit_context_builder(commit_user);
+    commit_context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    commit_context_builder_load_options.file_system = file_system_;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         commit_context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .WithFileSystem(file_system_)
-                             .IgnoreEmptyCommit(false)
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+                         commit_context_builder.IgnoreEmptyCommit(false).Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(commit_context_builder_load_options,
+                                                              std::move(commit_context),
+                                                              commit_context_builder_options));
     ASSERT_OK(commit->Commit(results, 0));
 
     ASSERT_OK_AND_ASSIGN(
@@ -812,12 +868,16 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithIOException) {
                                          /*partition_keys=*/{"f1"},
                                          /*primary_keys=*/{}, options));
 
-    WriteContextBuilder context_builder(table_path, commit_user);
+    TableLoadOptions context_builder_load_options{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder(commit_user);
+    context_builder_options = options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).WithStreamingMode(true).Finish());
-    std::string root_path = write_context->GetRootPath();
+                         context_builder.WithStreamingMode(true).Finish());
+    std::string root_path = context_builder_load_options.path;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_options,
+                                                std::move(write_context), context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_0,
                          MakeRecordBatch({{"Alice", 10, 1, 11.1}}, {{"f1", "10"}}, 0));
@@ -833,14 +893,20 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithIOException) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> results,
                          file_store_write->PrepareCommit(/*wait_compaction=*/false, 0));
     ASSERT_EQ(3u, results.size());
-    CommitContextBuilder commit_context_builder(root_path, commit_user);
+    TableLoadOptions commit_context_builder_load_options{root_path};
+    std::map<std::string, std::string> commit_context_builder_options;
+    CommitContextBuilder commit_context_builder(commit_user);
+    commit_context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    commit_context_builder_load_options.file_system = file_system_;
+    commit_context_builder_options[Options::BUCKET] = "2";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         commit_context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .WithFileSystem(file_system_)
-                             .AddOption(Options::BUCKET, "2")
+                         commit_context_builder
+
                              .IgnoreEmptyCommit(false)
                              .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(commit_context_builder_load_options,
+                                                              std::move(commit_context),
+                                                              commit_context_builder_options));
     ASSERT_OK(commit->Commit(results, 0));
 
     ASSERT_OK_AND_ASSIGN(

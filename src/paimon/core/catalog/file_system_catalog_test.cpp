@@ -26,6 +26,7 @@
 #include "arrow/c/helpers.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -1479,13 +1480,18 @@ TEST(FileSystemCatalogTest, TestClaimingVersionManagementWithoutImplementingItIs
     ASSERT_NOK_WITH_MSG(CheckVersionManagementImplemented(claiming),
                         "does not implement VersionManagedCatalog");
 
-    CommitContextBuilder claiming_builder(dir->Str(), "commit_user_1");
+    TableLoadOptions claiming_builder_load_options{dir->Str()};
+    std::map<std::string, std::string> claiming_builder_options;
+    CommitContextBuilder claiming_builder("commit_user_1");
+    claiming_builder_options = options;
+    claiming_builder_load_options.catalog = claiming;
+    claiming_builder_load_options.identifier.emplace(Identifier("db", "tbl"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> claiming_context,
-                         claiming_builder.SetOptions(options)
-                             .WithCatalog(claiming, Identifier("db", "tbl"))
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(claiming_context)),
-                        "does not implement VersionManagedCatalog");
+                         claiming_builder.Finish());
+    ASSERT_NOK_WITH_MSG(
+        FileStoreCommit::Create(claiming_builder_load_options, std::move(claiming_context),
+                                claiming_builder_options),
+        "does not implement VersionManagedCatalog");
 
     std::shared_ptr<Catalog> plain =
         std::make_shared<FileSystemCatalog>(core_options.GetFileSystem(), dir->Str(), options);

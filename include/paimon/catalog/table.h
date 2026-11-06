@@ -71,8 +71,7 @@ class PAIMON_EXPORT Table {
         return uuid_.empty() ? FullName() : uuid_;
     }
 
-    /// Returns the metastore UUID, or null if unavailable, for
-    /// `CommitContextBuilder::WithTableId()`.
+    /// Returns the metastore UUID, or null if unavailable.
     std::optional<std::string> CatalogUuid() const {
         return uuid_.empty() ? std::nullopt : std::optional<std::string>(uuid_);
     }
@@ -85,19 +84,23 @@ class PAIMON_EXPORT Table {
 
     /// Creates a scan using this table's schema and options.
     virtual Result<std::unique_ptr<TableScan>> NewScan(
-        std::unique_ptr<ScanContext> context) const = 0;
+        std::unique_ptr<ScanContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const = 0;
 
     /// Creates a reader using this table's schema and options.
     virtual Result<std::unique_ptr<TableRead>> NewRead(
-        std::unique_ptr<ReadContext> context) const = 0;
+        std::unique_ptr<ReadContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const = 0;
 
     /// Creates a writer using this table's schema and options.
     virtual Result<std::unique_ptr<FileStoreWrite>> NewWrite(
-        std::unique_ptr<WriteContext> context) const = 0;
+        std::unique_ptr<WriteContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const = 0;
 
     /// Creates a commit using this table's schema and options.
     virtual Result<std::unique_ptr<FileStoreCommit>> NewCommit(
-        std::unique_ptr<CommitContext> context) const = 0;
+        std::unique_ptr<CommitContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const = 0;
 
  protected:
     /// @param file_system File system the table's data is accessed through.

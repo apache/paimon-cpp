@@ -58,7 +58,7 @@ positions in that schema. For example, the following constructs
    PAIMON_ASSIGN_OR_RAISE(
        std::shared_ptr<paimon::Predicate> filter,
        paimon::PredicateBuilder::Or({text, price}));
-   paimon::ReadContextBuilder builder(table_path);
+   paimon::ReadContextBuilder builder;
    builder.EnablePreciseFileIndexEvaluate(true)
        .SetReadFieldNames({"body", "price"})
        .SetPredicate(filter);
@@ -82,7 +82,7 @@ predicate by projecting ``_body_INDEX_SCORE``:
    PAIMON_ASSIGN_OR_RAISE(
        std::shared_ptr<paimon::Predicate> text,
        paimon::PredicateBuilder::FullTextMatch(0, request));
-   paimon::ReadContextBuilder builder(table_path);
+   paimon::ReadContextBuilder builder;
    builder.EnablePreciseFileIndexEvaluate(true)
        .SetReadFieldNames({"body", "_body_INDEX_SCORE"})
        .SetPredicate(text);

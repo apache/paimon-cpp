@@ -96,11 +96,12 @@ Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ArrowSchema() const {
 }
 
 Result<std::unique_ptr<TableRead>> BinlogSystemTable::NewRead(
-    std::unique_ptr<ReadContext> ctx) const {
+    std::unique_ptr<ReadContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     const std::shared_ptr<ReadContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
-    return NewChangelogRead(context, CreateBinlogBatchConverter());
+    return NewChangelogRead(context, CreateBinlogBatchConverter(), dynamic_options);
 }
 
 }  // namespace paimon

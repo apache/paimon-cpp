@@ -38,6 +38,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/table.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/catalog_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/commit_message.h"
@@ -823,13 +824,17 @@ TEST_F(RestCatalogTest, GlobalSystemTableRetainsFactoryCatalog) {
     std::weak_ptr<Catalog> weak_catalog = catalog;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                          catalog->GetTable(Identifier("sys", "tables")));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
-                         ScanContextBuilder(table->GetRootPath()).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_context)));
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                         table->NewScan(std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
-                         ReadContextBuilder(table->GetRootPath()).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, table->NewRead(std::move(read_context)));
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                         table->NewRead(std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
     catalog.reset();
     table.reset();
@@ -1686,10 +1691,13 @@ TEST_F(RestCatalogTest, FileStoreCommitIsBuiltFromTheCatalog) {
         requests_before = state_->get_table_requests;
     }
     std::shared_ptr<Catalog> shared_catalog(std::move(rest_catalog));
-    CommitContextBuilder builder(dir->Str(), "commit-user");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                         builder.WithCatalog(shared_catalog, Identifier("db1", "t1")).Finish());
-    ASSERT_OK(FileStoreCommit::Create(std::move(context)));
+    TableLoadOptions builder_load_options{dir->Str()};
+    std::map<std::string, std::string> builder_options;
+    CommitContextBuilder builder("commit-user");
+    builder_load_options.catalog = shared_catalog;
+    builder_load_options.identifier.emplace(Identifier("db1", "t1"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context, builder.Finish());
+    ASSERT_OK(FileStoreCommit::Create(builder_load_options, std::move(context), builder_options));
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_GT(state_->get_table_requests, requests_before);
@@ -1919,10 +1927,13 @@ TEST_P(RestCatalogCommitRecoveryTest, CommitAcceptedThenLostRecoversAfterRestart
     std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
 
     auto create_commit = [&]() -> Result<std::unique_ptr<FileStoreCommit>> {
-        CommitContextBuilder builder(dir->Str(), "commit-user");
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
-                               builder.WithCatalog(catalog, identifier).Finish());
-        return FileStoreCommit::Create(std::move(context));
+        TableLoadOptions builder_load_options{dir->Str()};
+        std::map<std::string, std::string> builder_options;
+        CommitContextBuilder builder("commit-user");
+        builder_load_options.catalog = catalog;
+        builder_load_options.identifier.emplace(identifier);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
+        return FileStoreCommit::Create(builder_load_options, std::move(context), builder_options);
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, create_commit());
 
@@ -2094,16 +2105,20 @@ class RestCatalogCommitLeaseTest : public RestCatalogTest {
     Result<std::unique_ptr<FileStoreCommit>> CreateCommit(
         const std::shared_ptr<Catalog>& catalog, const std::optional<std::string>& table_id,
         const std::map<std::string, std::string>& options) {
-        CommitContextBuilder builder(dir_->Str(), "commit-user");
-        builder.WithCatalog(catalog, Identifier("db1", "t1"));
+        TableLoadOptions builder_load_options{dir_->Str()};
+        std::map<std::string, std::string> builder_options;
+        CommitContextBuilder builder("commit-user");
+        builder_load_options.catalog = catalog;
+        builder_load_options.identifier.emplace(Identifier("db1", "t1"));
+
         if (table_id) {
-            builder.WithTableId(table_id.value());
+            builder_load_options.table_id = table_id.value();
         }
         for (const auto& [key, value] : options) {
-            builder.AddOption(key, value);
+            builder_options[key] = value;
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
-        return FileStoreCommit::Create(std::move(context));
+        return FileStoreCommit::Create(builder_load_options, std::move(context), builder_options);
     }
 
     std::vector<std::string> TableEvents() {

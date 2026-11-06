@@ -148,41 +148,41 @@ Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& 
     return Status::OK();
 }
 
-bool IsCatalogCommit(const CommitContext& ctx) {
-    return AsVersionManaged(ctx.GetCatalog()) != nullptr;
+bool IsCatalogCommit(const std::shared_ptr<Catalog>& catalog) {
+    return AsVersionManaged(catalog) != nullptr;
 }
 
 Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
-    const CommitContext& ctx, const std::optional<Identifier>& catalog_identifier,
+    const CommitContext& ctx, const std::shared_ptr<Catalog>& catalog,
+    const std::optional<std::string>& table_id, const std::optional<Identifier>& catalog_identifier,
     const CoreOptions& options, const std::shared_ptr<SnapshotManager>& snapshot_manager) {
-    if (IsCatalogCommit(ctx)) {
+    if (IsCatalogCommit(catalog)) {
         if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitLock> lock,
-                               AsVersionManaged(ctx.GetCatalog())
-                                   ->CreateCommitLock(catalog_identifier.value(), ctx.GetTableId(),
-                                                      ctx.GetCommitUser(), options));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<CommitLock> lock,
+            AsVersionManaged(catalog)->CreateCommitLock(catalog_identifier.value(), table_id,
+                                                        ctx.GetCommitUser(), options));
         // Reuse the caller's UUID so table recreation cannot redirect this commit.
         return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(
-            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId(), std::move(lock)));
+            catalog, catalog_identifier.value(), table_id, std::move(lock)));
     }
     if (ctx.UseRESTCatalogCommit()) {
         if (options.RestCommitAcquireLock()) {
-            return Status::Invalid(fmt::format(
-                "'{}' needs a commit through a REST catalog with WithCatalog(); a commit table "
-                "request built for the caller to send cannot hold a commit lease",
-                Options::REST_COMMIT_ACQUIRE_LOCK));
+            return Status::Invalid(
+                fmt::format("'{}' needs a table loaded through a REST catalog; a commit table "
+                            "request built for the caller to send cannot hold a commit lease",
+                            Options::REST_COMMIT_ACQUIRE_LOCK));
         }
-        return std::shared_ptr<SnapshotCommit>(
-            std::make_shared<CatalogSnapshotCommit>(ctx.GetTableId()));
+        return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(table_id));
     }
     // Catalogs without version management may still supply a table ID.
-    if (ctx.GetTableId() && ctx.GetCatalog() == nullptr) {
+    if (table_id && catalog == nullptr) {
         return Status::Invalid(
             "a commit which publishes the snapshot by writing it to the table directory sends no "
             "commit table request, so there is nowhere to put a table id; commit through a "
-            "catalog with WithCatalog() or ask for the request with UseRESTCatalogCommit()");
+            "catalog or ask for the request with UseRESTCatalogCommit()");
     }
     return std::shared_ptr<SnapshotCommit>(
         std::make_shared<RenamingSnapshotCommit>(options.GetFileSystem(), snapshot_manager));
@@ -203,7 +203,9 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
     const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
     const std::string& uuid, const std::string& branch,
-    const std::map<std::string, std::string>& fs_scheme_map) {
+    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::shared_ptr<Catalog>& catalog,
+    const std::map<std::string, std::string>& dynamic_options) {
     if (schema == nullptr) {
         return Status::Invalid(
             fmt::format("not found latest schema of {}", identifier.GetFullName()));
@@ -228,13 +230,16 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
                            CoreOptions::FromMap(options, specified_file_system, fs_scheme_map));
     std::unique_ptr<FileStore> store =
         std::make_unique<FileStore>(root_path, std::move(core_options));
-    return Create(std::move(store), effective_schema, identifier, uuid, fs_scheme_map);
+    return Create(std::move(store), effective_schema, identifier, uuid, fs_scheme_map, catalog,
+                  dynamic_options);
 }
 
 Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     std::unique_ptr<FileStore> store, const std::shared_ptr<TableSchema>& schema,
     const Identifier& identifier, const std::string& uuid,
-    const std::map<std::string, std::string>& fs_scheme_map) {
+    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::shared_ptr<Catalog>& catalog,
+    const std::map<std::string, std::string>& dynamic_options) {
     if (!store || !schema) {
         return Status::Invalid("managed table requires a store and schema");
     }
@@ -250,6 +255,8 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
             std::make_shared<AppendOnlyFileStoreTable>(std::move(store), schema, identifier, uuid);
     }
     table->fs_scheme_map_ = fs_scheme_map;
+    table->catalog_ = catalog;
+    table->dynamic_options_ = dynamic_options;
     return table;
 }
 
@@ -294,59 +301,6 @@ Status FileStoreTable::RestoreRealtimeCommittedProgress(
     return Status::OK();
 }
 
-Status FileStoreTable::CheckContextNamesThisTable(
-    const std::string& kind, const std::string& context_root_path,
-    const std::optional<Identifier>& context_identifier,
-    const std::optional<std::string>& context_table_id) const {
-    if (!root_path_.empty()) {
-        PAIMON_ASSIGN_OR_RAISE(std::string context_path,
-                               PathUtil::NormalizePath(context_root_path));
-        PAIMON_ASSIGN_OR_RAISE(std::string table_path, PathUtil::NormalizePath(root_path_));
-        if (context_path != table_path) {
-            return Status::Invalid(fmt::format(
-                "the {} context names root path '{}' but this table serves '{}': the store below "
-                "reads and writes this table's files, so a context naming another path would "
-                "leave this table's metadata there and publish it as the other's",
-                kind, context_root_path, root_path_));
-        }
-    }
-    if (context_identifier) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> context_branch,
-                               context_identifier.value().GetBranchName());
-        if (context_branch && context_branch.value() != CurrentBranch()) {
-            return Status::Invalid(fmt::format(
-                "the {} context names branch '{}' of '{}' but this table serves branch '{}', "
-                "which is the one a {} of this table writes and publishes",
-                kind, context_branch.value(), context_identifier.value().ToString(),
-                CurrentBranch(), kind));
-        }
-        PAIMON_ASSIGN_OR_RAISE(
-            Identifier context_table,
-            CatalogUtils::BranchIdentifier(context_identifier.value(), CurrentBranch()));
-        PAIMON_ASSIGN_OR_RAISE(Identifier served_table,
-                               CatalogUtils::BranchIdentifier(identifier_, CurrentBranch()));
-        const bool names_this_table =
-            (served_table.GetDatabaseName() == Identifier::kUnknownDatabase ||
-             context_table.GetDatabaseName() == served_table.GetDatabaseName()) &&
-            context_table.GetObjectName() == served_table.GetObjectName();
-        if (!names_this_table) {
-            return Status::Invalid(fmt::format(
-                "the {} context names table '{}' but this table is '{}': the store below serves "
-                "this table's files, so a context naming another table would write this table's "
-                "metadata and publish it as the other's",
-                kind, context_identifier.value().ToString(), identifier_.ToString()));
-        }
-    }
-    if (context_table_id && context_table_id != CatalogUuid()) {
-        return Status::Invalid(fmt::format(
-            "the {} context carries table id '{}' but this table's is '{}': the id tells a "
-            "recreated table from the one the changes were prepared for, so one this table does "
-            "not carry would publish this table's metadata as the recreation's",
-            kind, context_table_id.value(), CatalogUuid().value_or("none")));
-    }
-    return Status::OK();
-}
-
 std::unique_ptr<FileStoreScan> FileStoreTable::WithTablePath(std::unique_ptr<FileStoreScan>&& scan,
                                                              const std::string& root_path) {
     scan->WithTablePath(root_path);
@@ -354,31 +308,24 @@ std::unique_ptr<FileStoreScan> FileStoreTable::WithTablePath(std::unique_ptr<Fil
 }
 
 Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
-    std::unique_ptr<WriteContext> ctx) const {
+    std::unique_ptr<WriteContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "write"));
-    PAIMON_RETURN_NOT_OK(CheckContextNamesThisTable("write", ctx->GetRootPath(),
-                                                    ctx->GetIdentifier(),
-                                                    /*context_table_id=*/std::nullopt));
-    if (AsVersionManaged(ctx->GetCatalog()) != nullptr) {
+    PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(catalog_));
+    if (AsVersionManaged(catalog_)) {
         PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(CurrentBranch()));
     }
-    PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx->GetCatalog()));
-    std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
-    if (specific_fs == nullptr && ctx->GetFileSystemSchemeToIdentifierMap().empty() &&
-        ctx->GetCatalog() != nullptr && !ctx->GetIdentifier()) {
-        return Status::Invalid("a catalog write requires a table identifier");
-    }
     std::optional<Identifier> catalog_identifier;
-    if (ctx->GetIdentifier()) {
-        PAIMON_ASSIGN_OR_RAISE(Identifier identifier, CatalogUtils::BranchIdentifier(
-                                                          *ctx->GetIdentifier(), CurrentBranch()));
+    if (catalog_) {
+        PAIMON_ASSIGN_OR_RAISE(Identifier identifier,
+                               CatalogUtils::BranchIdentifier(identifier_, CurrentBranch()));
         catalog_identifier.emplace(std::move(identifier));
     }
     if (ctx->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(CurrentBranch()));
     }
     std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(ctx->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(dynamic_options));
     FileStore file_store(root_path_, options);
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*schema, options));
@@ -396,7 +343,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
                                   options.GetWriteFileFormat(/*level=*/0)->Identifier(),
                                   ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
-                           file_store.NewSnapshotManager(ctx->GetCatalog(), catalog_identifier));
+                           file_store.NewSnapshotManager(catalog_, catalog_identifier));
     std::shared_ptr<IOManager> io_manager;
     const auto& io_temp_dir = ctx->GetTempDirectory();
     if (!io_temp_dir.empty()) {
@@ -417,13 +364,14 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
 }
 
 Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
-    std::unique_ptr<ScanContext> context) const {
+    std::unique_ptr<ScanContext> context,
+    const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     if (context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(CurrentBranch()));
     }
     std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, ResolveOptions(context->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, ResolveOptions(dynamic_options));
     PAIMON_ASSIGN_OR_RAISE(
         bool read_optimized,
         OptionsUtils::GetValueFromMap<bool>(core_options.ToMap(), kReadOptimizedScanOption, false));
@@ -538,22 +486,23 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::CreateTableRead(
 }
 
 Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
-    std::unique_ptr<ReadContext> context) const {
+    std::unique_ptr<ReadContext> context,
+    const std::map<std::string, std::string>& dynamic_options) const {
     std::shared_ptr<ReadContext> read_context = std::move(context);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(read_context, "read"));
     if (read_context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(CurrentBranch()));
     }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(read_context->GetOptions()));
-    auto fs_scheme_map = fs_scheme_map_;
-    for (const auto& [scheme, identifier] : read_context->GetFileSystemSchemeToIdentifierMap()) {
-        fs_scheme_map[scheme] = identifier;
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(dynamic_options));
+    auto explicit_options = dynamic_options_;
+    for (const auto& [key, value] : dynamic_options) {
+        explicit_options[key] = value;
     }
     std::shared_ptr<TableSchema> loaded_schema = std::static_pointer_cast<TableSchema>(schema_);
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<InternalReadContext> internal_context,
-        InternalReadContext::CreateForTable(read_context, loaded_schema, std::move(options),
-                                            root_path_, fs_scheme_map));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
+                           InternalReadContext::CreateForTable(
+                               read_context, loaded_schema, std::move(options), root_path_,
+                               fs_scheme_map_, catalog_, identifier_, explicit_options));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
                            CreateTableRead(internal_context, read_context->GetMemoryPool(),
@@ -566,10 +515,11 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
         return std::move(table_read);
     }
 
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> fallback_context,
-                           InternalReadContext::CreateForFallbackBranch(
-                               read_context, /*branch=*/scan_fallback_branch.value(), file_system_,
-                               root_path_, fs_scheme_map));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<InternalReadContext> fallback_context,
+        InternalReadContext::CreateForFallbackBranch(
+            read_context, /*branch=*/scan_fallback_branch.value(), file_system_, root_path_,
+            fs_scheme_map_, catalog_, identifier_, explicit_options));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> fallback_table_read,
                            CreateTableRead(fallback_context, read_context->GetMemoryPool(),
@@ -580,30 +530,29 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
 }
 
 Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
-    std::unique_ptr<CommitContext> ctx) const {
+    std::unique_ptr<CommitContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "commit"));
-    PAIMON_RETURN_NOT_OK(CheckContextNamesThisTable("commit", ctx->GetRootPath(),
-                                                    ctx->GetIdentifier(), ctx->GetTableId()));
-    if (ctx->GetCatalog() != nullptr || ctx->UseRESTCatalogCommit()) {
+    PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(catalog_));
+    if (catalog_ && ctx->UseRESTCatalogCommit()) {
+        return Status::Invalid(
+            "a commit cannot both use a catalog and build an external REST request");
+    }
+    if (catalog_ || ctx->UseRESTCatalogCommit()) {
         PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(CurrentBranch()));
     }
-    PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx->GetCatalog()));
-    std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
-    if (specific_fs == nullptr && ctx->GetCatalog() != nullptr && !ctx->GetIdentifier()) {
-        return Status::Invalid("a catalog commit requires a table identifier");
-    }
     std::optional<Identifier> catalog_identifier;
-    if (ctx->GetIdentifier()) {
-        PAIMON_ASSIGN_OR_RAISE(Identifier identifier, CatalogUtils::BranchIdentifier(
-                                                          *ctx->GetIdentifier(), CurrentBranch()));
+    if (catalog_) {
+        PAIMON_ASSIGN_OR_RAISE(Identifier identifier,
+                               CatalogUtils::BranchIdentifier(identifier_, CurrentBranch()));
         catalog_identifier.emplace(std::move(identifier));
     }
     FileStoreCommitImpl::SchemaIdLoader schema_id_loader;
-    if (ctx->GetCatalog() != nullptr) {
+    if (catalog_ != nullptr) {
         if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
-        std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
+        std::shared_ptr<Catalog> catalog = catalog_;
         Identifier identifier = catalog_identifier.value();
         schema_id_loader = [catalog, identifier]() -> Result<int64_t> {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
@@ -620,15 +569,14 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
     std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
     std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(ctx->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(dynamic_options));
     FileStore file_store(root_path_, options);
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*schema, options));
     assert(options.GetFileSystem());
     assert(options.GetFileFormat());
     PAIMON_RETURN_NOT_OK(FileStoreCommitImpl::ValidateCommitOptions(options));
     PAIMON_ASSIGN_OR_RAISE(bool is_object_store, FileSystem::IsObjectStore(root_path_));
-    if (is_object_store && !ctx->UseRESTCatalogCommit() &&
-        AsVersionManaged(ctx->GetCatalog()) == nullptr &&
+    if (is_object_store && !ctx->UseRESTCatalogCommit() && AsVersionManaged(catalog_) == nullptr &&
         options.ToMap().count(kObjectStoreCommitInteTestOption) == 0) {
         return Status::NotImplemented(
             "commit operation does not support object store file system for now");
@@ -642,7 +590,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
                                   options.GetFileFormat()->Identifier(), ctx->GetMemoryPool()));
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
-                           file_store.NewSnapshotManager(ctx->GetCatalog(), catalog_identifier));
+                           file_store.NewSnapshotManager(catalog_, catalog_identifier));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
                            file_store.NewManifestList(path_factory, ctx->GetMemoryPool()));
 
@@ -666,7 +614,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
                               ctx->GetExecutor(), ctx->GetMemoryPool());
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotCommit> snapshot_commit,
-                           NewSnapshotCommit(*ctx, catalog_identifier, options, snapshot_manager));
+                           NewSnapshotCommit(*ctx, catalog_, CatalogUuid(), catalog_identifier,
+                                             options, snapshot_manager));
 
     return std::make_unique<FileStoreCommitImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, root_path_, ctx->GetCommitUser(),
