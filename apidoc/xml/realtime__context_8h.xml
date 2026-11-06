@@ -1,0 +1,329 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="realtime__context_8h" kind="file" language="C++">
+    <compoundname>realtime_context.h</compoundname>
+    <includes local="no">cstdint</includes>
+    <includes local="no">map</includes>
+    <includes local="no">memory</includes>
+    <includes local="no">string</includes>
+    <includes local="no">utility</includes>
+    <includes refid="metrics_8h" local="yes">paimon/metrics.h</includes>
+    <includes refid="result_8h" local="yes">paimon/result.h</includes>
+    <includes refid="visibility_8h" local="yes">paimon/visibility.h</includes>
+    <includedby refid="api_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/api.h</includedby>
+    <includedby refid="realtime__commit__progress_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h</includedby>
+    <includedby refid="realtime__snapshot__offsets_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h</includedby>
+    <incdepgraph>
+      <node id="11">
+        <label>paimon/defs.h</label>
+        <link refid="defs_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="9" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+      </node>
+      <node id="7">
+        <label>paimon/metrics.h</label>
+        <link refid="metrics_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h</label>
+        <link refid="realtime__context_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+        <childnode refid="14" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+      </node>
+      <node id="14">
+        <label>paimon/result.h</label>
+        <link refid="result_8h"/>
+        <childnode refid="15" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="24" relation="include">
+        </childnode>
+      </node>
+      <node id="17">
+        <label>paimon/status.h</label>
+        <link refid="status_8h"/>
+        <childnode refid="18" relation="include">
+        </childnode>
+        <childnode refid="19" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="20" relation="include">
+        </childnode>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="21" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+      </node>
+      <node id="21">
+        <label>paimon/string_builder.h</label>
+        <link refid="string__builder_8h"/>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="22" relation="include">
+        </childnode>
+        <childnode refid="23" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+      </node>
+      <node id="8">
+        <label>paimon/type_fwd.h</label>
+        <link refid="type__fwd_8h"/>
+        <childnode refid="9" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+      </node>
+      <node id="12">
+        <label>paimon/visibility.h</label>
+        <link refid="visibility_8h"/>
+      </node>
+      <node id="15">
+        <label>cassert</label>
+      </node>
+      <node id="2">
+        <label>cstdint</label>
+      </node>
+      <node id="18">
+        <label>cstring</label>
+      </node>
+      <node id="19">
+        <label>iosfwd</label>
+      </node>
+      <node id="9">
+        <label>limits</label>
+      </node>
+      <node id="3">
+        <label>map</label>
+      </node>
+      <node id="4">
+        <label>memory</label>
+      </node>
+      <node id="22">
+        <label>ostream</label>
+      </node>
+      <node id="20">
+        <label>paimon/compare.h</label>
+      </node>
+      <node id="13">
+        <label>paimon/macros.h</label>
+      </node>
+      <node id="24">
+        <label>paimon/traits.h</label>
+      </node>
+      <node id="23">
+        <label>sstream</label>
+      </node>
+      <node id="5">
+        <label>string</label>
+      </node>
+      <node id="16">
+        <label>type_traits</label>
+      </node>
+      <node id="6">
+        <label>utility</label>
+      </node>
+      <node id="10">
+        <label>vector</label>
+      </node>
+    </incdepgraph>
+    <invincdepgraph>
+      <node id="2">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/api.h</label>
+        <link refid="api_8h"/>
+      </node>
+      <node id="4">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_store_commit.h</label>
+        <link refid="file__store__commit_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+      </node>
+      <node id="5">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_store_write.h</label>
+        <link refid="file__store__write_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h</label>
+        <link refid="realtime__commit__progress_8h"/>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h</label>
+        <link refid="realtime__context_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+      </node>
+      <node id="6">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_snapshot_offsets.h</label>
+        <link refid="realtime__snapshot__offsets_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+      </node>
+    </invincdepgraph>
+    <innerclass refid="structpaimon_1_1_realtime_partition_bucket" prot="public">paimon::RealtimePartitionBucket</innerclass>
+    <innerclass refid="classpaimon_1_1_realtime_metrics" prot="public">paimon::RealtimeMetrics</innerclass>
+    <innerclass refid="classpaimon_1_1_realtime_context" prot="public">paimon::RealtimeContext</innerclass>
+    <innernamespace refid="namespacepaimon">paimon</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="comment">/*</highlight></codeline>
+<codeline lineno="2"><highlight class="comment"><sp/>*<sp/>Licensed<sp/>to<sp/>the<sp/>Apache<sp/>Software<sp/>Foundation<sp/>(ASF)<sp/>under<sp/>one</highlight></codeline>
+<codeline lineno="3"><highlight class="comment"><sp/>*<sp/>or<sp/>more<sp/>contributor<sp/>license<sp/>agreements.<sp/><sp/>See<sp/>the<sp/>NOTICE<sp/>file</highlight></codeline>
+<codeline lineno="4"><highlight class="comment"><sp/>*<sp/>distributed<sp/>with<sp/>this<sp/>work<sp/>for<sp/>additional<sp/>information</highlight></codeline>
+<codeline lineno="5"><highlight class="comment"><sp/>*<sp/>regarding<sp/>copyright<sp/>ownership.<sp/><sp/>The<sp/>ASF<sp/>licenses<sp/>this<sp/>file</highlight></codeline>
+<codeline lineno="6"><highlight class="comment"><sp/>*<sp/>to<sp/>you<sp/>under<sp/>the<sp/>Apache<sp/>License,<sp/>Version<sp/>2.0<sp/>(the</highlight></codeline>
+<codeline lineno="7"><highlight class="comment"><sp/>*<sp/>&quot;License&quot;);<sp/>you<sp/>may<sp/>not<sp/>use<sp/>this<sp/>file<sp/>except<sp/>in<sp/>compliance</highlight></codeline>
+<codeline lineno="8"><highlight class="comment"><sp/>*<sp/>with<sp/>the<sp/>License.<sp/><sp/>You<sp/>may<sp/>obtain<sp/>a<sp/>copy<sp/>of<sp/>the<sp/>License<sp/>at</highlight></codeline>
+<codeline lineno="9"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="10"><highlight class="comment"><sp/>*<sp/><sp/><sp/><sp/><sp/>http://www.apache.org/licenses/LICENSE-2.0</highlight></codeline>
+<codeline lineno="11"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="12"><highlight class="comment"><sp/>*<sp/>Unless<sp/>required<sp/>by<sp/>applicable<sp/>law<sp/>or<sp/>agreed<sp/>to<sp/>in<sp/>writing,</highlight></codeline>
+<codeline lineno="13"><highlight class="comment"><sp/>*<sp/>software<sp/>distributed<sp/>under<sp/>the<sp/>License<sp/>is<sp/>distributed<sp/>on<sp/>an</highlight></codeline>
+<codeline lineno="14"><highlight class="comment"><sp/>*<sp/>&quot;AS<sp/>IS&quot;<sp/>BASIS,<sp/>WITHOUT<sp/>WARRANTIES<sp/>OR<sp/>CONDITIONS<sp/>OF<sp/>ANY</highlight></codeline>
+<codeline lineno="15"><highlight class="comment"><sp/>*<sp/>KIND,<sp/>either<sp/>express<sp/>or<sp/>implied.<sp/><sp/>See<sp/>the<sp/>License<sp/>for<sp/>the</highlight></codeline>
+<codeline lineno="16"><highlight class="comment"><sp/>*<sp/>specific<sp/>language<sp/>governing<sp/>permissions<sp/>and<sp/>limitations</highlight></codeline>
+<codeline lineno="17"><highlight class="comment"><sp/>*<sp/>under<sp/>the<sp/>License.</highlight></codeline>
+<codeline lineno="18"><highlight class="comment"><sp/>*/</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal"></highlight><highlight class="preprocessor">#pragma<sp/>once</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;cstdint&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="23"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;map&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="24"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;memory&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="25"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;string&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="26"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;utility&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="27"><highlight class="normal"></highlight></codeline>
+<codeline lineno="28"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="metrics_8h" kindref="compound">paimon/metrics.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="29"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="result_8h" kindref="compound">paimon/result.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="30"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="visibility_8h" kindref="compound">paimon/visibility.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="31"><highlight class="normal"></highlight></codeline>
+<codeline lineno="32"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal"><ref refid="namespacepaimon" kindref="compound">paimon</ref><sp/>{</highlight></codeline>
+<codeline lineno="33"><highlight class="normal"></highlight></codeline>
+<codeline lineno="34"><highlight class="normal"></highlight><highlight class="keyword">class<sp/></highlight><highlight class="normal">RealtimeStoreFactory;</highlight></codeline>
+<codeline lineno="35"><highlight class="normal"></highlight></codeline>
+<codeline lineno="37" refid="structpaimon_1_1_realtime_partition_bucket" refkind="compound"><highlight class="keyword">struct<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref><sp/>{</highlight></codeline>
+<codeline lineno="39" refid="structpaimon_1_1_realtime_partition_bucket_1a2a15f779b839f7679096fc105ec3df5e" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="structpaimon_1_1_realtime_partition_bucket_1a2a15f779b839f7679096fc105ec3df5e" kindref="member">RealtimePartitionBucket</ref>(std::map&lt;std::string,<sp/>std::string&gt;<sp/>partition,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/>bucket)</highlight></codeline>
+<codeline lineno="40"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>:<sp/>partition(<ref refid="namespacestd" kindref="compound">std</ref>::<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">move</ref>(partition)),<sp/>bucket(bucket)<sp/>{}</highlight></codeline>
+<codeline lineno="41"><highlight class="normal"></highlight></codeline>
+<codeline lineno="43" refid="structpaimon_1_1_realtime_partition_bucket_1af8964b4cb535a137ea134bce3eb5bc30" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="structpaimon_1_1_realtime_partition_bucket_1af8964b4cb535a137ea134bce3eb5bc30" kindref="member">operator&lt;</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref>&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>)</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="44"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">if</highlight><highlight class="normal"><sp/>(partition<sp/>!=<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>.partition)<sp/>{</highlight></codeline>
+<codeline lineno="45"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>partition<sp/>&lt;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>.partition;</highlight></codeline>
+<codeline lineno="46"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="47"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>bucket<sp/>&lt;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>.bucket;</highlight></codeline>
+<codeline lineno="48"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="49"><highlight class="normal"></highlight></codeline>
+<codeline lineno="51" refid="structpaimon_1_1_realtime_partition_bucket_1aabb217c3cbcfd56ed684b62f4855fa90" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="structpaimon_1_1_realtime_partition_bucket_1aabb217c3cbcfd56ed684b62f4855fa90" kindref="member">operator==</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref>&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>)</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="52"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>partition<sp/>==<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>.partition<sp/>&amp;&amp;<sp/>bucket<sp/>==<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>.bucket;</highlight></codeline>
+<codeline lineno="53"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="54"><highlight class="normal"></highlight></codeline>
+<codeline lineno="56" refid="structpaimon_1_1_realtime_partition_bucket_1a7742298973333542aa4fae98bffe337c" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">bool</highlight><highlight class="normal"><sp/><ref refid="structpaimon_1_1_realtime_partition_bucket_1a7742298973333542aa4fae98bffe337c" kindref="member">operator!=</ref>(</highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/><ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref>&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>)</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="57"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>!(*</highlight><highlight class="keyword">this</highlight><highlight class="normal"><sp/>==<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">other</ref>);</highlight></codeline>
+<codeline lineno="58"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="59"><highlight class="normal"></highlight></codeline>
+<codeline lineno="61" refid="structpaimon_1_1_realtime_partition_bucket_1a29ab4daf7fb0c0f8eef28facf7411323" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::map&lt;std::string,<sp/>std::string&gt;<sp/><ref refid="structpaimon_1_1_realtime_partition_bucket_1a29ab4daf7fb0c0f8eef28facf7411323" kindref="member">partition</ref>;</highlight></codeline>
+<codeline lineno="63" refid="structpaimon_1_1_realtime_partition_bucket_1af6222a4e83ea203dc3ff17d9811372e3" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/>bucket<sp/>=<sp/>-1;</highlight></codeline>
+<codeline lineno="64"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="65"><highlight class="normal"></highlight></codeline>
+<codeline lineno="67" refid="namespacepaimon_1a96ef50bca14c6706de741dc797bf4410" refkind="member"><highlight class="keyword">using<sp/></highlight><highlight class="normal"><ref refid="namespacepaimon_1a96ef50bca14c6706de741dc797bf4410" kindref="member">RealtimeOffsetMap</ref><sp/>=<sp/>std::map&lt;RealtimePartitionBucket,<sp/>int64_t&gt;;</highlight></codeline>
+<codeline lineno="68"><highlight class="normal"></highlight></codeline>
+<codeline lineno="70" refid="classpaimon_1_1_realtime_metrics" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_realtime_metrics" kindref="compound">RealtimeMetrics</ref><sp/>{</highlight></codeline>
+<codeline lineno="71"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="72" refid="classpaimon_1_1_realtime_metrics_1ad623ebae5868d84a819a3e179c6c5e26" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_realtime_metrics_1ad623ebae5868d84a819a3e179c6c5e26" kindref="member">RealtimeMetrics</ref>()<sp/>=<sp/></highlight><highlight class="keyword">delete</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="73" refid="classpaimon_1_1_realtime_metrics_1ab9070fcac8763c5dade13454f92ac3aa" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_realtime_metrics_1ab9070fcac8763c5dade13454f92ac3aa" kindref="member">~RealtimeMetrics</ref>()<sp/>=<sp/></highlight><highlight class="keyword">delete</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="74"><highlight class="normal"></highlight></codeline>
+<codeline lineno="75" refid="classpaimon_1_1_realtime_metrics_1a44bed03923a9f67b16900eb89350f701" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>kBuildingMemoryBytes[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;realtimeBuildingMemoryBytes&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="76" refid="classpaimon_1_1_realtime_metrics_1aaef56d033d58db83b5e79ba264ce239d" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>kSealedMemoryBytes[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;realtimeSealedMemoryBytes&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="77" refid="classpaimon_1_1_realtime_metrics_1a44ea89b38a554c3ff1217a8f91b3bccc" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>kTotalMemoryBytes[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;realtimeTotalMemoryBytes&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="78" refid="classpaimon_1_1_realtime_metrics_1a0f086cf2b38b96779e927976a5eb9016" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>kBuildingRowCount[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;realtimeBuildingRowCount&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="79" refid="classpaimon_1_1_realtime_metrics_1a8dffca3824a301e02bf0a6d7932d0244" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>kSealedRowCount[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;realtimeSealedRowCount&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="80" refid="classpaimon_1_1_realtime_metrics_1a12e52f426da3e32f4cf63b2027b3b68f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>kTotalRowCount[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;realtimeTotalRowCount&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="81"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="82"><highlight class="normal"></highlight></codeline>
+<codeline lineno="96" refid="classpaimon_1_1_realtime_context" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_realtime_context" kindref="compound">RealtimeContext</ref><sp/>{</highlight></codeline>
+<codeline lineno="97"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="99" refid="classpaimon_1_1_realtime_context_1aaa3d2a495a2173981fa67bfc2bec27a7" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::shared_ptr&lt;RealtimeContext&gt;</ref>&gt;<sp/><ref refid="classpaimon_1_1_realtime_context_1aaa3d2a495a2173981fa67bfc2bec27a7" kindref="member">Create</ref>();</highlight></codeline>
+<codeline lineno="100"><highlight class="normal"></highlight></codeline>
+<codeline lineno="104" refid="classpaimon_1_1_realtime_context_1ab7b04f885d6b6ac18b1e22f845c3ad4a" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::shared_ptr&lt;RealtimeContext&gt;</ref>&gt;<sp/><ref refid="classpaimon_1_1_realtime_context_1ab7b04f885d6b6ac18b1e22f845c3ad4a" kindref="member">Create</ref>(</highlight></codeline>
+<codeline lineno="105"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;RealtimeStoreFactory&gt;&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">factory</ref>);</highlight></codeline>
+<codeline lineno="106"><highlight class="normal"></highlight></codeline>
+<codeline lineno="108" refid="classpaimon_1_1_realtime_context_1aa967b54cabfe781fefd98a08cc60a543" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;Metrics&gt;<sp/><ref refid="classpaimon_1_1_realtime_context_1aa967b54cabfe781fefd98a08cc60a543" kindref="member">GetMetrics</ref>()<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>=<sp/>0;</highlight></codeline>
+<codeline lineno="109"><highlight class="normal"></highlight></codeline>
+<codeline lineno="110" refid="classpaimon_1_1_realtime_context_1a69aa10a5b50ccd0a356831c579bc07ff" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">virtual</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_realtime_context_1a69aa10a5b50ccd0a356831c579bc07ff" kindref="member">~RealtimeContext</ref>();</highlight></codeline>
+<codeline lineno="111"><highlight class="normal"></highlight></codeline>
+<codeline lineno="112"><highlight class="normal"><sp/></highlight><highlight class="keyword">protected</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="113" refid="classpaimon_1_1_realtime_context_1ac9a4333b438b4d6d5c1d4a666b5b6525" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_realtime_context_1ac9a4333b438b4d6d5c1d4a666b5b6525" kindref="member">RealtimeContext</ref>()<sp/>=<sp/></highlight><highlight class="keywordflow">default</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="114"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="115"><highlight class="normal"></highlight></codeline>
+<codeline lineno="116"><highlight class="normal">}<sp/><sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>paimon</highlight><highlight class="normal"></highlight></codeline>
+    </programlisting>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h"/>
+  </compounddef>
+</doxygen>

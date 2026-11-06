@@ -1,0 +1,54 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_full_text_scan" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::FullTextScan</compoundname>
+    <includes refid="full__text__scan_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h</includes>
+    <innerclass refid="classpaimon_1_1_full_text_scan_1_1_plan" prot="public">paimon::FullTextScan::Plan</innerclass>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_full_text_scan_1a1cce49f4e2afc34aa41ba11322999a09" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::FullTextScan::~FullTextScan</definition>
+        <argsstring>()=default</argsstring>
+        <name>~FullTextScan</name>
+        <qualifiedname>paimon::FullTextScan::~FullTextScan</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="61" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_full_text_scan_1a7f98d4b9c11c89a84f3535f76537afb1" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_full_text_scan_1_1_plan" kindref="compound">Plan</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; Plan &gt; &gt; paimon::FullTextScan::CreatePlan</definition>
+        <argsstring>()=0</argsstring>
+        <name>CreatePlan</name>
+        <qualifiedname>paimon::FullTextScan::CreatePlan</qualifiedname>
+        <briefdescription>
+<para>Plans the search on the snapshot that the options select, as Java <computeroutput>TimeTravelUtil#tryTravelOrLatest</computeroutput> does: snapshot <computeroutput>scan.snapshot-id</computeroutput>, the snapshot of tag <computeroutput>scan.tag-name</computeroutput>, the latest snapshot at or before <computeroutput>scan.timestamp</computeroutput> or <computeroutput>scan.timestamp-millis</computeroutput>, or else the latest snapshot. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>As in Java, at most one of these options may be set, and it must agree with an explicit <computeroutput>scan.mode</computeroutput>: <computeroutput>from-snapshot</computeroutput> needs <computeroutput>scan.snapshot-id</computeroutput> or <computeroutput>scan.tag-name</computeroutput>, <computeroutput>from-snapshot-full</computeroutput> needs <computeroutput>scan.snapshot-id</computeroutput>, <computeroutput>from-timestamp</computeroutput> needs <computeroutput>scan.timestamp</computeroutput> or <computeroutput>scan.timestamp-millis</computeroutput>, and <computeroutput>latest-full</computeroutput> and <computeroutput>latest</computeroutput> take none of them.</para>
+<para>Each index shard of the searched column becomes one split. The scan considers only the index files that are in the partitions of the partition filter, that index the column as their indexed field or as one of their extra fields, and whose indexer supports full-text search (<computeroutput><ref refid="classpaimon_1_1_global_indexer_1a1ab1e5ea14677d6ce921b7b9dd0b5d7d" kindref="member">GlobalIndexer::SupportsFullTextSearch()</ref></computeroutput>). The plan fails if Paimon C++ is built without the backend of a <computeroutput>full-text</computeroutput> or <computeroutput>lucene-fts</computeroutput> index it finds. When the row ranges of index shards overlap, each row is ranked by one shard only: an index whose indexed field is the column comes before one that carries it as an extra field, and further ties are broken by index type and fields, then by the start and end of the shard. <simplesect kind="return"><para>The plan, or an error if more than one time-travel option is set, the option does not agree with <computeroutput>scan.mode</computeroutput>, the selected snapshot or tag does not exist, or reading the index manifests fails; <computeroutput>NotImplemented</computeroutput> for an index whose backend is not built. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="83" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Plans a table-level full-text search into splits, aligned with Java <computeroutput>org.apache.paimon.table.source.FullTextScan</computeroutput>. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Create one with <computeroutput><ref refid="classpaimon_1_1_full_text_search_builder_1a448d4e471f5d985bcc829f5d3287521a" kindref="member">FullTextSearchBuilder::NewFullTextScan()</ref></computeroutput>. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="35" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" bodystart="35" bodyend="84"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_full_text_scan_1a7f98d4b9c11c89a84f3535f76537afb1" prot="public" virt="pure-virtual"><scope>paimon::FullTextScan</scope><name>CreatePlan</name></member>
+      <member refid="classpaimon_1_1_full_text_scan_1a1cce49f4e2afc34aa41ba11322999a09" prot="public" virt="virtual"><scope>paimon::FullTextScan</scope><name>~FullTextScan</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

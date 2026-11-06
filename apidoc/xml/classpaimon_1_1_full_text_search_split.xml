@@ -1,0 +1,146 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_full_text_search_split" kind="class" language="C++" prot="public">
+    <compoundname>paimon::FullTextSearchSplit</compoundname>
+    <derivedcompoundref refid="classpaimon_1_1_index_full_text_search_split" prot="public" virt="non-virtual">paimon::IndexFullTextSearchSplit</derivedcompoundref>
+    <includes refid="full__text__search__split_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_full_text_search_split_1a664da20e34736ebbb9b3a803c30b4b45" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::FullTextSearchSplit::~FullTextSearchSplit</definition>
+        <argsstring>()=default</argsstring>
+        <name>~FullTextSearchSplit</name>
+        <qualifiedname>paimon::FullTextSearchSplit::~FullTextSearchSplit</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="41" column="13"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_full_text_search_split_1ad0e0afebe837af0b6a01ac4341fbec55" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::string &gt;</type>
+        <definition>static Result&lt; std::string &gt; paimon::FullTextSearchSplit::Serialize</definition>
+        <argsstring>(const std::shared_ptr&lt; FullTextSearchSplit &gt; &amp;split, const std::shared_ptr&lt; MemoryPool &gt; &amp;pool)</argsstring>
+        <name>Serialize</name>
+        <qualifiedname>paimon::FullTextSearchSplit::Serialize</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_full_text_search_split" kindref="compound">FullTextSearchSplit</ref> &gt; &amp;</type>
+          <declname>split</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <briefdescription>
+<para>Serializes <computeroutput>split</computeroutput> to a binary string. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>split</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The split to serialize; it must come from <computeroutput><ref refid="classpaimon_1_1_full_text_scan" kindref="compound">FullTextScan</ref></computeroutput> or <computeroutput><ref refid="classpaimon_1_1_full_text_search_split_1abc4f9b6e60e2d8f29886a387c803caa4" kindref="member">Deserialize()</ref></computeroutput>. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>pool</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Memory pool for temporary allocations. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="46" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_full_text_search_split_1abc4f9b6e60e2d8f29886a387c803caa4" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_full_text_search_split" kindref="compound">FullTextSearchSplit</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::shared_ptr&lt; FullTextSearchSplit &gt; &gt; paimon::FullTextSearchSplit::Deserialize</definition>
+        <argsstring>(const char *buffer, size_t length, const std::shared_ptr&lt; MemoryPool &gt; &amp;pool)</argsstring>
+        <name>Deserialize</name>
+        <qualifiedname>paimon::FullTextSearchSplit::Deserialize</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref> *</type>
+          <declname>buffer</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">size_t</ref></type>
+          <declname>length</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <briefdescription>
+<para>Deserializes a split written by <computeroutput><ref refid="classpaimon_1_1_full_text_search_split_1ad0e0afebe837af0b6a01ac4341fbec55" kindref="member">Serialize()</ref></computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>buffer</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Pointer to the serialized bytes. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>length</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Number of serialized bytes. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>pool</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Memory pool for the objects of the split. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para>The split, or an error if <computeroutput>buffer</computeroutput> is null, or the bytes are corrupt or not a split of a supported version. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="55" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>A unit of work of a table-level full-text search, planned by <computeroutput><ref refid="classpaimon_1_1_full_text_scan" kindref="compound">FullTextScan</ref></computeroutput> and searched by <computeroutput><ref refid="classpaimon_1_1_full_text_read" kindref="compound">FullTextRead</ref></computeroutput>, aligned with Java <computeroutput>org.apache.paimon.table.source.FullTextSearchSplit</computeroutput>. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Splits can be serialized, so that a search can be planned in one process and run in others. The encoding is specific to Paimon C++: Java Paimon serializes its splits with Java serialization, so there is no cross-language format to match. </para>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="1">
+        <label>paimon::FullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_full_text_search_split"/>
+      </node>
+      <node id="2">
+        <label>paimon::IndexFullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_index_full_text_search_split"/>
+        <childnode refid="1" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="39" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" bodystart="39" bodyend="57"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_full_text_search_split_1abc4f9b6e60e2d8f29886a387c803caa4" prot="public" virt="non-virtual"><scope>paimon::FullTextSearchSplit</scope><name>Deserialize</name></member>
+      <member refid="classpaimon_1_1_full_text_search_split_1ad0e0afebe837af0b6a01ac4341fbec55" prot="public" virt="non-virtual"><scope>paimon::FullTextSearchSplit</scope><name>Serialize</name></member>
+      <member refid="classpaimon_1_1_full_text_search_split_1a664da20e34736ebbb9b3a803c30b4b45" prot="public" virt="virtual"><scope>paimon::FullTextSearchSplit</scope><name>~FullTextSearchSplit</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

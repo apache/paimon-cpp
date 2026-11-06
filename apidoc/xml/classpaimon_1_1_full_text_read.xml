@@ -1,0 +1,86 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_full_text_read" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::FullTextRead</compoundname>
+    <includes refid="full__text__read_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_read.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_full_text_read_1a9f915ec77d01a2a272e1b9cc8fae6ed3" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::FullTextRead::~FullTextRead</definition>
+        <argsstring>()=default</argsstring>
+        <name>~FullTextRead</name>
+        <qualifiedname>paimon::FullTextRead::~FullTextRead</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_read.h" line="36" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_full_text_read_1aa18f1c19ad38bccce88e5bc130c311a1" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_scored_global_index_result" kindref="compound">ScoredGlobalIndexResult</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::shared_ptr&lt; ScoredGlobalIndexResult &gt; &gt; paimon::FullTextRead::Read</definition>
+        <argsstring>(const FullTextScan::Plan &amp;plan)</argsstring>
+        <name>Read</name>
+        <qualifiedname>paimon::FullTextRead::Read</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_full_text_scan_1_1_plan" kindref="compound">FullTextScan::Plan</ref> &amp;</type>
+          <declname>plan</declname>
+        </param>
+        <briefdescription>
+<para>Searches the splits of <computeroutput>plan</computeroutput>; see <computeroutput>Read(splits)</computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_read.h" line="39" column="12" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_read.h" bodystart="39" bodyend="41"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_full_text_read_1a58bab3d6aeaa5ced0a91d7ee89370951" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_scored_global_index_result" kindref="compound">ScoredGlobalIndexResult</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; ScoredGlobalIndexResult &gt; &gt; paimon::FullTextRead::Read</definition>
+        <argsstring>(const std::vector&lt; std::shared_ptr&lt; FullTextSearchSplit &gt; &gt; &amp;splits)=0</argsstring>
+        <name>Read</name>
+        <qualifiedname>paimon::FullTextRead::Read</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::vector&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_full_text_search_split" kindref="compound">FullTextSearchSplit</ref> &gt; &gt; &amp;</type>
+          <declname>splits</declname>
+        </param>
+        <briefdescription>
+<para>Searches <computeroutput>splits</computeroutput> and returns the <computeroutput>limit</computeroutput> highest-scoring rows among the candidates that they return. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The result holds global row ids and iterates them in ascending order; pass it to <computeroutput><ref refid="classpaimon_1_1_scan_context_builder_1a85b99415dcb3179120a380353425fe0e" kindref="member">ScanContextBuilder::SetGlobalIndexResult()</ref></computeroutput> to read the rows, whose scores the read returns in the <computeroutput>_INDEX_SCORE</computeroutput> field.</para>
+<para>The splits are searched in parallel, and each one returns at most <computeroutput>limit</computeroutput> candidates, chosen by its index. Ties among the candidates are broken by ascending row id, but which of the rows tied at the <computeroutput>limit</computeroutput>-th score of a split become candidates is up to its index. A split ranks only its search row ranges, and with deletion vectors enabled only the rows that are live in the snapshot the splits were planned from; BM25 statistics still come from its whole index shard. <parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>splits</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Splits planned by a <computeroutput><ref refid="classpaimon_1_1_full_text_scan" kindref="compound">FullTextScan</ref></computeroutput> of the same column, all from one snapshot. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para>The rows found, or an error if a split is invalid, its index files do not index the column of the latest schema (for example, after the column was replaced), or an index cannot be read. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_read.h" line="58" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Searches the splits of a table-level full-text search, aligned with Java <computeroutput>org.apache.paimon.table.source.FullTextRead</computeroutput>. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Create one with <computeroutput><ref refid="classpaimon_1_1_full_text_search_builder_1a744cc19cf588435300bb8b32235f6cd3" kindref="member">FullTextSearchBuilder::NewFullTextRead()</ref></computeroutput>. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_read.h" line="34" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_read.h" bodystart="34" bodyend="60"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_full_text_read_1aa18f1c19ad38bccce88e5bc130c311a1" prot="public" virt="non-virtual"><scope>paimon::FullTextRead</scope><name>Read</name></member>
+      <member refid="classpaimon_1_1_full_text_read_1a58bab3d6aeaa5ced0a91d7ee89370951" prot="public" virt="pure-virtual"><scope>paimon::FullTextRead</scope><name>Read</name></member>
+      <member refid="classpaimon_1_1_full_text_read_1a9f915ec77d01a2a272e1b9cc8fae6ed3" prot="public" virt="virtual"><scope>paimon::FullTextRead</scope><name>~FullTextRead</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
