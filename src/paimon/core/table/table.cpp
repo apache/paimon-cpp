@@ -74,6 +74,7 @@
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/table/file_store.h"
 #include "paimon/core/table/format/format_table_file_store_commit.h"
 #include "paimon/core/table/format/format_table_file_store_write.h"
 #include "paimon/core/table/format/format_table_loader.h"
@@ -98,7 +99,6 @@
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
-#include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
@@ -330,29 +330,14 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           options.CreateGlobalIndexExternalPath());
-
+    FileStore file_store(ctx->GetRootPath(), options);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> file_store_path_factory,
-        FileStorePathFactory::Create(ctx->GetRootPath(), arrow_schema, schema->PartitionKeys(),
-                                     options.GetPartitionDefaultName(),
-                                     options.GetWriteFileFormat(/*level=*/0)->Identifier(),
-                                     options.DataFilePrefix(), options.LegacyPartitionNameEnabled(),
-                                     external_paths, global_index_external_path,
-                                     options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
-    auto snapshot_manager =
-        std::make_shared<SnapshotManager>(options.GetFileSystem(), ctx->GetRootPath(), branch);
-    if (VersionManagedCatalog* versioned = AsVersionManaged(ctx->GetCatalog())) {
-        std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
-        Identifier identifier = catalog_identifier.value();
-        // Keep the catalog alive while the writer uses its snapshot loader.
-        snapshot_manager->SetSnapshotLoader(
-            [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
-                return versioned->LoadSnapshot(identifier);
-            });
-    }
+        file_store.NewPathFactory(arrow_schema, schema->PartitionKeys(),
+                                  options.GetWriteFileFormat(/*level=*/0)->Identifier(),
+                                  ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
+                           file_store.NewSnapshotManager(ctx->GetCatalog(), catalog_identifier));
     std::shared_ptr<IOManager> io_manager;
     const auto& io_temp_dir = ctx->GetTempDirectory();
     if (!io_temp_dir.empty()) {
@@ -423,15 +408,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
         if (need_dv_maintainer_factory) {
             PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<IndexManifestFile> index_manifest_file,
-                IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                          options.GetManifestCompression(), file_store_path_factory,
-                                          ResolveBucketMode(options.GetBucket(), schema),
-                                          ctx->GetMemoryPool(), options));
-            auto index_file_handler = std::make_shared<IndexFileHandler>(
-                options.GetFileSystem(), std::move(index_manifest_file),
-                std::make_shared<IndexFilePathFactories>(file_store_path_factory),
-                options.DeletionVectorsBitmap64(), ctx->GetMemoryPool());
+                std::shared_ptr<IndexFileHandler> index_file_handler,
+                file_store.NewIndexFileHandler(ResolveBucketMode(options.GetBucket(), schema),
+                                               file_store_path_factory, ctx->GetMemoryPool()));
             dv_maintainer_factory =
                 std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
         }
@@ -525,15 +504,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         std::shared_ptr<IndexFileHandler> index_file_handler;
         if (options.DeletionVectorsEnabled() || has_btree_index || has_existing_index_manifest) {
             PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<IndexManifestFile> index_manifest_file,
-                IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                          options.GetManifestCompression(), file_store_path_factory,
-                                          ResolveBucketMode(options.GetBucket(), schema),
-                                          ctx->GetMemoryPool(), options));
-            index_file_handler = std::make_shared<IndexFileHandler>(
-                options.GetFileSystem(), std::move(index_manifest_file),
-                std::make_shared<IndexFilePathFactories>(file_store_path_factory),
-                options.DeletionVectorsBitmap64(), ctx->GetMemoryPool());
+                index_file_handler,
+                file_store.NewIndexFileHandler(ResolveBucketMode(options.GetBucket(), schema),
+                                               file_store_path_factory, ctx->GetMemoryPool()));
         }
         bool has_restored_btree_index = false;
         if (!has_btree_index && has_existing_index_manifest) {
@@ -589,23 +562,21 @@ class TableScanImpl {
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
         const ScanContext* context) {
         auto fs = core_options.GetFileSystem();
-        auto manifest_file_format = core_options.GetManifestFormat();
         std::string branch = BranchManager::NormalizeBranch(core_options.GetBranch());
-        auto snapshot_manager = std::make_shared<SnapshotManager>(fs, context->GetPath(), branch);
+        FileStore file_store(context->GetPath(), core_options);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
+                               file_store.NewSnapshotManager(/*catalog=*/nullptr,
+                                                             /*catalog_identifier=*/std::nullopt));
         // TODO(liancheng.lsz): support fallback branch in scan
         auto schema_manager = std::make_shared<SchemaManager>(fs, context->GetPath(), branch);
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<ManifestList> manifest_list,
-            ManifestList::Create(fs, manifest_file_format, core_options.GetManifestCompression(),
-                                 path_factory, core_options.GetCache(), memory_pool));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
+                               file_store.NewManifestList(path_factory, memory_pool));
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<arrow::Schema> partition_schema,
             FieldMapping::GetPartitionSchema(arrow_schema, table_schema->PartitionKeys()));
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<ManifestFile> manifest_file,
-            ManifestFile::Create(fs, manifest_file_format, core_options.GetManifestCompression(),
-                                 path_factory, core_options.GetManifestTargetFileSize(),
-                                 memory_pool, core_options, partition_schema));
+            file_store.NewManifestFile(path_factory, partition_schema, memory_pool));
         std::unique_ptr<FileStoreScan> scan;
         if (table_schema->PrimaryKeys().empty()) {
             if (core_options.DataEvolutionEnabled()) {
@@ -666,22 +637,6 @@ class TableScanImpl {
                 core_options.DeletionVectorsEnabled(), core_options.GetMergeEngine(),
                 key_comparator);
         }
-    }
-
-    static Result<std::unique_ptr<IndexFileHandler>> CreateIndexFileHandler(
-        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
-        const std::shared_ptr<FileStorePathFactory>& path_factory,
-        const std::shared_ptr<MemoryPool>& memory_pool) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
-                               IndexManifestFile::Create(
-                                   core_options.GetFileSystem(), core_options.GetManifestFormat(),
-                                   core_options.GetManifestCompression(), path_factory,
-                                   ResolveBucketMode(core_options.GetBucket(), table_schema),
-                                   memory_pool, core_options));
-        return std::make_unique<IndexFileHandler>(
-            core_options.GetFileSystem(), std::move(index_manifest_file),
-            std::make_shared<IndexFilePathFactories>(path_factory),
-            core_options.DeletionVectorsBitmap64(), memory_pool);
     }
 };
 
@@ -894,19 +849,11 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
             *arrow_schema, context->GetScanFilters()->GetPredicate(),
             /*validate_field_idx=*/false));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
-                           core_options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
-
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(
-            context->GetPath(), arrow_schema, table_schema->PartitionKeys(),
-            core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
-            core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            context->GetMemoryPool()));
+    FileStore file_store(context->GetPath(), core_options);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
+                           file_store.NewPathFactory(arrow_schema, table_schema->PartitionKeys(),
+                                                     core_options.GetFileFormat()->Identifier(),
+                                                     context->GetMemoryPool()));
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan> file_store_scan,
                            TableScanImpl::CreateFileStoreScan(
@@ -915,9 +862,10 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<SplitGenerator> split_generator,
         TableScanImpl::CreateSplitGenerator(table_schema, core_options, context.get()));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
-                           TableScanImpl::CreateIndexFileHandler(
-                               table_schema, core_options, path_factory, context->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<IndexFileHandler> index_file_handler,
+        file_store.NewIndexFileHandler(ResolveBucketMode(core_options.GetBucket(), table_schema),
+                                       path_factory, context->GetMemoryPool()));
     auto snapshot_reader = std::make_shared<SnapshotReader>(
         file_store_scan, path_factory, std::move(split_generator), std::move(index_file_handler));
     const bool pk_table = !table_schema->PrimaryKeys().empty();
@@ -1014,19 +962,11 @@ Result<std::unique_ptr<TableRead>> CreateTableRead(
     }
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*table_schema, core_options));
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
-                           core_options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
-
+    FileStore file_store(internal_context->GetPath(), core_options);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(
-            internal_context->GetPath(), arrow_schema, table_schema->PartitionKeys(),
-            core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
-            core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            memory_pool));
+        file_store.NewPathFactory(arrow_schema, table_schema->PartitionKeys(),
+                                  core_options.GetFileFormat()->Identifier(), memory_pool));
 
     if (internal_context->GetPrimaryKeys().empty()) {
         return std::make_unique<AppendOnlyTableRead>(path_factory, internal_context, memory_pool,
@@ -1365,55 +1305,27 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         return Status::NotImplemented(
             "commit operation does not support object store file system for now");
     }
+    FileStore file_store(root_path, options);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
-                           BinaryRowPartitionComputer::Create(schema->PartitionKeys(), arrow_schema,
-                                                              options.GetPartitionDefaultName(),
-                                                              options.LegacyPartitionNameEnabled(),
-                                                              ctx->GetMemoryPool()));
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           options.CreateGlobalIndexExternalPath());
-
+                           file_store.NewPartitionComputer(arrow_schema, schema->PartitionKeys(),
+                                                           ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(
-            root_path, arrow_schema, schema->PartitionKeys(), options.GetPartitionDefaultName(),
-            options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
-            options.LegacyPartitionNameEnabled(), external_paths, global_index_external_path,
-            options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
-
-    auto snapshot_manager =
-        std::make_shared<SnapshotManager>(options.GetFileSystem(), root_path, branch);
-    if (IsCatalogCommit(*ctx)) {
-        std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
-        VersionManagedCatalog* versioned = AsVersionManaged(catalog);
-        Identifier identifier = catalog_identifier.value();
-        // Capture the catalog to keep the versioned interface alive.
-        snapshot_manager->SetSnapshotLoader(
-            [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
-                return versioned->LoadSnapshot(identifier);
-            });
-    }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<ManifestList> manifest_list,
-        ManifestList::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                             options.GetManifestCompression(), path_factory, options.GetCache(),
-                             ctx->GetMemoryPool()));
-
+        file_store.NewPathFactory(arrow_schema, schema->PartitionKeys(),
+                                  options.GetFileFormat()->Identifier(), ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
+                           file_store.NewSnapshotManager(ctx->GetCatalog(), catalog_identifier));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
+                           file_store.NewManifestList(path_factory, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestFile> manifest_file,
-        ManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                             options.GetManifestCompression(), path_factory,
-                             options.GetManifestTargetFileSize(), ctx->GetMemoryPool(), options,
-                             partition_schema));
+        file_store.NewManifestFile(path_factory, partition_schema, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<IndexManifestFile> index_manifest_file,
-        IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                  options.GetManifestCompression(), path_factory,
-                                  ResolveBucketMode(options.GetBucket(), schema),
-                                  ctx->GetMemoryPool(), options));
+        file_store.NewIndexManifestFile(ResolveBucketMode(options.GetBucket(), schema),
+                                        path_factory, ctx->GetMemoryPool()));
 
     auto expire_snapshots = std::make_shared<ExpireSnapshots>(
         snapshot_manager, path_factory, manifest_list, manifest_file, index_manifest_file,
