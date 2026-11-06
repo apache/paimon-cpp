@@ -161,8 +161,7 @@ class WarmupFileBatchReaderTest : public ::testing::Test {
                                FileReadAhead::Open("dummy", 0, &builder, fs, 1, executor_,
                                                    cache_enabled, CacheConfig(), true, pool_));
         observed_ = checked_pointer_cast<ObservedReader>(opened.readers[0]);
-        return std::make_unique<WarmupFileBatchReader>(opened.readers[0], opened.read_ahead, level,
-                                                       GetArrowPool(pool_));
+        return std::make_unique<WarmupFileBatchReader>(opened.readers[0], opened.read_ahead, level);
     }
 
     Status Configure(FileBatchReader* reader) {
@@ -183,6 +182,91 @@ class WarmupFileBatchReaderTest : public ::testing::Test {
     std::shared_ptr<arrow::Array> data_;
     std::shared_ptr<ObservedReader> observed_;
 };
+
+class SparseMappingReader : public MockFileBatchReader {
+ public:
+    explicit SparseMappingReader(const std::shared_ptr<arrow::Array>& data)
+        : MockFileBatchReader(data, data->type(), 4) {
+        EnableRandomizeBatchSize(false);
+    }
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        compact_ = false;
+        PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch,
+                               MockFileBatchReader::NextBatchWithBitmap());
+        if (BatchReader::IsEofBatch(batch)) {
+            return batch;
+        }
+        batch.second = RoaringBitmap32();
+        batch.second.Add(1);
+        batch.second.Add(3);
+        return batch;
+    }
+    Result<ReadBatch> NextBatch() override {
+        PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, NextBatchWithBitmap());
+        PAIMON_ASSIGN_OR_RAISE(
+            ReadBatch result,
+            ReaderUtils::ApplyBitmapToReadBatch(std::move(batch), GetArrowPool(GetDefaultPool())));
+        compact_ = true;
+        return result;
+    }
+    Result<uint64_t> GetPreviousBatchFileRowId(uint64_t index) const override {
+        if (index >= (compact_ ? 2u : 4u)) {
+            return Status::Invalid("out of range");
+        }
+        return compact_ ? 1 + 2 * index : index;
+    }
+
+ private:
+    bool compact_ = false;
+};
+
+TEST_F(WarmupFileBatchReaderTest, PreservesSparseBitmapAndFileRowMapping) {
+    auto data = data_->Slice(0, 4);
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW}) {
+        for (bool cache_enabled : {false, true}) {
+            for (bool with_bitmap : {false, true}) {
+                auto inner = std::make_shared<SparseMappingReader>(data);
+                std::shared_ptr<ReadAheadCache> cache;
+                if (cache_enabled) {
+                    cache = std::make_shared<ReadAheadCache>(std::make_shared<MockInputStream>(),
+                                                             CacheConfig(), 0, pool_);
+                }
+                WarmupFileBatchReader reader(inner, FileReadAhead::Create(cache, "sparse"), level);
+                ASSERT_OK(Configure(&reader));
+                ASSERT_NOK(reader.GetPreviousBatchFileRowId(0));
+                reader.Warmup();
+                if (with_bitmap) {
+                    ASSERT_OK_AND_ASSIGN(auto batch, reader.NextBatchWithBitmap());
+                    ASSERT_EQ(batch.first.first->length, 4);
+                    ASSERT_TRUE(batch.second.Contains(1));
+                    ASSERT_TRUE(batch.second.Contains(3));
+                    ASSERT_EQ(batch.second.Cardinality(), 2);
+                    ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+                } else {
+                    ASSERT_OK_AND_ASSIGN(auto batch, reader.NextBatch());
+                    ASSERT_EQ(batch.first->length, 2);
+                    auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+                    ASSERT_TRUE(imported.ok());
+                    ASSERT_TRUE(imported.ValueOrDie()->Equals(
+                        arrow::ipc::internal::json::ArrayFromJSON(type_, "[[1],[3]]")
+                            .ValueOrDie()));
+                }
+                ASSERT_OK_AND_ASSIGN(uint64_t first, reader.GetPreviousBatchFileRowId(0));
+                ASSERT_OK_AND_ASSIGN(uint64_t second, reader.GetPreviousBatchFileRowId(1));
+                ASSERT_EQ(first, with_bitmap ? 0 : 1);
+                ASSERT_EQ(second, with_bitmap ? 1 : 3);
+                ASSERT_NOK(reader.GetPreviousBatchFileRowId(with_bitmap ? 4 : 2));
+                ASSERT_OK_AND_ASSIGN(auto eof, reader.NextBatch());
+                ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+                ASSERT_NOK(reader.GetPreviousBatchFileRowId(0));
+                ASSERT_OK(Configure(&reader));
+                ASSERT_NOK(reader.GetPreviousBatchFileRowId(0));
+                reader.Close();
+                ASSERT_NOK(reader.GetPreviousBatchFileRowId(0));
+            }
+        }
+    }
+}
 
 TEST_F(WarmupFileBatchReaderTest, RawWarmsBytesWithoutDecodingAndIsIdempotent) {
     auto fs = std::make_shared<GatedFileSystem>();
@@ -378,8 +462,8 @@ TEST_F(WarmupFileBatchReaderTest, InvalidInitialAndLateRangesReportFileOnRead) {
                              FileReadAhead::Open("range-bounds-file", late ? 4 : 2, &builder,
                                                  std::make_shared<MockFileSystem>(), 1, nullptr,
                                                  true, CacheConfig(), false, pool_));
-        auto reader = std::make_unique<WarmupFileBatchReader>(
-            opened.readers[0], opened.read_ahead, WarmupLevel::RAW, GetArrowPool(pool_));
+        auto reader = std::make_unique<WarmupFileBatchReader>(opened.readers[0], opened.read_ahead,
+                                                              WarmupLevel::RAW);
         ASSERT_OK(Configure(reader.get()));
         reader->Warmup();
         if (late) {

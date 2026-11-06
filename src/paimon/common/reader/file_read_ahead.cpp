@@ -314,7 +314,7 @@ Result<std::unique_ptr<FileBatchReader>> FileReadAhead::OpenSynchronous(
     std::shared_ptr<PrefetchFileBatchReader> capable_reader =
         checked_pointer_cast<PrefetchFileBatchReader>(std::move(reader));
     return std::make_unique<WarmupFileBatchReader>(std::move(capable_reader), std::move(state),
-                                                   level, arrow_pool);
+                                                   level);
 }
 
 Status FileReadAhead::Warmup(PrefetchFileBatchReader* reader) {

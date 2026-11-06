@@ -249,6 +249,130 @@ TEST_F(OrcFileBatchReaderTest, BuilderEnablesCacheBeforeReadingMetadata) {
     reader->Close();
 }
 
+class PhysicalProbeStream : public paimon::InputStream {
+ public:
+    explicit PhysicalProbeStream(std::shared_ptr<paimon::InputStream> inner)
+        : inner_(std::move(inner)) {}
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return inner_->Seek(offset, origin);
+    }
+    Result<int64_t> GetPos() const override {
+        return inner_->GetPos();
+    }
+    Result<int64_t> Length() const override {
+        return inner_->Length();
+    }
+    Result<std::string> GetUri() const override {
+        return inner_->GetUri();
+    }
+    Status Close() override {
+        return inner_->Close();
+    }
+    Result<int64_t> Read(char* data, int64_t size) override {
+        return inner_->Read(data, size);
+    }
+    Result<int64_t> Read(char* data, int64_t size, int64_t offset) override {
+        reads.emplace_back(offset, size);
+        return inner_->Read(data, size, offset);
+    }
+    void ReadAsync(char* data, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& cb) override {
+        reads.emplace_back(offset, size);
+        inner_->ReadAsync(data, size, offset, std::move(cb));
+    }
+    uint64_t Overlap(uint64_t begin, uint64_t length) const {
+        uint64_t bytes = 0;
+        for (const auto& r : reads) {
+            uint64_t lo = std::max(begin, r.first);
+            uint64_t hi = std::min(begin + length, r.first + r.second);
+            if (hi > lo) {
+                bytes += hi - lo;
+            }
+        }
+        return bytes;
+    }
+    std::vector<std::pair<uint64_t, uint64_t>> reads;
+
+ private:
+    std::shared_ptr<paimon::InputStream> inner_;
+};
+
+TEST_F(OrcFileBatchReaderTest, SeekPreparesTargetStripeBeforePhysicalReads) {
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path = dir->Str() + "/seek.orc";
+    {
+        auto output = ::orc::writeLocalFile(path);
+        auto type = ::orc::Type::buildTypeFromString("struct<a:int>");
+        auto writer = ::orc::createWriter(*type, output.get(), ::orc::WriterOptions());
+        for (int stripe = 0; stripe < 3; ++stripe) {
+            auto batch = writer->createRowBatch(4);
+            auto* root = dynamic_cast<::orc::StructVectorBatch*>(batch.get());
+            ASSERT_NE(root, nullptr);
+            root->numElements = 4;
+            auto* values = dynamic_cast<::orc::LongVectorBatch*>(root->fields[0]);
+            ASSERT_NE(values, nullptr);
+            values->numElements = 4;
+            for (int row = 0; row < 4; ++row) {
+                values->data[row] = stripe * 4 + row;
+            }
+            writer->add(*batch);
+            writer->writeIntermediateFooter();
+        }
+        writer->close();
+    }
+    auto metadata = ::orc::createReader(::orc::readLocalFile(path), ::orc::ReaderOptions());
+    ASSERT_EQ(metadata->getNumberOfStripes(), 3);
+    auto stripe = metadata->getStripe(2);
+    uint64_t payload_offset = stripe->getOffset() + stripe->getIndexLength();
+    uint64_t payload_length = stripe->getDataLength();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<paimon::InputStream> raw,
+                         dir->GetFileSystem()->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<paimon::InputStream> cache_raw,
+                         dir->GetFileSystem()->Open(path));
+    auto physical_owner = std::make_unique<PhysicalProbeStream>(raw);
+    auto* physical = physical_owner.get();
+    auto cache_physical = std::make_shared<PhysicalProbeStream>(cache_raw);
+    auto pool = GetDefaultPool();
+    CacheConfig config;
+    config.SetBlockSize(0);
+    ASSERT_OK_AND_ASSIGN(int64_t file_size, raw->Length());
+    auto cache = std::make_shared<ReadAheadCache>(cache_physical, config, file_size, pool);
+    auto context = FileReadAhead::Create(cache, path);
+    auto cache_input = std::make_shared<CacheInputStream>(
+        std::move(physical_owner), cache, CacheInputStream::CacheFactory(), context);
+    ASSERT_OK_AND_ASSIGN(auto orc_input, OrcInputStreamImpl::Create(cache_input, 1));
+    ASSERT_OK_AND_ASSIGN(auto reader, OrcFileBatchReader::Create(
+                                          std::move(orc_input),
+                                          std::make_shared<OrcReadMemory>(pool), {}, 2, context));
+    ASSERT_OK(context->Warmup(reader.get()));
+    physical->reads.clear();
+    cache_physical->reads.clear();
+    ASSERT_OK_AND_ASSIGN(uint64_t hits_before,
+                         context->GetMetrics()->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+    ASSERT_OK(reader->SeekToRow(9));
+    uint64_t seek_bytes = physical->Overlap(payload_offset, payload_length);
+    uint64_t seek_cache_bytes = cache_physical->Overlap(payload_offset, payload_length);
+    ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+    uint64_t next_cache_bytes = cache_physical->Overlap(payload_offset, payload_length);
+    ASSERT_EQ(seek_bytes, 0);
+    ASSERT_EQ(seek_cache_bytes, payload_length);
+    ASSERT_EQ(next_cache_bytes, seek_cache_bytes);
+    ASSERT_OK_AND_ASSIGN(uint64_t hits,
+                         context->GetMetrics()->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+    ASSERT_GT(hits, hits_before);
+    ASSERT_EQ(physical->Overlap(payload_offset, payload_length), 0);
+    ASSERT_OK_AND_ASSIGN(uint64_t file_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(file_row, 9);
+    auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+    ASSERT_TRUE(imported.ok());
+    auto values = std::static_pointer_cast<arrow::Int32Array>(
+        std::static_pointer_cast<arrow::StructArray>(imported.ValueOrDie())->field(0));
+    ASSERT_EQ(values->Value(0), 9);
+    reader->Close();
+    context->ReleaseBuffers();
+}
+
 TEST_F(OrcFileBatchReaderTest, DiscoverStripeRangesOnDemand) {
     using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
     class CountingStream : public ::orc::InputStream {
@@ -308,15 +432,20 @@ TEST_F(OrcFileBatchReaderTest, DiscoverStripeRangesOnDemand) {
         stripe_bounds.emplace_back(stripe->getOffset(), footer);
         footer_offsets.push_back(footer);
     }
-    auto input = std::make_unique<CountingStream>(::orc::readLocalFile(path));
-    auto* observed = input.get();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> main_stream,
+                         dir->GetFileSystem()->Open(path));
+    ASSERT_OK_AND_ASSIGN(int64_t file_size, main_stream->Length());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> cache_stream,
                          dir->GetFileSystem()->Open(path));
     CacheConfig config;
     config.SetBlockSize(0);
-    auto cache =
-        std::make_shared<ReadAheadCache>(cache_stream, config, observed->getLength(), pool_);
+    auto cache = std::make_shared<ReadAheadCache>(cache_stream, config, file_size, pool_);
     auto context = FileReadAhead::Create(cache, path);
+    auto cached_stream = std::make_shared<CacheInputStream>(
+        std::move(main_stream), cache, CacheInputStream::CacheFactory(), context);
+    ASSERT_OK_AND_ASSIGN(auto adapter, OrcInputStreamImpl::Create(cached_stream, 1));
+    auto input = std::make_unique<CountingStream>(std::move(adapter));
+    auto* observed = input.get();
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<OrcFileBatchReader> reader,
         OrcFileBatchReader::Create(std::move(input), std::make_shared<OrcReadMemory>(pool_), {}, 2,

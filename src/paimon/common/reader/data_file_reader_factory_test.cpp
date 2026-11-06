@@ -22,15 +22,19 @@
 
 #include "arrow/api.h"
 #include "arrow/array/array_nested.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
+#include "paimon/common/reader/late_materializing_reader_builder.h"
 #include "paimon/common/reader/warmup_file_batch_reader.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/mock/mock_format_reader_builder.h"
@@ -47,6 +51,9 @@ class PlainFileBatchReader : public FileBatchReader {
 
     Result<ReadBatch> NextBatch() override {
         return reader_->NextBatch();
+    }
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        return reader_->NextBatchWithBitmap();
     }
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
         return reader_->GetReaderMetrics();
@@ -181,6 +188,48 @@ TEST(DataFileReaderFactoryTest, CapableReaderSupportsReadAheadRegardlessOfFormat
             batch.first->release(batch.first.get());
             batch.second->release(batch.second.get());
             reader->Close();
+        }
+    }
+}
+
+TEST(DataFileReaderFactoryTest, LmPreservesPlainReaderWithoutOpeningCacheStream) {
+    auto type = arrow::struct_(
+        {arrow::field("v", arrow::int32()), arrow::field("payload", arrow::int32())});
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(type, "[[1,11],[2,22]]").ValueOrDie();
+    auto pool = GetDefaultPool();
+    for (bool cache_enabled : {false, true}) {
+        for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW}) {
+            for (bool with_predicate : {false, true}) {
+                auto inner = std::make_unique<CapabilityReaderBuilder>(data, type, false);
+                auto* observed = inner.get();
+                LateMaterializingReaderBuilder builder(std::move(inner), GetArrowPool(pool));
+                auto fs = std::make_shared<CountingOpenFileSystem>();
+                fs->fail_cache_open = true;
+                DataFileReadOptions options;
+                options.read_ahead_cache_enabled = cache_enabled;
+                options.warmup_level = level;
+                ASSERT_OK_AND_ASSIGN(auto reader, DataFileReaderFactory::Open(
+                                                      "avro", "dummy", 0, &builder, options, fs,
+                                                      nullptr, pool, GetArrowPool(pool)));
+                ASSERT_EQ(observed->build_count, 1);
+                ASSERT_EQ(fs->open_count, 1);
+                ASSERT_OK_AND_ASSIGN(bool cache_active, observed->stream->EnableCache());
+                ASSERT_FALSE(cache_active);
+                ASSERT_OK_AND_ASSIGN(auto schema, reader->GetFileSchema());
+                auto predicate = with_predicate ? PredicateBuilder::GreaterThan(
+                                                      0, "v", FieldType::INT, Literal(1))
+                                                : nullptr;
+                ASSERT_OK(reader->SetReadSchema(schema.get(), predicate, std::nullopt));
+                reader->Warmup();
+                ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+                ASSERT_EQ(batch.first->length, with_predicate ? 1 : 2);
+                auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+                ASSERT_TRUE(imported.ok());
+                ASSERT_TRUE(
+                    imported.ValueOrDie()->Equals(with_predicate ? data->Slice(1, 1) : data));
+                reader->Close();
+                ASSERT_EQ(fs->open_count, 1);
+            }
         }
     }
 }

@@ -218,24 +218,36 @@ Status OrcFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
 }
 
 Status OrcFileBatchReader::SeekToRow(uint64_t row_number) {
+    // ORC may read payload while seeking within a stripe. Warm the target before that I/O.
+    PAIMON_RETURN_NOT_OK(PrepareRangesForRow(row_number));
     return reader_->SeekToRow(row_number);
 }
 
 Result<std::vector<std::pair<uint64_t, uint64_t>>> OrcFileBatchReader::PreBufferRange() {
     using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
     std::pair<uint64_t, uint64_t> row_range;
-    PAIMON_ASSIGN_OR_RAISE(ByteRanges ranges,
-                           reader_->PreBufferRange(target_column_ids_, &row_range));
+    PAIMON_ASSIGN_OR_RAISE(
+        ByteRanges ranges,
+        reader_->PreBufferRange(target_column_ids_,
+                                range_preparation_row_.value_or(reader_->GetNextRowToRead()),
+                                &row_range));
     pre_buffered_row_range_ = row_range;
     return ranges;
 }
 
-Result<BatchReader::ReadBatch> OrcFileBatchReader::NextBatch() {
-    uint64_t next_row = reader_->GetNextRowToRead();
-    if (read_ahead_ && (!pre_buffered_row_range_ || next_row < pre_buffered_row_range_->first ||
-                        next_row >= pre_buffered_row_range_->second)) {
-        PAIMON_RETURN_NOT_OK(read_ahead_->PrepareRanges(this));
+Status OrcFileBatchReader::PrepareRangesForRow(uint64_t row_number) {
+    if (read_ahead_ && (!pre_buffered_row_range_ || row_number < pre_buffered_row_range_->first ||
+                        row_number >= pre_buffered_row_range_->second)) {
+        range_preparation_row_ = row_number;
+        Status status = read_ahead_->PrepareRanges(this);
+        range_preparation_row_.reset();
+        return status;
     }
+    return Status::OK();
+}
+
+Result<BatchReader::ReadBatch> OrcFileBatchReader::NextBatch() {
+    PAIMON_RETURN_NOT_OK(PrepareRangesForRow(reader_->GetNextRowToRead()));
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader_->Next());
     if (BatchReader::IsEofBatch(batch)) {
         previous_batch_row_count_ = 0;

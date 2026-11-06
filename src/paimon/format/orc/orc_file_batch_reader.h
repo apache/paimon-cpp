@@ -118,6 +118,8 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override;
 
  private:
+    Status PrepareRangesForRow(uint64_t row_number);
+
     OrcFileBatchReader(std::unique_ptr<::orc::ReaderMetrics>&& reader_metrics,
                        std::unique_ptr<OrcReaderWrapper>&& reader,
                        const std::map<std::string, std::string>& options,
@@ -141,6 +143,7 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
     std::vector<std::pair<uint64_t, uint64_t>> cache_ranges_;
     std::shared_ptr<FileReadAhead> read_ahead_;
     std::optional<std::pair<uint64_t, uint64_t>> pre_buffered_row_range_;
+    std::optional<uint64_t> range_preparation_row_;
 
     uint64_t previous_batch_row_count_ = 0;
 };

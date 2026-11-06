@@ -17,6 +17,7 @@
  */
 #include "paimon/common/reader/warmup_file_batch_reader.h"
 
+#include <type_traits>
 #include <utility>
 
 #include "paimon/common/metrics/metrics_impl.h"
@@ -26,12 +27,8 @@ namespace paimon {
 
 WarmupFileBatchReader::WarmupFileBatchReader(std::shared_ptr<PrefetchFileBatchReader> reader,
                                              std::shared_ptr<FileReadAhead> read_ahead,
-                                             WarmupLevel level,
-                                             std::shared_ptr<arrow::MemoryPool> arrow_pool)
-    : reader_(std::move(reader)),
-      read_ahead_(std::move(read_ahead)),
-      level_(level),
-      arrow_pool_(std::move(arrow_pool)) {}
+                                             WarmupLevel level)
+    : reader_(std::move(reader)), read_ahead_(std::move(read_ahead)), level_(level) {}
 
 WarmupFileBatchReader::~WarmupFileBatchReader() {
     ResetReadState();
@@ -55,24 +52,35 @@ void WarmupFileBatchReader::Warmup() {
     (void)read_ahead_->Warmup(reader_.get());
 }
 
-Result<BatchReader::ReadBatchWithBitmap> WarmupFileBatchReader::ReadOneBatch() {
-    PAIMON_RETURN_NOT_OK(read_ahead_->Warmup(reader_.get()));
-    PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, reader_->NextBatchWithBitmap());
-    Status status = read_ahead_->GetStatus();
-    if (!status.ok()) {
-        ReaderUtils::ReleaseReadBatch(std::move(batch.first));
-        return status;
-    }
-    return batch;
-}
-
-Result<BatchReader::ReadBatchWithBitmap> WarmupFileBatchReader::NextBatchWithBitmap() {
+template <typename Batch>
+Result<Batch> WarmupFileBatchReader::ReadOneBatch() {
     if (closed_) {
         return Status::Invalid("cannot read a closed warmup reader");
     }
     PAIMON_RETURN_NOT_OK(read_status_);
     batch_returned_ = false;
-    Result<ReadBatchWithBitmap> result = ReadOneBatch();
+    Result<Batch> result = [&]() -> Result<Batch> {
+        PAIMON_RETURN_NOT_OK(read_ahead_->Warmup(reader_.get()));
+        // Preserve the format reader's mapping for the API used to consume this batch.
+        Result<Batch> read = [&]() {
+            if constexpr (std::is_same_v<Batch, ReadBatch>) {
+                return reader_->NextBatch();
+            } else {
+                return reader_->NextBatchWithBitmap();
+            }
+        }();
+        PAIMON_ASSIGN_OR_RAISE(Batch batch, std::move(read));
+        Status status = read_ahead_->GetStatus();
+        if (!status.ok()) {
+            if constexpr (std::is_same_v<Batch, ReadBatch>) {
+                ReaderUtils::ReleaseReadBatch(std::move(batch));
+            } else {
+                ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+            }
+            return status;
+        }
+        return batch;
+    }();
     if (result.ok() && !BatchReader::IsEofBatch(result.value())) {
         batch_returned_ = true;
     } else if (!result.ok()) {
@@ -81,9 +89,12 @@ Result<BatchReader::ReadBatchWithBitmap> WarmupFileBatchReader::NextBatchWithBit
     return result;
 }
 
+Result<BatchReader::ReadBatchWithBitmap> WarmupFileBatchReader::NextBatchWithBitmap() {
+    return ReadOneBatch<ReadBatchWithBitmap>();
+}
+
 Result<BatchReader::ReadBatch> WarmupFileBatchReader::NextBatch() {
-    PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, NextBatchWithBitmap());
-    return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch), arrow_pool_);
+    return ReadOneBatch<ReadBatch>();
 }
 
 Status WarmupFileBatchReader::SetReadSchema(::ArrowSchema* schema,

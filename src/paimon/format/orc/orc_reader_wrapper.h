@@ -104,7 +104,8 @@ class OrcReaderWrapper {
     }
 
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange(
-        const std::vector<uint64_t>& target_column_ids, std::pair<uint64_t, uint64_t>* row_range) {
+        const std::vector<uint64_t>& target_column_ids, uint64_t next_row,
+        std::pair<uint64_t, uint64_t>* row_range) {
         try {
             if (stripe_row_ends_.empty()) {
                 uint64_t row_end = 0;
@@ -122,10 +123,10 @@ class OrcReaderWrapper {
                 stripe_row_ends_ = std::move(stripe_row_ends);
             }
             auto stripe =
-                std::upper_bound(stripe_row_ends_.begin(), stripe_row_ends_.end(), next_row_);
+                std::upper_bound(stripe_row_ends_.begin(), stripe_row_ends_.end(), next_row);
             if (stripe == stripe_row_ends_.end()) {
                 if (row_range) {
-                    *row_range = {next_row_, next_row_};
+                    *row_range = {next_row, next_row};
                 }
                 return std::vector<std::pair<uint64_t, uint64_t>>();
             }

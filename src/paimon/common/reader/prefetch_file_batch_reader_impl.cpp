@@ -152,8 +152,8 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
       batch_size_(batch_size),
       executor_(executor),
       read_ahead_(read_ahead),
-      synchronous_reader_(std::make_unique<WarmupFileBatchReader>(readers[0], read_ahead,
-                                                                  warmup_level, arrow_pool)),
+      synchronous_reader_(
+          std::make_unique<WarmupFileBatchReader>(readers[0], read_ahead, warmup_level)),
       arrow_pool_(arrow_pool),
       prefetch_queue_capacity_(prefetch_queue_capacity),
       enable_adaptive_prefetch_strategy_(enable_adaptive_prefetch_strategy),

@@ -57,6 +57,11 @@ class LateMaterializingReaderBuilder : public ReaderBuilder {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> format_reader,
                                inner_->Build(stream));
         auto cache_stream = std::dynamic_pointer_cast<CacheInputStream>(stream);
+        if (cache_stream && !dynamic_cast<PrefetchFileBatchReader*>(format_reader.get())) {
+            // LM exposes the prefetch interface even for plain format readers. Do not let the
+            // outer factory enable a cache based on the wrapper's interface alone.
+            cache_stream->ClearCacheFactory();
+        }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LateMaterializingFileBatchReader> reader,
                                LateMaterializingFileBatchReader::Create(
                                    std::move(format_reader), arrow_pool_,

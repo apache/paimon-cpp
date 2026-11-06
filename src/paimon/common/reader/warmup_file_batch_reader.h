@@ -25,18 +25,13 @@
 #include "paimon/common/reader/file_read_ahead.h"
 #include "paimon/reader/file_batch_reader.h"
 
-namespace arrow {
-class MemoryPool;
-}  // namespace arrow
-
 namespace paimon {
 
 /// A synchronous file reader with independent byte caching and raw warmup.
 class WarmupFileBatchReader : public FileBatchReader {
  public:
     WarmupFileBatchReader(std::shared_ptr<PrefetchFileBatchReader> reader,
-                          std::shared_ptr<FileReadAhead> read_ahead, WarmupLevel level,
-                          std::shared_ptr<arrow::MemoryPool> arrow_pool);
+                          std::shared_ptr<FileReadAhead> read_ahead, WarmupLevel level);
     ~WarmupFileBatchReader() override;
 
     Result<ReadBatch> NextBatch() override;
@@ -56,12 +51,12 @@ class WarmupFileBatchReader : public FileBatchReader {
     void ResetReadState();
 
  private:
-    Result<ReadBatchWithBitmap> ReadOneBatch();
+    template <typename Batch>
+    Result<Batch> ReadOneBatch();
 
     std::shared_ptr<PrefetchFileBatchReader> reader_;
     std::shared_ptr<FileReadAhead> read_ahead_;
     const WarmupLevel level_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     Status read_status_;
     bool prepared_ = false;
     bool closed_ = false;
