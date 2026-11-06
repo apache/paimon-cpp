@@ -20,7 +20,7 @@
 # AGENTS.md
 
 This file provides repository-specific instructions for coding agents working on Paimon C++.
-For contributor-facing setup and the complete coding conventions, also read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/code-style.md`](docs/code-style.md).
+For contributor-facing setup, coding conventions, and design and testing principles, also read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/code-style.md`](docs/code-style.md), and [`docs/development-guidelines.md`](docs/development-guidelines.md).
 
 ## Scope
 
@@ -58,7 +58,9 @@ When changing a public API, check the declaration under `include/paimon/`, its i
 
 ## C++ Requirements
 
-The full rules are in [`docs/code-style.md`](docs/code-style.md). In particular:
+The full coding rules are in [`docs/code-style.md`](docs/code-style.md).
+For design choices and regression test coverage, follow [`docs/development-guidelines.md`](docs/development-guidelines.md).
+In particular:
 
 - Use C++17; do not introduce C++20 or later features.
 - Use `Status` and `Result<T>` for fallible operations. Do not use exceptions for production error propagation.
