@@ -37,6 +37,11 @@ Use the [Conventional Commits](https://www.conventionalcommits.org/) format for 
 <type>(<optional-scope>): <description>
 ```
 
+Use one of these lowercase types: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`,
+`refactor`, `revert`, `style`, or `test`. The scope is optional. For a breaking change,
+add `!` immediately before the colon, for example `feat(api)!: remove a deprecated interface`.
+The PR title check enforces this type list and format.
+
 Examples:
 
 ```text
