@@ -33,6 +33,7 @@
 struct ArrowSchema;
 
 namespace paimon {
+class SystemTable;
 class TableSchema;
 class FileSystem;
 class Identifier;
@@ -79,6 +80,7 @@ class FileSystemCatalog : public Catalog {
         const Identifier& identifier) const override;
 
  private:
+    Result<std::shared_ptr<SystemTable>> LoadSystemTable(const Identifier& identifier) const;
     /// Fails when `db_name` cannot be used as a single path component, so that the returned
     /// path always stays under `warehouse`.
     static Result<std::string> NewDatabasePath(const std::string& warehouse,

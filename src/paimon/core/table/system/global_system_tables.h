@@ -33,7 +33,10 @@ class FileSystem;
 /// Context passed to global system table constructors, providing catalog-level
 /// access for enumerating databases, tables, and reading metadata.
 struct GlobalSystemTableContext {
-    const Catalog* catalog = nullptr;  // non-owning pointer
+    /// Catalog used when loading rows; borrowed for synchronous schema loading.
+    const Catalog* catalog = nullptr;
+    /// Keeps the catalog alive for tables returned by Catalog::GetTable().
+    std::shared_ptr<const Catalog> catalog_owner;
     std::shared_ptr<FileSystem> fs;
     std::string warehouse;
     std::map<std::string, std::string> catalog_options;
@@ -48,7 +51,6 @@ class CatalogOptionsSystemTable : public InMemorySystemTable {
 
     explicit CatalogOptionsSystemTable(GlobalSystemTableContext context);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -64,7 +66,6 @@ class AllTableOptionsSystemTable : public InMemorySystemTable {
 
     explicit AllTableOptionsSystemTable(GlobalSystemTableContext context);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -80,7 +81,6 @@ class TablesSystemTable : public InMemorySystemTable {
 
     explicit TablesSystemTable(GlobalSystemTableContext context);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -96,7 +96,6 @@ class PartitionsSystemTable : public InMemorySystemTable {
 
     explicit PartitionsSystemTable(GlobalSystemTableContext context);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::vector<GenericRow>> BuildRows() const override;
 
@@ -113,6 +112,7 @@ class GlobalSystemTableLoader {
     static Result<bool> IsSupported(const std::string& table_name,
                                     const std::map<std::string, std::string>& catalog_options);
 
+    /// Loads a global system table. Views that enumerate tables require a catalog in context.
     static Result<std::shared_ptr<SystemTable>> Load(const std::string& table_name,
                                                      const GlobalSystemTableContext& context);
 

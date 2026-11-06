@@ -40,8 +40,10 @@ format table is an insert.
 
 Reading and writing
 -------------------
-A format table is not served through :cpp:func:`Catalog::GetTable`, which describes a managed
-table; use :cpp:func:`Catalog::GetFormatTable` instead.
+Use :cpp:func:`Catalog::GetTable` to load a format table through the common ``Table``
+interface. Its ``NewScan``, ``NewRead``, ``NewWrite`` and ``NewCommit`` methods use the
+loaded schema, location and file system. :cpp:func:`Catalog::GetFormatTable` also returns
+the concrete ``FormatTable`` interface for callers using the legacy context constructors.
 
 Reading and writing go through the entry points every other table uses: ``TableScan::Create``,
 ``TableRead::Create``, ``FileStoreWrite::Create`` and ``FileStoreCommit::Create``, each from its

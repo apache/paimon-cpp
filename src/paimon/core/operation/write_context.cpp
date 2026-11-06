@@ -18,6 +18,7 @@
 
 #include "paimon/write_context.h"
 
+#include <map>
 #include <utility>
 
 #include "arrow/util/thread_pool.h"
@@ -26,6 +27,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
@@ -263,6 +265,14 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
     PAIMON_ASSIGN_OR_RAISE(
         std::string branch,
         BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "write"));
+    std::map<std::string, std::string> options = impl_->options_;
+    std::optional<std::string> named_branch;
+    if (impl_->identifier_) {
+        PAIMON_ASSIGN_OR_RAISE(named_branch, impl_->identifier_->GetBranchName());
+    }
+    if (impl_->branch_ || named_branch || options.count(Options::BRANCH) != 0) {
+        options[Options::BRANCH] = branch;
+    }
     if (impl_->catalog_ != nullptr && !BranchManager::IsMainBranch(branch)) {
         // Refused here rather than at the commit of what is written to the branch.
         PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
@@ -286,7 +296,7 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         impl_->ignore_num_bucket_check_, impl_->ignore_previous_files_, enable_multi_thread_spill,
         impl_->write_id_, branch, impl_->write_schema_, impl_->memory_pool_, impl_->executor_,
         impl_->temp_directory_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
-        impl_->realtime_context_, impl_->options_, impl_->format_table_, impl_->catalog_,
+        impl_->realtime_context_, options, impl_->format_table_, impl_->catalog_,
         impl_->identifier_);
     impl_->Reset();
     return ctx;

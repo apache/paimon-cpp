@@ -61,6 +61,15 @@ class InternalReadContext {
         const std::shared_ptr<TableSchema>& table_schema,
         const std::map<std::string, std::string>& options);
 
+    static Result<std::unique_ptr<InternalReadContext>> CreateForTable(
+        const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& schema,
+        CoreOptions options, const std::string& root_path,
+        const std::map<std::string, std::string>& fs_scheme_map);
+    static Result<std::unique_ptr<InternalReadContext>> CreateForFallbackBranch(
+        const std::shared_ptr<ReadContext>& context, const std::string& branch,
+        const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+        const std::map<std::string, std::string>& fs_scheme_map);
+
     /// Maps score output positions in the read schema to their logical search sources.
     const std::map<int32_t, IndexScoreSource>& GetIndexScoreBindings() const {
         return index_score_bindings_;
@@ -79,7 +88,7 @@ class InternalReadContext {
         return table_schema_;
     }
     const std::string& GetPath() const {
-        return read_context_->GetPath();
+        return path_ ? *path_ : read_context_->GetPath();
     }
 
     std::shared_ptr<CatalogContext> CreateDependencyCatalogContext() const;
@@ -141,7 +150,7 @@ class InternalReadContext {
     /// The scheme map the file system of this read was resolved with, which a catalog reading a
     /// dependency table on its behalf needs to resolve that table's location the same way.
     const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
-        return read_context_->GetFileSystemSchemeToIdentifierMap();
+        return fs_scheme_map_;
     }
 
     bool ReadAheadCacheEnabled() const {
@@ -163,6 +172,9 @@ class InternalReadContext {
         const std::shared_ptr<arrow::Schema>& new_read_schema);
 
  private:
+    static Result<std::unique_ptr<InternalReadContext>> CreateFromCoreOptions(
+        const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& schema,
+        CoreOptions options);
     InternalReadContext(const std::shared_ptr<ReadContext>& read_context,
                         const std::shared_ptr<TableSchema>& table_schema,
                         const std::shared_ptr<arrow::Schema>& read_schema,
@@ -185,6 +197,8 @@ class InternalReadContext {
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     CoreOptions options_;
+    std::optional<std::string> path_;
+    std::map<std::string, std::string> fs_scheme_map_;
     std::map<int32_t, IndexScoreSource> index_score_bindings_;
 };
 

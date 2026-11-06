@@ -56,8 +56,10 @@
 #include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/record_batch.h"
 #include "paimon/scan_context.h"
@@ -644,6 +646,40 @@ TEST(FormatTableTest, TestCreateReadsOptions) {
     ASSERT_EQ(table->FullName(), "db.tbl");
 }
 
+TEST(FormatTableTest, TestReadRejectsSearchForDirectAndStaticEntrypoints) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
+                         CreateTable(dir->GetFileSystem(), dir->Str(), {}));
+    const std::shared_ptr<Table> loaded_table = table;
+    for (bool vector_search : {false, true}) {
+        for (int32_t entrypoint : {0, 1, 2}) {
+            SCOPED_TRACE(vector_search);
+            SCOPED_TRACE(entrypoint);
+            ReadContextBuilder builder =
+                entrypoint == 2 ? ReadContextBuilder(table) : ReadContextBuilder(dir->Str());
+            builder.EnablePreciseFileIndexEvaluate(true);
+            if (vector_search) {
+                builder.SetVectorSearch(std::make_shared<VectorSearch>(
+                    "embedding", 3, std::vector<float>{1.0f, 2.0f}, nullptr, nullptr,
+                    VectorSearch::DistanceType::COSINE, std::map<std::string, std::string>{}));
+            } else {
+                builder.SetFullTextSearch(
+                    std::make_shared<FullTextSearch>("name", R"({"match":{"query":"paimon"}})", 3));
+            }
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+            auto read = entrypoint == 0 ? loaded_table->NewRead(std::move(context))
+                                        : TableRead::Create(std::move(context));
+            ASSERT_NOK_WITH_MSG(read,
+                                "Precise file-index evaluation is not supported for format tables");
+            ASSERT_TRUE(read.status().IsNotImplemented());
+        }
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                         ReadContextBuilder(dir->Str()).Finish());
+    ASSERT_OK(loaded_table->NewRead(std::move(context)));
+}
+
 TEST(FormatTableTest, TestFileCompressionComesFromCoreOptions) {
     // The resolution order itself is `CoreOptionsTest.TestFormatTableFileCompression`'s business;
     // what matters here is that the table asks for it rather than resolving compression again.
@@ -752,11 +788,10 @@ TEST(FormatTableTest, TestCatalogManagedPartitionsAreRejected) {
     // And the same refusal when it arrives at the call rather than in the schema. Validating the
     // schema's own options alone would let this one through and then drop it, leaving a caller
     // who asked for catalog-managed partitions with a scan that read the directories anyway.
-    Result<std::shared_ptr<FormatTable>> dynamic_table =
-        FormatTable::Create(off_dir->GetFileSystem(), off_dir->Str(), Identifier("db", "tbl"),
-                            off_table->LatestSchema(),
-                            /*location_carries_paimon_metadata=*/true,
-                            {{Options::METASTORE_PARTITIONED_TABLE, "true"}});
+    Result<std::shared_ptr<FormatTable>> dynamic_table = FormatTable::Create(
+        off_dir->GetFileSystem(), off_dir->Str(), Identifier("db", "tbl"), off_table->GetSchema(),
+        /*location_carries_paimon_metadata=*/true,
+        {{Options::METASTORE_PARTITIONED_TABLE, "true"}});
     ASSERT_FALSE(dynamic_table.ok());
     ASSERT_TRUE(dynamic_table.status().IsNotImplemented()) << dynamic_table.status().ToString();
 }
@@ -2719,7 +2754,7 @@ TEST(FormatTableTest, TestTheGenericEntryPointsReachAFormatTable) {
                         "a format table sends no commit table request");
 
     auto format_catalog = std::make_shared<MockVersionManagedCatalog>();
-    format_catalog->SetTableSchema(table->LatestSchema());
+    format_catalog->SetTableSchema(table->GetSchema());
     CommitContextBuilder catalog_builder(dir->Str(), "test-user");
     catalog_builder.WithCatalog(format_catalog, Identifier("db", "fmt"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> catalog_context, catalog_builder.Finish());

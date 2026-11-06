@@ -52,6 +52,11 @@ class TableSchema : public DataSchema, public Jsonizable<TableSchema> {
         const std::vector<std::string>& primary_keys,
         const std::map<std::string, std::string>& options);
 
+    Result<std::unique_ptr<TableSchema>> Copy(
+        const std::map<std::string, std::string>& options) const;
+    Result<std::unique_ptr<TableSchema>> MergeOptions(
+        const std::map<std::string, std::string>& options) const;
+
     static Result<std::unique_ptr<TableSchema>> CreateFromJson(const std::string& json_str);
 
     /// Computes the highest non-system field id across all nesting levels of a "fields" JSON
@@ -149,6 +154,8 @@ class TableSchema : public DataSchema, public Jsonizable<TableSchema> {
         const std::shared_ptr<arrow::Field>& field, int32_t field_id);
 
  private:
+    Status DeriveBucketInfo();
+
     // version of schema for paimon
     int32_t version_ = -1;
     int64_t id_ = -1;

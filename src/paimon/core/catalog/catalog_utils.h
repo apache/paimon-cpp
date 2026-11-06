@@ -38,6 +38,8 @@ class CatalogUtils {
     CatalogUtils() = delete;
     ~CatalogUtils() = delete;
 
+    /// Derives an identifier for a table loaded directly from a path.
+    static Identifier IdentifierFromPath(const std::string& path, const std::string& branch);
     /// Returns whether `db_name` is the reserved system database "sys".
     static bool IsSystemDatabase(const std::string& db_name);
 

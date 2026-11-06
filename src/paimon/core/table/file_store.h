@@ -43,11 +43,25 @@ class IndexManifestFile;
 class ManifestFile;
 class ManifestList;
 class SnapshotManager;
+class SchemaManager;
 
-/// Component factories for one managed-table operation using already resolved options.
+/// Managed-table storage configuration and component factories using resolved options.
 class FileStore {
  public:
     FileStore(std::string root_path, CoreOptions options);
+
+    const CoreOptions& GetOptions() const {
+        return options_;
+    }
+    const std::string& GetRootPath() const {
+        return root_path_;
+    }
+    std::string CurrentBranch() const;
+    std::shared_ptr<FileSystem> GetFileSystem() const {
+        return options_.GetFileSystem();
+    }
+    std::shared_ptr<SchemaManager> GetSchemaManager() const;
+    std::shared_ptr<SnapshotManager> GetSnapshotManager() const;
 
     Result<std::shared_ptr<FileStorePathFactory>> NewPathFactory(
         const std::shared_ptr<arrow::Schema>& arrow_schema,
