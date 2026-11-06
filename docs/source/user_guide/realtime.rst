@@ -283,34 +283,34 @@ and an input ``batch`` built as described above.
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContext> realtime,
                           RealtimeContext::Create());
 
-   WriteContextBuilder write_builder(table_path, commit_user);
-   write_builder.SetOptions(options)
-       .WithStreamingMode(true)
+   TableLoadOptions load_options{table_path};
+   WriteContextBuilder write_builder(commit_user);
+   write_builder.WithStreamingMode(true)
        .WithRealtimeContext(realtime);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context,
                           write_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> writer,
-                          FileStoreWrite::Create(std::move(write_context)));
+                          FileStoreWrite::Create(load_options, std::move(write_context), options));
    PAIMON_RETURN_NOT_OK(writer->Write(std::move(batch)));
 
 To query before preparing or committing:
 
 .. code-block:: cpp
 
-   ScanContextBuilder scan_builder(table_path);
-   scan_builder.SetOptions(options).WithRealtimeContext(realtime);
+   ScanContextBuilder scan_builder;
+   scan_builder.WithRealtimeContext(realtime);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                           scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
-                          TableScan::Create(std::move(scan_context)));
+                          TableScan::Create(load_options, std::move(scan_context), options));
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
 
-   ReadContextBuilder read_builder(table_path);
-   read_builder.SetOptions(options).WithRealtimeContext(realtime);
+   ReadContextBuilder read_builder;
+   read_builder.WithRealtimeContext(realtime);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                           read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
-                          TableRead::Create(std::move(read_context)));
+                          TableRead::Create(load_options, std::move(read_context), options));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
                           read->CreateReader(plan->Splits()));
    // Consume NextBatch() or NextBatchWithBitmap(), then Close() the reader.
@@ -328,11 +328,11 @@ Checkpoint with progress-aware APIs:
    PAIMON_ASSIGN_OR_RAISE(std::vector<RealtimeCommitProgress> progress,
                           writer->PrepareCommitWithProgress(checkpoint_id));
 
-   CommitContextBuilder commit_builder(table_path, commit_user);
+   CommitContextBuilder commit_builder(commit_user);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
-                          commit_builder.SetOptions(options).Finish());
+                          commit_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> commit,
-                          FileStoreCommit::Create(std::move(commit_context)));
+                          FileStoreCommit::Create(load_options, std::move(commit_context), options));
    PAIMON_ASSIGN_OR_RAISE(
        int64_t snapshot_id,
        commit->CommitWithProgress(progress, checkpoint_id, /*watermark=*/std::nullopt));
@@ -365,7 +365,8 @@ deduplicate ``deleted_offsets`` bitmap. Preserve the complete progress when
 coordinating checkpoints. Snapshot conflicts are retried internally against
 the latest snapshot; commit identifiers must follow the streaming commit
 protocol. With a version-managed catalog, configure the writer and committer
-with the same ``WithCatalog()`` catalog and identifier.
+from the same catalog-loaded Table, or use the same catalog and identifier in
+``TableLoadOptions``.
 
 Read Views and Consistency
 --------------------------

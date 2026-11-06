@@ -54,21 +54,29 @@ class AuditLogSystemTable : public SystemTable {
  public:
     static constexpr const char* kName = "audit_log";
 
+    /// @param data_table_name Logical table name, including any branch suffix.
     AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
-                        std::shared_ptr<TableSchema> table_schema,
+                        std::shared_ptr<TableSchema> table_schema, std::string data_table_name,
                         std::map<std::string, std::string> options);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
     Result<std::unique_ptr<TableScan>> NewScan(
-        const std::shared_ptr<ScanContext>& context) const override;
+        std::unique_ptr<ScanContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
     Result<std::unique_ptr<TableRead>> NewRead(
-        const std::shared_ptr<ReadContext>& context) const override;
+        std::unique_ptr<ReadContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {}) const override;
 
  protected:
+    /// Constructor for derived changelog views with a different system-table name.
+    AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
+                        std::shared_ptr<TableSchema> table_schema,
+                        std::map<std::string, std::string> options, std::string name);
+
     Result<std::unique_ptr<TableRead>> NewChangelogRead(
         const std::shared_ptr<ReadContext>& context,
-        std::shared_ptr<const ChangelogBatchConverter> converter) const;
+        std::shared_ptr<const ChangelogBatchConverter> converter,
+        const std::map<std::string, std::string>& dynamic_options) const;
     /// Build the context for the data table underneath this changelog view.
     ///
     /// The builder starts from the defaults, so every setting the caller configured has to be

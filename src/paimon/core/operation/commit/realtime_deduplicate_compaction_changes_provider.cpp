@@ -242,15 +242,13 @@ Result<std::shared_ptr<CommitChanges>> RealtimeDeduplicateCompactionChangesProvi
     }
     PAIMON_ASSIGN_OR_RAISE(result->files_to_delete_after_commit,
                            CollectIntermediateFilesToDelete(snapshot_buckets));
-    ReadContextBuilder builder(path_factory_->RootPath());
+    ReadContextBuilder builder;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
-                           builder.SetOptions(options_.ToMap())
-                               .WithFileSystem(options_.GetFileSystem())
-                               .WithMemoryPool(pool_)
-                               .Finish());
+                           builder.WithMemoryPool(pool_).Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> context,
-        InternalReadContext::Create(read_context, table_schema_, options_.ToMap()));
+        InternalReadContext::Create(read_context, table_schema_, options_.ToMap(),
+                                    options_.GetFileSystem(), path_factory_->RootPath()));
     RawFileSplitRead read(path_factory_, context, pool_, executor_);
     const auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields());
     const auto offset_schema =

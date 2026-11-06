@@ -78,7 +78,9 @@ class BranchManager {
     /// option and `explicit_branch` may each name.
     ///
     /// An absent name and a name which `NormalizeBranch` maps to `main` both mean the main
-    /// branch. Names which disagree are refused rather than silently chosen between, with
+    /// branch. Identifier names also fold main branch aliases as the catalog does through
+    /// `GetBranchNameOrDefault`; option and explicit branch names keep their case.
+    /// Names which disagree are refused rather than silently chosen between, with
     /// `operation` naming the operation in that error. Every name is put through
     /// `CheckValidBranch` before it is compared, so neither the branch this returns nor a
     /// branch it names in an error is one that would leave the table root.

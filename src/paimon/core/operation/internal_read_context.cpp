@@ -44,7 +44,9 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/url_utils.h"
 #include "paimon/core/options/map_storage_layout.h"
+#include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_search.h"
@@ -76,7 +78,7 @@ std::string IdentifierToFlatJson(const Identifier& identifier) {
 }  // namespace
 
 std::shared_ptr<CatalogContext> InternalReadContext::CreateDependencyCatalogContext() const {
-    const auto& catalog = read_context_->GetCatalog();
+    const auto& catalog = catalog_;
     if (!catalog) {
         // Preserve path-only filesystem reads using <warehouse>/<database>.db/<table>.
         return std::make_shared<CatalogContext>(
@@ -86,13 +88,13 @@ std::shared_ptr<CatalogContext> InternalReadContext::CreateDependencyCatalogCont
 
     // Preserve the dependency catalog's effective settings: table options, then catalog
     // options, then explicit read overrides. The upstream reader loads its own table options;
-    // ReadContextBuilder must not copy these catalog settings back into that read.
+    // Catalog settings are used only while loading dependencies.
     auto dependency_options = options_.ToMap();
     const auto& catalog_options = catalog->GetOptions();
     for (const auto& [key, value] : catalog_options) {
         dependency_options[key] = value;
     }
-    const auto& read_options = read_context_->GetOptions();
+    const auto& read_options = dynamic_options_;
     for (const auto& [key, value] : read_options) {
         dependency_options[key] = value;
     }
@@ -100,11 +102,11 @@ std::shared_ptr<CatalogContext> InternalReadContext::CreateDependencyCatalogCont
         std::string(RestApi::kHeaderOptionPrefix) + RestApi::kReadViaHeader;
     auto metastore = dependency_options.find(CatalogOptions::METASTORE);
     if (metastore != dependency_options.end() &&
-        StringUtils::ToLowerCase(metastore->second) == "rest" && read_context_->GetIdentifier() &&
+        StringUtils::ToLowerCase(metastore->second) == "rest" && identifier_ &&
         dependency_options.count(read_via_option) == 0) {
         // Only fill in a missing header when the merged options select a REST dependency catalog.
         dependency_options[read_via_option] =
-            UrlUtils::EncodeString(IdentifierToFlatJson(*read_context_->GetIdentifier()));
+            UrlUtils::EncodeString(IdentifierToFlatJson(*identifier_));
     }
     // A REST warehouse identifies the catalog, independent of the table's storage location.
     return std::make_shared<CatalogContext>(catalog->GetRootPath(), dependency_options,
@@ -275,10 +277,20 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options) {
+    const std::map<std::string, std::string>& options,
+    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier,
+    const std::map<std::string, std::string>& dynamic_options) {
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                           CoreOptions::FromMap(options, context->GetSpecificFileSystem(),
-                                                context->GetFileSystemSchemeToIdentifierMap()));
+                           CoreOptions::FromMap(options, file_system, fs_scheme_map));
+    return CreateForTable(context, table_schema, std::move(core_options), root_path, fs_scheme_map,
+                          catalog, identifier, dynamic_options);
+}
+
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromCoreOptions(
+    const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
+    CoreOptions core_options) {
     core_options.WithCache(context->GetCache());
     if (context->EnablePreciseFileIndexEvaluate()) {
         if (!core_options.FileIndexReadEnabled()) {
@@ -493,9 +505,58 @@ Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSche
     }
     // Create a new InternalReadContext sharing all properties except read_schema.
     // The new read_schema is the minimal column set for COUNT(*).
-    return std::shared_ptr<InternalReadContext>(
+    auto result = std::shared_ptr<InternalReadContext>(
         new InternalReadContext(original->read_context_, original->table_schema_, new_read_schema,
                                 original->options_, original->arrow_pool_));
+    result->path_ = original->path_;
+    result->fs_scheme_map_ = original->fs_scheme_map_;
+    result->catalog_ = original->catalog_;
+    if (original->identifier_) {
+        result->identifier_.emplace(*original->identifier_);
+    }
+    result->dynamic_options_ = original->dynamic_options_;
+    return result;
+}
+
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForTable(
+    const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& schema,
+    CoreOptions options, const std::string& root_path,
+    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier,
+    const std::map<std::string, std::string>& dynamic_options) {
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InternalReadContext> result,
+                           CreateFromCoreOptions(context, schema, std::move(options)));
+    result->path_ = root_path;
+    result->fs_scheme_map_ = fs_scheme_map;
+    result->catalog_ = catalog;
+    if (identifier) {
+        result->identifier_.emplace(*identifier);
+    }
+    result->dynamic_options_ = dynamic_options;
+    return result;
+}
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallbackBranch(
+    const std::shared_ptr<ReadContext>& context, const std::string& branch,
+    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier,
+    const std::map<std::string, std::string>& dynamic_options) {
+    if (context->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
+    }
+    SchemaManager manager(file_system, root_path, branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> schema, manager.Latest());
+    if (!schema) {
+        return Status::Invalid("fallback schema not found");
+    }
+    auto options = schema.value()->Options();
+    for (const auto& [key, value] : dynamic_options) {
+        options[key] = value;
+    }
+    options[Options::BRANCH] = branch;
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options, file_system));
+    return CreateForTable(context, schema.value(), std::move(core_options), root_path,
+                          fs_scheme_map, catalog, identifier, dynamic_options);
 }
 
 }  // namespace paimon
