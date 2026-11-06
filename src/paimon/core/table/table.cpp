@@ -331,7 +331,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 
-    FileStore file_store(ctx->GetRootPath(), branch, options);
+    FileStore file_store(ctx->GetRootPath(), options);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> file_store_path_factory,
         file_store.NewPathFactory(arrow_schema, schema->PartitionKeys(),
@@ -564,9 +564,10 @@ class TableScanImpl {
         const ScanContext* context) {
         auto fs = core_options.GetFileSystem();
         std::string branch = BranchManager::NormalizeBranch(core_options.GetBranch());
-        FileStore file_store(context->GetPath(), branch, core_options);
+        FileStore file_store(context->GetPath(), core_options);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
-                               file_store.NewSnapshotManager(nullptr, std::nullopt));
+                               file_store.NewSnapshotManager(/*catalog=*/nullptr,
+                                                             /*catalog_identifier=*/std::nullopt));
         // TODO(liancheng.lsz): support fallback branch in scan
         auto schema_manager = std::make_shared<SchemaManager>(fs, context->GetPath(), branch);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
@@ -849,8 +850,7 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
             *arrow_schema, context->GetScanFilters()->GetPredicate(),
             /*validate_field_idx=*/false));
     }
-    FileStore file_store(context->GetPath(),
-                         BranchManager::NormalizeBranch(core_options.GetBranch()), core_options);
+    FileStore file_store(context->GetPath(), core_options);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
                            file_store.NewPathFactory(arrow_schema, table_schema->PartitionKeys(),
                                                      core_options.GetFileFormat()->Identifier(),
@@ -969,8 +969,7 @@ Result<std::unique_ptr<TableRead>> CreateTableRead(
     }
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*table_schema, core_options));
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
-    FileStore file_store(internal_context->GetPath(),
-                         BranchManager::NormalizeBranch(core_options.GetBranch()), core_options);
+    FileStore file_store(internal_context->GetPath(), core_options);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         file_store.NewPathFactory(arrow_schema, table_schema->PartitionKeys(),
@@ -1324,7 +1323,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         return Status::NotImplemented(
             "commit operation does not support object store file system for now");
     }
-    FileStore file_store(root_path, branch, options);
+    FileStore file_store(root_path, options);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
                            file_store.NewPartitionComputer(arrow_schema, schema->PartitionKeys(),
                                                            ctx->GetMemoryPool()));
@@ -1332,10 +1331,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         std::shared_ptr<FileStorePathFactory> path_factory,
         file_store.NewPathFactory(arrow_schema, schema->PartitionKeys(),
                                   options.GetFileFormat()->Identifier(), ctx->GetMemoryPool()));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<SnapshotManager> snapshot_manager,
-        file_store.NewSnapshotManager(IsCatalogCommit(*ctx) ? ctx->GetCatalog() : nullptr,
-                                      catalog_identifier));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
+                           file_store.NewSnapshotManager(ctx->GetCatalog(), catalog_identifier));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
                            file_store.NewManifestList(path_factory, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,

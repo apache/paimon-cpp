@@ -47,7 +47,7 @@ class SnapshotManager;
 /// Component factories for one managed-table operation using already resolved options.
 class FileStore {
  public:
-    FileStore(std::string root_path, std::string branch, CoreOptions options);
+    FileStore(std::string root_path, CoreOptions options);
 
     Result<std::shared_ptr<FileStorePathFactory>> NewPathFactory(
         const std::shared_ptr<arrow::Schema>& arrow_schema,
@@ -76,7 +76,6 @@ class FileStore {
 
  private:
     std::string root_path_;
-    std::string branch_;
     CoreOptions options_;
 };
 }  // namespace paimon
