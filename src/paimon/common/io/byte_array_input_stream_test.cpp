@@ -19,6 +19,8 @@
 
 #include "paimon/io/byte_array_input_stream.h"
 
+#include <chrono>
+#include <future>
 #include <memory>
 #include <utility>
 
@@ -79,6 +81,56 @@ TEST(ByteArrayInputStreamTest, TestSimple) {
     ASSERT_NOK_WITH_MSG(input_stream->Seek(100, SeekOrigin::FS_SEEK_CUR),
                         "invalid seek, after seek, current pos 103, length 6");
     ASSERT_OK(input_stream->Close());
+}
+
+TEST(ByteArrayInputStreamTest, TestZeroLengthRead) {
+    auto pool = GetDefaultPool();
+    Bytes empty_bytes(0, pool.get());
+    ByteArrayInputStream input_stream("abc", 3);
+    ASSERT_OK(input_stream.Seek(1, SeekOrigin::FS_SEEK_SET));
+
+    ASSERT_OK_AND_ASSIGN(int64_t read_size, input_stream.Read(empty_bytes.data(), 0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(int64_t position, input_stream.GetPos());
+    ASSERT_EQ(1, position);
+
+    ASSERT_OK_AND_ASSIGN(read_size, input_stream.Read(empty_bytes.data(), 0, /*offset=*/0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(read_size, input_stream.Read(empty_bytes.data(), 0, /*offset=*/3));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(position, input_stream.GetPos());
+    ASSERT_EQ(1, position);
+
+    auto read_promise = std::make_shared<std::promise<Status>>();
+    std::future<Status> read_result = read_promise->get_future();
+    input_stream.ReadAsync(empty_bytes.data(), 0, /*offset=*/3, [read_promise](Status status) {
+        read_promise->set_value(std::move(status));
+    });
+    ASSERT_EQ(std::future_status::ready, read_result.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK(read_result.get());
+    ASSERT_OK_AND_ASSIGN(position, input_stream.GetPos());
+    ASSERT_EQ(1, position);
+
+    ASSERT_NOK_WITH_MSG(input_stream.Read(empty_bytes.data(), 0, /*offset=*/-1),
+                        "boundary check failed");
+    ASSERT_NOK_WITH_MSG(input_stream.Read(empty_bytes.data(), 0, /*offset=*/4),
+                        "boundary check failed");
+
+    ASSERT_OK(input_stream.Seek(3, SeekOrigin::FS_SEEK_SET));
+    ASSERT_OK_AND_ASSIGN(read_size, input_stream.Read(empty_bytes.data(), 0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(position, input_stream.GetPos());
+    ASSERT_EQ(3, position);
+}
+
+TEST(ByteArrayInputStreamTest, TestZeroLengthReadFromEmptyStream) {
+    ByteArrayInputStream input_stream("", 0);
+    ASSERT_OK_AND_ASSIGN(int64_t read_size, input_stream.Read(nullptr, 0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(read_size, input_stream.Read(nullptr, 0, /*offset=*/0));
+    ASSERT_EQ(0, read_size);
+    ASSERT_OK_AND_ASSIGN(int64_t position, input_stream.GetPos());
+    ASSERT_EQ(0, position);
 }
 
 }  // namespace paimon::test

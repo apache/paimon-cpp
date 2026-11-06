@@ -32,16 +32,25 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/operation/commit/realtime_commit_properties.h"
+#include "paimon/core/snapshot.h"
+#include "paimon/core/table/sink/commit_message_impl.h"
+#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/file_store_write.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/realtime/realtime_context.h"
 #include "paimon/scan_context.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/write_context.h"
 
 namespace paimon::test {
 namespace {
@@ -49,8 +58,9 @@ namespace {
 Result<std::set<std::string>> ListFiles(const std::string& table_path,
                                         const std::optional<int64_t>& snapshot_id = std::nullopt,
                                         const std::shared_ptr<ScanFilter>& scan_filter = nullptr,
-                                        const std::string& branch = "main") {
-    return SnapshotFileScan::ListFiles(table_path, branch, snapshot_id, scan_filter, /*options=*/{},
+                                        const std::string& branch = "main",
+                                        const std::map<std::string, std::string>& options = {}) {
+    return SnapshotFileScan::ListFiles(table_path, branch, snapshot_id, scan_filter, options,
                                        /*file_system=*/nullptr, /*executor=*/nullptr,
                                        /*memory_pool=*/nullptr);
 }
@@ -184,6 +194,15 @@ TEST(SnapshotFileScanTest, TestSingleBucketManifestAvoidsExtraIO) {
                          ListFiles(table_path, std::nullopt, CreateFilter({}, 0)));
     ASSERT_EQ(bucket_files, all_files);
     ASSERT_EQ(io_hook->IOCount(), full_read_io_count);
+
+    SnapshotManager snapshot_manager(dir->GetFileSystem(), table_path);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, snapshot_manager.LoadSnapshot(1));
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> unmatched_bucket_files,
+                         ListFiles(table_path, std::nullopt, CreateFilter({}, 1)));
+    ASSERT_EQ(ExpectedFiles(table_path, {"schema/schema-0", "snapshot/snapshot-1",
+                                         "manifest/" + snapshot.BaseManifestList(),
+                                         "manifest/" + snapshot.DeltaManifestList()}),
+              unmatched_bucket_files);
 }
 
 TEST(SnapshotFileScanTest, TestExplicitSnapshot) {
@@ -329,6 +348,20 @@ TEST(SnapshotFileScanTest, TestDeletionVectorIndexBucketFilter) {
                                    "manifest/manifest-list-540cf68e-698e-4b66-af30-eb558d8db43d-7",
                                    "schema/schema-0", "snapshot/snapshot-4"}),
         bucket_one_files);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::set<std::string> matching_partition_files,
+        ListFiles(table_path, /*snapshot_id=*/4, CreateFilter({{{"f1", "10"}}}, 0)));
+    ASSERT_EQ(matching_partition_files, bucket_zero_files);
+    ASSERT_OK_AND_ASSIGN(
+        std::set<std::string> unmatched_partition_files,
+        ListFiles(table_path, /*snapshot_id=*/4, CreateFilter({{{"f1", "999"}}}, 0)));
+    ASSERT_EQ(unmatched_partition_files.count(
+                  table_path + "/index/index-86356766-3238-46e6-990b-656cd7409eaa-0"),
+              0);
+    ASSERT_EQ(unmatched_partition_files.count(
+                  table_path + "/manifest/index-manifest-59bcb792-830f-4b57-b838-cfcc50d29266-0"),
+              1);
 }
 
 TEST(SnapshotFileScanTest, TestGlobalIndex) {
@@ -355,7 +388,8 @@ TEST(SnapshotFileScanTest, TestBranch) {
                              "append_table_with_append_pt_branch";
 
     ASSERT_OK_AND_ASSIGN(std::set<std::string> files,
-                         ListFiles(table_path, std::nullopt, /*scan_filter=*/nullptr, "test"));
+                         ListFiles(table_path, std::nullopt, /*scan_filter=*/nullptr, "test",
+                                   {{Options::BRANCH, "main"}}));
     ASSERT_EQ(
         ExpectedFiles(table_path,
                       {"branch/branch-test/schema/schema-0", "branch/branch-test/schema/schema-1",
@@ -367,6 +401,106 @@ TEST(SnapshotFileScanTest, TestBranch) {
                        "pt=2/bucket-0/data-150a7c45-2972-4d8c-983e-a1ab2e382e6a-0.orc",
                        "pt=2/bucket-0/data-ea107991-e78c-445a-b225-7af07bcdf8c3-0.orc"}),
         files);
+}
+
+TEST(SnapshotFileScanTest, TestTableWithoutSnapshot) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema = arrow::schema({arrow::field("value", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), schema, {}, {}, {{Options::FILE_FORMAT, "orc"}}, false));
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> files, ListFiles(dir->Str() + "/foo.db/bar"));
+    ASSERT_TRUE(files.empty());
+}
+
+TEST(SnapshotFileScanTest, TestCommittedChangelogFiles) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int64()), arrow::field("value", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), schema, {}, {"id"},
+                                            {{Options::FILE_FORMAT, "orc"},
+                                             {Options::BUCKET, "1"},
+                                             {Options::CHANGELOG_PRODUCER, "input"}},
+                                            /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()),
+                                                     R"([[1,"a"],[2,"b"]])", {}, 0, {}));
+    ASSERT_OK_AND_ASSIGN(auto messages, helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    const std::string table_path = dir->Str() + "/foo.db/bar";
+    SnapshotManager snapshot_manager(dir->GetFileSystem(), table_path);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, snapshot_manager.LoadSnapshot(1));
+    ASSERT_TRUE(snapshot.ChangelogManifestList().has_value());
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> files, ListFiles(table_path));
+    ASSERT_EQ(files.count(table_path + "/manifest/" + snapshot.ChangelogManifestList().value()), 1);
+    ASSERT_EQ(messages.size(), 1);
+    auto message = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message);
+    const auto& changelog_files = message->GetNewFilesIncrement().ChangelogFiles();
+    ASSERT_FALSE(changelog_files.empty());
+    for (const auto& file : changelog_files) {
+        ASSERT_EQ(files.count(table_path + "/bucket-0/" + file->file_name), 1);
+    }
+    std::vector<BasicFileStatus> manifests;
+    ASSERT_OK(dir->GetFileSystem()->ListDir(table_path + "/manifest", &manifests));
+    for (const auto& manifest : manifests) {
+        ASSERT_EQ(files.count(manifest.GetPath()), 1);
+    }
+}
+
+TEST(SnapshotFileScanTest, TestCommittedRealtimeOffsetFiles) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int64()), arrow::field("value", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(
+            dir->Str(), schema, {}, {},
+            {{Options::FILE_FORMAT, "orc"}, {Options::BUCKET, "1"}, {Options::BUCKET_KEY, "id"}},
+            /*is_streaming_mode=*/false));
+    helper.reset();
+    const std::string table_path = dir->Str() + "/foo.db/bar";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    WriteContextBuilder write_builder(table_path, "test");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
+                         write_builder.AddOption(Options::REALTIME_ENABLED, "true")
+                             .WithStreamingMode(true)
+                             .WithRealtimeContext(realtime_context)
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         FileStoreWrite::Create(std::move(write_context)));
+    auto input_type = arrow::struct_({arrow::field("_REALTIME_OFFSET", arrow::int64(), false),
+                                      schema->field(0), schema->field(1)});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(input_type, R"([[0,1,"a"],[1,2,"b"]])", {}, 0, {}));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(auto progress, writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_FALSE(progress.empty());
+    CommitContextBuilder commit_builder(table_path, "test");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                         commit_builder.AddOption(Options::REALTIME_ENABLED, "true").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id,
+                         commit->CommitWithProgress(progress, 0, std::nullopt));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_OK(writer->Close());
+
+    SnapshotManager snapshot_manager(dir->GetFileSystem(), table_path);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, snapshot_manager.LoadSnapshot(snapshot_id));
+    auto offsets_path = RealtimeCommitProperties::GetOffsetsPath(snapshot);
+    ASSERT_TRUE(offsets_path.has_value());
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> files, ListFiles(table_path));
+    ASSERT_EQ(files.count(offsets_path.value()), 1);
+    for (const auto& path : files) {
+        ASSERT_OK_AND_ASSIGN(bool exists, dir->GetFileSystem()->Exists(path));
+        ASSERT_TRUE(exists) << path;
+    }
 }
 
 TEST(SnapshotFileScanTest, TestInvalidArguments) {

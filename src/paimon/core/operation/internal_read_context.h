@@ -102,6 +102,9 @@ class InternalReadContext {
     bool HasVectorOrFullTextSearch() const {
         return read_context_->HasVectorOrFullTextSearch();
     }
+    bool EnablePreciseFileIndexEvaluate() const {
+        return read_context_->EnablePreciseFileIndexEvaluate();
+    }
     bool EnablePredicateFilter() const {
         return read_context_->EnablePredicateFilter();
     }
@@ -153,8 +156,8 @@ class InternalReadContext {
         return read_context_->GetWarmupLevel();
     }
 
-    /// Create the minimal read schema for PK COUNT(*). Search requests and score
-    /// projections are unsupported; their bindings cannot be inherited across schemas.
+    /// Create the minimal read schema for PK COUNT(*). Precise file-index evaluation is
+    /// unsupported because count readers do not use the file predicate executor.
     static Result<std::shared_ptr<InternalReadContext>> CreateWithSchema(
         const std::shared_ptr<InternalReadContext>& original,
         const std::shared_ptr<arrow::Schema>& new_read_schema);
@@ -167,11 +170,10 @@ class InternalReadContext {
                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     static std::optional<DataField> TryResolveSpecialFieldById(int32_t field_id,
-                                                               const CoreOptions& core_options,
-                                                               bool has_vector_or_full_text_search);
-    static std::optional<DataField> TryResolveSpecialFieldByName(
-        const std::string& name, const CoreOptions& core_options,
-        bool has_vector_or_full_text_search, int32_t output_field_idx);
+                                                               const CoreOptions& core_options);
+    static std::optional<DataField> TryResolveSpecialFieldByName(const std::string& name,
+                                                                 const CoreOptions& core_options,
+                                                                 int32_t output_field_idx);
     static Result<std::shared_ptr<arrow::Field>> AlignReadFieldWithTableFieldIds(
         const std::shared_ptr<arrow::Field>& read_field,
         const std::shared_ptr<arrow::Field>& table_field);

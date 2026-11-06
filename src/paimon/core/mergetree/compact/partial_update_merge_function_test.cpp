@@ -851,6 +851,54 @@ TEST_F(PartialUpdateMergeFunctionTest, TestDeleteReproduceCorrectSequenceNumber)
     ASSERT_EQ(result->sequence_number, 1);
 }
 
+TEST_F(PartialUpdateMergeFunctionTest, TestIgnoreDeleteInitializesFromFirstRetract) {
+    auto mfunc = CreateMergeFunction(/*value_arity=*/3, {{"ignore-delete", "true"}});
+    mfunc->Reset();
+    Add(mfunc, RowKind::Delete(), {1, 10, 20});
+    Add(mfunc, RowKind::Delete(), {1, 100, 200});
+    CheckResult(mfunc, {1, 10, 20});
+
+    Add(mfunc, RowKind::UpdateAfter(), {1, NullType(), 30});
+    CheckResult(mfunc, {1, 10, 30});
+    ASSERT_OK_AND_ASSIGN(auto result, mfunc->GetResult());
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->value_kind, RowKind::Insert());
+}
+
+TEST_F(PartialUpdateMergeFunctionTest, TestRemoveRecordOnDeleteStartsWithUpdateBefore) {
+    auto mfunc = CreateMergeFunction(/*value_arity=*/3,
+                                     {{"partial-update.remove-record-on-delete", "true"}});
+    mfunc->Reset();
+    Add(mfunc, RowKind::UpdateBefore(), {1, 10, 20});
+    Add(mfunc, RowKind::UpdateBefore(), {1, 100, 200});
+    CheckResult(mfunc, {1, 10, 20});
+
+    Add(mfunc, RowKind::UpdateAfter(), {1, NullType(), 30});
+    CheckResult(mfunc, {1, 10, 30});
+    ASSERT_OK_AND_ASSIGN(auto result, mfunc->GetResult());
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->value_kind, RowKind::Insert());
+    ASSERT_EQ(result->sequence_number, 2);
+}
+
+TEST_F(PartialUpdateMergeFunctionTest, TestSequenceGroupStartsWithRetract) {
+    auto mfunc = CreateMergeFunction(/*value_arity=*/4, {{"fields.f2.sequence-group", "f1"}});
+    mfunc->Reset();
+    Add(mfunc, RowKind::Delete(), {1, 10, 5, 30});
+    CheckResult(mfunc, {1, NullType(), 5, 30});
+    ASSERT_OK_AND_ASSIGN(auto deleted, mfunc->GetResult());
+    ASSERT_TRUE(deleted.has_value());
+    ASSERT_EQ(deleted->value_kind, RowKind::Delete());
+
+    mfunc->Reset();
+    Add(mfunc, RowKind::UpdateBefore(), {1, 10, 5, 30});
+    Add(mfunc, RowKind::UpdateAfter(), {1, 20, 6, NullType()});
+    CheckResult(mfunc, {1, 20, 6, 30});
+    ASSERT_OK_AND_ASSIGN(auto updated, mfunc->GetResult());
+    ASSERT_TRUE(updated.has_value());
+    ASSERT_EQ(updated->value_kind, RowKind::Insert());
+}
+
 TEST_F(PartialUpdateMergeFunctionTest, TestInitRowWithNullableFieldOnDelete) {
     std::map<std::string, std::string> options_map = {
         {"partial-update.remove-record-on-delete", "true"}};

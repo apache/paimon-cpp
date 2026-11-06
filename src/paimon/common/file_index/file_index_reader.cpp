@@ -24,6 +24,15 @@
 #include "paimon/status.h"
 
 namespace paimon {
+bool FileIndexReader::SupportsSearch(SearchType) const {
+    return false;
+}
+
+std::optional<double> FileIndexReader::EstimateSelectivity(
+    const std::shared_ptr<LeafPredicate>&) const {
+    return std::nullopt;
+}
+
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIsNotNull() {
     return FileIndexResult::Remain();
 }
@@ -107,13 +116,13 @@ Result<std::shared_ptr<ScoredFileIndexResult>> FileIndexReader::VisitVectorSearc
     return Status::NotImplemented("This file index does not support vector search");
 }
 
-Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitFullTextSearch(
+Result<std::shared_ptr<ScoredFileIndexResult>> FileIndexReader::VisitFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
     return Status::NotImplemented("This file index does not support full text search");
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitFullTextMatch(
-    const std::shared_ptr<FullTextMatch>& full_text_match) {
+    const std::shared_ptr<FullTextMatch>& full_text_match, bool needs_scores) {
     return Status::NotImplemented("This file index does not support complete full-text matching");
 }
 }  // namespace paimon

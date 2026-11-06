@@ -18,9 +18,11 @@
 
 #include "paimon/core/io/data_file_meta.h"
 
+#include <functional>
 #include <limits>
 
 #include "gtest/gtest.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
@@ -59,6 +61,73 @@ TEST(DataFileMetaTest, TestCopyWithoutStats) {
     ASSERT_EQ(SimpleStats::EmptyStats(), upgraded->value_stats);
     ASSERT_TRUE(upgraded->value_stats_cols.has_value());
     ASSERT_TRUE(upgraded->value_stats_cols->empty());
+}
+
+TEST(DataFileMetaTest, TestCopyWithColumnMaxSequenceNumbers) {
+    auto pool = GetDefaultPool();
+    auto key_stats = BinaryRowGenerator::GenerateStats({1}, {5}, {0}, pool.get());
+    auto value_stats = BinaryRowGenerator::GenerateStats({1, std::string("a")},
+                                                         {5, std::string("z")}, {0, 1}, pool.get());
+    DataFileMeta file_meta(
+        "data-0.orc", /*file_size=*/645, /*row_count=*/5,
+        BinaryRowGenerator::GenerateRow({1}, pool.get()),
+        BinaryRowGenerator::GenerateRow({5}, pool.get()), key_stats, value_stats,
+        /*min_sequence_number=*/100, /*max_sequence_number=*/104, /*schema_id=*/2, /*level=*/1,
+        /*extra_files=*/{"data-0.orc.index"}, Timestamp(1737111915429ll, 0),
+        /*delete_row_count=*/2, std::make_shared<Bytes>("index", pool.get()), FileSource::Append(),
+        /*value_stats_cols=*/std::vector<std::string>{"f0", "f1"},
+        /*external_path=*/"external/data-0.orc", /*first_row_id=*/10,
+        /*write_cols=*/std::vector<std::string>{"f0", "f1"},
+        /*column_max_sequence_numbers=*/std::vector<int64_t>{103, 104});
+    const DataFileMeta original = file_meta;
+    const std::vector<std::optional<std::vector<int64_t>>> replacements = {
+        std::vector<int64_t>{104, 104}, std::nullopt};
+    for (const auto& sequences : replacements) {
+        auto copied = file_meta.CopyWithColumnMaxSequenceNumbers(sequences);
+        ASSERT_TRUE(copied);
+        DataFileMeta expected = original;
+        expected.column_max_sequence_numbers = sequences;
+        ASSERT_EQ(*copied, expected);
+        ASSERT_EQ(file_meta, original);
+    }
+}
+
+TEST(DataFileMetaTest, TestComparisonOfOptionalMetadata) {
+    auto pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(auto file_meta,
+                         DataFileMeta::ForAppend("data-0.orc", 100, 2, SimpleStats::EmptyStats(), 0,
+                                                 1, 0, FileSource::Append(), std::nullopt,
+                                                 "external/data-0.orc", 10, std::nullopt));
+    file_meta->extra_files = {"changelog-0.orc", std::nullopt};
+    file_meta->embedded_index = std::make_shared<Bytes>("index", pool.get());
+    file_meta->ToString();
+    ASSERT_TRUE(file_meta->TEST_Equal(*file_meta));
+    DataFileMeta renamed = *file_meta;
+    renamed.file_name = "data-1.orc";
+    renamed.file_size = 200;
+    renamed.creation_time = Timestamp(1737111915429ll, 0);
+    renamed.extra_files = {"changelog-1.orc", std::nullopt};
+    renamed.external_path = "other/data-1.orc";
+    ASSERT_TRUE(file_meta->TEST_Equal(renamed));
+    ASSERT_TRUE(renamed.TEST_Equal(*file_meta));
+
+    const std::vector<std::pair<const char*, std::function<void(DataFileMeta&)>>> changes = {
+        {"extra file count", [](DataFileMeta& meta) { meta.extra_files.pop_back(); }},
+        {"missing extra file", [](DataFileMeta& meta) { meta.extra_files[0] = std::nullopt; }},
+        {"missing embedded index", [](DataFileMeta& meta) { meta.embedded_index.reset(); }},
+        {"different embedded index",
+         [&](DataFileMeta& meta) {
+             meta.embedded_index = std::make_shared<Bytes>("other", pool.get());
+         }},
+        {"missing external path", [](DataFileMeta& meta) { meta.external_path.reset(); }},
+    };
+    for (const auto& [name, change] : changes) {
+        SCOPED_TRACE(name);
+        DataFileMeta other = *file_meta;
+        change(other);
+        ASSERT_FALSE(file_meta->TEST_Equal(other));
+        ASSERT_FALSE(other.TEST_Equal(*file_meta));
+    }
 }
 
 TEST(DataFileMetaTest, TestAddRowCount) {

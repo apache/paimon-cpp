@@ -172,8 +172,12 @@ class ReadInteTest : public testing::Test, public ::testing::WithParamInterface<
             EXPECT_TRUE(schema_ids.empty() || schema_ids.size() == data_files.size());
             for (uint32_t j = 0; j < data_files.size(); j++) {
                 const auto& data_file = data_files[j];
+                EXPECT_OK_AND_ASSIGN(
+                    FileStatus file_status,
+                    LocalFileSystem().GetFileStatus(PathUtil::JoinPath(bucket_path, data_file)));
                 data_file_metas.push_back(std::make_shared<DataFileMeta>(
-                    data_file, /*file_size=*/1, /*row_count=*/1, /*min_key=*/BinaryRow::EmptyRow(),
+                    data_file, /*file_size=*/file_status.GetLen(), /*row_count=*/1,
+                    /*min_key=*/BinaryRow::EmptyRow(),
                     /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
                     /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
                     /*max_sequence_number=*/0, /*schema_id=*/schema_ids.empty() ? 0 : schema_ids[j],
@@ -865,6 +869,61 @@ TEST(SystemTableReadInteTest, TestReadMetadataSystemTables) {
     ASSERT_GE(min_sequence_number_array->Value(0), 0);
     ASSERT_GE(max_sequence_number_array->Value(0), min_sequence_number_array->Value(0));
     ASSERT_FALSE(creation_time_array->IsNull(0));
+}
+
+TEST(SystemTableReadInteTest, TestReadMetadataSystemTablesAtPinnedSnapshot) {
+    arrow::FieldVector fields = {
+        arrow::field("pk", arrow::utf8()),
+        arrow::field("v", arrow::int32()),
+    };
+    auto schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {
+        {Options::FILE_SYSTEM, "local"}, {Options::FILE_FORMAT, "parquet"}, {Options::BUCKET, "1"}};
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(dir->Str(), schema,
+                                                         /*partition_keys=*/{},
+                                                         /*primary_keys=*/{"pk"}, options,
+                                                         /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_1,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["a", 1]])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch_1), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_2,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["b", 2]])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch_2), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+    std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+
+    ASSERT_OK_AND_ASSIGN(auto latest_files, ReadSystemTable(table_path + "$files", options));
+    ASSERT_EQ(SingleStructChunk(latest_files)->length(), 2);
+    ASSERT_OK_AND_ASSIGN(auto latest_manifests,
+                         ReadSystemTable(table_path + "$manifests", options));
+    const int64_t latest_manifest_count = SingleStructChunk(latest_manifests)->length();
+
+    std::map<std::string, std::string> pinned_options = options;
+    pinned_options[Options::SCAN_SNAPSHOT_ID] = "1";
+    ASSERT_OK_AND_ASSIGN(auto pinned_files, ReadSystemTable(table_path + "$files", pinned_options));
+    auto pinned_files_array = SingleStructChunk(pinned_files);
+    ASSERT_EQ(pinned_files_array->length(), 1);
+    auto record_count_array =
+        std::dynamic_pointer_cast<arrow::Int64Array>(pinned_files_array->field(6));
+    ASSERT_TRUE(record_count_array);
+    ASSERT_EQ(record_count_array->Value(0), 1);
+    ASSERT_OK_AND_ASSIGN(auto pinned_manifests,
+                         ReadSystemTable(table_path + "$manifests", pinned_options));
+    ASSERT_EQ(SingleStructChunk(pinned_manifests)->length(), 1);
+    ASSERT_LT(SingleStructChunk(pinned_manifests)->length(), latest_manifest_count);
+
+    // A pinned snapshot that does not exist must not fall back to the latest snapshot.
+    std::map<std::string, std::string> missing_options = options;
+    missing_options[Options::SCAN_SNAPSHOT_ID] = "3";
+    ASSERT_NOK_WITH_MSG(ReadSystemTable(table_path + "$files", missing_options),
+                        "snapshot 3 does not exist");
+    ASSERT_NOK_WITH_MSG(ReadSystemTable(table_path + "$manifests", missing_options),
+                        "snapshot 3 does not exist");
 }
 
 TEST(SystemTableReadInteTest, TestReadOptimizedSystemTable) {

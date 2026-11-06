@@ -36,6 +36,8 @@ namespace paimon {
 // Inspired by RocksDB's monitoring/histogram_windowing.h.
 // https://github.com/facebook/rocksdb/blob/main/monitoring/histogram_windowing.h
 // Maintains multiple time windows and aggregates stats across the recent ones.
+//
+// TODO(jinli.zjw): Refactor this implementation in the future.
 class HistogramWindowingImpl : public Histogram {
  public:
     // Default: 3 windows, 60s per window , 100 per window (paimon-java default)

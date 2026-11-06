@@ -225,6 +225,21 @@ TEST_F(SortedFileMetaSelectorTest, TestVisitNotIn) {
     CheckResult(result, {"file1", "file2", "file3", "file4", "file5"});
 }
 
+TEST_F(SortedFileMetaSelectorTest, NullLiteralsSelectNoFiles) {
+    ASSERT_OK_AND_ASSIGN(auto selector, SortedFileMetaSelector::Create(files_, key_serializer_));
+    const Literal null_literal(FieldType::INT);
+    for (auto visit :
+         {&SortedFileMetaSelector::VisitEqual, &SortedFileMetaSelector::VisitNotEqual,
+          &SortedFileMetaSelector::VisitLessThan, &SortedFileMetaSelector::VisitLessOrEqual,
+          &SortedFileMetaSelector::VisitGreaterThan,
+          &SortedFileMetaSelector::VisitGreaterOrEqual}) {
+        ASSERT_OK_AND_ASSIGN(auto result, (selector.get()->*visit)(null_literal));
+        ASSERT_TRUE(result.empty());
+    }
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitNotIn({Literal(1), null_literal}));
+    ASSERT_TRUE(result.empty());
+}
+
 TEST_F(SortedFileMetaSelectorTest, TestVisitStartsWith) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<KeySerializer> key_serializer,
@@ -241,12 +256,15 @@ TEST_F(SortedFileMetaSelectorTest, TestVisitStartsWith) {
                                                              /*has_nulls=*/false);
     auto third_meta = std::make_shared<SortedIndexFileMeta>(serialize("dog"), serialize("zoo"),
                                                             /*has_nulls=*/false);
+    auto high_byte_meta = std::make_shared<SortedIndexFileMeta>(
+        serialize(std::string("\xff", 1)), serialize(std::string("\xff\xff", 2)), false);
     auto only_nulls_meta =
         std::make_shared<SortedIndexFileMeta>(nullptr, nullptr, /*has_nulls=*/true);
     std::vector<GlobalIndexIOMeta> files = {
         GlobalIndexIOMeta("first", 1, /*row_count=*/1, first_meta->Serialize(pool.get())),
         GlobalIndexIOMeta("second", 1, /*row_count=*/1, second_meta->Serialize(pool.get())),
         GlobalIndexIOMeta("third", 1, /*row_count=*/1, third_meta->Serialize(pool.get())),
+        GlobalIndexIOMeta("high_byte", 1, /*row_count=*/1, high_byte_meta->Serialize(pool.get())),
         GlobalIndexIOMeta("only_nulls", 1, /*row_count=*/1, only_nulls_meta->Serialize(pool.get())),
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<SortedFileMetaSelector> selector,
@@ -260,7 +278,10 @@ TEST_F(SortedFileMetaSelectorTest, TestVisitStartsWith) {
     ASSERT_TRUE(result.empty());
 
     ASSERT_OK_AND_ASSIGN(result, selector->VisitStartsWith(Literal(FieldType::STRING, "", 0)));
-    CheckResult(result, {"first", "second", "third"});
+    CheckResult(result, {"first", "second", "third", "high_byte"});
+
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitStartsWith(Literal(FieldType::STRING, "\xff", 1)));
+    CheckResult(result, {"high_byte"});
 
     ASSERT_OK_AND_ASSIGN(result, selector->VisitStartsWith(Literal(FieldType::STRING)));
     ASSERT_TRUE(result.empty());

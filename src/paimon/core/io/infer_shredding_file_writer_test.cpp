@@ -47,7 +47,9 @@ class CollectingFileWriter : public SingleFileWriter<::ArrowArray*, std::shared_
         : SingleFileWriter("", std::function<Status(::ArrowArray*, ::ArrowArray*)>()),
           converter_(converter),
           logical_type_(logical_type),
-          sink_(sink) {}
+          sink_(sink) {
+        path_ = "collected.parquet";
+    }
 
     Status Write(::ArrowArray* record) override {
         record_count_ += record->length;
@@ -75,20 +77,24 @@ class CollectingFileWriter : public SingleFileWriter<::ArrowArray*, std::shared_
     }
 
     Result<bool> ReachTargetSize(bool suggested_check, int64_t target_size) override {
-        return false;
+        return reach_target_size;
     }
 
     Result<AbortExecutor> GetAbortExecutor() const override {
         return AbortExecutor(nullptr, "");
     }
 
-    void Abort() override {}
+    void Abort() override {
+        aborted = true;
+    }
 
     int64_t RecordCount() const override {
         return record_count_;
     }
 
     bool closed = false;
+    bool aborted = false;
+    bool reach_target_size = false;
 
  private:
     std::shared_ptr<ShreddingBatchConverter> converter_;
@@ -209,6 +215,31 @@ TEST_F(InferShreddingFileWriterTest, EmptyFileUsesUntypedVariantPlan) {
     ASSERT_EQ(physical_type.GetFieldByName("typed_value"), nullptr);
     ASSERT_TRUE(sink_.empty());
     ASSERT_TRUE(inner_->closed);
+}
+
+TEST_F(InferShreddingFileWriterTest, AbortWhileBufferingDoesNotCreateInnerWriter) {
+    auto writer = MakeWriter(/*buffer_rows=*/4);
+    ASSERT_OK(WriteBatch(writer.get(), {R"({"a":1})"}));
+    ASSERT_EQ(writer->GetPath(), "");
+    writer->Abort();
+    ASSERT_TRUE(captured_converters_.empty());
+    ASSERT_TRUE(sink_.empty());
+}
+
+TEST_F(InferShreddingFileWriterTest, ForwardsFinalizedWriterOperations) {
+    auto writer = MakeWriter(/*buffer_rows=*/1);
+    ASSERT_OK(WriteBatch(writer.get(), {R"({"a":1})"}));
+    ASSERT_NE(inner_, nullptr);
+    ASSERT_EQ(writer->GetPath(), "collected.parquet");
+    ASSERT_OK_AND_ASSIGN(bool below_target, writer->ReachTargetSize(true, 100));
+    ASSERT_FALSE(below_target);
+    inner_->reach_target_size = true;
+    ASSERT_OK_AND_ASSIGN(bool reached_target, writer->ReachTargetSize(true, 100));
+    ASSERT_TRUE(reached_target);
+
+    ASSERT_OK(writer->Close());
+    writer->Abort();
+    ASSERT_TRUE(inner_->aborted);
 }
 
 }  // namespace paimon::test

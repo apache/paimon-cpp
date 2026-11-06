@@ -40,6 +40,7 @@
 #include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
 #include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
+#include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/operation/internal_read_context.h"
@@ -436,6 +437,51 @@ TEST_F(DataEvolutionSplitReadTest, TestBlobFallbackValidatesRangesBeforeOpeningF
                         "Blob file range should intersect logical range.");
     ASSERT_NOK_WITH_MSG(create_reader({overlap, blob}, Range(100, 109), std::nullopt),
                         "should not have overlapping row id ranges");
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestEmptyBlobReaders) {
+    auto dir = UniqueTestDirectory::Create("local");
+    auto schema =
+        DataField::ConvertDataFieldsToArrowSchema({DataField(0, arrow::field("id", arrow::int32())),
+                                                   DataField(1, BlobUtils::ToArrowField("b0"))});
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                        {Options::ROW_TRACKING_ENABLED, "true"},
+                                                        {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, options));
+    ReadContextBuilder builder(dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
+                         InternalReadContext::Create(read_context, table_schema, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        FileStorePathFactory::Create(dir->Str(), schema, {}, "default", "parquet", "data-",
+                                     /*legacy_partition_name_enabled=*/true, {}, std::nullopt,
+                                     /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+    DataEvolutionSplitRead split_read(path_factory, context, GetDefaultPool(),
+                                      /*executor=*/nullptr);
+    auto blob = CreateBlobFile("payload", 100, 10, 1, {{"b0"}});
+    auto blob_schema = arrow::schema({schema->field(1)});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<BatchReader> fallback_reader,
+        split_read.CreateBlobFallbackReader(
+            BinaryRow::EmptyRow(), {blob}, Range(100, 109), blob_schema,
+            /*row_ranges=*/std::vector<Range>{}, /*data_file_path_factory=*/nullptr,
+            /*group_dv_factory=*/nullptr, /*group_dv=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(std::move(fallback_reader)));
+    ASSERT_FALSE(result);
+
+    // Dedicated payload files do not contain blob-view references for the pre-read pass.
+    ASSERT_OK_AND_ASSIGN(std::string bucket_path,
+                         path_factory->BucketPath(BinaryRow::EmptyRow(), 0));
+    DataSplitImpl::Builder split_builder(BinaryRow::EmptyRow(), 0, bucket_path, {blob});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> split,
+                         split_builder.RawConvertible(false).Build());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> view_reader,
+                         split_read.CreateBlobViewReader(split, {"b0"}, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(result, ReadResultCollector::CollectResult(std::move(view_reader)));
+    ASSERT_FALSE(result);
 }
 
 TEST_F(DataEvolutionSplitReadTest, TestRowIdSelectionWithOverlap) {
@@ -861,6 +907,30 @@ TEST_F(DataEvolutionSplitReadTest, TestPlanIndependentlyRolledVectorReadRanges) 
     ASSERT_EQ(vector1->row_count, 4);
 }
 
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesWithBlobAndNewerUpdate) {
+    auto main = CreateNormalFile("main.parquet", 100, 10, 0);
+    auto older = CreateDataFileMeta("older.vector.vortex", 100, 5, 1);
+    auto newer = CreateDataFileMeta("newer.vector.vortex", 100, 5, 2);
+    auto blob = CreateBlobFile("payload", 100, 10, 3, {{"payload"}});
+    ASSERT_OK_AND_ASSIGN(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> groups,
+                         DataEvolutionSplitRead::MergeRangesAndSort({blob, older, main, newer}));
+    ASSERT_EQ(groups.size(), 1);
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+        DataEvolutionSplitRead::PlanVectorReadRanges(groups[0], {0, 1, 2}, EmbeddingFieldIds));
+    ASSERT_EQ(ranges.size(), 2);
+    ASSERT_EQ(ranges[0].range, Range(100, 104));
+    ASSERT_EQ(ranges[0].files, (std::vector<std::shared_ptr<DataFileMeta>>{newer, main, blob}));
+    ASSERT_EQ(ranges[1].range, Range(105, 109));
+    ASSERT_EQ(ranges[1].files, (std::vector<std::shared_ptr<DataFileMeta>>{main, blob}));
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestPlanVectorReadRangesWithNoFiles) {
+    ASSERT_OK_AND_ASSIGN(std::vector<DataEvolutionSplitRead::VectorReadRange> ranges,
+                         DataEvolutionSplitRead::PlanVectorReadRanges({}, {1}, EmbeddingFieldIds));
+    ASSERT_TRUE(ranges.empty());
+}
+
 TEST_F(DataEvolutionSplitReadTest, TestPlanSequentialVectorRead) {
     auto main = CreateNormalFile("main.parquet", 100, 10, 0);
     auto vector0 = CreateDataFileMeta("vector0.vector.vortex", 100, 3, 1);
@@ -1057,6 +1127,70 @@ TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadReusesMainReader) {
         auto projected = arrow::StructArray::Make(columns, names).ValueOrDie();
         ASSERT_TRUE(result->Equals(arrow::ChunkedArray(projected))) << result->ToString();
         ASSERT_EQ(counting_fs->OpenCount(), 1);
+    }
+
+    // A selection confined to the first VECTOR file must not include rows from the second.
+    {
+        ReadContextBuilder builder(dir->Str());
+        builder.WithFileSystem(fs).EnablePrefetch(false).SetReadFieldNames(
+            {"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
+                             InternalReadContext::Create(read_context, table_schema, options));
+        DataEvolutionSplitRead split_read(path_factory, context, GetDefaultPool(), executor);
+        auto selected_split =
+            std::make_shared<IndexedSplitImpl>(split, std::vector<Range>{Range(0, 1)});
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                             split_read.CreateReader(selected_split));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(result);
+        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected->Slice(0, 2))))
+            << result->ToString();
+    }
+
+    // Older full-schema files may omit write_cols, while VECTOR metadata includes system fields.
+    {
+        SchemaManager schema_manager(fs, dir->Str());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> stored_schema,
+                             schema_manager.CreateTable(schema, {}, {}, options));
+        ASSERT_EQ(stored_schema->Id(), 0);
+        auto evolved_fields = schema->fields();
+        evolved_fields.push_back(DataField(2, arrow::field("added", arrow::utf8())).ArrowField());
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> evolved_schema,
+            TableSchema::Create(1, arrow::schema(evolved_fields), {}, {}, options));
+        auto legacy_data = arrow::ipc::internal::json::ArrayFromJSON(
+                               arrow::struct_(schema->fields()),
+                               "[[0, null], [1, null], [2, null], [3, null], [4, null], [5, null]]")
+                               .ValueOrDie();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> legacy_main,
+                             write_file("legacy.parquet", 0, legacy_data, 3));
+        legacy_main->write_cols = std::nullopt;
+        DataSplitImpl::Builder legacy_split_builder(BinaryRow::EmptyRow(), 0, bucket_path,
+                                                    {vector1, legacy_main, vector0});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> legacy_split,
+                             legacy_split_builder.RawConvertible(false).Build());
+        ReadContextBuilder builder(dir->Str());
+        builder.WithFileSystem(fs).EnablePrefetch(false).SetReadFieldNames(
+            {"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
+                             InternalReadContext::Create(read_context, evolved_schema, options));
+        DataEvolutionSplitRead split_read(path_factory, context, GetDefaultPool(), executor);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                             split_read.CreateReader(legacy_split));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(result);
+        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected))) << result->ToString();
+
+        vector0->write_cols->push_back(SpecialFields::RowId().Name());
+        vector0->write_cols->push_back(SpecialFields::SequenceNumber().Name());
+        ASSERT_OK_AND_ASSIGN(reader, split_read.CreateReader(legacy_split));
+        ASSERT_OK_AND_ASSIGN(result, ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(result);
+        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected))) << result->ToString();
     }
 }
 
@@ -1353,6 +1487,32 @@ TEST_F(DataEvolutionSplitReadTest, TestFileIndexSelectionOnlyPushesDownNormalGro
         ASSERT_TRUE(selection.has_value());
         ASSERT_TRUE(selection->IsEmpty());
     }
+
+    // The per-file reader also applies indexes when no group selection was prepared.
+    auto check_reader = [&](const std::shared_ptr<Predicate>& predicate,
+                            const std::optional<std::vector<Range>>& row_ranges,
+                            const std::string& expected_json) {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<FileBatchReader> reader,
+            split_read.ApplyIndexAndDvReaderIfNeeded(
+                std::make_unique<MockFileBatchReader>(data, data->type(), 2), normal, index_schema,
+                index_schema, predicate, /*dv_factory=*/nullptr, row_ranges,
+                /*data_file_path_factory=*/nullptr, /*file_index_options=*/{}));
+        if (expected_json.empty()) {
+            ASSERT_FALSE(reader);
+            return;
+        }
+        ASSERT_TRUE(reader);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        auto expected =
+            arrow::ipc::internal::json::ArrayFromJSON(data->type(), expected_json).ValueOrDie();
+        ASSERT_TRUE(result);
+        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(expected))) << result->ToString();
+    };
+    check_reader(match, std::nullopt, "[[1]]");
+    check_reader(match, std::vector<Range>{Range(102, 103)}, "");
+    check_reader(miss, std::nullopt, "");
 }
 
 namespace {
@@ -1424,7 +1584,7 @@ TEST_F(DataEvolutionSplitReadTest, TestGroupBitmapCombinesWithRowRangesAndDvInFi
             std::make_unique<MockFileBatchReader>(data, type, 2), file, schema, schema,
             /*predicate=*/nullptr, MakeSingleFileDvFactory(file->file_name, MakeBitmapDv({1})),
             std::vector<Range>{Range(101, 103)}, /*data_file_path_factory=*/nullptr,
-            /*file_index_options=*/{}, /*index_scores=*/nullptr));
+            /*file_index_options=*/{}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadResultCollector::CollectResult(std::move(reader)));
     auto expected = arrow::ipc::internal::json::ArrayFromJSON(type, R"([[3]])").ValueOrDie();
@@ -1614,6 +1774,10 @@ TEST_F(DataEvolutionSplitReadTest, TestPartialBlobBunchUsesNormalRange) {
 TEST_F(DataEvolutionSplitReadTest, TestExcludeDeletedRowIds) {
     // anchor range starts at 100, deleted anchor positions {3, 4, 7} are row ids {103, 104, 107}
     DataEvolutionSplitRead::GroupDeletionVector group_dv{MakeBitmapDv({3, 4, 7}), Range(100, 199)};
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Range> empty,
+                         DataEvolutionSplitRead::ExcludeDeletedRowIds({}, group_dv));
+    ASSERT_TRUE(empty.empty());
 
     ASSERT_OK_AND_ASSIGN(std::vector<Range> remaining,
                          DataEvolutionSplitRead::ExcludeDeletedRowIds({Range(102, 108)}, group_dv));

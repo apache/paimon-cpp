@@ -219,9 +219,21 @@ Result<std::shared_ptr<FileStorePathFactory>> CreatePathFactory(
     return path_factory;
 }
 
-Result<std::optional<Snapshot>> LatestSnapshot(const MetadataSystemTableContext& context) {
+// Reads the snapshot pinned by `scan.snapshot-id`, or the latest snapshot when the option is unset.
+// A pinned snapshot that does not exist is an error instead of a fallback to the latest snapshot.
+Result<std::optional<Snapshot>> SelectedSnapshot(const MetadataSystemTableContext& context,
+                                                 const CoreOptions& core_options) {
     SnapshotManager snapshot_manager(context.fs, context.table_path, context.branch);
-    return snapshot_manager.LatestSnapshot();
+    std::optional<int64_t> snapshot_id = core_options.GetScanSnapshotId();
+    if (snapshot_id == std::nullopt) {
+        return snapshot_manager.LatestSnapshot();
+    }
+    PAIMON_ASSIGN_OR_RAISE(bool exists, snapshot_manager.SnapshotExists(snapshot_id.value()));
+    if (!exists) {
+        return Status::NotExist(fmt::format("snapshot {} does not exist", snapshot_id.value()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager.LoadSnapshot(snapshot_id.value()));
+    return std::optional<Snapshot>(std::move(snapshot));
 }
 
 Result<std::vector<ManifestFileMeta>> ReadDataManifests(
@@ -255,11 +267,12 @@ Result<std::unique_ptr<ManifestFile>> CreateManifestFile(
                                 partition_schema);
 }
 
-Result<std::vector<ManifestEntry>> ReadLatestManifestEntries(
+Result<std::vector<ManifestEntry>> ReadSelectedManifestEntries(
     const MetadataSystemTableContext& context,
     const std::shared_ptr<FileStorePathFactory>& path_factory, const CoreOptions& core_options,
     const std::shared_ptr<MemoryPool>& pool) {
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, LatestSnapshot(context));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
+                           SelectedSnapshot(context, core_options));
     if (!snapshot) {
         return std::vector<ManifestEntry>();
     }
@@ -276,12 +289,12 @@ Result<std::vector<ManifestEntry>> ReadLatestManifestEntries(
     return entries;
 }
 
-Result<std::vector<ManifestEntry>> ReadLatestDataFiles(
+Result<std::vector<ManifestEntry>> ReadSelectedDataFiles(
     const MetadataSystemTableContext& context,
     const std::shared_ptr<FileStorePathFactory>& path_factory, const CoreOptions& core_options,
     const std::shared_ptr<MemoryPool>& pool) {
     PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> entries,
-                           ReadLatestManifestEntries(context, path_factory, core_options, pool));
+                           ReadSelectedManifestEntries(context, path_factory, core_options, pool));
     std::vector<ManifestEntry> merged_entries;
     PAIMON_RETURN_NOT_OK(FileEntry::MergeEntries(entries, &merged_entries));
     return merged_entries;
@@ -798,13 +811,14 @@ Result<std::shared_ptr<arrow::Schema>> ManifestsSystemTable::ArrowSchema() const
 
 Result<std::vector<GenericRow>> ManifestsSystemTable::BuildRows() const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> schema, ArrowSchema());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, LatestSnapshot(context_));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CreateCoreOptions(context_));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
+                           SelectedSnapshot(context_, core_options));
     if (!snapshot) {
         return std::vector<GenericRow>();
     }
 
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CreateCoreOptions(context_));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
                            CreatePathFactory(context_, core_options, pool));
     PAIMON_ASSIGN_OR_RAISE(
@@ -884,7 +898,7 @@ Result<std::vector<GenericRow>> FilesSystemTable::BuildRows() const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
                            CreatePathFactory(context_, core_options, pool));
     PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> entries,
-                           ReadLatestDataFiles(context_, path_factory, core_options, pool));
+                           ReadSelectedDataFiles(context_, path_factory, core_options, pool));
     std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(context_.table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(

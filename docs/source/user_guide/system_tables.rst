@@ -39,11 +39,16 @@ case-insensitive, and an unrecognized suffix fails with
 * ``$tags``: tags and the snapshots they reference.
 * ``$branches``: table branches, including ``main``.
 * ``$consumers``: persisted streaming consumer offsets.
-* ``$manifests``: data manifest metadata in the latest snapshot.
-* ``$files``: data file metadata in the latest snapshot.
+* ``$manifests``: data manifest metadata in the selected snapshot.
+* ``$files``: data file metadata in the selected snapshot.
 * ``$audit_log``: row-level changelog records with rowkind.
 * ``$binlog``: changelog records with list-wrapped data columns.
 * ``$ro``: read-optimized data, described in the next section.
+
+``$manifests`` and ``$files`` read the latest snapshot by default. Set
+``scan.snapshot-id`` to read metadata from a specific snapshot of the selected
+branch. If that snapshot does not exist, the read fails with
+``snapshot <id> does not exist`` instead of falling back to the latest snapshot.
 
 Global System Tables
 --------------------

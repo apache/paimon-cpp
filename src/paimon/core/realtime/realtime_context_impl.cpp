@@ -73,6 +73,7 @@ struct RealtimeContextImpl::RefreshNotification {
     int64_t committed_end_offset;
     std::vector<std::shared_ptr<DataFileMeta>> active_data_files;
     std::optional<RealtimeDeduplicateState::PreparedSnapshot> prepared;
+    bool installed = false;
 };
 
 struct RealtimeContextImpl::RefreshState {
@@ -168,6 +169,17 @@ std::shared_ptr<Metrics> RealtimeContextImpl::GetMetrics() const {
     return metrics;
 }
 
+Result<std::optional<int64_t>> RealtimeContextImpl::GetRefreshedSnapshotId(
+    const RealtimePartitionBucket& partition_bucket) const {
+    std::lock_guard<std::mutex> progress_lock(progress_mutex_);
+    std::lock_guard<std::mutex> registry_lock(mutex_);
+    auto iter = stores_.find(partition_bucket);
+    if (iter == stores_.end()) {
+        return Status::KeyError("real-time partition-bucket store does not exist");
+    }
+    return iter->second.refreshed_snapshot_id;
+}
+
 Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket) {
     PAIMON_RETURN_NOT_OK(CheckUsable());
@@ -259,9 +271,11 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
                                    GetArrowPool(memory_pool)));
         store = std::move(deduplicate_store);
     }
-    stores_.emplace(partition_bucket,
-                    StoreEntry{store, requested_schema, mode, std::move(temp_directory),
-                               std::move(deduplicate_key_fields), deduplicate_state});
+    stores_.emplace(
+        partition_bucket,
+        StoreEntry{store, requested_schema, mode, std::move(temp_directory),
+                   std::move(deduplicate_key_fields), deduplicate_state,
+                   /*materialized_max_sequence_number=*/-1, last_refreshed_snapshot_id_});
     if (offset_iter != committed_offsets_.end()) {
         reclaimed_offsets_.emplace(partition_bucket, offset_iter->second);
     }
@@ -504,7 +518,7 @@ Status RealtimeContextImpl::InstallCommittedRefresh(int64_t snapshot_id, Refresh
     committed_data_files_ = std::move(refresh->next_data_files);
     last_refreshed_snapshot_id_ = snapshot_id;
     Status first_error = Status::OK();
-    for (const auto& [partition_bucket, notification] : refresh->notifications) {
+    for (auto& [partition_bucket, notification] : refresh->notifications) {
         Status status;
         if (notification.deduplicate_state) {
             Result<std::shared_ptr<RealtimeReadView>> retired =
@@ -527,12 +541,22 @@ Status RealtimeContextImpl::InstallCommittedRefresh(int64_t snapshot_id, Refresh
             status = notification.store->AdvanceCommittedOffset(notification.committed_end_offset);
         }
         if (status.ok()) {
+            notification.installed = true;
             reclaimed_offsets_[partition_bucket] = notification.committed_end_offset;
             if (notification.deduplicate_state) {
                 installed_snapshot_ids_[partition_bucket] = snapshot_id;
             }
         } else if (first_error.ok()) {
             first_error = std::move(status);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> registry_lock(mutex_);
+        for (auto& [partition_bucket, entry] : stores_) {
+            auto notification = refresh->notifications.find(partition_bucket);
+            if (notification == refresh->notifications.end() || notification->second.installed) {
+                entry.refreshed_snapshot_id = snapshot_id;
+            }
         }
     }
     return first_error;

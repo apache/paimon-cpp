@@ -32,6 +32,7 @@
 #include "arrow/array/builder_dict.h"
 #include "arrow/array/builder_nested.h"
 #include "arrow/c/bridge.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/reader/late_materializing_reader_builder.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
@@ -247,6 +248,82 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
     arrow::FieldVector full_fields_;
     std::shared_ptr<arrow::DataType> full_type_;
 };
+
+// Restrict only the payload pass to model a format reader that omits rows or returns
+// an invalid selection without changing the probe data.
+class PayloadSelectionReader : public MockFileBatchReader {
+ public:
+    PayloadSelectionReader(const std::shared_ptr<arrow::Array>& data,
+                           const std::shared_ptr<arrow::DataType>& schema, int32_t batch_size,
+                           const RoaringBitmap32& payload_bitmap, bool empty_bitmap = false)
+        : MockFileBatchReader(data, schema, batch_size),
+          payload_bitmap_(payload_bitmap),
+          empty_bitmap_(empty_bitmap) {}
+
+    Status SetReadSchema(::ArrowSchema* schema, const std::shared_ptr<Predicate>& predicate,
+                         const std::optional<RoaringBitmap32>& selection) override {
+        PAIMON_RETURN_NOT_OK(MockFileBatchReader::SetReadSchema(schema, predicate, selection));
+        if (++schema_count_ == 2) {
+            bitmap_ = payload_bitmap_;
+        }
+        return Status::OK();
+    }
+
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch,
+                               MockFileBatchReader::NextBatchWithBitmap());
+        if (schema_count_ == 2 && empty_bitmap_ && !BatchReader::IsEofBatch(batch)) {
+            batch.second = RoaringBitmap32();
+        }
+        return batch;
+    }
+
+ private:
+    RoaringBitmap32 payload_bitmap_;
+    bool empty_bitmap_;
+    int32_t schema_count_ = 0;
+};
+
+TEST_F(LateMaterializingFileBatchReaderTest, PayloadEarlyEofReturnsError) {
+    auto data = BuildData({0, 1, 2, 3});
+    RoaringBitmap32 payload_bitmap;
+    payload_bitmap.Add(2);
+    auto mock = std::make_unique<PayloadSelectionReader>(data, full_type_, 2, payload_bitmap);
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    auto predicate = PredicateBuilder::GreaterThan(0, "k", FieldType::BIGINT, Literal(int64_t{1}));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    ASSERT_NOK_WITH_MSG(Collect(reader.get()), "does not match probe data length");
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, EmptyPayloadBitmapReturnsError) {
+    auto data = BuildData({0, 1, 2, 3});
+    RoaringBitmap32 payload_bitmap;
+    payload_bitmap.AddRange(0, 4);
+    auto mock = std::make_unique<PayloadSelectionReader>(data, full_type_, 2, payload_bitmap,
+                                                         /*empty_bitmap=*/true);
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    auto predicate = PredicateBuilder::GreaterThan(0, "k", FieldType::BIGINT, Literal(int64_t{1}));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    ASSERT_NOK_WITH_MSG(Collect(reader.get()), "inner read bitmap is empty");
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, SkipsPayloadBatchesWithoutMatches) {
+    auto data = BuildData({0, 1, 2, 3, 4, 5});
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, 2);
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    auto predicate = PredicateBuilder::GreaterThan(0, "k", FieldType::BIGINT, Literal(int64_t{3}));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
+    ASSERT_EQ(rows.size(), 2u);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        ASSERT_EQ(rows[i].k, static_cast<int64_t>(i + 4));
+        ASSERT_EQ(rows[i].v, "v_" + std::to_string(i + 4));
+        ASSERT_EQ(rows[i].file_row, i + 4);
+    }
+}
 
 // No predicate: the reader must pass through the inner reader unchanged (all rows, all columns).
 TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenNoPredicate) {
@@ -864,6 +941,60 @@ TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangeErrorFailsRead
 
     ASSERT_NOK_WITH_MSG(reader->NextBatch(), "pre-buffer range unavailable");
     EXPECT_EQ(calls, 0);
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, DisabledPrefetchCacheSkipsRangeQueries) {
+    class UnavailableRangesBuilder : public MockFormatReaderBuilder {
+     public:
+        using MockFormatReaderBuilder::MockFormatReaderBuilder;
+
+        Result<std::unique_ptr<FileBatchReader>> Build(
+            const std::shared_ptr<InputStream>& stream) const override {
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
+                                   MockFormatReaderBuilder::Build(stream));
+            checked_cast<MockFileBatchReader*>(reader.get())
+                ->SetPreBufferRangeStatus(Status::IOError("pre-buffer range unavailable"));
+            return reader;
+        }
+    };
+
+    auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
+    auto mock_fs = std::make_shared<MockFileSystem>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
+        LateMaterializingReaderBuilder builder(
+            std::make_unique<UnavailableRangesBuilder>(data, full_type_, /*batch_size=*/3),
+            GetArrowPool(pool_));
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<PrefetchFileBatchReaderImpl> reader,
+            PrefetchFileBatchReaderImpl::Create(
+                /*data_file_path=*/"", /*data_file_size=*/0, &builder, mock_fs,
+                /*prefetch_max_parallel_num=*/1, /*batch_size=*/3, /*prefetch_batch_count=*/2,
+                /*enable_adaptive_prefetch_strategy=*/false, executor,
+                /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
+                /*enable_io_metrics=*/false, level, pool_, GetArrowPool(pool_)));
+        auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                          Literal(4l));
+        ::ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(full_fields_), &c_schema).ok());
+        ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, std::nullopt));
+        reader->Warmup();
+
+        // Every range query fails, so successful probe/payload reads require skipping them all.
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result,
+                             CollectStruct(reader.get()));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->length(), 6);
+        auto keys = checked_pointer_cast<arrow::Int64Array>(result->GetFieldByName("k"));
+        auto values = checked_pointer_cast<arrow::StringArray>(result->GetFieldByName("v"));
+        ASSERT_TRUE(keys);
+        ASSERT_TRUE(values);
+        for (int64_t i = 0; i < result->length(); ++i) {
+            ASSERT_EQ(keys->Value(i), i + 4);
+            ASSERT_EQ(values->GetString(i), fmt::format("v_{}", i + 4));
+        }
+        reader->Close();
+    }
 }
 
 // End to end below the prefetch layer: the ranges the inner LM reader reports mid-read must reach

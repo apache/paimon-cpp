@@ -57,6 +57,7 @@
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/utils/row_range_index.h"
 namespace paimon::test {
 using DataEvolutionTableParam = std::tuple<std::string, bool, bool>;
 
@@ -3553,32 +3554,43 @@ TEST_P(DataEvolutionDvTableTest, TestGlobalIndexLiveRows) {
 
     std::shared_ptr<Executor> executor = CreateDefaultExecutor();
     auto read_live_rows = [&](const Snapshot& read_snapshot,
-                              const std::shared_ptr<PredicateFilter>& partition_filter) {
+                              const std::shared_ptr<PredicateFilter>& partition_filter,
+                              const std::optional<RowRangeIndex>& row_range_index) {
         return GlobalIndexLiveRowFilter::LiveRows(table_path, table_schema.value(), read_snapshot,
-                                                  partition_filter, options, executor,
-                                                  GetDefaultPool());
+                                                  partition_filter, row_range_index, options,
+                                                  executor, GetDefaultPool());
     };
     ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap64> live_rows,
-                         read_live_rows(snapshot.value(), /*partition_filter=*/nullptr));
+                         read_live_rows(snapshot.value(), /*partition_filter=*/nullptr,
+                                        /*row_range_index=*/std::nullopt));
     ASSERT_TRUE(live_rows);
     ASSERT_EQ(live_rows.value(), RoaringBitmap64::From({0, 2, 5, 6, 7}));
+
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex p1_row_ranges, RowRangeIndex::Create({Range(4, 5)}));
+    ASSERT_OK_AND_ASSIGN(
+        live_rows, read_live_rows(snapshot.value(), /*partition_filter=*/nullptr, p1_row_ranges));
+    ASSERT_TRUE(live_rows);
+    ASSERT_EQ(live_rows.value(), RoaringBitmap64::From({5, 6, 7}));
 
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema.value()->Fields());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<PredicateFilter> p0_filter,
                          FileStoreScan::CreatePartitionPredicate(
                              table_schema.value()->PartitionKeys(),
                              options.GetPartitionDefaultName(), arrow_schema, {{{"f1", "p0"}}}));
-    ASSERT_OK_AND_ASSIGN(live_rows, read_live_rows(snapshot.value(), p0_filter));
+    ASSERT_OK_AND_ASSIGN(live_rows, read_live_rows(snapshot.value(), p0_filter,
+                                                   /*row_range_index=*/std::nullopt));
     ASSERT_TRUE(live_rows);
     ASSERT_EQ(live_rows.value(), RoaringBitmap64::From({0, 2}));
 
     ASSERT_OK_AND_ASSIGN(live_rows, read_live_rows(snapshot_before_deletion.value(),
-                                                   /*partition_filter=*/nullptr));
+                                                   /*partition_filter=*/nullptr,
+                                                   /*row_range_index=*/std::nullopt));
     ASSERT_TRUE(live_rows);
     ASSERT_EQ(live_rows.value(), RoaringBitmap64::From({0, 1, 2, 3, 4, 5, 6, 7}));
 
     ASSERT_OK(fs->Delete(PathUtil::JoinPath(table_path, "index")));
-    ASSERT_NOK_WITH_MSG(read_live_rows(snapshot.value(), /*partition_filter=*/nullptr),
+    ASSERT_NOK_WITH_MSG(read_live_rows(snapshot.value(), /*partition_filter=*/nullptr,
+                                       /*row_range_index=*/std::nullopt),
                         "failed to read deletion vector of data file");
 }
 

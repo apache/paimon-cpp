@@ -400,7 +400,8 @@ This product includes code from Apache ORC.
 * Upstream source patches:
   * cmake_modules/orc.diff
 * Adapted read-ahead cache:
-  * include/paimon/utils/read_ahead_cache.h (adapted from Cache.hh)
+  * include/paimon/utils/prefetch_cache_config.h (adapted from Cache.hh)
+  * src/paimon/common/utils/read_ahead_cache.h (adapted from Cache.hh)
   * src/paimon/common/utils/read_ahead_cache.cpp (adapted from Cache.cc)
 * Adapted byte range combiner:
   * src/paimon/common/utils/byte_range_combiner.h (adapted from Cache.hh)
@@ -409,6 +410,18 @@ This product includes code from Apache ORC.
 
 Copyright: 2013 and onwards The Apache Software Foundation.
 Home page: https://orc.apache.org/
+License: https://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+
+This product includes code from Vortex 0.75.0.
+
+* Callback I/O sink utilities in crates/vortex_callback_io/callback_io.rs
+  (adapted from vortex-ffi/src/sink.rs)
+* Upstream source patch in cmake_modules/vortex.diff
+
+Copyright the Vortex contributors
+Home page: https://github.com/vortex-data/vortex
 License: https://www.apache.org/licenses/LICENSE-2.0
 
 --------------------------------------------------------------------------------

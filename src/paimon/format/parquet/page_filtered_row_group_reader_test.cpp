@@ -67,6 +67,38 @@ class Predicate;
 
 namespace paimon::parquet::test {
 
+namespace {
+class SyntheticOffsetIndex : public ::parquet::OffsetIndex {
+ public:
+    explicit SyntheticOffsetIndex(std::vector<::parquet::PageLocation> pages)
+        : pages_(std::move(pages)) {}
+
+    const std::vector<::parquet::PageLocation>& page_locations() const override {
+        return pages_;
+    }
+
+ private:
+    std::vector<::parquet::PageLocation> pages_;
+};
+
+class SyntheticPageIndexReader : public ::parquet::RowGroupPageIndexReader {
+ public:
+    explicit SyntheticPageIndexReader(std::shared_ptr<::parquet::OffsetIndex> index)
+        : index_(std::move(index)) {}
+
+    std::shared_ptr<::parquet::ColumnIndex> GetColumnIndex(int32_t) override {
+        return nullptr;
+    }
+
+    std::shared_ptr<::parquet::OffsetIndex> GetOffsetIndex(int32_t) override {
+        return index_;
+    }
+
+ private:
+    std::shared_ptr<::parquet::OffsetIndex> index_;
+};
+}  // namespace
+
 class ReadAtTrackingInputStream : public InputStream {
  public:
     explicit ReadAtTrackingInputStream(std::shared_ptr<InputStream> input)
@@ -1764,6 +1796,70 @@ TEST_F(PageFilteredRowGroupReaderTest, MissingOffsetIndexFallsBackToSequentialRe
     ASSERT_TRUE(values);
     ASSERT_EQ(15, values->Value(0));
     ASSERT_EQ(85, values->Value(1));
+}
+
+TEST_F(PageFilteredRowGroupReaderTest, InvalidOffsetIndexFallsBackWithoutChangingSelectedRows) {
+    std::string file_name = dir_->Str() + "/invalid_offset_index.parquet";
+    auto data = MakeSequentialIntData(100);
+    WriteTestFile(file_name, data, /*write_batch_size=*/10, /*max_row_group_length=*/100);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
+    auto stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+    std::unique_ptr<::parquet::arrow::FileReader> reader;
+    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get(), &reader).ok());
+    auto column = reader->parquet_reader()->metadata()->RowGroup(0)->ColumnChunk(0);
+    int64_t offset = column->data_page_offset();
+    int64_t size = column->total_compressed_size();
+    std::vector<std::vector<::parquet::PageLocation>> invalid_pages = {
+        {},
+        {{offset, 1, 1}},
+        {{offset - 1, 1, 0}},
+        {{offset, 0, 0}},
+        {{offset, 2, 0}, {offset + 1, 2, 10}},
+        {{offset, 1, 0}, {offset + size, 1, 10}},
+    };
+    RowRanges rows;
+    rows.Add(RowRanges::Range(15, 19));
+    rows.Add(RowRanges::Range(85, 89));
+    TargetRowGroup target(0, true, rows);
+    // A missing index and each malformed layout must select the same rows using the
+    // sequential fallback, including through the streaming reader's schema API.
+    for (size_t i = 0; i <= invalid_pages.size(); ++i) {
+        SCOPED_TRACE(i);
+        std::shared_ptr<::parquet::OffsetIndex> index;
+        if (i < invalid_pages.size()) {
+            index = std::make_shared<SyntheticOffsetIndex>(invalid_pages[i]);
+            ASSERT_FALSE(
+                PageFilteredRowGroupReader::MakeDataPageReadPlan(rows, index, *column, 100));
+        }
+        auto page_index = std::make_shared<SyntheticPageIndexReader>(index);
+        std::vector<arrow::io::ReadRange> ranges = PageFilteredRowGroupReader::ComputePageRanges(
+            target, {0}, page_index, reader->parquet_reader());
+        ASSERT_EQ(1, ranges.size());
+        ASSERT_EQ(offset, ranges[0].offset);
+        ASSERT_EQ(size, ranges[0].length);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<arrow::RecordBatchReader> batches,
+                             PageFilteredRowGroupReader::ReadFilteredRowGroup(
+                                 target, {0}, arrow::io::CacheOptions::Defaults(), false, ranges,
+                                 /*max_chunksize=*/3, page_index, arrow_pool_, reader.get()));
+        ASSERT_TRUE(
+            batches->schema()->Equals(*arrow::schema({arrow::field("val", arrow::int32())})));
+        std::vector<int32_t> selected;
+        while (true) {
+            std::shared_ptr<arrow::RecordBatch> batch;
+            ASSERT_TRUE(batches->ReadNext(&batch).ok());
+            if (!batch) {
+                break;
+            }
+            ASSERT_LE(batch->num_rows(), 3);
+            auto values = std::dynamic_pointer_cast<arrow::Int32Array>(batch->column(0));
+            ASSERT_NE(nullptr, values);
+            for (int64_t row = 0; row < values->length(); ++row) {
+                selected.push_back(values->Value(row));
+            }
+        }
+        ASSERT_EQ((std::vector<int32_t>{15, 16, 17, 18, 19, 85, 86, 87, 88, 89}), selected);
+    }
 }
 
 /// Test: bitmap hits partial pages of a row group (no predicate).

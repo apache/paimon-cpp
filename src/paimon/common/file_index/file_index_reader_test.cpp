@@ -70,6 +70,12 @@ TEST(FileIndexReaderTest, TestDefaultIndexReader) {
     ASSERT_TRUE(reader.VisitIn({lit0, lit1}).value()->IsRemain().value());
     ASSERT_TRUE(reader.VisitNotIn({lit0, lit1}).value()->IsRemain().value());
 
+    Literal text(FieldType::STRING, "abc", 3);
+    ASSERT_TRUE(reader.VisitStartsWith(text).value()->IsRemain().value());
+    ASSERT_TRUE(reader.VisitEndsWith(text).value()->IsRemain().value());
+    ASSERT_TRUE(reader.VisitContains(text).value()->IsRemain().value());
+    ASSERT_TRUE(reader.VisitLike(text).value()->IsRemain().value());
+
     std::shared_ptr<VectorSearch> vector_search =
         std::make_shared<VectorSearch>("embedding", 1, std::vector<float>{1.0f}, nullptr, nullptr,
                                        std::nullopt, std::map<std::string, std::string>{});
@@ -81,37 +87,18 @@ TEST(FileIndexReaderTest, TestDefaultIndexReader) {
     auto full_text_match = std::make_shared<FullTextMatch>("body", R"({"match":{"query":"word"}})");
     ASSERT_NOK_WITH_MSG(reader.VisitFullTextMatch(full_text_match),
                         "does not support complete full-text matching");
+    ASSERT_NOK_WITH_MSG(reader.VisitFullTextMatch(full_text_match, /*needs_scores=*/true),
+                        "does not support complete full-text matching");
 }
 
-TEST(FileIndexReaderTest, TestFullTextMatchVisitorDispatch) {
-    class FullTextReader : public FileIndexReader {
-     public:
-        Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
-            const std::shared_ptr<FullTextMatch>& full_text_match) override {
-            received_match_ = full_text_match;
-            return FileIndexResult::Skip();
-        }
-
-        std::shared_ptr<FullTextMatch> received_match_;
-    };
-
-    auto match = std::make_shared<FullTextMatch>("body", R"({"match":{"query":"apple"}})");
-    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::FullTextMatch(0, match));
-    auto leaf = std::dynamic_pointer_cast<LeafPredicate>(predicate);
-    ASSERT_TRUE(leaf);
-
-    auto default_reader = std::make_shared<FileIndexReader>();
-    auto result =
-        PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(leaf, default_reader);
-    ASSERT_NOK_WITH_MSG(result, "This file index does not support complete full-text matching");
-    ASSERT_TRUE(result.status().IsNotImplemented());
-
-    auto reader = std::make_shared<FullTextReader>();
-    ASSERT_OK_AND_ASSIGN(
-        auto matches,
-        PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(leaf, reader));
-    ASSERT_EQ(reader->received_match_, match);
-    ASSERT_OK_AND_ASSIGN(bool is_remain, matches->IsRemain());
-    ASSERT_FALSE(is_remain);
+TEST(FileIndexReaderTest, TestScalarVisitorAndUnknownSelectivity) {
+    auto reader = std::make_shared<MockFileIndexReader>();
+    auto predicate = std::dynamic_pointer_cast<LeafPredicate>(
+        PredicateBuilder::Equal(0, "value", FieldType::INT, Literal(1)));
+    ASSERT_TRUE(predicate);
+    ASSERT_FALSE(reader->EstimateSelectivity(predicate).has_value());
+    ASSERT_FALSE(reader->SupportsSearch(FileIndexReader::SearchType::FULL_TEXT_MATCH));
+    ASSERT_FALSE(reader->SupportsSearch(FileIndexReader::SearchType::FULL_TEXT_SEARCH));
+    ASSERT_FALSE(reader->SupportsSearch(FileIndexReader::SearchType::VECTOR_SEARCH));
 }
 }  // namespace paimon::test

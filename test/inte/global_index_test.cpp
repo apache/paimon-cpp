@@ -20,6 +20,7 @@
 #include <atomic>
 #include <limits>
 
+#include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
@@ -47,6 +48,8 @@
 #include "paimon/global_index/global_index_result.h"
 #include "paimon/global_index/global_index_scan.h"
 #include "paimon/global_index/global_index_write_task.h"
+#include "paimon/global_index/global_indexer.h"
+#include "paimon/global_index/global_indexer_factory.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/result.h"
@@ -102,6 +105,66 @@ class DeleteAfterListFileSystem final : public LocalFileSystem {
     std::string listed_directory_name_;
     mutable std::atomic<bool> deleted_ = false;
 };
+
+#ifdef PAIMON_ENABLE_ORC
+class NestedFieldsIndexWriter : public GlobalIndexWriter {
+ public:
+    explicit NestedFieldsIndexWriter(std::shared_ptr<arrow::DataType> type)
+        : type_(std::move(type)) {}
+
+    Status AddBatch(::ArrowArray* array, std::vector<int64_t>&&) override {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> decoded,
+                                          arrow::ImportArray(array, type_));
+        return ToPaimonStatus(decoded->ValidateFull());
+    }
+
+    Result<std::vector<GlobalIndexIOMeta>> Finish() override {
+        return std::vector<GlobalIndexIOMeta>{};
+    }
+
+ private:
+    std::shared_ptr<arrow::DataType> type_;
+};
+
+class NestedFieldsIndexer : public GlobalIndexer {
+ public:
+    Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const override {
+        return std::optional<std::vector<std::string>>(
+            {"details", "attributes", "plain_details", "plain_attributes"});
+    }
+
+    Result<std::shared_ptr<GlobalIndexWriter>> CreateWriter(
+        const std::string& field_name, ::ArrowSchema* arrow_schema,
+        const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
+        const std::shared_ptr<MemoryPool>& pool) const override {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::DataType> type,
+                                          arrow::ImportType(arrow_schema));
+        return std::shared_ptr<GlobalIndexWriter>(
+            std::make_shared<NestedFieldsIndexWriter>(std::move(type)));
+    }
+
+    Result<std::shared_ptr<GlobalIndexReader>> CreateReader(
+        ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
+        const std::vector<GlobalIndexIOMeta>& files, int64_t total_row_count,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<MemoryPool>& pool) const override {
+        return Status::NotImplemented("test index has no reader");
+    }
+};
+
+class NestedFieldsIndexFactory : public GlobalIndexerFactory {
+ public:
+    const char* Identifier() const override {
+        return "nested-fields-test-global";
+    }
+
+    Result<std::unique_ptr<GlobalIndexer>> Create(
+        const std::map<std::string, std::string>& options) const override {
+        return std::unique_ptr<GlobalIndexer>(std::make_unique<NestedFieldsIndexer>());
+    }
+};
+REGISTER_PAIMON_FACTORY(NestedFieldsIndexFactory);
+#endif
 
 }  // namespace
 
@@ -1121,6 +1184,78 @@ TEST_P(GlobalIndexTest, TestWriteIndex) {
     }
 }
 
+#ifdef PAIMON_ENABLE_ORC
+TEST_P(GlobalIndexTest, TestWriteIndexDecodesNestedOrcDictionaries) {
+    if (file_format_ != "orc") {
+        GTEST_SKIP() << "ORC-only dictionary encoding case";
+    }
+    arrow::FieldVector fields = {
+        arrow::field("key", arrow::int32()),
+        arrow::field("details", arrow::struct_({arrow::field("text", arrow::utf8()),
+                                                arrow::field("number", arrow::int32())})),
+        arrow::field("attributes", arrow::map(arrow::utf8(), arrow::utf8())),
+        arrow::field("plain_details", arrow::struct_({arrow::field("left", arrow::int32()),
+                                                      arrow::field("right", arrow::int32())})),
+        arrow::field("plain_attributes", arrow::map(arrow::int32(), arrow::int32()))};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {"orc.dictionary-key-size-threshold", "1"},
+                                                  {"orc.read.enable-lazy-decoding", "true"}};
+    CreateTable(/*partition_keys=*/{}, schema, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    std::shared_ptr<arrow::Array> source =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [0, ["red", 10], [["color", "red"]], [1, 2], [[1, 2]]],
+            [1, ["blue", 20], [["color", "blue"]], [3, 4], [[3, 4]]],
+            [2, ["red", 30], [["color", "red"]], [5, 6], [[5, 6]]],
+            [3, ["blue", 40], [["color", "blue"]], [7, 8], [[7, 8]]]
+        ])")
+            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         WriteArray(table_path, schema->field_names(), source));
+    ASSERT_OK(Commit(table_path, messages));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> split,
+                         ScanData(table_path, /*partition_filters=*/{}));
+    std::shared_ptr<IndexedSplitImpl> indexed_split =
+        std::make_shared<IndexedSplitImpl>(split, std::vector<Range>{Range(0, 3)});
+    ReadContextBuilder read_builder(table_path);
+    read_builder.SetOptions(options).WithFileSystem(fs_).SetReadFieldNames(
+        {"key", "details", "attributes", "plain_details", "plain_attributes",
+         SpecialFields::RowId().Name()});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                         table_read->CreateReader(indexed_split));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    arrow::Result<std::shared_ptr<arrow::Array>> raw_result =
+        arrow::ImportArray(batch.first.get(), batch.second.get());
+    ASSERT_TRUE(raw_result.ok()) << raw_result.status().ToString();
+    std::shared_ptr<arrow::Array> raw = std::move(raw_result).ValueOrDie();
+    std::shared_ptr<arrow::StructArray> raw_rows =
+        std::dynamic_pointer_cast<arrow::StructArray>(raw);
+    ASSERT_TRUE(raw_rows);
+    std::shared_ptr<arrow::StructArray> raw_details =
+        std::dynamic_pointer_cast<arrow::StructArray>(raw_rows->GetFieldByName("details"));
+    std::shared_ptr<arrow::MapArray> raw_attributes =
+        std::dynamic_pointer_cast<arrow::MapArray>(raw_rows->GetFieldByName("attributes"));
+    ASSERT_TRUE(raw_details);
+    ASSERT_TRUE(raw_attributes);
+    std::shared_ptr<arrow::Array> raw_text = raw_details->GetFieldByName("text");
+    ASSERT_TRUE(raw_text);
+    ASSERT_EQ(raw_text->type_id(), arrow::Type::DICTIONARY);
+    ASSERT_EQ(raw_attributes->keys()->type_id(), arrow::Type::DICTIONARY);
+    ASSERT_EQ(raw_attributes->items()->type_id(), arrow::Type::DICTIONARY);
+    ASSERT_OK(
+        GlobalIndexWriteTask::WriteIndex(table_path, "key", "nested-fields-test", indexed_split,
+                                         /*options=*/{}, /*task_id=*/std::nullopt, pool_, fs_));
+}
+#endif
+
 TEST_P(GlobalIndexTest, TestWriteIndexWithPartition) {
     CreateTable(/*partition_keys=*/{"f1"});
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -1282,6 +1417,46 @@ TEST_P(GlobalIndexTest, TestScanIndex) {
              Literal(FieldType::STRING, "Lucy", 4)});
         ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
         ASSERT_EQ(index_result->ToString(), "{2,3,6}");
+    }
+    {
+        // test starts with predicate for f0
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> predicate,
+            PredicateBuilder::StartsWith(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                         Literal(FieldType::STRING, "Al", 2)));
+        ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
+        ASSERT_TRUE(index_result);
+        ASSERT_EQ(index_result->ToString(), "{0,7}");
+    }
+    {
+        // test ends with predicate for f0
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> predicate,
+            PredicateBuilder::EndsWith(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                       Literal(FieldType::STRING, "ce", 2)));
+        ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
+        ASSERT_TRUE(index_result);
+        ASSERT_EQ(index_result->ToString(), "{0,7}");
+    }
+    {
+        // test contains predicate for f0
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> predicate,
+            PredicateBuilder::Contains(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                       Literal(FieldType::STRING, "lic", 3)));
+        ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
+        ASSERT_TRUE(index_result);
+        ASSERT_EQ(index_result->ToString(), "{0,7}");
+    }
+    {
+        // test like predicate for f0
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> predicate,
+            PredicateBuilder::Like(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                   Literal(FieldType::STRING, "A_i%", 4)));
+        ASSERT_OK_AND_ASSIGN(auto index_result, global_index_scan_impl->Scan(predicate));
+        ASSERT_TRUE(index_result);
+        ASSERT_EQ(index_result->ToString(), "{0,7}");
     }
     {
         // test and predicate
@@ -1699,6 +1874,40 @@ TEST_P(GlobalIndexTest, TestScanIndexWithPartition) {
     std::vector<std::map<std::string, std::string>> partitions = {{{"f1", "10"}}};
     check_result(partitions);
     check_result(std::nullopt);
+}
+
+TEST_P(GlobalIndexTest, TestScanIndexWithPartitionPredicate) {
+    if (file_format_ == "avro") {
+        return;
+    }
+
+    // Only f1=10 has an index in this table.
+    std::string table_path =
+        paimon::test::GetDataDir() + "/" + file_format_ +
+        "/append_with_global_index_with_partition.db/append_with_global_index_with_partition";
+    auto check_result = [&](const std::shared_ptr<Predicate>& partitions,
+                            const std::shared_ptr<MemoryPool>& pool, bool expect_index) {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<GlobalIndexScan> scan,
+            GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt, partitions,
+                                    /*options=*/{}, fs_, /*executor=*/nullptr, pool));
+        ASSERT_OK_AND_ASSIGN(auto readers, scan->CreateReaders("f0", std::nullopt));
+        if (!expect_index) {
+            ASSERT_TRUE(readers.empty());
+            return;
+        }
+        ASSERT_EQ(readers.size(), 1u);
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             readers[0]->VisitEqual(Literal(FieldType::STRING, "Bob", 3)));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->ToString(), "{1,4}");
+    };
+
+    check_result(/*partitions=*/nullptr, /*pool=*/nullptr, /*expect_index=*/true);
+    check_result(PredicateBuilder::Equal(/*field_index=*/0, "f1", FieldType::INT, Literal(10)),
+                 pool_, /*expect_index=*/true);
+    check_result(PredicateBuilder::Equal(/*field_index=*/0, "f1", FieldType::INT, Literal(20)),
+                 pool_, /*expect_index=*/false);
 }
 
 TEST_P(GlobalIndexTest, TestScanUnregisteredIndex) {
@@ -2834,6 +3043,219 @@ TEST_P(GlobalIndexTest, TestScanIndexWithTwoIndexes) {
     // query f2
     ASSERT_OK_AND_ASSIGN(index_readers, global_index_scan->CreateReaders("f2", std::nullopt));
     ASSERT_EQ(index_readers.size(), 0);
+}
+
+TEST_P(GlobalIndexTest, TestLuminaSearchSkipsRowsDeletedByDeletionVectors) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 arrow::field("f1", arrow::list(arrow::float32()))};
+    std::map<std::string, std::string> lumina_options = {
+        {"lumina.index.dimension", "4"},
+        {"lumina.index.type", "bruteforce"},
+        {"lumina.distance.metric", "l2"},
+        {"lumina.encoding.type", "rawf32"},
+        {"lumina.search.parallel_number", "10"},
+        {"lumina.extension.build.tag.tag_schema",
+         R"([{"key_name":"f0","type":"enum","value_type":"int32"}])"}};
+    auto schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
+    CreateTable(/*partition_keys=*/{}, schema, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    auto src_array1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[0, [0.0, 0.0, 0.0, 0.0]],
+[1, [1.0, 1.0, 1.0, 1.0]],
+[2, [2.0, 2.0, 2.0, 2.0]],
+[3, [3.0, 3.0, 3.0, 3.0]],
+[4, [4.0, 4.0, 4.0, 4.0]],
+[5, [5.0, 5.0, 5.0, 5.0]]
+    ])")
+                          .ValueOrDie();
+    auto src_array2 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[6, [6.0, 6.0, 6.0, 6.0]],
+[7, [7.0, 7.0, 7.0, 7.0]],
+[8, [8.0, 8.0, 8.0, 8.0]],
+[9, [9.0, 9.0, 9.0, 9.0]]
+    ])")
+                          .ValueOrDie();
+    auto src_array3 = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[10, [10.0, 10.0, 10.0, 10.0]],
+[11, [11.0, 11.0, 11.0, 11.0]]
+    ])")
+                          .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs1,
+                         WriteArray(table_path, schema->field_names(), src_array1));
+    ASSERT_OK(Commit(table_path, commit_msgs1));
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs2,
+                         WriteArray(table_path, schema->field_names(), src_array2));
+    ASSERT_OK(Commit(table_path, commit_msgs2));
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs3,
+                         WriteArray(table_path, schema->field_names(), src_array3));
+    ASSERT_OK(Commit(table_path, commit_msgs3));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f1", "lumina", lumina_options,
+                         Range(0, 5)));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f1", "lumina", lumina_options,
+                         Range(6, 9)));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f1", "lumina", lumina_options,
+                         Range(10, 11)));
+
+    auto create_scan = [&]() {
+        return GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                       /*partitions=*/std::nullopt, lumina_options, fs_,
+                                       /*executor=*/nullptr, pool_);
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> scan_before_deletion, create_scan());
+
+    ASSERT_OK_AND_ASSIGN(auto split, ScanData(table_path, /*partition_filters=*/{}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
+                         DeletionVectorTestHelper::RetrieveAnchorFileNames(split->DataFiles()));
+    ASSERT_EQ(anchor_file_names.size(), 3u);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<CommitMessage> dv_commit_msg,
+                         DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+                             dir_->GetFileSystem(), table_path, file_format_, commit_msgs1[0],
+                             {{anchor_file_names[0], /*deleted_positions=*/{0, 1, 2}},
+                              {anchor_file_names[1], /*deleted_positions=*/{1}},
+                              {anchor_file_names[2], /*deleted_positions=*/{0, 1}}},
+                             pool_));
+    ASSERT_OK(Commit(table_path, {dv_commit_msg}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> scan, create_scan());
+
+    std::vector<float> query = {0.0f, 0.0f, 0.0f, 0.0f};
+    auto search = [&](const std::shared_ptr<GlobalIndexScan>& index_scan,
+                      const std::optional<RowRangeIndex>& row_range_index,
+                      VectorSearch::PreFilter pre_filter,
+                      const std::shared_ptr<Predicate>& predicate)
+        -> Result<std::shared_ptr<ScoredGlobalIndexResult>> {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexReader> reader,
+                               index_scan->CreateReader("f1", "lumina", row_range_index));
+        if (!reader) {
+            return Status::Invalid("no lumina index on f1");
+        }
+        return reader->VisitVectorSearch(std::make_shared<VectorSearch>(
+            "f1", /*limit=*/3, query, std::move(pre_filter), predicate,
+            /*distance_type=*/std::nullopt, lumina_options));
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> index_result,
+                         search(scan_before_deletion, /*row_range_index=*/std::nullopt,
+                                /*pre_filter=*/nullptr, /*predicate=*/nullptr));
+    ASSERT_EQ(index_result->ToString(),
+              "row ids: {0,1,2,6,7,8,10,11}, "
+              "scores: {0.00,4.00,16.00,144.00,196.00,256.00,400.00,484.00}");
+    ASSERT_OK_AND_ASSIGN(index_result, search(
+                                           scan, /*row_range_index=*/std::nullopt,
+                                           [](int64_t row_id) -> bool { return row_id != 8; },
+                                           /*predicate=*/nullptr));
+    ASSERT_EQ(index_result->ToString(),
+              "row ids: {3,4,5,6,9}, scores: {36.00,64.00,100.00,144.00,324.00}");
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::In(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::INT,
+        {Literal(1), Literal(4), Literal(7), Literal(8), Literal(9)});
+    ASSERT_OK_AND_ASSIGN(index_result,
+                         search(
+                             scan, /*row_range_index=*/std::nullopt,
+                             [](int64_t row_id) -> bool { return row_id != 9; }, predicate));
+    ASSERT_EQ(index_result->ToString(), "row ids: {4,8}, scores: {64.00,256.00}");
+    ASSERT_OK_AND_ASSIGN(index_result, search(scan, /*row_range_index=*/std::nullopt,
+                                              /*pre_filter=*/nullptr, /*predicate=*/nullptr));
+    ASSERT_EQ(index_result->ToString(),
+              "row ids: {3,4,5,6,8,9}, scores: {36.00,64.00,100.00,144.00,256.00,324.00}");
+
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex deleted_shard_range, RowRangeIndex::Create({Range(10, 11)}));
+    ASSERT_OK_AND_ASSIGN(index_result, search(scan, deleted_shard_range, /*pre_filter=*/nullptr,
+                                              /*predicate=*/nullptr));
+    ASSERT_EQ(index_result->ToString(), "row ids: {}, scores: {}");
+
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex first_shard_range, RowRangeIndex::Create({Range(0, 5)}));
+    ASSERT_OK_AND_ASSIGN(index_result, search(scan, first_shard_range, /*pre_filter=*/nullptr,
+                                              /*predicate=*/nullptr));
+    ASSERT_EQ(index_result->ToString(), "row ids: {3,4,5}, scores: {36.00,64.00,100.00}");
+    ASSERT_OK_AND_ASSIGN(auto plan, ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
+                                                           /*options=*/{}, index_result));
+    auto expected_array =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({SpecialFields::ValueKind().ArrowField(), fields[0]}), R"([
+[0, 3],
+[0, 4],
+[0, 5]
+    ])")
+            .ValueOrDie();
+    ASSERT_OK(ReadData(table_path, {"f0"}, expected_array, /*predicate=*/nullptr, plan));
+}
+
+TEST_P(GlobalIndexTest, TestLuminaSearchSkipsUnindexedDeletionVectors) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 arrow::field("f1", arrow::list(arrow::float32()))};
+    std::map<std::string, std::string> lumina_options = {{"lumina.index.dimension", "4"},
+                                                         {"lumina.index.type", "bruteforce"},
+                                                         {"lumina.distance.metric", "l2"},
+                                                         {"lumina.encoding.type", "rawf32"},
+                                                         {"lumina.search.parallel_number", "10"}};
+    auto schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
+    CreateTable(/*partition_keys=*/{}, schema, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    auto indexed_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[0, [0.0, 0.0, 0.0, 0.0]],
+[1, [1.0, 1.0, 1.0, 1.0]]
+    ])")
+                             .ValueOrDie();
+    auto unindexed_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[2, [2.0, 2.0, 2.0, 2.0]],
+[3, [3.0, 3.0, 3.0, 3.0]]
+    ])")
+                               .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto indexed_commit_msgs,
+                         WriteArray(table_path, schema->field_names(), indexed_array));
+    ASSERT_OK(Commit(table_path, indexed_commit_msgs));
+    ASSERT_OK_AND_ASSIGN(auto unindexed_commit_msgs,
+                         WriteArray(table_path, schema->field_names(), unindexed_array));
+    ASSERT_OK(Commit(table_path, unindexed_commit_msgs));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f1", "lumina", lumina_options,
+                         Range(0, 1)));
+
+    ASSERT_OK_AND_ASSIGN(auto split, ScanData(table_path, /*partition_filters=*/{}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
+                         DeletionVectorTestHelper::RetrieveAnchorFileNames(split->DataFiles()));
+    ASSERT_EQ(anchor_file_names.size(), 2u);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CommitMessage> dv_commit_msg,
+        DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+            dir_->GetFileSystem(), table_path, file_format_, unindexed_commit_msgs[0],
+            {{anchor_file_names[1], /*deleted_positions=*/{1}}}, pool_));
+    ASSERT_OK(Commit(table_path, {dv_commit_msg}));
+
+    ASSERT_OK_AND_ASSIGN(split, ScanData(table_path, /*partition_filters=*/{}));
+    std::vector<std::string> deletion_file_paths;
+    for (const std::optional<DeletionFile>& deletion_file : split->DeletionFiles()) {
+        if (deletion_file) {
+            deletion_file_paths.push_back(deletion_file->path);
+        }
+    }
+    ASSERT_EQ(deletion_file_paths.size(), 1u);
+    ASSERT_OK(dir_->GetFileSystem()->Delete(deletion_file_paths[0]));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                 /*partitions=*/std::nullopt, lumina_options, fs_,
+                                                 /*executor=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader,
+                         scan->CreateReader("f1", "lumina", /*row_range_index=*/std::nullopt));
+    ASSERT_TRUE(reader);
+    std::vector<float> query = {0.0f, 0.0f, 0.0f, 0.0f};
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ScoredGlobalIndexResult> index_result,
+        reader->VisitVectorSearch(std::make_shared<VectorSearch>(
+            "f1", /*limit=*/2, query, /*pre_filter=*/nullptr,
+            /*predicate=*/nullptr, /*distance_type=*/std::nullopt, lumina_options)));
+    ASSERT_EQ(index_result->ToString(), "row ids: {0,1}, scores: {0.00,4.00}");
 }
 #endif
 

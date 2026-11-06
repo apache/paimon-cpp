@@ -322,15 +322,20 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(new PrefetchFileBatchReaderImpl(
         readers, batch_size, prefetch_queue_capacity, enable_adaptive_prefetch_strategy, executor,
         cache, io_metrics, warmup_level, arrow_pool));
-    for (const auto& sub_reader : reader->readers_) {
-        // The sub-readers whose byte ranges only become known once they have read some data (the
-        // late-materialization payload pass) report them here instead of through PreBufferRange(),
-        // which is asked once per read-range generation before any read. Capturing the impl raw is
-        // safe: it owns readers_, and CleanUp() joins the background thread before it goes away.
-        sub_reader->SetPreBufferRangeCallback(
-            [impl = reader.get()](std::vector<std::pair<uint64_t, uint64_t>>&& ranges) {
-                impl->RegisterLatePreBufferRanges(std::move(ranges));
-            });
+    // LM uses callback presence to decide whether to query payload ranges. A disabled cache
+    // must not trigger those optional metadata queries.
+    if (cache) {
+        for (const auto& sub_reader : reader->readers_) {
+            // The sub-readers whose byte ranges only become known once they have read some data
+            // (the late-materialization payload pass) report them here instead of through
+            // PreBufferRange(), which is asked once per read-range generation before any read.
+            // Capturing the impl raw is safe: it owns readers_, and CleanUp() joins the background
+            // thread before it goes away.
+            sub_reader->SetPreBufferRangeCallback(
+                [impl = reader.get()](std::vector<std::pair<uint64_t, uint64_t>>&& ranges) {
+                    impl->RegisterLatePreBufferRanges(std::move(ranges));
+                });
+        }
     }
     if (initialize_read_ranges) {
         // normally initialize read ranges should be false, as set read schema will refresh read

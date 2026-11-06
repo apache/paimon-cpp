@@ -23,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -103,6 +104,8 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         int64_t commit_identifier) override;
     Status Close() override;
     std::shared_ptr<Metrics> GetMetrics() const override;
+    Result<std::optional<int64_t>> GetBaseSnapshotId(
+        const std::map<std::string, std::string>& partition, int32_t bucket) const override;
 
     const CoreOptions& GetOptions() const {
         return options_;
@@ -114,13 +117,16 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         WriterContainer() = default;
         WriterContainer(
             const std::shared_ptr<T>& writer, int32_t total_buckets,
+            const std::optional<int64_t>& base_snapshot_id,
             const std::shared_ptr<BucketedPrimaryKeyIndexMaintainer>& primary_key_index_maintainer)
             : writer(writer),
               total_buckets(total_buckets),
+              base_snapshot_id(base_snapshot_id),
               primary_key_index_maintainer(primary_key_index_maintainer) {}
         std::shared_ptr<T> writer;
         int64_t last_modified_commit_identifier = std::numeric_limits<int64_t>::min();
         int32_t total_buckets = -1;
+        std::optional<int64_t> base_snapshot_id;
         std::shared_ptr<BucketedPrimaryKeyIndexMaintainer> primary_key_index_maintainer;
     };
 
@@ -184,7 +190,7 @@ class AbstractFileStoreWrite : public FileStoreWrite {
  private:
     std::unordered_map<BinaryRow, std::unordered_map<int32_t, WriterContainer<BatchWriter>>>
         writers_;
-    std::mutex writers_mutex_;
+    mutable std::mutex writers_mutex_;
     std::mutex realtime_seal_prepare_mutex_;
     // Seal/prepare may flush concurrently with writes, but cannot return before an in-flight
     // write has published its outcome, including invalidating the context on failure.

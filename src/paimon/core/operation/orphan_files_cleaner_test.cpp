@@ -51,6 +51,7 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/defs.h"
+#include "paimon/executor.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
@@ -149,9 +150,19 @@ TEST(OrphanFilesCleanerTest, TestPkTable) {
     std::string table_path = dir->Str();
     ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
     CleanContextBuilder clean_context_builder(table_path);
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<CleanContext> clean_context,
-        clean_context_builder.AddOption(Options::FILE_SYSTEM, "local").WithOlderThanMs(0).Finish());
+    std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
+    // Replacing options must discard an earlier invalid value, and cleaning must work with
+    // the caller's memory pool and executor.
+    clean_context_builder.AddOption(Options::BUCKET, "invalid-bucket");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CleanContext> clean_context,
+                         clean_context_builder.SetOptions({{Options::FILE_SYSTEM, "local"}})
+                             .WithMemoryPool(pool)
+                             .WithExecutor(executor)
+                             .WithOlderThanMs(0)
+                             .Finish());
+    ASSERT_EQ(pool, clean_context->GetMemoryPool());
+    ASSERT_EQ(executor, clean_context->GetExecutor());
     ASSERT_OK_AND_ASSIGN(auto cleaner, OrphanFilesCleaner::Create(std::move(clean_context)));
     ASSERT_OK_AND_ASSIGN(std::set<std::string> cleaned_paths, cleaner->Clean());
     ASSERT_TRUE(cleaned_paths.empty());

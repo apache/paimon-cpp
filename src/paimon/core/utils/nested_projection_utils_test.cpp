@@ -313,6 +313,31 @@ TEST(NestedProjectionUtilsTest, PruneDataTypeMapStructSchemaEvolutionAddedField)
     ASSERT_TRUE(result.value()->Equals(*data_type)) << result.value()->ToString();
 }
 
+TEST(NestedProjectionUtilsTest, PruneDataTypeNestedListMapWithAddedFieldAndVariantAccess) {
+    auto wrap_in_containers = [](const std::shared_ptr<arrow::DataType>& value_type) {
+        return arrow::list(
+            arrow::list(arrow::map(arrow::utf8(), value_type, /*keys_sorted=*/true)));
+    };
+    auto data_value =
+        arrow::struct_({MakeField("a", arrow::int32(), 10),
+                        MakeField("v", VariantTypeUtils::UnshreddedStructType(), 11)});
+    auto read_value = arrow::struct_({MakeField("a", arrow::int32(), 10),
+                                      MakeField("v", MakeVariantAccessType(), 11),
+                                      MakeField("added", arrow::utf8(), 12)});
+    // Only fields present in the file are retained, with the variant projection applied.
+    auto expected_value = arrow::struct_(
+        {MakeField("a", arrow::int32(), 10), MakeField("v", MakeVariantAccessType(), 11)});
+    auto data_type = wrap_in_containers(data_value);
+    auto read_type = wrap_in_containers(read_value);
+    auto expected_type = wrap_in_containers(expected_value);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<arrow::DataType>> pruned,
+                         NestedProjectionUtils::PruneDataType(read_type, data_type));
+    ASSERT_TRUE(pruned.has_value());
+    ASSERT_TRUE(pruned.value()->Equals(*expected_type, /*check_metadata=*/true))
+        << pruned.value()->ToString();
+}
+
 TEST(NestedProjectionUtilsTest, PruneDataTypeListStructDropAndAddStillFails) {
     // Dropping a file field (b) is a real partial projection -- keep failing.
     auto data_inner =
@@ -637,6 +662,45 @@ TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionWithProjection) {
     });
     ASSERT_OK_AND_ASSIGN(
         auto has_nested_projection,
+        NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, read_schema));
+    ASSERT_TRUE(has_nested_projection);
+}
+
+TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionVariantAccessReturnsFalse) {
+    auto file_schema = arrow::schema({MakeField("v", VariantTypeUtils::UnshreddedStructType(), 1)});
+    auto read_schema = arrow::schema({MakeField("v", MakeVariantAccessType(), 1)});
+
+    ASSERT_OK_AND_ASSIGN(
+        bool has_nested_projection,
+        NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, read_schema));
+    ASSERT_FALSE(has_nested_projection);
+}
+
+TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionNestedStruct) {
+    auto file_child =
+        arrow::struct_({MakeField("a", arrow::int32(), 3), MakeField("b", arrow::utf8(), 4)});
+    auto read_child = arrow::struct_({MakeField("a", arrow::int32(), 3)});
+    // The outer struct keeps all its fields; only the child struct is projected.
+    auto file_schema =
+        arrow::schema({MakeField("f0", arrow::struct_({MakeField("child", file_child, 2)}), 1)});
+    auto read_schema =
+        arrow::schema({MakeField("f0", arrow::struct_({MakeField("child", read_child, 2)}), 1)});
+
+    ASSERT_OK_AND_ASSIGN(
+        bool has_nested_projection,
+        NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, read_schema));
+    ASSERT_TRUE(has_nested_projection);
+}
+
+TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionMapKey) {
+    auto file_key =
+        arrow::struct_({MakeField("a", arrow::int32(), 2), MakeField("b", arrow::utf8(), 3)});
+    auto read_key = arrow::struct_({MakeField("a", arrow::int32(), 2)});
+    auto file_schema = arrow::schema({MakeField("f0", arrow::map(file_key, arrow::int64()), 1)});
+    auto read_schema = arrow::schema({MakeField("f0", arrow::map(read_key, arrow::int64()), 1)});
+
+    ASSERT_OK_AND_ASSIGN(
+        bool has_nested_projection,
         NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, read_schema));
     ASSERT_TRUE(has_nested_projection);
 }

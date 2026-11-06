@@ -26,6 +26,7 @@
 #include "fmt/format.h"
 #include "lumina/api/LuminaBuilder.h"
 #include "lumina/core/Types.h"
+#include "paimon/common/file_index/empty/empty_file_index_reader.h"
 #include "paimon/common/io/byte_array_output_stream.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/io/offset_input_stream.h"
@@ -55,6 +56,11 @@ Result<std::shared_ptr<arrow::Schema>> ImportVectorSchema(::ArrowSchema* c_schem
 }
 
 }  // namespace
+
+std::shared_ptr<FileIndexReader> LuminaFileIndexer::CreateEmptyReader() const {
+    return std::make_shared<EmptyFileIndexReader>(
+        std::vector<FileIndexReader::SearchType>{FileIndexReader::SearchType::VECTOR_SEARCH});
+}
 
 LuminaFileIndexWriter::LuminaFileIndexWriter(std::string field_name,
                                              std::shared_ptr<arrow::DataType> arrow_type,

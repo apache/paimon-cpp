@@ -99,8 +99,11 @@ TEST(FileStoreWriteTest, TestRealtimeCatalogCommitRefreshAndRecovery) {
         };
         ASSERT_OK_AND_ASSIGN(auto realtime_context, RealtimeContext::Create());
         ASSERT_OK_AND_ASSIGN(auto writer, create_writer(realtime_context));
+        ASSERT_NOK_WITH_MSG(writer->GetBaseSnapshotId({}, 0), "writer does not exist");
         ASSERT_OK_AND_ASSIGN(auto batch, make_batch(R"([[10, 1, "a"], [20, 2, "b"]])"));
         ASSERT_OK(writer->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(auto base_snapshot_id, writer->GetBaseSnapshotId({}, 0));
+        ASSERT_EQ(base_snapshot_id, std::nullopt);
         ASSERT_OK_AND_ASSIGN(auto progress, writer->PrepareCommitWithProgress(1));
         ASSERT_EQ(progress.size(), 1u);
         CommitContextBuilder commit_builder(table_path, "writer");
@@ -117,11 +120,21 @@ TEST(FileStoreWriteTest, TestRealtimeCatalogCommitRefreshAndRecovery) {
                                                     table_path, "snapshot/snapshot-1")));
         ASSERT_FALSE(has_snapshot);
 
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({}, 0));
+        ASSERT_EQ(base_snapshot_id, std::nullopt);
+        catalog->SetLoadSnapshotStatus(Status::IOError("catalog unavailable"));
+        ASSERT_NOK_WITH_MSG(writer->RefreshCommittedSnapshot(snapshot_id), "catalog unavailable");
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({}, 0));
+        ASSERT_EQ(base_snapshot_id, std::nullopt);
+        catalog->SetLoadSnapshotStatus(Status::OK());
         ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({}, 0));
+        ASSERT_EQ(base_snapshot_id, 1);
         ASSERT_OK_AND_ASSIGN(double retained_rows,
                              writer->GetMetrics()->GetGauge(RealtimeMetrics::kTotalRowCount));
         ASSERT_EQ(retained_rows, 0);
         ASSERT_OK(writer->Close());
+        ASSERT_NOK_WITH_MSG(writer->GetBaseSnapshotId({}, 0), "writer does not exist");
 
         ASSERT_OK_AND_ASSIGN(auto recovered_context, RealtimeContext::Create());
         ASSERT_OK_AND_ASSIGN(auto recovered_writer, create_writer(recovered_context));
@@ -131,16 +144,132 @@ TEST(FileStoreWriteTest, TestRealtimeCatalogCommitRefreshAndRecovery) {
         ASSERT_EQ(read_state.committed_offsets, expected_offsets);
         ASSERT_OK_AND_ASSIGN(auto next_batch, make_batch(R"([[21, 1, "updated"]])"));
         ASSERT_OK(recovered_writer->Write(std::move(next_batch)));
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, recovered_writer->GetBaseSnapshotId({}, 0));
+        ASSERT_EQ(base_snapshot_id, 1);
+        ASSERT_OK_AND_ASSIGN(auto shared_writer, create_writer(recovered_context));
+        ASSERT_OK_AND_ASSIGN(auto empty_batch, make_batch("[]"));
+        ASSERT_OK(shared_writer->Write(std::move(empty_batch)));
         ASSERT_OK_AND_ASSIGN(auto next_progress, recovered_writer->PrepareCommitWithProgress(2));
         ASSERT_OK_AND_ASSIGN(snapshot_id,
                              commit->CommitWithProgress(next_progress, 2, std::nullopt));
         ASSERT_EQ(snapshot_id, 2);
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, recovered_writer->GetBaseSnapshotId({}, 0));
+        ASSERT_EQ(base_snapshot_id, 1);
         ASSERT_OK(recovered_writer->RefreshCommittedSnapshot(snapshot_id));
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, recovered_writer->GetBaseSnapshotId({}, 0));
+        ASSERT_EQ(base_snapshot_id, 2);
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, shared_writer->GetBaseSnapshotId({}, 0));
+        ASSERT_EQ(base_snapshot_id, 2);
+        ASSERT_OK(shared_writer->Close());
         ASSERT_OK(recovered_writer->Close());
 
         catalog->SetLoadSnapshotStatus(Status::IOError("catalog unavailable"));
         ASSERT_OK_AND_ASSIGN(auto failed_context, RealtimeContext::Create());
         ASSERT_NOK_WITH_MSG(create_writer(failed_context), "catalog unavailable");
+    }
+}
+
+TEST(FileStoreWriteTest, TestBucketBaseSnapshotTracksActualLazyRestore) {
+    for (bool primary_key : {false, true}) {
+        SCOPED_TRACE(primary_key);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        const Identifier identifier("db", "table");
+        const auto logical_schema = arrow::schema(
+            {arrow::field("dt", arrow::utf8(), false), arrow::field("id", arrow::int64(), false)});
+        const std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                            {Options::BUCKET_KEY, "id"},
+                                                            {Options::FILE_FORMAT, "parquet"},
+                                                            {Options::WRITE_ONLY, "true"}};
+        const std::vector<std::string> primary_keys =
+            primary_key ? std::vector<std::string>{"dt", "id"} : std::vector<std::string>{};
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
+                             TableSchema::Create(0, logical_schema, {"dt"}, primary_keys, options));
+        auto catalog = std::make_shared<MockVersionManagedCatalog>();
+        catalog->SetTableSchema(schema);
+        catalog->SetFileSystem(dir->GetFileSystem());
+        catalog->CheckBaseSnapshotUuid();
+        auto create_writer = [&](bool ignore_previous) -> Result<std::unique_ptr<FileStoreWrite>> {
+            WriteContextBuilder builder(dir->Str(), "writer");
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> context,
+                                   builder.WithCatalog(catalog, identifier)
+                                       .WithStreamingMode(true)
+                                       .WithIgnorePreviousFiles(ignore_previous)
+                                       .Finish());
+            return FileStoreWrite::Create(std::move(context));
+        };
+        auto make_batch = [&](const std::string& dt, int32_t bucket,
+                              const std::string& json) -> Result<std::unique_ptr<RecordBatch>> {
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                              arrow::ipc::internal::json::ArrayFromJSON(
+                                                  arrow::struct_(logical_schema->fields()), json));
+            ArrowArray c_array;
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+            return RecordBatchBuilder(&c_array)
+                .SetPartition({{"dt", dt}})
+                .SetBucket(bucket)
+                .Finish();
+        };
+        CommitContextBuilder commit_builder(dir->Str(), "writer");
+        ASSERT_OK_AND_ASSIGN(auto commit_context,
+                             commit_builder.WithCatalog(catalog, identifier).Finish());
+        ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+        auto seed_snapshot = [&](int32_t bucket, int64_t identifier) -> Status {
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> writer, create_writer(false));
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> batch,
+                                   make_batch("a", bucket, R"([["a", 1]])"));
+            PAIMON_RETURN_NOT_OK(writer->Write(std::move(batch)));
+            PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<CommitMessage>> messages,
+                                   writer->PrepareCommit(false, identifier));
+            PAIMON_RETURN_NOT_OK(commit->Commit(messages, identifier));
+            return writer->Close();
+        };
+
+        ASSERT_OK_AND_ASSIGN(auto writer, create_writer(false));
+        ASSERT_NOK_WITH_MSG(writer->GetBaseSnapshotId({{"dt", "empty"}}, 0),
+                            "writer does not exist");
+        ASSERT_OK_AND_ASSIGN(auto batch, make_batch("empty", 0, R"([["empty", 2]])"));
+        ASSERT_OK(writer->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(auto base_snapshot_id,
+                             writer->GetBaseSnapshotId({{"dt", "empty"}}, 0));
+        ASSERT_EQ(base_snapshot_id, std::nullopt);
+
+        ASSERT_OK(seed_snapshot(0, 1));
+        ASSERT_EQ(catalog->AcceptedSnapshots().back().Id(), 1);
+        ASSERT_OK_AND_ASSIGN(batch, make_batch("a", 0, R"([["a", 2]])"));
+        ASSERT_OK(writer->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({{"dt", "a"}}, 0));
+        ASSERT_EQ(base_snapshot_id, 1);
+
+        ASSERT_OK(seed_snapshot(1, 2));
+        ASSERT_EQ(catalog->AcceptedSnapshots().back().Id(), 2);
+        ASSERT_OK_AND_ASSIGN(batch, make_batch("a", 1, R"([["a", 3]])"));
+        ASSERT_OK(writer->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({{"dt", "a"}}, 1));
+        ASSERT_EQ(base_snapshot_id, 2);
+        ASSERT_OK_AND_ASSIGN(batch, make_batch("b", 0, R"([["b", 4]])"));
+        ASSERT_OK(writer->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({{"dt", "b"}}, 0));
+        ASSERT_EQ(base_snapshot_id, 2);
+
+        ASSERT_OK_AND_ASSIGN(auto ignoring_writer, create_writer(true));
+        ASSERT_OK_AND_ASSIGN(batch, make_batch("a", 0, R"([["a", 5]])"));
+        ASSERT_OK(ignoring_writer->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id,
+                             ignoring_writer->GetBaseSnapshotId({{"dt", "a"}}, 0));
+        ASSERT_EQ(base_snapshot_id, std::nullopt);
+        ASSERT_OK(ignoring_writer->Close());
+
+        const size_t snapshot_loads = catalog->LoadSnapshotCalls();
+        catalog->SetLoadSnapshotStatus(Status::IOError("catalog unavailable"));
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({{"dt", "a"}}, 0));
+        ASSERT_EQ(base_snapshot_id, 1);
+        ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({{"dt", "empty"}}, 0));
+        ASSERT_EQ(base_snapshot_id, std::nullopt);
+        ASSERT_NOK_WITH_MSG(writer->GetBaseSnapshotId({{"dt", "b"}}, 1), "writer does not exist");
+        ASSERT_EQ(catalog->LoadSnapshotCalls(), snapshot_loads);
+        ASSERT_OK(writer->Close());
+        ASSERT_NOK_WITH_MSG(writer->GetBaseSnapshotId({{"dt", "a"}}, 0), "writer does not exist");
     }
 }
 

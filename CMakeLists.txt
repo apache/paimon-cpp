@@ -41,7 +41,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 project(paimon
-        VERSION 0.4.0
+        VERSION 0.5.0
         DESCRIPTION "Paimon C++ Project")
 
 string(TOUPPER "${CMAKE_BUILD_TYPE}" UPPERCASE_BUILD_TYPE)
@@ -306,8 +306,10 @@ include(san-config)
 
 # Code coverage
 if("${PAIMON_GENERATE_COVERAGE}")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --coverage -DCOVERAGE_BUILD")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage -DCOVERAGE_BUILD")
+    set(CMAKE_C_FLAGS
+        "${CMAKE_C_FLAGS} --coverage -fprofile-update=atomic -DCOVERAGE_BUILD")
+    set(CMAKE_CXX_FLAGS
+        "${CMAKE_CXX_FLAGS} --coverage -fprofile-update=atomic -DCOVERAGE_BUILD")
 endif()
 
 # CMAKE_CXX_FLAGS now fully assembled

@@ -146,6 +146,9 @@ TEST_F(RangeBitmapGlobalIndexTest, TestIntType) {
     ASSERT_OK_AND_ASSIGN(auto meta, WriteGlobalIndex(test_root, type, array, Range(0, 4)));
 
     auto reader = CreateGlobalIndexReader(test_root, type, meta);
+    ASSERT_TRUE(reader);
+    ASSERT_FALSE(reader->IsThreadSafe());
+    ASSERT_EQ(reader->GetIndexType(), "range-bitmap");
 
     Literal lit_0(static_cast<int32_t>(0));
     Literal lit_1(static_cast<int32_t>(1));

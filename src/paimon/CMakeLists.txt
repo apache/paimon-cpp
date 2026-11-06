@@ -69,6 +69,7 @@ set(PAIMON_COMMON_SRCS
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
     common/file_index/bitmap/bitmap_index_result.cpp
+    common/file_index/file_indexer.cpp
     common/file_index/file_indexer_factory.cpp
     common/file_index/file_index_format.cpp
     common/file_index/file_index_format_utils.cpp
@@ -412,6 +413,7 @@ set(PAIMON_CORE_SRCS
     core/operation/orphan_files_cleaner.cpp
     core/operation/orphan_files_cleaner_impl.cpp
     core/operation/raw_file_split_read.cpp
+    core/operation/precise_file_index_read.cpp
     core/operation/read_context.cpp
     core/operation/scan_context.cpp
     core/manifest/snapshot_live_manifest_entries.cpp
@@ -453,6 +455,7 @@ set(PAIMON_CORE_SRCS
     core/stats/simple_stats_converter.cpp
     core/stats/simple_stats.cpp
     core/stats/simple_stats_evolution.cpp
+    core/table/file_store.cpp
     core/table/table.cpp
     core/table/bucket_mode.cpp
     core/table/format/format_file_listing.cpp
@@ -618,6 +621,7 @@ if(PAIMON_BUILD_TESTS)
                     common/data/columnar/columnar_utils_test.cpp
                     common/data/data_define_test.cpp
                     common/data/decimal_test.cpp
+                    common/data/generic_array_test.cpp
                     common/data/generic_row_test.cpp
                     common/data/internal_row_test.cpp
                     common/data/record_batch_test.cpp
@@ -679,6 +683,7 @@ if(PAIMON_BUILD_TESTS)
                     common/global_index/btree/btree_global_index_integration_test.cpp
                     common/global_index/btree/btree_compatibility_test.cpp
                     common/global_index/sorted_file_meta_selector_test.cpp
+                    common/global_index/sorted_file_global_index_reader_test.cpp
                     common/global_index/btree/lazy_filtered_btree_reader_test.cpp
                     common/global_index/rangebitmap/range_bitmap_global_index_test.cpp
                     common/global_index/wrap/file_index_reader_wrapper_test.cpp
@@ -833,6 +838,7 @@ if(PAIMON_BUILD_TESTS)
                     core/bucket/bucket_select_converter_test.cpp
                     core/bucket/default_bucket_function_test.cpp
                     core/bucket/hive_bucket_function_test.cpp
+                    core/bucket/hive_hasher_test.cpp
                     core/bucket/bucket_id_calculator_test.cpp
                     core/bucket/mod_bucket_function_test.cpp
                     core/casting/cast_executor_factory_test.cpp
@@ -870,6 +876,7 @@ if(PAIMON_BUILD_TESTS)
                     core/index/index_file_handler_test.cpp
                     core/io/compact_increment_test.cpp
                     core/io/infer_shredding_file_writer_test.cpp
+                    core/io/shredding_key_value_data_file_writer_factory_test.cpp
                     core/io/concat_key_value_record_reader_test.cpp
                     core/io/data_file_meta_serializer_test.cpp
                     core/io/data_file_path_factory_test.cpp
@@ -877,6 +884,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/field_mapping_reader_test.cpp
                     core/io/key_value_data_file_record_reader_test.cpp
                     core/io/key_value_projection_reader_test.cpp
+                    core/io/row_to_arrow_array_converter_test.cpp
                     core/io/key_value_in_memory_record_reader_test.cpp
                     core/io/merged_key_value_record_reader_test.cpp
                     core/io/complete_row_tracking_fields_reader_test.cpp
@@ -928,6 +936,7 @@ if(PAIMON_BUILD_TESTS)
                     core/mergetree/lookup_file_test.cpp
                     core/mergetree/lookup_levels_test.cpp
                     core/mergetree/compact/aggregate/aggregate_merge_function_test.cpp
+                    core/mergetree/compact/aggregate/field_aggregate_utils_test.cpp
                     core/mergetree/compact/aggregate/field_aggregator_factory_test.cpp
                     core/mergetree/compact/aggregate/field_bool_agg_test.cpp
                     core/mergetree/compact/aggregate/field_collect_agg_test.cpp
@@ -992,6 +1001,7 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/realtime_deduplicate_dv_materializer_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp
                     core/operation/key_value_file_store_write_test.cpp
+                    core/operation/precise_file_index_read_test.cpp
                     core/operation/internal_read_context_test.cpp
                     core/operation/abstract_split_read_test.cpp
                     core/operation/append_only_file_store_write_test.cpp

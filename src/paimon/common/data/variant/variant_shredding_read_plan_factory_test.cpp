@@ -308,4 +308,70 @@ TEST_F(VariantShreddingReadPlanFactoryTest, ColumnAbsentInFileSkipped) {
     EXPECT_TRUE(plans.empty());
 }
 
+TEST_F(VariantShreddingReadPlanFactoryTest, AccessProjectionOnShreddedArray) {
+    std::shared_ptr<arrow::DataType> physical;
+    std::shared_ptr<arrow::StructArray> shredded;
+    MakeFullShredded(arrow::list(arrow::int64()), Variant(R"([10,"hi",null])"), &physical,
+                     &shredded);
+    ASSERT_FALSE(HasFatalFailure());
+
+    auto read_field =
+        arrow::field("v", arrow::struct_({AccessChild("first", arrow::int64(), "$[0]"),
+                                          AccessChild("second", arrow::utf8(), "$[1]"),
+                                          AccessChild("null_element", arrow::utf8(), "$[2]"),
+                                          AccessChild("out_of_bounds", arrow::int64(), "$[5]")}));
+    auto plan = CreatePlan(read_field, arrow::field("v", physical));
+    ASSERT_NE(plan, nullptr);
+    ASSERT_OK_AND_ASSIGN(auto assembled, plan->Assemble(shredded, arrow::default_memory_pool()));
+    auto row = checked_pointer_cast<arrow::StructArray>(assembled);
+    ASSERT_EQ(row->length(), 1);
+    ASSERT_EQ(static_cast<const arrow::Int64Array&>(*row->field(0)).Value(0), 10);
+    // The string does not fit the shredded int64 element type and is read from its binary value.
+    ASSERT_EQ(static_cast<const arrow::StringArray&>(*row->field(1)).GetString(0), "hi");
+    ASSERT_TRUE(row->field(2)->IsNull(0));
+    ASSERT_TRUE(row->field(3)->IsNull(0));
+}
+
+TEST_F(VariantShreddingReadPlanFactoryTest, AccessThroughScalarReturnsNull) {
+    auto unshredded = MakeUnshredded(Variant(R"({"a":1})"));
+    ASSERT_FALSE(HasFatalFailure());
+    auto read_field =
+        arrow::field("v", arrow::struct_({AccessChild("object_child", arrow::int64(), "$.a.x"),
+                                          AccessChild("array_child", arrow::int64(), "$.a[0]")}));
+    auto plan = CreatePlan(read_field, arrow::field("v", unshredded->type()));
+    ASSERT_NE(plan, nullptr);
+    ASSERT_OK_AND_ASSIGN(auto assembled, plan->Assemble(unshredded, arrow::default_memory_pool()));
+    auto row = checked_pointer_cast<arrow::StructArray>(assembled);
+    ASSERT_EQ(row->length(), 1);
+    ASSERT_TRUE(row->field(0)->IsNull(0));
+    ASSERT_TRUE(row->field(1)->IsNull(0));
+}
+
+TEST_F(VariantShreddingReadPlanFactoryTest, NestedSchemaEvolutionWithoutVariantPlan) {
+    auto read_field = arrow::field("s", arrow::struct_({VariantTypeUtils::ToArrowField("v")}));
+    const arrow::FieldVector file_fields = {
+        arrow::field("s", arrow::struct_({arrow::field("other", arrow::int32())})),
+        arrow::field("s", arrow::int32()),
+    };
+    for (const auto& file_field : file_fields) {
+        ASSERT_OK_AND_ASSIGN(auto plans,
+                             VariantShreddingReadPlanFactory::CreateReadPlans(
+                                 arrow::schema({read_field}), arrow::schema({file_field}), pool_));
+        ASSERT_TRUE(plans.empty());
+    }
+}
+
+TEST_F(VariantShreddingReadPlanFactoryTest, ReorderedStructFieldsInsideListSkipPlan) {
+    auto variant_field = VariantTypeUtils::ToArrowField("v");
+    auto other_field = arrow::field("x", arrow::int32());
+    auto read_field =
+        arrow::field("items", arrow::list(arrow::struct_({variant_field, other_field})));
+    auto file_field =
+        arrow::field("items", arrow::list(arrow::struct_({other_field, variant_field})));
+    ASSERT_OK_AND_ASSIGN(auto plans,
+                         VariantShreddingReadPlanFactory::CreateReadPlans(
+                             arrow::schema({read_field}), arrow::schema({file_field}), pool_));
+    ASSERT_TRUE(plans.empty());
+}
+
 }  // namespace paimon::test

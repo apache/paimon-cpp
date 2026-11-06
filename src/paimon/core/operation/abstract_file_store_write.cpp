@@ -531,6 +531,42 @@ std::shared_ptr<Metrics> AbstractFileStoreWrite::GetMetrics() const {
     return result;
 }
 
+Result<std::optional<int64_t>> AbstractFileStoreWrite::GetBaseSnapshotId(
+    const std::map<std::string, std::string>& partition, int32_t bucket) const {
+    PAIMON_ASSIGN_OR_RAISE(BinaryRow part, file_store_path_factory_->ToBinaryRow(partition));
+    std::optional<int64_t> snapshot_id;
+    {
+        std::lock_guard<std::mutex> lock(writers_mutex_);
+        auto partition_iter = writers_.find(part);
+        if (partition_iter == writers_.end()) {
+            return Status::KeyError("partition-bucket writer does not exist");
+        }
+        auto bucket_iter = partition_iter->second.find(bucket);
+        if (bucket_iter == partition_iter->second.end()) {
+            return Status::KeyError("partition-bucket writer does not exist");
+        }
+        snapshot_id = bucket_iter->second.base_snapshot_id;
+    }
+    std::shared_ptr<RealtimeContext> context = GetRealtimeContext();
+    if (context) {
+        std::vector<std::pair<std::string, std::string>> partition_values;
+        PAIMON_ASSIGN_OR_RAISE(partition_values,
+                               file_store_path_factory_->GeneratePartitionVector(part));
+        const std::map<std::string, std::string> canonical_partition(partition_values.begin(),
+                                                                     partition_values.end());
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> context_impl,
+                               RealtimeContextImpl::Cast(context));
+        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> refreshed_snapshot_id,
+                               context_impl->GetRefreshedSnapshotId(
+                                   RealtimePartitionBucket(canonical_partition, bucket)));
+        // Lazy restore may have selected a newer snapshot than the context's last refresh.
+        if (refreshed_snapshot_id && (!snapshot_id || *snapshot_id < *refreshed_snapshot_id)) {
+            snapshot_id = refreshed_snapshot_id;
+        }
+    }
+    return snapshot_id;
+}
+
 Status AbstractFileStoreWrite::CheckRealtimeWriteUsable() const {
     if (IsRealtimeWrite() && realtime_write_poisoned_.load()) {
         return Status::Invalid(
@@ -658,16 +694,20 @@ Result<std::shared_ptr<BatchWriter>> AbstractFileStoreWrite::GetWriter(const Bin
         std::shared_ptr<BatchWriter> writer,
         CreateWriter(partition, bucket, restore_data_files, max_sequence_number, dv_maintainer));
     int32_t total_buckets = restored->TotalBuckets().value_or(GetDefaultBucketNum());
+    const std::optional<Snapshot> snapshot = restored->GetSnapshot();
+    const std::optional<int64_t> base_snapshot_id =
+        snapshot ? std::optional<int64_t>(snapshot->Id()) : std::nullopt;
 
     if (partition_iter == writers_.end()) {
         writers_.emplace(
-            partition, std::unordered_map<int32_t, WriterContainer<BatchWriter>>(
-                           {{bucket, WriterContainer<BatchWriter>(writer, total_buckets,
-                                                                  primary_key_index_maintainer)}}));
+            partition,
+            std::unordered_map<int32_t, WriterContainer<BatchWriter>>(
+                {{bucket, WriterContainer<BatchWriter>(writer, total_buckets, base_snapshot_id,
+                                                       primary_key_index_maintainer)}}));
     } else {
         partition_iter->second.emplace(
-            bucket,
-            WriterContainer<BatchWriter>(writer, total_buckets, primary_key_index_maintainer));
+            bucket, WriterContainer<BatchWriter>(writer, total_buckets, base_snapshot_id,
+                                                 primary_key_index_maintainer));
     }
     writer_memory_manager_->RegisterWriter(writer.get());
 

@@ -32,6 +32,17 @@ TEST(LocalFileTest, TestSchemeCaseInsensitive) {
     ASSERT_NOK(LocalFile::Create("s3:/tmp"));
 }
 
+TEST(LocalFileTest, TestGetParentFileWithoutSlash) {
+    for (const char* path : {"file", ""}) {
+        SCOPED_TRACE(path);
+        LocalFile file(path);
+        std::unique_ptr<LocalFile> parent = file.GetParentFile();
+        ASSERT_TRUE(parent);
+        ASSERT_TRUE(parent->IsEmpty());
+        ASSERT_TRUE(parent->GetPath().empty());
+    }
+}
+
 TEST(LocalFileTest, TestGetFileStatusForMissingFile) {
     auto test_root_dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);

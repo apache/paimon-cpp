@@ -108,13 +108,15 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
     Result<std::shared_ptr<FileIndexReader>> GetFileIndexReader(
         const std::string& column_name, const std::shared_ptr<arrow::Schema>& arrow_schema,
         const std::string& index_type, const std::pair<int64_t, int64_t>& offset_and_length) const {
-        if (offset_and_length.first == FileIndexFormat::EMPTY_INDEX_FLAG) {
-            return std::make_shared<EmptyFileIndexReader>();
-        }
         const std::map<std::string, std::string>& indexer_options =
             options_.GetIndexerOptions(column_name, index_type);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexer> file_indexer,
                                FileIndexerFactory::Get(index_type, indexer_options));
+        if (offset_and_length.first == FileIndexFormat::EMPTY_INDEX_FLAG) {
+            return file_indexer ? file_indexer->CreateEmptyReader()
+                                : std::make_shared<EmptyFileIndexReader>(
+                                      std::vector<FileIndexReader::SearchType>{});
+        }
         // assert(file_indexer);
         if (!file_indexer) {
             return std::shared_ptr<FileIndexReader>();

@@ -422,3 +422,13 @@ Vector Index (Lumina)
 An approximate nearest neighbor (ANN) index powered by Lumina for vector similarity search.
 It supports high-dimensional vector search with configurable distance metrics and encoding strategies.
 For more configurations, refer to the ``docs/reference`` directory in the Lumina release package.
+
+When ``deletion-vectors.enabled`` and ``row-tracking.enabled`` are set, readers created by
+``GlobalIndexScan`` search only the rows that are live in the snapshot the scan reads, as Java
+Paimon does, so rows deleted by deletion vectors do not take ``limit`` slots. The live rows are
+combined with the ``pre_filter`` of the ``VectorSearch``. In Data Evolution tables, only the
+deletion vectors of the data files the index covers are read. As for full-text search, pass one
+snapshot id to both the index scan and the data scan.
+
+A search across multiple index shards returns up to ``limit`` rows from each shard, and the merged
+result is not truncated to ``limit``.

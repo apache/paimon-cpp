@@ -812,14 +812,15 @@ TEST_P(MergeTreeWriterTest, TestSortedReaderFailure) {
     ASSERT_TRUE(first_mixed_reader_closed);
     ASSERT_TRUE(second_mixed_reader_closed);
 
-    Status expected_status = Status::IOError("sorted reader failure");
     bool failing_reader_closed = false;
     std::vector<std::unique_ptr<KeyValueRecordReader>> failing_readers;
     failing_readers.push_back(std::make_unique<TrackingKeyValueRecordReader>(
-        CreateSingleReader(sorted_reader_array, /*batch_size=*/16, expected_status),
+        CreateSingleReader(sorted_reader_array, /*batch_size=*/16,
+                           Status::IOError("sorted reader failure")),
         &failing_reader_closed));
     Status failing_status = merge_writer->WriteSortedReadersToFiles(std::move(failing_readers));
-    ASSERT_EQ(expected_status, failing_status);
+    ASSERT_TRUE(failing_status.IsIOError());
+    ASSERT_NOK_WITH_MSG(failing_status, "sorted reader failure");
     ASSERT_TRUE(failing_reader_closed);
     ASSERT_OK(merge_writer->Close());
 }

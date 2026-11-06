@@ -123,6 +123,60 @@ TEST(FieldNestedUpdateAggTest, AppendsNonNullRowsUpToLimit) {
     ASSERT_TRUE(FindRow(result, 2));
 }
 
+TEST(FieldNestedUpdateAggTest, NullFieldsLeaveAccumulatorUnchanged) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldNestedUpdateAgg> agg, MakeAgg({}));
+    VariantType null_field = VariantType(NullType());
+    VariantType accumulator = Rows({Row(int32_t{1}, 1, 10)});
+
+    ASSERT_OK_AND_ASSIGN(VariantType aggregated, agg->Agg(accumulator, null_field));
+    ASSERT_EQ(1, GetRows(aggregated)->Size());
+    ASSERT_TRUE(FindRow(aggregated, 1));
+    ASSERT_EQ(10, FindRow(aggregated, 1)->GetInt(2));
+
+    ASSERT_OK_AND_ASSIGN(VariantType retracted, agg->Retract(accumulator, null_field));
+    ASSERT_EQ(1, GetRows(retracted)->Size());
+    ASSERT_TRUE(FindRow(retracted, 1));
+    ASSERT_EQ(10, FindRow(retracted, 1)->GetInt(2));
+
+    ASSERT_OK_AND_ASSIGN(VariantType empty, agg->Retract(null_field, accumulator));
+    ASSERT_TRUE(DataDefine::IsVariantNull(empty));
+}
+
+TEST(FieldNestedUpdateAggTest, SkipsNullElementsWhenUpsertingByKey) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldNestedUpdateAgg> agg,
+                         MakeAgg({{"fields.f.nested-key", "id"}}));
+    VariantType accumulator = Rows({VariantType(NullType()), Row(int32_t{1}, 1, 10)});
+    VariantType input = Rows({VariantType(NullType()), Row(int32_t{1}, 2, 20),
+                              VariantType(NullType()), Row(int32_t{2}, 1, 30)});
+    ASSERT_OK_AND_ASSIGN(VariantType result, agg->Agg(accumulator, input));
+
+    ASSERT_EQ(2, GetRows(result)->Size());
+    ASSERT_TRUE(FindRow(result, 1));
+    ASSERT_EQ(20, FindRow(result, 1)->GetInt(2));
+    ASSERT_TRUE(FindRow(result, 2));
+    ASSERT_EQ(30, FindRow(result, 2)->GetInt(2));
+}
+
+TEST(FieldNestedUpdateAggTest, SkipsNullElementsWhenRetracting) {
+    for (bool keyed : {false, true}) {
+        SCOPED_TRACE(keyed);
+        std::map<std::string, std::string> options;
+        if (keyed) {
+            options.emplace("fields.f.nested-key", "id");
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldNestedUpdateAgg> agg, MakeAgg(options));
+        VariantType accumulator =
+            Rows({VariantType(NullType()), Row(int32_t{1}, 1, 10), Row(int32_t{2}, 1, 20)});
+        VariantType input = Rows({VariantType(NullType()), Row(int32_t{1}, 1, 10)});
+        ASSERT_OK_AND_ASSIGN(VariantType result, agg->Retract(accumulator, input));
+
+        ASSERT_EQ(1, GetRows(result)->Size());
+        ASSERT_FALSE(FindRow(result, 1));
+        ASSERT_TRUE(FindRow(result, 2));
+        ASSERT_EQ(20, FindRow(result, 2)->GetInt(2));
+    }
+}
+
 // count limit is measured against the raw element count, so null elements consume the limit even
 // though they are dropped from the result
 TEST(FieldNestedUpdateAggTest, CountLimitCountsNullElementsOfAccumulator) {

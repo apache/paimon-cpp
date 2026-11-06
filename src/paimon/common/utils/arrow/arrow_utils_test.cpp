@@ -29,6 +29,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "arrow/ipc/api.h"
+#include "arrow/util/byte_size.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -248,6 +249,16 @@ TEST(ArrowUtilsTest, TestCheckNullableMatchParentNullMasksChildren) {
         arrow::StructArray::Make({parent, vector}, {struct_field, vector_field}).ValueOrDie();
 
     ASSERT_OK(ArrowUtils::CheckNullabilityMatch(schema, batch));
+}
+
+TEST(ArrowUtilsTest, TestCheckNullableMatchAllNullParentMasksNestedStruct) {
+    auto leaf = arrow::field("leaf", arrow::int32(), /*nullable=*/false);
+    auto inner = arrow::field("inner", arrow::struct_({leaf}), /*nullable=*/false);
+    auto parent = arrow::field("parent", arrow::struct_({inner}), /*nullable=*/true);
+    auto null_parents = arrow::MakeArrayOfNull(parent->type(), 3).ValueOrDie();
+    auto batch = arrow::StructArray::Make({null_parents}, {parent}).ValueOrDie();
+    ASSERT_TRUE(batch->ValidateFull().ok());
+    ASSERT_OK(ArrowUtils::CheckNullabilityMatch(arrow::schema({parent}), batch));
 }
 
 TEST(ArrowUtilsTest, TestCheckNullableMatchRejectsVisibleChildNulls) {
@@ -995,6 +1006,26 @@ TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsetsFallsBackForDictionary) {
     ASSERT_FALSE(IsViewInto(*normalized->column_data(0)->buffers[1], *array->data()->buffers[1]));
 }
 
+TEST(ArrowUtilsTest, TestNormalizeZeroWidthBinarySlice) {
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::fixed_size_binary(0),
+                                                           R"(["", null, "", ""])")
+                     .ValueOrDie();
+    ASSERT_TRUE(array->ValidateFull().ok());
+    CheckNormalizedSlice(array, /*offset=*/1, /*length=*/2);
+}
+
+TEST(ArrowUtilsTest, TestDictionaryArrayMemoryUsage) {
+    auto indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, null, 1]").ValueOrDie();
+    auto dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["alpha", "beta"])")
+            .ValueOrDie();
+    auto array = arrow::DictionaryArray::FromArrays(
+                     arrow::dictionary(arrow::int32(), arrow::utf8()), indices, dictionary)
+                     .ValueOrDie();
+    ASSERT_EQ(ArrowUtils::GetArrayMemoryUsage(array->data()), arrow::util::TotalBufferSize(*array));
+}
+
 TEST(ArrowUtilsTest, TestEqualsIgnoreNullable) {
     {
         // test simple
@@ -1137,6 +1168,11 @@ TEST(ArrowUtilsTest, TestResolveDictionaryStructTypeFromLayout) {
         arrow::struct_({arrow::field("s", arrow::utf8()), arrow::field("i", arrow::int32())});
 
     {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::DataType> resolved,
+                             resolve(ints, arrow::int32()));
+        ASSERT_TRUE(resolved->Equals(*arrow::int32()));
+    }
+    {
         // No dictionary: the very same type instance comes back.
         auto batch = arrow::StructArray::Make({strings, ints}, std::vector<std::string>{"s", "i"})
                          .ValueOrDie();
@@ -1252,6 +1288,19 @@ TEST(ArrowUtilsTest, TestFlattenUnresolvableDictionaries) {
                 .ValueOrDie())
             .ValueOrDie();
 
+    {
+        // A column outside the requested logical schema retains its original encoding.
+        auto batch = arrow::StructArray::Make({layout_unrecoverable, ints},
+                                              std::vector<std::string>{"unprojected", "i"})
+                         .ValueOrDie();
+        auto projected_type = arrow::struct_({arrow::field("i", arrow::int32())});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> flattened,
+                             ArrowUtils::FlattenUnresolvableDictionaries(
+                                 batch, projected_type, pool,
+                                 /*preserve_layout_recoverable_dictionaries=*/true));
+        ASSERT_TRUE(flattened->Equals(*batch));
+        ASSERT_EQ(flattened->field(0)->type_id(), arrow::Type::DICTIONARY);
+    }
     {
         // Only the column that would not survive the export is decoded; the one that would keeps
         // its encoding, which is what makes this selective rather than an all-or-nothing flatten.
