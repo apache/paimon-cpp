@@ -4398,13 +4398,19 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateSequenceGroups) {
     // Older, equal and null group versions are independent; ungrouped nulls keep prior values.
     ASSERT_OK_AND_ASSIGN(batch, MakeUnpartitionedBatchFromJson(R"([
         [2, 1, 9, 999, 21, 210, null],
-        [3, 1, 10, 110, null, 999, null],
-        [4, 1, 11, null, 19, 190, null]
+        [3, 1, 10, 110, null, 999, null]
     ])"));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, nullptr));
+    ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(
+        plan, context, schema_,
+        R"([[0, 1, 10, 110, 21, 210, "seed"], [0, 2, 10, 10, 20, 20, "two"]])"));
+    ASSERT_OK_AND_ASSIGN(batch,
+                         MakeUnpartitionedBatchFromJson(R"([[4, 1, 11, null, 19, 190, null]])"));
     ASSERT_OK(writer->Write(std::move(batch)));
     const std::string expected =
         R"([[0, 1, 11, null, 21, 210, "seed"], [0, 2, 10, 10, 20, 20, "two"]])";
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, nullptr));
+    ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
     ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(plan, context, schema_, expected));
     ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(1));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
@@ -4478,25 +4484,27 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateAggregationSpillAndRecovery) {
     ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
     ASSERT_OK_AND_ASSIGN(batch, MakeUnpartitionedBatchFromJson(R"([[4, 1, 22, 5, "latest"]])"));
     ASSERT_OK(writer->Write(std::move(batch)));
+    const std::string committed_expected = R"([[0, 1, 22, 32, "latest"]])";
+    const std::string replayed_expected = R"([[0, 1, 23, 39, "tail"]])";
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
     ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, R"([[0, 1, 22, 32, "latest"]])"));
+        ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
     ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(1));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
     ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, R"([[0, 1, 22, 32, "latest"]])"));
+        ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
     ASSERT_OK_AND_ASSIGN(snapshot, Commit(progress, 1));
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
     ASSERT_TRUE(WaitForChannelFileCount(temp_directory, 0));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(nullptr, nullptr));
     ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, nullptr, schema_, R"([[0, 1, 22, 32, "latest"]])"));
+        ReadPlanWithSchemaAndCheck(plan, nullptr, schema_, committed_expected));
     const std::string tail = R"([[5, 1, 23, 7, "tail"]])";
     ASSERT_OK_AND_ASSIGN(batch, MakeUnpartitionedBatchFromJson(tail));
     ASSERT_OK(writer->Write(std::move(batch)));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
     ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, R"([[0, 1, 23, 39, "tail"]])"));
+        ReadPlanWithSchemaAndCheck(plan, context, schema_, replayed_expected));
     ASSERT_NOK_WITH_MSG(writer->Close(),
                         "real-time writer closed with data not covered by a successful "
                         "PrepareCommitWithProgress");
@@ -4508,19 +4516,19 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateAggregationSpillAndRecovery) {
     ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(context, temp_directory));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
     ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, R"([[0, 1, 22, 32, "latest"]])"));
+        ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
     // Simulate caller WAL replay with exactly the original offset and row.
     ASSERT_OK_AND_ASSIGN(batch, MakeUnpartitionedBatchFromJson(tail));
     ASSERT_OK(writer->Write(std::move(batch)));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
     ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, R"([[0, 1, 23, 39, "tail"]])"));
+        ReadPlanWithSchemaAndCheck(plan, context, schema_, replayed_expected));
     ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(2));
     ASSERT_OK_AND_ASSIGN(snapshot, Commit(progress, 2));
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(nullptr, nullptr));
     ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, nullptr, schema_, R"([[0, 1, 23, 39, "tail"]])"));
+        ReadPlanWithSchemaAndCheck(plan, nullptr, schema_, replayed_expected));
     ASSERT_OK(writer->Close());
 }
 
