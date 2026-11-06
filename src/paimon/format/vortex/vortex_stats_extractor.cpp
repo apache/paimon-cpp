@@ -28,6 +28,7 @@
 #include "paimon/common/utils/math.h"
 #include "paimon/defs.h"
 #include "paimon/format/column_stats.h"
+#include "paimon/format/vortex/vortex_defs.h"
 #include "paimon/format/vortex/vortex_ffi.h"
 #include "paimon/format/vortex/vortex_ffi_util.h"
 #include "paimon/format/vortex/vortex_io_callbacks.h"
@@ -59,8 +60,9 @@ VortexStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fil
     }
     vx_error* error = nullptr;
     VxDataSourcePtr data_source(
-        vx_data_source_new_callback(session.get(), VortexInputContext::MakeCallbacks(input_context),
-                                    length, &error),
+        vx_data_source_new_callback_with_coalesce(
+            session.get(), VortexInputContext::MakeCallbacks(input_context), length,
+            kDefaultVortexReadIoCoalesceMaxGap, kDefaultVortexReadIoCoalesceMaxSize, &error),
         vx_data_source_free);
     if (data_source == nullptr) {
         return VortexCallbackError("open Vortex file for stats", error,

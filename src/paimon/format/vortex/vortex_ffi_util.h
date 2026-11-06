@@ -40,5 +40,7 @@ using VxScanPtr = std::unique_ptr<vx_scan, decltype(&vx_scan_free)>;
 using VxPartitionPtr = std::unique_ptr<vx_partition, decltype(&vx_partition_free)>;
 using VxDtypePtr = std::unique_ptr<const vx_dtype, decltype(&vx_dtype_free)>;
 using VxArrayPtr = std::unique_ptr<const vx_array, decltype(&vx_array_free)>;
+using VxExpressionPtr = std::unique_ptr<vx_expression, decltype(&vx_expression_free)>;
+using VxScalarPtr = std::unique_ptr<vx_scalar, decltype(&vx_scalar_free)>;
 
 }  // namespace paimon::vortex

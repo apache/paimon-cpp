@@ -20,7 +20,11 @@
 #include "paimon/format/vortex/vortex_file_format.h"
 
 #include "arrow/c/bridge.h"
+#include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/options_utils.h"
+#include "paimon/format/vortex/vortex_defs.h"
+#include "paimon/format/vortex/vortex_predicate_converter.h"
 #include "paimon/format/vortex/vortex_reader_builder.h"
 #include "paimon/format/vortex/vortex_stats_extractor.h"
 #include "paimon/format/vortex/vortex_writer_builder.h"
@@ -29,7 +33,32 @@ namespace paimon::vortex {
 
 Result<std::unique_ptr<ReaderBuilder>> VortexFileFormat::CreateReaderBuilder(
     int32_t batch_size) const {
-    return std::make_unique<VortexReaderBuilder>(batch_size);
+    PAIMON_ASSIGN_OR_RAISE(uint32_t max_in_values, OptionsUtils::GetValueFromMap<uint32_t>(
+                                                       options_, kVortexReadInPushdownMaxValues,
+                                                       kDefaultVortexReadInPushdownMaxValues));
+    const VortexPredicateOptions predicate_options{max_in_values};
+    PAIMON_ASSIGN_OR_RAISE(int64_t max_gap,
+                           OptionsUtils::GetValueFromMap<int64_t>(
+                               options_, kVortexReadIoCoalesceMaxGap,
+                               static_cast<int64_t>(kDefaultVortexReadIoCoalesceMaxGap)));
+    PAIMON_ASSIGN_OR_RAISE(int64_t max_size,
+                           OptionsUtils::GetValueFromMap<int64_t>(
+                               options_, kVortexReadIoCoalesceMaxSize,
+                               static_cast<int64_t>(kDefaultVortexReadIoCoalesceMaxSize)));
+    if (max_gap < 0) {
+        return Status::Invalid(fmt::format("{} must be non-negative", kVortexReadIoCoalesceMaxGap));
+    }
+    if (max_size <= 0) {
+        return Status::Invalid(fmt::format("{} must be positive", kVortexReadIoCoalesceMaxSize));
+    }
+    if (max_gap > max_size) {
+        return Status::Invalid(fmt::format("{} must not exceed {}, got {} > {}",
+                                           kVortexReadIoCoalesceMaxGap,
+                                           kVortexReadIoCoalesceMaxSize, max_gap, max_size));
+    }
+    return std::make_unique<VortexReaderBuilder>(
+        batch_size, predicate_options,
+        VortexIoCoalesceOptions{static_cast<uint64_t>(max_gap), static_cast<uint64_t>(max_size)});
 }
 
 Result<std::unique_ptr<WriterBuilder>> VortexFileFormat::CreateWriterBuilder(
