@@ -56,7 +56,7 @@
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/factories/factory_creator.h"
-#include "paimon/fs/local/local_file_system.h"
+#include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
@@ -1747,13 +1747,15 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
             file_name2 = "data-2efd8477-9fb4-44a6-9a39-901dd5a83b28-0.parquet";
         }
 
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileSystem> file_system,
+                             FileSystemFactory::Get("local", path, {}));
         auto create_data_file_meta = [&](const std::string& file_name, int32_t schema_id,
                                          const std::vector<uint8_t>& embedded_bytes) {
             auto embedded_index = std::make_shared<Bytes>(embedded_bytes.size(), pool_.get());
             memcpy(embedded_index->data(), reinterpret_cast<const void*>(embedded_bytes.data()),
                    embedded_bytes.size());
             EXPECT_OK_AND_ASSIGN(FileStatus file_status,
-                                 LocalFileSystem().GetFileStatus(path + "bucket-0/" + file_name));
+                                 file_system->GetFileStatus(path + "bucket-0/" + file_name));
             return std::make_shared<DataFileMeta>(
                 file_name, file_status.GetLen(),
                 /*row_count=*/10, /*min_key=*/BinaryRow::EmptyRow(),
@@ -2433,8 +2435,10 @@ TEST_P(WriteAndReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
         }
         // each record is a stripe
 
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileSystem> file_system,
+                             FileSystemFactory::Get("local", path, {}));
         ASSERT_OK_AND_ASSIGN(FileStatus file_status,
-                             LocalFileSystem().GetFileStatus(path + "bucket-0/" + file_name));
+                             file_system->GetFileStatus(path + "bucket-0/" + file_name));
         auto data_file_meta = std::make_shared<DataFileMeta>(
             file_name, file_status.GetLen(),
             /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
