@@ -32,8 +32,10 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/table/system/system_table_schema.h"
@@ -448,19 +450,88 @@ Result<std::shared_ptr<FormatTable>> RestCatalog::LoadFormatTable(
                                /*dynamic_options=*/{});
 }
 
+Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
+    const Identifier& identifier, const Identifier& load_identifier,
+    const std::optional<std::string>& branch) const {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
+                           identifier.GetSystemTableName());
+    if (!system_table_name || !SystemTableLoader::IsSupported(system_table_name.value())) {
+        return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
+    }
+    std::string data_table_path;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> latest_schema,
+                           LoadDataTableSchema(load_identifier, branch, &data_table_path,
+                                               /*table_id=*/nullptr));
+    std::map<std::string, std::string> dynamic_options;
+    if (branch) {
+        dynamic_options[Options::BRANCH] = branch.value();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
+                           GetTableFileSystem(identifier));
+    // Use the catalog name, including any branch, even when data lives under a UUID directory.
+    PAIMON_ASSIGN_OR_RAISE(
+        Identifier data_identifier,
+        CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
+    return SystemTableLoader::Load(system_table_name.value(), table_file_system, data_table_path,
+                                   latest_schema, dynamic_options, data_identifier.GetObjectName(),
+                                   fs_scheme_to_identifier_map_);
+}
+
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
-    // Read UUID, path and schema together to avoid mixing table generations after recreation.
+    if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
+        PAIMON_ASSIGN_OR_RAISE(bool supported,
+                               GlobalSystemTableLoader::IsSupported(identifier.GetObjectName(),
+                                                                    api_->GetMergedOptions()));
+        if (!supported) {
+            return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
+        }
+        std::shared_ptr<const Catalog> self = weak_from_this().lock();
+        if (self == nullptr) {
+            return Status::Invalid(
+                "a global system table retains its catalog, so the catalog must be owned by "
+                "a std::shared_ptr before it is asked for one");
+        }
+        GlobalSystemTableContext context;
+        context.catalog = self.get();
+        context.catalog_owner = std::move(self);
+        context.fs = fs_;
+        context.warehouse = warehouse_;
+        context.catalog_options = api_->GetMergedOptions();
+        return GlobalSystemTableLoader::Load(identifier.GetObjectName(), context);
+    }
+    PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
+    if (is_system_table) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+        PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+        return LoadSystemTable(identifier, load_identifier, NormalizeBranch(std::move(branch)));
+    }
+    // Load UUID, location and schema together to avoid mixing table generations.
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+    branch = NormalizeBranch(std::move(branch));
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
     std::string uuid;
     std::string table_path;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
-                           LoadTableSchema(identifier, &uuid, &table_path));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
+                           LoadDataTableSchema(load_identifier, branch, &table_path, &uuid));
+    std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
+    if (data_schema != nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
+                               TableTypeDefine::IsFormatTable(data_schema->Options()));
+        if (is_format_table) {
+            return FormatTable::Create(fs_, table_path, identifier, data_schema,
+                                       /*location_carries_paimon_metadata=*/false,
+                                       /*dynamic_options=*/{});
+        }
+    }
     PAIMON_RETURN_NOT_OK(
         CatalogUtils::CheckManagedTableType(identifier, schema, "Catalog::GetTable"));
     // The table holds the file system its own data is served by, which a server issuing data
     // tokens binds to this table.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
-    return std::make_shared<Table>(table_file_system, table_path, schema, identifier, uuid);
+    return FileStoreTable::Create(table_file_system, table_path, schema, identifier, uuid,
+                                  branch.value_or(Identifier::kDefaultMainBranch),
+                                  fs_scheme_to_identifier_map_);
 }
 
 std::string RestCatalog::GetRootPath() const {

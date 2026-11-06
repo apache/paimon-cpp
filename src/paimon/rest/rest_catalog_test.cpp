@@ -49,15 +49,21 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/read_context.h"
+#include "paimon/reader/batch_reader.h"
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/rest/rest_api.h"
+#include "paimon/scan_context.h"
 #include "paimon/schema/schema.h"
 #include "paimon/table/format/format_table.h"
+#include "paimon/table/source/table_read.h"
+#include "paimon/table/source/table_scan.h"
 #include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -810,6 +816,32 @@ TEST_F(RestCatalogTest, CatalogFactoryMetastoreDispatch) {
     ASSERT_NOK_WITH_MSG(status, "unsupported metastore");
 }
 
+TEST_F(RestCatalogTest, GlobalSystemTableRetainsFactoryCatalog) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> unique_catalog,
+                         Catalog::Create(kWarehouse, options_));
+    std::shared_ptr<Catalog> catalog(std::move(unique_catalog));
+    std::weak_ptr<Catalog> weak_catalog = catalog;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         catalog->GetTable(Identifier("sys", "tables")));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                         ScanContextBuilder(table->GetRootPath()).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder(table->GetRootPath()).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, table->NewRead(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
+    catalog.reset();
+    table.reset();
+    ASSERT_FALSE(weak_catalog.expired());
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(batch));
+    reader->Close();
+    reader.reset();
+    read.reset();
+    ASSERT_TRUE(weak_catalog.expired());
+}
+
 TEST_F(RestCatalogTest, CreateWithWrongTokenFails) {
     options_[CatalogOptions::TOKEN] = "wrong-token";
     ASSERT_NOK_WITH_MSG(CreateRestCatalog().status(), "not authorized");
@@ -918,8 +950,7 @@ TEST_F(RestCatalogTest, TableOperations) {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_EQ(requests_before_get_table + 1, state_->get_table_requests);
     }
-    std::shared_ptr<DataSchema> schema =
-        std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    std::shared_ptr<DataSchema> schema = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, schema);
     ASSERT_EQ((std::vector<std::string>{"f0", "f1"}), schema->FieldNames());
     ASSERT_EQ((std::vector<std::string>{"f0"}), schema->PrimaryKeys());
@@ -937,7 +968,7 @@ TEST_F(RestCatalogTest, TableOperations) {
     // timeMillis is backed by the server's audit "updatedAt" instead of the current
     // time, keeping the conversion deterministic
     std::shared_ptr<TableSchema> table_schema =
-        std::dynamic_pointer_cast<TableSchema>(table->LatestSchema());
+        std::dynamic_pointer_cast<TableSchema>(table->GetSchema());
     ASSERT_NE(nullptr, table_schema);
     ASSERT_EQ(123, table_schema->TimeMillis());
 
@@ -959,7 +990,7 @@ TEST_F(RestCatalogTest, TableOperations) {
     }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> commented_table,
                          catalog->GetTable(Identifier("db1", "commented")));
-    ASSERT_EQ("a table comment", commented_table->LatestSchema()->Comment().value_or(""));
+    ASSERT_EQ("a table comment", commented_table->GetSchema()->Comment().value_or(""));
 
     ASSERT_OK(catalog->RenameTable(identifier, Identifier("db1", "t2"),
                                    /*ignore_if_not_exists=*/false));
@@ -1062,8 +1093,8 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
     }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(system_identifier));
     ASSERT_EQ("t1$options", table->Name());
-    ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->LatestSchema()->FieldNames());
-    ASSERT_EQ("db1.t1$options", table->Uuid());
+    ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->GetSchema()->FieldNames());
+    ASSERT_EQ("t1$options", table->Uuid());
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_EQ(requests_before + 1, state_->get_table_requests);
@@ -1105,8 +1136,7 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(branch_identifier));
     ASSERT_EQ("t1$branch_b1", table->Name());
-    std::shared_ptr<DataSchema> schema =
-        std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    std::shared_ptr<DataSchema> schema = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, schema);
     // the branch's own schema and schema id, not the main table's
     ASSERT_EQ((std::vector<std::string>{"b0"}), schema->FieldNames());
@@ -1118,7 +1148,7 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> main_table,
                          catalog->GetTable(Identifier("db1", "t1$branch_main")));
     std::shared_ptr<DataSchema> main_schema =
-        std::dynamic_pointer_cast<DataSchema>(main_table->LatestSchema());
+        std::dynamic_pointer_cast<DataSchema>(main_table->GetSchema());
     ASSERT_NE(nullptr, main_schema);
     ASSERT_EQ((std::vector<std::string>{"f0", "f1"}), main_schema->FieldNames());
     ASSERT_EQ(0, main_schema->Options().count(Options::BRANCH));
@@ -1128,13 +1158,14 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> main_case_table,
                          catalog->GetTable(Identifier("db1", "t1$branch_MAIN")));
     std::shared_ptr<DataSchema> main_case_schema =
-        std::dynamic_pointer_cast<DataSchema>(main_case_table->LatestSchema());
+        std::dynamic_pointer_cast<DataSchema>(main_case_table->GetSchema());
     ASSERT_NE(nullptr, main_case_schema);
     ASSERT_EQ((std::vector<std::string>{"f0", "f1"}), main_case_schema->FieldNames());
     ASSERT_EQ(0, main_case_schema->Options().count(Options::BRANCH));
     // the branch the alias spells resolves to the main branch, not to a branch
     // directory named after the alias
-    ASSERT_OK_AND_ASSIGN(std::string main_case_branch, main_case_table->CurrentBranch());
+    std::string main_case_branch =
+        std::dynamic_pointer_cast<FileStoreTable>(main_case_table)->CurrentBranch();
     ASSERT_EQ("main", main_case_branch);
 
     // a system table on a branch resolves against the branch's data table: the system
@@ -1275,7 +1306,9 @@ TEST_F(RestCatalogTest, FormatTableIsLoadedInOneRequest) {
     // directory named "schema" there is a partition value, not metadata to skip.
     ASSERT_FALSE(table->LocationCarriesPaimonMetadata());
 
-    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "fmt")), "Cannot open format table");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> opened,
+                         catalog->GetTable(Identifier("db1", "fmt")));
+    ASSERT_NE(nullptr, std::dynamic_pointer_cast<FormatTable>(opened));
 
     // A managed table stays out of this path, and so does a system table.
     ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));
@@ -1389,8 +1422,7 @@ TEST_F(RestCatalogTest, NestedSchemaHighestFieldId) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                          catalog->GetTable(Identifier("db1", "nested")));
-    std::shared_ptr<DataSchema> schema =
-        std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    std::shared_ptr<DataSchema> schema = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, schema);
     ASSERT_EQ(5, schema->Id());
     // 9 lives inside the value row of the map: ROW, ARRAY element and MAP key/value
@@ -1484,8 +1516,7 @@ TEST_F(RestCatalogTest, PartitionKeysRoundTrip) {
                                    /*ignore_if_exists=*/false));
     // the partition keys survive both the create request and the load response conversion
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(Identifier("db1", "pt")));
-    std::shared_ptr<DataSchema> loaded =
-        std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    std::shared_ptr<DataSchema> loaded = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, loaded);
     ASSERT_EQ((std::vector<std::string>{"f1"}), loaded->PartitionKeys());
 }

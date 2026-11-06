@@ -77,11 +77,11 @@ TEST(SystemTableTest, TestChangelogArrowSchemaReturnsInvalidOptions) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_NOK_WITH_MSG(audit_log.ArrowSchema(),
                         "Invalid Config [table-read.sequence-number.enabled: invalid]");
 
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_NOK_WITH_MSG(binlog.ArrowSchema(),
                         "Invalid Config [table-read.sequence-number.enabled: invalid]");
 }
@@ -92,7 +92,7 @@ TEST(SystemTableTest, TestBinlogArrowSchemaWithSequenceNumber) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> schema, binlog.ArrowSchema());
 
     ASSERT_EQ(schema->field_names(),
@@ -219,7 +219,7 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
                          SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
                                                  /*dynamic_options=*/{}));
-    ASSERT_EQ(system_table->Name(), ReadOptimizedSystemTable::kName);
+    ASSERT_EQ(system_table->Name(), "table$ro");
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> arrow_schema, system_table->ArrowSchema());
     ASSERT_EQ(arrow_schema->field_names(), (std::vector<std::string>{"pk", "v"}));
@@ -247,9 +247,10 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
         ReadContextBuilder builder("/tmp/table");

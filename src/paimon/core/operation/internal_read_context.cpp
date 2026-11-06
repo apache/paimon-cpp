@@ -44,7 +44,9 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/url_utils.h"
 #include "paimon/core/options/map_storage_layout.h"
+#include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_search.h"
@@ -279,6 +281,12 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(),
                                                 context->GetFileSystemSchemeToIdentifierMap()));
+    return CreateFromCoreOptions(context, table_schema, std::move(core_options));
+}
+
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromCoreOptions(
+    const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
+    CoreOptions core_options) {
     core_options.WithCache(context->GetCache());
     if (context->EnablePreciseFileIndexEvaluate()) {
         if (!core_options.FileIndexReadEnabled()) {
@@ -482,7 +490,8 @@ InternalReadContext::InternalReadContext(const std::shared_ptr<ReadContext>& rea
       table_schema_(table_schema),
       read_schema_(read_schema),
       arrow_pool_(arrow_pool),
-      options_(options) {}
+      options_(options),
+      fs_scheme_map_(read_context->GetFileSystemSchemeToIdentifierMap()) {}
 
 Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSchema(
     const std::shared_ptr<InternalReadContext>& original,
@@ -493,9 +502,44 @@ Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSche
     }
     // Create a new InternalReadContext sharing all properties except read_schema.
     // The new read_schema is the minimal column set for COUNT(*).
-    return std::shared_ptr<InternalReadContext>(
+    auto result = std::shared_ptr<InternalReadContext>(
         new InternalReadContext(original->read_context_, original->table_schema_, new_read_schema,
                                 original->options_, original->arrow_pool_));
+    result->path_ = original->path_;
+    result->fs_scheme_map_ = original->fs_scheme_map_;
+    return result;
+}
+
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForTable(
+    const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& schema,
+    CoreOptions options, const std::string& root_path,
+    const std::map<std::string, std::string>& fs_scheme_map) {
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InternalReadContext> result,
+                           CreateFromCoreOptions(context, schema, std::move(options)));
+    result->path_ = root_path;
+    result->fs_scheme_map_ = fs_scheme_map;
+    return result;
+}
+Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallbackBranch(
+    const std::shared_ptr<ReadContext>& context, const std::string& branch,
+    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+    const std::map<std::string, std::string>& fs_scheme_map) {
+    if (context->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
+    }
+    SchemaManager manager(file_system, root_path, branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> schema, manager.Latest());
+    if (!schema) {
+        return Status::Invalid("fallback schema not found");
+    }
+    auto options = schema.value()->Options();
+    for (const auto& [key, value] : context->GetOptions()) {
+        options[key] = value;
+    }
+    options[Options::BRANCH] = branch;
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options, file_system));
+    return CreateForTable(context, schema.value(), std::move(core_options), root_path,
+                          fs_scheme_map);
 }
 
 }  // namespace paimon

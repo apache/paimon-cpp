@@ -35,6 +35,7 @@
 struct ArrowSchema;
 
 namespace paimon {
+class SystemTable;
 class FileSystem;
 class TableSchema;
 
@@ -124,6 +125,9 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
         const Identifier& identifier) const override;
 
  private:
+    Result<std::shared_ptr<SystemTable>> LoadSystemTable(
+        const Identifier& identifier, const Identifier& load_identifier,
+        const std::optional<std::string>& branch) const;
     RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
                 const std::string& warehouse, bool data_token_enabled, bool fs_explicitly_supplied,
                 const std::map<std::string, std::string>& fs_scheme_to_identifier_map);

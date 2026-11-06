@@ -42,8 +42,10 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
 #include "paimon/read_context.h"
 #include "paimon/scan_context.h"
@@ -357,15 +359,20 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
 
 AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::shared_ptr<TableSchema> table_schema,
+                                         std::string data_table_name,
                                          std::map<std::string, std::string> options)
-    : fs_(std::move(fs)),
+    : AuditLogSystemTable(std::move(fs), std::move(table_path), std::move(table_schema),
+                          std::move(options), ComposeName(data_table_name, kName)) {}
+
+AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
+                                         std::shared_ptr<TableSchema> table_schema,
+                                         std::map<std::string, std::string> options,
+                                         std::string name)
+    : SystemTable(fs, table_path, std::move(name)),
+      fs_(std::move(fs)),
       table_path_(std::move(table_path)),
       table_schema_(std::move(table_schema)),
       options_(std::move(options)) {}
-
-std::string AuditLogSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ArrowSchema() const {
     std::shared_ptr<arrow::Field> row_kind_field =
@@ -383,17 +390,19 @@ Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ArrowSchema() const 
 }
 
 Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
-    const std::shared_ptr<ScanContext>& context) const {
+    std::unique_ptr<ScanContext> ctx) const {
+    const std::shared_ptr<ScanContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
         return Status::NotImplemented("audit_log system table predicate pushdown is not supported");
     }
     std::shared_ptr<ScanFilter> scan_filter = context->GetScanFilters();
     ScanContextBuilder builder(table_path_);
-    builder.SetOptions(options_)
-        .WithStreamingMode(context->IsStreamingMode())
+    builder.WithStreamingMode(context->IsStreamingMode())
+        .SetOptions(context->GetOptions())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
+        .WithFileSystem(GetFileSystem())
         .WithCache(context->GetCache());
     if (scan_filter) {
         if (scan_filter->GetBucketFilter()) {
@@ -407,11 +416,16 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
         builder.SetLimit(context->GetLimit().value());
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> data_context, builder.Finish());
-    return TableScan::Create(std::move(data_context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, options_));
+    return data_table->NewScan(std::move(data_context));
 }
 
 Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
+    PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     return NewChangelogRead(context, std::make_shared<AuditLogBatchConverter>());
 }
 
@@ -430,8 +444,11 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> data_context,
                            CreateDataReadContext(context, read_options));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, read_options,
+                                           context->GetFileSystemSchemeToIdentifierMap()));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> data_read,
-                           TableRead::Create(std::move(data_context)));
+                           data_table->NewRead(std::move(data_context)));
     auto* key_value_read = dynamic_cast<KeyValueTableRead*>(data_read.get());
     if (!key_value_read) {
         return Status::Invalid("audit_log system table requires key-value table read");
@@ -449,14 +466,16 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
     const std::map<std::string, std::string>& read_options) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema, BaseReadSchema());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
+    auto options = context->GetOptions();
+    if (core_options.TableReadSequenceNumberEnabled()) {
+        options[Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED] = "true";
+    }
     ReadContextBuilder builder(table_path_);
-    builder.SetOptions(read_options)
-        .SetReadFieldNames(base_read_schema->field_names())
-        .WithBranch(core_options.GetBranch())
+    builder.SetReadFieldNames(base_read_schema->field_names())
+        .SetOptions(options)
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(context->GetSpecificFileSystem())
-        .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
+        .WithFileSystem(GetFileSystem())
         .EnablePrefetch(context->EnablePrefetch())
         .SetPrefetchBatchCount(context->GetPrefetchBatchCount())
         .SetPrefetchMaxParallelNum(context->GetPrefetchMaxParallelNum())

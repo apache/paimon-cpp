@@ -26,6 +26,7 @@
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/options/table_type.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
@@ -147,6 +148,17 @@ Result<std::shared_ptr<FormatTable>> CatalogUtils::LoadFormatTableInTwoRequests(
     }
     return FormatTable::Create(catalog.GetFileSystem(), location, identifier, data_schema,
                                location_carries_paimon_metadata, /*dynamic_options=*/{});
+}
+
+Identifier CatalogUtils::IdentifierFromPath(const std::string& table_path,
+                                            const std::string& branch) {
+    const std::string name = PathUtil::GetName(table_path);
+    const std::string parent = PathUtil::GetName(PathUtil::GetParentDirPath(table_path));
+    const std::string suffix = Catalog::DB_SUFFIX;
+    if (StringUtils::EndsWith(parent, suffix)) {
+        return Identifier(parent.substr(0, parent.size() - suffix.size()), name, branch);
+    }
+    return Identifier(Identifier::kUnknownDatabase, name, branch);
 }
 
 }  // namespace paimon

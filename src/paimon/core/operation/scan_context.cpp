@@ -18,10 +18,13 @@
 
 #include "paimon/scan_context.h"
 
+#include <map>
 #include <utility>
 
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/utils/branch_manager.h"
+#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
@@ -240,6 +243,17 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::string branch,
+        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, std::nullopt, "scan"));
+    std::map<std::string, std::string> options = impl_->options_;
+    std::optional<std::string> named_branch;
+    if (impl_->identifier_) {
+        PAIMON_ASSIGN_OR_RAISE(named_branch, impl_->identifier_->GetBranchName());
+    }
+    if (named_branch || options.count(Options::BRANCH) != 0) {
+        options[Options::BRANCH] = branch;
+    }
     std::shared_ptr<Executor> executor =
         impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
     auto ctx = std::make_unique<ScanContext>(
@@ -247,7 +261,7 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         std::make_shared<ScanFilter>(impl_->predicates_, impl_->partition_filters_,
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
-        impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
+        impl_->specific_file_system_, impl_->table_schema_, options, impl_->cache_,
         impl_->format_table_, impl_->catalog_, impl_->identifier_);
     impl_->Reset();
     return ctx;

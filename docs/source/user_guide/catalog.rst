@@ -158,12 +158,27 @@ offsets when a real-time writer is created:
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
                           paimon::FileStoreWrite::Create(std::move(write_context)));
 
-The ``Table`` handle is an equivalent entry point: ``table->NewCommit()``,
-``table->NewWrite()``, ``table->NewRead()`` and ``table->NewScan()`` each take the
-same finished context and return the same operator as ``FileStoreCommit::Create()``,
-``FileStoreWrite::Create()``, ``TableRead::Create()`` and ``TableScan::Create()``.
-Pick whichever reads better; the context still carries the catalog when one is
-needed. See the :ref:`Table API <cpp-api-catalog>`.
+``Catalog::GetTable()`` returns a common ``Table`` interface for managed, format and
+system tables. The managed implementation selects append-only or primary-key behavior
+from the loaded schema; system tables reject writes and commits.
+
+``table->NewCommit()``, ``NewWrite()``, ``NewRead()`` and ``NewScan()`` use the table's
+bound type, path, schema and file system. ``GetSchema()`` returns that schema without
+metadata I/O; reload through the catalog to refresh it. Contexts still provide execution
+settings, dynamic options and optional catalog services. Branch or type options that
+contradict a loaded managed table are rejected. The legacy static ``Create()`` methods
+load the table from their context before delegating to these methods.
+See the :ref:`Table API <cpp-api-catalog>`.
+
+An explicit ``WithBranch()`` or branch-qualified identifier participates in the same
+branch check. Omitting a branch allows the loaded table to supply it. The static
+scan and read factories use an explicit context branch first, then the branch in
+the schema options, and finally main.
+
+Global system tables under ``sys`` retain their catalog for deferred row loading.
+Before calling ``GetTable()`` for one, place the catalog in a ``std::shared_ptr``,
+as in the example above. ``LoadTableSchema()`` can inspect the schema without
+retaining the catalog.
 
 For real-time writes, also set ``WithStreamingMode(true)`` and
 ``WithRealtimeContext(...)`` with ``realtime.enabled=true``. After

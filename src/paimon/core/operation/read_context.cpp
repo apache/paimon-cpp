@@ -27,6 +27,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/full_text_search.h"
@@ -420,6 +421,14 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     PAIMON_ASSIGN_OR_RAISE(
         std::string branch,
         BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "read"));
+    std::map<std::string, std::string> options = impl_->options_;
+    std::optional<std::string> named_branch;
+    if (impl_->identifier_) {
+        PAIMON_ASSIGN_OR_RAISE(named_branch, impl_->identifier_->GetBranchName());
+    }
+    if (impl_->branch_ || named_branch || options.count(Options::BRANCH) != 0) {
+        options[Options::BRANCH] = branch;
+    }
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0");
     }
@@ -452,7 +461,7 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         impl_->prefetch_batch_count_, impl_->prefetch_max_parallel_num_,
         impl_->enable_multi_thread_row_to_batch_, impl_->row_to_batch_thread_number_,
         impl_->table_schema_, impl_->memory_pool_, impl_->executor_, impl_->specific_file_system_,
-        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
+        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, options,
         impl_->read_ahead_cache_enabled_, impl_->cache_config_, impl_->cache_, impl_->format_table_,
         impl_->warmup_level_, impl_->catalog_, impl_->identifier_);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
