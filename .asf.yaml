@@ -37,6 +37,7 @@ github:
   enabled_merge_buttons:
     merge: false
     squash: true
+    squash_commit_message: PR_TITLE
     rebase: false
   rulesets:
     - name: "Branch Protection"
