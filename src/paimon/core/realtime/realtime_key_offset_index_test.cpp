@@ -115,6 +115,24 @@ TEST(RealtimeKeyOffsetIndexTest, TestMutableIndexSnapshotIsCopyOnWrite) {
     ASSERT_TRUE(pinned.IsEmpty());
 }
 
+TEST(RealtimeKeyOffsetIndexTest, TestMutableIndexMemoryUsageExcludesOldSnapshots) {
+    const auto key_field = arrow::field("id", arrow::int64());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<MutableKeyOffsetIndex> index,
+                         MutableKeyOffsetIndex::Create(key_field, GetDefaultPool()));
+    const uint64_t initial_bytes = index->GetMemoryUsage();
+    ASSERT_GT(initial_bytes, 0);
+    ASSERT_OK(index->Add(MakeKeys(key_field, R"([[1], [2]])"), MakeOffsets("[10, 20]")));
+    const auto snapshot = index->Snapshot();
+    ASSERT_EQ(initial_bytes, snapshot->GetMemoryUsage());
+    ASSERT_OK(index->Add(MakeKeys(key_field, R"([[1]])"), MakeOffsets("[30]")));
+    ASSERT_EQ(initial_bytes, snapshot->GetMemoryUsage());
+    // COW allocates a fresh map sized for the live keys, not an extra charge for the old map.
+    ASSERT_GT(index->GetMemoryUsage(), 0);
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap64 pinned,
+                         snapshot->LookupOffsets(MakeKeys(key_field, R"([[1]])")));
+    AssertOffsets(pinned, {10});
+}
+
 TEST(RealtimeKeyOffsetIndexTest, TestMutableIndexValidatesInput) {
     const std::shared_ptr<arrow::Field> key_field = arrow::field("id", arrow::int64());
     ASSERT_NOK_WITH_MSG(MutableKeyOffsetIndex::Create(nullptr, GetDefaultPool()),

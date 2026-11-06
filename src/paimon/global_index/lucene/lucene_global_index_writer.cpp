@@ -65,8 +65,10 @@ Result<std::shared_ptr<LuceneGlobalIndexWriter>> LuceneGlobalIndexWriter::Create
                                                         options, std::string(kLuceneWriteTmpDir)));
         std::string tmp_path = PathUtil::JoinPath(tmp_dir, "paimon-lucene-" + uuid);
 
+        // FSDirectory calls Directory::setLockFactory(), which mutates lockPrefix. Use a separate
+        // factory per directory to avoid racing on the NoLockFactory singleton across writers.
         auto lucene_dir = Lucene::FSDirectory::open(LuceneUtils::StringToWstring(tmp_path),
-                                                    Lucene::NoLockFactory::getNoLockFactory());
+                                                    Lucene::newLucene<Lucene::NoLockFactory>());
         // TODO(xinyu.lxy): support other tokenizer
         // open lucene index writer
         PAIMON_ASSIGN_OR_RAISE(
@@ -76,11 +78,8 @@ Result<std::shared_ptr<LuceneGlobalIndexWriter>> LuceneGlobalIndexWriter::Create
             std::string tokenize_mode,
             OptionsUtils::GetValueFromMap(options, kJiebaTokenizeMode,
                                           std::string(kDefaultJiebaTokenizeMode)));
-        PAIMON_ASSIGN_OR_RAISE(std::string dictionary_dir, LuceneUtils::GetJiebaDictionaryDir());
-        auto jieba = std::make_shared<cppjieba::Jieba>(
-            dictionary_dir + "/jieba.dict.utf8", dictionary_dir + "/hmm_model.utf8",
-            dictionary_dir + "/user.dict.utf8", dictionary_dir + "/idf.utf8",
-            dictionary_dir + "/stop_words.utf8");
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const cppjieba::Jieba> jieba,
+                               LuceneUtils::GetJieba());
         JiebaTokenizerContext jieba_context(tokenize_mode,
                                             /*with_position=*/!omit_term_freq_and_positions, jieba,
                                             pool);

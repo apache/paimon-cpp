@@ -18,6 +18,7 @@
  */
 
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -427,6 +428,44 @@ TEST_F(VariantShreddingTest, ShredScalarsAndMismatches) {
         {arrow::field("arr", arrow::list(arrow::struct_({arrow::field("k", arrow::utf8())})))});
     RoundTrip(array_type, {R"({"arr": [{"k": "v1"}, {"k": "v2", "extra": 1}, {"other": 2}]})",
                            "{\"arr\": [1, 2]}", R"({"arr": {"k": "v"}})"});
+}
+
+TEST_F(VariantShreddingTest, DecimalExactDownscaleUsesTypedValue) {
+    auto variant =
+        BuildVariant([](VariantBuilder& builder) { return builder.AppendDecimal({12300, 3}); });
+    auto shredded = ShredAndCheck(Physical(arrow::decimal128(9, 1)), {variant});
+    ASSERT_FALSE(HasFatalFailure());
+    const auto& typed = static_cast<const arrow::Decimal128Array&>(*shredded->field(2));
+    ASSERT_FALSE(typed.IsNull(0));
+    ASSERT_EQ(typed.FormatValue(0), "12.3");
+    ASSERT_TRUE(shredded->field(1)->IsNull(0));
+}
+
+TEST_F(VariantShreddingTest, DecimalToLongUsesTypedValueOrPreservesResidual) {
+    auto integral =
+        BuildVariant([](VariantBuilder& builder) { return builder.AppendDecimal({120, 1}); });
+    auto fractional =
+        BuildVariant([](VariantBuilder& builder) { return builder.AppendDecimal({125, 1}); });
+    auto wide = BuildVariant([](VariantBuilder& builder) {
+        return builder.AppendDecimal(
+            {static_cast<__int128_t>(std::numeric_limits<int64_t>::max()) + 1, 0});
+    });
+    auto shredded = ShredAndCheck(Physical(arrow::int64()), {integral, fractional, wide});
+    ASSERT_FALSE(HasFatalFailure());
+    const auto& typed = static_cast<const arrow::Int64Array&>(*shredded->field(2));
+    ASSERT_FALSE(typed.IsNull(0));
+    ASSERT_EQ(typed.Value(0), 12);
+    ASSERT_TRUE(typed.IsNull(1));
+    ASSERT_TRUE(typed.IsNull(2));
+    ASSERT_FALSE(shredded->field(1)->IsNull(1));
+    ASSERT_FALSE(shredded->field(1)->IsNull(2));
+}
+
+TEST_F(VariantShreddingTest, LongPreservedAsResidualForBooleanTarget) {
+    auto shredded = RoundTrip(arrow::boolean(), {"1"});
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_TRUE(shredded->field(2)->IsNull(0));
+    ASSERT_FALSE(shredded->field(1)->IsNull(0));
 }
 
 TEST_F(VariantShreddingTest, ScalarShreddingIntegerWidths) {

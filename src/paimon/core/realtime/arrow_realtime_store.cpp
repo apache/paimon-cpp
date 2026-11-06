@@ -286,6 +286,7 @@ class ArrowRealtimeStore::SharedSpillFileReader {
     }
 
     Result<std::shared_ptr<arrow::RecordBatch>> ReadRecordBatch(int32_t batch_index) {
+        // TODO(xinyu.lxy): Use independent IPC readers to read the shared spill file in parallel.
         std::lock_guard<std::mutex> lock(mutex_);
         return file_reader_->ReadRecordBatch(batch_index);
     }
@@ -689,6 +690,18 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
 }
 
 Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> ArrowRealtimeStore::SealForCommit() {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> frozen,
+                           FreezeBuildingSegment());
+    if (!frozen) {
+        return frozen;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeSegmentHandle> segment,
+                           SpillFrozenSegment(frozen.value()));
+    return std::optional<std::shared_ptr<RealtimeSegmentHandle>>(std::move(segment));
+}
+
+Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>
+ArrowRealtimeStore::FreezeBuildingSegment() {
     std::shared_ptr<MemorySegment> memory_segment;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -705,21 +718,30 @@ Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> ArrowRealtimeStore
         building_memory_usage_ = 0;
         building_row_count_ = 0;
     }
+    return std::optional<std::shared_ptr<RealtimeSegmentHandle>>(std::move(memory_segment));
+}
 
+Result<std::shared_ptr<RealtimeSegmentHandle>> ArrowRealtimeStore::SpillFrozenSegment(
+    const std::shared_ptr<RealtimeSegmentHandle>& segment) {
+    std::shared_ptr<MemorySegment> memory_segment =
+        std::dynamic_pointer_cast<MemorySegment>(segment);
+    if (!memory_segment) {
+        return Status::Invalid("real-time spill requires a frozen memory segment");
+    }
     if (!io_manager_) {
-        return std::optional<std::shared_ptr<RealtimeSegmentHandle>>(memory_segment);
+        return segment;
     }
 
     PAIMON_ASSIGN_OR_RAISE(FileIOChannel::ID channel_id, io_manager_->CreateChannel("realtime"));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<ArrowIpcFileWriter> writer,
-        ArrowIpcFileWriter::Create(spill_file_system_, channel_id.GetPath(), write_schema_,
-                                   spill_compression_, spill_compression_level_,
-                                   /*use_threads=*/false, arrow_pool_));
+    std::unique_ptr<ArrowIpcFileWriter> writer;
     auto cleanup_guard = ScopeGuard([&]() {
         writer.reset();
         [[maybe_unused]] Status status = spill_file_system_->Delete(channel_id.GetPath());
     });
+    PAIMON_ASSIGN_OR_RAISE(
+        writer, ArrowIpcFileWriter::Create(spill_file_system_, channel_id.GetPath(), write_schema_,
+                                           spill_compression_, spill_compression_level_,
+                                           /*use_threads=*/false, arrow_pool_));
     std::vector<SpilledBatch> spilled_batches;
     spilled_batches.reserve(memory_segment->GetBatches().size());
     for (const StoredBatch& batch : memory_segment->GetBatches()) {
@@ -754,7 +776,7 @@ Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> ArrowRealtimeStore
             sealed_memory_usage_ += spilled_segment->GetMemoryUsage();
         }
     }
-    return std::optional<std::shared_ptr<RealtimeSegmentHandle>>(std::move(spilled_segment));
+    return std::shared_ptr<RealtimeSegmentHandle>(std::move(spilled_segment));
 }
 
 Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateCommitReaders(
@@ -902,6 +924,13 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
 }
 
 Status ArrowRealtimeStore::AdvanceCommittedOffset(int64_t committed_end_offset) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> retired,
+                           RetireCommittedSegments(committed_end_offset));
+    return Status::OK();
+}
+
+Result<std::shared_ptr<RealtimeReadView>> ArrowRealtimeStore::RetireCommittedSegments(
+    int64_t committed_end_offset) {
     // Drop the store's references only after releasing the write mutex. Segment destruction may
     // release large Arrow buffers or delete a spill file.
     std::vector<std::shared_ptr<Segment>> reclaimed_segments;
@@ -927,7 +956,7 @@ Status ArrowRealtimeStore::AdvanceCommittedOffset(int64_t committed_end_offset) 
         sealed_memory_usage_ -= reclaimed_memory_usage;
         sealed_row_count_ -= reclaimed_row_count;
     }
-    return Status::OK();
+    return std::shared_ptr<RealtimeReadView>(new ReadView(std::move(reclaimed_segments)));
 }
 
 RealtimeStoreDataUsage ArrowRealtimeStore::GetDataUsage() const {

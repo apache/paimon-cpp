@@ -31,6 +31,7 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/core_options.h"
@@ -424,12 +425,16 @@ Status GlobalIndexWriteTask::DeleteCheckpoint(const std::string& table_path,
                                               const std::string& task_id,
                                               const std::map<std::string, std::string>& options,
                                               const std::shared_ptr<FileSystem>& file_system) {
-    PAIMON_ASSIGN_OR_RAISE(std::string task_directory,
-                           IndexCheckpointPathFactory::GetTaskDirectory(table_path, task_id));
     std::pair<std::shared_ptr<TableSchema>, CoreOptions> schema_and_options;
     PAIMON_ASSIGN_OR_RAISE(schema_and_options,
                            LoadSchemaAndOptions(table_path, options, file_system));
-    std::shared_ptr<FileSystem> fs = schema_and_options.second.GetFileSystem();
+    const CoreOptions& core_options = schema_and_options.second;
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
+                           core_options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::string task_directory,
+                           IndexCheckpointPathFactory::GetTaskDirectory(
+                               table_path, task_id, global_index_external_path));
+    std::shared_ptr<FileSystem> fs = core_options.GetFileSystem();
     PAIMON_ASSIGN_OR_RAISE(bool exists, fs->Exists(task_directory));
     if (!exists) {
         return Status::OK();

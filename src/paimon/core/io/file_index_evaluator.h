@@ -19,11 +19,12 @@
 #pragma once
 #include <map>
 #include <memory>
-#include <set>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/file_index_reader.h"
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/fs/file_system.h"
@@ -46,69 +47,62 @@ struct DataFileMeta;
 struct FullTextSearch;
 struct VectorSearch;
 
-/// Evaluate indexes using predicates and search requests expressed in file field names.
-/// Backend options are also expressed in file field names.
+/// Evaluates indexes for one data file, sharing its container and field readers across operations.
+/// Predicates, search requests and backend options use file field names.
 class FileIndexEvaluator {
  public:
-    FileIndexEvaluator() = delete;
-    ~FileIndexEvaluator() = delete;
-
-    // for scan process, will only use embedding file to evaluate
-    static Result<std::shared_ptr<FileIndexResult>> Evaluate(
+    /// Open one index container and reuse its field readers throughout a single file read.
+    /// Uses the embedded index when present; otherwise, loads the external index if available.
+    /// Files whose row counts cannot be represented by bitmap32 skip index loading.
+    static Result<std::unique_ptr<FileIndexEvaluator>> Create(
         const std::shared_ptr<arrow::Schema>& data_schema,
         const std::map<std::string, std::string>& options,
-        const std::shared_ptr<Predicate>& predicate, const std::shared_ptr<DataFileMeta>& file_meta,
-        const std::shared_ptr<MemoryPool>& pool);
-
-    // for read process, will use embedding file or extra index file to evaluate
-    static Result<std::shared_ptr<FileIndexResult>> Evaluate(
-        const std::shared_ptr<arrow::Schema>& data_schema,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<Predicate>& predicate,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::shared_ptr<DataFileMeta>& file_meta,
-        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
-
-    static Result<std::shared_ptr<ScoredFileIndexResult>> EvaluateVectorSearch(
-        const std::shared_ptr<arrow::Schema>& data_schema,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<VectorSearch>& vector_search,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::shared_ptr<DataFileMeta>& file_meta,
         const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
 
-    static Result<std::shared_ptr<FileIndexResult>> EvaluateFullTextSearch(
-        const std::shared_ptr<arrow::Schema>& data_schema,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<FullTextSearch>& full_text_search,
-        const std::shared_ptr<DataFilePathFactory>& path_factory,
-        const std::shared_ptr<DataFileMeta>& file_meta,
-        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
+    /// Evaluates a predicate tree for index pruning, reusing the cached field readers.
+    /// This does not perform exact scalar filtering or reorder children by selectivity.
+    Result<std::shared_ptr<FileIndexResult>> Evaluate(const std::shared_ptr<Predicate>& predicate);
+
+    Result<std::shared_ptr<FileIndexReader>> GetSearchReader(
+        const std::string& field_name, FileIndexReader::SearchType search_type);
+
+    Result<std::shared_ptr<FileIndexResult>> EvaluateLeaf(
+        const std::shared_ptr<LeafPredicate>& predicate, bool needs_scores);
+
+    Result<std::optional<double>> EstimateSelectivity(
+        const std::shared_ptr<LeafPredicate>& predicate);
+
+    Result<std::shared_ptr<ScoredFileIndexResult>> SearchVector(
+        const std::shared_ptr<VectorSearch>& search);
+
+    Result<std::shared_ptr<ScoredFileIndexResult>> SearchFullText(
+        const std::shared_ptr<FullTextSearch>& search);
 
  private:
-    static Result<std::shared_ptr<FileIndexResult>> Evaluate(
-        bool only_use_embedding_index, const std::shared_ptr<arrow::Schema>& data_schema,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<Predicate>& predicate,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::shared_ptr<DataFileMeta>& file_meta,
-        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
+    FileIndexEvaluator(std::shared_ptr<arrow::Schema> data_schema,
+                       std::shared_ptr<DataFileMeta> file_meta,
+                       std::unique_ptr<FileIndexFormat::Reader> format_reader);
+
+    Result<std::vector<std::shared_ptr<FileIndexReader>>> GetReaders(const std::string& field_name);
 
     static Result<std::shared_ptr<InputStream>> ExtractIndexInputStream(
-        bool only_use_embedding_index,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const std::shared_ptr<DataFileMeta>& file_meta,
         const std::shared_ptr<FileSystem>& file_system);
 
-    static Result<std::shared_ptr<FileIndexResult>> Evaluate(
-        const std::shared_ptr<Predicate>& predicate,
-        const std::map<std::string, std::vector<std::shared_ptr<FileIndexReader>>>&
-            field_name_to_index_readers);
+    Result<std::shared_ptr<FileIndexResult>> EvaluatePredicate(
+        const std::shared_ptr<Predicate>& predicate);
 
-    static Result<std::shared_ptr<FileIndexResult>> EvaluateCompoundPredicate(
-        const std::shared_ptr<CompoundPredicate>& compound_predicate,
-        const std::map<std::string, std::vector<std::shared_ptr<FileIndexReader>>>&
-            field_name_to_index_readers);
+    Result<std::shared_ptr<FileIndexResult>> EvaluateCompoundPredicate(
+        const std::shared_ptr<CompoundPredicate>& compound_predicate);
+
+ private:
+    std::shared_ptr<arrow::Schema> data_schema_;
+    std::shared_ptr<DataFileMeta> file_meta_;
+    std::unique_ptr<FileIndexFormat::Reader> format_reader_;
+    std::map<std::string, std::vector<std::shared_ptr<FileIndexReader>>> field_readers_;
 };
 
 }  // namespace paimon

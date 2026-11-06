@@ -618,6 +618,40 @@ TEST_F(VariantTableInteTest, TestPrimaryKeyTable) {
     ReadAndCheck(helper.get(), splits, {0, 1, 2}, {"{\"a\": 1}", R"({"b": "updated"})", "[42]"});
 }
 
+TEST_F(VariantTableInteTest, TestPrimaryKeyInferenceWithBitmapIndex) {
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::WRITE_ONLY, "true"},
+        {Options::VARIANT_INFER_SHREDDING_SCHEMA, "true"},
+        {Options::VARIANT_SHREDDING_MAX_INFER_BUFFER_ROW, "2"},
+        {"file-index.bitmap.columns", "id"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(test_dir_, schema_, /*partition_keys=*/{},
+                                            /*primary_keys=*/{"id"}, options,
+                                            /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> initial,
+                         MakeBatch(BuildArray({R"({"a": 1})", R"({"a": 2})", nullptr})));
+    ASSERT_OK(helper->WriteAndCommit(std::move(initial), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> update,
+                         MakeBatch(BuildArray({R"({"a": 20})"}, /*id_offset=*/1)));
+    ASSERT_OK(helper->WriteAndCommit(std::move(update), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_FALSE(splits.empty());
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_TRUE(data_split);
+        for (const auto& file : data_split->DataFiles()) {
+            ASSERT_TRUE(file->embedded_index);
+        }
+    }
+    ReadAndCheck(helper.get(), splits, {0, 1, 2}, {R"({"a": 1})", R"({"a": 20})", nullptr});
+}
+
 TEST_F(VariantTableInteTest, TestVariantAccessRead) {
     std::map<std::string, std::string> options = {
         {Options::FILE_FORMAT, "parquet"},

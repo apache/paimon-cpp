@@ -238,6 +238,44 @@ class ConflictDetectionTest : public testing::Test {
     arrow::FieldVector fields_;
 };
 
+TEST_F(ConflictDetectionTest, TestEmptyAndUnrelatedEntriesSkipRowIdChecks) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
+                         TableSchema::Create(0, arrow::schema(fields_), {"f1"}, {}, {}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::DATA_EVOLUTION_ENABLED, "true"}}));
+    ConflictDetection detection(schema, options, nullptr, nullptr, nullptr, nullptr, "test-user",
+                                "test-table", nullptr);
+    const BinaryRow partition = CreateIntRow(10);
+    const ManifestEntry untracked = CreateManifestEntry("untracked", FileKind::Add());
+    const ManifestEntry deleted =
+        CreateManifestEntryWithFirstRowId("deleted", partition, FileKind::Delete(), 0, 0, 10);
+    const ManifestEntry new_rows =
+        CreateManifestEntryWithFirstRowId("new-rows", partition, FileKind::Add(), 0, 100, 10);
+    ASSERT_OK(CheckConflicts(detection, {}, {}, Snapshot::CommitKind::Append()));
+    ASSERT_OK(detection.CheckRowIdExistence({}, {untracked, deleted, new_rows}, 100));
+    ASSERT_OK(detection.CheckRowIdExistence({}, {new_rows}, std::nullopt));
+    const auto deleted_index =
+        CreateGlobalIndexEntry("deleted-index", partition, 0, FileKind::Delete(), 0, 9);
+    const auto dv_index = CreateDvIndexEntry("deletion-vector", partition, 0);
+    ASSERT_OK(detection.CheckGlobalIndexRowIdExistence({}, {deleted_index, dv_index}));
+}
+
+TEST_F(ConflictDetectionTest, TestRowIdChecksAreDisabledWithoutDataEvolution) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
+                         TableSchema::Create(0, arrow::schema(fields_), {"f1"}, {}, {}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ConflictDetection detection(schema, options, nullptr, nullptr, nullptr, nullptr, "test-user",
+                                "test-table", nullptr);
+    const BinaryRow partition = CreateIntRow(10);
+    const ManifestEntry missing =
+        CreateManifestEntryWithFirstRowId("missing", partition, FileKind::Add(), 0, 0, 10);
+    ASSERT_OK(detection.CheckRowIdExistence({}, {missing}, 100));
+    ASSERT_OK(detection.CheckGlobalIndexRowIdExistence(
+        {}, {CreateGlobalIndexEntry("missing-index", partition, 0, 0, 9)}));
+    ASSERT_OK(detection.CheckForRowIdFromSnapshot(MakeSnapshot(Snapshot::CommitKind::Append()),
+                                                  {missing}, {}, std::nullopt));
+}
+
 TEST_F(ConflictDetectionTest, TestFileDeletionConflicts) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<TableSchema> table_schema,

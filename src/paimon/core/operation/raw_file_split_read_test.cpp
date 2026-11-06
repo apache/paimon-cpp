@@ -285,6 +285,89 @@ TEST_F(RawFileSplitReadTest, TestCreateReader) {
     CheckReadResult(read_schema, expected_array);
 }
 
+TEST_F(RawFileSplitReadTest, TestCreateReaderUsesExplicitPredicate) {
+    const std::string path =
+        GetDataDir() + "/orc/multi_partition_append_table.db/multi_partition_append_table";
+    ReadContextBuilder builder(path);
+    builder.EnablePredicateFilter(true)
+        .SetPredicate(PredicateBuilder::Equal(0, "f0", FieldType::STRING,
+                                              Literal(FieldType::STRING, "Bob", 3)))
+        .AddOption(Options::FILE_INDEX_READ_ENABLED, "false");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+    SchemaManager schemas(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schemas.ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<InternalReadContext> context,
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
+    const CoreOptions& options = context->GetCoreOptions();
+    const auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths, options.CreateExternalPaths());
+    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_path,
+                         options.CreateGlobalIndexExternalPath());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> paths,
+        FileStorePathFactory::Create(
+            path, schema, table_schema->PartitionKeys(), options.GetPartitionDefaultName(),
+            options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
+            options.LegacyPartitionNameEnabled(), external_paths, global_index_path,
+            options.IndexFileInDataFileDir(), pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
+    RawFileSplitRead read(paths, context, pool_, executor);
+    auto split = std::dynamic_pointer_cast<DataSplitImpl>(PrepareDataSplits().front());
+    ASSERT_NE(nullptr, split);
+    const auto first = split->DataFiles().front();
+    const auto second = std::make_shared<DataFileMeta>(*first);
+    // The supplied predicate, not the context's predicate, must be used for both files.
+    const std::shared_ptr<Predicate> predicate =
+        PredicateBuilder::Equal(0, "f0", FieldType::STRING, Literal(FieldType::STRING, "Tony", 4));
+    RoaringBitmap32 deleted;
+    deleted.Add(1);
+    std::shared_ptr<DeletionVector> dv = std::make_shared<BitmapDeletionVector>(deleted);
+    DeletionVector::Factory dv_factory =
+        [dv](const std::string&) -> Result<std::shared_ptr<DeletionVector>> { return dv; };
+    RawFileSplitRead::PredicateProvider no_pushdown =
+        [](const std::shared_ptr<DataFileMeta>&) -> Result<std::shared_ptr<Predicate>> {
+        return std::shared_ptr<Predicate>();
+    };
+    ASSERT_NOK_WITH_MSG(
+        read.CreateReaderWithPredicateProvider(split->Partition(), split->Bucket(), {first, second},
+                                               dv_factory, std::nullopt, context->GetReadSchema(),
+                                               predicate, /*predicate_provider=*/{}),
+        "file predicate provider is null");
+    ASSERT_NOK_WITH_MSG(
+        read.CreateReaderWithPredicateProvider(split->Partition(), split->Bucket(), {first, second},
+                                               dv_factory, std::vector<Range>{Range(0, 0)},
+                                               context->GetReadSchema(), predicate, no_pushdown),
+        "file-local row ranges require exactly one data file");
+    arrow::FieldVector output_fields = {arrow::field("_VALUE_KIND", arrow::int8())};
+    output_fields.insert(output_fields.end(), schema->fields().begin(), schema->fields().end());
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(output_fields), R"([
+                                [0, "Tony", 10, 0, 14.1],
+                                [0, "Tony", 10, 0, 14.1]
+                            ])")
+                        .ValueOrDie();
+    for (bool use_provider : {false, true}) {
+        SCOPED_TRACE(use_provider);
+        std::unique_ptr<BatchReader> reader;
+        if (use_provider) {
+            // A provider without pushdown must not suppress the explicit residual predicate.
+            ASSERT_OK_AND_ASSIGN(
+                reader, read.CreateReaderWithPredicateProvider(
+                            split->Partition(), split->Bucket(), {first, second}, dv_factory,
+                            std::nullopt, context->GetReadSchema(), predicate, no_pushdown));
+        } else {
+            ASSERT_OK_AND_ASSIGN(
+                reader,
+                read.CreateReader(split->Partition(), split->Bucket(), {first, second}, dv_factory,
+                                  std::nullopt, context->GetReadSchema(), predicate));
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(result->Equals(std::make_shared<arrow::ChunkedArray>(expected)))
+            << result->ToString();
+    }
+}
+
 // recall all columns with reverse sequence in data
 TEST_F(RawFileSplitReadTest, TestCreateReaderWithReserveSequence) {
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
@@ -462,7 +545,8 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
         "f3", /*limit=*/2, std::vector<float>{1.0f}, nullptr, nullptr,
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     ReadContextBuilder context_builder(path);
-    context_builder.SetReadFieldNames({"_INDEX_SCORE", "f0"}).SetVectorSearch(vector_search);
+    context_builder.EnablePreciseFileIndexEvaluate(true);
+    context_builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0"}).SetVectorSearch(vector_search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
@@ -504,13 +588,14 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                    arrow::field("_INDEX_SCORE", arrow::float32()),
+                                    arrow::field("_f3_INDEX_SCORE", arrow::float32()),
                                     arrow::field("f0", arrow::utf8())}),
                     {R"([[0, 0.25, "Bob"], [0, 0.75, "Tony"]])"}, &expected)
                     .ok());
     ASSERT_TRUE(result->Equals(expected));
 
     ReadContextBuilder without_score_builder(path);
+    without_score_builder.EnablePreciseFileIndexEvaluate(true);
     without_score_builder.SetReadFieldNames({"f0"}).SetVectorSearch(vector_search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> without_score_context,
                          without_score_builder.Finish());
@@ -540,7 +625,8 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchFiltersDeletionVectorBeforeTopK) {
         "f3", /*limit=*/1, std::vector<float>{1.0f}, user_filter, nullptr,
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     ReadContextBuilder builder(path);
-    builder.SetReadFieldNames({"_INDEX_SCORE", "f0"}).SetVectorSearch(search);
+    builder.EnablePreciseFileIndexEvaluate(true);
+    builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0"}).SetVectorSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result,
@@ -549,7 +635,7 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchFiltersDeletionVectorBeforeTopK) {
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                    arrow::field("_INDEX_SCORE", arrow::float32()),
+                                    arrow::field("_f3_INDEX_SCORE", arrow::float32()),
                                     arrow::field("f0", arrow::utf8())}),
                     {R"([[0, 0.75, "Tony"]])"}, &expected)
                     .ok());
@@ -565,6 +651,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchFiltersDeletionVectorBeforeLimit)
     auto search = std::make_shared<FullTextSearch>("f3", R"({"match":{"query":"match"}})",
                                                    /*limit=*/1, user_filter);
     ReadContextBuilder builder(path);
+    builder.EnablePreciseFileIndexEvaluate(true);
     builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
@@ -610,12 +697,15 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchRenamedUnprojectedFieldInOldFile) {
                                                  nullptr, VectorSearch::DistanceType::EUCLIDEAN,
                                                  std::map<std::string, std::string>{});
     ReadContextBuilder builder(path);
-    builder.SetOptions(options).SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(search);
+    builder.EnablePreciseFileIndexEvaluate(true);
+    builder.SetOptions(options)
+        .SetReadFieldNames({"f0", "_renamed_f3_INDEX_SCORE"})
+        .SetVectorSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
 
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                         arrow::field("f0", arrow::utf8()),
-                                         arrow::field("_INDEX_SCORE", arrow::float32())});
+    auto expected_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("f0", arrow::utf8()),
+         arrow::field("_renamed_f3_INDEX_SCORE", arrow::float32())});
     const std::vector<std::pair<RoaringBitmap32, std::string>> cases = {
         {RoaringBitmap32(), R"([[0,"Bob",0.25],[0,"Tony",0.75]])"},
         {RoaringBitmap32::From({0}), R"([[0,"Tony",0.75]])"}};
@@ -639,6 +729,7 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchRenamedUnprojectedFieldInOldFile) {
     auto missing_search = std::make_shared<VectorSearch>(*search);
     missing_search->field_name = "f3";
     ReadContextBuilder missing_field_builder(path);
+    missing_field_builder.EnablePreciseFileIndexEvaluate(true);
     missing_field_builder.SetOptions(options).SetReadFieldNames({"f0"}).SetVectorSearch(
         missing_search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> missing_context,
@@ -677,6 +768,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
     auto search =
         std::make_shared<FullTextSearch>("renamed_f3", R"({"match":{"query":"match"}})", 2);
     ReadContextBuilder builder(path);
+    builder.EnablePreciseFileIndexEvaluate(true);
     builder.SetOptions(options).SetReadFieldNames({"f0"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
 
@@ -705,6 +797,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
     auto missing_search = std::make_shared<FullTextSearch>(*search);
     missing_search->field_name = "f3";
     ReadContextBuilder missing_field_builder(path);
+    missing_field_builder.EnablePreciseFileIndexEvaluate(true);
     missing_field_builder.SetOptions(options).SetReadFieldNames({"f0"}).SetFullTextSearch(
         missing_search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> missing_context,

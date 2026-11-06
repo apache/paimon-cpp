@@ -64,6 +64,26 @@ Interface
    :members:
    :undoc-members:
 
+.. doxygenclass:: paimon::FullTextSearchBuilder
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::FullTextScan
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::FullTextRead
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::FullTextSearchSplit
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::IndexFullTextSearchSplit
+   :members:
+   :undoc-members:
+
 .. doxygenclass:: paimon::GlobalIndexWriteTask
    :members:
    :undoc-members:

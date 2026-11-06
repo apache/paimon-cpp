@@ -29,6 +29,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -176,6 +177,24 @@ TEST(LanceUtilsTest, ConvertsObjectStoreOptions) {
 }
 
 TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
+    auto time_field = [](const std::string& name, int32_t precision) {
+        return arrow::field(
+            name, arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/true,
+            arrow::key_value_metadata({DataType::kTimePrecision}, {std::to_string(precision)}));
+    };
+    auto ltz_fields = [](const std::string& zone) {
+        return arrow::FieldVector{
+            arrow::field("ltz_0_col", arrow::timestamp(arrow::TimeUnit::SECOND, zone)),
+            arrow::field("ltz_3_col", arrow::timestamp(arrow::TimeUnit::MILLI, zone)),
+            arrow::field("ltz_6_col", arrow::timestamp(arrow::TimeUnit::MICRO, zone)),
+            arrow::field("ltz_9_col", arrow::timestamp(arrow::TimeUnit::NANO, zone)),
+            arrow::field("ltz_array_col",
+                         arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, zone))),
+            arrow::field("ltz_row_col",
+                         arrow::struct_({arrow::field(
+                             "value", arrow::timestamp(arrow::TimeUnit::MILLI, zone))})),
+        };
+    };
     arrow::FieldVector fields = {
         arrow::field("bool_col", arrow::boolean()),
         arrow::field("i8_col", arrow::int8()),
@@ -187,6 +206,7 @@ TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
         arrow::field("string_col", arrow::utf8()),
         arrow::field("binary_col", arrow::binary()),
         arrow::field("date_col", arrow::date32()),
+        time_field("time_col", 3),
         arrow::field("timestamp_col", arrow::timestamp(arrow::TimeUnit::MICRO)),
         arrow::field("decimal_col", arrow::decimal128(12, 2)),
         arrow::field("array_col", arrow::list(arrow::float32())),
@@ -194,15 +214,26 @@ TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
         arrow::field(
             "vector_col",
             arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 2)),
+        arrow::field("time_array_col", arrow::list(time_field("item", 0))),
+        arrow::field("time_row_col", arrow::struct_({time_field("value", 6)})),
+        arrow::field("time_row_array_col",
+                     arrow::struct_({arrow::field("values", arrow::list(time_field("item", 9)))})),
     };
+    arrow::FieldVector local_ltz_fields = ltz_fields("GMT-10:00");
+    fields.insert(fields.end(), local_ltz_fields.begin(), local_ltz_fields.end());
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::shared_ptr<arrow::Array> expected =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
-          [true,-1,-2,-3,-4,1.5,2.5,"one","abc",1,
-           "1970-01-01 00:00:00.000001","12.34",[1.0,2.0],[7],[3.0,4.0]],
-          [false,1,2,3,4,3.5,4.5,"two","xyz",2,
-           "2030-12-31 23:59:59.999999","-12.34",[],[8],[5.0,6.0]],
-          [null,null,null,null,null,null,null,null,null,null,null,null,null,[null],null]
+          [true,-1,-2,-3,-4,1.5,2.5,"one","abc",1,0,
+           "1970-01-01 00:00:00.000001","12.34",[1.0,2.0],[7],[3.0,4.0],
+           [0,null,45296000],[45296123],[[3723123,null]],
+           1700000000,1700000000123,1700000000123456,1700000000123456789,
+           [1700000000123456,null,-1],[1700000000123]],
+          [false,1,2,3,4,3.5,4.5,"two","xyz",2,86399999,
+           "2030-12-31 23:59:59.999999","-12.34",[],[8],[5.0,6.0],
+           [],[86399999],[[]],-1,-1,-1,-1,[],[-1]],
+          [null,null,null,null,null,null,null,null,null,null,null,null,null,null,[null],null,
+           null,[null],[null],null,null,null,null,null,[null]]
         ])")
             .ValueOrDie();
     std::string path = PathUtil::JoinPath(directory_->Str(), "supported-types.lance");
@@ -218,6 +249,30 @@ TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
                              paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
         ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(expected))) << actual->ToString() << "\nvs\n"
                                                                    << expected->ToString();
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, OpenReader(path, 2));
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, /*predicate=*/nullptr,
+                                    /*selection_bitmap=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    arrow::Result<std::shared_ptr<arrow::Array>> batch_result =
+        arrow::ImportArray(batch.first.get(), batch.second.get());
+    ASSERT_TRUE(batch_result.ok()) << batch_result.status().ToString();
+    std::shared_ptr<arrow::Array> batch_array = std::move(batch_result).MoveValueUnsafe();
+    ASSERT_TRUE(batch_array->type()->Equals(arrow::struct_(fields), /*check_metadata=*/true))
+        << batch_array->type()->ToString(/*show_metadata=*/true);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<::ArrowSchema> c_file_schema, reader->GetFileSchema());
+    arrow::Result<std::shared_ptr<arrow::Schema>> file_schema =
+        arrow::ImportSchema(c_file_schema.get());
+    ASSERT_TRUE(file_schema.ok()) << file_schema.status().ToString();
+    for (const std::shared_ptr<arrow::Field>& utc_field : ltz_fields("UTC")) {
+        std::shared_ptr<arrow::Field> file_field =
+            file_schema.ValueUnsafe()->GetFieldByName(utc_field->name());
+        ASSERT_NE(file_field, nullptr) << utc_field->name();
+        ASSERT_TRUE(file_field->type()->Equals(utc_field->type())) << file_field->ToString();
     }
 }
 
@@ -351,10 +406,12 @@ TEST_F(LanceFileFormatTest, EmptyProjectionAndEmptySelection) {
 
 TEST_F(LanceFileFormatTest, ExtractStatistics) {
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
-                                 arrow::field("name", arrow::utf8())};
+                                 arrow::field("name", arrow::utf8()),
+                                 arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI))};
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::shared_ptr<arrow::Array> data =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([[1,"a"],[2,null]])")
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[1,"a",3723123],[2,null,null]])")
             .ValueOrDie();
     std::string path = PathUtil::JoinPath(directory_->Str(), "stats.lance");
     ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2));
@@ -365,9 +422,10 @@ TEST_F(LanceFileFormatTest, ExtractStatistics) {
                          format_->CreateStatsExtractor(&ffi_schema));
     ASSERT_OK_AND_ASSIGN(auto result, extractor->ExtractWithFileInfo(file_system_, path, pool_));
     ASSERT_EQ(result.second.GetRowCount(), 2);
-    ASSERT_EQ(result.first.size(), 2);
+    ASSERT_EQ(result.first.size(), 3);
     ASSERT_EQ(result.first[0]->ToString(), "min null, max null, null count null");
     ASSERT_EQ(result.first[1]->ToString(), "min null, max null, null count null");
+    ASSERT_EQ(result.first[2]->ToString(), "min null, max null, null count null");
 }
 
 TEST_F(LanceFileFormatTest, RejectsIncompatibleReadTypes) {

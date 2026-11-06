@@ -118,8 +118,9 @@ Result<std::unique_ptr<SnapshotReader>> CreateSnapshotReader(
 
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<IndexManifestFile> index_manifest_file,
-        IndexManifestFile::Create(fs, options.GetManifestFormat(), options.GetManifestCompression(),
-                                  path_factory, options.GetBucket(), pool, options));
+        IndexManifestFile::Create(
+            fs, options.GetManifestFormat(), options.GetManifestCompression(), path_factory,
+            ResolveBucketMode(options.GetBucket(), table_schema), pool, options));
     auto index_file_handler = std::make_unique<IndexFileHandler>(
         fs, std::move(index_manifest_file), std::make_shared<IndexFilePathFactories>(path_factory),
         options.DeletionVectorsBitmap64(), pool);
@@ -166,8 +167,8 @@ Status SubtractDeletedRows(const DataSplitImpl& split, const std::string& root_p
 Result<std::optional<RoaringBitmap64>> GlobalIndexLiveRowFilter::LiveRows(
     const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
     const Snapshot& snapshot, const std::shared_ptr<PredicateFilter>& partition_filter,
-    const CoreOptions& options, const std::shared_ptr<Executor>& executor,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::optional<RowRangeIndex>& row_range_index, const CoreOptions& options,
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
     // Without row tracking, as in primary-key tables, data files carry no row ids to filter.
     if (!options.DeletionVectorsEnabled() || !options.RowTrackingEnabled()) {
         return std::optional<RoaringBitmap64>();
@@ -176,6 +177,9 @@ Result<std::optional<RoaringBitmap64>> GlobalIndexLiveRowFilter::LiveRows(
         std::unique_ptr<SnapshotReader> snapshot_reader,
         CreateSnapshotReader(root_path, table_schema, partition_filter, options, executor, pool));
     snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(snapshot);
+    if (row_range_index) {
+        snapshot_reader->WithRowRangeIndex(row_range_index.value());
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, snapshot_reader->Read());
 
     std::vector<std::shared_ptr<DataSplitImpl>> splits;

@@ -430,6 +430,8 @@ string(REPLACE "-Wglobal-constructors" "" EP_C_FLAGS ${EP_C_FLAGS})
 # Remove coverage flags from third-party dependencies to avoid gcov dependency
 string(REPLACE "--coverage" "" EP_CXX_FLAGS ${EP_CXX_FLAGS})
 string(REPLACE "--coverage" "" EP_C_FLAGS ${EP_C_FLAGS})
+string(REPLACE " -fprofile-update=atomic" "" EP_CXX_FLAGS ${EP_CXX_FLAGS})
+string(REPLACE " -fprofile-update=atomic" "" EP_C_FLAGS ${EP_C_FLAGS})
 string(REPLACE "-DCOVERAGE_BUILD" "" EP_CXX_FLAGS ${EP_CXX_FLAGS})
 string(REPLACE "-DCOVERAGE_BUILD" "" EP_C_FLAGS ${EP_C_FLAGS})
 if(NOT MSVC_TOOLCHAIN)

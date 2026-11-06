@@ -27,6 +27,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/core/catalog/catalog_utils.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/commit_table_request.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
@@ -45,16 +46,26 @@ class CatalogSnapshotCommit : public SnapshotCommit {
     /// @param catalog Catalog implementing version management.
     /// @param identifier Identifier of the table to commit to.
     /// @param table_id Catalog UUID captured before preparing changes; null if unavailable.
+    /// @param lock Lock taken around each publication attempt; null to publish without one.
     CatalogSnapshotCommit(const std::shared_ptr<Catalog>& catalog, Identifier identifier,
-                          const std::optional<std::string>& table_id)
+                          const std::optional<std::string>& table_id,
+                          std::unique_ptr<CommitLock> lock = nullptr)
         : catalog_(catalog),
           version_managed_catalog_(AsVersionManaged(catalog)),
           identifier_(std::move(identifier)),
-          table_id_(table_id) {}
+          table_id_(table_id),
+          lock_(std::move(lock)) {}
 
     /// @param table_id Catalog UUID to include in the request; null if unavailable.
     explicit CatalogSnapshotCommit(const std::optional<std::string>& table_id = std::nullopt)
         : identifier_("", ""), table_id_(table_id) {}
+
+    Result<std::unique_ptr<CommitLockScope>> AcquireLock() override {
+        if (lock_ == nullptr) {
+            return std::unique_ptr<CommitLockScope>();
+        }
+        return lock_->Acquire();
+    }
 
     Result<bool> Commit(const std::optional<std::string>& base_snapshot_uuid,
                         const Snapshot& snapshot, const std::string& branch,
@@ -110,6 +121,7 @@ class CatalogSnapshotCommit : public SnapshotCommit {
     VersionManagedCatalog* version_managed_catalog_ = nullptr;
     Identifier identifier_;
     std::optional<std::string> table_id_;
+    std::unique_ptr<CommitLock> lock_;
     std::optional<CommitTableRequest> commit_table_request_;
 };
 

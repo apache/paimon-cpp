@@ -16,37 +16,13 @@
 
 #![allow(non_camel_case_types)]
 
-//! Callback-based I/O for the Vortex C API.
+//! Callback I/O for Vortex using Paimon's `InputStream` and `OutputStream`.
 //!
-//! The stock C API can only read a whole file already materialized in memory
-//! (`vx_data_source_new_buffer`) or a path that Vortex itself resolves
-//! (`vx_data_source_new`), and it can only write to a local filesystem path
-//! (`vx_array_sink_open_file`, which uses `async_fs::File::create`). paimon owns its own pluggable
-//! filesystem, so none of these fit: reading forces the entire file into memory, and writing forces
-//! a local temporary file that then has to be copied back.
+//! Copied into `vortex-ffi/src/` at build time; see `cmake_modules/vortex.diff`.
+//! Keep FFI types and signatures in sync with `src/paimon/format/vortex/vortex_ffi.h`.
 //!
-//! This module adds entry points that take host callbacks instead, so Vortex issues positional
-//! reads and sequential writes straight against paimon's `InputStream` / `OutputStream`. Vortex's
-//! core I/O traits are the plug points; the shape of the bridge mirrors `vortex-jni`'s
-//! `JavaReadable` and `JavaWrite`.
-//!
-//! The write side needs its own handle type rather than reusing `vx_array_sink`, whose fields are
-//! private to `crate::sink`.
-//!
-//! The sink entry points below (`vx_callback_sink_push` / `_close` / `_abort`) are adapted from
-//! vortex-ffi's `src/sink.rs` (SPDX-License-Identifier: Apache-2.0, Copyright the Vortex
-//! contributors), reworked to drive the write pipeline through host callbacks instead of a
-//! Vortex-resolved filesystem path.
-//!
-//! This file is maintained in the paimon-cpp tree (`crates/vortex_callback_io/`) and copied into
-//! `vortex-ffi/src/` at build time; see `cmake_modules/vortex.diff`.
-//!
-//! The C declarations that mirror the types and entry points below live in paimon-cpp's
-//! `src/paimon/format/vortex/vortex_ffi.h` (cbindgen does not see this module, so they are written
-//! by hand). The two sides are only checked by human review, and a mismatch in field order or a
-//! function signature is silent memory corruption, not a compile error. Any change to a
-//! `#[repr(C)]` struct, a callback `type`, or a `#[no_mangle]` entry point here MUST be mirrored in
-//! that header in the same change.
+//! Sink entry points are adapted from Vortex's `vortex-ffi/src/sink.rs`
+//! (SPDX-License-Identifier: Apache-2.0, Copyright the Vortex contributors).
 
 use std::ffi::CStr;
 use std::ffi::c_char;
@@ -162,11 +138,7 @@ pub struct vx_output_callbacks {
     pub release_fn: Option<vx_release_fn>,
 }
 
-/// The host context, owned by the reader.
-///
-/// Held behind an `Arc` so in-flight reads keep the context alive, and so `release_fn` runs exactly
-/// once when the last reference goes away. It carries only the context, not the read callback, so
-/// that ownership can be taken over before anything else is validated.
+/// Shared host context, released when the last reader or writer reference is dropped.
 struct CallbackTarget {
     ctx: *mut c_void,
     release_fn: Option<vx_release_fn>,
@@ -189,11 +161,7 @@ impl Drop for CallbackTarget {
     }
 }
 
-/// A [`VortexReadAt`] that forwards positional reads to host callbacks.
-///
-/// Reads run on the runtime's blocking pool, since the host callback is synchronous and must not
-/// occupy an async executor thread. The file size is supplied at construction time, so `size()`
-/// never crosses the FFI boundary.
+/// A [`VortexReadAt`] that runs host callbacks on the blocking pool.
 struct CallbackReadAt {
     target: Arc<CallbackTarget>,
     read_at_fn: vx_read_at_fn,
@@ -203,14 +171,12 @@ struct CallbackReadAt {
     coalesce_config: CoalesceConfig,
 }
 
-/// Number of concurrent host read callbacks Vortex may have in flight for one file.
-///
-/// The host filesystem may be remote, where concurrency hides latency; it is also the bound on
-/// blocking threads occupied by one reader.
+/// Maximum concurrent host reads per file, also bounding blocking-pool usage.
 const DEFAULT_CONCURRENCY: usize = 16;
 
 impl VortexReadAt for CallbackReadAt {
     fn coalesce_config(&self) -> Option<CoalesceConfig> {
+        // Coalesce reads to reduce remote I/O and blocking-pool overhead.
         Some(self.coalesce_config)
     }
 
@@ -280,8 +246,7 @@ unsafe fn data_source_new_callback(
     size: u64,
     coalesce_config: CoalesceConfig,
 ) -> VortexResult<*const vx_data_source> {
-    // Take ownership of the host context before anything else, so an early error below still
-    // releases it exactly once when this `Arc` is dropped.
+    // Take ownership before validation so errors also release the context.
     let target = Arc::new(CallbackTarget {
         ctx: callbacks.ctx,
         release_fn: callbacks.release_fn,
@@ -347,11 +312,7 @@ pub unsafe extern "C-unwind" fn vx_data_source_new_callback_with_coalesce(
     })
 }
 
-/// A [`VortexWrite`] that forwards sequential writes to host callbacks.
-///
-/// Writes run inline on the runtime thread driving the write task, the same way `vortex-jni`
-/// forwards to Java sinks: the host callback is synchronous and the layout writer hands over one
-/// buffer at a time, so there is nothing to overlap.
+/// A [`VortexWrite`] that calls host callbacks inline on the writer's runtime thread.
 struct CallbackWrite {
     target: Arc<CallbackTarget>,
     write_fn: vx_write_fn,
@@ -405,11 +366,7 @@ impl VortexWrite for CallbackWrite {
     }
 }
 
-/// A sink that writes a Vortex file through host callbacks.
-///
-/// Mirrors `vx_array_sink`: pushed arrays go through a channel feeding a write task on the session's
-/// runtime, and errors surface when the sink is closed. This is a separate type because
-/// `vx_array_sink`'s fields are private to its own module.
+/// A Vortex file sink backed by host callbacks and a background write task.
 pub struct vx_callback_sink {
     sink: Sender<VortexResult<ArrayRef>>,
     writer: Task<VortexResult<WriteSummary>>,
@@ -421,8 +378,7 @@ unsafe fn callback_sink_open(
     callbacks: vx_output_callbacks,
     dtype: *const vx_dtype,
 ) -> VortexResult<*mut vx_callback_sink> {
-    // Take ownership of the host context before anything else, so an early error below still
-    // releases it exactly once when this `Arc` is dropped.
+    // Take ownership before validation so errors also release the context.
     let target = Arc::new(CallbackTarget {
         ctx: callbacks.ctx,
         release_fn: callbacks.release_fn,
@@ -442,7 +398,7 @@ unsafe fn callback_sink_open(
         flush_fn: callbacks.flush_fn,
     };
 
-    // Small on purpose so the producing thread feels back-pressure, as in vortex-jni's writer.
+    // Limit queued arrays to apply backpressure to the producer.
     let (sink, rx) = mpsc::channel(4);
     let array_stream = ArrayStreamAdapter::new(dtype.clone(), rx.into_stream());
 
@@ -2161,7 +2117,6 @@ mod tests {
         );
     }
 
-    /// Host context standing in for paimon's `InputStream`: positional reads against a file.
     struct FileContext {
         file: File,
     }
@@ -2188,8 +2143,7 @@ mod tests {
         drop(unsafe { Box::from_raw(ctx.cast::<FileContext>()) });
     }
 
-    /// Writing a file with the stock sink and reading it back through the callback data source
-    /// must yield the same dtype and row count: the callback plug point is wired up correctly.
+    // Read a file written by the standard sink through host callbacks.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_callback_data_source_round_trip() {
@@ -2512,8 +2466,6 @@ mod tests {
         }
     }
 
-    /// A rejected request must still release the host context: the entry point takes ownership
-    /// before it validates anything, so the host never has to guess whether to clean up.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_rejected_callbacks_release_context() {
@@ -2526,7 +2478,6 @@ mod tests {
         unsafe {
             let session = vx_session_new();
             let mut error = ptr::null_mut();
-            // No read callback, so the call must fail.
             let callbacks = vx_input_callbacks {
                 ctx: ptr::null_mut(),
                 read_at_fn: None,
@@ -2554,12 +2505,10 @@ mod tests {
         }
     }
 
-    /// Writing through the callback sink and reading the bytes back through the callback data source
-    /// must round-trip, with no filesystem involved in either direction.
+    // Round-trip through an in-memory buffer using only callbacks.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_callback_sink_round_trip() {
-        /// Host context standing in for a paimon stream pair: an in-memory byte buffer.
         struct BufferContext {
             data: Mutex<Vec<u8>>,
         }

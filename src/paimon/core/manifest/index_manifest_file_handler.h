@@ -37,7 +37,8 @@ class IndexManifestFileHandler {
 
     static Result<std::string> Write(const std::optional<std::string>& previous_index_manifest,
                                      const std::vector<IndexManifestEntry>& new_index_entries,
-                                     int32_t bucket_mode, IndexManifestFile* index_manifest_file);
+                                     BucketMode bucket_mode,
+                                     IndexManifestFile* index_manifest_file);
 
  private:
     class IndexManifestFileCombiner {
@@ -81,6 +82,6 @@ class IndexManifestFileHandler {
         const std::vector<IndexManifestEntry>& index_entries);
 
     static Result<std::unique_ptr<IndexManifestFileCombiner>> GetIndexManifestFileCombine(
-        const std::string& index_type, int32_t bucket_mode);
+        const std::string& index_type, BucketMode bucket_mode);
 };
 }  // namespace paimon

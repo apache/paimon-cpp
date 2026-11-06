@@ -322,6 +322,112 @@ class ColumnIndexFilterTest : public ::testing::Test {
     int64_t row_group_row_count_ = 0;
 };
 
+// Supply optional or malformed statistics while keeping the real file's offset index.
+class TestColumnIndex : public ::parquet::ColumnIndex {
+ public:
+    const std::vector<bool>& null_pages() const override {
+        return null_pages_;
+    }
+
+    const std::vector<std::string>& encoded_min_values() const override {
+        return min_values_;
+    }
+
+    const std::vector<std::string>& encoded_max_values() const override {
+        return max_values_;
+    }
+
+    const std::vector<int64_t>& null_counts() const override {
+        return null_counts_;
+    }
+
+    const std::vector<int32_t>& non_null_page_indices() const override {
+        return non_null_pages_;
+    }
+
+    ::parquet::BoundaryOrder::type boundary_order() const override {
+        return ::parquet::BoundaryOrder::Unordered;
+    }
+    bool has_null_counts() const override {
+        return has_null_counts_;
+    }
+
+    std::vector<bool> null_pages_ = std::vector<bool>(10, false);
+    std::vector<std::string> min_values_ = std::vector<std::string>(10, std::string(4, '\0'));
+    std::vector<std::string> max_values_ = min_values_;
+    std::vector<int64_t> null_counts_ = std::vector<int64_t>(10, 0);
+    std::vector<int32_t> non_null_pages_{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    bool has_null_counts_ = true;
+};
+
+class TestRowGroupPageIndexReader : public ::parquet::RowGroupPageIndexReader {
+ public:
+    TestRowGroupPageIndexReader(const std::shared_ptr<TestColumnIndex>& column_index,
+                                const std::shared_ptr<::parquet::OffsetIndex>& offset_index)
+        : column_index_(column_index), offset_index_(offset_index) {}
+
+    std::shared_ptr<::parquet::ColumnIndex> GetColumnIndex(int32_t) override {
+        return column_index_;
+    }
+    std::shared_ptr<::parquet::OffsetIndex> GetOffsetIndex(int32_t) override {
+        return offset_index_;
+    }
+
+ private:
+    std::shared_ptr<TestColumnIndex> column_index_;
+    std::shared_ptr<::parquet::OffsetIndex> offset_index_;
+};
+
+TEST_F(ColumnIndexFilterTest, InWithNullKeepsPagesWithPossibleNulls) {
+    auto index = std::make_shared<TestColumnIndex>();
+    index->null_pages_[0] = true;
+    index->null_counts_[0] = 10;
+    index->null_counts_[1] = 1;
+    index->non_null_pages_.erase(index->non_null_pages_.begin());
+    auto page_reader = std::make_shared<TestRowGroupPageIndexReader>(
+        index, page_index_reader_->RowGroup(0)->GetOffsetIndex(0));
+    auto predicate = PredicateBuilder::In(0, "val", FieldType::INT,
+                                          {Literal(FieldType::INT), Literal(int32_t{999})});
+    ASSERT_OK_AND_ASSIGN(auto ranges, ColumnIndexFilter::CalculateRowRanges(
+                                          predicate, page_reader, column_name_to_index_,
+                                          parquet_reader_->metadata()->schema(), 100));
+    ASSERT_EQ(ranges.RowCount(), 20);
+    ASSERT_EQ(ranges.GetRanges().size(), 1u);
+    ASSERT_EQ(ranges.GetRanges()[0].from, 0);
+    ASSERT_EQ(ranges.GetRanges()[0].to, 19);
+
+    // Without null counts every non-null page may still contain nulls.
+    index->has_null_counts_ = false;
+    index->null_counts_.clear();
+    ASSERT_OK_AND_ASSIGN(
+        ranges, ColumnIndexFilter::CalculateRowRanges(predicate, page_reader, column_name_to_index_,
+                                                      parquet_reader_->metadata()->schema(), 100));
+    ASSERT_EQ(ranges.RowCount(), 100);
+}
+
+TEST_F(ColumnIndexFilterTest, NotInWithNullRejectsEveryPage) {
+    auto predicate = PredicateBuilder::NotIn(0, "val", FieldType::INT,
+                                             {Literal(int32_t{55}), Literal(FieldType::INT)});
+    ASSERT_OK_AND_ASSIGN(auto ranges, Filter(predicate));
+    ASSERT_TRUE(ranges.IsEmpty());
+}
+
+TEST_F(ColumnIndexFilterTest, TruncatedIntegerBoundsKeepPages) {
+    for (bool truncate_min : {true, false}) {
+        SCOPED_TRACE(truncate_min);
+        auto index = std::make_shared<TestColumnIndex>();
+        auto& bounds = truncate_min ? index->min_values_ : index->max_values_;
+        bounds.assign(10, std::string(3, '\0'));
+        auto page_reader = std::make_shared<TestRowGroupPageIndexReader>(
+            index, page_index_reader_->RowGroup(0)->GetOffsetIndex(0));
+        auto predicate = PredicateBuilder::Equal(0, "val", FieldType::INT, Literal(int32_t{999}));
+        ASSERT_OK_AND_ASSIGN(auto ranges, ColumnIndexFilter::CalculateRowRanges(
+                                              predicate, page_reader, column_name_to_index_,
+                                              parquet_reader_->metadata()->schema(), 100));
+        ASSERT_EQ(ranges.RowCount(), 100);
+    }
+}
+
 /// EQUAL: val = 55 → should match only page 5 (rows [50,59])
 TEST_F(ColumnIndexFilterTest, EqualMatchSinglePage) {
     auto pred =

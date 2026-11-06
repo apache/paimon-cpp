@@ -107,6 +107,13 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
                                 const Snapshot& snapshot,
                                 const std::vector<PartitionStatistics>& statistics) override;
 
+    /// Returns a `RestCommitLock` when the writer sets `Options::REST_COMMIT_ACQUIRE_LOCK`, which
+    /// requires `Options::REST_COMMIT_LOCK_ENABLED` on the table, and null otherwise. No request
+    /// is sent until a lease is acquired.
+    Result<std::unique_ptr<CommitLock>> CreateCommitLock(
+        const Identifier& identifier, const std::optional<std::string>& table_uuid,
+        const std::string& commit_user, const CoreOptions& options) override;
+
     /// Options merged with the server side config.
     const std::map<std::string, std::string>& GetOptions() const override;
 

@@ -200,14 +200,19 @@ class ParquetFileBatchReaderTest : public ::testing::Test,
     void WriteArray(const std::string& file_path, const std::shared_ptr<arrow::Array>& src_array,
                     const std::shared_ptr<arrow::Schema>& arrow_schema, int64_t write_batch_size,
                     bool enable_dictionary, int64_t max_row_group_length,
-                    int64_t max_page_size = 1024 * 1024 * 1024) const {
+                    int64_t max_page_size = 1024 * 1024 * 1024,
+                    bool enable_page_index = true) const {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
                              fs_->Create(file_path, /*overwrite=*/true));
         ::parquet::WriterProperties::Builder builder;
         builder.write_batch_size(write_batch_size);
         builder.max_row_group_length(max_row_group_length);
         builder.data_pagesize(max_page_size);
-        builder.enable_write_page_index();
+        if (enable_page_index) {
+            builder.enable_write_page_index();
+        } else {
+            builder.disable_write_page_index();
+        }
         enable_dictionary ? builder.enable_dictionary() : builder.disable_dictionary();
         auto writer_properties = builder.build();
         ASSERT_OK_AND_ASSIGN(auto format_writer, ParquetFormatWriter::Create(
@@ -1349,6 +1354,43 @@ TEST_F(ParquetFileBatchReaderTest, TestBitmapPagePushDownWithMultiRowGroups) {
 
     auto expected_array = arrow::ChunkedArray(src_array->Slice(3, 3));
     ASSERT_TRUE(result_array->Equals(expected_array)) << result_array->ToString();
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestBitmapTrimWithoutPageIndexFallsBackToRowGroup) {
+    auto src_array = MakeSequentialIntData(8);
+    auto arrow_schema = arrow::schema(src_array->type()->fields());
+    WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/4, /*max_page_size=*/1,
+               /*enable_page_index=*/false);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, fs_->Open(file_path_));
+    ASSERT_OK_AND_ASSIGN(int64_t file_length, input->Length());
+    auto stream = std::make_unique<ArrowInputStreamAdapter>(std::move(input), file_length, pool_);
+    std::map<std::string, std::string> options = {
+        {PARQUET_READ_ENABLE_PAGE_INDEX_FILTER, "true"},
+        {PARQUET_READ_BITMAP_ROW_RANGE_REFINING_STRATEGY, "trim"}};
+    auto reader = PrepareParquetFileBatchReader(std::move(stream), options, arrow_schema,
+                                                /*predicate=*/nullptr, RoaringBitmap32::From({1}),
+                                                /*batch_size=*/8);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_TRUE(result);
+    // Without offset indexes, trim must retain the entire candidate row group.
+    ASSERT_TRUE(result->Equals(arrow::ChunkedArray(src_array->Slice(0, 4)))) << result->ToString();
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestPredicateAndBitmapPageRangesDoNotOverlap) {
+    auto src_array = MakeSequentialIntData(4);
+    auto arrow_schema = arrow::schema(src_array->type()->fields());
+    WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/4, /*max_page_size=*/1);
+    auto predicate =
+        PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT, Literal(3));
+    auto reader = PrepareParquetFileBatchReader(file_path_, arrow_schema, predicate,
+                                                RoaringBitmap32::From({0}), /*batch_size=*/4,
+                                                /*enable_page_level_filter=*/true);
+    // Both filters retain the row group, but their page ranges have no intersection.
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(batch));
 }
 
 TEST_F(ParquetFileBatchReaderTest, TestBitmapPruningPrecedesPredicatePushDown) {

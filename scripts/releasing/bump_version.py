@@ -16,7 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Check or update the Apache Paimon C++ project and documentation version."""
+"""Check versions, start the next development cycle, or promote stable docs."""
 
 import argparse
 import json
@@ -27,6 +27,33 @@ from typing import Dict, List
 
 
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+
+DOCS_URL = "https://paimon.apache.org/docs/cpp/"
+MAIN_ENTRY_VERSION = "main"
+
+
+def series(version: str) -> str:
+    """The major.minor documentation series a version belongs to."""
+    return ".".join(version.split(".")[:2])
+
+
+def stable_entry(version: str) -> Dict[str, object]:
+    """Dropdown entry for the latest release published at the site root."""
+    return {
+        "name": f"{version} (stable)",
+        "version": "",
+        "url": DOCS_URL,
+        "preferred": True,
+    }
+
+
+def series_entry(version: str) -> Dict[str, object]:
+    """Dropdown entry for an archived release series under <series>/."""
+    return {
+        "name": version,
+        "version": series(version),
+        "url": f"{DOCS_URL}{series(version)}/",
+    }
 
 
 class VersionError(RuntimeError):
@@ -55,6 +82,55 @@ def load_versions(path: Path) -> List[Dict[str, object]]:
     return value
 
 
+def check_version_list(versions: List[Dict[str, object]]) -> None:
+    """Validate the dev/stable/archived layout of versions.json."""
+    if len(versions) < 2:
+        raise VersionError(
+            "versions.json must contain a dev entry followed by a stable entry"
+        )
+    dev = versions[0]
+    if (
+        dev.get("version") != MAIN_ENTRY_VERSION
+        # Older Git refs retain the previous display label.
+        or dev.get("name") not in ("main", "main (development)")
+        or dev.get("url") != f"{DOCS_URL}main/"
+    ):
+        raise VersionError(
+            "the first versions.json entry must be the main-branch docs: "
+            f"name 'main', version {MAIN_ENTRY_VERSION!r}, "
+            f"url {DOCS_URL}main/"
+        )
+    stable = versions[1]
+    name = stable.get("name")
+    match = (
+        re.fullmatch(r"(\d+\.\d+\.\d+) \(stable\)", name)
+        if isinstance(name, str)
+        else None
+    )
+    if (
+        match is None
+        or stable.get("version") != ""
+        or stable.get("url") != DOCS_URL
+        or stable.get("preferred") is not True
+    ):
+        raise VersionError(
+            "the second versions.json entry must be the stable docs: name "
+            "'X.Y.Z (stable)', version '', url the site root, preferred true"
+        )
+    for item in versions[2:]:
+        item_name = item.get("name")
+        if (
+            not isinstance(item_name, str)
+            or VERSION_PATTERN.fullmatch(item_name) is None
+            or item.get("version") != series(item_name)
+            or item.get("url") != f"{DOCS_URL}{series(item_name)}/"
+        ):
+            raise VersionError(
+                "archived versions.json entries must use name X.Y.Z, "
+                f"version X.Y and url {DOCS_URL}X.Y/, found {item!r}"
+            )
+
+
 def checked_files(root: Path, expected: str) -> Dict[Path, str]:
     cmake_path = root / "CMakeLists.txt"
     docs_path = root / "docs/source/conf.py"
@@ -70,22 +146,14 @@ def checked_files(root: Path, expected: str) -> Dict[Path, str]:
     docs_matches = re.findall(
         r'^version = "(\d+\.\d+\.\d+)"$', docs, re.MULTILINE
     )
-    json_matches = [
-        item
-        for item in versions
-        if item.get("name") == expected and item.get("version") == expected
-    ]
-
     if cmake_matches != [expected]:
         raise VersionError(f"CMake version is {cmake_matches}, expected [{expected!r}]")
-    if docs_matches != [expected]:
+    check_version_list(versions)
+    stable_version = versions[1]["name"].split(" ")[0]
+    if docs_matches not in ([expected], [stable_version]):
         raise VersionError(
-            f"documentation version is {docs_matches}, expected [{expected!r}]"
-        )
-    if len(json_matches) != 1:
-        raise VersionError(
-            "versions.json must contain exactly one entry whose name and "
-            f"version are both {expected}"
+            f"documentation version is {docs_matches}, expected project version "
+            f"{expected!r} or stable documentation version {stable_version!r}"
         )
     return {
         cmake_path: cmake,
@@ -94,11 +162,13 @@ def checked_files(root: Path, expected: str) -> Dict[Path, str]:
     }
 
 
-def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
+def updated_files(
+    root: Path, current: str, new: str, *, dev_only: bool = False
+) -> Dict[Path, str]:
+    """Start the next development cycle, optionally promoting the released version."""
     files = checked_files(root, current)
     cmake_path = root / "CMakeLists.txt"
     docs_path = root / "docs/source/conf.py"
-    versions_path = root / "docs/source/_static/versions.json"
 
     files[cmake_path] = replace_once(
         files[cmake_path],
@@ -108,28 +178,60 @@ def updated_files(root: Path, current: str, new: str) -> Dict[Path, str]:
     )
     files[docs_path] = replace_once(
         files[docs_path],
-        rf'^version = "{re.escape(current)}"$',
+        r'^version = "\d+\.\d+\.\d+"$',
         f'version = "{new}"',
         f"documentation version {current}",
     )
 
+    if dev_only:
+        return {cmake_path: files[cmake_path], docs_path: files[docs_path]}
+
+    versions_path = root / "docs/source/_static/versions.json"
     versions = load_versions(versions_path)
-    matches = [item for item in versions if item.get("version") == current]
-    if len(matches) != 1:
-        raise VersionError(
-            f"versions.json contains {len(matches)} entries for {current}"
-        )
-    matches[0]["name"] = new
-    matches[0]["version"] = new
+    promote_stable(versions, current)
+    versions[0]["name"] = "main"
     files[versions_path] = json.dumps(versions, indent=4) + "\n"
     return files
 
 
+def promote_stable(versions: List[Dict[str, object]], version: str) -> None:
+    """Update the stable label, archiving the previous stable series if needed."""
+    previous_version = versions[1]["name"].split(" ")[0]
+    if series(previous_version) != series(version):
+        versions.insert(2, series_entry(previous_version))
+    versions[1] = stable_entry(version)
+
+
+def promoted_files(root: Path, version: str) -> Dict[Path, str]:
+    """Promote the current project version without changing project metadata."""
+    files = checked_files(root, version)
+    docs = files[root / "docs/source/conf.py"]
+    if re.findall(r'^version = "(\d+\.\d+\.\d+)"$', docs, re.MULTILINE) != [version]:
+        raise VersionError("documentation version must match the version being promoted")
+    versions_path = root / "docs/source/_static/versions.json"
+    versions = load_versions(versions_path)
+    promote_stable(versions, version)
+    return {versions_path: json.dumps(versions, indent=4) + "\n"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("current_version", nargs="?")
-    parser.add_argument("new_version", nargs="?")
-    parser.add_argument("--check", metavar="VERSION")
+    parser.add_argument(
+        "current_version", nargs="?", help="current project version (released unless --dev-only)"
+    )
+    parser.add_argument("new_version", nargs="?", help="next development version")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", metavar="VERSION", help="validate version metadata")
+    mode.add_argument(
+        "--dev-only",
+        action="store_true",
+        help="update development versions without promoting stable docs",
+    )
+    mode.add_argument(
+        "--promote-stable",
+        metavar="VERSION",
+        help="promote the current project version to stable docs",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--root", type=Path, default=Path(__file__).resolve().parents[2]
@@ -137,24 +239,31 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        if args.check:
+        if args.check or args.promote_stable:
             if args.current_version or args.new_version:
-                raise VersionError("--check cannot be combined with version arguments")
+                raise VersionError(
+                    "--check and --promote-stable cannot be combined with version arguments"
+                )
+        if args.check:
             require_version(args.check)
             checked_files(args.root.resolve(), args.check)
             print(f"Release version metadata is consistent: {args.check}")
             return 0
 
-        if not args.current_version or not args.new_version:
-            raise VersionError("CURRENT_VERSION and NEW_VERSION are required")
-        require_version(args.current_version)
-        require_version(args.new_version)
-        if args.current_version == args.new_version:
-            raise VersionError("current and new versions must differ")
-
-        files = updated_files(
-            args.root.resolve(), args.current_version, args.new_version
-        )
+        if args.promote_stable:
+            require_version(args.promote_stable)
+            files = promoted_files(args.root.resolve(), args.promote_stable)
+        else:
+            if not args.current_version or not args.new_version:
+                raise VersionError("CURRENT_VERSION and NEW_VERSION are required")
+            require_version(args.current_version)
+            require_version(args.new_version)
+            if args.current_version == args.new_version:
+                raise VersionError("current and new versions must differ")
+            files = updated_files(
+                args.root.resolve(), args.current_version, args.new_version,
+                dev_only=args.dev_only,
+            )
         for path, content in files.items():
             if args.dry_run:
                 print(f"Would update {path}")

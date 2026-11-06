@@ -144,6 +144,10 @@ class MockGlobalIndexReader : public GlobalIndexReader {
 
     Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override {
+        {
+            std::lock_guard<std::mutex> lock(captured_search_mutex_);
+            captured_vector_search_ = vector_search;
+        }
         return MakeScoredResult();
     }
 
@@ -161,6 +165,11 @@ class MockGlobalIndexReader : public GlobalIndexReader {
     std::shared_ptr<FullTextSearch> CapturedFullTextSearch() const {
         std::lock_guard<std::mutex> lock(captured_search_mutex_);
         return captured_full_text_search_;
+    }
+
+    std::shared_ptr<VectorSearch> CapturedVectorSearch() const {
+        std::lock_guard<std::mutex> lock(captured_search_mutex_);
+        return captured_vector_search_;
     }
 
     bool IsThreadSafe() const override {
@@ -209,6 +218,7 @@ class MockGlobalIndexReader : public GlobalIndexReader {
     bool supports_search_;
     mutable std::mutex captured_search_mutex_;
     std::shared_ptr<FullTextSearch> captured_full_text_search_;
+    std::shared_ptr<VectorSearch> captured_vector_search_;
     std::vector<int64_t> default_result_;
     bool return_nullptr_ = false;
     bool return_error_ = false;

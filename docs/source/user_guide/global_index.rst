@@ -50,9 +50,15 @@ task once it is no longer running or being retried:
    PAIMON_RETURN_NOT_OK(paimon::GlobalIndexWriteTask::DeleteCheckpoint(
        table_path, "build-task-1", options, file_system));
 
-Pass the same table path and task id used in ``WriteIndex``. Task ids must be unique within the
-table. The cleanup recursively removes the whole task directory, other tasks' directories and completed
-index files are preserved.
+Checkpoints are stored in ``<table_path>/index/checkpoint/<task_id>`` by default. When
+``global-index.external-path`` is configured, they are stored in
+``<global-index.external-path>/checkpoint/<task_id>`` instead.
+
+Pass the same table path, task id, and ``global-index.external-path`` configuration used in
+``WriteIndex``. Cleanup reads the configuration from the table schema and applies any supplied
+options as overrides. Task ids must be unique among builds sharing the same global index directory,
+including builds for different tables sharing an external path. The cleanup recursively removes
+the whole task directory, other tasks' directories and completed index files are preserved.
 
 Bitmap Index
 ------------
@@ -138,7 +144,7 @@ a column name containing only such whitespace selects the indexed field.
 
 - **Environment Variable**: ``PAIMON_JIEBA_DICT_DIR``
 
-  - **Description**: Specifies the directory containing Jieba dictionary files for Chinese text tokenization. At runtime, the system first checks this environment variable; if not set, it falls back to the compile-time ``JIEBA_TEST_DICT_DIR`` macro (only available in test builds). If neither is available, will fail with an error.
+  - **Description**: Specifies the directory containing Jieba dictionary files for Chinese text tokenization. At runtime, the system first checks this environment variable; if not set, it falls back to the compile-time ``JIEBA_TEST_DICT_DIR`` macro (only available in test builds). If neither is available, will fail with an error. A relative directory is resolved against the current working directory. Each dictionary directory is loaded once per process and shared by all Lucene index readers and writers, so changes to its dictionary files take effect only after the process restarts.
 
 Full-Text Index (Experimental)
 ------------------------------
@@ -285,9 +291,144 @@ and readers use that copy.
 The prefix-stripped options are also stored as a flat JSON object in the metadata of each index
 file, as Java Paimon does.
 
+Table-Level Full-Text Search
+----------------------------
+
+``FullTextSearchBuilder`` (``paimon/table/source/full_text_search_builder.h``) searches the global
+full-text indexes of one column of a data-evolution table, as Java Paimon's
+``FullTextSearchBuilder`` does, so a caller does not create index readers or choose index types and
+shard ranges. It searches the index files whose indexer supports full-text search
+(``GlobalIndexer::SupportsFullTextSearch()``): ``full-text`` and ``lucene-fts``. Only the rows that
+an index shard covers are searched, as in the default ``fast`` ``full-text-index.search-mode`` of
+Java Paimon, so rows written since the index was last built are not found until it is built for
+them. A search whose ``full-text-index.search-mode``, or else ``global-index.search-mode``, is
+``full`` or ``detail``, which also search the rows that no index covers, fails with
+``NotImplemented``. Row filters, which Java Paimon evaluates with scalar indexes before ranking, are
+not supported yet.
+
+.. code-block:: cpp
+
+   paimon::FullTextSearchBuilder search_builder(table_path);
+   search_builder.SetQuery("content", R"({"match":{"query":"paimon lake"}})").SetLimit(10);
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::ScoredGlobalIndexResult> result,
+                          search_builder.ExecuteLocal());
+
+   // Read the rows found, with their scores.
+   paimon::ScanContextBuilder scan_builder(table_path);
+   scan_builder.SetGlobalIndexResult(result);
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
+                          scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
+                          paimon::TableScan::Create(std::move(scan_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Plan> data_plan, scan->CreatePlan());
+
+   paimon::ReadContextBuilder read_builder(table_path);
+   read_builder.SetReadFieldNames({"id", "content", "_INDEX_SCORE"});
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
+                          read_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
+                          paimon::TableRead::Create(std::move(read_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> reader,
+                          read->CreateReader(data_plan->Splits()));
+
+The result holds the ``limit`` highest-scoring rows among the candidates of all index shards, and
+a read of the rows returns their scores in the ``_INDEX_SCORE`` field. Each shard returns at most
+``limit`` candidates, chosen by its index, so ties are broken by ascending row id among the
+candidates only: which of the rows tied at the ``limit``-th score of a shard become candidates is up
+to its index.
+
+- ``SetPartitionFilter()`` restricts the search to some partitions, as in ``ScanContextBuilder``.
+- The search reads the snapshot that the time-travel options select, as Java Paimon does: snapshot
+  ``scan.snapshot-id``, the snapshot of tag ``scan.tag-name``, the latest snapshot at or before
+  ``scan.timestamp`` or ``scan.timestamp-millis``, or else the latest snapshot. At most one of these
+  options may be set, and it must agree with an explicit ``scan.mode``: ``from-snapshot`` needs
+  ``scan.snapshot-id`` or ``scan.tag-name``, ``from-snapshot-full`` needs ``scan.snapshot-id``,
+  ``from-timestamp`` needs ``scan.timestamp`` or ``scan.timestamp-millis``, and ``latest-full`` and
+  ``latest`` take none of them. The search still uses the latest schema of the table, not the
+  schema of that snapshot.
+- A shard whose indexed field is the column or that carries it as an extra field is searched.
+  When shards overlap, each row is ranked by one of them: an index whose indexed field is the
+  column comes first, then the order of the index type and fields, then the start and end of the
+  shard.
+- With deletion vectors, only the rows live in that snapshot are ranked, as described for
+  ``GlobalIndexScan`` above.
+- The shards are searched in parallel on the executor given to ``WithExecutor()``, or else on one
+  with ``global-index.thread-num`` threads, and each returns at most ``limit`` rows.
+- If Paimon C++ is built without the backend of a ``full-text`` or ``lucene-fts`` index, the
+  search fails instead of skipping the index and leaving its rows out of the result.
+- A column with a primary-key full-text index (``pk-full-text.index.columns``) cannot be searched
+  yet.
+
+The row ids of the result refer to the snapshot the search was planned from. If the table may
+change before the rows are read, plan with ``NewFullTextScan()`` and pin the data scan to the
+snapshot of the plan, setting ``scan.mode`` too so that a ``scan.mode`` of the table cannot override
+it. For a search of ``scan.tag-name``, pin the data scan with the same tag instead, as the tag may
+outlive the snapshot.
+
+.. code-block:: cpp
+
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FullTextScan> search_scan,
+                          search_builder.NewFullTextScan());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::FullTextScan::Plan> plan,
+                          search_scan->CreatePlan());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FullTextRead> search_read,
+                          search_builder.NewFullTextRead());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::ScoredGlobalIndexResult> result,
+                          search_read->Read(*plan));
+
+   paimon::ScanContextBuilder scan_builder(table_path);
+   scan_builder.SetGlobalIndexResult(result);
+   if (plan->SnapshotId()) {
+       scan_builder.AddOption(paimon::Options::SCAN_MODE, "from-snapshot")
+           .AddOption(paimon::Options::SCAN_SNAPSHOT_ID, std::to_string(*plan->SnapshotId()));
+   }
+
+``ExecuteLocal()`` plans and searches in one process. To plan in one process and search in others,
+plan with ``NewFullTextScan()``, ship the splits with ``FullTextSearchSplit::Serialize()`` and
+``FullTextSearchSplit::Deserialize()``, and search them with the ``NewFullTextRead()`` of a builder
+for the same table, column and query. The serialized form is versioned and specific to Paimon C++:
+Java Paimon serializes its splits with Java serialization, so splits cannot be exchanged with it.
+Each split records the snapshot it was planned from, and the read ranks the rows live in that
+snapshot. The read rejects a split whose index files do not index the column of the latest schema,
+such as after the column was replaced. A read returns the top rows of the splits it is given, so
+keep the ``limit`` highest-scoring rows of all reads if the splits are searched by several of them.
+
+.. code-block:: cpp
+
+   // Planning process.
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FullTextScan> scan,
+                          search_builder.NewFullTextScan());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::FullTextScan::Plan> plan, scan->CreatePlan());
+   for (const auto& split : plan->Splits()) {
+       PAIMON_ASSIGN_OR_RAISE(std::string bytes,
+                              paimon::FullTextSearchSplit::Serialize(split, pool));
+       // Send `bytes` to a searching process.
+   }
+
+   // Searching process.
+   std::vector<std::shared_ptr<paimon::FullTextSearchSplit>> splits;
+   PAIMON_ASSIGN_OR_RAISE(
+       std::shared_ptr<paimon::FullTextSearchSplit> split,
+       paimon::FullTextSearchSplit::Deserialize(bytes.data(), bytes.size(), pool));
+   splits.push_back(std::move(split));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FullTextRead> read,
+                          search_builder.NewFullTextRead());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::ScoredGlobalIndexResult> result,
+                          read->Read(splits));
+
 Vector Index (Lumina)
 ---------------------
 
 An approximate nearest neighbor (ANN) index powered by Lumina for vector similarity search.
 It supports high-dimensional vector search with configurable distance metrics and encoding strategies.
 For more configurations, refer to the ``docs/reference`` directory in the Lumina release package.
+
+When ``deletion-vectors.enabled`` and ``row-tracking.enabled`` are set, readers created by
+``GlobalIndexScan`` search only the rows that are live in the snapshot the scan reads, as Java
+Paimon does, so rows deleted by deletion vectors do not take ``limit`` slots. The live rows are
+combined with the ``pre_filter`` of the ``VectorSearch``. In Data Evolution tables, only the
+deletion vectors of the data files the index covers are read. As for full-text search, pass one
+snapshot id to both the index scan and the data scan.
+
+A search across multiple index shards returns up to ``limit`` rows from each shard, and the merged
+result is not truncated to ``limit``.

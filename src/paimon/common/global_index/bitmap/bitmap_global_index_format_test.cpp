@@ -19,9 +19,11 @@
 
 #include "paimon/common/global_index/bitmap/bitmap_global_index_format.h"
 
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/common/io/byte_array_output_stream.h"
@@ -63,6 +65,17 @@ std::shared_ptr<ByteArrayOutputStream> CreateOutput(const std::shared_ptr<Memory
 }
 
 }  // namespace
+
+TEST(BitmapGlobalIndexFormatTest, CompareNullSerializedKeys) {
+    auto pool = GetDefaultPool();
+    BitmapGlobalIndexFormat::SerializedKey null_key(nullptr);
+    BitmapGlobalIndexFormat::SerializedKey another_null_key(nullptr);
+    auto empty_key = SerializedString("", pool.get());
+
+    ASSERT_EQ(null_key.CompareTo(another_null_key), 0);
+    ASSERT_LT(null_key.CompareTo(empty_key), 0);
+    ASSERT_GT(empty_key.CompareTo(null_key), 0);
+}
 
 TEST(BitmapGlobalIndexFormatTest, RoundTripMultipleDictionaryBlocks) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
@@ -138,6 +151,63 @@ TEST(BitmapGlobalIndexFormatTest, RoundTripEmptyNullBitmap) {
     ASSERT_OK_AND_ASSIGN(RoaringBitmap64 non_null_rows,
                          BitmapGlobalIndexFormat::ReadBitmap(footer.NonNullRowsBlock(), &reader));
     ASSERT_EQ(RoaringBitmap64::From({0}), non_null_rows);
+}
+
+TEST(BitmapGlobalIndexFormatTest, RoundTripWithCompressionAndUncompressedFallback) {
+    auto pool = GetDefaultPool();
+    for (BlockCompressionType compression_type :
+         {BlockCompressionType::ZSTD, BlockCompressionType::LZ4}) {
+        SCOPED_TRACE(static_cast<int32_t>(compression_type));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlockCompressionFactory> compression_factory,
+                             BlockCompressionFactory::Create(compression_type));
+        for (int32_t key_length : {1, 1024}) {
+            SCOPED_TRACE(key_length);
+            // Tiny blocks do not benefit from compression; repeated long keys do.
+            std::vector<std::string> keys = {std::string(key_length, 'a'),
+                                             std::string(key_length, 'b')};
+            auto output = CreateOutput(pool);
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<BitmapGlobalIndexFormat::StreamingWriter> writer,
+                BitmapGlobalIndexFormat::StreamingWriter::Create(
+                    output, /*dictionary_block_size=*/1, compression_factory, pool));
+            for (int32_t i = 0; i < 2; ++i) {
+                ASSERT_OK(writer->Write(SerializedString(keys[i], pool.get()),
+                                        RoaringBitmap64::From({i, i + 2})));
+            }
+            ASSERT_OK(
+                writer->Finish(RoaringBitmap64::From({4}), RoaringBitmap64::From({0, 1, 2, 3})));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes, output->Finish(pool.get()));
+
+            BytesSeekableReader reader(bytes, pool);
+            ASSERT_OK_AND_ASSIGN(BitmapGlobalIndexFormat::Footer footer,
+                                 BitmapGlobalIndexFormat::ReadFooter(bytes->size(), &reader));
+            ASSERT_OK_AND_ASSIGN(
+                std::vector<BitmapGlobalIndexFormat::DictionaryBlockMeta> block_metas,
+                BitmapGlobalIndexFormat::ReadIndexBlock(footer.IndexBlock(), &reader, pool.get()));
+            ASSERT_EQ(block_metas.size(), 2);
+
+            for (int32_t i = 0; i < 2; ++i) {
+                ASSERT_OK_AND_ASSIGN(BitmapGlobalIndexFormat::DictionaryBlock block,
+                                     BitmapGlobalIndexFormat::ReadDictionaryBlock(
+                                         block_metas[i], &reader, pool.get()));
+                ASSERT_EQ(block.Entries().size(), 1);
+                const auto& entry = block.Entries()[0];
+                ASSERT_EQ(keys[i], std::string(entry.Key().GetBytes()->data(),
+                                               entry.Key().GetBytes()->size()));
+                ASSERT_OK_AND_ASSIGN(RoaringBitmap64 bitmap, BitmapGlobalIndexFormat::ReadBitmap(
+                                                                 entry.BitmapBlock(), &reader));
+                ASSERT_EQ(bitmap, RoaringBitmap64::From({i, i + 2}));
+            }
+
+            ASSERT_OK_AND_ASSIGN(RoaringBitmap64 null_rows, BitmapGlobalIndexFormat::ReadBitmap(
+                                                                footer.NullRowsBlock(), &reader));
+            ASSERT_EQ(null_rows, RoaringBitmap64::From({4}));
+            ASSERT_OK_AND_ASSIGN(
+                RoaringBitmap64 non_null_rows,
+                BitmapGlobalIndexFormat::ReadBitmap(footer.NonNullRowsBlock(), &reader));
+            ASSERT_EQ(non_null_rows, RoaringBitmap64::From({0, 1, 2, 3}));
+        }
+    }
 }
 
 }  // namespace paimon::test

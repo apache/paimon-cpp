@@ -114,7 +114,21 @@ html_sidebars = {
 # The master toctree document.
 master_doc = "index"
 
-version = "0.4.0"
+version = "0.5.0"
+
+# Documentation channel, set by the paimon-website build pipeline:
+# "main" (default) for the main-branch docs published under main/, "stable"
+# for the latest release published at docs/cpp/, or "X.Y" for an archived
+# release series published under docs/cpp/X.Y/.
+docs_channel = os.environ.get("PAIMON_DOCS_VERSION", "main")
+switcher_version = "" if docs_channel == "stable" else docs_channel
+
+# The release string feeds the version warning banner: main-branch builds
+# carry a ".dev" suffix so the banner calls them an unstable development
+# version, as the Apache Arrow documentation does. Release builds (stable
+# and archived series) keep the plain version. The stable channel disables
+# the banner because its empty switcher identifier is not a release number.
+release = f"{version}.dev" if docs_channel == "main" else version
 
 html_theme_options = {
     "show_toc_level": 2,
@@ -122,7 +136,18 @@ html_theme_options = {
     "use_edit_page_button": True,
     "header_links_before_dropdown": 4,
     "navbar_align": "left",
-    "navbar_end": ["theme-switcher", "navbar-icon-links"],
+    "navbar_end": ["version-switcher", "theme-switcher", "navbar-icon-links"],
+    "switcher": {
+        # The main build is republished daily by the paimon-website pipeline,
+        # so its copy of the version list stays the freshest one on the site.
+        # PAIMON_DOCS_VERSIONS_URL allows local previews to point at their
+        # own copy instead of the live site.
+        "json_url": os.environ.get(
+            "PAIMON_DOCS_VERSIONS_URL",
+            "https://paimon.apache.org/docs/cpp/main/_static/versions.json",
+        ),
+        "version_match": switcher_version,
+    },
     "icon_links": [
         {
             "name": "GitHub",
@@ -133,7 +158,7 @@ html_theme_options = {
     "logo": {
         "text": "Apache Paimon C++",
     },
-    "show_version_warning_banner": True,
+    "show_version_warning_banner": docs_channel != "stable",
 }
 
 html_context = {

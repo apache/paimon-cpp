@@ -18,10 +18,12 @@
 
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/snapshot.h"
 
@@ -31,6 +33,14 @@ namespace paimon {
 class SnapshotCommit {
  public:
     virtual ~SnapshotCommit() = default;
+
+    /// Acquires the lock scope of one publication attempt. The caller holds it from reading the
+    /// base snapshot until `Commit()` returns, and checks it right before committing.
+    ///
+    /// @return The scope, or null when publication takes no lock.
+    virtual Result<std::unique_ptr<CommitLockScope>> AcquireLock() {
+        return std::unique_ptr<CommitLockScope>();
+    }
 
     /// @param base_snapshot_uuid Base snapshot UUID; null for an absent or legacy snapshot.
     /// @param snapshot Snapshot to be committed.

@@ -36,6 +36,7 @@ User Guide
    user_guide/format_table
    user_guide/system_tables
    user_guide/write
+   user_guide/realtime
    user_guide/commit
    user_guide/compaction
    user_guide/read
@@ -43,5 +44,6 @@ User Guide
    user_guide/clean
    user_guide/prefetch
    user_guide/arrow
+   user_guide/file_index
    user_guide/global_index
    user_guide/primary_key_global_index

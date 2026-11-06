@@ -20,12 +20,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -621,6 +624,125 @@ TEST(RestHttpClientTest, InvalidHeadersAreRejected) {
     ASSERT_NOK_WITH_MSG(
         client->Execute("GET", "/", {}, {{"X-Ok", std::string("a\0b", 3)}}, "").status(),
         "invalid http header value for 'X-Ok'");
+}
+
+namespace {
+
+struct ResponseGate {
+    void AwaitRequests(int32_t count) {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait_for(lock, std::chrono::seconds(10), [&]() { return requests >= count; });
+    }
+
+    void Release() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            released = true;
+        }
+        changed.notify_all();
+    }
+
+    MockRestServer::Response Hold() {
+        std::unique_lock<std::mutex> lock(mutex);
+        ++requests;
+        changed.notify_all();
+        changed.wait_for(lock, std::chrono::seconds(30), [&]() { return released; });
+        MockRestServer::Response response;
+        response.close_without_response = true;
+        return response;
+    }
+
+    std::mutex mutex;
+    std::condition_variable changed;
+    int32_t requests = 0;
+    bool released = false;
+};
+
+}  // namespace
+
+TEST(RestHttpClientTest, CancellationStopsWaitingForAResponse) {
+    ResponseGate gate;
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<MockRestServer> server,
+        MockRestServer::Start([&](const MockRestServer::Request&) { return gate.Hold(); }));
+    ScopeGuard release([&]() { gate.Release(); });
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestHttpClient> client,
+                         RestHttpClient::Create(server->GetBaseUri(), FastRetryConfig(5)));
+    RestHttpClient::Cancellation cancellation;
+    Status status;
+    std::thread request([&]() {
+        status = client
+                     ->Execute("POST", "/v1/slow", {}, {}, "{}", /*follow_redirects=*/true,
+                               /*retry_safe=*/true, &cancellation)
+                     .status();
+    });
+    gate.AwaitRequests(1);
+    auto cancelled_at = std::chrono::steady_clock::now();
+    cancellation.Cancel();
+    request.join();
+    ASSERT_LT(std::chrono::steady_clock::now() - cancelled_at, std::chrono::seconds(10));
+    ASSERT_TRUE(status.IsCancelled()) << status.ToString();
+    ASSERT_NOK_WITH_MSG(status, "http POST request was cancelled");
+    std::lock_guard<std::mutex> lock(gate.mutex);
+    ASSERT_EQ(1, gate.requests);
+}
+
+TEST(RestHttpClientTest, CancellationEndsARetryBackoff) {
+    std::atomic<int32_t> request_count{0};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,
+                         MockRestServer::Start([&](const MockRestServer::Request&) {
+                             ++request_count;
+                             MockRestServer::Response response;
+                             response.code = 503;
+                             response.headers["Retry-After"] = "60";
+                             return response;
+                         }));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestHttpClient> client,
+                         RestHttpClient::Create(server->GetBaseUri(), FastRetryConfig(5)));
+    RestHttpClient::Cancellation cancellation;
+    Status status;
+    std::thread request([&]() {
+        status = client
+                     ->Execute("POST", "/v1/busy", {}, {}, "{}", /*follow_redirects=*/true,
+                               /*retry_safe=*/true, &cancellation)
+                     .status();
+    });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (request_count.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    auto cancelled_at = std::chrono::steady_clock::now();
+    cancellation.Cancel();
+    request.join();
+    ASSERT_LT(std::chrono::steady_clock::now() - cancelled_at, std::chrono::seconds(10));
+    ASSERT_TRUE(status.IsCancelled()) << status.ToString();
+    ASSERT_EQ(1, request_count.load());
+}
+
+TEST(RestHttpClientTest, CancelledRequestIsNotSent) {
+    std::atomic<int32_t> request_count{0};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,
+                         MockRestServer::Start([&](const MockRestServer::Request&) {
+                             ++request_count;
+                             return MockRestServer::Response();
+                         }));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestHttpClient> client,
+                         RestHttpClient::Create(server->GetBaseUri()));
+    RestHttpClient::Cancellation cancellation;
+    cancellation.Cancel();
+    Status status = client
+                        ->Execute("GET", "/v1/config", {}, {}, "", /*follow_redirects=*/true,
+                                  /*retry_safe=*/true, &cancellation)
+                        .status();
+    ASSERT_TRUE(status.IsCancelled()) << status.ToString();
+
+    RestHttpClient::Cancellation not_cancelled;
+    ASSERT_OK_AND_ASSIGN(RestHttpClient::Response response,
+                         client->Execute("GET", "/v1/config", {}, {}, "", /*follow_redirects=*/true,
+                                         /*retry_safe=*/true, &not_cancelled));
+    ASSERT_EQ(200, response.code);
+    ASSERT_EQ(1, request_count.load());
 }
 
 TEST(RestHttpClientTest, UnsupportedMethod) {

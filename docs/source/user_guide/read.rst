@@ -41,6 +41,28 @@ cross-language task scheduling and interaction (e.g., Java and C++), substantial
 across the two language ecosystems.
 
 
+Planning with a custom memory pool
+----------------------------------
+
+Supply an application-owned pool through ``ScanContextBuilder::WithMemoryPool``.
+In a function returning ``Status`` or ``Result``, use the ordinary scan API:
+
+.. code-block:: cpp
+
+    ScanContextBuilder builder(table_path);
+    builder.WithMemoryPool(pool);
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan, TableScan::Create(std::move(context)));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
+
+* The pool controls only allocations routed through it, not all planning memory
+  or process RSS.
+* Handle both exceptions such as ``std::bad_alloc`` and failed ``Result`` values;
+  a failure is not an empty or partial successful plan.
+* Keep the pool alive until all objects using its allocations have been released,
+  including retained plans, splits, cache entries and executor task closures.
+  Use a thread-safe pool or synchronize its operations when they can overlap.
+
 Schema Evolution
 -----------------------
 Scope and Compatibility

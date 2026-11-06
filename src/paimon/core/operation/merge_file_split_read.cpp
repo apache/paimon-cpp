@@ -405,9 +405,9 @@ Result<std::unique_ptr<MergeFileSplitRead>> MergeFileSplitRead::Create(
 
 Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateReader(
     const std::shared_ptr<Split>& split) {
-    if (context_->HasVectorOrFullTextSearch()) {
+    if (context_->EnablePreciseFileIndexEvaluate()) {
         return Status::NotImplemented(
-            "VectorSearch or FullTextSearch does not support merge file reads yet");
+            "Precise file-index evaluation does not support merge file reads");
     }
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
     if (!data_split) {
@@ -828,7 +828,7 @@ Result<std::unique_ptr<KeyValueRecordReader>> MergeFileSplitRead::CreateReaderFo
         std::vector<RawFileReaderWithMeta> raw_file_readers,
         CreateRawFileReadersWithMeta(partition, data_files, read_schema_, predicate, dv_factory,
                                      /*row_ranges=*/{}, data_file_path_factory,
-                                     /*extra_format_options=*/{}));
+                                     /*extra_format_options=*/{}, /*attach_blob_context=*/false));
 
     // KeyValueDataFileRecordReader converts arrow array from format reader to KeyValue objects
     std::vector<std::unique_ptr<KeyValueRecordReader>> file_record_readers;

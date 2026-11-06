@@ -275,6 +275,20 @@ TEST_F(MemorySliceTest, TestSliceCopyBytes) {
     ASSERT_NE(bytes->data(), copied->data());
 }
 
+TEST_F(MemorySliceTest, TestSliceCopyEmptyBytes) {
+    auto bytes = std::make_shared<Bytes>(0, pool_.get());
+    MemorySlice slice = MemorySlice::Wrap(bytes);
+    auto copied = slice.CopyBytes(pool_.get());
+    ASSERT_TRUE(copied);
+    ASSERT_EQ(0u, copied->size());
+
+    auto non_empty_bytes = std::make_shared<Bytes>("test", pool_.get());
+    MemorySlice empty_slice(MemorySegment::Wrap(non_empty_bytes), /*offset=*/2, /*length=*/0);
+    copied = empty_slice.CopyBytes(pool_.get());
+    ASSERT_TRUE(copied);
+    ASSERT_EQ(0u, copied->size());
+}
+
 TEST_F(MemorySliceTest, TestSliceGetOrCreateHeapMemory) {
     auto bytes = std::make_shared<Bytes>("test", pool_.get());
     MemorySlice slice = MemorySlice::Wrap(bytes);

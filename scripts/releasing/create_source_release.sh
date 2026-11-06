@@ -146,20 +146,18 @@ for required_file in CMakeLists.txt LICENSE NOTICE; do
         fail "${required_file} is missing from ${GIT_REF}"
 done
 
-CMAKE_VERSION=$(
-    git -C "${SOURCE_ROOT}" show "${GIT_REF}:CMakeLists.txt" |
-        awk '$1 == "VERSION" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/ { print $2; exit }'
-)
-[[ "${CMAKE_VERSION}" == "${RELEASE_VERSION}" ]] ||
-    fail "CMake version ${CMAKE_VERSION:-<missing>} does not match ${RELEASE_VERSION}"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+TEMP_DIR=$(mktemp -d)
+trap 'rm -rf "${TEMP_DIR}"' EXIT
 
-DOCS_VERSION=$(
-    git -C "${SOURCE_ROOT}" show "${GIT_REF}:docs/source/conf.py" |
-        sed -n 's/^version = "\([^"]*\)"$/\1/p' |
-        head -n 1
-)
-[[ "${DOCS_VERSION}" == "${RELEASE_VERSION}" ]] ||
-    fail "documentation version ${DOCS_VERSION:-<missing>} does not match ${RELEASE_VERSION}"
+# Check the immutable ref with the same metadata rules as archive verification.
+mkdir -p "${TEMP_DIR}/metadata/docs/source/_static"
+for metadata_file in CMakeLists.txt docs/source/conf.py docs/source/_static/versions.json; do
+    git -C "${SOURCE_ROOT}" show "${GIT_REF}:${metadata_file}" \
+        >"${TEMP_DIR}/metadata/${metadata_file}"
+done
+python3 "${SCRIPT_DIR}/bump_version.py" \
+    --root "${TEMP_DIR}/metadata" --check "${RELEASE_VERSION}"
 
 GZIP_BIN=$(find_gnu_gzip)
 
@@ -173,9 +171,6 @@ for suffix in "" ".sha512" ".asc"; do
     [[ ! -e "${OUTPUT_DIR}/${ARTIFACT_NAME}${suffix}" ]] ||
         fail "refusing to overwrite ${OUTPUT_DIR}/${ARTIFACT_NAME}${suffix}"
 done
-
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "${TEMP_DIR}"' EXIT
 
 echo "Creating ${ARTIFACT_NAME} from ${GIT_REF}..."
 git -C "${SOURCE_ROOT}" -c tar.umask=0022 archive \

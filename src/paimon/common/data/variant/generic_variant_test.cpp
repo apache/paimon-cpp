@@ -217,6 +217,45 @@ TEST_F(GenericVariantTest, DuplicateKeys) {
     ASSERT_EQ(to_json, "{\"a\":2}");
 }
 
+TEST_F(GenericVariantTest, DuplicateKeysWithInterleavedFieldsKeepLastValues) {
+    ASSERT_OK_AND_ASSIGN(
+        auto variant,
+        VariantBuilder::ParseJson(
+            R"({"z":1,"a":{"old":true},"m":[1,2],"z":4,"a":{"new":[3,4]},"b":"keep"})",
+            /*allow_duplicate_keys=*/true, pool_));
+    ASSERT_OK_AND_ASSIGN(std::string json, variant->ToJson());
+    ASSERT_EQ(json, R"({"a":{"new":[3,4]},"b":"keep","m":[1,2],"z":4})");
+    ASSERT_OK_AND_ASSIGN(int32_t size, variant->ObjectSize());
+    ASSERT_EQ(size, 4);
+}
+
+TEST_F(GenericVariantTest, HighScaleDecimalFallsBackToDouble) {
+    ASSERT_OK_AND_ASSIGN(auto variant,
+                         GenericVariant::FromJson("0." + std::string(38, '0') + "1", pool_));
+    ASSERT_OK_AND_ASSIGN(VariantValueType type, variant->GetType());
+    ASSERT_EQ(type, VariantValueType::kDouble);
+    ASSERT_OK_AND_ASSIGN(double value, variant->GetDouble());
+    ASSERT_DOUBLE_EQ(value, 1e-39);
+}
+
+TEST_F(GenericVariantTest, LargeArrayElementsRoundTrip) {
+    for (int32_t size : {1 << 16, 1 << 24}) {
+        SCOPED_TRACE(size);
+        const std::string text(size, 'x');
+        VariantBuilder builder(/*allow_duplicate_keys=*/false);
+        ASSERT_OK(builder.AppendString(text));
+        ASSERT_OK(builder.FinishWritingArray(/*start=*/0, /*offsets=*/{0}));
+        ASSERT_OK_AND_ASSIGN(auto variant, builder.Build(pool_));
+        ASSERT_OK_AND_ASSIGN(int32_t count, variant->ArraySize());
+        ASSERT_EQ(count, 1);
+        ASSERT_OK_AND_ASSIGN(auto element, variant->GetElementAtIndex(0));
+        ASSERT_TRUE(element);
+        ASSERT_OK_AND_ASSIGN(std::string_view value, element->GetString());
+        ASSERT_EQ(value.size(), text.size());
+        ASSERT_TRUE(value == text);
+    }
+}
+
 TEST_F(GenericVariantTest, CorruptedLayoutRejected) {
     // Headers claiming a near-INT32_MAX element count must be rejected by the 64-bit layout
     // bound instead of overflowing the 32-bit offset arithmetic.

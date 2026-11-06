@@ -41,6 +41,7 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
 #include "paimon/core/catalog/catalog_utils.h"
+#include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
@@ -68,6 +69,7 @@
 #include "paimon/core/postpone/postpone_bucket_file_store_write.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_schema_layout.h"
+#include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
@@ -104,7 +106,6 @@
 #include "paimon/file_store_write.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
@@ -266,6 +267,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                            CoreOptions::FromMap(ctx->GetOptions(), specific_fs,
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
     std::string branch = ctx->GetBranch();
+    if (ctx->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
+    }
     std::optional<Identifier> catalog_identifier;
     if (ctx->GetIdentifier()) {
         PAIMON_ASSIGN_OR_RAISE(
@@ -384,7 +388,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                                                                       snapshot_manager, options));
             }
         } else if (realtime_deduplicate) {
-            return Status::Invalid("real-time deduplicate write requires a real-time context");
+            if (!ctx->GetWriteSchema().empty() || ignore_previous_files || options.WriteOnly()) {
+                return Status::Invalid(
+                    "deduplicate compaction requires the full schema, restored files and "
+                    "write-only=false");
+            }
         }
         std::shared_ptr<arrow::Schema> write_schema = arrow_schema;
         const auto& write_field_names = ctx->GetWriteSchema();
@@ -418,7 +426,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 std::unique_ptr<IndexManifestFile> index_manifest_file,
                 IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                           options.GetManifestCompression(), file_store_path_factory,
-                                          options.GetBucket(), ctx->GetMemoryPool(), options));
+                                          ResolveBucketMode(options.GetBucket(), schema),
+                                          ctx->GetMemoryPool(), options));
             auto index_file_handler = std::make_shared<IndexFileHandler>(
                 options.GetFileSystem(), std::move(index_manifest_file),
                 std::make_shared<IndexFilePathFactories>(file_store_path_factory),
@@ -519,7 +528,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 std::unique_ptr<IndexManifestFile> index_manifest_file,
                 IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                           options.GetManifestCompression(), file_store_path_factory,
-                                          options.GetBucket(), ctx->GetMemoryPool(), options));
+                                          ResolveBucketMode(options.GetBucket(), schema),
+                                          ctx->GetMemoryPool(), options));
             index_file_handler = std::make_shared<IndexFileHandler>(
                 options.GetFileSystem(), std::move(index_manifest_file),
                 std::make_shared<IndexFilePathFactories>(file_store_path_factory),
@@ -659,13 +669,15 @@ class TableScanImpl {
     }
 
     static Result<std::unique_ptr<IndexFileHandler>> CreateIndexFileHandler(
-        const CoreOptions& core_options, const std::shared_ptr<FileStorePathFactory>& path_factory,
+        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
+        const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<MemoryPool>& memory_pool) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
                                IndexManifestFile::Create(
                                    core_options.GetFileSystem(), core_options.GetManifestFormat(),
                                    core_options.GetManifestCompression(), path_factory,
-                                   core_options.GetBucket(), memory_pool, core_options));
+                                   ResolveBucketMode(core_options.GetBucket(), table_schema),
+                                   memory_pool, core_options));
         return std::make_unique<IndexFileHandler>(
             core_options.GetFileSystem(), std::move(index_manifest_file),
             std::make_shared<IndexFilePathFactories>(path_factory),
@@ -750,6 +762,9 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(shared_context->GetOptions(),
                                                 shared_context->GetSpecificFileSystem(), {}));
+    if (shared_context->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(tmp_options.GetBranch()));
+    }
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(shared_context->GetPath()));
     if (system_table_path) {
@@ -901,8 +916,8 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
         std::unique_ptr<SplitGenerator> split_generator,
         TableScanImpl::CreateSplitGenerator(table_schema, core_options, context.get()));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
-                           TableScanImpl::CreateIndexFileHandler(core_options, path_factory,
-                                                                 context->GetMemoryPool()));
+                           TableScanImpl::CreateIndexFileHandler(
+                               table_schema, core_options, path_factory, context->GetMemoryPool()));
     auto snapshot_reader = std::make_shared<SnapshotReader>(
         file_store_scan, path_factory, std::move(split_generator), std::move(index_file_handler));
     const bool pk_table = !table_schema->PrimaryKeys().empty();
@@ -952,6 +967,9 @@ namespace {
 Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
     const std::shared_ptr<ReadContext>& context, const std::string& branch,
     const std::shared_ptr<TableSchema>& loaded_schema) {
+    if (context->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
+    }
     std::map<std::string, std::string> tmp_options = context->GetOptions();
     std::shared_ptr<TableSchema> table_schema;
     const auto& specific_table_schema = context->GetSpecificTableSchema();
@@ -989,12 +1007,6 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
 Result<std::unique_ptr<TableRead>> CreateTableRead(
     const std::shared_ptr<InternalReadContext>& internal_context,
     const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor) {
-    if (PredicateUtils::ContainsFullTextMatch(internal_context->GetPredicate())) {
-        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
-    }
-    if (!internal_context->GetIndexScoreBindings().empty()) {
-        return Status::NotImplemented("Per-field index score output is not implemented yet");
-    }
     const auto& core_options = internal_context->GetCoreOptions();
     const auto& table_schema = internal_context->GetTableSchema();
     if (internal_context->GetRealtimeContext() && !core_options.RealtimeEnabled()) {
@@ -1058,8 +1070,9 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(
 /// refuses by name what a format table cannot honour.
 Result<std::unique_ptr<TableRead>> NewFormatTableRead(const std::shared_ptr<FormatTable>& table,
                                                       const std::shared_ptr<ReadContext>& context) {
-    if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
-        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    if (context->EnablePreciseFileIndexEvaluate()) {
+        return Status::NotImplemented(
+            "Precise file-index evaluation is not supported for format tables");
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
                            FormatTableRead::Create(table, context));
@@ -1079,12 +1092,11 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     if (context->GetExecutor() == nullptr) {
         return Status::Invalid("executor is null pointer");
     }
+    if (context->GetRealtimeContext()) {
+        PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(context->GetBranch()));
+    }
     // A table the caller already loaded says what it is, so nothing is read to find out.
     if (context->GetFormatTable() != nullptr) {
-        if (context->HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for format tables");
-        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
                                FormatTable::Copy(context->GetFormatTable(), context->GetOptions()));
         return NewFormatTableRead(format_table, context);
@@ -1096,13 +1108,9 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
-        if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+        if (context->EnablePreciseFileIndexEvaluate()) {
             return Status::NotImplemented(
-                "FullTextMatch predicate execution is not implemented yet");
-        }
-        if (context->HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for system tables");
+                "Precise file-index evaluation is not supported for system tables");
         }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
@@ -1122,10 +1130,6 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
                                    context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
-        if (context->HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for format tables");
-        }
         return NewFormatTableRead(format_table, context);
     }
 
@@ -1181,17 +1185,26 @@ bool IsCatalogCommit(const CommitContext& ctx) {
 
 Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
     const CommitContext& ctx, const std::optional<Identifier>& catalog_identifier,
-    const std::shared_ptr<FileSystem>& fs,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager) {
+    const CoreOptions& options, const std::shared_ptr<SnapshotManager>& snapshot_manager) {
     if (IsCatalogCommit(ctx)) {
         if (!catalog_identifier) {
             return Status::Invalid("a catalog commit requires a table identifier");
         }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitLock> lock,
+                               AsVersionManaged(ctx.GetCatalog())
+                                   ->CreateCommitLock(catalog_identifier.value(), ctx.GetTableId(),
+                                                      ctx.GetCommitUser(), options));
         // Reuse the caller's UUID so table recreation cannot redirect this commit.
         return std::shared_ptr<SnapshotCommit>(std::make_shared<CatalogSnapshotCommit>(
-            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId()));
+            ctx.GetCatalog(), catalog_identifier.value(), ctx.GetTableId(), std::move(lock)));
     }
     if (ctx.UseRESTCatalogCommit()) {
+        if (options.RestCommitAcquireLock()) {
+            return Status::Invalid(fmt::format(
+                "'{}' needs a commit through a REST catalog with WithCatalog(); a commit table "
+                "request built for the caller to send cannot hold a commit lease",
+                Options::REST_COMMIT_ACQUIRE_LOCK));
+        }
         return std::shared_ptr<SnapshotCommit>(
             std::make_shared<CatalogSnapshotCommit>(ctx.GetTableId()));
     }
@@ -1203,7 +1216,7 @@ Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
             "catalog with WithCatalog() or ask for the request with UseRESTCatalogCommit()");
     }
     return std::shared_ptr<SnapshotCommit>(
-        std::make_shared<RenamingSnapshotCommit>(fs, snapshot_manager));
+        std::make_shared<RenamingSnapshotCommit>(options.GetFileSystem(), snapshot_manager));
 }
 
 /// Creates a format-table commit, rejecting non-default options that require snapshots.
@@ -1399,7 +1412,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         std::shared_ptr<IndexManifestFile> index_manifest_file,
         IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                   options.GetManifestCompression(), path_factory,
-                                  options.GetBucket(), ctx->GetMemoryPool(), options));
+                                  ResolveBucketMode(options.GetBucket(), schema),
+                                  ctx->GetMemoryPool(), options));
 
     auto expire_snapshots = std::make_shared<ExpireSnapshots>(
         snapshot_manager, path_factory, manifest_list, manifest_file, index_manifest_file,
@@ -1417,9 +1431,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
                                              ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<SnapshotCommit> snapshot_commit,
-        NewSnapshotCommit(*ctx, catalog_identifier, options.GetFileSystem(), snapshot_manager));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotCommit> snapshot_commit,
+                           NewSnapshotCommit(*ctx, catalog_identifier, options, snapshot_manager));
 
     return std::make_unique<FileStoreCommitImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, root_path, ctx->GetCommitUser(),

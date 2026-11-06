@@ -38,6 +38,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
+#include "paimon/core/table/source/scan_mode.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -496,6 +497,45 @@ TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithValueStatsCols) {
     entry.File()->level = 1;
     ASSERT_OK_AND_ASSIGN(keep, scan->FilterByStats(entry));
     ASSERT_FALSE(keep);
+}
+
+TEST_F(KeyValueFileStoreScanTest, TestChangelogValueFilterByProducer) {
+    auto schema = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(0, arrow::field("id", arrow::int32())),
+         DataField(1, arrow::field("value", arrow::int32()))});
+    auto predicate = PredicateBuilder::GreaterThan(1, "value", FieldType::INT, Literal(30));
+    auto scan_filter = std::make_shared<ScanFilter>(
+        predicate, std::vector<std::map<std::string, std::string>>(), std::nullopt);
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    std::vector<std::pair<std::string, bool>> producers = {
+        {"lookup", true}, {"full-compaction", true}, {"input", false}};
+    for (const auto& [producer, value_filter_enabled] : producers) {
+        std::map<std::string, std::string> options = {{Options::CHANGELOG_PRODUCER, producer}};
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(0, schema, {}, {"id"}, options));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueFileStoreScan> scan,
+                             KeyValueFileStoreScan::Create(
+                                 /*snapshot_manager=*/nullptr, /*schema_manager=*/nullptr,
+                                 /*manifest_list=*/nullptr, /*manifest_file=*/nullptr, table_schema,
+                                 schema, scan_filter, core_options, executor, pool_));
+        scan->WithKind(ScanMode::CHANGELOG);
+
+        // Lookup/full-compaction prune nonmatching files without EnableValueFilter().
+        // Input changelogs must retain them; matching files are kept for every producer.
+        for (int32_t value : {20, 40}) {
+            SimpleStats stats = BinaryRowGenerator::GenerateStats(
+                /*min=*/{1, value}, /*max=*/{1, value}, /*null=*/{0, 0}, pool_.get());
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<DataFileMeta> file,
+                DataFileMeta::ForAppend("changelog.parquet", 100, 1, stats, 0, 0, 0, std::nullopt,
+                                        std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+            ManifestEntry entry(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0,
+                                /*total_buckets=*/1, file);
+            ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterByStats(entry));
+            ASSERT_EQ(keep, !value_filter_enabled || value > 30);
+        }
+    }
 }
 
 TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithSchemaEvolution) {

@@ -313,6 +313,31 @@ TEST(NestedProjectionUtilsTest, PruneDataTypeMapStructSchemaEvolutionAddedField)
     ASSERT_TRUE(result.value()->Equals(*data_type)) << result.value()->ToString();
 }
 
+TEST(NestedProjectionUtilsTest, PruneDataTypeNestedListMapWithAddedFieldAndVariantAccess) {
+    auto wrap_in_containers = [](const std::shared_ptr<arrow::DataType>& value_type) {
+        return arrow::list(
+            arrow::list(arrow::map(arrow::utf8(), value_type, /*keys_sorted=*/true)));
+    };
+    auto data_value =
+        arrow::struct_({MakeField("a", arrow::int32(), 10),
+                        MakeField("v", VariantTypeUtils::UnshreddedStructType(), 11)});
+    auto read_value = arrow::struct_({MakeField("a", arrow::int32(), 10),
+                                      MakeField("v", MakeVariantAccessType(), 11),
+                                      MakeField("added", arrow::utf8(), 12)});
+    // Only fields present in the file are retained, with the variant projection applied.
+    auto expected_value = arrow::struct_(
+        {MakeField("a", arrow::int32(), 10), MakeField("v", MakeVariantAccessType(), 11)});
+    auto data_type = wrap_in_containers(data_value);
+    auto read_type = wrap_in_containers(read_value);
+    auto expected_type = wrap_in_containers(expected_value);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<arrow::DataType>> pruned,
+                         NestedProjectionUtils::PruneDataType(read_type, data_type));
+    ASSERT_TRUE(pruned.has_value());
+    ASSERT_TRUE(pruned.value()->Equals(*expected_type, /*check_metadata=*/true))
+        << pruned.value()->ToString();
+}
+
 TEST(NestedProjectionUtilsTest, PruneDataTypeListStructDropAndAddStillFails) {
     // Dropping a file field (b) is a real partial projection -- keep failing.
     auto data_inner =
@@ -520,6 +545,94 @@ TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeKeepsNestedLargeBinaryBlob) 
     ASSERT_TRUE(blob_out->Equals(*blob));
 }
 
+TEST(NestedProjectionUtilsTest, AlignTimestampTimezonesRelabelsZonedLeavesOfSameUnit) {
+    auto make_type = [](const std::string& zone, arrow::TimeUnit::type other_unit) {
+        return arrow::struct_({
+            arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, zone)),
+            arrow::field("row", arrow::struct_({arrow::field(
+                                    "ltz", arrow::timestamp(arrow::TimeUnit::MILLI, zone))})),
+            arrow::field("list", arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, zone))),
+            arrow::field("fixed_list",
+                         arrow::fixed_size_list(arrow::timestamp(arrow::TimeUnit::MICRO, zone), 2)),
+            arrow::field("map", arrow::map(arrow::timestamp(arrow::TimeUnit::MILLI, zone),
+                                           arrow::timestamp(arrow::TimeUnit::MICRO, zone))),
+            arrow::field("other_unit", arrow::timestamp(other_unit, zone)),
+            arrow::field("ntz", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        });
+    };
+    const std::string json = R"([[1, [2], [3, null], [16, null], [[11, 12], [13, null]], 4, 5],
+                                 [null, [null], null, null, null, null, null],
+                                 [6, [7], [8], [17, 18], [[14, 15]], 9, 10]])";
+    std::shared_ptr<arrow::DataType> data_type = make_type("UTC", arrow::TimeUnit::MICRO);
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, json).ValueOrDie();
+    ASSERT_EQ(NestedProjectionUtils::AlignTimestampTimezones(array, array->type()).get(),
+              array.get());
+
+    std::shared_ptr<arrow::DataType> read_type = make_type("Asia/Shanghai", arrow::TimeUnit::MILLI);
+    std::shared_ptr<arrow::Array> aligned =
+        NestedProjectionUtils::AlignTimestampTimezones(array, read_type);
+    auto expected_type = arrow::struct_({
+        arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai")),
+        arrow::field("row",
+                     arrow::struct_({arrow::field(
+                         "ltz", arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai"))})),
+        arrow::field("list",
+                     arrow::list(arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai"))),
+        arrow::field(
+            "fixed_list",
+            arrow::fixed_size_list(arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai"), 2)),
+        arrow::field("map", arrow::map(arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai"),
+                                       arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai"))),
+        arrow::field("other_unit", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")),
+        arrow::field("ntz", arrow::timestamp(arrow::TimeUnit::MICRO)),
+    });
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type, json).ValueOrDie();
+    ASSERT_TRUE(aligned->type()->Equals(expected_type)) << aligned->type()->ToString();
+    ASSERT_TRUE(aligned->Equals(*expected));
+    ASSERT_TRUE(array->type()->Equals(data_type)) << array->type()->ToString();
+
+    std::shared_ptr<arrow::Array> aligned_slice =
+        NestedProjectionUtils::AlignTimestampTimezones(array->Slice(1), read_type);
+    ASSERT_TRUE(aligned_slice->Equals(*expected->Slice(1)));
+
+    std::shared_ptr<arrow::Array> zoned =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"),
+                                                  "[1, null]")
+            .ValueOrDie();
+    ASSERT_EQ(NestedProjectionUtils::AlignTimestampTimezones(
+                  zoned, arrow::timestamp(arrow::TimeUnit::MICRO))
+                  .get(),
+              zoned.get());
+    std::shared_ptr<arrow::Array> unzoned =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MICRO),
+                                                  "[1, null]")
+            .ValueOrDie();
+    ASSERT_EQ(NestedProjectionUtils::AlignTimestampTimezones(
+                  unzoned, arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"))
+                  .get(),
+              unzoned.get());
+}
+
+TEST(NestedProjectionUtilsTest, AlignTimestampTimezonesMatchesStructChildrenByName) {
+    auto utc = arrow::timestamp(arrow::TimeUnit::MICRO, "UTC");
+    auto shanghai = arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai");
+    const std::string json = "[[1, 2], [null, null]]";
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({arrow::field("unread", utc), arrow::field("read", utc)}), json)
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> aligned = NestedProjectionUtils::AlignTimestampTimezones(
+        array, arrow::struct_({arrow::field("read", shanghai)}));
+    auto expected_type =
+        arrow::struct_({arrow::field("unread", utc), arrow::field("read", shanghai)});
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type, json).ValueOrDie();
+    ASSERT_TRUE(aligned->type()->Equals(expected_type)) << aligned->type()->ToString();
+    ASSERT_TRUE(aligned->Equals(*expected));
+}
+
 TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionNoProjection) {
     auto file_schema = arrow::schema({
         MakeField("f0", arrow::int32(), 1),
@@ -549,6 +662,45 @@ TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionWithProjection) {
     });
     ASSERT_OK_AND_ASSIGN(
         auto has_nested_projection,
+        NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, read_schema));
+    ASSERT_TRUE(has_nested_projection);
+}
+
+TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionVariantAccessReturnsFalse) {
+    auto file_schema = arrow::schema({MakeField("v", VariantTypeUtils::UnshreddedStructType(), 1)});
+    auto read_schema = arrow::schema({MakeField("v", MakeVariantAccessType(), 1)});
+
+    ASSERT_OK_AND_ASSIGN(
+        bool has_nested_projection,
+        NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, read_schema));
+    ASSERT_FALSE(has_nested_projection);
+}
+
+TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionNestedStruct) {
+    auto file_child =
+        arrow::struct_({MakeField("a", arrow::int32(), 3), MakeField("b", arrow::utf8(), 4)});
+    auto read_child = arrow::struct_({MakeField("a", arrow::int32(), 3)});
+    // The outer struct keeps all its fields; only the child struct is projected.
+    auto file_schema =
+        arrow::schema({MakeField("f0", arrow::struct_({MakeField("child", file_child, 2)}), 1)});
+    auto read_schema =
+        arrow::schema({MakeField("f0", arrow::struct_({MakeField("child", read_child, 2)}), 1)});
+
+    ASSERT_OK_AND_ASSIGN(
+        bool has_nested_projection,
+        NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, read_schema));
+    ASSERT_TRUE(has_nested_projection);
+}
+
+TEST(NestedProjectionUtilsTest, HasNestedSubfieldProjectionMapKey) {
+    auto file_key =
+        arrow::struct_({MakeField("a", arrow::int32(), 2), MakeField("b", arrow::utf8(), 3)});
+    auto read_key = arrow::struct_({MakeField("a", arrow::int32(), 2)});
+    auto file_schema = arrow::schema({MakeField("f0", arrow::map(file_key, arrow::int64()), 1)});
+    auto read_schema = arrow::schema({MakeField("f0", arrow::map(read_key, arrow::int64()), 1)});
+
+    ASSERT_OK_AND_ASSIGN(
+        bool has_nested_projection,
         NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, read_schema));
     ASSERT_TRUE(has_nested_projection);
 }

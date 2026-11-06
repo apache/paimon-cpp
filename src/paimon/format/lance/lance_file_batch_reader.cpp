@@ -128,9 +128,14 @@ Result<BatchReader::ReadBatch> LanceFileBatchReader::AlignBatch(ReadBatch batch)
     if (array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("Lance reader returned a non-struct Arrow batch");
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> aligned,
-                           NestedProjectionUtils::AlignArrayToReadType(
-                               array, arrow::struct_(read_schema_->fields()), arrow_pool_.get()));
+    std::shared_ptr<arrow::DataType> read_type = arrow::struct_(read_schema_->fields());
+    // Zoned timestamps come back as UTC, as LanceFormatWriter and Paimon Java store them, while
+    // paimon asks for the local zone; the instants are the same.
+    std::shared_ptr<arrow::Array> relabelled =
+        NestedProjectionUtils::AlignTimestampTimezones(array, read_type);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<arrow::Array> aligned,
+        NestedProjectionUtils::AlignArrayToReadType(relabelled, read_type, arrow_pool_.get()));
     auto out_array = std::make_unique<::ArrowArray>();
     auto out_schema = std::make_unique<::ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(

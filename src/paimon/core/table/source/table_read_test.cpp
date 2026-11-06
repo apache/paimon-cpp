@@ -22,34 +22,40 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "arrow/api.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/identifier.h"
 #include "paimon/catalog/table.h"
 #include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/operation/abstract_split_read.h"
 #include "paimon/core/operation/split_read.h"
 #include "paimon/core/schema/schema_manager.h"
-#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/defs.h"
-#include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
+#include "paimon/scan_context.h"
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
+#include "paimon/table/source/table_scan.h"
+#include "paimon/testing/mock/mock_search_file_index.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -125,50 +131,94 @@ TEST(TableReadTest, TestReadWithSpecifiedInvalidSchema) {
                         "Get field field_no_exist failed: not exist in table schema");
 }
 
-TEST(TableReadTest, TestFullTextMatchExecutionIsNotImplemented) {
+TEST(TableReadTest, TestFullTextMatchReadEntryAndScoreValidation) {
     auto match = std::make_shared<FullTextMatch>("f0", R"({"match":{"query":"apple"}})");
     ASSERT_OK_AND_ASSIGN(auto full_text, PredicateBuilder::FullTextMatch(/*field_index=*/0, match));
     auto scalar = PredicateBuilder::Equal(/*field_index=*/1, "f1", FieldType::INT, Literal(1));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::Or({scalar, full_text}));
     const std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    auto fs = std::make_shared<LocalFileSystem>();
-    SchemaManager schema_manager(fs, table_path);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, schema_manager.ReadSchema(0));
-    Table table(fs, table_path, schema, Identifier("append_09.db", "append_09"));
-    for (bool table_entry : {false, true}) {
-        ReadContextBuilder builder(table_path);
-        builder.SetReadFieldNames({"f0", "f1"}).SetPredicate(predicate);
-        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-        auto result =
-            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
-        ASSERT_NOK_WITH_MSG(result, "FullTextMatch predicate execution is not implemented yet");
-        ASSERT_TRUE(result.status().IsNotImplemented());
+    ReadContextBuilder builder(table_path);
+    builder.EnablePreciseFileIndexEvaluate(true)
+        .SetReadFieldNames({"f0", "f1"})
+        .SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_OK(TableRead::Create(std::move(context)));
 
-        builder.SetReadFieldNames({"f0", "f1", "_f0_INDEX_SCORE"}).SetPredicate(predicate);
-        ASSERT_OK_AND_ASSIGN(context, builder.Finish());
-        result =
-            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
-        ASSERT_NOK_WITH_MSG(result, "Score-producing FullTextMatch cannot appear under OR");
-    }
+    builder.EnablePreciseFileIndexEvaluate(true)
+        .SetReadFieldNames({"f0", "f1", "_f0_INDEX_SCORE"})
+        .SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(context, builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(context)),
+                        "Score-producing FullTextMatch cannot appear under OR");
 }
 
-TEST(TableReadTest, TestPerFieldScoreExecutionIsNotImplemented) {
+TEST(TableReadTest, TestPerFieldScoreReadEntry) {
     const std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     auto search =
         std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"apple"}})", /*limit=*/1);
-    auto fs = std::make_shared<LocalFileSystem>();
-    SchemaManager schema_manager(fs, path);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, schema_manager.ReadSchema(0));
-    Table table(fs, path, schema, Identifier("append_09.db", "append_09"));
-    for (bool table_entry : {false, true}) {
-        ReadContextBuilder builder(path);
-        builder.SetFullTextSearch(search).SetReadFieldNames({"f1", "_f0_INDEX_SCORE"});
-        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-        auto result =
-            table_entry ? table.NewRead(std::move(context)) : TableRead::Create(std::move(context));
-        ASSERT_NOK_WITH_MSG(result, "Per-field index score output is not implemented yet");
-        ASSERT_TRUE(result.status().IsNotImplemented());
+    ReadContextBuilder builder(path);
+    builder.EnablePreciseFileIndexEvaluate(true).SetFullTextSearch(search).SetReadFieldNames(
+        {"f1", "_f0_INDEX_SCORE"});
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_OK(TableRead::Create(std::move(context)));
+}
+
+TEST(TableReadTest, TestMixedFilePredicateProducesScoresThroughPublicReadEntry) {
+    const std::string path =
+        GetDataDir() + "/orc/multi_partition_append_table.db/multi_partition_append_table";
+    ScanContextBuilder scan_builder(path);
+    scan_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    std::shared_ptr<DataSplitImpl> selected_split;
+    for (const auto& split : plan->Splits()) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_TRUE(data_split);
+        for (const auto& file : data_split->DataFiles()) {
+            if (file->file_name != "data-01b6a930-6564-409b-b8f4-ed1307790d72-0.orc") {
+                continue;
+            }
+            auto indexed_file = std::make_shared<DataFileMeta>(*file);
+            ASSERT_OK_AND_ASSIGN(
+                indexed_file->embedded_index,
+                MockSearchFileIndex::MakeIndex("f0", MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
+                                               {{0, 0.25f}, {2, 0.75f}}, GetDefaultPool()));
+            DataSplitImpl::Builder split_builder(data_split->Partition(), data_split->Bucket(),
+                                                 data_split->BucketPath(), {indexed_file});
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplit> single,
+                                 split_builder.WithSnapshot(1).RawConvertible(true).Build());
+            selected_split = std::dynamic_pointer_cast<DataSplitImpl>(single);
+        }
     }
+    ASSERT_TRUE(selected_split);
+    auto match = std::make_shared<FullTextMatch>("f0", R"({"match":{"query":"names"}})");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> text,
+                         PredicateBuilder::FullTextMatch(2, match));
+    auto scalar = PredicateBuilder::GreaterThan(1, "f3", FieldType::DOUBLE, Literal(13.0));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({text, scalar}));
+    ReadContextBuilder builder(path);
+    builder.EnablePreciseFileIndexEvaluate(true)
+        .SetReadFieldNames({"_f0_INDEX_SCORE", "f3", "f0"})
+        .SetPredicate(predicate)
+        .AddOption(Options::READ_BATCH_SIZE, "1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, TableRead::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(selected_split));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_TRUE(actual);
+    ASSERT_EQ(actual->length(), 1);
+    auto values = std::dynamic_pointer_cast<arrow::StructArray>(actual->chunk(0));
+    ASSERT_TRUE(values);
+    auto scores = std::dynamic_pointer_cast<arrow::FloatArray>(values->field(1));
+    auto names = std::dynamic_pointer_cast<arrow::StringArray>(values->field(3));
+    ASSERT_TRUE(scores);
+    ASSERT_TRUE(names);
+    ASSERT_FLOAT_EQ(scores->Value(0), 0.75f);
+    ASSERT_EQ(names->GetString(0), "Tony");
 }
 
 TEST(TableReadTest, TestCreateKeyValueTableRead) {
@@ -190,10 +240,13 @@ TEST(TableReadTest, TestCreateCountReaderRejectsFileIndexSearch) {
         auto search =
             std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"Alice"}})", /*limit=*/1);
         ReadContextBuilder context_builder(path);
-        context_builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
+        context_builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames({"f0"})
+            .SetFullTextSearch(search);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-        ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}), "VectorSearch or FullTextSearch");
+        ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}),
+                            "CreateCountReader does not support precise file-index evaluation");
     }
     {
         std::string path = paimon::test::GetDataDir() +
@@ -202,10 +255,64 @@ TEST(TableReadTest, TestCreateCountReaderRejectsFileIndexSearch) {
                                                      nullptr, nullptr, std::nullopt,
                                                      std::map<std::string, std::string>{});
         ReadContextBuilder context_builder(path);
-        context_builder.SetReadFieldNames({"f0"}).SetVectorSearch(search);
+        context_builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames({"f0"})
+            .SetVectorSearch(search);
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-        ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}), "VectorSearch or FullTextSearch");
+        ASSERT_NOK_WITH_MSG(table_read->CreateCountReader({}),
+                            "CreateCountReader does not support precise file-index evaluation");
+    }
+}
+
+TEST(TableReadTest, TestPreciseEvaluationRejectsSystemAndFormatTables) {
+    std::string path = GetDataDir() + "/orc/append_09.db/append_09";
+    ReadContextBuilder system_builder(path + "$snapshots");
+    system_builder.EnablePreciseFileIndexEvaluate(true);
+    ASSERT_OK_AND_ASSIGN(auto system_context, system_builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(system_context)),
+                        "Precise file-index evaluation is not supported for system tables");
+
+    auto directory = UniqueTestDirectory::Create();
+    SchemaManager schema_manager(directory->GetFileSystem(), directory->Str());
+    ASSERT_OK_AND_ASSIGN(
+        auto schema, schema_manager.CreateTable(arrow::schema({arrow::field("f0", arrow::int32())}),
+                                                /*partition_keys=*/{}, /*primary_keys=*/{},
+                                                {{Options::TYPE, "format-table"}}));
+    ASSERT_OK_AND_ASSIGN(auto format_table,
+                         FormatTable::Create(directory->GetFileSystem(), directory->Str(),
+                                             Identifier("db", "table"), {}));
+    for (bool loaded_table : {false, true}) {
+        ReadContextBuilder builder =
+            loaded_table ? ReadContextBuilder(format_table) : ReadContextBuilder(directory->Str());
+        builder.EnablePreciseFileIndexEvaluate(true);
+        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(context)),
+                            "Precise file-index evaluation is not supported for format tables");
+    }
+}
+
+TEST(TableReadTest, TestPreciseScalarEvaluationRejectsUnsupportedTableModes) {
+    for (bool primary_key : {false, true}) {
+        const std::string path =
+            GetDataDir() +
+            (primary_key ? "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality"
+                         : "/orc/append_09.db/append_09");
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(true).SetReadFieldNames({"f3"}).SetPredicate(
+            PredicateBuilder::GreaterThan(0, "f3", FieldType::DOUBLE, Literal(0.0)));
+        if (primary_key) {
+            builder.AddOption(Options::DELETION_VECTORS_ENABLED, "false");
+        } else {
+            builder.AddOption(Options::DATA_EVOLUTION_ENABLED, "true");
+        }
+        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+        const std::string expected_error =
+            primary_key ? "Precise file-index evaluation on primary-key tables requires "
+                          "deletion vectors"
+                        : "Precise file-index evaluation does not support data-evolution or "
+                          "real-time reads";
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(context)), expected_error);
     }
 }
 
@@ -216,7 +323,8 @@ TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
         std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr,
                                        nullptr, std::nullopt, std::map<std::string, std::string>{});
     ReadContextBuilder context_builder(path);
-    context_builder.SetReadFieldNames({"f0"}).SetVectorSearch(search);
+    context_builder.EnablePreciseFileIndexEvaluate(true).SetReadFieldNames({"f0"}).SetVectorSearch(
+        search);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> reader, TableRead::Create(std::move(context)));
 

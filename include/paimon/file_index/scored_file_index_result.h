@@ -29,7 +29,7 @@
 
 namespace paimon {
 
-/// File-local vector search result. Scores correspond to row positions in ascending order.
+/// File-local search result. Scores correspond to row positions in ascending order.
 class PAIMON_EXPORT ScoredFileIndexResult : public FileIndexResult {
  public:
     static Result<std::shared_ptr<ScoredFileIndexResult>> Create(RoaringBitmap32&& row_positions,

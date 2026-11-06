@@ -65,6 +65,39 @@ class MemoryPool;
 BitSliceIndexBitmapFileIndex::BitSliceIndexBitmapFileIndex(
     const std::map<std::string, std::string>& options) {}
 
+bool BitSliceIndexBitmapFileIndex::SupportsExactPredicate(Function::Type function,
+                                                          FieldType field_type) const {
+    switch (field_type) {
+        case FieldType::TINYINT:
+        case FieldType::SMALLINT:
+        case FieldType::INT:
+        case FieldType::BIGINT:
+        case FieldType::DATE:
+        case FieldType::DECIMAL:
+            break;
+        case FieldType::TIMESTAMP:
+            // Nanosecond timestamps are truncated to microseconds.
+            return function == Function::Type::IS_NULL || function == Function::Type::IS_NOT_NULL;
+        default:
+            return false;
+    }
+    switch (function) {
+        case Function::Type::EQUAL:
+        case Function::Type::NOT_EQUAL:
+        case Function::Type::IN:
+        case Function::Type::NOT_IN:
+        case Function::Type::IS_NULL:
+        case Function::Type::IS_NOT_NULL:
+        case Function::Type::GREATER_THAN:
+        case Function::Type::GREATER_OR_EQUAL:
+        case Function::Type::LESS_THAN:
+        case Function::Type::LESS_OR_EQUAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
 Result<std::shared_ptr<FileIndexWriter>> BitSliceIndexBitmapFileIndex::CreateWriter(
     ::ArrowSchema* c_arrow_schema, const std::shared_ptr<MemoryPool>& pool) const {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,

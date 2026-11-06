@@ -302,7 +302,8 @@ Result<std::shared_ptr<BatchWriter>> AppendOnlyFileStoreWrite::CreateWriter(
             options_.GetTargetFileSize(/*has_primary_key=*/false),
             options_.GetCompactionFileSize(/*has_primary_key=*/false),
             options_.CompactionForceRewriteAllFiles(), rewriter,
-            compaction_metrics_->CreateReporter(partition, bucket), cancellation_controller);
+            compaction_metrics_->CreateReporter(partition, bucket), cancellation_controller,
+            /*materialize_dv_on_commit=*/!options_.GetRealtimeDeduplicateKeyFields().empty());
     }
 
     auto writer = std::make_shared<AppendOnlyWriter>(
@@ -323,7 +324,7 @@ Result<std::shared_ptr<BatchWriter>> AppendOnlyFileStoreWrite::CreateWriter(
         return RealtimeDeduplicateWriter::Create(
             partition_map, bucket, realtime_context_, writer, realtime_schema_layout_,
             table_schema_->Id(), deduplicate_key_fields, restore_data_files, data_file_path_factory,
-            options_, io_manager_ ? io_manager_->GetTempDir() : "", pool_);
+            options_, io_manager_ ? io_manager_->GetTempDir() : "", schema_manager_, pool_);
     }
     return RealtimeAppendOnlyWriter::Create(partition_map, bucket, realtime_context_, writer,
                                             realtime_schema_layout_, options_,

@@ -69,6 +69,7 @@ set(PAIMON_COMMON_SRCS
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
     common/file_index/bitmap/bitmap_index_result.cpp
+    common/file_index/file_indexer.cpp
     common/file_index/file_indexer_factory.cpp
     common/file_index/file_index_format.cpp
     common/file_index/file_index_format_utils.cpp
@@ -85,6 +86,7 @@ set(PAIMON_COMMON_SRCS
     common/fs/credential_provider_factory.cpp
     common/fs/file_system_factory.cpp
     common/global_index/union_global_index_reader.cpp
+    common/global_index/scored_global_index_result_utils.cpp
     common/global_index/offset_global_index_reader.cpp
     common/global_index/bitmap_scored_global_index_result.cpp
     common/global_index/bitmap_global_index_result.cpp
@@ -385,6 +387,9 @@ set(PAIMON_CORE_SRCS
     core/operation/commit/conflict_detection.cpp
     core/operation/commit/commit_scanner.cpp
     core/operation/commit/commit_changes_provider.cpp
+    core/operation/commit/realtime_deduplicate_commit_changes_provider.cpp
+    core/operation/commit/realtime_deduplicate_compaction_changes_provider.cpp
+    core/operation/commit/realtime_deduplicate_dv_materializer.cpp
     core/operation/commit/compacted_changelog_path_resolver.cpp
     core/operation/commit/overwrite_changes_provider.cpp
     core/operation/commit/realtime_commit_properties.cpp
@@ -408,6 +413,7 @@ set(PAIMON_CORE_SRCS
     core/operation/orphan_files_cleaner.cpp
     core/operation/orphan_files_cleaner_impl.cpp
     core/operation/raw_file_split_read.cpp
+    core/operation/precise_file_index_read.cpp
     core/operation/read_context.cpp
     core/operation/scan_context.cpp
     core/manifest/snapshot_live_manifest_entries.cpp
@@ -419,6 +425,7 @@ set(PAIMON_CORE_SRCS
     core/realtime/data_file_key_offset_index_writer.cpp
     core/realtime/key_offset_index_utils.cpp
     core/realtime/realtime_key_offset_index.cpp
+    core/realtime/realtime_file_schema.cpp
     core/realtime/realtime_offset_file_index_lookup.cpp
     core/realtime/realtime_deduplicate_state.cpp
     core/realtime/realtime_deduplicate_writer.cpp
@@ -478,6 +485,10 @@ set(PAIMON_CORE_SRCS
     core/table/source/table_read.cpp
     core/table/source/table_scan.cpp
     core/table/source/data_evolution_batch_scan.cpp
+    core/table/source/data_evolution_full_text_read.cpp
+    core/table/source/data_evolution_full_text_scan.cpp
+    core/table/source/full_text_search_builder.cpp
+    core/table/source/full_text_search_split.cpp
     core/table/source/primary_key_sorted_index_scan.cpp
     core/table/source/primary_key_sorted_index_result.cpp
     core/table/source/primary_key_index_batch_scan.cpp
@@ -514,6 +525,7 @@ if(PAIMON_ENABLE_REST)
          rest/rest_auth.cpp
          rest/dlf_auth.cpp
          rest/rest_catalog.cpp
+         rest/rest_commit_lock.cpp
          rest/rest_messages.cpp
          rest/rest_token_file_system.cpp
          rest/rest_credential_provider.cpp
@@ -603,6 +615,7 @@ if(PAIMON_BUILD_TESTS)
                     common/data/columnar/columnar_utils_test.cpp
                     common/data/data_define_test.cpp
                     common/data/decimal_test.cpp
+                    common/data/generic_array_test.cpp
                     common/data/generic_row_test.cpp
                     common/data/internal_row_test.cpp
                     common/data/record_batch_test.cpp
@@ -664,6 +677,7 @@ if(PAIMON_BUILD_TESTS)
                     common/global_index/btree/btree_global_index_integration_test.cpp
                     common/global_index/btree/btree_compatibility_test.cpp
                     common/global_index/sorted_file_meta_selector_test.cpp
+                    common/global_index/sorted_file_global_index_reader_test.cpp
                     common/global_index/btree/lazy_filtered_btree_reader_test.cpp
                     common/global_index/rangebitmap/range_bitmap_global_index_test.cpp
                     common/global_index/wrap/file_index_reader_wrapper_test.cpp
@@ -818,6 +832,7 @@ if(PAIMON_BUILD_TESTS)
                     core/bucket/bucket_select_converter_test.cpp
                     core/bucket/default_bucket_function_test.cpp
                     core/bucket/hive_bucket_function_test.cpp
+                    core/bucket/hive_hasher_test.cpp
                     core/bucket/bucket_id_calculator_test.cpp
                     core/bucket/mod_bucket_function_test.cpp
                     core/casting/cast_executor_factory_test.cpp
@@ -855,6 +870,7 @@ if(PAIMON_BUILD_TESTS)
                     core/index/index_file_handler_test.cpp
                     core/io/compact_increment_test.cpp
                     core/io/infer_shredding_file_writer_test.cpp
+                    core/io/shredding_key_value_data_file_writer_factory_test.cpp
                     core/io/concat_key_value_record_reader_test.cpp
                     core/io/data_file_meta_serializer_test.cpp
                     core/io/data_file_path_factory_test.cpp
@@ -862,6 +878,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/field_mapping_reader_test.cpp
                     core/io/key_value_data_file_record_reader_test.cpp
                     core/io/key_value_projection_reader_test.cpp
+                    core/io/row_to_arrow_array_converter_test.cpp
                     core/io/key_value_in_memory_record_reader_test.cpp
                     core/io/merged_key_value_record_reader_test.cpp
                     core/io/complete_row_tracking_fields_reader_test.cpp
@@ -898,6 +915,7 @@ if(PAIMON_BUILD_TESTS)
                     core/realtime/key_offset_index_utils_test.cpp
                     core/realtime/primary_key_realtime_store_test.cpp
                     core/realtime/realtime_deduplicate_state_test.cpp
+                    core/realtime/realtime_file_schema_test.cpp
                     core/realtime/realtime_key_offset_index_test.cpp
                     core/realtime/realtime_offset_batch_reader_test.cpp
                     core/realtime/realtime_offset_file_index_lookup_test.cpp
@@ -911,6 +929,7 @@ if(PAIMON_BUILD_TESTS)
                     core/mergetree/lookup_file_test.cpp
                     core/mergetree/lookup_levels_test.cpp
                     core/mergetree/compact/aggregate/aggregate_merge_function_test.cpp
+                    core/mergetree/compact/aggregate/field_aggregate_utils_test.cpp
                     core/mergetree/compact/aggregate/field_aggregator_factory_test.cpp
                     core/mergetree/compact/aggregate/field_bool_agg_test.cpp
                     core/mergetree/compact/aggregate/field_collect_agg_test.cpp
@@ -972,8 +991,10 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/row_id_column_conflict_checker_test.cpp
                     core/operation/commit/row_tracking_commit_utils_test.cpp
                     core/operation/commit/realtime_commit_properties_test.cpp
+                    core/operation/commit/realtime_deduplicate_dv_materializer_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp
                     core/operation/key_value_file_store_write_test.cpp
+                    core/operation/precise_file_index_read_test.cpp
                     core/operation/internal_read_context_test.cpp
                     core/operation/abstract_split_read_test.cpp
                     core/operation/append_only_file_store_write_test.cpp
@@ -1021,12 +1042,16 @@ if(PAIMON_BUILD_TESTS)
                     core/table/source/append_count_reader_test.cpp
                     core/table/source/pk_count_reader_test.cpp
                     core/table/source/data_evolution_batch_scan_test.cpp
+                    core/table/source/data_evolution_full_text_read_test.cpp
+                    core/table/source/data_evolution_full_text_scan_test.cpp
+                    core/table/source/full_text_search_split_test.cpp
                     core/table/source/data_split_test.cpp
                     core/table/source/deletion_file_test.cpp
                     core/table/source/split_generator_test.cpp
                     core/table/source/snapshot/snapshot_reader_test.cpp
                     core/table/source/startup_mode_test.cpp
                     core/table/source/table_scan_test.cpp
+                    core/table/source/scan_exception_safety_test.cpp
                     core/table/system/system_table_test.cpp
                     core/tag/tag_test.cpp
                     core/utils/blob_view_lookup_test.cpp
@@ -1100,6 +1125,7 @@ if(PAIMON_BUILD_TESTS)
                         rest/resource_paths_test.cpp
                         rest/dlf_auth_test.cpp
                         rest/rest_catalog_test.cpp
+                        rest/rest_commit_lock_test.cpp
                         rest/rest_messages_test.cpp
                         rest/rest_token_file_system_test.cpp
                         rest/rest_credential_provider_test.cpp

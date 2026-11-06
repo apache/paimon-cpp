@@ -23,11 +23,13 @@
 #include <string>
 #include <vector>
 
+#include "paimon/defs.h"
 #include "paimon/file_index/file_index_reader.h"
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/file_index/file_index_writer.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/function.h"
 #include "paimon/visibility.h"
 
 struct ArrowSchema;
@@ -37,6 +39,17 @@ namespace paimon {
 class PAIMON_EXPORT FileIndexer {
  public:
     virtual ~FileIndexer() = default;
+
+    /// Whether this indexer returns exact file-local matching row positions for the field type.
+    /// Supported evaluations return BitmapIndexResult (or Skip), never Remain or false positives.
+    /// The schema and values must satisfy the index's writer constraints.
+    virtual bool SupportsExactPredicate(Function::Type function, FieldType field_type) const {
+        return false;
+    }
+
+    /// Create a reader for an empty index entry without serialized bytes.
+    /// Scalar indexers use the default reader. Search indexers must preserve their capabilities.
+    virtual std::shared_ptr<FileIndexReader> CreateEmptyReader() const;
 
     /// Extra columns required while building this index, in addition to the indexed column.
     virtual Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const {

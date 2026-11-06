@@ -19,7 +19,9 @@
 #include "paimon/rest/rest_messages.h"
 
 #include <map>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/common/utils/rapidjson_util.h"
@@ -72,6 +74,18 @@ TEST(RestMessagesTest, ConfigResponseMerge) {
     ASSERT_EQ(0, merged.count("unset-absent"));
 }
 
+TEST(RestMessagesTest, ConfigResponseMissingOrNullMaps) {
+    const std::vector<std::string> inputs = {"{}", R"({"defaults": null, "overrides": null})"};
+    const std::map<std::string, std::string> client = {{"client", "client-value"}};
+    for (const auto& json : inputs) {
+        SCOPED_TRACE(json);
+        ASSERT_OK_AND_ASSIGN(ConfigResponse config, ConfigResponse::FromJsonString(json));
+        ASSERT_TRUE(config.GetDefaults().empty());
+        ASSERT_TRUE(config.GetOverrides().empty());
+        ASSERT_EQ(client, config.Merge(client));
+    }
+}
+
 TEST(RestMessagesTest, ListResponsesParse) {
     ASSERT_OK_AND_ASSIGN(ListDatabasesResponse databases,
                          ListDatabasesResponse::FromJsonString(
@@ -91,7 +105,7 @@ TEST(RestMessagesTest, ListResponsesParse) {
     ASSERT_FALSE(null_token.NextPageToken().has_value());
 }
 
-TEST(RestMessagesTest, ListSnapshotsResponseParse) {
+TEST(RestMessagesTest, ListSnapshotsResponseRoundTrip) {
     std::string json = R"({
         "snapshots": [{
             "version": 3,
@@ -136,9 +150,15 @@ TEST(RestMessagesTest, ListSnapshotsResponseParse) {
     SnapshotInfo compact_info = response.Data()[1].ToSnapshotInfo();
     ASSERT_EQ(SnapshotInfo::CommitKind::COMPACT, compact_info.commit_kind);
     ASSERT_FALSE(compact_info.watermark.has_value());
+
+    ASSERT_OK_AND_ASSIGN(std::string written, response.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(ListSnapshotsResponse round_tripped,
+                         ListSnapshotsResponse::FromJsonString(written));
+    ASSERT_EQ(response.Data(), round_tripped.Data());
+    ASSERT_EQ(response.NextPageToken(), round_tripped.NextPageToken());
 }
 
-TEST(RestMessagesTest, GetDatabaseResponseParse) {
+TEST(RestMessagesTest, GetDatabaseResponseRoundTrip) {
     std::string json = R"({
         "id": "10",
         "name": "db1",
@@ -159,9 +179,18 @@ TEST(RestMessagesTest, GetDatabaseResponseParse) {
     ASSERT_EQ("owner1", options.at("owner"));
     ASSERT_EQ("100", options.at("createdAt"));
     ASSERT_EQ("updater", options.at("updatedBy"));
+
+    ASSERT_OK_AND_ASSIGN(std::string written, response.ToJsonString());
+    rapidjson::Document expected;
+    expected.Parse(json.c_str());
+    ASSERT_FALSE(expected.HasParseError());
+    rapidjson::Document doc;
+    doc.Parse(written.c_str());
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_TRUE(expected == doc) << written;
 }
 
-TEST(RestMessagesTest, GetTableResponseParse) {
+TEST(RestMessagesTest, GetTableResponseRoundTrip) {
     std::string json = R"({
         "id": "42",
         "database": "db1",
@@ -194,6 +223,15 @@ TEST(RestMessagesTest, GetTableResponseParse) {
     ASSERT_FALSE(schema.HasParseError());
     ASSERT_EQ(2u, schema["fields"].Size());
     ASSERT_STREQ("f0", schema["fields"][0]["name"].GetString());
+
+    ASSERT_OK_AND_ASSIGN(std::string written, response.ToJsonString());
+    rapidjson::Document expected;
+    expected.Parse(json.c_str());
+    ASSERT_FALSE(expected.HasParseError());
+    rapidjson::Document doc;
+    doc.Parse(written.c_str());
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_TRUE(expected == doc) << written;
 }
 
 TEST(RestMessagesTest, GetTableTokenResponseParse) {
@@ -373,6 +411,74 @@ TEST(RestMessagesTest, CommitTableResponseRoundTrip) {
     ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString("null"), "value must be an object");
     ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString("true"), "value must be an object");
     ASSERT_NOK(CommitTableResponse::FromJsonString("not json"));
+}
+
+TEST(RestMessagesTest, CommitLockRequestRoundTrip) {
+    CommitLockRequest request("table-uuid", "commit-user");
+    ASSERT_OK_AND_ASSIGN(std::string json, request.ToJsonString());
+    rapidjson::Document doc;
+    doc.Parse(json.c_str());
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_EQ(2u, doc.MemberCount());
+    ASSERT_STREQ("table-uuid", doc["tableId"].GetString());
+    ASSERT_STREQ("commit-user", doc["commitUser"].GetString());
+
+    ASSERT_OK_AND_ASSIGN(CommitLockRequest parsed, CommitLockRequest::FromJsonString(json));
+    ASSERT_EQ("table-uuid", parsed.GetTableId());
+    ASSERT_EQ("commit-user", parsed.GetCommitUser());
+
+    ASSERT_NOK_WITH_MSG(CommitLockRequest::FromJsonString(R"({"commitUser": "u"})"),
+                        "key must exist");
+    ASSERT_NOK_WITH_MSG(CommitLockRequest::FromJsonString(R"({"tableId": "t"})"), "key must exist");
+}
+
+TEST(RestMessagesTest, CommitLockResponseRoundTrip) {
+    std::string granted_json =
+        R"({"acquired": true, "commitUser": "commit-user", "expiresAtMillis": 1700000060000,)"
+        R"( "leaseMillis": 60000, "snapshot": {"version": 3, "id": 7, "schemaId": 0,)"
+        R"( "baseManifestList": "bml", "deltaManifestList": "dml", "commitUser": "u",)"
+        R"( "commitIdentifier": 1, "commitKind": "APPEND", "timeMillis": 100,)"
+        R"( "totalRecordCount": 10, "deltaRecordCount": 1}, "unknown": 1})";
+    ASSERT_OK_AND_ASSIGN(CommitLockResponse granted,
+                         CommitLockResponse::FromJsonString(granted_json));
+    ASSERT_TRUE(granted.IsAcquired());
+    ASSERT_EQ(std::optional<std::string>("commit-user"), granted.GetCommitUser());
+    ASSERT_EQ(1700000060000, granted.GetExpiresAtMillis());
+    ASSERT_EQ(60000, granted.GetLeaseMillis());
+    ASSERT_TRUE(granted.GetSnapshot());
+    ASSERT_EQ(7, granted.GetSnapshot()->Id());
+
+    ASSERT_OK_AND_ASSIGN(std::string written, granted.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(CommitLockResponse round_tripped,
+                         CommitLockResponse::FromJsonString(written));
+    ASSERT_TRUE(round_tripped.IsAcquired());
+    ASSERT_EQ(granted.GetCommitUser(), round_tripped.GetCommitUser());
+    ASSERT_EQ(granted.GetExpiresAtMillis(), round_tripped.GetExpiresAtMillis());
+    ASSERT_EQ(granted.GetLeaseMillis(), round_tripped.GetLeaseMillis());
+    ASSERT_EQ(granted.GetSnapshot(), round_tripped.GetSnapshot());
+
+    ASSERT_OK_AND_ASSIGN(
+        CommitLockResponse contended,
+        CommitLockResponse::FromJsonString(
+            R"({"acquired": false, "commitUser": null, "expiresAtMillis": 0, "leaseMillis": 0,)"
+            R"( "snapshot": null})"));
+    ASSERT_FALSE(contended.IsAcquired());
+    ASSERT_FALSE(contended.GetCommitUser());
+    ASSERT_EQ(0, contended.GetLeaseMillis());
+    ASSERT_FALSE(contended.GetSnapshot());
+    ASSERT_OK_AND_ASSIGN(std::string contended_json, contended.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(CommitLockResponse contended_round_trip,
+                         CommitLockResponse::FromJsonString(contended_json));
+    ASSERT_FALSE(contended_round_trip.IsAcquired());
+    ASSERT_FALSE(contended_round_trip.GetCommitUser());
+    ASSERT_FALSE(contended_round_trip.GetSnapshot());
+
+    ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString("{}"), "key must exist");
+    ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString(R"({"acquired": null})"),
+                        "key must exist");
+    ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString(R"({"acquired": "true"})"),
+                        "value must be bool");
+    ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString("[]"), "value must be an object");
 }
 
 TEST(RestMessagesTest, CreateDatabaseRequestRoundTrip) {

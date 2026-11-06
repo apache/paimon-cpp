@@ -202,7 +202,7 @@ Status RestApi::ErrorToStatus(const RestHttpClient::Response& response, bool fol
 Result<RestHttpClient::Response> RestApi::Execute(
     const std::string& method, const std::string& path,
     const std::map<std::string, std::string>& query_params, const std::string& body,
-    bool retry_safe) const {
+    bool retry_safe, const RestHttpClient::Cancellation* cancellation) const {
     RestAuthParameter auth_parameter = RestAuthParameter::Create(method, path, query_params, body);
     StringMap request_headers = base_headers_;
     if (!body.empty()) {
@@ -212,9 +212,9 @@ Result<RestHttpClient::Response> RestApi::Execute(
     PAIMON_ASSIGN_OR_RAISE(StringMap headers,
                            auth_provider_->MergeAuthHeader(request_headers, auth_parameter));
     bool follow_redirects = auth_provider_->AllowsRedirects();
-    PAIMON_ASSIGN_OR_RAISE(
-        RestHttpClient::Response response,
-        client_->Execute(method, path, query_params, headers, body, follow_redirects, retry_safe));
+    PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
+                           client_->Execute(method, path, query_params, headers, body,
+                                            follow_redirects, retry_safe, cancellation));
     if (!response.IsSuccessful()) {
         return ErrorToStatus(response, follow_redirects);
     }
@@ -337,6 +337,35 @@ Result<bool> RestApi::CommitSnapshot(const Identifier& identifier,
     CommitTableResponse entity;
     PAIMON_RETURN_NOT_OK(ParseResponseBody(response.body, path, &entity));
     return entity.IsSuccess();
+}
+
+Result<CommitLockResponse> RestApi::AcquireCommitLock(const Identifier& identifier,
+                                                      const std::string& table_uuid,
+                                                      const std::string& commit_user) const {
+    return PostCommitLock(
+        resource_paths_.CommitLock(identifier.GetDatabaseName(), identifier.GetObjectName()),
+        table_uuid, commit_user, /*cancellation=*/nullptr);
+}
+
+Result<CommitLockResponse> RestApi::RenewCommitLock(
+    const Identifier& identifier, const std::string& table_uuid, const std::string& commit_user,
+    const RestHttpClient::Cancellation* cancellation) const {
+    return PostCommitLock(
+        resource_paths_.RenewCommitLock(identifier.GetDatabaseName(), identifier.GetObjectName()),
+        table_uuid, commit_user, cancellation);
+}
+
+Result<CommitLockResponse> RestApi::PostCommitLock(
+    const std::string& path, const std::string& table_uuid, const std::string& commit_user,
+    const RestHttpClient::Cancellation* cancellation) const {
+    CommitLockRequest request(table_uuid, commit_user);
+    PAIMON_ASSIGN_OR_RAISE(std::string body, request.ToJsonString());
+    // Safe to replay: the same commit user shares a lease, and a renewal never revives one.
+    PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
+                           Execute("POST", path, {}, body, /*retry_safe=*/true, cancellation));
+    CommitLockResponse entity;
+    PAIMON_RETURN_NOT_OK(ParseResponseBody(response.body, path, &entity));
+    return entity;
 }
 
 Result<GetTableTokenResponse> RestApi::LoadTableToken(const Identifier& identifier) const {

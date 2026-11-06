@@ -19,10 +19,7 @@
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 
 #include <atomic>
-#include <chrono>
-#include <condition_variable>
 #include <limits>
-#include <mutex>
 #include <set>
 
 #include "arrow/compute/api.h"
@@ -44,10 +41,17 @@
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/mock/mock_format_reader_builder.h"
+#include "paimon/testing/utils/blocking_file_system.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+TEST(PrefetchFileBatchReaderTest, DefaultPreBufferRangeIsEmpty) {
+    MockFileBatchReader reader(nullptr, arrow::struct_({}), 1);
+    ASSERT_OK_AND_ASSIGN(auto ranges, reader.PrefetchFileBatchReader::PreBufferRange());
+    ASSERT_TRUE(ranges.empty());
+}
 
 class ControlledMockFileBatchReader : public MockFileBatchReader {
  public:
@@ -133,37 +137,6 @@ class FailingFileSystem : public MockFileSystem {
     }
 };
 
-/// Blocks every Open() until `opens_needed` of them are in flight at once, so a caller that
-/// opens its streams one at a time never reaches the barrier and fails instead of passing
-/// silently. The wait is bounded so that failure is reported rather than hanging the test.
-class BarrierFileSystem : public MockFileSystem {
- public:
-    explicit BarrierFileSystem(uint32_t opens_needed) : opens_needed_(opens_needed) {}
-
-    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
-        const uint32_t arrived = ++inflight_opens_;
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (!condition_.wait_for(lock, kBarrierTimeout,
-                                 [this] { return inflight_opens_ >= opens_needed_; })) {
-            return Status::IOError(fmt::format(
-                "only {} of {} opens were in flight at once, so they are not concurrent", arrived,
-                opens_needed_));
-        }
-        condition_.notify_all();
-        return std::make_unique<MockInputStream>();
-    }
-
- private:
-    // Generous so a loaded machine does not turn this into a flaky test; a regression makes the
-    // opens serial, which no wait ever satisfies.
-    static constexpr std::chrono::seconds kBarrierTimeout{60};
-
-    const uint32_t opens_needed_;
-    mutable std::atomic<uint32_t> inflight_opens_{0};
-    mutable std::mutex mutex_;
-    mutable std::condition_variable condition_;
-};
-
 class IoReadingMockFileBatchReader : public MockFileBatchReader {
  public:
     IoReadingMockFileBatchReader(const std::shared_ptr<arrow::Array>& data,
@@ -181,6 +154,21 @@ class IoReadingMockFileBatchReader : public MockFileBatchReader {
 
  private:
     std::shared_ptr<InputStream> input_stream_;
+};
+
+class StreamCapturingMockReaderBuilder : public MockFormatReaderBuilder {
+ public:
+    using MockFormatReaderBuilder::MockFormatReaderBuilder;
+
+    Result<std::unique_ptr<FileBatchReader>> Build(
+        const std::shared_ptr<InputStream>& input_stream) const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        input_streams_.push_back(input_stream);
+        return MockFormatReaderBuilder::Build(input_stream);
+    }
+
+    mutable std::mutex mutex_;
+    mutable std::vector<std::shared_ptr<InputStream>> input_streams_;
 };
 
 class IoReadingMockFormatReaderBuilder : public ReaderBuilder {
@@ -524,6 +512,164 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestFailedIoMetrics) {
                          metrics->GetCounter(PrefetchIoMetrics::READ_LATENCY_COUNT));
     ASSERT_OK(metrics->GetCounter(PrefetchIoMetrics::READ_LATENCY_SUM_US));
     ASSERT_EQ(latency_count, read_requests);
+}
+
+TEST_F(PrefetchFileBatchReaderImplTest, TestSequentialIoMetricsAndPositionForwarding) {
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "stream-data");
+    ASSERT_OK(local_fs_->WriteFile(path, "abcdef", /*overwrite=*/false));
+    StreamCapturingMockReaderBuilder builder(PrepareArray(1), data_type_, 1);
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        PrefetchFileBatchReaderImpl::Create(
+            path, 6, &builder, local_fs_, /*prefetch_max_parallel_num=*/1, /*batch_size=*/1,
+            /*prefetch_batch_count=*/1, /*enable_adaptive_prefetch_strategy=*/false, executor_,
+            /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
+            /*enable_io_metrics=*/true, WarmupLevel::NONE, pool_, GetArrowPool(pool_)));
+    ASSERT_EQ(builder.input_streams_.size(), 1u);
+    const auto& stream = builder.input_streams_.front();
+    ASSERT_OK(stream->Seek(2, FS_SEEK_SET));
+    ASSERT_OK_AND_ASSIGN(int64_t position, stream->GetPos());
+    ASSERT_EQ(position, 2);
+    char buffer[8] = {};
+    ASSERT_OK_AND_ASSIGN(int64_t bytes_read, stream->Read(buffer, 4));
+    ASSERT_EQ(bytes_read, 4);
+    ASSERT_EQ(std::string(buffer, bytes_read), "cdef");
+    ASSERT_OK_AND_ASSIGN(position, stream->GetPos());
+    ASSERT_EQ(position, 6);
+    ASSERT_OK(stream->Seek(-2, FS_SEEK_END));
+    ASSERT_OK_AND_ASSIGN(bytes_read, stream->Read(buffer, 2));
+    ASSERT_EQ(std::string(buffer, bytes_read), "ef");
+    ASSERT_OK(stream->Seek(0, FS_SEEK_SET));
+    ASSERT_NOK(stream->Read(buffer, 8));
+    const auto metrics = reader->GetReaderMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t requests, metrics->GetCounter(PrefetchIoMetrics::READ_REQUESTS));
+    ASSERT_EQ(requests, 3);
+    ASSERT_OK_AND_ASSIGN(uint64_t requested,
+                         metrics->GetCounter(PrefetchIoMetrics::READ_REQUESTED_BYTES));
+    ASSERT_EQ(requested, 14);
+    ASSERT_OK_AND_ASSIGN(uint64_t physical,
+                         metrics->GetCounter(PrefetchIoMetrics::READ_PHYSICAL_BYTES));
+    ASSERT_EQ(physical, 6);
+    ASSERT_OK_AND_ASSIGN(uint64_t failures, metrics->GetCounter(PrefetchIoMetrics::READ_FAILED));
+    ASSERT_EQ(failures, 1);
+}
+
+TEST_F(PrefetchFileBatchReaderImplTest, TestMinimumQueueCapacityAndFileSchema) {
+    auto data = PrepareArray(10);
+    MockFormatReaderBuilder builder(data, data_type_, 2);
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        PrefetchFileBatchReaderImpl::Create(
+            "", 0, &builder, mock_fs_, /*prefetch_max_parallel_num=*/3, /*batch_size=*/2,
+            /*prefetch_batch_count=*/1, /*enable_adaptive_prefetch_strategy=*/false, executor_,
+            /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/false, CacheConfig(),
+            /*enable_io_metrics=*/false, WarmupLevel::NONE, pool_, GetArrowPool(pool_)));
+    ASSERT_EQ(reader->prefetch_queue_capacity_, 1u);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_schema, reader->GetFileSchema());
+    auto imported_schema = arrow::ImportSchema(c_schema.get());
+    ASSERT_TRUE(imported_schema.ok()) << imported_schema.status().ToString();
+    std::shared_ptr<arrow::Schema> schema = std::move(imported_schema).ValueOrDie();
+    ASSERT_TRUE(schema->Equals(*arrow::schema(fields_)));
+    ASSERT_OK_AND_ASSIGN(auto result, CollectResultAndRowIds(reader.get()));
+    ASSERT_TRUE(result.first);
+    ASSERT_TRUE(result.first->Equals(*std::make_shared<arrow::ChunkedArray>(data)));
+}
+
+TEST_F(PrefetchFileBatchReaderImplTest, TestDiscardedBatchesAreCountedAndReleased) {
+    for (int32_t scenario : {0, 1, 2}) {
+        SCOPED_TRACE(scenario);
+        MockFormatReaderBuilder builder(PrepareArray(20), data_type_, 5);
+        ASSERT_OK_AND_ASSIGN(
+            auto reader,
+            PrefetchFileBatchReaderImpl::Create(
+                "", 0, &builder, mock_fs_, /*prefetch_max_parallel_num=*/1, /*batch_size=*/5,
+                /*prefetch_batch_count=*/2, /*enable_adaptive_prefetch_strategy=*/false, executor_,
+                /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/false, CacheConfig(),
+                /*enable_io_metrics=*/false, WarmupLevel::NONE, pool_, GetArrowPool(pool_)));
+        auto* source = dynamic_cast<MockFileBatchReader*>(reader->readers_.front().get());
+        ASSERT_TRUE(source);
+        if (scenario == 2) {
+            ASSERT_OK(reader->SetReadRanges({{0, 5}}));
+            ASSERT_OK(source->SetReadRanges({{10, 15}}));
+        }
+        ASSERT_OK_AND_ASSIGN(auto batch, source->NextBatchWithBitmap());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        auto imported_array = arrow::ImportArray(batch.first.first.get(), batch.first.second.get());
+        ASSERT_TRUE(imported_array.ok()) << imported_array.status().ToString();
+        std::shared_ptr<arrow::Array> array = std::move(imported_array).ValueOrDie();
+        if (scenario == 0) {
+            array = PrepareArray(0);
+        }
+        std::weak_ptr<arrow::ArrayData> lifetime = array->data();
+        ASSERT_TRUE(
+            arrow::ExportArray(*array, batch.first.first.get(), batch.first.second.get()).ok());
+        array.reset();
+        if (scenario == 1) {
+            batch.second = RoaringBitmap32();
+        }
+        ASSERT_FALSE(lifetime.expired());
+        ASSERT_OK(reader->HandleReadResult(/*reader_idx=*/0, {0, 5}, std::move(batch)));
+        ASSERT_TRUE(lifetime.expired());
+        ASSERT_TRUE(reader->prefetch_queues_.front()->empty());
+        ASSERT_OK_AND_ASSIGN(uint64_t discarded, reader->GetReaderMetrics()->GetCounter(
+                                                     PrefetchMetrics::DISCARDED_BATCHES));
+        ASSERT_EQ(discarded, 1);
+        ASSERT_OK_AND_ASSIGN(uint64_t produced, reader->GetReaderMetrics()->GetCounter(
+                                                    PrefetchMetrics::PRODUCED_BATCHES));
+        ASSERT_EQ(produced, 0);
+    }
+}
+
+TEST_F(PrefetchFileBatchReaderImplTest, TestBatchFilteredIntoLaterReadRange) {
+    auto data = PrepareArray(20);
+    RoaringBitmap32 bitmap;
+    bitmap.Add(12);
+    bitmap.Add(13);
+    MockFormatReaderBuilder builder(data, data_type_, bitmap, 5);
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        PrefetchFileBatchReaderImpl::Create(
+            "", 0, &builder, mock_fs_, /*prefetch_max_parallel_num=*/1, /*batch_size=*/5,
+            /*prefetch_batch_count=*/2, /*enable_adaptive_prefetch_strategy=*/false, executor_,
+            /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/false, CacheConfig(),
+            /*enable_io_metrics=*/false, WarmupLevel::NONE, pool_, GetArrowPool(pool_)));
+    auto* mock_reader = dynamic_cast<MockFileBatchReader*>(reader->readers_[0].get());
+    ASSERT_TRUE(mock_reader);
+    mock_reader->EnableRandomizeBatchSize(false);
+    ASSERT_OK(reader->SetReadRanges({{0, 5}, {10, 15}}));
+    ASSERT_OK_AND_ASSIGN(auto batch_with_bitmap, reader->NextBatchWithBitmap());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch_with_bitmap));
+    ASSERT_EQ(batch_with_bitmap.second, RoaringBitmap32::From({2, 3}));
+    // Row IDs address the original batch, before the selection bitmap is applied.
+    ASSERT_OK_AND_ASSIGN(uint64_t first_row_id, reader->GetPreviousBatchFileRowId(2));
+    ASSERT_OK_AND_ASSIGN(uint64_t last_row_id, reader->GetPreviousBatchFileRowId(3));
+    ASSERT_EQ(first_row_id, 12);
+    ASSERT_EQ(last_row_id, 13);
+    ASSERT_OK_AND_ASSIGN(auto batch, ReaderUtils::ApplyBitmapToReadBatch(
+                                         std::move(batch_with_bitmap), GetArrowPool(pool_)));
+    ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::GetArray(std::move(batch)));
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->Equals(data->Slice(12, 2)));
+    ASSERT_OK_AND_ASSIGN(auto eof_batch, reader->NextBatchWithBitmap());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof_batch));
+    ASSERT_OK_AND_ASSIGN(uint64_t produced,
+                         reader->GetReaderMetrics()->GetCounter(PrefetchMetrics::PRODUCED_BATCHES));
+    ASSERT_EQ(produced, 1);
+}
+
+TEST_F(PrefetchFileBatchReaderImplTest, TestWorkloopStopsAfterReadError) {
+    MockFormatReaderBuilder builder(PrepareArray(10), data_type_, 5);
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        PrefetchFileBatchReaderImpl::Create(
+            "", 0, &builder, mock_fs_, /*prefetch_max_parallel_num=*/1, /*batch_size=*/5,
+            /*prefetch_batch_count=*/2, /*enable_adaptive_prefetch_strategy=*/false, executor_,
+            /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/false, CacheConfig(),
+            /*enable_io_metrics=*/false, WarmupLevel::NONE, pool_, GetArrowPool(pool_)));
+    reader->SetReadStatus(Status::IOError("reader stopped"));
+    reader->Workloop();
+    ASSERT_NOK_WITH_MSG(reader->GetReadStatus(), "reader stopped");
+    ASSERT_TRUE(reader->prefetch_queues_.front()->empty());
 }
 
 TEST_F(PrefetchFileBatchReaderImplTest, FilterReadRangesWithoutBitmap) {
@@ -1421,7 +1567,10 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestCreateOpensAllStreamsConcurrently) {
     const int32_t prefetch_max_parallel_num = 3;
     // One stream for the cache plus one per reader.
     const uint32_t opens_needed = prefetch_max_parallel_num + 1;
-    auto barrier_fs = std::make_shared<BarrierFileSystem>(opens_needed);
+    auto barrier_fs = std::make_shared<BlockingFileSystem>(std::make_shared<MockFileSystem>());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlockingFileSystem::Gate> barrier,
+        barrier_fs->Barrier(BlockingFileSystem::Operation::OPEN, /*path=*/"", opens_needed));
     MockFormatReaderBuilder reader_builder(data_array, data_type_, batch_size);
     // Unlike executor_ above, this one has a thread per open: with fewer threads than opens the
     // barrier could not be reached however concurrent the dispatch is.
@@ -1436,6 +1585,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestCreateOpensAllStreamsConcurrently) {
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
             /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
     ASSERT_NE(reader, nullptr);
+    ASSERT_TRUE(barrier->WaitForArrival());
 }
 
 }  // namespace paimon::test

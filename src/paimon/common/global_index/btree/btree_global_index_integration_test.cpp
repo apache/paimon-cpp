@@ -24,6 +24,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/compression/block_compression_factory.h"
 #include "paimon/common/factories/io_hook.h"
+#include "paimon/common/global_index/btree/btree_global_index_reader.h"
 #include "paimon/common/global_index/btree/btree_global_index_writer.h"
 #include "paimon/common/global_index/btree/btree_global_indexer.h"
 #include "paimon/common/global_index/btree/lazy_filtered_btree_reader.h"
@@ -346,6 +347,33 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadIntData) {
         ASSERT_OK_AND_ASSIGN(auto result, filtered_reader->VisitIsNull());
         CheckResult(result, {2, 5});
     }
+
+    // Call the file reader directly, since the outer reader handles these predicates itself.
+    {
+        auto lazy_reader = std::dynamic_pointer_cast<LazyFilteredBTreeReader>(filtered_reader);
+        ASSERT_TRUE(lazy_reader);
+        ASSERT_OK_AND_ASSIGN(auto file_index_reader, lazy_reader->GetOrCreateReader(metas[0]));
+        auto btree_reader = std::dynamic_pointer_cast<BTreeGlobalIndexReader>(file_index_reader);
+        ASSERT_TRUE(btree_reader);
+
+        ASSERT_OK_AND_ASSIGN(auto result, btree_reader->VisitIsNotNull());
+        CheckResult(result, {1, 3, 4, 6, 7, 8, 10});
+
+        ASSERT_OK_AND_ASSIGN(result, btree_reader->VisitNotEqual(Literal(1)));
+        CheckResult(result, {3, 4, 6, 7, 8, 10});
+        ASSERT_OK_AND_ASSIGN(result, btree_reader->VisitNotEqual(Literal(99)));
+        CheckResult(result, {1, 3, 4, 6, 7, 8, 10});
+
+        ASSERT_OK_AND_ASSIGN(result,
+                             btree_reader->VisitNotIn({Literal(1), Literal(5), Literal(99)}));
+        CheckResult(result, {3, 4, 6, 7});
+        ASSERT_OK_AND_ASSIGN(result, btree_reader->VisitNotIn({}));
+        CheckResult(result, {1, 3, 4, 6, 7, 8, 10});
+
+        // A non-string prefix falls back to all non-null rows within the row-id filter.
+        ASSERT_OK_AND_ASSIGN(result, btree_reader->VisitStartsWith(Literal(1)));
+        CheckResult(result, {1, 3, 4, 6, 7, 8, 10});
+    }
 }
 
 TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadStringData) {
@@ -527,6 +555,62 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadStringData) {
         ASSERT_OK_AND_ASSIGN(result, reader->VisitLike(lit_underscore));
         CheckResult(result, {0, 1, 3, 4, 6, 7, 8});
     }
+}
+
+TEST_P(BTreeGlobalIndexIntegrationTest, StringPrefixByteOverflow) {
+    auto file_writer = std::make_shared<FakeGlobalIndexFileWriter>(fs_, base_path_);
+    auto field = arrow::field("str_field", arrow::utf8());
+    auto c_schema = CreateArrowSchema(field);
+    std::map<std::string, std::string> options = {{BtreeDefs::kBtreeIndexBlockSize, "128"},
+                                                  {BtreeDefs::kBtreeIndexCompression, GetParam()}};
+    ASSERT_OK_AND_ASSIGN(auto indexer, BTreeGlobalIndexer::Create(options));
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         indexer->CreateWriter("str_field", c_schema.get(), file_writer, pool_));
+
+    // Build byte strings directly so that 0xFF and embedded zero bytes are preserved.
+    std::vector<std::string> values = {"a\xFE",    "a\xFF",    "a\xFFz",   std::string("b\0", 2),
+                                       "\xFF\xFE", "\xFF\xFF", "\xFF\xFFz"};
+    arrow::StringBuilder value_builder;
+    for (const auto& value : values) {
+        ASSERT_TRUE(value_builder.Append(value).ok());
+    }
+    ASSERT_TRUE(value_builder.AppendNull().ok());
+    std::shared_ptr<arrow::Array> value_array;
+    ASSERT_TRUE(value_builder.Finish(&value_array).ok());
+    auto array = arrow::StructArray::Make({value_array}, {field}).ValueOrDie();
+
+    ArrowArray c_array;
+    ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+    std::vector<int64_t> row_ids(array->length());
+    std::iota(row_ids.begin(), row_ids.end(), 0);
+    ASSERT_OK(writer->AddBatch(&c_array, std::move(row_ids)));
+    ASSERT_OK_AND_ASSIGN(auto metas, writer->Finish());
+    ASSERT_EQ(metas.size(), 1);
+
+    auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
+    c_schema = CreateArrowSchema(field);
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, indexer->CreateReader(c_schema.get(), file_reader, metas, TotalRowCount(metas),
+                                           /*row_ranges=*/std::nullopt, pool_));
+    auto lazy_reader = std::dynamic_pointer_cast<LazyFilteredBTreeReader>(reader);
+    ASSERT_TRUE(lazy_reader);
+    ASSERT_OK_AND_ASSIGN(auto file_index_reader, lazy_reader->GetOrCreateReader(metas[0]));
+    auto btree_reader = std::dynamic_pointer_cast<BTreeGlobalIndexReader>(file_index_reader);
+    ASSERT_TRUE(btree_reader);
+
+    // Carry into the preceding byte; the exclusive upper bound is "b\0".
+    Literal carry_prefix(FieldType::STRING, values[1].data(), values[1].size());
+    ASSERT_OK_AND_ASSIGN(auto result, btree_reader->VisitStartsWith(carry_prefix));
+    CheckResult(result, {1, 2});
+
+    // All bytes overflow, so max_key_ must be included in the result.
+    Literal overflow_prefix(FieldType::STRING, values[5].data(), values[5].size());
+    ASSERT_OK_AND_ASSIGN(result, btree_reader->VisitStartsWith(overflow_prefix));
+    CheckResult(result, {5, 6});
+
+    // Suffix queries return all non-null candidates for subsequent filtering.
+    ASSERT_OK_AND_ASSIGN(result, btree_reader->VisitEndsWith(Literal(FieldType::STRING, "z", 1)));
+    CheckResult(result, {0, 1, 2, 3, 4, 5, 6});
 }
 
 TEST_P(BTreeGlobalIndexIntegrationTest, WriteEmptyStringKeyMetadata) {

@@ -225,6 +225,9 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @param memory_pool The memory pool to use.
     /// @return Reference to this builder for method chaining.
     /// @note if not set, memory_pool is default pool
+    /// A custom pool controls only allocations routed through it, not all planning memory.
+    /// Keep it alive while any plan, split, cache entry, or executor task can retain its
+    /// allocations; destroying the scan alone does not release all such objects.
     ScanContextBuilder& WithMemoryPool(const std::shared_ptr<MemoryPool>& memory_pool);
     /// Set custom executor for task execution.
     /// @param executor The executor to use.

@@ -31,23 +31,25 @@ Background and documentation are available at [paimon.apache.org](https://paimon
 Paimon C++ currently provides:
 
 - **Write**: append table and primary key table write support with compaction.
-- **Commit**: append table commit support for simple append-only tables.
-- **Scan**: batch and stream scan for append tables and primary key tables without changelog.
+- **Commit**: append table and primary key table commit support. Direct file-system commits work on non-object-store paths; object-store paths require a catalog-mediated commit.
+- **Scan**: batch and stream scan for append tables and primary key tables, with changelog consumption when a changelog producer is configured.
 - **Read**: append table read, primary key table read with deletion vector, and primary key table merge-on-read.
 - **Arrow integration**: batch read and write interfaces based on the [Arrow Columnar In-Memory Format](https://arrow.apache.org).
 - **File systems**: file system abstraction with built-in local, Jindo, OSS, and S3 file system support.
-- **File formats**: file format abstraction with built-in ORC, Parquet, and Avro support.
+- **File formats**: file format abstraction with built-in Parquet, Blob, ORC, and Avro support, plus optional Lance and Mosaic formats.
 - **Runtime utilities**: memory pool and thread pool abstractions with default implementations.
-- **AI-Oriented Features**: supports RowTracking and DataEvolution mode and provides Global Index
-  capabilities including B-tree index, DiskANN-based vector search with Lumina, and Lucene-based
-  full-text search.
+- **AI-oriented features**: row tracking and data evolution modes, plus global index
+  capabilities including B-tree and bitmap indexing, vector search with Lumina, and
+  full-text search with Lucene or Paimon's Tantivy-based implementation.
 - **Compatibility**: compatibility with Apache Paimon Java format and communication protocols,
   including commit messages, data splits, and manifests.
 
-Note: Linux `x86_64` and `aarch64` builds are supported and verified in CI. See the supported
-platform matrix in [docs/source/building.rst](docs/source/building.rst) for other platforms.
-
 ## Building
+
+Building requires a C++17-compatible compiler and CMake 3.22 or newer.
+Linux `x86_64` and `aarch64` builds are supported and verified in CI.
+See the [build guide](docs/source/building.rst) for platform support, system requirements,
+dependency configuration, optional components, and instructions for building and running tests.
 
 ```bash
 git clone https://github.com/apache/paimon-cpp.git
@@ -60,17 +62,25 @@ Build with CMake:
 cmake -B build
 cmake --build build
 ```
+
 ### Dev Containers
 
 We provide Dev Container configuration file templates.
 
 To use a Dev Container as your development environment, follow the steps below, then select `Dev Containers: Reopen in Container` from VS Code's Command Palette.
 
-```
+```bash
 cd .devcontainer
 cp Dockerfile.template Dockerfile
 cp devcontainer.json.template devcontainer.json
 ```
+
+## Examples
+
+Start with the [read and write example](examples/read_write_demo.cpp) to see how to write,
+commit, scan, and read table data. The [cleanup example](examples/clean_demo.cpp) demonstrates
+table maintenance. Both examples have a [CMake project](examples/CMakeLists.txt) that uses
+installed Paimon and Arrow packages.
 
 ## Collaboration
 

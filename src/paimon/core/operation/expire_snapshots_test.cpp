@@ -19,6 +19,7 @@
 #include "paimon/core/operation/expire_snapshots.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <set>
 #include <utility>
@@ -75,6 +76,25 @@ class DeleteFailingFileSystem : public LocalFileSystem {
     std::string failed_path_;
 };
 
+// Simulates a concurrent expiration or tag deletion at a specific existence check.
+class DisappearingFileSystem : public LocalFileSystem {
+ public:
+    DisappearingFileSystem(std::string path, int32_t remove_on_check)
+        : path_(std::move(path)), remove_on_check_(remove_on_check) {}
+
+    Result<bool> Exists(const std::string& path) const override {
+        if (path == path_ && ++checks_ == remove_on_check_) {
+            PAIMON_RETURN_NOT_OK(LocalFileSystem::Delete(path));
+        }
+        return LocalFileSystem::Exists(path);
+    }
+
+ private:
+    std::string path_;
+    int32_t remove_on_check_;
+    mutable int32_t checks_ = 0;
+};
+
 }  // namespace
 
 class ExpireSnapshotsTest : public testing::Test {
@@ -123,7 +143,7 @@ class ExpireSnapshotsTest : public testing::Test {
         ASSERT_OK_AND_ASSIGN(index_manifest_file_,
                              IndexManifestFile::Create(
                                  fs_, options.GetManifestFormat(), options.GetManifestCompression(),
-                                 path_factory_, options.GetBucket(), mem_pool_, options));
+                                 path_factory_, BucketMode::BUCKET_UNAWARE, mem_pool_, options));
     }
     void TearDown() override {}
 
@@ -223,6 +243,33 @@ class ExpireSnapshotsTest : public testing::Test {
             std::unique_ptr<IndexPathFactory> index_path_factory,
             path_factory_->CreateIndexFileFactory(entry.partition, entry.bucket));
         return index_path_factory->ToPath(entry.index_file);
+    }
+
+    Result<Snapshot> WriteSnapshot(int64_t id, const std::vector<ManifestEntry>& base = {},
+                                   const std::vector<ManifestEntry>& delta = {},
+                                   int64_t time_millis = 0,
+                                   const std::optional<std::string>& statistics = std::nullopt) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestFileMeta> base_files,
+                               manifest_file_->Write(base));
+        PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestFileMeta> delta_files,
+                               manifest_file_->Write(delta));
+        using ListMeta = std::pair<std::string, int64_t>;
+        PAIMON_ASSIGN_OR_RAISE(ListMeta base_list, manifest_list_->Write(base_files));
+        PAIMON_ASSIGN_OR_RAISE(ListMeta delta_list, manifest_list_->Write(delta_files));
+        Snapshot snapshot(id, 0, base_list.first, base_list.second, delta_list.first,
+                          delta_list.second, std::nullopt, std::nullopt, std::nullopt, "test", id,
+                          Snapshot::CommitKind::Append(), time_millis, 0, 0, std::nullopt,
+                          std::nullopt, statistics, std::nullopt, std::nullopt);
+        SnapshotManager manager(fs_, test_data_path_);
+        PAIMON_ASSIGN_OR_RAISE(std::string json, snapshot.ToJsonString());
+        PAIMON_RETURN_NOT_OK(fs_->AtomicStore(manager.SnapshotPath(id), json));
+        return snapshot;
+    }
+
+    Status WriteTag(const Snapshot& snapshot, const std::string& name) {
+        TagManager manager(fs_, test_data_path_);
+        PAIMON_ASSIGN_OR_RAISE(std::string json, snapshot.ToJsonString());
+        return fs_->AtomicStore(manager.TagPath(name), json);
     }
 
  private:
@@ -353,6 +400,155 @@ TEST_F(ExpireSnapshotsTest, TestExpireSourceBackedBTreeIndexFiles) {
     std::set<std::string> missing_skipping_set;
     ASSERT_NOK(expire.AddIndexManifestToSkippingSet(std::string("missing-index-manifest"),
                                                     &missing_skipping_set));
+}
+
+TEST_F(ExpireSnapshotsTest, TestTimeRetentionStopsAtRecentSnapshot) {
+    auto manager = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::SNAPSHOT_NUM_RETAINED_MIN, "1"},
+                                               {Options::SNAPSHOT_TIME_RETAINED, "1h"}}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_,
+                           index_manifest_file_, fs_, options.GetExpireConfig(), false, executor_);
+    ASSERT_OK(WriteSnapshot(1).status());
+    ASSERT_OK(WriteSnapshot(2, {}, {}, std::numeric_limits<int64_t>::max() / 2).status());
+    ASSERT_OK(WriteSnapshot(3, {}, {}, std::numeric_limits<int64_t>::max() / 2).status());
+    ASSERT_OK_AND_ASSIGN(int32_t count, expire.Expire());
+    ASSERT_EQ(1, count);
+    ASSERT_OK_AND_ASSIGN(bool exists, manager->SnapshotExists(1));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, manager->SnapshotExists(2));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, manager->SnapshotExists(3));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> earliest, manager->EarliestSnapshotId());
+    ASSERT_EQ(std::optional<int64_t>(2), earliest);
+}
+
+TEST_F(ExpireSnapshotsTest, TestSnapshotsDisappearBeforeEarliestLookup) {
+    SnapshotManager paths(fs_, test_data_path_);
+    ASSERT_OK(WriteSnapshot(1).status());
+    auto disappearing_fs = std::make_shared<DisappearingFileSystem>(paths.SnapshotDirectory(), 1);
+    auto manager = std::make_shared<SnapshotManager>(disappearing_fs, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_,
+                           index_manifest_file_, disappearing_fs, options.GetExpireConfig(), false,
+                           executor_);
+    ASSERT_OK_AND_ASSIGN(int32_t count, expire.Expire());
+    ASSERT_EQ(0, count);
+    ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(paths.SnapshotDirectory()));
+    ASSERT_FALSE(exists);
+}
+
+TEST_F(ExpireSnapshotsTest, TestConcurrentExpirationSkipsDisappearingSnapshot) {
+    SnapshotManager paths(fs_, test_data_path_);
+    for (int64_t id : {1, 2, 3}) {
+        ASSERT_OK(WriteSnapshot(id).status());
+    }
+    auto disappearing_fs = std::make_shared<DisappearingFileSystem>(paths.SnapshotPath(2), 2);
+    auto manager = std::make_shared<SnapshotManager>(disappearing_fs, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_,
+                           index_manifest_file_, disappearing_fs, options.GetExpireConfig(), false,
+                           executor_);
+    ASSERT_OK_AND_ASSIGN(int32_t count, expire.ExpireUntil(1, 3, 3));
+    ASSERT_EQ(0, count);
+    ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(paths.SnapshotPath(1)));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, fs_->Exists(paths.SnapshotPath(2)));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, fs_->Exists(paths.SnapshotPath(3)));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> earliest, manager->EarliestSnapshotId());
+    ASSERT_EQ(std::optional<int64_t>(3), earliest);
+}
+
+TEST_F(ExpireSnapshotsTest, TestIndexManifestDisappearsBeforeRead) {
+    auto manager = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ASSERT_OK_AND_ASSIGN(IndexManifestEntry entry, CreateSourceBackedBTreeEntry("kept.index", 0));
+    ASSERT_OK_AND_ASSIGN(std::string payload_path, IndexFilePath(entry));
+    ASSERT_OK(fs_->WriteFile(payload_path, "index", false));
+    ASSERT_OK_AND_ASSIGN(std::optional<std::string> manifest,
+                         index_manifest_file_->WriteIndexFiles(std::nullopt, {entry}));
+    ASSERT_TRUE(manifest.has_value());
+    std::string manifest_path = path_factory_->ToManifestFilePath(manifest.value());
+    auto disappearing_fs = std::make_shared<DisappearingFileSystem>(manifest_path, 2);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexManifestFile> index_manifest,
+                         IndexManifestFile::Create(disappearing_fs, options.GetManifestFormat(),
+                                                   options.GetManifestCompression(), path_factory_,
+                                                   BucketMode::BUCKET_UNAWARE, mem_pool_, options));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_, index_manifest,
+                           disappearing_fs, options.GetExpireConfig(), false, executor_);
+    std::set<std::string> retained = {"retained.index"};
+    ASSERT_OK(expire.CleanUnusedIndexManifest(manifest, &retained));
+    ASSERT_EQ((std::set<std::string>{"retained.index"}), retained);
+    ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(manifest_path));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, fs_->Exists(payload_path));
+    ASSERT_TRUE(exists);
+}
+
+TEST_F(ExpireSnapshotsTest, TestTagListingSkipsDeletedTagsAndSortsBySnapshotId) {
+    ASSERT_OK_AND_ASSIGN(Snapshot first, WriteSnapshot(1));
+    ASSERT_OK_AND_ASSIGN(Snapshot second, WriteSnapshot(2));
+    ASSERT_OK_AND_ASSIGN(Snapshot third, WriteSnapshot(3));
+    ASSERT_OK(WriteTag(third, "a-third"));
+    ASSERT_OK(WriteTag(first, "z-first"));
+    ASSERT_OK(WriteTag(second, "deleted"));
+    TagManager tags(fs_, test_data_path_);
+    auto disappearing_fs = std::make_shared<DisappearingFileSystem>(tags.TagPath("deleted"), 1);
+    auto manager = std::make_shared<SnapshotManager>(disappearing_fs, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_,
+                           index_manifest_file_, disappearing_fs, options.GetExpireConfig(), false,
+                           executor_);
+    ASSERT_OK_AND_ASSIGN(std::vector<Snapshot> snapshots, expire.GetTaggedSnapshots());
+    ASSERT_EQ(2, snapshots.size());
+    ASSERT_EQ(1, snapshots[0].Id());
+    ASSERT_EQ(3, snapshots[1].Id());
+}
+
+TEST_F(ExpireSnapshotsTest, TestUnreadableTaggedManifestKeepsDataWhileExpiringMetadata) {
+    ManifestEntry added = CreateManifestEntry("protected.data", 0, FileKind::Add());
+    ManifestEntry deleted = CreateManifestEntry("protected.data", 0, FileKind::Delete());
+    ASSERT_OK_AND_ASSIGN(Snapshot tagged, WriteSnapshot(1, {added}));
+    ASSERT_OK(WriteTag(tagged, "protected"));
+    ASSERT_OK(WriteSnapshot(2, {}, {deleted}).status());
+    ASSERT_OK_AND_ASSIGN(std::string bucket, path_factory_->BucketPath(added.Partition(), 0));
+    std::string data_path = PathUtil::JoinPath(bucket, added.FileName());
+    ASSERT_OK(fs_->Mkdirs(bucket));
+    ASSERT_OK(fs_->WriteFile(data_path, "protected", false));
+    std::vector<ManifestFileMeta> manifests;
+    ASSERT_OK(manifest_list_->Read(tagged.BaseManifestList(), nullptr, std::nullopt, &manifests));
+    ASSERT_EQ(1, manifests.size());
+    manifest_file_->DeleteQuietly(manifests[0].FileName());
+    auto manager = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_,
+                           index_manifest_file_, fs_, options.GetExpireConfig(), false, executor_);
+    ASSERT_OK_AND_ASSIGN(int32_t count, expire.ExpireUntil(1, 2, 2));
+    ASSERT_EQ(1, count);
+    ASSERT_OK_AND_ASSIGN(bool exists, manager->SnapshotExists(1));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, manager->SnapshotExists(2));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, fs_->Exists(data_path));
+    ASSERT_TRUE(exists);
+    ASSERT_OK_AND_ASSIGN(std::optional<Tag> tag, TagManager(fs_, test_data_path_).Get("protected"));
+    ASSERT_TRUE(tag.has_value());
+}
+
+TEST_F(ExpireSnapshotsTest, TestRetainedStatisticsAreIncludedInManifestSkippingSet) {
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, WriteSnapshot(1, {}, {}, 0, "statistics-retained"));
+    auto manager = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_,
+                           index_manifest_file_, fs_, options.GetExpireConfig(), false, executor_);
+    std::set<std::string> retained;
+    ASSERT_OK(expire.GetManifestSkippingSet({snapshot}, &retained));
+    ASSERT_EQ(1, retained.count("statistics-retained"));
+    ASSERT_EQ(1, retained.count(snapshot.BaseManifestList()));
+    ASSERT_EQ(1, retained.count(snapshot.DeltaManifestList()));
 }
 
 TEST_F(ExpireSnapshotsTest, TestExternalIndexDeleteFailureKeepsManifestForRetry) {
@@ -573,6 +769,67 @@ TEST_F(ExpireSnapshotsTest, TestCleanUnusedDataFilePreservesRetainedExtraFiles) 
         ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(file));
         ASSERT_FALSE(exists) << file;
     }
+}
+
+TEST_F(ExpireSnapshotsTest, TestCleansEmptyPartitionHierarchyAndKeepsNonemptyPartition) {
+    auto manager = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions options,
+        CoreOptions::FromMap({{Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"}}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_,
+                           index_manifest_file_, fs_, options.GetExpireConfig(), false, executor_);
+    std::vector<ManifestEntry> deletions;
+    std::vector<std::string> partition_paths;
+    for (int16_t value : {3, 4, 5}) {
+        BinaryRow partition(2);
+        BinaryRowWriter writer(&partition, 20, mem_pool_.get());
+        writer.WriteBoolean(0, value != 5);
+        writer.WriteShort(1, value);
+        writer.Complete();
+        ManifestEntry entry = CreateManifestEntry("expired.data", 0, FileKind::Delete());
+        deletions.emplace_back(FileKind::Delete(), partition, 0, 3, entry.File());
+        ASSERT_OK_AND_ASSIGN(std::string bucket, path_factory_->BucketPath(partition, 0));
+        ASSERT_OK(fs_->Mkdirs(bucket));
+        ASSERT_OK(fs_->WriteFile(PathUtil::JoinPath(bucket, "expired.data"), "data", false));
+        if (value == 5) {
+            ASSERT_OK(fs_->WriteFile(PathUtil::JoinPath(bucket, "live.data"), "live", false));
+        }
+        ASSERT_OK_AND_ASSIGN(std::vector<std::string> hierarchy,
+                             path_factory_->GetHierarchicalPartitionPath(partition));
+        ASSERT_EQ(2, hierarchy.size());
+        partition_paths.push_back(hierarchy[0]);
+    }
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> manifests, manifest_file_->Write(deletions));
+    using ListMeta = std::pair<std::string, int64_t>;
+    ASSERT_OK_AND_ASSIGN(ListMeta list, manifest_list_->Write(manifests));
+    ExpireSnapshots::DataFilePathFactoryCache cache;
+    ASSERT_OK(expire.CleanUnusedDataFiles(list.first, {}, &cache));
+    ASSERT_OK(expire.CleanEmptyDirectories());
+    for (size_t i = 0; i < partition_paths.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(partition_paths[i]));
+        ASSERT_EQ(i == 2, exists) << partition_paths[i];
+    }
+    ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(test_data_path_));
+    ASSERT_TRUE(exists);
+}
+
+TEST_F(ExpireSnapshotsTest, TestEmptyUnpartitionedBucketDoesNotDeleteTableDirectory) {
+    partition_keys_.clear();
+    path_factory_ = CreateFactory(test_data_path_);
+    auto manager = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions options,
+        CoreOptions::FromMap({{Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"}}));
+    ExpireSnapshots expire(manager, path_factory_, manifest_list_, manifest_file_,
+                           index_manifest_file_, fs_, options.GetExpireConfig(), false, executor_);
+    ASSERT_OK_AND_ASSIGN(std::string bucket, path_factory_->BucketPath(BinaryRow::EmptyRow(), 0));
+    ASSERT_OK(fs_->Mkdirs(bucket));
+    expire.deletion_buckets_[BinaryRow::EmptyRow()].insert(0);
+    ASSERT_OK(expire.CleanEmptyDirectories());
+    ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(bucket));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, fs_->Exists(test_data_path_));
+    ASSERT_TRUE(exists);
 }
 
 }  // namespace paimon::test

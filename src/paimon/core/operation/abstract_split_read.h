@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -58,12 +59,19 @@ class FieldMappingBuilder;
 class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
+class PreciseFileIndexRead;
 class Predicate;
+struct BlobReadContext;
 struct DataFileMeta;
 class TableSchema;
 
 class AbstractSplitRead : public SplitRead {
  public:
+    /// Supplies the complete predicate for a file. The provider must be nonempty, but may return
+    /// a null predicate when no predicate applies to an individual file.
+    using PredicateProvider =
+        std::function<Result<std::shared_ptr<Predicate>>(const std::shared_ptr<DataFileMeta>&)>;
+
     ~AbstractSplitRead() override = default;
 
     /// `extra_format_options` are merged over the table options when building the format
@@ -78,9 +86,17 @@ class AbstractSplitRead : public SplitRead {
         const std::map<std::string, std::string>& extra_format_options) const;
 
  protected:
+    virtual Result<std::unique_ptr<FileBatchReader>> CreatePreciseFileIndexReader(
+        const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+        const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& path_factory,
+        const std::map<std::string, std::string>& extra_format_options) const;
+
     struct RawFileReaderWithMeta {
         std::shared_ptr<DataFileMeta> file;
         std::unique_ptr<FileBatchReader> reader;
+        std::shared_ptr<BlobReadContext> blob_context = nullptr;
     };
 
     AbstractSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
@@ -89,15 +105,26 @@ class AbstractSplitRead : public SplitRead {
                       const std::shared_ptr<MemoryPool>& memory_pool,
                       const std::shared_ptr<Executor>& executor);
 
+    /// Creates raw readers using each file's predicate for pushdown. The provider is called once
+    /// per file and may be called concurrently.
+    Result<std::vector<std::unique_ptr<FileBatchReader>>> CreateRawFileReadersWithPredicateProvider(
+        const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+        const std::shared_ptr<arrow::Schema>& read_schema, PredicateProvider predicate_provider,
+        DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::map<std::string, std::string>& extra_format_options) const;
+
     /// Creates raw readers while preserving the metadata associated with every reader which was
-    /// not eliminated by a file index or deletion vector.
+    /// not eliminated by a file index or deletion vector. Set `attach_blob_context` only for
+    /// data-evolution blob fallback readers.
     Result<std::vector<RawFileReaderWithMeta>> CreateRawFileReadersWithMeta(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::map<std::string, std::string>& extra_format_options) const;
+        const std::map<std::string, std::string>& extra_format_options,
+        bool attach_blob_context) const;
 
     Result<std::unique_ptr<BatchReader>> ApplyPredicateFilterIfNeeded(
         std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<Predicate>& predicate) const;
@@ -111,8 +138,7 @@ class AbstractSplitRead : public SplitRead {
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::map<std::string, std::string>& file_index_options,
-        std::vector<float>* index_scores) const;
+        const std::map<std::string, std::string>& file_index_options) const;
 
     static Result<std::unique_ptr<FileBatchReader>> ApplyBitmapSelection(
         std::unique_ptr<FileBatchReader>&& file_reader,
@@ -127,17 +153,28 @@ class AbstractSplitRead : public SplitRead {
         const std::optional<std::vector<std::string>>& write_cols);
 
  private:
+    friend class PreciseFileIndexRead;
+
+    Result<std::vector<RawFileReaderWithMeta>> CreateRawFileReadersWithMetaImpl(
+        const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+        const std::shared_ptr<arrow::Schema>& read_schema, PredicateProvider predicate_provider,
+        DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::map<std::string, std::string>& extra_format_options,
+        bool attach_blob_context) const;
+
     /// What a data file is opened with, gathered from the context and the table options once so
     /// that the reader builder and the file reader cannot be built from different answers.
     DataFileReadOptions BuildDataFileReadOptions() const;
 
-    // return nullptr if data file is skipped by index or dv
-    Result<std::unique_ptr<FileBatchReader>> CreateRawFileReader(
+    // Return metadata with a null reader if the data file is skipped by index or dv.
+    Result<RawFileReaderWithMeta> CreateRawFileReader(
         const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::map<std::string, std::string>& extra_format_options) const;
+        const std::map<std::string, std::string>& extra_format_options,
+        bool attach_blob_context) const;
 
     Result<std::unique_ptr<ReaderBuilder>> PrepareReaderBuilder(
         const std::string& format_identifier,
@@ -153,7 +190,8 @@ class AbstractSplitRead : public SplitRead {
         const BinaryRow& partition, std::unique_ptr<ReaderBuilder> reader_builder,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const RoaringBitmap32* exact_selection) const;
 
     /// The returned field ID set contains MAP fields handled by shredding read plans. It tells
     /// FieldMappingReader to skip its generic selected-key filtering because the plans have already

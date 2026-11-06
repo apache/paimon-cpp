@@ -1,0 +1,71 @@
+{
+  "version": 3,
+  "id": 0,
+  "fields": [
+    {
+      "id": 0,
+      "name": "id",
+      "type": "INT"
+    },
+    {
+      "id": 1,
+      "name": "f_ltz_0",
+      "type": "TIMESTAMP_LTZ(0)"
+    },
+    {
+      "id": 2,
+      "name": "f_ltz_3",
+      "type": "TIMESTAMP_LTZ(3)"
+    },
+    {
+      "id": 3,
+      "name": "f_ltz_6",
+      "type": "TIMESTAMP_LTZ(6)"
+    },
+    {
+      "id": 4,
+      "name": "f_ltz_9",
+      "type": "TIMESTAMP_LTZ(9)"
+    },
+    {
+      "id": 5,
+      "name": "f_ltz_array",
+      "type": {
+        "type": "ARRAY",
+        "element": "TIMESTAMP_LTZ(6)",
+        "nullable": true
+      }
+    },
+    {
+      "id": 6,
+      "name": "f_ltz_struct",
+      "type": {
+        "type": "ROW",
+        "fields": [
+          {
+            "id": 7,
+            "name": "number",
+            "type": "INT"
+          },
+          {
+            "id": 8,
+            "name": "ts",
+            "type": "TIMESTAMP_LTZ(3)"
+          }
+        ],
+        "nullable": true
+      }
+    }
+  ],
+  "highestFieldId": 8,
+  "partitionKeys": [],
+  "primaryKeys": [],
+  "options": {
+    "bucket": "-1",
+    "file.format": "lance",
+    "manifest.format": "avro",
+    "metadata.stats-mode": "none"
+  },
+  "comment": null,
+  "timeMillis": 1793201390242
+}

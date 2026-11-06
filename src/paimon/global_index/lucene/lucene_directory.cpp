@@ -40,7 +40,9 @@ LuceneDirectory::LuceneDirectory(
       path_(path),
       file_name_to_offset_and_length_(file_name_to_offset_and_length),
       paimon_input_(paimon_input) {
-    Lucene::Directory::setLockFactory(Lucene::NoLockFactory::getNoLockFactory());
+    // Directory::setLockFactory() mutates lockPrefix. Do not share the NoLockFactory singleton
+    // across concurrently created directories, even though the locks themselves are no-ops.
+    Lucene::Directory::setLockFactory(Lucene::newLucene<Lucene::NoLockFactory>());
 }
 
 Lucene::HashSet<Lucene::String> LuceneDirectory::listAll() {

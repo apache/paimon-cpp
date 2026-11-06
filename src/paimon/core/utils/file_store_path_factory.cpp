@@ -248,8 +248,8 @@ FileStorePathFactory::CreateGlobalIndexCheckpointPathFactory(const std::string& 
     };
     PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint index type", index_type));
     PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint field", field_name));
-    PAIMON_ASSIGN_OR_RAISE(std::string directory,
-                           IndexCheckpointPathFactory::GetTaskDirectory(root_, task_id));
+    PAIMON_ASSIGN_OR_RAISE(std::string directory, IndexCheckpointPathFactory::GetTaskDirectory(
+                                                      root_, task_id, global_index_external_path_));
     std::string file_name_prefix =
         fmt::format("{}-global-index-{}-{}-{}-", index_type, field_name, range.from, range.to);
     return std::unique_ptr<IndexCheckpointPathFactory>(

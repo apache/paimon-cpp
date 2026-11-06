@@ -248,6 +248,82 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
     std::shared_ptr<arrow::DataType> full_type_;
 };
 
+// Restrict only the payload pass to model a format reader that omits rows or returns
+// an invalid selection without changing the probe data.
+class PayloadSelectionReader : public MockFileBatchReader {
+ public:
+    PayloadSelectionReader(const std::shared_ptr<arrow::Array>& data,
+                           const std::shared_ptr<arrow::DataType>& schema, int32_t batch_size,
+                           const RoaringBitmap32& payload_bitmap, bool empty_bitmap = false)
+        : MockFileBatchReader(data, schema, batch_size),
+          payload_bitmap_(payload_bitmap),
+          empty_bitmap_(empty_bitmap) {}
+
+    Status SetReadSchema(::ArrowSchema* schema, const std::shared_ptr<Predicate>& predicate,
+                         const std::optional<RoaringBitmap32>& selection) override {
+        PAIMON_RETURN_NOT_OK(MockFileBatchReader::SetReadSchema(schema, predicate, selection));
+        if (++schema_count_ == 2) {
+            bitmap_ = payload_bitmap_;
+        }
+        return Status::OK();
+    }
+
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch,
+                               MockFileBatchReader::NextBatchWithBitmap());
+        if (schema_count_ == 2 && empty_bitmap_ && !BatchReader::IsEofBatch(batch)) {
+            batch.second = RoaringBitmap32();
+        }
+        return batch;
+    }
+
+ private:
+    RoaringBitmap32 payload_bitmap_;
+    bool empty_bitmap_;
+    int32_t schema_count_ = 0;
+};
+
+TEST_F(LateMaterializingFileBatchReaderTest, PayloadEarlyEofReturnsError) {
+    auto data = BuildData({0, 1, 2, 3});
+    RoaringBitmap32 payload_bitmap;
+    payload_bitmap.Add(2);
+    auto mock = std::make_unique<PayloadSelectionReader>(data, full_type_, 2, payload_bitmap);
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    auto predicate = PredicateBuilder::GreaterThan(0, "k", FieldType::BIGINT, Literal(int64_t{1}));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    ASSERT_NOK_WITH_MSG(Collect(reader.get()), "does not match probe data length");
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, EmptyPayloadBitmapReturnsError) {
+    auto data = BuildData({0, 1, 2, 3});
+    RoaringBitmap32 payload_bitmap;
+    payload_bitmap.AddRange(0, 4);
+    auto mock = std::make_unique<PayloadSelectionReader>(data, full_type_, 2, payload_bitmap,
+                                                         /*empty_bitmap=*/true);
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    auto predicate = PredicateBuilder::GreaterThan(0, "k", FieldType::BIGINT, Literal(int64_t{1}));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    ASSERT_NOK_WITH_MSG(Collect(reader.get()), "inner read bitmap is empty");
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, SkipsPayloadBatchesWithoutMatches) {
+    auto data = BuildData({0, 1, 2, 3, 4, 5});
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, 2);
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    auto predicate = PredicateBuilder::GreaterThan(0, "k", FieldType::BIGINT, Literal(int64_t{3}));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
+    ASSERT_EQ(rows.size(), 2u);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        ASSERT_EQ(rows[i].k, static_cast<int64_t>(i + 4));
+        ASSERT_EQ(rows[i].v, "v_" + std::to_string(i + 4));
+        ASSERT_EQ(rows[i].file_row, i + 4);
+    }
+}
+
 // No predicate: the reader must pass through the inner reader unchanged (all rows, all columns).
 TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenNoPredicate) {
     auto data = BuildData({0, 1, 2, 3, 4});

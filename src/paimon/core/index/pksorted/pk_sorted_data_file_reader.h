@@ -73,8 +73,7 @@ class PkSortedDataFileReader : public RawFileSplitRead {
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::map<std::string, std::string>& file_index_options,
-        std::vector<float>* index_scores) const override;
+        const std::map<std::string, std::string>& file_index_options) const override;
 
  private:
     PkSortedDataFileReader(const std::shared_ptr<FileStorePathFactory>& path_factory,
