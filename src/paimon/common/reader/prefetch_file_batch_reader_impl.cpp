@@ -148,7 +148,7 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
     uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<FileReadAhead>& read_ahead,
     WarmupLevel warmup_level, const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
-    : readers_(std::move(readers)),
+    : readers_(readers),
       batch_size_(batch_size),
       executor_(executor),
       read_ahead_(read_ahead),
