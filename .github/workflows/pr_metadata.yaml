@@ -30,17 +30,17 @@ permissions:
 
 jobs:
   metadata:
-    name: PR ${{ matrix.check }}
+    name: PR metadata
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        check: [title, description]
     steps:
       - name: Checkout validation script
+        id: checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
-      - name: Check PR metadata
-        run: python3 ci/scripts/check_pr_metadata.py ${{ matrix.check }}
+      - name: Check PR title
+        run: python3 ci/scripts/check_pr_metadata.py title
+      - name: Check PR description
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: python3 ci/scripts/check_pr_metadata.py description
