@@ -412,13 +412,16 @@ in append and append deduplicate modes. PK modes are unsupported. For example:
 .. code-block:: text
 
    realtime.enabled = true
-   realtime.index.<index_name>.columns = id
+   realtime.index.hash.columns = id,payload
    realtime.store.stats-mode = full
 
-Replace ``<index_name>`` with the registered index plugin name. Use a
-comma-separated list such as ``id,payload`` to index multiple fields. Supported
-field types and predicates depend on the plugin; indexing ``_REALTIME_OFFSET``
-is unsupported.
+The built-in ``hash`` plugin is **experimental**; its implementation and supported
+capabilities may change. It supports equality and ``IN`` predicates on boolean,
+integer, floating-point, string, binary, and date fields. Decimal, timestamp, and
+nested types are currently unsupported. Use a comma-separated list to index
+multiple fields; indexing ``_REALTIME_OFFSET`` is unsupported.
+
+Note that this index does not currently handle hash collisions.
 
 Indexes and batch statistics work independently and can be enabled together.
 For ``id = 7 AND score > 100``, an index supporting equality on ``id`` selects

@@ -372,6 +372,41 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareCommi
     return result;
 }
 
+Status AbstractFileStoreWrite::RefreshRealtimeCommittedProgress(
+    int64_t snapshot_id, const RealtimeOffsetMap& committed_offsets,
+    const RealtimeDataFileMap& committed_data_files) {
+    // Prepare drains each bucket's pending queue into local handles. Keep it and Seal out until
+    // the snapshot is installed and the covered handles have been removed from these queues.
+    std::lock_guard<std::mutex> seal_prepare_lock(realtime_seal_prepare_mutex_);
+    std::vector<std::pair<std::shared_ptr<BatchWriter>, int64_t>> writers_to_release;
+    {
+        std::lock_guard<std::mutex> lock(writers_mutex_);
+        for (const auto& [partition, buckets] : writers_) {
+            std::vector<std::pair<std::string, std::string>> partition_values;
+            PAIMON_ASSIGN_OR_RAISE(partition_values,
+                                   file_store_path_factory_->GeneratePartitionVector(partition));
+            std::map<std::string, std::string> partition_map(partition_values.begin(),
+                                                             partition_values.end());
+            for (const auto& [bucket, container] : buckets) {
+                auto iter = committed_offsets.find(RealtimePartitionBucket(partition_map, bucket));
+                if (iter != committed_offsets.end()) {
+                    writers_to_release.emplace_back(container.writer, iter->second);
+                }
+            }
+        }
+    }
+    // No writer-registry lock is held during snapshot preparation I/O, so writes can continue
+    // and register new bucket writers. Those writers cannot seal until this refresh completes.
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> context,
+                           RealtimeContextImpl::Cast(GetRealtimeContext()));
+    PAIMON_RETURN_NOT_OK(
+        context->AdvanceCommittedProgress(snapshot_id, committed_offsets, committed_data_files));
+    for (const auto& [writer, committed_end_offset] : writers_to_release) {
+        writer->ReleaseCommittedRealtimeSegments(committed_end_offset);
+    }
+    return Status::OK();
+}
+
 Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealtimeCommit() {
     struct WriterSnapshot {
         BinaryRow partition;

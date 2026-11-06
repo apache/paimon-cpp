@@ -40,6 +40,9 @@ class RecordBatch;
 class WriteContext;
 
 /// Interface for write operations in a file store.
+///
+/// A `RealtimeContext` supports only one active writer for each partition-bucket. Close the
+/// previous writer before creating a replacement that accesses the same partition-bucket.
 class PAIMON_EXPORT FileStoreWrite {
  public:
     /// Create an instance of `FileStoreWrite`.
@@ -133,6 +136,10 @@ class PAIMON_EXPORT FileStoreWrite {
     ///
     /// The writer loads the snapshot's partition-bucket offsets and releases sealed memory that is
     /// fully covered by disk. Calling this method on a non-real-time writer returns an error.
+    /// After a successful refresh, fully covered segments are also removed from this writer's
+    /// pending prepare queue. Existing read views continue to pin the resources they reference.
+    /// Snapshot installation and queue cleanup are serialized with `Seal()` and
+    /// `PrepareCommitWithProgress()`.
     ///
     /// With `WriteContextBuilder::WithCatalog()`, the latest snapshot can be loaded from the
     /// catalog. Older requested snapshots must be available on the file system.
@@ -149,8 +156,9 @@ class PAIMON_EXPORT FileStoreWrite {
 
     /// Releases resources owned by this writer.
     ///
-    /// Closing a real-time writer with data not covered by a successful
-    /// `PrepareCommitWithProgress()` returns an error and invalidates its `RealtimeContext`.
+    /// Closing a real-time writer with data covered by neither a successful
+    /// `PrepareCommitWithProgress()` nor a refreshed committed snapshot returns an error and
+    /// invalidates its `RealtimeContext`.
     /// The caller must rebuild both objects and recover input from the durable snapshot offset.
     virtual Status Close() = 0;
 };

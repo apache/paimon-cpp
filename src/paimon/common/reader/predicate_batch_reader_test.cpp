@@ -240,6 +240,44 @@ TEST_F(PredicateBatchReaderTest, TestPreservesSelectedRowPositions) {
     }
 }
 
+TEST_F(PredicateBatchReaderTest, TestFragmentedSelectionsWithLargeInList) {
+    constexpr int32_t kRowCount = 8192;
+    const std::shared_ptr<arrow::Array> source = PrepareArray(kRowCount + 2)->Slice(2, kRowCount);
+    std::vector<Literal> literals;
+    for (int64_t i = 0; i < 1024; ++i) {
+        literals.emplace_back(2 + i * 4);
+    }
+    const std::shared_ptr<Predicate> predicate =
+        PredicateBuilder::In(1, "f1", FieldType::BIGINT, literals);
+    // Exercise dense, threshold, and sparse selections against the same predicate and sliced
+    // input. Matching unselected rows must never be added by whole-batch evaluation.
+    for (int32_t stride : {2, 3, 4, 64}) {
+        SCOPED_TRACE(stride);
+        RoaringBitmap32 selection;
+        RoaringBitmap32 expected;
+        for (int32_t row = 0; row < kRowCount; row += stride) {
+            selection.Add(row);
+            if (row < 4096 && row % 4 == 0) {
+                expected.Add(row);
+            }
+        }
+        auto input = std::make_unique<MockFileBatchReader>(source, source->type(), selection,
+                                                           /*read_batch_size=*/kRowCount);
+        input->EnableRandomizeBatchSize(false);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<PredicateBatchReader> reader,
+                             PredicateBatchReader::Create(std::move(input), predicate,
+                                                          GetArrowPool(GetDefaultPool())));
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, reader->NextBatchWithBitmap());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        ASSERT_EQ(expected, batch.second);
+        auto imported = arrow::ImportArray(batch.first.first.get(), batch.first.second.get());
+        ASSERT_TRUE(imported.ok()) << imported.status().ToString();
+        ASSERT_TRUE(source->Equals(*imported.ValueOrDie()));
+        ASSERT_OK_AND_ASSIGN(batch, reader->NextBatchWithBitmap());
+        ASSERT_TRUE(BatchReader::IsEofBatch(batch));
+    }
+}
+
 TEST_F(PredicateBatchReaderTest, TestEmptySelectionsAndPredicateResults) {
     const std::shared_ptr<arrow::Array> source = PrepareArray(12);
     const std::shared_ptr<Predicate> predicate =

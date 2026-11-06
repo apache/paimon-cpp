@@ -49,6 +49,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
@@ -7304,6 +7305,98 @@ TEST_F(RealtimeWriteInteTest, TestRefreshCommittedSnapshotReclaimsMemory) {
                          GetRealtimeMemoryUsage(realtime_context));
     ASSERT_LT(memory_usage_after_refresh, memory_usage_before_refresh);
     ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimeWriteInteTest, TestRefreshReleasesMemoryHeldByUnpreparedSealedSegments) {
+    CreateTable(/*partition_keys=*/{});
+    // Keep the Arrow allocator alive until both the writer and its context have released any
+    // input buffers, including when an assertion returns early.
+    std::shared_ptr<MemoryPool> input_pool = GetMemoryPool();
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(input_pool);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    std::vector<Row> committed_rows = MakeRows(/*first_id=*/0, /*count=*/4, /*partition=*/"p0");
+    for (Row& row : committed_rows) {
+        std::get<1>(row) = std::string(64 * 1024, 'x');
+    }
+    // Track the input buffers separately from store gauges, which stop counting a segment as
+    // soon as the store retires it even if the writer still owns its pending commit handle.
+    {
+        arrow::Int64Builder offsets(arrow_pool.get());
+        arrow::Int64Builder ids(arrow_pool.get());
+        arrow::StringBuilder payloads(arrow_pool.get());
+        arrow::StringBuilder partitions(arrow_pool.get());
+        for (const Row& row : committed_rows) {
+            const auto& [id, payload, partition] = row;
+            ASSERT_TRUE(offsets.Append(id).ok());
+            ASSERT_TRUE(ids.Append(id).ok());
+            ASSERT_TRUE(payloads.Append(payload).ok());
+            ASSERT_TRUE(partitions.Append(partition).ok());
+        }
+        arrow::ArrayVector columns;
+        const std::vector<arrow::ArrayBuilder*> builders = {&offsets, &ids, &payloads, &partitions};
+        for (arrow::ArrayBuilder* builder : builders) {
+            std::shared_ptr<arrow::Array> column;
+            ASSERT_TRUE(builder->Finish(&column).ok());
+            columns.push_back(std::move(column));
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                             RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, schema_));
+        auto data =
+            arrow::StructArray::Make(std::move(columns), schema_layout->InputSchema()->fields());
+        ASSERT_TRUE(data.ok());
+        ArrowArray c_array;
+        ASSERT_TRUE(arrow::ExportArray(*data.ValueOrDie(), &c_array).ok());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             RecordBatchBuilder(&c_array).SetBucket(0).Finish());
+        ASSERT_OK(writer->Write(std::move(batch)));
+    }
+    ASSERT_OK(writer->Seal());
+
+    ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/4);
+    std::vector<Row> tail_rows = MakeRows(/*first_id=*/4, /*count=*/2, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> tail_batch,
+                         MakeBatch(tail_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(tail_batch)));
+    ASSERT_OK(writer->Seal());
+
+    // An independent context persists the same input prefix while this writer has only sealed
+    // it. Do not prepare this writer before refresh: that would already release its handles.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> committing_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> committing_writer,
+                         CreateRealtimeWriter(committing_context));
+    ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/0);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> committed_batch,
+                         MakeBatch(committed_rows, /*partitioned=*/false));
+    ASSERT_OK(committing_writer->Write(std::move(committed_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
+                         committing_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(commits, /*commit_identifier=*/0));
+    ASSERT_OK(committing_writer->Close());
+
+    const uint64_t allocated_before_refresh = input_pool->CurrentUsage();
+    ASSERT_GT(allocated_before_refresh, 0);
+    ASSERT_OK_AND_ASSIGN(uint64_t memory_before_refresh, GetRealtimeMemoryUsage(realtime_context));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_LT(input_pool->CurrentUsage(), allocated_before_refresh);
+    ASSERT_EQ(0, input_pool->CurrentUsage());
+    ASSERT_OK_AND_ASSIGN(uint64_t memory_after_refresh, GetRealtimeMemoryUsage(realtime_context));
+    ASSERT_GT(memory_after_refresh, 0);
+    ASSERT_LT(memory_after_refresh, memory_before_refresh);
+
+    std::vector<Row> expected_rows = committed_rows;
+    expected_rows.insert(expected_rows.end(), tail_rows.begin(), tail_rows.end());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> remaining,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, remaining.size());
+    ASSERT_EQ(OffsetRange(4, 6), remaining[0].offset_range);
+    ASSERT_OK(writer->Close());
 }
 
 TEST_F(RealtimeWriteInteTest, TestPlanPinsMemoryAcrossRefresh) {

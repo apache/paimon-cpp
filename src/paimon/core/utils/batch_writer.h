@@ -75,10 +75,13 @@ class BatchWriter {
     /// Close this writer, the call will delete newly generated but not committed files.
     virtual Status Close() = 0;
 
-    /// Whether this writer owns real-time data not covered by a successful prepare.
+    /// Whether this writer owns real-time data not covered by a successful prepare or refresh.
     virtual bool HasUnpreparedRealtimeData() const {
         return false;
     }
+
+    /// Releases pending real-time segments fully covered by the installed committed offset.
+    virtual void ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) {}
 
     virtual std::shared_ptr<Metrics> GetMetrics() const = 0;
 };

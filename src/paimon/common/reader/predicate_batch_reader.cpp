@@ -131,6 +131,20 @@ Result<RoaringBitmap32> PredicateBatchReader::Filter(const std::shared_ptr<arrow
     if (!predicate_filter_) {
         PAIMON_RETURN_NOT_OK(BindPredicateToArray(*array));
     }
+    // At 25% selectivity or above, evaluate the batch once to avoid repeatedly initializing
+    // predicate lookup state for fragmented selections. Only selected rows may enter the result.
+    if (selection.Cardinality() >= array->length() * kFullBatchSelectivityThreshold) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<char> result,
+                               predicate_filter_->Test(*array, arrow_pool_.get()));
+        assert(result.size() == static_cast<size_t>(array->length()));
+        RoaringBitmap32 is_valid;
+        for (auto iter = selection.Begin(); iter != selection.End(); ++iter) {
+            if (result[*iter]) {
+                is_valid.Add(*iter);
+            }
+        }
+        return is_valid;
+    }
     PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector slices,
                            ReaderUtils::GenerateFilteredArrayVector(array, selection));
     RoaringBitmap32 is_valid;

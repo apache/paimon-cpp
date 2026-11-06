@@ -57,6 +57,8 @@ class PredicateBatchReader : public BatchReader {
     }
 
  private:
+    static constexpr double kFullBatchSelectivityThreshold = 0.25;
+
     PredicateBatchReader(std::unique_ptr<BatchReader>&& reader,
                          const std::shared_ptr<Predicate>& predicate,
                          const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
