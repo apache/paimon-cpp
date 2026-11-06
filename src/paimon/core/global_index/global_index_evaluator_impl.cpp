@@ -79,13 +79,39 @@ bool IsIsNotNull(const std::shared_ptr<Predicate>& predicate) {
 
 Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexEvaluatorImpl::Evaluate(
     const std::shared_ptr<Predicate>& predicate) {
-    std::shared_ptr<GlobalIndexResult> compound_result;
-    if (predicate) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> normalized_predicate,
-                               NormalizePredicate(predicate));
-        PAIMON_ASSIGN_OR_RAISE(compound_result, EvaluatePredicate(normalized_predicate));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Evaluation> evaluation,
+                           EvaluateWithContributingFields(predicate));
+    if (!evaluation) {
+        return std::shared_ptr<GlobalIndexResult>(nullptr);
     }
-    return compound_result;
+    return evaluation->result;
+}
+
+Result<std::optional<GlobalIndexEvaluatorImpl::Evaluation>>
+GlobalIndexEvaluatorImpl::EvaluateWithContributingFields(
+    const std::shared_ptr<Predicate>& predicate) {
+    if (!predicate) {
+        return std::optional<Evaluation>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> normalized_predicate,
+                           NormalizePredicate(predicate));
+    return EvaluatePredicate(normalized_predicate);
+}
+
+Result<std::set<int32_t>> GlobalIndexEvaluatorImpl::CollectFieldIds(
+    const TableSchema& table_schema, const std::shared_ptr<Predicate>& predicate) {
+    std::set<int32_t> field_ids;
+    if (!predicate) {
+        return field_ids;
+    }
+    std::set<std::string> field_names;
+    PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &field_names));
+    for (const DataField& field : table_schema.Fields()) {
+        if (field_names.count(field.Name()) > 0) {
+            field_ids.insert(field.Id());
+        }
+    }
+    return field_ids;
 }
 
 Result<std::shared_ptr<Predicate>> GlobalIndexEvaluatorImpl::NormalizePredicate(
@@ -138,9 +164,7 @@ Result<std::shared_ptr<Predicate>> GlobalIndexEvaluatorImpl::NormalizePredicate(
 }
 
 Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexEvaluatorImpl::GetIndexReaders(
-    const std::string& field_name) {
-    PAIMON_ASSIGN_OR_RAISE(DataField data_field, table_schema_->GetField(field_name));
-    int32_t field_id = data_field.Id();
+    int32_t field_id) {
     // get or create global index readers for current field
     std::vector<std::shared_ptr<GlobalIndexReader>> readers;
     auto iter = index_readers_cache_.find(field_id);
@@ -153,23 +177,24 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexEvaluatorImpl
     return readers;
 }
 
-Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexEvaluatorImpl::EvaluatePredicate(
-    const std::shared_ptr<Predicate>& predicate) {
+Result<std::optional<GlobalIndexEvaluatorImpl::Evaluation>>
+GlobalIndexEvaluatorImpl::EvaluatePredicate(const std::shared_ptr<Predicate>& predicate) {
     if (predicate == nullptr) {
-        return std::shared_ptr<GlobalIndexResult>(nullptr);
+        return std::optional<Evaluation>();
     }
 
     if (auto compound_predicate = std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
         return EvaluateCompoundPredicate(compound_predicate);
     } else if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate)) {
-        const std::string& field_name = leaf_predicate->FieldName();
+        PAIMON_ASSIGN_OR_RAISE(DataField field,
+                               table_schema_->GetField(leaf_predicate->FieldName()));
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<GlobalIndexReader>> readers,
-                               GetIndexReaders(field_name));
+                               GetIndexReaders(field.Id()));
         if (readers.empty()) {
             // No usable index for this field within the requested range. Treat as "no
             // pushdown available" so the upstream falls back to a full scan instead of
             // wrongly producing an empty result.
-            return std::shared_ptr<GlobalIndexResult>(nullptr);
+            return std::optional<Evaluation>();
         }
         // calculate compound result as field may has multiple indexes
         std::shared_ptr<GlobalIndexResult> compound_result;
@@ -190,60 +215,86 @@ Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexEvaluatorImpl::EvaluatePre
             if (compound_result) {
                 PAIMON_ASSIGN_OR_RAISE(bool is_empty, compound_result->IsEmpty());
                 if (is_empty) {
-                    return compound_result;
+                    break;
                 }
             }
         }
-        return compound_result;
+        if (!compound_result) {
+            return std::optional<Evaluation>();
+        }
+        return std::optional<Evaluation>(
+            Evaluation{compound_result, {field.Id()}, /*declined_field_ids=*/{}});
     }
     return Status::Invalid(fmt::format(
         "cannot cast predicate {} to CompoundPredicate or LeafPredicate", predicate->ToString()));
 }
 
-Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexEvaluatorImpl::EvaluateCompoundPredicate(
+Result<std::optional<GlobalIndexEvaluatorImpl::Evaluation>>
+GlobalIndexEvaluatorImpl::EvaluateCompoundPredicate(
     const std::shared_ptr<CompoundPredicate>& compound_predicate) {
+    std::shared_ptr<GlobalIndexResult> compound_result;
+    std::set<int32_t> contributing_field_ids;
+    std::set<int32_t> declined_field_ids;
+    auto merge_fields = [&](const Evaluation& evaluation) {
+        contributing_field_ids.insert(evaluation.contributing_field_ids.begin(),
+                                      evaluation.contributing_field_ids.end());
+        declined_field_ids.insert(evaluation.declined_field_ids.begin(),
+                                  evaluation.declined_field_ids.end());
+    };
     if (compound_predicate->GetFunction().GetType() == Function::Type::OR) {
-        std::shared_ptr<GlobalIndexResult> compound_result;
         for (const auto& child : compound_predicate->Children()) {
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> sub_result,
+            PAIMON_ASSIGN_OR_RAISE(std::optional<Evaluation> sub_evaluation,
                                    EvaluatePredicate(child));
-            if (!sub_result) {
-                return std::shared_ptr<GlobalIndexResult>(nullptr);
+            if (!sub_evaluation) {
+                return std::optional<Evaluation>();
             }
             if (!compound_result) {
-                compound_result = sub_result;
+                compound_result = sub_evaluation->result;
             } else {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> or_result,
-                                       compound_result->Or(sub_result));
+                                       compound_result->Or(sub_evaluation->result));
                 compound_result = or_result;
             }
+            merge_fields(*sub_evaluation);
         }
-        return compound_result;
     } else if (compound_predicate->GetFunction().GetType() == Function::Type::AND) {
-        std::shared_ptr<GlobalIndexResult> compound_result;
         for (const auto& child : compound_predicate->Children()) {
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> sub_result,
+            PAIMON_ASSIGN_OR_RAISE(std::optional<Evaluation> sub_evaluation,
                                    EvaluatePredicate(child));
-            if (sub_result) {
+            if (sub_evaluation) {
                 if (!compound_result) {
-                    compound_result = sub_result;
+                    compound_result = sub_evaluation->result;
                 } else {
                     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> and_result,
-                                           compound_result->And(sub_result));
+                                           compound_result->And(sub_evaluation->result));
                     compound_result = and_result;
                 }
+                merge_fields(*sub_evaluation);
+            } else {
+                PAIMON_ASSIGN_OR_RAISE(std::set<int32_t> child_field_ids,
+                                       CollectFieldIds(*table_schema_, child));
+                declined_field_ids.insert(child_field_ids.begin(), child_field_ids.end());
             }
 
             if (compound_result) {
                 PAIMON_ASSIGN_OR_RAISE(bool is_empty, compound_result->IsEmpty());
                 if (is_empty) {
-                    return compound_result;
+                    break;
                 }
             }
         }
-        return compound_result;
+    } else {
+        return Status::Invalid("CompoundPredicate only support And/Or function");
     }
-    return Status::Invalid("CompoundPredicate only support And/Or function");
+    if (!compound_result) {
+        return std::optional<Evaluation>();
+    }
+    for (int32_t declined_field_id : declined_field_ids) {
+        contributing_field_ids.erase(declined_field_id);
+    }
+    return std::optional<Evaluation>(Evaluation{std::move(compound_result),
+                                                std::move(contributing_field_ids),
+                                                std::move(declined_field_ids)});
 }
 
 }  // namespace paimon

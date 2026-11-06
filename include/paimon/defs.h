@@ -623,6 +623,19 @@ struct PAIMON_EXPORT Options {
     /// index covers. Default value is "global-index.search-mode", or else "fast". Paimon C++
     /// supports only "fast" so far, and a full-text search in another mode fails.
     static const char FULL_TEXT_INDEX_SEARCH_MODE[];
+    /// "scalar-index.search-mode" - Search mode for scalar index queries: "fast" evaluates only the
+    /// rows that an index covers, while "full" and "detail" also evaluate the rows that no index
+    /// covers. Default value is "global-index.search-mode", or else "fast". Paimon C++ supports
+    /// only "fast" so far, and a full-text search with a row filter in another mode fails.
+    static const char SCALAR_INDEX_SEARCH_MODE[];
+    /// "global-index.filter.refine-from-data" - Whether a vector, hybrid or full-text search may
+    /// read the filter columns of candidate rows to verify a row filter that the scalar global
+    /// index can only answer with a superset, such as contains, ends-with or like on a BTree index
+    /// or a conjunction with a member no index can evaluate. When false, such candidates are
+    /// excluded from the search, which never returns a non-matching row but may return fewer than
+    /// the requested top-k. When true, the read runs on the caller and may cover every candidate
+    /// row. Default value is "false". Paimon C++ reads it only in full-text search so far.
+    static const char GLOBAL_INDEX_FILTER_REFINE_FROM_DATA[];
     /// "pk-btree.index.columns" - Comma-separated columns indexed by primary-key BTree indexes.
     /// No default value.
     static const char PK_BTREE_INDEX_COLUMNS[];

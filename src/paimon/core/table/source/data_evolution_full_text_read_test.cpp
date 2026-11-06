@@ -49,6 +49,9 @@
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/global_index/global_indexer_factory.h"
+#include "paimon/predicate/full_text_match.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/table/source/full_text_search_builder.h"
 #include "paimon/testing/mock/mock_global_index_reader.h"
 #include "paimon/testing/utils/testharness.h"
@@ -57,6 +60,8 @@
 namespace paimon::test {
 namespace {
 constexpr char kFakeIndexType[] = "fake-full-text";
+constexpr char kFakeScalarIndexType[] = "fake-scalar";
+constexpr char kOtherFakeScalarIndexType[] = "other-fake-scalar";
 constexpr char kQuery[] = R"({"match":{"query":"paimon"}})";
 
 struct RecordedSearch {
@@ -79,6 +84,7 @@ class FakeIndexState {
         std::lock_guard<std::mutex> lock(mutex_);
         scores_.clear();
         searches_.clear();
+        scalar_rows_.clear();
     }
 
     void SetScores(const std::string& file_name, std::vector<float> scores) {
@@ -91,6 +97,20 @@ class FakeIndexState {
         auto iter = scores_.find(file_name);
         if (iter == scores_.end()) {
             return Status::Invalid("no scores for fake index file " + file_name);
+        }
+        return iter->second;
+    }
+
+    void SetScalarRows(const std::string& file_name, const std::vector<int64_t>& rows) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        scalar_rows_[file_name] = rows;
+    }
+
+    std::optional<std::vector<int64_t>> ScalarRows(const std::string& file_name) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto iter = scalar_rows_.find(file_name);
+        if (iter == scalar_rows_.end()) {
+            return std::nullopt;
         }
         return iter->second;
     }
@@ -109,6 +129,7 @@ class FakeIndexState {
     mutable std::mutex mutex_;
     std::map<std::string, std::vector<float>> scores_;
     std::map<std::string, RecordedSearch> searches_;
+    std::map<std::string, std::vector<int64_t>> scalar_rows_;
 };
 
 class FakeFullTextReader : public MockGlobalIndexReader {
@@ -212,6 +233,60 @@ class FakeFullTextIndexerFactory : public GlobalIndexerFactory {
 };
 REGISTER_PAIMON_FACTORY(FakeFullTextIndexerFactory);
 
+class FakeScalarIndexer : public GlobalIndexer {
+ public:
+    Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const override {
+        return std::optional<std::vector<std::string>>();
+    }
+
+    Result<std::shared_ptr<GlobalIndexWriter>> CreateWriter(
+        const std::string& field_name, ::ArrowSchema* arrow_schema,
+        const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
+        const std::shared_ptr<MemoryPool>& pool) const override {
+        return Status::NotImplemented("fake scalar index cannot be written");
+    }
+
+    Result<std::shared_ptr<GlobalIndexReader>> CreateReader(
+        ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
+        const std::vector<GlobalIndexIOMeta>& files, int64_t total_row_count,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<MemoryPool>& pool) const override {
+        if (files.size() != 1) {
+            return Status::Invalid("fake scalar index expects one file per shard");
+        }
+        auto reader = std::make_shared<MockGlobalIndexReader>(/*supports_search=*/false);
+        std::optional<std::vector<int64_t>> rows =
+            FakeIndexState::Instance().ScalarRows(PathUtil::GetName(files[0].file_path));
+        if (rows) {
+            reader->SetDefaultResult(rows.value());
+        } else {
+            reader->SetReturnNullptr();
+        }
+        return std::shared_ptr<GlobalIndexReader>(std::move(reader));
+    }
+};
+
+class FakeScalarIndexerFactory : public GlobalIndexerFactory {
+ public:
+    const char* Identifier() const override {
+        return "fake-scalar-global";
+    }
+
+    Result<std::unique_ptr<GlobalIndexer>> Create(
+        const std::map<std::string, std::string>& options) const override {
+        return std::make_unique<FakeScalarIndexer>();
+    }
+};
+REGISTER_PAIMON_FACTORY(FakeScalarIndexerFactory);
+
+class OtherFakeScalarIndexerFactory : public FakeScalarIndexerFactory {
+ public:
+    const char* Identifier() const override {
+        return "other-fake-scalar-global";
+    }
+};
+REGISTER_PAIMON_FACTORY(OtherFakeScalarIndexerFactory);
+
 using ScoredRows = std::vector<std::pair<int64_t, float>>;
 
 ScoredRows ToRows(const ScoredGlobalIndexResult& result) {
@@ -251,7 +326,8 @@ class DataEvolutionFullTextReadTest : public ::testing::Test {
         const std::string& file_name, const Range& range, const std::vector<float>& scores,
         const std::vector<Range>& search_row_ranges, int32_t index_field_id = 1,
         const std::optional<std::vector<int32_t>>& extra_field_ids = std::nullopt,
-        int64_t snapshot_id = 1, const std::string& index_type = kFakeIndexType) const {
+        int64_t snapshot_id = 1, const std::string& index_type = kFakeIndexType,
+        const std::vector<std::shared_ptr<IndexFileMeta>>& scalar_index_files = {}) const {
         FakeIndexState::Instance().SetScores(file_name, scores);
         GlobalIndexMeta meta(range.from, range.to, index_field_id, extra_field_ids,
                              /*index_meta=*/nullptr);
@@ -259,8 +335,46 @@ class DataEvolutionFullTextReadTest : public ::testing::Test {
             index_type, file_name, /*file_size=*/128, /*row_count=*/range.Count(),
             /*dv_ranges=*/std::nullopt, /*external_path=*/std::nullopt, meta);
         return IndexFullTextSearchSplitImpl::Create(snapshot_id, "content", range.from, range.to,
-                                                    {file}, search_row_ranges)
+                                                    {file}, search_row_ranges, scalar_index_files)
             .value();
+    }
+
+    std::shared_ptr<FullTextSearchSplit> NewFilteredSplit(
+        const std::string& file_name, const Range& range, const std::vector<float>& scores,
+        const std::vector<std::shared_ptr<IndexFileMeta>>& scalar_index_files) const {
+        return NewSplit(file_name, range, scores, {range}, /*index_field_id=*/1,
+                        /*extra_field_ids=*/std::nullopt, /*snapshot_id=*/1, kFakeIndexType,
+                        scalar_index_files);
+    }
+
+    static std::shared_ptr<IndexFileMeta> NewScalarFile(
+        const std::string& file_name, const Range& range, int32_t index_field_id,
+        const std::string& index_type = kFakeScalarIndexType,
+        const std::optional<std::vector<int32_t>>& extra_field_ids = std::nullopt) {
+        GlobalIndexMeta meta(range.from, range.to, index_field_id, extra_field_ids,
+                             /*index_meta=*/nullptr);
+        return std::make_shared<IndexFileMeta>(
+            index_type, file_name, /*file_size=*/128, /*row_count=*/range.Count(),
+            /*dv_ranges=*/std::nullopt, /*external_path=*/std::nullopt, meta);
+    }
+
+    static std::shared_ptr<Predicate> IdEquals(int32_t id) {
+        return PredicateBuilder::Equal(/*field_index=*/0, "id", FieldType::INT, Literal(id));
+    }
+
+    static std::shared_ptr<Predicate> TitleEquals(const std::string& title) {
+        return PredicateBuilder::Equal(/*field_index=*/2, "title", FieldType::STRING,
+                                       Literal(FieldType::STRING, title.data(), title.size()));
+    }
+
+    Result<ScoredRows> ReadWithFilter(
+        const std::vector<std::shared_ptr<FullTextSearchSplit>>& splits,
+        const std::shared_ptr<Predicate>& filter, int32_t limit = 10) const {
+        std::unique_ptr<FullTextSearchBuilder> builder = NewBuilder(limit);
+        builder->WithFilter(filter);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FullTextRead> read, builder->NewFullTextRead());
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredGlobalIndexResult> result, read->Read(splits));
+        return ToRows(*result);
     }
 
     std::unique_ptr<FullTextSearchBuilder> NewBuilder(int32_t limit) const {
@@ -312,6 +426,115 @@ TEST_F(DataEvolutionFullTextReadTest, TestRanksOnlySearchRowRanges) {
     ASSERT_EQ(searches["b.index"].include_row_ids, std::vector<int64_t>({2, 3, 4}));
 }
 
+TEST_F(DataEvolutionFullTextReadTest, TestFilterRanksOnlyMatchedRows) {
+    FakeIndexState::Instance().SetScalarRows("id.index", {1, 2, 7});
+    auto scalar_file = NewScalarFile("id.index", Range(0, 9), /*index_field_id=*/0);
+    std::vector<std::shared_ptr<FullTextSearchSplit>> splits = {
+        NewFilteredSplit("a.index", Range(0, 4), {0.1f, 0.9f, 0.5f, 0.3f, 0.7f}, {scalar_file}),
+        NewFilteredSplit("b.index", Range(5, 9), {0.8f, 0.2f, 0.6f, 0.4f, 1.0f}, {scalar_file})};
+    ASSERT_OK_AND_ASSIGN(ScoredRows rows, ReadWithFilter(splits, IdEquals(1), /*limit=*/2));
+    ASSERT_EQ(rows, ScoredRows({{1, 0.9f}, {7, 0.6f}}));
+    std::map<std::string, RecordedSearch> searches = FakeIndexState::Instance().Searches();
+    ASSERT_EQ(searches.size(), 2u);
+    ASSERT_EQ(searches["a.index"].include_row_ids, std::vector<int64_t>({1, 2}));
+    ASSERT_EQ(searches["b.index"].include_row_ids, std::vector<int64_t>({2}));
+    ASSERT_EQ(searches["a.index"].limit, 2);
+
+    FakeIndexState::Instance().SetScalarRows("narrow-id.index", {0, 1, 2});
+    splits = {NewSplit("narrow.index", Range(0, 4), {0.1f, 0.9f, 0.5f, 0.3f, 0.7f}, {Range(1, 4)},
+                       /*index_field_id=*/1, /*extra_field_ids=*/std::nullopt, /*snapshot_id=*/1,
+                       kFakeIndexType,
+                       {NewScalarFile("narrow-id.index", Range(0, 4), /*index_field_id=*/0)})};
+    ASSERT_OK_AND_ASSIGN(rows, ReadWithFilter(splits, IdEquals(1)));
+    ASSERT_EQ(rows, ScoredRows({{1, 0.9f}, {2, 0.5f}}));
+    ASSERT_EQ(FakeIndexState::Instance().Searches()["narrow.index"].include_row_ids,
+              std::vector<int64_t>({1, 2}));
+
+    FakeIndexState::Instance().SetScalarRows("all-id.index", {0, 1});
+    splits = {NewFilteredSplit("all.index", Range(0, 1), {0.1f, 0.9f},
+                               {NewScalarFile("all-id.index", Range(0, 1), /*index_field_id=*/0)})};
+    ASSERT_OK_AND_ASSIGN(rows, ReadWithFilter(splits, IdEquals(1)));
+    ASSERT_EQ(rows, ScoredRows({{0, 0.1f}, {1, 0.9f}}));
+    ASSERT_FALSE(FakeIndexState::Instance().Searches()["all.index"].include_row_ids);
+
+    FakeIndexState::Instance().Reset();
+    FakeIndexState::Instance().SetScalarRows("none-id.index", {});
+    splits = {
+        NewFilteredSplit("none.index", Range(0, 1), {0.1f, 0.9f},
+                         {NewScalarFile("none-id.index", Range(0, 1), /*index_field_id=*/0)})};
+    ASSERT_OK_AND_ASSIGN(rows, ReadWithFilter(splits, IdEquals(1)));
+    ASSERT_TRUE(rows.empty());
+    ASSERT_TRUE(FakeIndexState::Instance().Searches().empty());
+}
+
+TEST_F(DataEvolutionFullTextReadTest, TestFilterExcludesRowsThatIndexesCannotDecide) {
+    std::vector<float> scores = {0.1f, 0.9f};
+    FakeIndexState::Instance().SetScalarRows("multi.index", {0, 1});
+    std::vector<std::vector<std::shared_ptr<IndexFileMeta>>> unusable_files = {
+        {},
+        {NewScalarFile("declining.index", Range(0, 1), /*index_field_id=*/0)},
+        {NewScalarFile("multi.index", Range(0, 1), /*index_field_id=*/0, kFakeScalarIndexType,
+                       std::vector<int32_t>({2}))}};
+    for (const auto& scalar_index_files : unusable_files) {
+        std::vector<std::shared_ptr<FullTextSearchSplit>> splits = {
+            NewFilteredSplit("a.index", Range(0, 1), scores, scalar_index_files)};
+        ASSERT_OK_AND_ASSIGN(ScoredRows rows, ReadWithFilter(splits, IdEquals(1)));
+        ASSERT_TRUE(rows.empty());
+    }
+
+    FakeIndexState::Instance().SetScalarRows("id.index", {0, 1});
+    FakeIndexState::Instance().SetScalarRows("title.index", {0, 1});
+    std::vector<std::shared_ptr<FullTextSearchSplit>> id_splits = {
+        NewFilteredSplit("a.index", Range(0, 1), scores,
+                         {NewScalarFile("id.index", Range(0, 1), /*index_field_id=*/0)})};
+    std::vector<std::shared_ptr<FullTextSearchSplit>> title_splits = {
+        NewFilteredSplit("a.index", Range(0, 1), scores,
+                         {NewScalarFile("title.index", Range(0, 1), /*index_field_id=*/2)})};
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> partly_indexed,
+                         PredicateBuilder::And({IdEquals(1), TitleEquals("x")}));
+    ASSERT_OK_AND_ASSIGN(ScoredRows rows, ReadWithFilter(id_splits, partly_indexed));
+    ASSERT_TRUE(rows.empty());
+
+    const Literal literal(FieldType::STRING, "x", 1);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> contains,
+                         PredicateBuilder::Contains(2, "title", FieldType::STRING, literal));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> ends_with,
+                         PredicateBuilder::EndsWith(2, "title", FieldType::STRING, literal));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> like,
+                         PredicateBuilder::Like(2, "title", FieldType::STRING, literal));
+    for (const auto& candidate_only : {contains, ends_with, like}) {
+        ASSERT_OK_AND_ASSIGN(rows, ReadWithFilter(title_splits, candidate_only));
+        ASSERT_TRUE(rows.empty());
+    }
+    ASSERT_TRUE(FakeIndexState::Instance().Searches().empty());
+
+    ASSERT_OK_AND_ASSIGN(rows, ReadWithFilter(title_splits, TitleEquals("x")));
+    ASSERT_EQ(rows, ScoredRows({{0, 0.1f}, {1, 0.9f}}));
+
+    FakeIndexState::Instance().SetScalarRows("partial.index", {0, 1});
+    std::vector<std::shared_ptr<FullTextSearchSplit>> partly_covered_splits = {
+        NewFilteredSplit("b.index", Range(0, 2), {0.1f, 0.9f, 0.8f},
+                         {NewScalarFile("partial.index", Range(0, 1), /*index_field_id=*/0)})};
+    ASSERT_OK_AND_ASSIGN(rows, ReadWithFilter(partly_covered_splits, IdEquals(1)));
+    ASSERT_EQ(rows, ScoredRows({{0, 0.1f}, {1, 0.9f}}));
+}
+
+TEST_F(DataEvolutionFullTextReadTest, TestFilterUnionsIndexesOfDifferentTypes) {
+    FakeIndexState::Instance().SetScalarRows("first.index", {1});
+    FakeIndexState::Instance().SetScalarRows("second.index", {2});
+    auto first = NewScalarFile("first.index", Range(0, 4), /*index_field_id=*/0);
+    auto second =
+        NewScalarFile("second.index", Range(5, 9), /*index_field_id=*/0, kOtherFakeScalarIndexType);
+    std::vector<std::shared_ptr<FullTextSearchSplit>> splits = {NewFilteredSplit(
+        "a.index", Range(0, 9), {0.1f, 0.9f, 0.5f, 0.3f, 0.7f, 0.8f, 0.2f, 0.6f, 0.4f, 1.0f},
+        {first, second})};
+    ASSERT_OK_AND_ASSIGN(ScoredRows rows, ReadWithFilter(splits, IdEquals(1)));
+    ASSERT_EQ(rows, ScoredRows({{1, 0.9f}, {7, 0.6f}}));
+    ASSERT_EQ(FakeIndexState::Instance().Searches()["a.index"].include_row_ids,
+              std::vector<int64_t>({1, 7}));
+}
+
 TEST_F(DataEvolutionFullTextReadTest, TestIncludeRowIds) {
     auto row_ids_of = [](const std::optional<RoaringBitmap64>& bitmap) {
         std::vector<int64_t> row_ids;
@@ -325,7 +548,7 @@ TEST_F(DataEvolutionFullTextReadTest, TestIncludeRowIds) {
         NewSplit("a.index", Range(10, 19), scores, {Range(10, 12), Range(17, 19)}));
     ASSERT_TRUE(split);
     std::optional<RoaringBitmap64> row_ids =
-        DataEvolutionFullTextRead::IncludeRowIds(*split, /*live_rows=*/nullptr);
+        DataEvolutionFullTextRead::IncludeRowIds(*split, /*eligible_rows=*/nullptr);
     ASSERT_TRUE(row_ids);
     ASSERT_EQ(row_ids_of(row_ids), std::vector<int64_t>({10, 11, 12, 17, 18, 19}));
     RoaringBitmap64 live_rows = RoaringBitmap64::From({0, 11, 12, 15, 18, 25});
@@ -340,7 +563,7 @@ TEST_F(DataEvolutionFullTextReadTest, TestIncludeRowIds) {
     auto whole_split = std::dynamic_pointer_cast<IndexFullTextSearchSplit>(
         NewSplit("b.index", Range(10, 19), scores, {Range(10, 19)}));
     ASSERT_TRUE(whole_split);
-    ASSERT_FALSE(DataEvolutionFullTextRead::IncludeRowIds(*whole_split, /*live_rows=*/nullptr));
+    ASSERT_FALSE(DataEvolutionFullTextRead::IncludeRowIds(*whole_split, /*eligible_rows=*/nullptr));
     RoaringBitmap64 all_rows;
     all_rows.AddRange(0, 30);
     ASSERT_FALSE(DataEvolutionFullTextRead::IncludeRowIds(*whole_split, &all_rows));
@@ -354,7 +577,8 @@ TEST_F(DataEvolutionFullTextReadTest, TestIncludeRowIds) {
     auto widest_split = std::dynamic_pointer_cast<IndexFullTextSearchSplit>(
         NewSplit("widest.index", Range(1, max_row_id), /*scores=*/{}, {Range(1, max_row_id)}));
     ASSERT_TRUE(widest_split);
-    ASSERT_FALSE(DataEvolutionFullTextRead::IncludeRowIds(*widest_split, /*live_rows=*/nullptr));
+    ASSERT_FALSE(
+        DataEvolutionFullTextRead::IncludeRowIds(*widest_split, /*eligible_rows=*/nullptr));
     RoaringBitmap64 sparse_live_rows = RoaringBitmap64::From({0, 5, 20, max_row_id});
     row_ids = DataEvolutionFullTextRead::IncludeRowIds(*widest_split, &sparse_live_rows);
     ASSERT_TRUE(row_ids);
@@ -481,6 +705,43 @@ TEST_F(DataEvolutionFullTextReadTest, TestBuilderValidatesSettings) {
     FullTextSearchBuilder missing_table(PathUtil::JoinPath(dir_->Str(), "foo.db/missing"));
     missing_table.SetQuery("content", kQuery).SetLimit(3);
     ASSERT_NOK_WITH_MSG(missing_table.NewFullTextScan(), "schema file not found");
+
+    std::unique_ptr<FullTextSearchBuilder> missing_field = NewBuilder(3);
+    missing_field->WithFilter(
+        PredicateBuilder::Equal(/*field_index=*/0, "missing", FieldType::INT, Literal(1)));
+    ASSERT_NOK_WITH_MSG(missing_field->NewFullTextScan(), "field missing does not exist in schema");
+    ASSERT_NOK_WITH_MSG(missing_field->NewFullTextRead(), "field missing does not exist in schema");
+
+    std::unique_ptr<FullTextSearchBuilder> row_id_field = NewBuilder(3);
+    row_id_field->WithFilter(PredicateBuilder::Equal(
+        /*field_index=*/0, "_ROW_ID", FieldType::BIGINT, Literal(static_cast<int64_t>(1))));
+    ASSERT_NOK_WITH_MSG(row_id_field->NewFullTextScan(), "field _ROW_ID does not exist in schema");
+
+    std::unique_ptr<FullTextSearchBuilder> wrong_type = NewBuilder(3);
+    wrong_type->WithFilter(PredicateBuilder::Equal(/*field_index=*/0, "id", FieldType::STRING,
+                                                   Literal(FieldType::STRING, "x", 1)));
+    ASSERT_NOK_WITH_MSG(wrong_type->NewFullTextScan(), "mismatches predicate field type");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> full_text_match,
+                         PredicateBuilder::FullTextMatch(
+                             /*field_index=*/2, std::make_shared<FullTextMatch>("title", kQuery)));
+    std::unique_ptr<FullTextSearchBuilder> with_match = NewBuilder(3);
+    with_match->WithFilter(full_text_match);
+    ASSERT_NOK_WITH_MSG(with_match->NewFullTextScan(),
+                        "FullTextMatch predicate execution is not implemented yet");
+
+    std::unique_ptr<FullTextSearchBuilder> scalar_full_mode = NewBuilder(3);
+    scalar_full_mode->AddOption(Options::SCALAR_INDEX_SEARCH_MODE, "full");
+    ASSERT_OK(scalar_full_mode->NewFullTextScan());
+    scalar_full_mode->WithFilter(IdEquals(1));
+    ASSERT_NOK_WITH_MSG(scalar_full_mode->NewFullTextScan(),
+                        "full and detail are not supported yet");
+    ASSERT_NOK_WITH_MSG(scalar_full_mode->NewFullTextRead(),
+                        "full and detail are not supported yet");
+
+    std::unique_ptr<FullTextSearchBuilder> null_filter = NewBuilder(3);
+    null_filter->WithFilter(nullptr);
+    ASSERT_OK(null_filter->NewFullTextScan());
 }
 
 TEST_F(DataEvolutionFullTextReadTest, TestBuilderRejectsPrimaryKeyFullTextIndex) {
