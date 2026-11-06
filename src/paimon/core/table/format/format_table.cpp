@@ -335,7 +335,7 @@ Result<std::unique_ptr<FileStoreCommit>> NewFormatTableCommit(
 }  // namespace
 Result<std::shared_ptr<FormatTable>> FormatTable::ForContext(
     const std::map<std::string, std::string>& options) const {
-    return Copy(std::shared_ptr<FormatTable>(new FormatTable(*this)), options);
+    return Copy(std::make_shared<FormatTable>(*this), options);
 }
 Result<std::unique_ptr<TableScan>> FormatTable::NewScan(std::unique_ptr<ScanContext> ctx) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "scan"));

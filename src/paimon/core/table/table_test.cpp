@@ -509,7 +509,7 @@ TEST(TableTest, TestPathIdentifierPreservesBranch) {
     Identifier catalog_table = CatalogUtils::IdentifierFromPath("/warehouse/db.db/tbl/", "dev");
     ASSERT_EQ("db", catalog_table.GetDatabaseName());
     ASSERT_EQ("tbl$branch_dev", catalog_table.GetObjectName());
-    for (const std::string& path : {"tbl", "/warehouse/db.db.extra/tbl"}) {
+    for (const std::string path : {"tbl", "/warehouse/db.db.extra/tbl"}) {
         Identifier table = CatalogUtils::IdentifierFromPath(path, "dev");
         ASSERT_EQ(Identifier::kUnknownDatabase, table.GetDatabaseName());
         ASSERT_EQ("tbl$branch_dev", table.GetObjectName());
@@ -549,7 +549,7 @@ TEST(TableTest, TestGlobalSystemTableRetainsCatalog) {
 TEST(TableTest, TestExplicitContextBranchMustMatchLoadedTable) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
-    for (const std::string& table_branch : {"main", "dev"}) {
+    for (const std::string table_branch : {"main", "dev"}) {
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<Table> table,
             CreateManagedTable(dir->GetFileSystem(), dir->Str() + "/" + table_branch,
@@ -823,7 +823,7 @@ TEST(TableTest, TestRealtimeFallbackOnlyAllowsMainBranch) {
                          dev_schemas.CreateTable(arrow_schema, {}, {}, table_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime, RealtimeContext::Create());
     for (bool realtime_enabled : {false, true}) {
-        for (const std::string& fallback : {"main", "dev"}) {
+        for (const std::string fallback : {"main", "dev"}) {
             SCOPED_TRACE(fallback + (realtime_enabled ? ":realtime" : ":disk"));
             ReadContextBuilder builder(dir->Str());
             builder.SetOptions({{Options::SCAN_FALLBACK_BRANCH, fallback}});

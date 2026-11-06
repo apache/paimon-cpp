@@ -928,7 +928,7 @@ TEST(SystemTableReadInteTest, TestReadMetadataSystemTablesAtPinnedSnapshot) {
                         "snapshot 3 does not exist");
 
     FileSystemCatalog catalog(dir->GetFileSystem(), dir->Str(), {});
-    for (const std::string& kind : {"files", "manifests"}) {
+    for (const std::string kind : {"files", "manifests"}) {
         SCOPED_TRACE(kind);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                              catalog.GetTable(Identifier("foo", "bar$" + kind)));
@@ -1753,7 +1753,7 @@ TEST(SystemTableReadInteTest, TestChangelogSequenceNumberCannotBeDisabledByReadO
     FileSystemCatalog catalog(dir->GetFileSystem(), dir->Str(), {});
     const std::map<std::string, std::string> read_options = {
         {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "false"}};
-    for (const std::string& kind : {"audit_log", "binlog"}) {
+    for (const std::string kind : {"audit_log", "binlog"}) {
         SCOPED_TRACE(kind);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                              catalog.GetTable(Identifier("foo", "bar$" + kind)));
