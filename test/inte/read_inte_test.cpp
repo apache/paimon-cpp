@@ -172,8 +172,12 @@ class ReadInteTest : public testing::Test, public ::testing::WithParamInterface<
             EXPECT_TRUE(schema_ids.empty() || schema_ids.size() == data_files.size());
             for (uint32_t j = 0; j < data_files.size(); j++) {
                 const auto& data_file = data_files[j];
+                EXPECT_OK_AND_ASSIGN(
+                    FileStatus file_status,
+                    LocalFileSystem().GetFileStatus(PathUtil::JoinPath(bucket_path, data_file)));
                 data_file_metas.push_back(std::make_shared<DataFileMeta>(
-                    data_file, /*file_size=*/1, /*row_count=*/1, /*min_key=*/BinaryRow::EmptyRow(),
+                    data_file, /*file_size=*/file_status.GetLen(), /*row_count=*/1,
+                    /*min_key=*/BinaryRow::EmptyRow(),
                     /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
                     /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
                     /*max_sequence_number=*/0, /*schema_id=*/schema_ids.empty() ? 0 : schema_ids[j],

@@ -30,6 +30,7 @@
 #include <shared_mutex>
 #include <utility>
 
+#include "fmt/format.h"
 #include "paimon/common/memory/bytes_utils.h"
 #include "paimon/common/metrics/atomic_counter_pair.h"
 #include "paimon/common/utils/byte_range_combiner.h"
@@ -69,6 +70,17 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
 }  // namespace
 
 Result<std::optional<uint64_t>> ReadAheadCache::AddRanges(std::vector<ByteRange>&& ranges) {
+    // Validate before coalescing can split an invalid range into many entries. Zero retains
+    // the existing unknown-size convention; the combiner still validates integer bounds.
+    if (file_size_ > 0) {
+        for (const auto& range : ranges) {
+            if (range.offset > file_size_ || range.length > file_size_ - range.offset) {
+                return Status::Invalid(
+                    fmt::format("byte range (offset={}, length={}) exceeds file size {}",
+                                range.offset, range.length, file_size_));
+            }
+        }
+    }
     // Both an up-front registration and a mid-read one are cut at the plain size limit.
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<ByteRange> new_ranges,
@@ -216,7 +228,7 @@ void ReadAheadCache::PreBuffer(uint64_t offset) {
 ReadAheadCache::ReadAheadCache(const std::shared_ptr<InputStream>& stream,
                                const CacheConfig& config, uint64_t file_size,
                                const std::shared_ptr<MemoryPool>& memory_pool)
-    : stream_(stream), config_(config), memory_pool_(memory_pool) {
+    : stream_(stream), config_(config), file_size_(file_size), memory_pool_(memory_pool) {
     // An unknown file size cannot be aligned to, and a zero limit or block size
     // means the block cache is turned off: leave it null in those cases.
     if (file_size > 0 && config_.GetBlockSize() > 0 && config_.GetBlockCacheLimit() > 0) {

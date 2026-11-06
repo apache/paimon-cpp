@@ -152,9 +152,9 @@ class PAIMON_EXPORT ReadAheadCache {
     /// Construct a read cache with given options
     /// @param stream The stream the cache fetches from.
     /// @param config The cache configuration.
-    /// @param file_size Size of the file behind `stream`, used to align the
-    /// block cache to the end of the file. Zero means unknown and disables the
-    /// block cache.
+    /// @param file_size Size of the file behind `stream`, used to validate registered ranges
+    /// and align the block cache to the end of the file. Zero means unknown, skipping file-size
+    /// validation and disabling the block cache.
     /// @param memory_pool The pool the cached buffers are allocated from.
     ReadAheadCache(const std::shared_ptr<InputStream>& stream, const CacheConfig& config,
                    uint64_t file_size, const std::shared_ptr<MemoryPool>& memory_pool);
@@ -174,6 +174,7 @@ class PAIMON_EXPORT ReadAheadCache {
     ///
     /// @param ranges The byte ranges to register.
     /// @return The offset of the first newly registered range, or nullopt when nothing was added.
+    ///         Returns an error if a range exceeds the known file size or integer bounds.
     Result<std::optional<uint64_t>> AddRanges(std::vector<ByteRange>&& ranges);
 
     /// Read a range previously registered through AddRanges(), copying the cached data
@@ -261,6 +262,7 @@ class PAIMON_EXPORT ReadAheadCache {
 
     std::shared_ptr<InputStream> stream_;
     CacheConfig config_;
+    const uint64_t file_size_;
     // Every registered range, ordered by offset and disjoint (so a matching
     // region is found by binary search). An entry whose buffer is still null is
     // registered but not fetched yet; publishing fills buffer/future in place.
