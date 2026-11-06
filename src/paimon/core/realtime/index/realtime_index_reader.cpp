@@ -103,9 +103,4 @@ Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitLike(const Lite
     return std::optional<RoaringBitmap64>();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitFullTextMatch(
-    const std::shared_ptr<FullTextMatch>&) {
-    return std::optional<RoaringBitmap64>();
-}
-
 }  // namespace paimon

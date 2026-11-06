@@ -51,8 +51,6 @@ class PAIMON_EXPORT RealtimeIndexReader : public FunctionVisitor<std::optional<R
     Result<std::optional<RoaringBitmap64>> VisitEndsWith(const Literal& literal) override;
     Result<std::optional<RoaringBitmap64>> VisitContains(const Literal& literal) override;
     Result<std::optional<RoaringBitmap64>> VisitLike(const Literal& literal) override;
-    Result<std::optional<RoaringBitmap64>> VisitFullTextMatch(
-        const std::shared_ptr<FullTextMatch>& full_text_match) override;
 };
 
 }  // namespace paimon
