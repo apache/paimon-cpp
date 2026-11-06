@@ -68,8 +68,8 @@ Data file metadata:
 1. ``_FILE_NAME``: STRING — file name.
 2. ``_FILE_SIZE``: BIGINT — file size.
 3. ``_ROW_COUNT``: BIGINT — total number of rows (including add & delete) in this file.
-4. ``_MIN_KEY``: STRING — minimum key of this file.
-5. ``_MAX_KEY``: STRING — maximum key of this file.
+4. ``_MIN_KEY``: BYTES — minimum key of this file, encoded as a BinaryRow.
+5. ``_MAX_KEY``: BYTES — maximum key of this file, encoded as a BinaryRow.
 6. ``_KEY_STATS``: SimpleStats — statistics of the key.
 7. ``_VALUE_STATS``: SimpleStats — statistics of the value.
 8. ``_MIN_SEQUENCE_NUMBER``: BIGINT — minimum sequence number.
@@ -83,6 +83,11 @@ Data file metadata:
 16. ``_FILE_SOURCE``: TINYINT — indicates whether this file is generated as an ``APPEND`` or ``COMPACT`` file.
 17. ``_VALUE_STATS_COLS``: ARRAY<STRING> — statistical columns in metadata.
 18. ``_EXTERNAL_PATH``: STRING — external path of this file; ``null`` if it is in the warehouse.
+19. ``_FIRST_ROW_ID``: BIGINT — first row id of this file for row tracking; nullable.
+20. ``_WRITE_COLS``: ARRAY<STRING> — columns written in this file for data evolution; nullable.
+21. ``_WRITE_COLS_SEQUENCES``: ARRAY<BIGINT> — maximum sequence number per physical table field,
+    in the order selected by ``_WRITE_COLS`` (excluding system fields), or the file schema order
+    when ``_WRITE_COLS`` is null. Nullable; when absent, only the file-level sequence range is available.
 
 Index Manifest
 --------------
@@ -99,7 +104,7 @@ Schema:
 1. ``_KIND``: TINYINT — ``ADD`` or ``DELETE``.
 2. ``_PARTITION``: BYTES — partition spec, a BinaryRow.
 3. ``_BUCKET``: INT — bucket of this file.
-4. ``_INDEX_TYPE``: STRING — ``HASH`` or ``DELETION_VECTORS``.
+4. ``_INDEX_TYPE``: STRING — index type identifier, including global index types such as ``btree``.
 5. ``_FILE_NAME``: STRING — file name.
 6. ``_FILE_SIZE``: BIGINT — file size.
 7. ``_ROW_COUNT``: BIGINT — total number of rows.
@@ -108,6 +113,9 @@ Schema:
    - ``f1``: the starting offset of this deletion vector in the index file.
    - ``f2``: the length of this deletion vector in the index file.
    - ``_CARDINALITY``: the number of deleted rows.
+9. ``_EXTERNAL_PATH``: STRING — external path of the index file; nullable.
+10. ``_GLOBAL_INDEX``: global index metadata, including the row range, indexed field id,
+    optional extra field ids, index metadata and optional source metadata; nullable.
 
 Appendix
 --------
