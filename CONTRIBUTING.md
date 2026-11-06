@@ -53,7 +53,7 @@ Choose a type and optional scope that accurately describe the change. Keep the d
 ## Submitting Pull Requests
 
 1. **Fork** the repository and create a feature branch from `main`.
-2. Make your changes following the [Code Style Guide](docs/code-style.md).
+2. Make your changes following the [coding and development guidelines](#coding-guidelines).
 3. Add or update tests for the functionality you changed.
 4. Ensure all checks pass.
 5. Open a pull request against `main`. Fill in the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
@@ -71,6 +71,8 @@ Before submitting, please verify:
 - [ ] Error handling uses `Status` / `Result<T>` — no exceptions.
 - [ ] New utility code checks for existing helpers before reinventing (see the [utility reference](docs/code-style.md#reuse-existing-utilities)).
 - [ ] Tests are added or updated for the changed functionality.
+- [ ] Design and regression coverage follow the [Development Guidelines](docs/development-guidelines.md).
+- [ ] Copied or adapted external code follows the [attribution requirements](#external-code-attribution).
 - [ ] PR description follows the [template](.github/PULL_REQUEST_TEMPLATE.md).
 
 ---
@@ -83,18 +85,87 @@ Before submitting, please verify:
 - **CMake** ≥ 3.22
 - **Python 3** (for linting scripts and pre-commit)
 
+### Pre-commit Hooks (Recommended)
+
+Install [pre-commit](https://pre-commit.com/) and the Git hooks:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+The hooks automatically run on every commit:
+
+| Hook | What it checks |
+|------|----------------|
+| `clang-format` | C++ formatting (`.clang-format`) |
+| `cpplint` | Google C++ lint rules |
+| `cmake-format` | CMake file formatting (`.cmake-format.py`) |
+| `codespell` | Spelling errors |
+| `trailing-whitespace` | Trailing whitespace |
+| `end-of-file-fixer` | Missing newline at end of file |
+| `check-added-large-files` | Files > 5 MB |
+| `check-yaml` | YAML syntax |
+| `sphinx-lint` (alias `docs`) | reStructuredText syntax under `docs/source/` |
+
+Run hooks for changed files during development, or for the entire repository before submitting:
+
+```bash
+pre-commit run --files <changed-files>
+pre-commit run --all-files
+```
+
+### Building and Testing
+
+Run the following commands from the project root. Reuse an existing configured build directory
+when it is compatible with the change. Otherwise, configure a debug build with tests:
+
+```bash
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DPAIMON_BUILD_TESTS=ON
+```
+
+Start with the relevant test target and suite. For example, for `CoreOptionsTest`:
+
+```bash
+cmake --build build --target paimon-core-test -j "$(nproc)"
+./build/debug/paimon-core-test --gtest_filter='CoreOptionsTest.*'
+```
+
+Broaden validation for public API, shared infrastructure, build configuration, or cross-module
+changes. To build and run all unit tests:
+
+```bash
+cmake --build build --target unittest -j "$(nproc)"
+```
+
+The CI build entry point is `ci/scripts/build_paimon.sh`; it may rebuild dependencies and take
+substantially longer than a focused target. For complete build options and dependency setup,
+see [Building Paimon C++](docs/source/build_system.rst).
+
+Before handing off changes, review the diff and check whitespace:
+
+```bash
+git diff --check
+```
+
+Report which validation ran and any checks that could not run, including the reason. Use the
+[PR template](.github/PULL_REQUEST_TEMPLATE.md) to describe test coverage in the pull request.
+
 ---
 
-## Code Style
+## Coding Guidelines
 
-Please read the full [Code Style Guide](docs/code-style.md) before writing code. Key highlights:
+Read both guides before writing code. Each guide owns a different set of rules:
 
-- **Formatting**: Google C++ Style base, 100-column limit, 4-space indent. Let clang-format handle it.
-- **Error handling**: Use `Status` / `Result<T>` and project macros (`PAIMON_RETURN_NOT_OK`, `PAIMON_ASSIGN_OR_RAISE`). No exceptions.
-- **Naming**: PascalCase for classes and methods, snake_case for variables, trailing `_` for members.
-- **Headers**: `#pragma once`, includes ordered by category, Apache 2.0 license header on every file.
-- **Factory pattern**: Use `static Create()` + private constructor when construction can fail.
-- **Testing**: Google Test, `ASSERT_*` preferred over `EXPECT_*`, test files named `*_test.cpp` next to source.
+| Guide | Scope |
+|-------|-------|
+| [Code Style Guide](docs/code-style.md) | Code expression: declarations, naming, ownership types, initialization, formatting, comments, and test macros |
+| [Development Guidelines](docs/development-guidelines.md) | Design and testing decisions: defaults and overloads, function responsibilities, reuse, dependencies, return semantics, validation boundaries, and regression coverage |
+
+This contributing guide is the entry point for setup, validation, contribution workflow, and
+external code attribution. Link to the detailed rules rather than maintaining parallel copies.
 
 ---
 
@@ -117,3 +188,18 @@ If you make improvements that could benefit all developers, please update the te
 ## License
 
 By contributing to Paimon C++, you agree that your contributions will be licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
+
+### External Code Attribution
+
+When copying or adapting external code, including code from another Apache project:
+
+- Record the upstream project, source file, and version or commit in an attribution comment near
+  the derived code. Explain local modifications where required by the upstream license.
+- Preserve required copyright, license, and attribution notices. Follow the
+  [ASF source header policy](https://www.apache.org/legal/src-headers.html) when handling
+  third-party files; do not replace their headers with the standard ASF header.
+- Update [LICENSE](LICENSE) with the affected files and applicable license information, including
+  license texts under `licenses/` when needed. Add required third-party notices to [NOTICE](NOTICE)
+  according to the [ASF third-party notice policy](https://www.apache.org/legal/resolved.html#required-third-party-notices).
+- Include attribution changes in the same pull request as the code they describe, and identify
+  the source in the PR description so reviewers can check the adaptation.
