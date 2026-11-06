@@ -102,6 +102,7 @@ Result<std::shared_ptr<RealtimePrimaryKeyWriter>> RealtimePrimaryKeyWriter::Crea
     const std::map<std::string, std::string>& partition, int32_t bucket,
     const std::shared_ptr<RealtimeSchemaLayout>& schema_layout,
     const std::vector<std::string>& trimmed_primary_keys,
+    const std::vector<std::string>& primary_keys,
     const std::shared_ptr<FieldsComparator>& key_comparator, const CoreOptions& options,
     const std::shared_ptr<RealtimeContextImpl>& realtime_context,
     const RealtimeStoreState& store_state, int64_t restored_max_sequence_number,
@@ -111,8 +112,10 @@ Result<std::shared_ptr<RealtimePrimaryKeyWriter>> RealtimePrimaryKeyWriter::Crea
         restored_max_sequence_number == std::numeric_limits<int64_t>::max()) {
         return Status::Invalid("PK restored sequence number is invalid");
     }
-    if (options.GetMergeEngine() != MergeEngine::DEDUPLICATE) {
-        return Status::NotImplemented("PK realtime supports only the DEDUPLICATE merge engine");
+    if (options.GetMergeEngine() != MergeEngine::DEDUPLICATE &&
+        options.GetMergeEngine() != MergeEngine::PARTIAL_UPDATE) {
+        return Status::NotImplemented(
+            "PK realtime supports only the DEDUPLICATE and PARTIAL_UPDATE merge engines");
     }
     if (!schema_layout) {
         return Status::Invalid("PK realtime schema layout is null");
@@ -132,8 +135,8 @@ Result<std::shared_ptr<RealtimePrimaryKeyWriter>> RealtimePrimaryKeyWriter::Crea
                                partition_bucket, restored_max_sequence_number));
     return std::shared_ptr<RealtimePrimaryKeyWriter>(new RealtimePrimaryKeyWriter(
         store_state.store, merge_tree_writer, realtime_context, partition_bucket, schema_layout,
-        arrow::schema(std::move(key_fields)), trimmed_primary_keys, key_comparator, options,
-        store_state.initial_offset, initial_max_sequence_number, memory_pool));
+        arrow::schema(std::move(key_fields)), trimmed_primary_keys, primary_keys, key_comparator,
+        options, store_state.initial_offset, initial_max_sequence_number, memory_pool));
 }
 
 RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
@@ -144,6 +147,7 @@ RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
     const std::shared_ptr<RealtimeSchemaLayout>& schema_layout,
     const std::shared_ptr<arrow::Schema>& key_schema,
     const std::vector<std::string>& trimmed_primary_keys,
+    const std::vector<std::string>& primary_keys,
     const std::shared_ptr<FieldsComparator>& key_comparator, const CoreOptions& options,
     int64_t next_offset, int64_t last_sequence_number,
     const std::shared_ptr<MemoryPool>& memory_pool)
@@ -156,6 +160,7 @@ RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
       schema_layout_(schema_layout),
       key_schema_(key_schema),
       trimmed_primary_keys_(trimmed_primary_keys),
+      primary_keys_(primary_keys),
       key_comparator_(key_comparator),
       options_(options),
       next_offset_(next_offset),
@@ -262,8 +267,8 @@ Status RealtimePrimaryKeyWriter::FlushSegment(
          realtime_primary_key_readers) {
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<MergeFunction> merge_function,
-            PrimaryKeyTableUtils::CreateMergeFunction(
-                schema_layout_->UserSchema(), trimmed_primary_keys_, options_, memory_pool_));
+            PrimaryKeyTableUtils::CreateMergeFunction(schema_layout_->UserSchema(), primary_keys_,
+                                                      options_, memory_pool_));
         sorted_readers.push_back(std::make_unique<MergedKeyValueRecordReader>(
             std::move(realtime_primary_key_reader), key_comparator_,
             std::make_shared<ReducerMergeFunctionWrapper>(std::move(merge_function))));

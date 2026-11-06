@@ -51,6 +51,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
         const std::map<std::string, std::string>& partition, int32_t bucket,
         const std::shared_ptr<RealtimeSchemaLayout>& schema_layout,
         const std::vector<std::string>& trimmed_primary_keys,
+        const std::vector<std::string>& primary_keys,
         const std::shared_ptr<FieldsComparator>& key_comparator, const CoreOptions& options,
         const std::shared_ptr<RealtimeContextImpl>& realtime_context,
         const RealtimeStoreState& store_state, int64_t restored_max_sequence_number,
@@ -77,6 +78,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
                              const std::shared_ptr<RealtimeSchemaLayout>& schema_layout,
                              const std::shared_ptr<arrow::Schema>& key_schema,
                              const std::vector<std::string>& trimmed_primary_keys,
+                             const std::vector<std::string>& primary_keys,
                              const std::shared_ptr<FieldsComparator>& key_comparator,
                              const CoreOptions& options, int64_t next_offset,
                              int64_t last_sequence_number,
@@ -95,6 +97,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> sealed_segments_;
     std::shared_ptr<arrow::Schema> key_schema_;
     std::vector<std::string> trimmed_primary_keys_;
+    std::vector<std::string> primary_keys_;
     std::shared_ptr<FieldsComparator> key_comparator_;
     CoreOptions options_;
     int64_t next_offset_;

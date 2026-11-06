@@ -67,7 +67,7 @@ TEST(PrimaryKeyTableUtilsTest, TestSupportedRealtimeOptions) {
 TEST(PrimaryKeyTableUtilsTest, TestUnsupportedRealtimeOptions) {
     const std::vector<std::map<std::string, std::string>> unsupported_options = {
         {{Options::BUCKET, "0"}},
-        {{Options::BUCKET, "1"}, {Options::MERGE_ENGINE, "partial-update"}},
+        {{Options::BUCKET, "1"}, {Options::MERGE_ENGINE, "aggregation"}},
         {{Options::BUCKET, "1"}, {Options::DATA_EVOLUTION_ENABLED, "true"}},
         {{Options::BUCKET, "1"}, {Options::SEQUENCE_FIELD, "seq"}},
     };
