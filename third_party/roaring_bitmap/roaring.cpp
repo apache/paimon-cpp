@@ -1,3 +1,5 @@
+// Modified by Apache Paimon to use the paimon::roaring namespace.
+
 // !!! DO NOT EDIT - THIS IS AN AUTO-GENERATED FILE !!!
 // Created by amalgamation.sh on 2023-12-16T02:52:00Z
 

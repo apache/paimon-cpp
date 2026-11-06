@@ -20,7 +20,13 @@
 
 Append Only Table
 =================
-If a table does not have a primary key defined, it is an append table. Compared
-to the primary key table, it does not have the ability to directly receive changelogs.
-It cannot be directly updated with data through upsert. It can only receive
-incoming data from append data.
+If a table does not have a primary key defined, it is an append table.
+Ordinary append writes accept ``INSERT`` rows only and do not apply upserts
+or deletes by key.
+
+The experimental real-time append deduplicate mode is an exception. With
+``realtime.deduplicate-key-fields`` configured, it also accepts ``UPDATE_AFTER``,
+``DELETE`` and ``UPDATE_BEFORE``, using deletion vectors to hide superseded
+rows. The table still has no primary key; deduplication is scoped to each
+partition-bucket. See :doc:`realtime` for the required schema, options and
+shared context.
