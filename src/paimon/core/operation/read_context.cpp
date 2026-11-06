@@ -30,6 +30,7 @@
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
@@ -41,8 +42,9 @@ ReadContext::ReadContext(
     const std::string& path, const std::string& branch,
     const std::vector<std::string>& read_field_names, const std::vector<int32_t>& read_field_ids,
     const std::shared_ptr<Predicate>& predicate, const std::shared_ptr<VectorSearch>& vector_search,
-    const std::shared_ptr<FullTextSearch>& full_text_search, bool enable_predicate_filter,
-    bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
+    const std::shared_ptr<FullTextSearch>& full_text_search,
+    bool enable_precise_file_index_evaluate, bool enable_predicate_filter, bool enable_prefetch,
+    bool enable_late_materializing, uint32_t prefetch_batch_count,
     uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
     uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
     const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
@@ -60,6 +62,7 @@ ReadContext::ReadContext(
       predicate_(predicate),
       vector_search_(vector_search),
       full_text_search_(full_text_search),
+      enable_precise_file_index_evaluate_(enable_precise_file_index_evaluate),
       enable_predicate_filter_(enable_predicate_filter),
       enable_prefetch_(enable_prefetch),
       enable_late_materializing_(enable_late_materializing),
@@ -113,6 +116,7 @@ class ReadContextBuilder::Impl {
         predicate_.reset();
         vector_search_.reset();
         full_text_search_.reset();
+        enable_precise_file_index_evaluate_ = false;
         enable_predicate_filter_ = false;
         enable_prefetch_ = false;
         enable_late_materializing_ = false;
@@ -150,6 +154,7 @@ class ReadContextBuilder::Impl {
     std::shared_ptr<Predicate> predicate_;
     std::shared_ptr<VectorSearch> vector_search_;
     std::shared_ptr<FullTextSearch> full_text_search_;
+    bool enable_precise_file_index_evaluate_ = false;
     bool enable_predicate_filter_ = false;
     bool enable_prefetch_ = false;
     bool enable_late_materializing_ = false;
@@ -233,6 +238,11 @@ ReadContextBuilder& ReadContextBuilder::SetVectorSearch(
 ReadContextBuilder& ReadContextBuilder::SetFullTextSearch(
     const std::shared_ptr<FullTextSearch>& full_text_search) {
     impl_->full_text_search_ = full_text_search;
+    return *this;
+}
+
+ReadContextBuilder& ReadContextBuilder::EnablePreciseFileIndexEvaluate(bool enabled) {
+    impl_->enable_precise_file_index_evaluate_ = enabled;
     return *this;
 }
 
@@ -338,6 +348,13 @@ ReadContextBuilder& ReadContextBuilder::WithCache(const std::shared_ptr<Cache>& 
 }
 
 Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
+    if (!impl_->enable_precise_file_index_evaluate_ &&
+        (impl_->vector_search_ || impl_->full_text_search_ ||
+         PredicateUtils::ContainsFullTextMatch(impl_->predicate_))) {
+        return Status::Invalid(
+            "VectorSearch, FullTextSearch and FullTextMatch require "
+            "EnablePreciseFileIndexEvaluate(true)");
+    }
     if (impl_->vector_search_ && impl_->full_text_search_) {
         return Status::Invalid("VectorSearch and FullTextSearch cannot be configured together");
     }
@@ -430,14 +447,14 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
 
     auto ctx = std::make_unique<ReadContext>(
         impl_->path_, branch, impl_->read_field_names_, impl_->read_field_ids_, impl_->predicate_,
-        impl_->vector_search_, impl_->full_text_search_, impl_->enable_predicate_filter_,
-        impl_->enable_prefetch_, impl_->enable_late_materializing_, impl_->prefetch_batch_count_,
-        impl_->prefetch_max_parallel_num_, impl_->enable_multi_thread_row_to_batch_,
-        impl_->row_to_batch_thread_number_, impl_->table_schema_, impl_->memory_pool_,
-        impl_->executor_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
-        impl_->realtime_context_, impl_->options_, impl_->read_ahead_cache_enabled_,
-        impl_->cache_config_, impl_->cache_, impl_->format_table_, impl_->warmup_level_,
-        impl_->catalog_, impl_->identifier_);
+        impl_->vector_search_, impl_->full_text_search_, impl_->enable_precise_file_index_evaluate_,
+        impl_->enable_predicate_filter_, impl_->enable_prefetch_, impl_->enable_late_materializing_,
+        impl_->prefetch_batch_count_, impl_->prefetch_max_parallel_num_,
+        impl_->enable_multi_thread_row_to_batch_, impl_->row_to_batch_thread_number_,
+        impl_->table_schema_, impl_->memory_pool_, impl_->executor_, impl_->specific_file_system_,
+        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
+        impl_->read_ahead_cache_enabled_, impl_->cache_config_, impl_->cache_, impl_->format_table_,
+        impl_->warmup_level_, impl_->catalog_, impl_->identifier_);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
         ctx->SetReadSchema(std::move(impl_->read_schema_));
     }

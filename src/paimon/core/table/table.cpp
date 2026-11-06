@@ -106,7 +106,6 @@
 #include "paimon/file_store_write.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
@@ -1008,12 +1007,6 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
 Result<std::unique_ptr<TableRead>> CreateTableRead(
     const std::shared_ptr<InternalReadContext>& internal_context,
     const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor) {
-    if (PredicateUtils::ContainsFullTextMatch(internal_context->GetPredicate())) {
-        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
-    }
-    if (!internal_context->GetIndexScoreBindings().empty()) {
-        return Status::NotImplemented("Per-field index score output is not implemented yet");
-    }
     const auto& core_options = internal_context->GetCoreOptions();
     const auto& table_schema = internal_context->GetTableSchema();
     if (internal_context->GetRealtimeContext() && !core_options.RealtimeEnabled()) {
@@ -1077,8 +1070,9 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(
 /// refuses by name what a format table cannot honour.
 Result<std::unique_ptr<TableRead>> NewFormatTableRead(const std::shared_ptr<FormatTable>& table,
                                                       const std::shared_ptr<ReadContext>& context) {
-    if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
-        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    if (context->EnablePreciseFileIndexEvaluate()) {
+        return Status::NotImplemented(
+            "Precise file-index evaluation is not supported for format tables");
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableRead> read,
                            FormatTableRead::Create(table, context));
@@ -1103,10 +1097,6 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     }
     // A table the caller already loaded says what it is, so nothing is read to find out.
     if (context->GetFormatTable() != nullptr) {
-        if (context->HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for format tables");
-        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> format_table,
                                FormatTable::Copy(context->GetFormatTable(), context->GetOptions()));
         return NewFormatTableRead(format_table, context);
@@ -1118,13 +1108,9 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
-        if (PredicateUtils::ContainsFullTextMatch(context->GetPredicate())) {
+        if (context->EnablePreciseFileIndexEvaluate()) {
             return Status::NotImplemented(
-                "FullTextMatch predicate execution is not implemented yet");
-        }
-        if (context->HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for system tables");
+                "Precise file-index evaluation is not supported for system tables");
         }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
@@ -1144,10 +1130,6 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
                                    context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
-        if (context->HasVectorOrFullTextSearch()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch is not supported for format tables");
-        }
         return NewFormatTableRead(format_table, context);
     }
 

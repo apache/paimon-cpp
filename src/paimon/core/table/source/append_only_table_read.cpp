@@ -392,13 +392,13 @@ Result<std::unique_ptr<CountReader>> AppendOnlyTableRead::CreateCountReader(
                 "CreateCountReader does not support process-local real-time splits");
         }
     }
+    if (context_->EnablePreciseFileIndexEvaluate()) {
+        return Status::NotImplemented(
+            "CreateCountReader does not support precise file-index evaluation");
+    }
     if (context_->GetPredicate() != nullptr) {
         return Status::NotImplemented(
             "CreateCountReader with predicate pushdown is not supported yet");
-    }
-    if (context_->HasVectorOrFullTextSearch()) {
-        return Status::NotImplemented(
-            "CreateCountReader with VectorSearch or FullTextSearch is not supported");
     }
 
     return std::make_unique<AppendCountReader>(splits, context_->GetCoreOptions().GetFileSystem(),

@@ -123,6 +123,7 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetPredicate());
     ASSERT_FALSE(ctx->HasVectorOrFullTextSearch());
+    ASSERT_FALSE(ctx->EnablePreciseFileIndexEvaluate());
     ASSERT_FALSE(ctx->EnablePredicateFilter());
     ASSERT_FALSE(ctx->EnablePrefetch());
     ASSERT_TRUE(ctx->ReadAheadCacheEnabled());
@@ -151,6 +152,7 @@ TEST(ReadContextTest, TestSetContent) {
     auto predicate =
         PredicateBuilder::IsNull(/*field_index=*/0, /*field_name=*/"f1", FieldType::INT);
     builder.SetPredicate(predicate);
+    builder.EnablePreciseFileIndexEvaluate(true);
     builder.EnablePredicateFilter(true);
     builder.EnablePrefetch(true);
     builder.SetReadAheadCacheEnabled(false);
@@ -177,6 +179,7 @@ TEST(ReadContextTest, TestSetContent) {
     ASSERT_EQ(ctx->GetReadFieldNames(), std::vector<std::string>({"f1", "f2"}));
     ASSERT_EQ(ctx->GetReadFieldIds(), std::vector<int32_t>({0, 1}));
     ASSERT_EQ(*predicate, *(ctx->GetPredicate()));
+    ASSERT_TRUE(ctx->EnablePreciseFileIndexEvaluate());
     ASSERT_TRUE(ctx->EnablePredicateFilter());
     ASSERT_TRUE(ctx->EnablePrefetch());
     ASSERT_FALSE(ctx->ReadAheadCacheEnabled());
@@ -216,6 +219,40 @@ TEST(ReadContextTest, TestSetWarmupLevel) {
     ASSERT_EQ(WarmupLevel::NONE, first_ctx->GetWarmupLevel());
     ASSERT_OK_AND_ASSIGN(auto second_ctx, builder.Finish());
     ASSERT_EQ(WarmupLevel::RAW, second_ctx->GetWarmupLevel());
+}
+
+TEST(ReadContextTest, TestSearchRequiresPreciseFileIndexEvaluate) {
+    auto vector =
+        std::make_shared<VectorSearch>("embedding", /*limit=*/3, std::vector<float>{1.0f}, nullptr,
+                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    auto text = std::make_shared<FullTextSearch>("body", R"({"match":{"query":"apple"}})", 3);
+    auto match = std::make_shared<FullTextMatch>("body", text->query);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> full_text,
+                         PredicateBuilder::FullTextMatch(0, match));
+    auto scalar = PredicateBuilder::IsNotNull(1, "price", FieldType::INT);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
+                         PredicateBuilder::Or({scalar, full_text}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({scalar, disjunction}));
+    for (int32_t search_type = 0; search_type < 3; ++search_type) {
+        for (bool enable_before_search : {false, true}) {
+            ReadContextBuilder builder("table_root_path");
+            builder.EnablePreciseFileIndexEvaluate(enable_before_search);
+            if (search_type == 0) {
+                builder.SetVectorSearch(vector);
+            } else if (search_type == 1) {
+                builder.SetFullTextSearch(text);
+            } else {
+                builder.SetPredicate(predicate);
+            }
+            if (!enable_before_search) {
+                ASSERT_NOK_WITH_MSG(builder.Finish(), "EnablePreciseFileIndexEvaluate(true)");
+                builder.EnablePreciseFileIndexEvaluate(true);
+            }
+            ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+            ASSERT_TRUE(context->EnablePreciseFileIndexEvaluate());
+        }
+    }
 }
 
 TEST(ReadContextTest, TestSetOptionsOverridesAddedOptions) {
@@ -345,6 +382,7 @@ TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
         VectorSearch::DistanceType::COSINE, std::map<std::string, std::string>{});
     ReadContextBuilder builder("table_root_path");
     ASSERT_EQ(&builder, &builder.SetVectorSearch(vector_search));
+    builder.EnablePreciseFileIndexEvaluate(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context, builder.Finish());
     EXPECT_EQ(vector_search, vector_context->GetVectorSearch());
     EXPECT_FALSE(vector_context->GetFullTextSearch());
@@ -353,6 +391,7 @@ TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
     std::shared_ptr<FullTextSearch> full_text_search =
         std::make_shared<FullTextSearch>("body", R"({"match":{"query":"paimon"}})", /*limit=*/5);
     ASSERT_EQ(&builder, &builder.SetFullTextSearch(full_text_search));
+    builder.EnablePreciseFileIndexEvaluate(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> full_text_context, builder.Finish());
     EXPECT_FALSE(full_text_context->GetVectorSearch());
     EXPECT_EQ(full_text_search, full_text_context->GetFullTextSearch());
@@ -361,6 +400,7 @@ TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
     // Finish resets search configuration just like every other per-read option.
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> reset_context, builder.Finish());
     EXPECT_FALSE(reset_context->HasVectorOrFullTextSearch());
+    EXPECT_FALSE(reset_context->EnablePreciseFileIndexEvaluate());
 }
 
 TEST(ReadContextTest, TestRejectConflictingFileIndexSearch) {
@@ -370,7 +410,9 @@ TEST(ReadContextTest, TestRejectConflictingFileIndexSearch) {
     std::shared_ptr<FullTextSearch> full_text_search =
         std::make_shared<FullTextSearch>("body", R"({"match":{"query":"paimon"}})", /*limit=*/5);
     ReadContextBuilder conflicting("table_root_path");
-    conflicting.SetVectorSearch(vector_search).SetFullTextSearch(full_text_search);
+    conflicting.EnablePreciseFileIndexEvaluate(true)
+        .SetVectorSearch(vector_search)
+        .SetFullTextSearch(full_text_search);
     ASSERT_NOK_WITH_MSG(conflicting.Finish(), "cannot be configured together");
 }
 
@@ -384,13 +426,17 @@ TEST(ReadContextTest, TestFullTextPredicateAndRootTopKConfiguration) {
         std::make_shared<VectorSearch>("embedding", 3, std::vector<float>{1.0f}, nullptr, nullptr,
                                        std::nullopt, std::map<std::string, std::string>{});
     ReadContextBuilder builder("table_root_path");
-    builder.SetReadFieldNames({"body", "price"}).SetPredicate(filter).SetVectorSearch(vector);
+    builder.EnablePreciseFileIndexEvaluate(true)
+        .SetReadFieldNames({"body", "price"})
+        .SetPredicate(filter)
+        .SetVectorSearch(vector);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
     ASSERT_EQ(context->GetPredicate(), filter);
     ASSERT_EQ(context->GetVectorSearch(), vector);
 
     auto ranked_text = std::make_shared<FullTextSearch>("title", match->query, 2);
-    builder.SetPredicate(filter).SetFullTextSearch(ranked_text);
+    builder.EnablePreciseFileIndexEvaluate(true).SetPredicate(filter).SetFullTextSearch(
+        ranked_text);
     ASSERT_OK_AND_ASSIGN(context, builder.Finish());
     ASSERT_EQ(context->GetPredicate(), filter);
     ASSERT_EQ(context->GetFullTextSearch(), ranked_text);
@@ -401,11 +447,11 @@ TEST(ReadContextTest, TestRootTopKValidation) {
         std::make_shared<VectorSearch>("embedding", 0, std::vector<float>{1.0f}, nullptr, nullptr,
                                        std::nullopt, std::map<std::string, std::string>{});
     ReadContextBuilder vector_builder("table_root_path");
-    vector_builder.SetVectorSearch(vector);
+    vector_builder.EnablePreciseFileIndexEvaluate(true).SetVectorSearch(vector);
     ASSERT_NOK_WITH_MSG(vector_builder.Finish(), "VectorSearch TopK limit must be positive");
     auto text = std::make_shared<FullTextSearch>("body", R"({"match":{"query":"apple"}})", -1);
     ReadContextBuilder text_builder("table_root_path");
-    text_builder.SetFullTextSearch(text);
+    text_builder.EnablePreciseFileIndexEvaluate(true).SetFullTextSearch(text);
     ASSERT_NOK_WITH_MSG(text_builder.Finish(), "FullTextSearch TopK limit must be positive");
 }
 

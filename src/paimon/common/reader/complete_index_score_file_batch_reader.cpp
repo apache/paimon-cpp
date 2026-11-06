@@ -36,6 +36,17 @@ namespace paimon {
 CompleteIndexScoreFileBatchReader::CompleteIndexScoreFileBatchReader(
     std::unique_ptr<FileBatchReader>&& reader, const std::vector<float>& scores,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : CompleteIndexScoreFileBatchReader(std::move(reader),
+                                        std::map<std::string, std::vector<float>>{}, arrow_pool) {
+    if (!scores.empty()) {
+        scores_.emplace(SpecialFields::IndexScore().Name(), scores);
+    }
+}
+
+CompleteIndexScoreFileBatchReader::CompleteIndexScoreFileBatchReader(
+    std::unique_ptr<FileBatchReader>&& reader,
+    const std::map<std::string, std::vector<float>>& scores,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : arrow_pool_(arrow_pool), reader_(std::move(reader)), scores_(scores) {}
 
 Result<BatchReader::ReadBatch> CompleteIndexScoreFileBatchReader::NextBatch() {
@@ -48,9 +59,12 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreFileBatchReader::Next
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            reader_->NextBatchWithBitmap());
     if (BatchReader::IsEofBatch(batch_with_bitmap)) {
-        if (!scores_.empty() && score_cursor_ != scores_.size()) {
-            return Status::Invalid(fmt::format("Index score count {} does not match rows read {}",
-                                               scores_.size(), score_cursor_));
+        for (const auto& [field_name, scores] : scores_) {
+            if (score_cursor_ != scores.size()) {
+                return Status::Invalid(
+                    fmt::format("Index score count {} for field '{}' does not match rows read {}",
+                                scores.size(), field_name, score_cursor_));
+            }
         }
         return batch_with_bitmap;
     }
@@ -68,53 +82,67 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreFileBatchReader::Next
     }
     auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
     auto struct_type = struct_array->struct_type();
-    UpdateScoreFieldIndex(struct_type);
-
-    std::unique_ptr<arrow::ArrayBuilder> index_score_builder;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
-        arrow_pool_.get(), SpecialFields::IndexScore().Type(), &index_score_builder));
-    if (!index_score_builder || !index_score_builder->type() ||
-        index_score_builder->type()->id() != arrow::Type::FLOAT) {
-        return Status::Invalid("cannot cast index score builder to FloatBuilder");
-    }
-    auto* typed_builder = checked_cast<arrow::FloatBuilder*>(index_score_builder.get());
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Reserve(struct_array->length()));
-    bool all_not_null = (struct_array->length() == bitmap.Cardinality());
-    size_t score_count = all_not_null ? static_cast<size_t>(struct_array->length())
-                                      : static_cast<size_t>(bitmap.Cardinality());
-    if (score_cursor_ > scores_.size() || score_count > scores_.size() - score_cursor_) {
-        return Status::Invalid(fmt::format("Index score count {} is smaller than rows read {}",
-                                           scores_.size(), score_cursor_ + score_count));
-    }
-    for (int64_t i = 0; i < struct_array->length(); i++) {
-        if (all_not_null || bitmap.Contains(i)) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Append(scores_[score_cursor_++]));
-        } else {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->AppendNull());
-        }
-    }
-    std::shared_ptr<arrow::Array> index_score_array;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Finish(&index_score_array));
     arrow::ArrayVector array_vec = struct_array->fields();
-    array_vec[index_score_field_idx_] = index_score_array;
+    for (const auto& [field_name, scores] : scores_) {
+        PAIMON_ASSIGN_OR_RAISE(int32_t field_index, GetScoreFieldIndex(struct_type, field_name));
+        PAIMON_ASSIGN_OR_RAISE(
+            array_vec[field_index],
+            PrepareScoreArray(field_name, scores, struct_array->length(), bitmap));
+    }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array_with_score,
-                                      arrow::StructArray::Make(array_vec, field_names_with_score_));
+                                      arrow::StructArray::Make(array_vec, struct_type->fields()));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*array_with_score, c_array.get(), c_schema.get()));
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
+    score_cursor_ += bitmap.Cardinality();
     return batch_with_bitmap;
 }
 
-void CompleteIndexScoreFileBatchReader::UpdateScoreFieldIndex(
-    const arrow::StructType* struct_type) {
-    if (index_score_field_idx_ != -1) {
-        return;
+Result<int32_t> CompleteIndexScoreFileBatchReader::GetScoreFieldIndex(
+    const arrow::StructType* struct_type, const std::string& field_name) {
+    auto iter = index_score_field_indices_.find(field_name);
+    if (iter != index_score_field_indices_.end()) {
+        return iter->second;
     }
-    index_score_field_idx_ = struct_type->GetFieldIndex(SpecialFields::IndexScore().Name());
-    field_names_with_score_.reserve(struct_type->num_fields());
-    for (const auto& field : struct_type->fields()) {
-        field_names_with_score_.push_back(field->name());
+    const auto field_indices = struct_type->GetAllFieldIndices(field_name);
+    if (field_indices.empty()) {
+        return Status::Invalid(fmt::format("Missing index score field '{}'", field_name));
     }
+    if (field_indices.size() != 1) {
+        return Status::Invalid(fmt::format("Duplicate index score field '{}'", field_name));
+    }
+    int32_t field_index = field_indices[0];
+    if (struct_type->field(field_index)->type()->id() != arrow::Type::FLOAT) {
+        return Status::Invalid(
+            fmt::format("Index score field '{}' must have float32 type", field_name));
+    }
+    index_score_field_indices_.emplace(field_name, field_index);
+    return field_index;
+}
+
+Result<std::shared_ptr<arrow::Array>> CompleteIndexScoreFileBatchReader::PrepareScoreArray(
+    const std::string& field_name, const std::vector<float>& scores, int64_t row_count,
+    const RoaringBitmap32& bitmap) const {
+    size_t score_count = bitmap.Cardinality();
+    if (score_cursor_ > scores.size() || score_count > scores.size() - score_cursor_) {
+        return Status::Invalid(
+            fmt::format("Index score count {} for field '{}' is smaller than rows read {}",
+                        scores.size(), field_name, score_cursor_ + score_count));
+    }
+    arrow::FloatBuilder builder(arrow_pool_.get());
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(row_count));
+    bool all_not_null = (row_count == bitmap.Cardinality());
+    size_t cursor = score_cursor_;
+    for (int64_t i = 0; i < row_count; i++) {
+        if (all_not_null || bitmap.Contains(i)) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(scores[cursor++]));
+        } else {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
+        }
+    }
+    std::shared_ptr<arrow::Array> score_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&score_array));
+    return score_array;
 }
 
 Result<std::unique_ptr<::ArrowSchema>> CompleteIndexScoreFileBatchReader::GetFileSchema() const {
@@ -125,8 +153,7 @@ Status CompleteIndexScoreFileBatchReader::SetReadSchema(
     ::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
     const std::optional<RoaringBitmap32>& selection_bitmap) {
     score_cursor_ = 0;
-    index_score_field_idx_ = -1;
-    field_names_with_score_.clear();
+    index_score_field_indices_.clear();
     return reader_->SetReadSchema(read_schema, predicate, selection_bitmap);
 }
 

@@ -56,12 +56,16 @@
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/factories/factory_creator.h"
+#include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/predicate/full_text_match.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/record_batch.h"
@@ -72,6 +76,7 @@
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_index_path_factory.h"
+#include "paimon/testing/mock/mock_search_file_index.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
@@ -126,8 +131,12 @@ class WriteAndReadInteWithIndexTest
             embedded_index_ = RandomNumber(0, 1) == 0;
             RecordProperty("index_storage", embedded_index_ ? "embedded" : "external");
         }
+        auto factory = std::make_unique<MockFullTextSearchFileIndexFactory>(statistics_);
+        FactoryCreator::GetInstance()->Register(statistics_index_type_, factory.release());
     }
-    void TearDown() override {}
+    void TearDown() override {
+        FactoryCreator::GetInstance()->TEST_Unregister(statistics_index_type_);
+    }
 
     void CheckResult(const std::string& table_path,
                      const std::vector<std::shared_ptr<Split>> splits,
@@ -1088,6 +1097,97 @@ class WriteAndReadInteWithIndexTest
         ASSERT_EQ(1, (*split)->DataFiles()[1]->schema_id);
     }
 
+ private:
+    std::string PkDvTablePath() const {
+        return data_source_ == IndexDataSource::Java
+                   ? GetDataDir() + "/" + file_format_ + "/pk_with_bitmap_dv.db/pk_with_bitmap_dv/"
+                   : dir_->Str() + "/foo.db/bar";
+    }
+
+    void CreatePkDvSplit(std::shared_ptr<DataSplitImpl>* split,
+                         const std::shared_ptr<Bytes>& embedded_index = nullptr) const {
+        std::string path = PkDvTablePath();
+        if (data_source_ != IndexDataSource::Java) {
+            std::vector<DataField> read_fields = {
+                SpecialFields::ValueKind(),
+                DataField(0, arrow::field("key", arrow::int32())),
+                DataField(1, arrow::field("f0", arrow::utf8())),
+                DataField(2, arrow::field("f1", arrow::int32())),
+                DataField(3, arrow::field("f2", arrow::int32())),
+                DataField(4, arrow::field("f3", arrow::float64()))};
+            ASSERT_NO_FATAL_FAILURE(WriteCppTableWithDv(read_fields, &path, split));
+            if (embedded_index) {
+                (*split)->DataFiles()[0]->embedded_index = embedded_index;
+            }
+            return;
+        }
+        const bool is_orc = file_format_ == "orc";
+        const std::string file_name = is_orc
+                                          ? "data-0da0dc51-797c-4c82-9b08-269b2ce400dc-0.orc"
+                                          : "data-bfa36b28-40e7-4026-893b-d23116973174-0.parquet";
+        const std::string deletion_file_path =
+            path + (is_orc ? "index/index-73ec72e9-489e-49d9-a96c-f6db9b56fa07-0"
+                           : "index/index-daed25d2-8e68-45ba-aaad-ff342666ef27-0");
+        auto file = std::make_shared<DataFileMeta>(
+            file_name, /*file_size=*/1001, /*row_count=*/8, BinaryRow::EmptyRow(),
+            BinaryRow::EmptyRow(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
+            /*min_sequence_number=*/0, /*max_sequence_number=*/7, /*schema_id=*/0, /*level=*/5,
+            std::vector<std::optional<std::string>>{file_name + ".index"}, Timestamp(0ll, 0),
+            /*delete_row_count=*/0, embedded_index, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
+        // The fixture's deletion vector removes physical rows 0 (Alice) and 4 (Lucy).
+        DeletionFile deletion_file(deletion_file_path, /*offset=*/1, /*length=*/24,
+                                   /*cardinality=*/2);
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0, path + "bucket-0/",
+                                       {file});
+        ASSERT_OK_AND_ASSIGN(*split, builder.WithSnapshot(4)
+                                         .WithDataDeletionFiles({deletion_file})
+                                         .IsStreaming(false)
+                                         .RawConvertible(true)
+                                         .Build());
+    }
+
+    void CheckPkDvPreciseResult(
+        const std::shared_ptr<DataSplit>& split, const arrow::FieldVector& fields,
+        const std::string& json, const std::shared_ptr<Predicate>& predicate,
+        const std::shared_ptr<VectorSearch>& vector_search = nullptr,
+        const std::shared_ptr<FullTextSearch>& full_text_search = nullptr) const {
+        const std::string path = PkDvTablePath();
+        arrow::FieldVector output_fields = {SpecialFields::ValueKind().ArrowField()};
+        output_fields.insert(output_fields.end(), fields.begin(), fields.end());
+        std::shared_ptr<arrow::ChunkedArray> expected;
+        ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(output_fields),
+                                                                     {json}, &expected)
+                        .ok());
+        std::vector<std::string> field_names;
+        for (const auto& field : fields) {
+            field_names.push_back(field->name());
+        }
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .EnablePredicateFilter(false)
+            .SetReadFieldNames(field_names)
+            .SetPredicate(predicate)
+            .SetVectorSearch(vector_search)
+            .SetFullTextSearch(full_text_search)
+            .AddOption("read.batch-size", "1")
+            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
+            .EnableLateMaterializing(false);
+        if (enable_prefetch_) {
+            builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             TableRead::Create(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(actual->Equals(expected)) << actual->ToString();
+    }
+
  protected:
     std::string file_format_;
     bool enable_prefetch_ = false;
@@ -1095,6 +1195,9 @@ class WriteAndReadInteWithIndexTest
     IndexDataSource data_source_ = IndexDataSource::Java;
     std::shared_ptr<MemoryPool> pool_;
     std::unique_ptr<UniqueTestDirectory> dir_;
+    std::string statistics_index_type_ = "read-inte-statistics-full-text";
+    std::shared_ptr<MockSearchFileIndex::Statistics> statistics_ =
+        std::make_shared<MockSearchFileIndex::Statistics>();
 };
 
 std::vector<std::string> GetFileFormatsForWriteAndReadInteWithIndexTest() {
@@ -1626,46 +1729,9 @@ TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithDv) {
                                           DataField(4, arrow::field("f3", arrow::float64()))};
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
-    std::string path;
+    const std::string path = PkDvTablePath();
     std::shared_ptr<DataSplitImpl> split;
-    if (data_source_ != IndexDataSource::Java) {
-        ASSERT_NO_FATAL_FAILURE(WriteCppTableWithDv(read_fields, &path, &split));
-    } else {
-        path = GetDataDir() + "/" + file_format_ + "/pk_with_bitmap_dv.db/pk_with_bitmap_dv/";
-        std::string file_name, deletion_file_path;
-        if (file_format_ == "orc") {
-            file_name = "data-0da0dc51-797c-4c82-9b08-269b2ce400dc-0.orc";
-            deletion_file_path = path + "/index/index-73ec72e9-489e-49d9-a96c-f6db9b56fa07-0";
-        } else if (file_format_ == "parquet") {
-            file_name = "data-bfa36b28-40e7-4026-893b-d23116973174-0.parquet";
-            deletion_file_path = path + "/index/index-daed25d2-8e68-45ba-aaad-ff342666ef27-0";
-        }
-
-        auto data_file_meta = std::make_shared<DataFileMeta>(
-            file_name, /*file_size=*/1001,
-            /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
-            /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
-            /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
-            /*max_sequence_number=*/7, /*schema_id=*/0,
-            /*level=*/5,
-            /*extra_files=*/
-            std::vector<std::optional<std::string>>({file_name + ".index"}),
-            /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
-            /*embedded_index=*/nullptr, FileSource::Append(),
-            /*value_stats_cols=*/std::nullopt,
-            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt,
-            /*column_max_sequence_numbers=*/std::nullopt);
-        DeletionFile deletion_file(deletion_file_path,
-                                   /*offset=*/1, /*length=*/24, /*cardinality=*/2);
-        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
-                                       /*bucket_path=*/path + "bucket-0/", {data_file_meta});
-        ASSERT_OK_AND_ASSIGN(split, builder.WithSnapshot(4)
-                                        .WithDataDeletionFiles({deletion_file})
-                                        .IsStreaming(false)
-                                        .RawConvertible(true)
-                                        .Build());
-    }
+    ASSERT_NO_FATAL_FAILURE(CreatePkDvSplit(&split));
     {
         // test with non predicate
         std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -1723,6 +1789,138 @@ TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithDv) {
     }
 }
 
+TEST_P(WriteAndReadInteWithIndexTest, TestPkDvPreciseScalarPredicates) {
+    std::shared_ptr<DataSplitImpl> split;
+    ASSERT_NO_FATAL_FAILURE(CreatePkDvSplit(&split));
+    const arrow::FieldVector fields = {arrow::field("key", arrow::int32()),
+                                       arrow::field("f0", arrow::utf8()),
+                                       arrow::field("f3", arrow::float64())};
+    auto name =
+        PredicateBuilder::Equal(1, "f0", FieldType::STRING, Literal(FieldType::STRING, "Bob", 3));
+    auto value = PredicateBuilder::GreaterThan(2, "f3", FieldType::DOUBLE, Literal(15.0));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> conjunction,
+                         PredicateBuilder::And({name, value}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
+                         PredicateBuilder::Or({name, value}));
+    CheckPkDvPreciseResult(split, fields, R"([[0,5,"Bob",16.1]])", conjunction);
+    CheckPkDvPreciseResult(
+        split, fields,
+        R"([[0,1,"Bob",12.1],[0,5,"Bob",16.1],[0,6,"Tony",17.1],[0,7,"Alice",18.1]])", disjunction);
+    CheckPkDvPreciseResult(split, fields,
+                           R"([[0,1,"Bob",12.1],[0,2,"Emily",13.1],[0,3,"Tony",14.1],
+            [0,5,"Bob",16.1],[0,6,"Tony",17.1],[0,7,"Alice",18.1]])",
+                           /*predicate=*/nullptr);
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestPkDvMixedFilePredicatesAndScores) {
+    const std::string query = R"({"match":{"query":"names"}})";
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> index,
+        MockSearchFileIndex::MakeQueryIndex(
+            "f0", MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
+            {{query, {{{0, 0.875f}, {4, 0.75f}, {7, 0.5f}, {1, 0.25f}, {6, 0.125f}}, 0.5}}},
+            pool_));
+    std::shared_ptr<DataSplitImpl> split;
+    ASSERT_NO_FATAL_FAILURE(CreatePkDvSplit(&split, index));
+    {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> text,
+            PredicateBuilder::FullTextMatch(2, std::make_shared<FullTextMatch>("f0", query)));
+        auto scalar = PredicateBuilder::GreaterThan(3, "f3", FieldType::DOUBLE, Literal(15.0));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::And({text, scalar}));
+        CheckPkDvPreciseResult(
+            split,
+            {arrow::field("_f0_INDEX_SCORE", arrow::float32()), arrow::field("key", arrow::int32()),
+             arrow::field("f0", arrow::utf8()), arrow::field("f3", arrow::float64())},
+            R"([[0,0.125,6,"Tony",17.1],[0,0.5,7,"Alice",18.1]])", predicate);
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> text,
+            PredicateBuilder::FullTextMatch(1, std::make_shared<FullTextMatch>("f0", query)));
+        auto scalar = PredicateBuilder::GreaterThan(2, "f3", FieldType::DOUBLE, Literal(15.0));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::Or({text, scalar}));
+        CheckPkDvPreciseResult(
+            split,
+            {arrow::field("key", arrow::int32()), arrow::field("f0", arrow::utf8()),
+             arrow::field("f3", arrow::float64())},
+            R"([[0,1,"Bob",12.1],[0,5,"Bob",16.1],[0,6,"Tony",17.1],[0,7,"Alice",18.1]])",
+            predicate);
+    }
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestPkDvFullTextTopKFiltersBeforeLimit) {
+    const std::string query = R"({"match":{"query":"ranked"}})";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> index,
+                         MockSearchFileIndex::MakeQueryIndex("f0", statistics_index_type_,
+                                                             {{query,
+                                                               {{{0, 1.0f},
+                                                                 {4, 0.875f},
+                                                                 {7, 0.75f},
+                                                                 {5, 0.625f},
+                                                                 {2, 0.5f},
+                                                                 {1, 0.375f},
+                                                                 {3, 0.25f},
+                                                                 {6, 0.125f}},
+                                                                std::nullopt}}},
+                                                             pool_));
+    auto search = std::make_shared<FullTextSearch>("f0", query, /*limit=*/2);
+    auto predicate = PredicateBuilder::LessThan(2, "f3", FieldType::DOUBLE, Literal(17.0));
+    std::shared_ptr<DataSplitImpl> split;
+    ASSERT_NO_FATAL_FAILURE(CreatePkDvSplit(&split, index));
+    // Rows 0 and 4 are deleted, and row 7 fails the scalar filter. All three rank ahead of
+    // the surviving TopK, whose scores must be reordered with the physical output rows.
+    CheckPkDvPreciseResult(
+        split,
+        {arrow::field("key", arrow::int32()), arrow::field("_f0_INDEX_SCORE", arrow::float32()),
+         arrow::field("f3", arrow::float64())},
+        R"([[0,2,0.5,13.1],[0,5,0.625,16.1]])", predicate, /*vector_search=*/nullptr, search);
+    ASSERT_EQ(statistics_->executions.size(), 1);
+    ASSERT_TRUE(statistics_->executions.front().needs_scores);
+    ASSERT_FALSE(search->include_row_ids);
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestPkDvFullTextAndVectorTopKScoreAlignment) {
+    const std::string query = R"({"match":{"query":"names"}})";
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> text_payload,
+        MockSearchFileIndex::MakeQueryPayload(
+            {{query, {{{0, 1.0f}, {4, 0.875f}, {2, 0.75f}, {6, 0.5f}, {7, 0.25f}}, 0.5}}}, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> vector_payload,
+                         MockSearchFileIndex::MakePayload({{0, 0.125f},
+                                                           {4, 0.25f},
+                                                           {5, 0.375f},
+                                                           {7, 0.5f},
+                                                           {2, 0.625f},
+                                                           {6, 0.75f},
+                                                           {1, 0.875f},
+                                                           {3, 1.0f}},
+                                                          pool_));
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["f0"][MockSearchFileIndex::FULL_TEXT_IDENTIFIER] = text_payload;
+    indexes["f3"][MockSearchFileIndex::VECTOR_IDENTIFIER] = vector_payload;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> index,
+                         MockSearchFileIndex::Serialize(indexes, pool_));
+    std::shared_ptr<DataSplitImpl> split;
+    ASSERT_NO_FATAL_FAILURE(CreatePkDvSplit(&split, index));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> text,
+        PredicateBuilder::FullTextMatch(2, std::make_shared<FullTextMatch>("f0", query)));
+    auto search = std::make_shared<VectorSearch>(
+        "f3", /*limit=*/2, std::vector<float>{1.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
+    // The DV excludes rows 0 and 4 and FullTextMatch excludes row 5 before vector TopK.
+    // The vector field itself is not projected, and both score columns follow the final rows.
+    CheckPkDvPreciseResult(
+        split,
+        {arrow::field("_f3_INDEX_SCORE", arrow::float32()), arrow::field("key", arrow::int32()),
+         arrow::field("f0", arrow::utf8()), arrow::field("_f0_INDEX_SCORE", arrow::float32())},
+        R"([[0,0.625,2,"Emily",0.75],[0,0.5,7,"Alice",0.25]])", text, search);
+    ASSERT_FALSE(search->pre_filter);
+}
+
 TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
     std::vector<DataField> read_fields = {SpecialFields::ValueKind(),
                                           DataField(1, arrow::field("f1", arrow::int64())),
@@ -1757,7 +1955,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
             EXPECT_OK_AND_ASSIGN(FileStatus file_status,
                                  file_system->GetFileStatus(path + "bucket-0/" + file_name));
             return std::make_shared<DataFileMeta>(
-                file_name, file_status.GetLen(),
+                file_name, /*file_size=*/file_status.GetLen(),
                 /*row_count=*/10, /*min_key=*/BinaryRow::EmptyRow(),
                 /*max_key=*/BinaryRow::EmptyRow(),
                 /*key_stats=*/SimpleStats::EmptyStats(),
@@ -2121,6 +2319,42 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
         ASSERT_TRUE(array_status.ok());
         CheckResult(path, {split}, predicate, expected_array);
     }
+    {
+        // f1 evolved from INT to BIGINT. The second literal overflows the old file's INT type,
+        // so its predicate cannot use the index and must be evaluated against the data.
+        auto predicate =
+            PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f1", FieldType::BIGINT,
+                                 {Literal(10l), Literal(int64_t{2147483648})});
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .EnablePredicateFilter(false)
+            .SetPredicate(predicate)
+            .AddOption("read.batch-size", "2")
+            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
+            .EnableLateMaterializing(false);
+        if (enable_prefetch_) {
+            builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             TableRead::Create(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        std::shared_ptr<arrow::ChunkedArray> expected;
+        ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
+            [0, 10, "Alice", 11.1, null],
+            [0, 10, "Bob", 12.1, null],
+            [0, 10, "Emily", 13.1, null],
+            [0, 10, "Tony", 14.1, null],
+            [0, 10, "Bob", 16.1, null],
+            [0, 10, "Bob", 23.1, 100]
+        ])"},
+                                                                     &expected)
+                        .ok());
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(actual->Equals(expected)) << actual->ToString();
+    }
 }
 
 TEST_P(WriteAndReadInteWithIndexTest, TestWithBsiIndex) {
@@ -2440,7 +2674,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
         ASSERT_OK_AND_ASSIGN(FileStatus file_status,
                              file_system->GetFileStatus(path + "bucket-0/" + file_name));
         auto data_file_meta = std::make_shared<DataFileMeta>(
-            file_name, file_status.GetLen(),
+            file_name, /*file_size=*/file_status.GetLen(),
             /*row_count=*/8, /*min_key=*/BinaryRow::EmptyRow(),
             /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
             /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,

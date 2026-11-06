@@ -91,6 +91,10 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
 
     std::shared_ptr<Metrics> GetMetrics() const override;
 
+    // Snapshot last applied to this store, including initialization from committed progress.
+    Result<std::optional<int64_t>> GetRefreshedSnapshotId(
+        const RealtimePartitionBucket& partition_bucket) const;
+
     Result<RealtimeStoreState> GetOrCreateRealtimeStore(
         RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket);
 
@@ -127,6 +131,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
         std::vector<std::string> deduplicate_key_fields;
         std::shared_ptr<RealtimeDeduplicateState> deduplicate_state;
         int64_t materialized_max_sequence_number = -1;
+        std::optional<int64_t> refreshed_snapshot_id;
     };
 
     struct RefreshNotification;
@@ -150,7 +155,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     std::shared_ptr<RealtimeStoreFactory> factory_;
     mutable std::mutex mutex_;
     std::mutex refresh_mutex_;
-    std::mutex progress_mutex_;
+    mutable std::mutex progress_mutex_;
     std::map<RealtimePartitionBucket, StoreEntry> stores_;
     // Full-table progress used as the initial offset when a store is created lazily.
     RealtimeOffsetMap committed_offsets_;

@@ -2678,6 +2678,8 @@ TEST(FormatTableTest, TestTheGenericEntryPointsReachAFormatTable) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
                          FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_NOK_WITH_MSG(write->GetBaseSnapshotId({{"dt", "20240101"}}, 0),
+                        "format tables do not have base snapshots");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
                          MakeBatch({1, 2}, {"alice", "bob"}, "20240101", {{"dt", "20240101"}}));
     ASSERT_OK(write->Write(std::move(batch)));

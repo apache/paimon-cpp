@@ -41,6 +41,8 @@ class LuminaFileIndexer final : public FileIndexer {
     explicit LuminaFileIndexer(const std::map<std::string, std::string>& options)
         : options_(options) {}
 
+    std::shared_ptr<FileIndexReader> CreateEmptyReader() const override;
+
     Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const override;
 
     Result<std::shared_ptr<FileIndexReader>> CreateReader(
@@ -83,6 +85,10 @@ class LuminaFileIndexWriter final : public FileIndexWriter {
 class LuminaFileIndexReader final : public FileIndexReader {
  public:
     explicit LuminaFileIndexReader(std::unique_ptr<LuminaIndexSearcher>&& searcher);
+
+    bool SupportsSearch(SearchType search_type) const override {
+        return search_type == SearchType::VECTOR_SEARCH;
+    }
 
     Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(
         const std::shared_ptr<VectorSearch>& vector_search) override;

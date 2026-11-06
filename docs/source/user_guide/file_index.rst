@@ -21,6 +21,20 @@ File Index
 Full-text predicates and root TopK
 ----------------------------------
 
+Enable ``ReadContextBuilder::EnablePreciseFileIndexEvaluate(true)`` to precisely
+filter rows at the file-index-query stage, before reading all columns requested by
+the query from each data file. It evaluates the complete predicate to compute
+exact matching row positions within that file.
+
+For a root full-text or vector TopK request, predicate filtering, row-range
+restrictions and deletion vectors are applied before the TopK limit. Filtering after
+TopK truncation could discard selected rows. The final row positions are then passed
+to the data-file reader to restrict the read of all requested columns.
+
+The option defaults to ``false`` and requires ``file-index.read.enabled=true``.
+Full-text predicates and root TopK requests require this option; configuring
+them while it is disabled is rejected by ``ReadContextBuilder::Finish()``.
+
 ``PredicateBuilder::FullTextMatch`` creates a ``LeafPredicate`` for a full-text
 condition without TopK truncation. It holds a shared ``FullTextMatch`` request,
 whose query uses the same JSON DSL as ``FullTextSearch``. Do not modify a request
@@ -45,7 +59,9 @@ positions in that schema. For example, the following constructs
        std::shared_ptr<paimon::Predicate> filter,
        paimon::PredicateBuilder::Or({text, price}));
    paimon::ReadContextBuilder builder(table_path);
-   builder.SetReadFieldNames({"body", "price"}).SetPredicate(filter);
+   builder.EnablePreciseFileIndexEvaluate(true)
+       .SetReadFieldNames({"body", "price"})
+       .SetPredicate(filter);
 
 ``SetVectorSearch`` and ``SetFullTextSearch`` configure a separate root TopK
 request. They are mutually exclusive and require a positive limit. The intended
@@ -54,7 +70,9 @@ field does not need to be projected. A full-text match inside a predicate never
 has a TopK limit.
 
 Score output is requested through an explicit ``_<field>_INDEX_SCORE``
-projection. For example, request the score of a full-text
+projection. Precise evaluation rejects the unnamed ``_INDEX_SCORE`` column,
+whether selected by field name, field ID or an explicit read schema.
+For example, request the score of a full-text
 predicate by projecting ``_body_INDEX_SCORE``:
 
 .. code-block:: cpp
@@ -65,7 +83,9 @@ predicate by projecting ``_body_INDEX_SCORE``:
        std::shared_ptr<paimon::Predicate> text,
        paimon::PredicateBuilder::FullTextMatch(0, request));
    paimon::ReadContextBuilder builder(table_path);
-   builder.SetReadFieldNames({"body", "_body_INDEX_SCORE"}).SetPredicate(text);
+   builder.EnablePreciseFileIndexEvaluate(true)
+       .SetReadFieldNames({"body", "_body_INDEX_SCORE"})
+       .SetPredicate(text);
 
 Score fields have type ``float32`` and preserve the source field's exact name,
 including case. Select them with ``SetReadFieldNames`` or ``SetReadSchema``;

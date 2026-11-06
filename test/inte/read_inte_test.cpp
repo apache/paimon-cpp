@@ -176,7 +176,7 @@ class ReadInteTest : public testing::Test, public ::testing::WithParamInterface<
                     FileStatus file_status,
                     LocalFileSystem().GetFileStatus(PathUtil::JoinPath(bucket_path, data_file)));
                 data_file_metas.push_back(std::make_shared<DataFileMeta>(
-                    data_file, file_status.GetLen(), /*row_count=*/1,
+                    data_file, /*file_size=*/file_status.GetLen(), /*row_count=*/1,
                     /*min_key=*/BinaryRow::EmptyRow(),
                     /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
                     /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,

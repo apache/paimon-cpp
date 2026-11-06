@@ -92,4 +92,9 @@ Status FormatTableFileStoreWrite::Close() {
     return Status::OK();
 }
 
+Result<std::optional<int64_t>> FormatTableFileStoreWrite::GetBaseSnapshotId(
+    const std::map<std::string, std::string>&, int32_t) const {
+    return Status::Invalid("format tables do not have base snapshots");
+}
+
 }  // namespace paimon

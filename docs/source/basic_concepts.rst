@@ -23,8 +23,9 @@ Basic Concepts
 
 File Layouts
 ------------------------
-All files of a table are stored under one base directory. Paimon files are
-organized in a layered style. The following image illustrates the file layout.
+In a file-system deployment, table metadata is stored under the table's base
+directory. Paimon files are organized in a layered style. The following image
+illustrates the file layout.
 Starting from a snapshot file, Paimon readers can recursively access all records
 from the table.
 
@@ -35,7 +36,10 @@ from the table.
 
 Snapshot
 -------------------
-All snapshot files are stored in the snapshot directory.
+Direct file-system commits publish snapshot files in the snapshot directory.
+A catalog that manages table versions may instead hold the latest snapshot
+without publishing it there. See :doc:`user_guide/catalog` for the file-system
+metadata still required by reads, recovery and maintenance with a catalog.
 
 A snapshot file is a JSON file containing information about this snapshot,
 including the schema file in use the manifest list containing all changes of

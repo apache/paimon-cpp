@@ -644,6 +644,57 @@ TEST(TestReadAheadCache, TestReinitAfterReset) {
     AssertReadMiss({20, 2}, &cache);
 }
 
+TEST(TestReadAheadCache, TestAddRangesRejectsOutOfFileRanges) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/1024,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/2048);
+    auto cache = CreateTestFileAndCache("data_file", std::string(1024, 'x'), config, {},
+                                        /*file_size=*/1024);
+    constexpr uint64_t kMaxValue = std::numeric_limits<uint64_t>::max();
+    for (const ByteRange& range : std::vector<ByteRange>{{512, 32 * 1024 * 1024},
+                                                         {1024, 1},
+                                                         {1025, 0},
+                                                         {1023, 2},
+                                                         {kMaxValue, 1},
+                                                         {1, kMaxValue}}) {
+        ASSERT_NOK_WITH_MSG(cache->AddRanges({range}), "exceeds file size 1024");
+    }
+}
+
+TEST(TestReadAheadCache, TestInvalidLateRangesPreserveRegisteredRanges) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/8,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/32);
+    config.SetBlockCacheLimit(0);
+    auto cache = CreateTestFileAndCache("data_file", std::string(32, 'x'), config, {{0, 8}},
+                                        /*file_size=*/32);
+    AssertReadEquals({0, 8}, std::string(8, 'x'), cache.get());
+
+    ASSERT_NOK_WITH_MSG(cache->AddRanges({{16, 8}, {31, 2}}), "exceeds file size 32");
+
+    AssertReadEquals({0, 8}, std::string(8, 'x'), cache.get());
+    AssertReadMiss({16, 8}, cache.get());
+}
+
+TEST(TestReadAheadCache, TestAddRangesAcceptsFileEndBoundary) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/4,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/16);
+    auto cache = CreateTestFileAndCache("data_file", "abcdefgh", config, {{4, 4}},
+                                        /*file_size=*/8);
+    AssertReadEquals({4, 4}, "efgh", cache.get());
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added, cache->AddRanges({{8, 0}}));
+    ASSERT_FALSE(first_added.has_value());
+    ASSERT_OK(cache->AddRanges({{0, 8}}).status());
+    AssertReadEquals({0, 8}, "abcdefgh", cache.get());
+}
+
+TEST(TestReadAheadCache, TestAddRangesPreservesUnknownFileSize) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/1024 * 1024,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/2048);
+    auto cache = CreateTestFileAndCache("data_file", std::string(1024, 'x'), config, {},
+                                        /*file_size=*/0);
+    // Zero retains its existing unknown-size meaning. Registration performs no I/O.
+    ASSERT_OK(cache->AddRanges({{512, 32 * 1024 * 1024}}).status());
+}
+
 // Test that AddRanges() registers ranges that only become known after the cache was
 // initialized, so the reads that follow are served from the cache.
 TEST(TestReadAheadCache, TestAddRangesRegistersNewRanges) {

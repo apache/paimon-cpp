@@ -39,18 +39,19 @@
 #include "paimon/global_index/global_indexer_factory.h"
 
 namespace paimon {
-GlobalIndexScanImpl::GlobalIndexScanImpl(
-    const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& options,
-    const std::shared_ptr<IndexPathFactory>& path_factory, IndexMetaMap&& index_metas,
-    LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
+GlobalIndexScanImpl::GlobalIndexScanImpl(const std::shared_ptr<TableSchema>& table_schema,
+                                         const CoreOptions& options,
+                                         const std::shared_ptr<IndexPathFactory>& path_factory,
+                                         IndexMetaMap&& index_metas, LiveRowsLoader load_live_rows,
+                                         const std::shared_ptr<Executor>& executor,
+                                         const std::shared_ptr<MemoryPool>& pool)
     : pool_(pool),
       table_schema_(table_schema),
       options_(options),
       index_file_manager_(std::make_shared<GlobalIndexFileManager>(
           options.GetFileSystem(), path_factory, /*checkpoint_path_factory=*/nullptr)),
       index_metas_(std::move(index_metas)),
-      live_rows_supplier_(std::move(live_rows_supplier)),
+      load_live_rows_(std::move(load_live_rows)),
       executor_(executor) {}
 
 Result<std::shared_ptr<Executor>> GlobalIndexScanImpl::GetOrCreateExecutor(
@@ -132,18 +133,19 @@ Result<std::unique_ptr<GlobalIndexScanImpl>> GlobalIndexScanImpl::Create(
         index_metas[index_meta->index_field_id][index_file_meta->IndexType()][range].push_back(
             index_file_meta);
     }
-    // Full-text searches rank only the rows live in the snapshot the index is read from.
-    LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier;
+    // Full-text and vector searches rank only the rows live in the snapshot the index is read from.
+    LiveRowsLoader load_live_rows;
     if (options.DeletionVectorsEnabled()) {
-        live_rows_supplier = LiveRowGlobalIndexReader::CacheLiveRows(
-            [root_path, table_schema, snapshot, partitions, options, final_executor, pool]() {
-                return GlobalIndexLiveRowFilter::LiveRows(
-                    root_path, table_schema, snapshot, partitions, options, final_executor, pool);
-            });
+        load_live_rows = [root_path, table_schema, snapshot, partitions, options, final_executor,
+                          pool](const RowRangeIndex& row_range_index) {
+            return GlobalIndexLiveRowFilter::LiveRows(root_path, table_schema, snapshot, partitions,
+                                                      row_range_index, options, final_executor,
+                                                      pool);
+        };
     }
     return std::unique_ptr<GlobalIndexScanImpl>(
         new GlobalIndexScanImpl(table_schema, options, path_factory, std::move(index_metas),
-                                std::move(live_rows_supplier), final_executor, pool));
+                                std::move(load_live_rows), final_executor, pool));
 }
 
 Result<std::shared_ptr<GlobalIndexEvaluator>> GlobalIndexScanImpl::GetOrCreateIndexEvaluator() {
@@ -255,10 +257,20 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
         if (union_readers.empty()) {
             continue;
         }
-        if (live_rows_supplier_) {
+        if (load_live_rows_) {
+            // As Java `AbstractDataEvolutionVectorRead#preFilters` does, load only the live rows of
+            // the indexed row ranges, so Data Evolution tables skip the deletion vectors of other
+            // data files.
+            PAIMON_ASSIGN_OR_RAISE(RowRangeIndex indexed_row_ranges,
+                                   RowRangeIndex::Create(row_ranges));
+            LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier =
+                LiveRowGlobalIndexReader::CacheLiveRows(
+                    [load_live_rows = load_live_rows_, indexed_row_ranges]() {
+                        return load_live_rows(indexed_row_ranges);
+                    });
             readers.push_back(LiveRowGlobalIndexReader::CreateUnion(
                 std::move(union_readers), std::move(row_ranges), std::move(search_ranges),
-                executor_, live_rows_supplier_));
+                executor_, live_rows_supplier));
         } else {
             readers.push_back(std::make_shared<UnionGlobalIndexReader>(
                 std::move(union_readers), std::move(row_ranges), std::move(search_ranges),
