@@ -35,7 +35,7 @@ The Commit process consists of the following steps:
 2. Compact (merge) Manifest files
 3. Generate the Base Manifest List
 4. Generate new Manifest files and the Delta Manifest List
-5. Generate the Snapshot and HINT file
+5. Prepare and publish the Snapshot
 
 Detailed Process
 -------------------
@@ -110,17 +110,34 @@ The initially collected file change information is written into new manifest fil
 Metadata for these newly created manifest files is then written into the delta
 manifest list.
 
-Generate the Snapshot and HINT File
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Prepare and Publish the Snapshot
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 After the above steps are completed, the system generates a new Snapshot and performs
 the following operations:
 
 1. Determine the new Snapshot ID based on the latest ``SnapshotId + 1``.
 2. Record metadata such as ``schema id``, ``commit time``, and ``total record count``.
-3. Atomicity guarantee: Generating a Snapshot is an atomic operation. If an exception
-   (e.g., an I/O error) occurs during the process, the manifest files and manifest list files
-   generated in Steps 2–4 are cleaned up and removed.
-4. The Snapshot is written via a rename operation to ensure atomicity.
-5. After the Snapshot is successfully written, the system writes the ``LATEST`` hint file
-   to reduce list operations when fetching the latest Snapshot.
+3. If preparation fails before publication, the newly generated manifest files and
+   manifest list files are cleaned up. If publication returns an error and its
+   outcome is uncertain, the metadata files are retained because the snapshot may
+   already have been accepted.
+
+Snapshot publication depends on the commit mode:
+
+* **Direct file-system commit:** On non-object-store paths, the Snapshot is
+  published through an atomic rename. After publication, the committer writes
+  the ``LATEST`` hint file to reduce list operations when fetching the latest
+  Snapshot.
+* **Catalog-mediated commit:** When ``CommitContextBuilder::WithCatalog()``
+  supplies a catalog that manages table versions, the committer sends the
+  Snapshot and change statistics to that catalog for publication. This path
+  does not rename a local Snapshot file or write a local ``LATEST`` hint.
+* **REST request preparation:** ``UseRESTCatalogCommit(true)`` builds a commit
+  request without publishing the Snapshot. The caller retrieves the JSON with
+  ``GetLastCommitTableRequest()`` and sends it to the REST catalog. A successful
+  local ``Commit()`` in this mode means the request was prepared, not that the
+  catalog accepted it.
+
+Object-store paths require one of the catalog modes. See :doc:`write` for
+configuration and :doc:`catalog` for catalog publication and recovery semantics.
