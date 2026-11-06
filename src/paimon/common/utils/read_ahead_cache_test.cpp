@@ -214,6 +214,146 @@ TEST(TestReadAheadCache, TestNoEvictionKeepsAllRanges) {
     AssertReadEquals({0, 5}, "abcde", &cache);
 }
 
+TEST(TestReadAheadCache, BoundedRetentionLimitsPeakMemoryAndAllowsRewind) {
+    constexpr uint64_t kMiB = 1024 * 1024;
+    std::string content(32 * kMiB, 'a');
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = OpenTestFile(&dir, "bounded", content);
+    auto pool = TestPool();
+    CacheConfig config = TestCacheConfig(kMiB, 0, 2 * kMiB);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, content.size(), pool);
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, 16 * kMiB}}));
+    cache.Warmup();
+    ASSERT_EQ(pool->CurrentUsage(), 2 * kMiB);
+    for (uint64_t i = 0; i < 32; ++i) {
+        if (i == 16) {
+            ASSERT_OK(cache.AddRanges({{16 * kMiB, 16 * kMiB}}));
+        }
+        AssertReadEquals({i * kMiB, kMiB}, std::string(kMiB, 'a'), &cache);
+        ASSERT_LE(pool->CurrentUsage(), 2 * kMiB);
+    }
+    AssertReadEquals({0, kMiB}, std::string(kMiB, 'a'), &cache);
+    ASSERT_LE(pool->MaxMemoryUsage(), 2 * kMiB);
+    cache.ReleaseBuffers();
+    ASSERT_EQ(pool->CurrentUsage(), 0);
+}
+
+TEST(TestReadAheadCache, BoundedRetentionCountsPendingAndRetainedCallbacksAcrossReset) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = std::make_shared<GatedAsyncInputStream>(
+        OpenTestFile(&dir, "pending", "abcdefghijklmnopqrstuvwxyz"));
+    auto pool = TestPool();
+    CacheConfig config = TestCacheConfig(4, 0, 8);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 26, pool);
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, 24}}));
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 2);
+    AssertReadMiss({8, 4}, &cache);
+    ASSERT_EQ(stream->AsyncReadCount(), 2);
+    stream->ReleaseAllKeepingCallbacks();
+    AssertReadMiss({8, 4}, &cache);
+    ASSERT_EQ(pool->CurrentUsage(), 8);
+    cache.Reset();
+    ASSERT_OK(cache.AddRanges({{12, 4}}));
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 2);
+    stream->DropCompletedCallbacks();
+    ASSERT_EQ(pool->CurrentUsage(), 0);
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 3);
+    stream->ReleaseAll();
+    AssertReadEquals({12, 4}, "mnop", &cache);
+    ASSERT_LE(pool->MaxMemoryUsage(), 8);
+    cache.ReleaseBuffers();
+    ASSERT_EQ(pool->CurrentUsage(), 0);
+}
+
+TEST(TestReadAheadCache, BoundedRetentionCountsBuffersFromEarlierParallelGeneration) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = std::make_shared<GatedAsyncInputStream>(
+        OpenTestFile(&dir, "mode-switch", "abcdefghijklmnop"));
+    auto pool = TestPool();
+    CacheConfig config = TestCacheConfig(4, 0, 8);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 16, pool);
+    ASSERT_OK(cache.AddRanges({{0, 8}}));
+    cache.Warmup();
+    stream->ReleaseAllKeepingCallbacks();
+    cache.Reset();
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{8, 4}}));
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 2);
+    ASSERT_EQ(pool->CurrentUsage(), 8);
+    stream->DropCompletedCallbacks();
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 3);
+    stream->ReleaseAll();
+    AssertReadEquals({8, 4}, "ijkl", &cache);
+    ASSERT_LE(pool->MaxMemoryUsage(), 8);
+}
+
+TEST(TestReadAheadCache, BoundedRetentionDeclinesOversizedReadsWithoutAllocating) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = OpenTestFile(&dir, "oversized", "abcdefghijklmnop");
+    auto pool = TestPool();
+    CacheConfig config = TestCacheConfig(8, 0, 4);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 16, pool);
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, 16}}));
+    cache.Warmup();
+    AssertReadMiss({0, 8}, &cache);
+    ASSERT_EQ(pool->MaxMemoryUsage(), 0);
+    char bytes[8];
+    ASSERT_OK_AND_ASSIGN(int64_t read, stream->Read(bytes, 8, 0));
+    ASSERT_EQ(read, 8);
+    ASSERT_EQ(std::string(bytes, 8), "abcdefgh");
+}
+
+TEST(TestReadAheadCache, BoundedRetentionKeepsFailedFetchErrors) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream =
+        std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir, "failed", "abcdefghijklmnop"));
+    CacheConfig config = TestCacheConfig(4, 0, 4);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 16, TestPool());
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, 16}}));
+    cache.Warmup();
+    stream->FailAll(Status::IOError("failed fetch"));
+    AssertReadMiss({4, 4}, &cache);
+    char buffer[4];
+    ASSERT_NOK_WITH_MSG(cache.Read({0, 4}, buffer), "failed fetch");
+    ASSERT_EQ(stream->AsyncReadCount(), 1);
+}
+
+TEST(TestReadAheadCache, RejectOutOfFileRangesBeforeSplitting) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = OpenTestFile(&dir, "bounds", std::string(1024, 'a'));
+    CacheConfig config = TestCacheConfig(1024, 0, 2048);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 1024, TestPool());
+    for (const ByteRange& range :
+         std::vector<ByteRange>{{512, 32 * 1024 * 1024},
+                                {1025, 0},
+                                {1024, 1},
+                                {std::numeric_limits<uint64_t>::max(), 1}}) {
+        ASSERT_NOK_WITH_MSG(cache.AddRanges({{0, 1}, range}), "exceeds file size 1024");
+        ASSERT_TRUE(cache.ranges_.empty());
+    }
+    ASSERT_OK(cache.AddRanges({{1024, 0}, {1023, 1}}));
+    ASSERT_EQ(cache.ranges_.size(), 1);
+    ReadAheadCache unknown(stream, TestCacheConfig(1024 * 1024, 0, 8), 0, TestPool());
+    ASSERT_OK(unknown.AddRanges({{512, 32 * 1024 * 1024}}));
+    ASSERT_NOK_WITH_MSG(unknown.AddRanges({{1, std::numeric_limits<uint64_t>::max()}}),
+                        "int64 bound");
+}
+
 // Test that Read() hits and misses are recorded in the cache metrics.
 TEST(TestReadAheadCache, TestMetrics) {
     CacheConfig config =

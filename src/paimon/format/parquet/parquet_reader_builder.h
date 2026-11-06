@@ -31,6 +31,7 @@
 #include "arrow/io/memory.h"
 #include "fmt/format.h"
 #include "paimon/cache/cache.h"
+#include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/parquet/parquet_file_batch_reader.h"
@@ -81,6 +82,14 @@ class ParquetReaderBuilder : public ReaderBuilder {
             return Status::Invalid("Parquet reader memory pool is nullptr");
         }
         try {
+            std::optional<ReadHints> hints = hints_;
+            if (auto cache_stream = std::dynamic_pointer_cast<CacheInputStream>(path)) {
+                PAIMON_ASSIGN_OR_RAISE(bool cache_active, cache_stream->EnableCache());
+                if (!hints) {
+                    hints.emplace();
+                }
+                hints->read_ahead_cache_enabled = cache_active;
+            }
             PAIMON_ASSIGN_OR_RAISE(int64_t file_length, path->Length());
             std::string file_uri;
             if (cache_) {
@@ -92,14 +101,15 @@ class ParquetReaderBuilder : public ReaderBuilder {
             auto input_stream = std::make_shared<ParquetInputStream>(path, file_length, arrow_pool_,
                                                                      pool_, cache_, file_uri);
             auto storage_read_bytes = input_stream->StorageReadBytes();
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<::parquet::FileMetaData> file_metadata,
-                                   GetCachedParquetMetadata(input_stream, file_uri, arrow_pool_));
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<::parquet::FileMetaData> file_metadata,
+                GetCachedParquetMetadata(input_stream, file_uri, arrow_pool_, hints));
             if (file_metadata) {
                 input_stream->SetPageIndexRanges(*file_metadata);
             }
             return ParquetFileBatchReader::Create(
                 std::move(input_stream), options_, batch_size_, std::move(file_metadata),
-                std::move(storage_read_bytes), arrow_pool_, hints_);
+                std::move(storage_read_bytes), arrow_pool_, hints);
         }
         PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ParquetReaderBuilder::Build")
     }
@@ -149,13 +159,14 @@ class ParquetReaderBuilder : public ReaderBuilder {
 
     Result<std::shared_ptr<::parquet::FileMetaData>> GetCachedParquetMetadata(
         const std::shared_ptr<arrow::io::RandomAccessFile>& input_stream,
-        const std::string& file_uri, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) const {
+        const std::string& file_uri, const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+        const std::optional<ReadHints>& hints) const {
         if (!cache_ || file_uri.empty()) {
             return std::shared_ptr<::parquet::FileMetaData>();
         }
         PAIMON_ASSIGN_OR_RAISE(
             ::parquet::ReaderProperties reader_properties,
-            ParquetFileBatchReader::CreateReaderProperties(arrow_pool, options_, hints_));
+            ParquetFileBatchReader::CreateReaderProperties(arrow_pool, options_, hints));
 
         auto cache_key = CacheKey::ForKind(file_uri, /*position=*/-1, /*length=*/-1,
                                            CacheKind::DATA_FILE_FOOTER);

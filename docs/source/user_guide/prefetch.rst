@@ -83,7 +83,7 @@ the default ``loser-tree`` sort engine additionally warms the first file of
 every sorted run before merging. It applies to append-table reads and append
 compaction as well, but does not cross split boundaries.
 
-How far the next file is prepared is set with
+Whether the next file's raw bytes are fetched early is set with
 ``ReadContextBuilder::SetWarmupLevel()``. Append compaction builds its own read
 context and always uses the default level.
 
@@ -91,25 +91,29 @@ context and always uses the default level.
 - ``WarmupLevel::RAW`` (default): fetch the next file's raw bytes through the
   read-ahead cache without decoding them. It has no effect when the read-ahead
   cache is disabled with ``ReadContextBuilder::SetReadAheadCacheEnabled()``.
-- ``WarmupLevel::DECODED``: also start decoding the next file, which hides the
-  most latency but uses the most memory.
 
-Warmup goes through the prefetch reader, so it only applies to Parquet and ORC
-files that are actually read with prefetching, and enabling prefetch alone does
-not guarantee that. With the adaptive strategy, a file whose first read range
-holds more batches than one prefetch queue can buffer is read without
-prefetching, and so without warmup; the ``prefetch.adaptive-disabled-count``
-metric counts how often this happens. Append compaction uses a prefetch queue
-of three batches, so it only warms files whose first read range spans no more
-than three full batches, such as files with small row groups.
+Warmup and the read-ahead cache work independently of batch prefetch for readers
+implementing the ``PrefetchFileBatchReader`` byte-range interface, including
+Parquet and ORC. Support is determined by the reader's capabilities rather than
+the format name; other readers keep their plain read path. With
+``EnablePrefetch(false)``, ``RAW`` still warms the cache
+and batches are read synchronously. The same behavior applies when the format
+or the adaptive strategy decides against prefetching. Warmup only fetches raw
+bytes; it never decodes batches. When batch prefetch is active, the first
+actual read starts the parallel decode loop.
+
+The defaults are batch prefetch off, read-ahead cache on, and ``RAW`` warmup.
+``WarmupLevel::NONE`` disables early warmup while retaining byte caching during
+normal reads. Disabling the cache makes ``RAW`` a no-op. When the shared cache
+is active, Parquet disables its own pre-buffering to avoid buffering the same
+byte ranges twice.
 
 ``WarmupLevel::RAW`` issues its fetches from the reading thread through the
 file system's asynchronous read, so it only overlaps I/O when that read is
 really asynchronous. The local file system serves it synchronously, so there
 ``RAW`` warmup reads the next file on the reading thread before the current
 batch is returned, adding latency instead of hiding it. On such file systems,
-prefer ``WarmupLevel::DECODED``, which fetches on the background decode thread,
-or ``WarmupLevel::NONE``.
+use ``WarmupLevel::NONE`` to disable early fetching.
 
 Warmup preserves the returned rows and their order, but it costs memory: under
 ``WarmupLevel::RAW`` the next file may hold up to the read-ahead cache's
@@ -118,3 +122,20 @@ on top of the file being read. It may also fetch data from a file that the
 reader never consumes: a read that stops early, for example because of a LIMIT,
 may already have warmed the next file, and closing it waits for that file's
 in-flight fetches.
+
+For synchronous reads, including adaptive fallback, the pre-buffer limit also
+bounds retained range buffers. Completed buffers outside the current window can
+be evicted; later reads can fetch them again. In-flight I/O and buffers retained
+by callbacks count against that budget, so a full budget can temporarily cause a
+read to bypass range caching. The block cache has its separate limit. Parallel
+prefetch retains its existing range-buffer retention policy.
+
+ORC discovers byte ranges one stripe at a time and reports later stripes as
+reading advances. Preparing the first batch does not require warmup to parse
+every stripe footer.
+
+Late-materialization payloads and later ORC stripes prepare their ranges through
+the same internal cache context. Format readers expose their initial ranges
+through ``PreBufferRange()``; the public prefetch reader has no range callback
+setter. Plugins overriding the former callback setter must remove that override
+and rebuild against the updated interface.

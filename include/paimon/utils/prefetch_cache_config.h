@@ -124,26 +124,18 @@ class PAIMON_EXPORT CacheConfig {
     uint64_t block_cache_limit_ = 1024 * 1024;
 };
 
-/// Controls how far a reader prepares the next file before that file is actually read.
+/// Controls whether a reader fetches the next file's raw bytes before that file is read.
 ///
-/// Warmup overlaps remote-storage latency with the read of the current file. Each level takes the
-/// next file one step further along the read pipeline: `RAW` covers the remote fetch, `DECODED`
-/// adds the decode on top of it. Higher levels hide more latency, but commit more memory and
-/// background I/O to files that a query may end up never reading (for example when a LIMIT stops
-/// the scan early). Callers can trade latency against memory by picking a level.
+/// Warmup can overlap remote-storage latency with reading the current file. It may fetch bytes
+/// for a file a query never consumes, for example when a LIMIT stops the scan early.
 enum class PAIMON_EXPORT WarmupLevel {
     /// Do not warm up. The next file's I/O starts only when it is actually read. This is the
     /// behavior from before warmup existed and uses no extra memory or background threads.
     NONE,
     /// Fetch only the next file's raw, still-compressed bytes into memory, and leave the decoder
-    /// alone. Overlaps the remote fetch while keeping memory lower than `DECODED`, because no
-    /// decoded batches are materialized ahead of the read. It fetches through the read-ahead
-    /// cache, so it falls back to `NONE` when that cache is disabled. This is the default, as it
-    /// hides the remote fetch without committing memory to decoded batches.
+    /// alone. No decoded batches are materialized ahead of the read. It uses the read-ahead cache,
+    /// so it falls back to `NONE` when that cache is disabled. This is the default level.
     RAW,
-    /// Fetch the raw bytes and start the background decode loop as well, so decoded batches are
-    /// ready before the file is read. Hides the most latency but uses the most memory.
-    DECODED,
 };
 
 }  // namespace paimon

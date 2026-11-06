@@ -276,7 +276,7 @@ Result<std::unique_ptr<FormatTableRead>> FormatTableRead::TEST_Create(
     const std::optional<std::vector<std::string>>& projection,
     const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<Predicate>& predicate,
     bool enable_predicate_filter) {
-    // No context, so nothing asked for prefetch or a cache: a file is opened plainly.
+    // No context: use the default synchronous read, read-ahead cache and raw warmup settings.
     return CreateInternal(table, projection, pool, predicate, enable_predicate_filter,
                           DataFileReadOptions(), /*executor=*/nullptr);
 }

@@ -1099,34 +1099,41 @@ TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadReusesMainReader) {
         ])")
             .ValueOrDie());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
-    for (const std::vector<std::string>& projection :
-         {std::vector<std::string>{"id", "embedding"},
-          std::vector<std::string>{"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"},
-          std::vector<std::string>{"id", "_ROW_ID", "_SEQUENCE_NUMBER"},
-          std::vector<std::string>{"_ROW_ID", "_SEQUENCE_NUMBER"}}) {
-        auto counting_fs = std::make_shared<CountingLocalFileSystem>(
-            PathUtil::JoinPath(bucket_path, main->file_name));
-        ReadContextBuilder builder(dir->Str());
-        builder.WithFileSystem(counting_fs).EnablePrefetch(false).SetReadFieldNames(projection);
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                             InternalReadContext::Create(read_context, table_schema, options));
-        auto split_read = std::make_unique<DataEvolutionSplitRead>(path_factory, context,
-                                                                   GetDefaultPool(), executor);
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, split_read->CreateReader(split));
-        split_read.reset();
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                             ReadResultCollector::CollectResult(std::move(reader)));
-        ASSERT_NE(result, nullptr);
-        arrow::ArrayVector columns = {expected->field(0)};
-        std::vector<std::string> names = {"_VALUE_KIND"};
-        for (const auto& name : projection) {
-            columns.push_back(expected->GetFieldByName(name));
-            names.push_back(name);
+    for (bool cache_enabled : {false, true}) {
+        for (const std::vector<std::string>& projection :
+             {std::vector<std::string>{"id", "embedding"},
+              std::vector<std::string>{"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"},
+              std::vector<std::string>{"id", "_ROW_ID", "_SEQUENCE_NUMBER"},
+              std::vector<std::string>{"_ROW_ID", "_SEQUENCE_NUMBER"}}) {
+            auto counting_fs = std::make_shared<CountingLocalFileSystem>(
+                PathUtil::JoinPath(bucket_path, main->file_name));
+            ReadContextBuilder builder(dir->Str());
+            builder.WithFileSystem(counting_fs)
+                .EnablePrefetch(false)
+                .SetReadAheadCacheEnabled(cache_enabled)
+                .SetReadFieldNames(projection);
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
+                                 InternalReadContext::Create(read_context, table_schema, options));
+            auto split_read = std::make_unique<DataEvolutionSplitRead>(path_factory, context,
+                                                                       GetDefaultPool(), executor);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 split_read->CreateReader(split));
+            split_read.reset();
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+            ASSERT_NE(result, nullptr);
+            arrow::ArrayVector columns = {expected->field(0)};
+            std::vector<std::string> names = {"_VALUE_KIND"};
+            for (const auto& name : projection) {
+                columns.push_back(expected->GetFieldByName(name));
+                names.push_back(name);
+            }
+            auto projected = arrow::StructArray::Make(columns, names).ValueOrDie();
+            ASSERT_TRUE(result->Equals(arrow::ChunkedArray(projected))) << result->ToString();
+            // The cache has its own stream; neither stream is reopened for each VECTOR range.
+            ASSERT_EQ(counting_fs->OpenCount(), cache_enabled ? 2 : 1);
         }
-        auto projected = arrow::StructArray::Make(columns, names).ValueOrDie();
-        ASSERT_TRUE(result->Equals(arrow::ChunkedArray(projected))) << result->ToString();
-        ASSERT_EQ(counting_fs->OpenCount(), 1);
     }
 
     // A selection confined to the first VECTOR file must not include rows from the second.

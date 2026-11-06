@@ -28,7 +28,7 @@ namespace paimon {
 struct PAIMON_EXPORT ReadHints {
     /// Whether framework-level prefetch is enabled for this read.
     bool prefetch_enabled = false;
-    /// Whether the shared read-ahead cache is enabled for this read.
+    /// Whether the shared read-ahead cache is active for this read, independently of prefetch.
     bool read_ahead_cache_enabled = false;
 };
 

@@ -1212,6 +1212,46 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
     }
 }
 
+TEST_F(ParquetFileBatchReaderTest, BuilderUsesActualCacheBeforeChoosingPreBuffer) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/10,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/10);
+    for (bool cache_enabled : {false, true}) {
+        SCOPED_TRACE(cache_enabled);
+        ParquetReaderBuilder builder({{PARQUET_READ_ENABLE_PRE_BUFFER, "true"}}, batch_size_);
+        ReadHints hints;
+        hints.read_ahead_cache_enabled = !cache_enabled;
+        builder.WithReadHints(hints);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, fs_->Open(file_path_));
+        ASSERT_OK_AND_ASSIGN(int64_t file_size, input->Length());
+        uint32_t factory_calls = 0;
+        CacheInputStream::CacheFactory cache_factory;
+        if (cache_enabled) {
+            cache_factory = [&]() -> Result<std::shared_ptr<ReadAheadCache>> {
+                ++factory_calls;
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> cache_stream,
+                                       fs_->Open(file_path_));
+                return std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), file_size,
+                                                        GetDefaultPool());
+            };
+        }
+        auto stream =
+            std::make_shared<CacheInputStream>(std::move(input), nullptr, std::move(cache_factory));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder.Build(stream));
+        auto* parquet_reader = dynamic_cast<ParquetFileBatchReader*>(reader.get());
+        ASSERT_NE(parquet_reader, nullptr);
+        ASSERT_EQ(parquet_reader->reader_->GetFileReader()->properties().pre_buffer(),
+                  !cache_enabled);
+        ASSERT_EQ(factory_calls, cache_enabled ? 1 : 0);
+        ASSERT_EQ(builder.hints_->read_ahead_cache_enabled, hints.read_ahead_cache_enabled);
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        auto actual_result = arrow::ImportArray(batch.first.get(), batch.second.get());
+        ASSERT_TRUE(actual_result.ok()) << actual_result.status().ToString();
+        std::shared_ptr<arrow::Array> actual = actual_result.ValueOrDie();
+        ASSERT_TRUE(actual->Equals(struct_array_));
+        reader->Close();
+    }
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
     const int32_t batch_size = 1024;
     // When both framework prefetch and the shared read-ahead cache are active, parquet's own
@@ -1239,7 +1279,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
                                                    pool_, options, batch_size, hints));
         ASSERT_EQ(arrow_props.pre_buffer(), true);
     }
-    // Only cache enabled (prefetch disabled): fall back to the option, which defaults to true.
+    // The shared cache also replaces parquet pre-buffering without batch prefetch.
     {
         std::map<std::string, std::string> options;
         ReadHints hints;
@@ -1247,7 +1287,10 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
         hints.read_ahead_cache_enabled = true;
         ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
                                                    pool_, options, batch_size, hints));
-        ASSERT_EQ(arrow_props.pre_buffer(), true);
+        ASSERT_EQ(arrow_props.pre_buffer(), false);
+        ASSERT_OK_AND_ASSIGN(auto reader_props,
+                             ParquetFileBatchReader::CreateReaderProperties(pool_, options, hints));
+        ASSERT_EQ(reader_props.is_buffered_stream_enabled(), false);
     }
     // Neither active and the option explicitly disabled: honor the option.
     {
