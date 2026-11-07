@@ -537,6 +537,20 @@ Result<std::optional<Snapshot>> RestCatalog::LoadSnapshot(const Identifier& iden
     return api_->LoadSnapshot(load_identifier);
 }
 
+Result<std::shared_ptr<TableQueryAuthResult>> RestCatalog::AuthTableQuery(
+    const Identifier& identifier, const std::optional<std::vector<std::string>>& select) const {
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "authTable"));
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+    // As in Java, an external table has no catalog to ask and is read without rules.
+    PAIMON_ASSIGN_OR_RAISE(GetTableResponse table, api_->GetTable(load_identifier));
+    if (table.IsExternal()) {
+        return TableQueryAuthResult::Create(/*filter=*/{}, /*column_masking=*/{});
+    }
+    PAIMON_ASSIGN_OR_RAISE(AuthTableQueryResponse response,
+                           api_->AuthTableQuery(load_identifier, select));
+    return TableQueryAuthResult::Create(response.GetFilter(), response.GetColumnMasking());
+}
+
 Result<bool> RestCatalog::CommitSnapshot(const Identifier& identifier,
                                          const std::optional<std::string>& table_uuid,
                                          const std::optional<std::string>& base_snapshot_uuid,

@@ -408,6 +408,8 @@ class PAIMON_EXPORT ReadContextBuilder {
 
     /// Whether to perform precise filtering according to predicates for data read from format
     /// reader.
+    /// @note On a table with `query-auth.enabled=true` the predicate is evaluated on the masked
+    ///       values, and its conjuncts on masked columns are evaluated even when this is false.
     /// @param enabled Whether to enable precise filtering (default: false)
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& EnablePredicateFilter(bool enabled);
@@ -566,11 +568,16 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
     ReadContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
 
-    /// Reads a native table through its own file system - including the per-table temporary
-    /// credentials a catalog that issues them hands out through `Catalog::GetTableFileSystem`.
-    /// This is a shorthand for `WithFileSystem(catalog->GetTableFileSystem(identifier))`; an
-    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked.
-    /// @param catalog Non-null catalog, read when `Finish()` builds the context.
+    /// Reads a native table through its catalog, which supplies its file system:
+    /// `catalog->GetTableFileSystem(identifier)`, with any per-table temporary credentials; an
+    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked for one.
+    /// `TableRead::Create()` reads `query-auth.enabled` from the schema the catalog holds for the
+    /// branch read; the fields the read reads with still come from `SetTableSchema()` on the main
+    /// branch or from the latest schema under the table path. A branch the catalog would read as
+    /// another object, such as `MAIN` or one holding a `$`, is rejected before the catalog is
+    /// asked for anything.
+    /// @param catalog Non-null catalog, read when `Finish()` builds the context and when
+    ///        `TableRead::Create()` runs.
     /// @param identifier The native table to read.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,

@@ -44,11 +44,6 @@ inline size_t Utf8CodePointLength(unsigned char leading_byte) {
     return 1;  // invalid continuation byte, treat as single byte
 }
 
-inline bool IsJavaRegexLineTerminator(const std::string& code_point) {
-    return code_point == "\n" || code_point == "\r" || code_point == "\xC2\x85" ||
-           code_point == "\xE2\x80\xA8" || code_point == "\xE2\x80\xA9";
-}
-
 }  // namespace
 
 Result<bool> Like::MatchString(const std::string& field, const std::string& pattern) {
@@ -153,7 +148,8 @@ Result<bool> Like::MatchString(const std::string& field, const std::string& patt
             if (wild && pc == "%") {
                 dp[j] = dp[j - 1] || dp[j];
             } else if (wild && pc == "_") {
-                dp[j] = prev && !IsJavaRegexLineTerminator(field_char);
+                // As Java `Like`, which matches `_` with `(?s:.)`: any one code point.
+                dp[j] = prev;
             } else {
                 dp[j] = (pc == field_char) ? prev : false;
             }

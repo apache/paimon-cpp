@@ -144,4 +144,41 @@ TEST(RapidJsonUtilTest, TestMapJsonString) {
     ASSERT_EQ(m1, m2);
 }
 
+TEST(RapidJsonUtilTest, TestRejectUnescapedNul) {
+    std::map<std::string, std::string> result;
+    for (const std::string& suffix : {std::string(1, '\0'), std::string(1, '\0') + "not JSON"}) {
+        ASSERT_NOK_WITH_MSG(RapidJsonUtil::FromJsonString("{}" + suffix, &result),
+                            "JSON contains an unescaped NUL byte");
+    }
+}
+
+TEST(RapidJsonUtilTest, TestSerializeStringWithEmbeddedNul) {
+    rapidjson::Document doc;
+    const std::string text("name\0secret", 11);
+    rapidjson::Value value = RapidJsonUtil::SerializeValue(text, &doc.GetAllocator());
+    ASSERT_EQ(text.size(), value.GetStringLength());
+    ASSERT_EQ(text, RapidJsonUtil::DeserializeValue<std::string>(value));
+
+    const std::map<std::string, std::string> map = {{text, text}};
+    rapidjson::Value object = RapidJsonUtil::SerializeValue(map, &doc.GetAllocator());
+    ASSERT_EQ(map, (RapidJsonUtil::DeserializeValue<std::map<std::string, std::string>>(object)));
+}
+
+TEST(RapidJsonUtilTest, TestCheckNoDuplicateMembers) {
+    auto check = [](const std::string& json) {
+        rapidjson::Document doc;
+        doc.Parse(json.c_str(), json.size());
+        EXPECT_FALSE(doc.HasParseError()) << json;
+        return RapidJsonUtil::CheckNoDuplicateMembers(doc);
+    };
+    ASSERT_OK(check(R"({"a": {"a": 1, "b": [{"a": 1}, {"a": 2}]}, "b": null})"));
+    ASSERT_OK(check(R"([1, "a", {"a": [], "A": {}}])"));
+    ASSERT_OK(check("{}"));
+
+    ASSERT_NOK_WITH_MSG(check(R"({"a": [], "a": [1]})"), "JSON object names member 'a' more than");
+    ASSERT_NOK_WITH_MSG(check(R"({"a": {"b": 1, "c": {"d": 1, "d": 1}}})"), "member 'd'");
+    ASSERT_NOK_WITH_MSG(check(R"([{}, [{"e": 1, "f": 2, "e": 3}]])"), "member 'e'");
+    ASSERT_NOK_WITH_MSG(check(R"({"filter": 1, "fil\u0074er": 2})"), "member 'filter'");
+}
+
 }  // namespace paimon::test

@@ -34,6 +34,7 @@
 #include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/fields_comparator.h"
@@ -91,6 +92,8 @@
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/core/table/source/merge_tree_split_generator.h"
 #include "paimon/core/table/source/primary_key_index_batch_scan.h"
+#include "paimon/core/table/source/query_auth_table_read.h"
+#include "paimon/core/table/source/query_auth_table_scan.h"
 #include "paimon/core/table/source/read_optimized_scan_options.h"
 #include "paimon/core/table/source/realtime_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
@@ -640,10 +643,65 @@ class TableScanImpl {
     }
 };
 
+/// Returns `options` with `query-auth.enabled` turned on when the current settings of `branch`
+/// enable it: the options of the schema the catalog holds for that branch, as Java loads the table
+/// of the branch it reads, or, when the caller hands in a cached schema, those of the latest schema
+/// of the branch under `path`, so a stale cache cannot skip the rules.
+Result<std::map<std::string, std::string>> ResolveQueryAuthReadOptions(
+    const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier,
+    const std::map<std::string, std::string>& options, const std::string& branch,
+    const std::shared_ptr<FileSystem>& file_system, const std::string& path,
+    bool has_specific_table_schema) {
+    bool enabled = false;
+    if (catalog != nullptr) {
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
+        if (!identifier) {
+            return Status::Invalid("a catalog read requires a table identifier");
+        }
+        if (!CatalogUtils::IsSystemDatabase(identifier.value().GetDatabaseName())) {
+            PAIMON_ASSIGN_OR_RAISE(Identifier table_identifier,
+                                   CatalogUtils::BranchIdentifier(identifier.value(), branch));
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
+                                   catalog->LoadTableSchema(table_identifier));
+            std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
+            if (data_schema == nullptr) {
+                return Status::Invalid(
+                    fmt::format("the catalog did not hand back a data table schema for {}",
+                                table_identifier.ToString()));
+            }
+            PAIMON_ASSIGN_OR_RAISE(
+                enabled, SchemaValidation::QueryAuthReadEnabled(data_schema->Options(), options));
+        }
+    }
+    if (!enabled && has_specific_table_schema && branch == BranchManager::DEFAULT_MAIN_BRANCH) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
+                               SystemTableLoader::TryParsePath(path));
+        if (!system_table_path) {
+            SchemaManager schema_manager(file_system, path, branch);
+            PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                                   schema_manager.Latest());
+            if (latest_schema) {
+                PAIMON_ASSIGN_OR_RAISE(enabled, SchemaValidation::QueryAuthReadEnabled(
+                                                    latest_schema.value()->Options(), options));
+            }
+        }
+    }
+    if (!enabled) {
+        return options;
+    }
+    std::map<std::string, std::string> read_options = options;
+    read_options[Options::QUERY_AUTH_ENABLED] = "true";
+    return read_options;
+}
+
 /// @param loaded_schema The table's schema, when the caller already read it, or null when it has
 ///        to be read here. `TableScan::Create()` reads one to dispatch on its table type.
+/// @param read_options The options of the scan with `ResolveQueryAuthReadOptions()` applied.
+/// @param query_auth_applied Whether a `QueryAuthTableScan` applies the rules around this scan, so
+///        a table with `query-auth.enabled=true` is planned as it is.
 Result<std::unique_ptr<TableScan>> NewDataTableScan(
-    const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& loaded_schema);
+    const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& loaded_schema,
+    const std::map<std::string, std::string>& read_options, bool query_auth_applied = false);
 
 /// Maps a `ScanContext` onto `FormatTableScan`, which takes one partition filter and a limit and
 /// nothing else.
@@ -720,13 +778,21 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     if (shared_context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(tmp_options.GetBranch()));
     }
+    std::map<std::string, std::string> read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        read_options,
+        ResolveQueryAuthReadOptions(shared_context->GetCatalog(), shared_context->GetIdentifier(),
+                                    shared_context->GetOptions(),
+                                    BranchManager::NormalizeBranch(tmp_options.GetBranch()),
+                                    tmp_options.GetFileSystem(), shared_context->GetPath(),
+                                    shared_context->GetSpecificTableSchema().has_value()));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(shared_context->GetPath()));
     if (system_table_path) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), shared_context->GetPath(),
-                                            shared_context->GetOptions()));
+                                            read_options));
         return system_table->NewScan(shared_context);
     }
     // A format table is planned by listing directories, so it never reaches the manifest path
@@ -737,14 +803,13 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
         std::shared_ptr<FormatTable> format_table,
         FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), shared_context->GetPath(),
                                    BranchManager::NormalizeBranch(tmp_options.GetBranch()),
-                                   shared_context->GetOptions(),
-                                   shared_context->GetSpecificTableSchema(),
+                                   read_options, shared_context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
         return NewFormatTableScan(format_table, shared_context);
     }
     // With the schema the dispatch already read, so the managed path does not read it again.
-    return NewDataTableScan(shared_context, latest_schema);
+    return NewDataTableScan(shared_context, latest_schema, read_options);
 }
 
 namespace {
@@ -792,8 +857,8 @@ Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& 
 }
 
 Result<std::unique_ptr<TableScan>> NewDataTableScan(
-    const std::shared_ptr<ScanContext>& context,
-    const std::shared_ptr<TableSchema>& loaded_schema) {
+    const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& loaded_schema,
+    const std::map<std::string, std::string>& read_options, bool query_auth_applied) {
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions tmp_options,
         CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(), {}));
@@ -813,6 +878,16 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
             return Status::Invalid("not found latest schema");
         }
         table_schema = latest_table_schema.value();
+    }
+    PAIMON_ASSIGN_OR_RAISE(bool query_auth, SchemaValidation::QueryAuthReadEnabled(
+                                                table_schema->Options(), read_options));
+    if (query_auth && !query_auth_applied) {
+        return QueryAuthTableScan::Create(
+            context, table_schema, tmp_options.GetFileSystem(), branch,
+            [table_schema, read_options](const std::shared_ptr<ScanContext>& inner_context) {
+                return NewDataTableScan(inner_context, table_schema, read_options,
+                                        /*query_auth_applied=*/true);
+            });
     }
     PAIMON_ASSIGN_OR_RAISE(bool read_optimized,
                            OptionsUtils::GetValueFromMap<bool>(context->GetOptions(),
@@ -912,13 +987,12 @@ namespace {
 /// @param loaded_schema The schema of `branch`, when the caller already read it, or null when it
 ///        has to be read here: `TableRead::Create()` reads one to dispatch on the table type, and
 ///        reading it again would cost a second listing and read.
-Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
+Result<std::shared_ptr<TableSchema>> LoadReadSchema(
     const std::shared_ptr<ReadContext>& context, const std::string& branch,
     const std::shared_ptr<TableSchema>& loaded_schema) {
     if (context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
     }
-    std::map<std::string, std::string> tmp_options = context->GetOptions();
     std::shared_ptr<TableSchema> table_schema;
     const auto& specific_table_schema = context->GetSpecificTableSchema();
     if (loaded_schema != nullptr) {
@@ -927,9 +1001,10 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
         PAIMON_ASSIGN_OR_RAISE(table_schema,
                                TableSchema::CreateFromJson(specific_table_schema.value()));
     } else {
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_core_options,
-                               CoreOptions::FromMap(tmp_options, context->GetSpecificFileSystem(),
-                                                    context->GetFileSystemSchemeToIdentifierMap()));
+        PAIMON_ASSIGN_OR_RAISE(
+            CoreOptions tmp_core_options,
+            CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(),
+                                 context->GetFileSystemSchemeToIdentifierMap()));
         SchemaManager schema_manager(tmp_core_options.GetFileSystem(), context->GetPath(), branch);
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                                schema_manager.Latest());
@@ -940,10 +1015,16 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
         table_schema = latest_schema.value();
     }
     assert(table_schema);
+    return table_schema;
+}
 
+/// @param table_schema The schema of `branch`, as `LoadReadSchema()` returns it.
+Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
+    const std::shared_ptr<ReadContext>& context, const std::string& branch,
+    const std::shared_ptr<TableSchema>& table_schema) {
     // merge options
     auto options = table_schema->Options();
-    for (const auto& [key, value] : tmp_options) {
+    for (const auto& [key, value] : context->GetOptions()) {
         options[key] = value;
     }
     if (branch != BranchManager::DEFAULT_MAIN_BRANCH) {
@@ -975,11 +1056,27 @@ Result<std::unique_ptr<TableRead>> CreateTableRead(
     return KeyValueTableRead::Create(path_factory, internal_context, memory_pool, executor);
 }
 
+/// @param read_options The options of the read with `ResolveQueryAuthReadOptions()` applied.
+/// @param query_auth_applied Whether a `QueryAuthTableRead` applies the rules around this read, so
+///        a table with `query-auth.enabled=true` is read as it is.
 Result<std::unique_ptr<TableRead>> NewDataTableRead(
-    const std::shared_ptr<ReadContext>& context,
-    const std::shared_ptr<TableSchema>& loaded_schema) {
+    const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& loaded_schema,
+    const std::map<std::string, std::string>& read_options, bool query_auth_applied = false) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
+                           LoadReadSchema(context, context->GetBranch(), loaded_schema));
+    PAIMON_ASSIGN_OR_RAISE(bool query_auth, SchemaValidation::QueryAuthReadEnabled(
+                                                table_schema->Options(), read_options));
+    // Dispatched before the read context is built, which consumes the read schema.
+    if (query_auth && !query_auth_applied) {
+        return QueryAuthTableRead::Create(
+            context, table_schema, GetArrowPool(context->GetMemoryPool()),
+            [table_schema, read_options](std::unique_ptr<ReadContext> inner_context) {
+                return NewDataTableRead(std::move(inner_context), table_schema, read_options,
+                                        /*query_auth_applied=*/true);
+            });
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
-                           CreateInternalReadContext(context, context->GetBranch(), loaded_schema));
+                           CreateInternalReadContext(context, context->GetBranch(), table_schema));
 
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<TableRead> table_read,
@@ -992,10 +1089,34 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(
         return std::move(table_read);
     }
 
+    if (query_auth_applied) {
+        return Status::NotImplemented(
+            "Fallback reads are not supported on a query-auth table: each branch requires its "
+            "own authorized splits and schema validation.");
+    }
+    // A fallback branch may enable query auth only in the catalog or in a schema newer than the
+    // cached one, so its setting is resolved as for the branch read.
+    std::map<std::string, std::string> fallback_read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        fallback_read_options,
+        ResolveQueryAuthReadOptions(
+            context->GetCatalog(), context->GetIdentifier(), context->GetOptions(),
+            scan_fallback_branch.value(), internal_context->GetCoreOptions().GetFileSystem(),
+            context->GetPath(), context->GetSpecificTableSchema().has_value()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> fallback_schema,
+                           LoadReadSchema(context, /*branch=*/scan_fallback_branch.value(),
+                                          /*loaded_schema=*/nullptr));
+    PAIMON_ASSIGN_OR_RAISE(
+        bool fallback_query_auth,
+        SchemaValidation::QueryAuthReadEnabled(fallback_schema->Options(), fallback_read_options));
+    if (fallback_query_auth) {
+        return Status::NotImplemented(fmt::format(
+            "Cannot read fallback branch '{}', which enables '{}', of a table that does not.",
+            scan_fallback_branch.value(), Options::QUERY_AUTH_ENABLED));
+    }
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> fallback_context,
-        CreateInternalReadContext(context, /*branch=*/scan_fallback_branch.value(),
-                                  /*loaded_schema=*/nullptr));
+        CreateInternalReadContext(context, scan_fallback_branch.value(), fallback_schema));
 
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<TableRead> fallback_table_read,
@@ -1045,6 +1166,12 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
         CoreOptions tmp_core_options,
         CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(),
                              context->GetFileSystemSchemeToIdentifierMap()));
+    std::map<std::string, std::string> read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        read_options, ResolveQueryAuthReadOptions(
+                          context->GetCatalog(), context->GetIdentifier(), context->GetOptions(),
+                          context->GetBranch(), tmp_core_options.GetFileSystem(),
+                          context->GetPath(), context->GetSpecificTableSchema().has_value()));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
@@ -1052,10 +1179,13 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
             return Status::NotImplemented(
                 "Precise file-index evaluation is not supported for system tables");
         }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<SystemTable> system_table,
-            SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                            context->GetOptions()));
+        // WithBranch() is kept apart from the options, so hand the branch to the system table.
+        if (!BranchManager::IsMainBranch(context->GetBranch())) {
+            read_options[Options::BRANCH] = context->GetBranch();
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                               SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(),
+                                                               context->GetPath(), read_options));
         return system_table->NewRead(context);
     }
 
@@ -1066,7 +1196,7 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FormatTable> format_table,
         FormatTableLoader::TryLoad(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                   context->GetBranch(), context->GetOptions(),
+                                   context->GetBranch(), read_options,
                                    context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
@@ -1074,7 +1204,7 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     }
 
     // With the schema the dispatch already read, so the managed path does not read it again.
-    return NewDataTableRead(context, latest_schema);
+    return NewDataTableRead(context, latest_schema, read_options);
 }
 
 namespace {

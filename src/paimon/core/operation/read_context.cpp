@@ -26,6 +26,7 @@
 #include "arrow/c/bridge.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
@@ -411,15 +412,25 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot read through a null catalog");
     }
+    // As for a scan, the branch is resolved into the identifier before the catalog is asked.
+    PAIMON_ASSIGN_OR_RAISE(
+        std::string branch,
+        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "read"));
+    if (impl_->catalog_ != nullptr && !BranchManager::IsMainBranch(branch)) {
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
+    }
+    if (impl_->identifier_) {
+        PAIMON_ASSIGN_OR_RAISE(
+            Identifier branch_identifier,
+            CatalogUtils::ResolvedBranchIdentifier(impl_->identifier_.value(), branch));
+        impl_->identifier_.emplace(std::move(branch_identifier));
+    }
     if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
         // A catalog issuing per-table temporary credentials only hands them out through
         // GetTableFileSystem, so the read uses the credentials of this table.
         PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
                                impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::string branch,
-        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "read"));
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0");
     }

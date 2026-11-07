@@ -23,6 +23,7 @@
 #include "paimon/core/global_index/global_index_scan_impl.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
 
@@ -81,6 +82,10 @@ Result<std::unique_ptr<GlobalIndexScan>> GlobalIndexScan::Create(
     std::shared_ptr<MemoryPool> pool = memory_pool ? memory_pool : GetDefaultPool();
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
                            LoadSchema(root_path, options, file_system));
+    // An index search reveals which rows match, so it must not see the rows a row filter hides,
+    // and it ranks raw values, which a column mask invalidates.
+    PAIMON_RETURN_NOT_OK(
+        SchemaValidation::RejectQueryAuth(*table_schema, options, "Global index search"));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            MergeOptions(table_schema, options, file_system));
     std::shared_ptr<PredicateFilter> partition_filters;
@@ -111,6 +116,8 @@ Result<std::unique_ptr<GlobalIndexScan>> GlobalIndexScan::Create(
     std::shared_ptr<MemoryPool> pool = memory_pool ? memory_pool : GetDefaultPool();
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
                            LoadSchema(root_path, options, file_system));
+    PAIMON_RETURN_NOT_OK(
+        SchemaValidation::RejectQueryAuth(*table_schema, options, "Global index search"));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            MergeOptions(table_schema, options, file_system));
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(root_path, snapshot_id, core_options));

@@ -19,6 +19,7 @@
 #include "paimon/read_context.h"
 
 #include <utility>
+#include <vector>
 
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
@@ -62,6 +63,60 @@ TEST(ReadContextTest, TestWithCatalogResolvesTableFileSystem) {
     ASSERT_FALSE(next_ctx->GetCatalog());
     ASSERT_FALSE(next_ctx->GetIdentifier());
     ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
+}
+
+TEST(ReadContextTest, TestWithCatalogResolvesTheBranch) {
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
+
+    for (const std::string branch : {"MAIN", "Main"}) {
+        const std::string message =
+            "a catalog names branch '" + branch + "' as it names the main branch";
+        ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
+                                .WithCatalog(catalog, Identifier("db1", "t1"))
+                                .AddOption(Options::BRANCH, branch)
+                                .Finish(),
+                            message);
+        ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
+                                .WithCatalog(catalog, Identifier("db1", "t1"))
+                                .WithBranch(branch)
+                                .Finish(),
+                            message);
+        ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
+                                .WithCatalog(catalog, Identifier("db1", "t1$branch_" + branch))
+                                .Finish(),
+                            message);
+    }
+    ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
+                            .WithCatalog(catalog, Identifier("db1", "t1"))
+                            .WithBranch("dev$options")
+                            .Finish(),
+                        "a branch a catalog addresses cannot contain '$'");
+    ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
+                            .WithCatalog(catalog, Identifier("db1", "t1", "dev"))
+                            .AddOption(Options::BRANCH, "test")
+                            .Finish(),
+                        "a read is aimed at one branch, but both 'dev' and 'test' were named");
+    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
+    ASSERT_EQ(0u, catalog->LoadTableSchemaCalls());
+    ASSERT_OK_AND_ASSIGN(auto path_ctx,
+                         ReadContextBuilder("table_root_path").WithBranch("MAIN").Finish());
+    ASSERT_EQ("MAIN", path_ctx->GetBranch());
+
+    ASSERT_OK_AND_ASSIGN(auto option_ctx, ReadContextBuilder("table_root_path")
+                                              .WithCatalog(catalog, Identifier("db1", "t1"))
+                                              .AddOption(Options::BRANCH, "dev")
+                                              .Finish());
+    ASSERT_EQ("dev", option_ctx->GetBranch());
+    ASSERT_EQ(Identifier("db1", "t1$branch_dev"), option_ctx->GetIdentifier().value());
+    ASSERT_OK_AND_ASSIGN(auto branch_ctx, ReadContextBuilder("table_root_path")
+                                              .WithCatalog(catalog, Identifier("db1", "t1"))
+                                              .WithBranch("dev")
+                                              .Finish());
+    ASSERT_EQ(Identifier("db1", "t1$branch_dev"), branch_ctx->GetIdentifier().value());
+    ASSERT_EQ(std::vector<Identifier>(
+                  {Identifier("db1", "t1$branch_dev"), Identifier("db1", "t1$branch_dev")}),
+              catalog->TableFileSystemRequests());
 }
 
 TEST(ReadContextTest, TestWithFileSystemOverridesCatalog) {

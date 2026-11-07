@@ -481,6 +481,95 @@ TEST(RestMessagesTest, CommitLockResponseRoundTrip) {
     ASSERT_NOK_WITH_MSG(CommitLockResponse::FromJsonString("[]"), "value must be an object");
 }
 
+TEST(RestMessagesTest, AuthTableQueryRequestRoundTrip) {
+    AuthTableQueryRequest request(std::vector<std::string>{"id", "name"});
+    ASSERT_OK_AND_ASSIGN(std::string json, request.ToJsonString());
+    rapidjson::Document doc;
+    doc.Parse(json.c_str());
+    ASSERT_FALSE(doc.HasParseError());
+    ASSERT_EQ(1u, doc.MemberCount());
+    ASSERT_TRUE(doc["select"].IsArray());
+    ASSERT_OK_AND_ASSIGN(AuthTableQueryRequest parsed, AuthTableQueryRequest::FromJsonString(json));
+    ASSERT_EQ(std::optional<std::vector<std::string>>(std::vector<std::string>{"id", "name"}),
+              parsed.GetSelect());
+
+    AuthTableQueryRequest all_columns(std::nullopt);
+    ASSERT_OK_AND_ASSIGN(std::string all_columns_json, all_columns.ToJsonString());
+    ASSERT_EQ("{}", all_columns_json);
+    ASSERT_OK_AND_ASSIGN(AuthTableQueryRequest parsed_all_columns,
+                         AuthTableQueryRequest::FromJsonString(all_columns_json));
+    ASSERT_FALSE(parsed_all_columns.GetSelect());
+    AuthTableQueryRequest no_columns(std::vector<std::string>{});
+    ASSERT_OK_AND_ASSIGN(std::string no_columns_json, no_columns.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(AuthTableQueryRequest parsed_no_columns,
+                         AuthTableQueryRequest::FromJsonString(no_columns_json));
+    ASSERT_EQ(std::optional<std::vector<std::string>>(std::vector<std::string>{}),
+              parsed_no_columns.GetSelect());
+
+    const std::string column("name\0secret", 11);
+    AuthTableQueryRequest nul_column(std::vector<std::string>{"name", column});
+    ASSERT_OK_AND_ASSIGN(std::string nul_column_json, nul_column.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(AuthTableQueryRequest parsed_nul_column,
+                         AuthTableQueryRequest::FromJsonString(nul_column_json));
+    ASSERT_EQ(nul_column.GetSelect(), parsed_nul_column.GetSelect());
+}
+
+TEST(RestMessagesTest, AuthTableQueryResponseRoundTrip) {
+    std::string json =
+        R"({"filter": ["{\"kind\":\"LEAF\"}"], "columnMasking": {"name": "{\"name\":\"NULL\"}"},)"
+        R"( "unknown": 1})";
+    ASSERT_OK_AND_ASSIGN(AuthTableQueryResponse response,
+                         AuthTableQueryResponse::FromJsonString(json));
+    ASSERT_EQ(std::vector<std::string>({R"({"kind":"LEAF"})"}), response.GetFilter());
+    ASSERT_EQ((std::map<std::string, std::string>{{"name", R"({"name":"NULL"})"}}),
+              response.GetColumnMasking());
+
+    ASSERT_OK_AND_ASSIGN(std::string written, response.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(AuthTableQueryResponse round_tripped,
+                         AuthTableQueryResponse::FromJsonString(written));
+    ASSERT_EQ(response.GetFilter(), round_tripped.GetFilter());
+    ASSERT_EQ(response.GetColumnMasking(), round_tripped.GetColumnMasking());
+
+    const std::string column("name\0secret", 11);
+    AuthTableQueryResponse nul_column({}, {{"name", R"({"name": "NULL"})"},
+                                           {column, R"({"name": "CONCAT", "inputs": ["***"]})"}});
+    ASSERT_OK_AND_ASSIGN(std::string nul_column_json, nul_column.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(AuthTableQueryResponse parsed_nul_column,
+                         AuthTableQueryResponse::FromJsonString(nul_column_json));
+    ASSERT_EQ(nul_column.GetColumnMasking(), parsed_nul_column.GetColumnMasking());
+
+    for (const char* no_rules : {"{}", R"({"filter": null, "columnMasking": null})"}) {
+        ASSERT_OK_AND_ASSIGN(AuthTableQueryResponse empty,
+                             AuthTableQueryResponse::FromJsonString(no_rules));
+        ASSERT_TRUE(empty.GetFilter().empty());
+        ASSERT_TRUE(empty.GetColumnMasking().empty());
+    }
+
+    ASSERT_NOK_WITH_MSG(AuthTableQueryResponse::FromJsonString(R"({"filter": "f"})"),
+                        "value must be an array");
+    ASSERT_NOK_WITH_MSG(AuthTableQueryResponse::FromJsonString(R"({"filter": [1]})"),
+                        "value must be string");
+    ASSERT_NOK_WITH_MSG(AuthTableQueryResponse::FromJsonString(R"({"columnMasking": ["m"]})"),
+                        "value must be an object");
+    ASSERT_NOK_WITH_MSG(AuthTableQueryResponse::FromJsonString(R"({"columnMasking": {"c": 1}})"),
+                        "value must be string");
+
+    ASSERT_NOK_WITH_MSG(AuthTableQueryResponse::FromJsonString(
+                            R"({"filter": [], "filter": ["{\"kind\":\"LEAF\"}"]})"),
+                        "JSON object names member 'filter' more than once");
+    ASSERT_NOK_WITH_MSG(AuthTableQueryResponse::FromJsonString(
+                            R"({"columnMasking": {"c": "{\"name\":\"FIELD_REF\"}",)"
+                            R"( "c": "{\"name\":\"NULL\"}"}})"),
+                        "JSON object names member 'c' more than once");
+    ASSERT_NOK_WITH_MSG(
+        AuthTableQueryResponse::FromJsonString(R"({"columnMasking": {}, "columnMasking": null})"),
+        "JSON object names member 'columnMasking' more than once");
+    for (const std::string& suffix : {std::string(1, '\0'), std::string(1, '\0') + "not JSON"}) {
+        ASSERT_NOK_WITH_MSG(AuthTableQueryResponse::FromJsonString("{}" + suffix),
+                            "JSON contains an unescaped NUL byte");
+    }
+}
+
 TEST(RestMessagesTest, CreateDatabaseRequestRoundTrip) {
     CreateDatabaseRequest request("db1", {{"k1", "v1"}});
     ASSERT_OK_AND_ASSIGN(std::string json, request.ToJsonString());

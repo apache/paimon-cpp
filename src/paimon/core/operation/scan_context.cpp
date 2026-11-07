@@ -22,6 +22,9 @@
 
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/catalog/catalog_utils.h"
+#include "paimon/core/utils/branch_manager.h"
+#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
@@ -41,6 +44,23 @@ ScanContext::ScanContext(
     const std::map<std::string, std::string>& options, const std::shared_ptr<Cache>& cache,
     const std::shared_ptr<FormatTable>& format_table, const std::shared_ptr<Catalog>& catalog,
     const std::optional<Identifier>& identifier)
+    : ScanContext(path, is_streaming_mode, limit, scan_filter, global_index_result,
+                  realtime_context, memory_pool, executor, specific_file_system, table_schema,
+                  options, cache, format_table, catalog, identifier,
+                  /*read_field_names=*/std::nullopt) {}
+
+ScanContext::ScanContext(
+    const std::string& path, bool is_streaming_mode, std::optional<int32_t> limit,
+    const std::shared_ptr<ScanFilter>& scan_filter,
+    const std::shared_ptr<GlobalIndexResult>& global_index_result,
+    const std::shared_ptr<RealtimeContext>& realtime_context,
+    const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor,
+    const std::shared_ptr<FileSystem>& specific_file_system,
+    const std::optional<std::string>& table_schema,
+    const std::map<std::string, std::string>& options, const std::shared_ptr<Cache>& cache,
+    const std::shared_ptr<FormatTable>& format_table, const std::shared_ptr<Catalog>& catalog,
+    const std::optional<Identifier>& identifier,
+    const std::optional<std::vector<std::string>>& read_field_names)
     : path_(path),
       is_streaming_mode_(is_streaming_mode),
       limit_(limit),
@@ -55,7 +75,8 @@ ScanContext::ScanContext(
       cache_(cache),
       format_table_(format_table),
       catalog_(catalog),
-      identifier_(identifier) {}
+      identifier_(identifier),
+      read_field_names_(read_field_names) {}
 
 ScanContext::~ScanContext() = default;
 
@@ -79,6 +100,7 @@ class ScanContextBuilder::Impl {
         cache_.reset();
         catalog_.reset();
         identifier_.reset();
+        read_field_names_.reset();
     }
 
  private:
@@ -103,6 +125,7 @@ class ScanContextBuilder::Impl {
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<Catalog> catalog_;
     std::optional<Identifier> identifier_;
+    std::optional<std::vector<std::string>> read_field_names_;
 };
 
 ScanContextBuilder::ScanContextBuilder(const std::string& path)
@@ -194,6 +217,12 @@ ScanContextBuilder& ScanContextBuilder::WithCatalog(const std::shared_ptr<Catalo
     return *this;
 }
 
+ScanContextBuilder& ScanContextBuilder::SetReadFieldNames(
+    const std::vector<std::string>& read_field_names) {
+    impl_->read_field_names_ = read_field_names;
+    return *this;
+}
+
 ScanContextBuilder& ScanContextBuilder::SetTableSchema(const std::string& table_schema) {
     impl_->table_schema_ = table_schema;
     return *this;
@@ -234,6 +263,24 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot scan through a null catalog");
     }
+    // The branch is resolved into the identifier before the catalog is asked, so every catalog
+    // request addresses the branch planned. As for a write, a branch the catalog would read as
+    // another object, such as `MAIN`, is refused.
+    PAIMON_ASSIGN_OR_RAISE(
+        std::string branch,
+        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, std::nullopt, "scan"));
+    if (impl_->catalog_ != nullptr && !BranchManager::IsMainBranch(branch)) {
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
+    }
+    if (branch != BranchManager::DEFAULT_MAIN_BRANCH) {
+        impl_->options_[Options::BRANCH] = branch;
+    }
+    if (impl_->identifier_) {
+        PAIMON_ASSIGN_OR_RAISE(
+            Identifier branch_identifier,
+            CatalogUtils::ResolvedBranchIdentifier(impl_->identifier_.value(), branch));
+        impl_->identifier_.emplace(std::move(branch_identifier));
+    }
     if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
         // A catalog issuing per-table temporary credentials only hands them out through
         // GetTableFileSystem, so the scan uses the credentials of this table.
@@ -248,7 +295,7 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
         impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
-        impl_->format_table_, impl_->catalog_, impl_->identifier_);
+        impl_->format_table_, impl_->catalog_, impl_->identifier_, impl_->read_field_names_);
     impl_->Reset();
     return ctx;
 }
