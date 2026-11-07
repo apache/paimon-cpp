@@ -124,9 +124,16 @@ TEST(WriteContextTest, TestCatalogAddressesBranchByIdentifier) {
                   .Finish());
 
     WriteContextBuilder upper_main_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(
-        upper_main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_MAIN")).Finish(),
-        "a catalog names branch 'MAIN' as it names the main branch");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> upper_main_context,
+        upper_main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_MAIN")).Finish());
+    ASSERT_EQ("main", upper_main_context->GetBranch());
+
+    WriteContextBuilder upper_main_option_builder("table_root_path", "commit_user_1");
+    ASSERT_NOK_WITH_MSG(upper_main_option_builder.WithCatalog(catalog, Identifier("db1", "t1"))
+                            .AddOption(Options::BRANCH, "MAIN")
+                            .Finish(),
+                        "a catalog names branch 'MAIN' as it names the main branch");
 
     WriteContextBuilder constructed_builder("table_root_path", "commit_user_1");
     ASSERT_OK_AND_ASSIGN(

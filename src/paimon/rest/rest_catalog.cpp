@@ -518,7 +518,9 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
         PAIMON_ASSIGN_OR_RAISE(bool is_format_table,
                                TableTypeDefine::IsFormatTable(data_schema->Options()));
         if (is_format_table) {
-            return FormatTable::Create(fs_, table_path, identifier, data_schema,
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
+                                   GetTableFileSystem(identifier));
+            return FormatTable::Create(table_file_system, table_path, identifier, data_schema,
                                        /*location_carries_paimon_metadata=*/false,
                                        /*dynamic_options=*/{});
         }

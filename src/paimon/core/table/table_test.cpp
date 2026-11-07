@@ -546,6 +546,68 @@ TEST(TableTest, TestGlobalSystemTableRetainsCatalog) {
     ASSERT_TRUE(weak_catalog.expired());
 }
 
+TEST(TableTest, TestMainBranchAliasesUseMainSchemaForAllOperatorEntryPoints) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/db.db/tbl";
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> created,
+                         CreateManagedTable(fs, path, Identifier("db", "tbl")));
+    auto catalog =
+        std::make_shared<FileSystemCatalog>(fs, dir->Str(), std::map<std::string, std::string>{});
+    for (const std::string alias : {"main", "MAIN", "Main", "mAiN"}) {
+        const Identifier identifier("db", "tbl$branch_" + alias);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(identifier));
+        for (bool static_factory : {false, true}) {
+            SCOPED_TRACE(alias + (static_factory ? ":static" : ":loaded"));
+            ScanContextBuilder builder(path);
+            builder.WithCatalog(catalog, identifier);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+            std::unique_ptr<TableScan> scan;
+            if (static_factory) {
+                ASSERT_OK_AND_ASSIGN(scan, TableScan::Create(std::move(context)));
+            } else {
+                ASSERT_OK_AND_ASSIGN(scan, table->NewScan(std::move(context)));
+            }
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_TRUE(plan->Splits().empty());
+
+            ReadContextBuilder read_builder(path);
+            read_builder.WithCatalog(catalog, identifier);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+            std::unique_ptr<TableRead> read;
+            if (static_factory) {
+                ASSERT_OK_AND_ASSIGN(read, TableRead::Create(std::move(read_context)));
+            } else {
+                ASSERT_OK_AND_ASSIGN(read, table->NewRead(std::move(read_context)));
+            }
+
+            WriteContextBuilder write_builder(path, "user");
+            write_builder.WithCatalog(catalog, identifier);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
+                                 write_builder.Finish());
+            std::unique_ptr<FileStoreWrite> write;
+            if (static_factory) {
+                ASSERT_OK_AND_ASSIGN(write, FileStoreWrite::Create(std::move(write_context)));
+            } else {
+                ASSERT_OK_AND_ASSIGN(write, table->NewWrite(std::move(write_context)));
+            }
+            ASSERT_OK(write->Close());
+
+            CommitContextBuilder commit_builder(path, "user");
+            commit_builder.WithCatalog(catalog, identifier);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                                 commit_builder.Finish());
+            std::unique_ptr<FileStoreCommit> commit;
+            if (static_factory) {
+                ASSERT_OK_AND_ASSIGN(commit, FileStoreCommit::Create(std::move(commit_context)));
+            } else {
+                ASSERT_OK_AND_ASSIGN(commit, table->NewCommit(std::move(commit_context)));
+            }
+        }
+    }
+}
+
 TEST(TableTest, TestExplicitContextBranchMustMatchLoadedTable) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);

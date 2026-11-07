@@ -313,6 +313,10 @@ Status FileStoreTable::CheckContextNamesThisTable(
     if (context_identifier) {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> context_branch,
                                context_identifier.value().GetBranchName());
+        if (context_branch) {
+            PAIMON_ASSIGN_OR_RAISE(context_branch,
+                                   context_identifier.value().GetBranchNameOrDefault());
+        }
         if (context_branch && context_branch.value() != CurrentBranch()) {
             return Status::Invalid(fmt::format(
                 "the {} context names branch '{}' of '{}' but this table serves branch '{}', "

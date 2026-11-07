@@ -1322,6 +1322,51 @@ TEST_F(RestCatalogTest, FormatTableIsLoadedInOneRequest) {
     ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("sys", "a$b$c$d")), "for system table");
 }
 
+TEST_F(RestCatalogTest, FormatTableUsesBoundFileSystemForStorageAccess) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    MockCatalogState::TableData table_data;
+    table_data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],)"
+                             R"( "partitionKeys": [], "primaryKeys": [],)"
+                             R"( "options": {"type": "format-table", "file.format": "parquet"}})";
+    table_data.path = dir->Str();
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["fmt"] = table_data;
+    }
+    for (bool supplied_file_system : {false, true}) {
+        SCOPED_TRACE(supplied_file_system);
+        {
+            std::lock_guard<std::mutex> lock(state_->mutex);
+            state_->token_requests.clear();
+        }
+        std::shared_ptr<FileSystem> supplied_fs =
+            supplied_file_system ? dir->GetFileSystem() : nullptr;
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog,
+                             RestCatalog::Create(kWarehouse, options_, supplied_fs));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog->GetTable(Identifier("db1", "fmt")));
+        ASSERT_NE(nullptr, std::dynamic_pointer_cast<FormatTable>(table));
+        if (supplied_file_system) {
+            ASSERT_EQ(supplied_fs, table->GetFileSystem());
+        } else {
+            ASSERT_NE(catalog->GetFileSystem(), table->GetFileSystem());
+        }
+        ASSERT_TRUE(TokenRequests().empty());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context,
+                             ScanContextBuilder(dir->Str()).Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+        ASSERT_TRUE(plan->Splits().empty());
+        if (supplied_file_system) {
+            ASSERT_TRUE(TokenRequests().empty());
+        } else {
+            ASSERT_EQ((std::vector<std::string>{TokenPath("db1", "fmt")}), TokenRequests());
+        }
+    }
+}
+
 TEST_F(RestCatalogTest, FormatTableWithAnUnusableSchemaIsRejectedOnLoad) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
     ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
