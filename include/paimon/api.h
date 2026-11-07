@@ -42,6 +42,9 @@
 #include "paimon/write_context.h"                // IWYU pragma: export
 
 // IWYU pragma: begin_exports
+#include "paimon/realtime/index/realtime_index.h"
+#include "paimon/realtime/index/realtime_index_factory.h"
+#include "paimon/realtime/index/realtime_index_reader.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/realtime/realtime_snapshot_offsets.h"
 #include "paimon/realtime/realtime_store.h"

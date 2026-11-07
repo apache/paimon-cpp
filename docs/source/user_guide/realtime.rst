@@ -115,6 +115,11 @@ Common Options
      - ``none``
      - ``none`` or ``full``. Full mode collects per-batch min/max and null counts
        for conservative predicate pruning, including retained spill metadata.
+   * - ``realtime.index.<index_name>.columns``
+     - Unset
+     - Comma-separated fields indexed in memory by the default Arrow store.
+       Available in append and append deduplicate modes; independent of
+       ``realtime.store.stats-mode``.
    * - ``realtime.deduplicate-key-fields``
      - Unset
      - Selects append deduplicate mode. Although expressed as a comma-separated
@@ -398,6 +403,37 @@ context's reclaimed progress for relevant active stores. It does not restore
 an old in-memory state and is not unrestricted historical time travel. For a
 disk-only historical query, do not attach the real-time context.
 
+In-memory Predicate Indexes
+--------------------------
+
+The default Arrow store supports optional predicate indexes on key or value fields
+in append and append deduplicate modes. PK modes are unsupported. For example:
+
+.. code-block:: text
+
+   realtime.enabled = true
+   realtime.index.hash.columns = id,payload
+   realtime.store.stats-mode = full
+
+The built-in ``hash`` plugin is **experimental**; its implementation and supported
+capabilities may change. It supports equality and ``IN`` predicates on boolean,
+integer, floating-point, string, binary, and date fields. Decimal, timestamp, and
+nested types are currently unsupported. Use a comma-separated list to index
+multiple fields; indexing ``_REALTIME_OFFSET`` is unsupported.
+
+Note that this index does not currently handle hash collisions.
+
+Indexes and batch statistics work independently and can be enabled together.
+For ``id = 7 AND score > 100``, an index supporting equality on ``id`` selects
+candidate offsets; statistics can then skip batches whose maximum ``score``
+is at most 100.
+Statistics cover entire batches, so mixed batches still need row-level
+filtering. Keep predicate fields in the read schema and enable
+``ReadContextBuilder::EnablePredicateFilter(true)`` for exact filtering.
+
+In-memory and disk indexes are configured independently. Use
+``file-index.<type>.columns`` to enable indexes for committed files.
+
 Implementation by Mode
 ----------------------
 
@@ -406,9 +442,10 @@ Append
 
 ``RealtimeAppendOnlyWriter`` validates offsets and writes to an
 ``APPEND_ONLY`` store. The default ``ArrowRealtimeStore`` retains building
-batches and immutable sealed segments in write order. Query readers project
-the requested fields, optionally prune stored batches using statistics, and
-apply the visible offset range before removing the hidden offset column.
+batches and immutable sealed segments in write order. Query readers use
+optional predicate indexes and batch statistics to prune candidates, project
+the requested fields, and apply the visible offset range before removing the
+hidden offset column.
 
 Preparing reads sealed segments through the ordinary ``AppendOnlyWriter``,
 removing the internal offset prefix before writing table files. Queries do not
@@ -467,8 +504,10 @@ are marked deleted, and within-batch duplicates are resolved in row order.
 Add rows are appended to the store; delete events update only the key/DV state,
 without persisting a delete row.
 
-Key indexes and DV bitmaps use copy-on-write snapshots, so later writes do not
-change the state held by existing lookups, read views, or seal checkpoints.
+Deduplicate key-to-latest-offset lookups and DV bitmaps use copy-on-write
+snapshots, so later writes do not change the state held by existing lookups,
+read views, or seal checkpoints. The optional predicate indexes share
+append-only postings instead.
 
 Memory reads use the read view's DV to exclude rows whose offsets are marked
 deleted.
@@ -511,8 +550,9 @@ still terminal for the owning writer/context.
 Old views can retain the memory representation after spill or reclamation;
 new views use the published representation. Spill files are deleted when the
 store and all remaining handles/readers have released them. They are temporary
-storage, not a recoverable log after process restart. Deduplicate key indexes
-and DVs remain in memory; full-mode statistics also remain resident after spill.
+storage, not a recoverable log after process restart. Predicate indexes,
+deduplicate key indexes, DVs, and full-mode statistics remain in memory after
+spill. Predicate index memory is included in store memory accounting.
 
 ``RealtimeContext::GetMetrics()`` and real-time writer metrics expose:
 
@@ -596,8 +636,8 @@ Current restrictions include:
 * Append deduplicate requires a single non-null scalar key, a persisted offset
   column, exact offset file-index reads, and non-bitmap64 DVs. Existing ordinary
   append files are not migrated automatically.
-* Spill covers Arrow data, not key indexes or DVs, and provides neither a hard
-  memory limit nor crash recovery.
+* Spill covers Arrow data, not predicate indexes, key indexes, or DVs, and
+  provides neither a hard memory limit nor crash recovery.
 
 Code Map
 --------

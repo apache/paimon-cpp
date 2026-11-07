@@ -424,6 +424,11 @@ set(PAIMON_CORE_SRCS
     core/realtime/arrow_realtime_store_factory.cpp
     core/realtime/data_file_key_offset_index_writer.cpp
     core/realtime/key_offset_index_utils.cpp
+    core/realtime/index/hash/hash_realtime_index.cpp
+    core/realtime/index/realtime_index_evaluator.cpp
+    core/realtime/index/realtime_index_factory.cpp
+    core/realtime/index/realtime_index_reader.cpp
+    core/realtime/index/realtime_index_set.cpp
     core/realtime/realtime_key_offset_index.cpp
     core/realtime/realtime_file_schema.cpp
     core/realtime/realtime_offset_file_index_lookup.cpp
@@ -914,6 +919,7 @@ if(PAIMON_BUILD_TESTS)
                     core/realtime/arrow_deduplicate_realtime_store_test.cpp
                     core/realtime/arrow_realtime_store_test.cpp
                     core/realtime/key_offset_index_utils_test.cpp
+                    core/realtime/index/realtime_index_test.cpp
                     core/realtime/primary_key_realtime_store_test.cpp
                     core/realtime/realtime_deduplicate_state_test.cpp
                     core/realtime/realtime_file_schema_test.cpp
