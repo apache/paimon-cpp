@@ -58,10 +58,16 @@ std::shared_ptr<TableSchema> PkSchema(
 }  // namespace
 
 TEST(PrimaryKeyTableUtilsTest, TestSupportedRealtimeOptions) {
-    ASSERT_OK_AND_ASSIGN(CoreOptions options,
-                         CoreOptions::FromMap({{Options::BUCKET, "1"},
-                                               {Options::DELETION_VECTORS_ENABLED, "true"}}));
-    ASSERT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema()));
+    const std::vector<std::map<std::string, std::string>> supported_options = {
+        {{Options::BUCKET, "1"}, {Options::DELETION_VECTORS_ENABLED, "true"}},
+        {{Options::BUCKET, "1"},
+         {Options::MERGE_ENGINE, "partial-update"},
+         {Options::DELETION_VECTORS_ENABLED, "false"}},
+    };
+    for (const std::map<std::string, std::string>& option_map : supported_options) {
+        ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(option_map));
+        ASSERT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema()));
+    }
 }
 
 TEST(PrimaryKeyTableUtilsTest, TestUnsupportedRealtimeOptions) {
@@ -112,8 +118,12 @@ TEST(PrimaryKeyTableUtilsTest, TestRealtimeRejectsDeleteAndSequenceOrderingOptio
                         "supports only ascending sequence.field.sort-order");
 }
 
-TEST(PrimaryKeyTableUtilsTest, TestRealtimeReportsSpecificLookupErrors) {
+TEST(PrimaryKeyTableUtilsTest, TestRealtimeReportsSpecificUnsupportedOptions) {
     const std::vector<std::pair<std::map<std::string, std::string>, std::string>> cases = {
+        {{{Options::BUCKET, "1"},
+          {Options::MERGE_ENGINE, "partial-update"},
+          {Options::DELETION_VECTORS_ENABLED, "true"}},
+         "PK realtime partial-update does not support deletion vectors"},
         {{{Options::BUCKET, "1"}, {Options::FORCE_LOOKUP, "true"}},
          "PK realtime does not support lookup"},
         {{{Options::BUCKET, "1"}, {Options::CHANGELOG_PRODUCER, "input"}},

@@ -4325,6 +4325,23 @@ TEST_F(RealtimeWriteInteTest, TestPkDeleteInsertAndPinnedReadsAcrossRefresh) {
     ASSERT_OK(writer->Close());
 }
 
+TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateWithDvUnsupported) {
+    options_[Options::MERGE_ENGINE] = "partial-update";
+    options_[Options::DELETION_VECTORS_ENABLED] = "true";
+    CreatePkTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    Result<std::unique_ptr<FileStoreWrite>> writer = CreateRealtimeWriter(realtime_context);
+    ASSERT_TRUE(writer.status().IsNotImplemented()) << writer.status().ToString();
+    ASSERT_EQ("PK realtime partial-update does not support deletion vectors",
+              writer.status().message());
+
+    Result<std::shared_ptr<Plan>> plan = CreatePlan(realtime_context, /*predicate=*/nullptr);
+    ASSERT_TRUE(plan.status().IsNotImplemented()) << plan.status().ToString();
+    ASSERT_EQ("PK realtime partial-update does not support deletion vectors",
+              plan.status().message());
+}
+
 TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateDeleteAcrossCommits) {
     fields_ = {arrow::field("id", arrow::int64()), arrow::field("a", arrow::int64()),
                arrow::field("b", arrow::int64())};

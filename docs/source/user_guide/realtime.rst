@@ -58,7 +58,8 @@ The table schema and options select the mode; there is no separate
      - Batches sorted by primary key and sequence number
      - Merge disk runs, sealed batches, and building batches by primary key
    * - PK DV
-     - Primary key; ``deletion-vectors.enabled=true``
+     - Primary key; ``merge-engine=deduplicate``;
+       ``deletion-vectors.enabled=true``
      - The same sorted PK store as PK MOR
      - Apply committed DVs, then merge disk and memory by primary key
    * - Append deduplicate
@@ -79,8 +80,9 @@ and exact residual filtering follow the mode-specific rules below.
 Append accepts ``INSERT`` only. PK and append deduplicate also accept
 ``UPDATE_AFTER``, ``DELETE``, and ``UPDATE_BEFORE``. PK supports composite
 primary keys with ``merge-engine=deduplicate`` or ``merge-engine=partial-update``.
-Partial update uses the existing merge function and its sequence-group,
-field-aggregation, and delete options. Append deduplicate currently
+PK realtime partial-update requires deletion vectors disabled
+(``deletion-vectors.enabled=false``). Partial update uses the existing merge
+function and its sequence-group, field-aggregation, and delete options. Append deduplicate currently
 accepts exactly one non-null, non-nested key field and is experimental: its
 persisted index format may change.
 
@@ -595,8 +597,8 @@ Current restrictions include:
   global-index result splits, vector/full-text search, and count-only real-time
   readers are unsupported.
 * PK mode supports deduplicate with default delete handling, or partial update
-  with its existing delete and sequence-group options. Both require
-  ascending sequence order and ``changelog-producer=none``. Custom
+  with deletion vectors disabled and its existing delete and sequence-group
+  options. Both require ascending sequence order and ``changelog-producer=none``. Custom
   ``sequence.field``, floating-point keys, PK global indexes, lookup without DVs,
   and read-optimized union scans are unsupported.
 * Append deduplicate requires a single non-null scalar key, a persisted offset
