@@ -23,6 +23,9 @@
 
 namespace paimon {
 Result<std::unique_ptr<OffsetOutputStream>> OffsetOutputStream::Create(OutputStream* output) {
+    if (!output) {
+        return Status::Invalid("output stream is null");
+    }
     PAIMON_ASSIGN_OR_RAISE(int64_t start, output->GetPos());
     return std::unique_ptr<OffsetOutputStream>(new OffsetOutputStream(output, start));
 }
@@ -43,6 +46,9 @@ Result<int64_t> OffsetOutputStream::GetUnderlyingPos() const {
     const OutputStream* output = output_;
     while (const auto* offset_output = dynamic_cast<const OffsetOutputStream*>(output)) {
         output = offset_output->output_;
+    }
+    if (!output) {
+        return Status::Invalid("underlying output stream is null");
     }
     return output->GetPos();
 }

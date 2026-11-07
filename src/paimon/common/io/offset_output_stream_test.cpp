@@ -31,6 +31,10 @@
 
 namespace paimon::test {
 
+TEST(OffsetOutputStreamTest, TestRejectsNullOutput) {
+    ASSERT_NOK_WITH_MSG(OffsetOutputStream::Create(nullptr), "output stream is null");
+}
+
 TEST(OffsetOutputStreamTest, TestRelativePositionsAndWrites) {
     auto pool = GetDefaultPool();
     auto output =
