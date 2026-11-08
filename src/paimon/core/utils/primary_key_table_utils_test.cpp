@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
@@ -133,9 +134,8 @@ TEST(PrimaryKeyTableUtilsTest, TestRealtimeReportsSpecificUnsupportedOptions) {
     };
     for (const auto& [option_map, expected_message] : cases) {
         ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(option_map));
-        Status status = PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema());
-        ASSERT_TRUE(status.IsNotImplemented());
-        ASSERT_EQ(status.message(), expected_message);
+        ASSERT_NOK_WITH_MSG(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema()),
+                            fmt::format("NotImplemented: {}", expected_message));
     }
 }
 

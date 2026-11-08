@@ -50,6 +50,7 @@
 #include "paimon/common/predicate/equal.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
@@ -4314,15 +4315,12 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateWithDvUnsupported) {
     CreatePkTable();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
-    Result<std::unique_ptr<FileStoreWrite>> writer = CreateRealtimeWriter(realtime_context);
-    ASSERT_TRUE(writer.status().IsNotImplemented()) << writer.status().ToString();
-    ASSERT_EQ("PK realtime partial-update does not support deletion vectors",
-              writer.status().message());
-
-    Result<std::shared_ptr<Plan>> plan = CreatePlan(realtime_context, /*predicate=*/nullptr);
-    ASSERT_TRUE(plan.status().IsNotImplemented()) << plan.status().ToString();
-    ASSERT_EQ("PK realtime partial-update does not support deletion vectors",
-              plan.status().message());
+    ASSERT_NOK_WITH_MSG(
+        CreateRealtimeWriter(realtime_context),
+        "NotImplemented: PK realtime partial-update does not support deletion vectors");
+    ASSERT_NOK_WITH_MSG(
+        CreatePlan(realtime_context, /*predicate=*/nullptr),
+        "NotImplemented: PK realtime partial-update does not support deletion vectors");
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateDeleteAcrossCommits) {
@@ -4487,24 +4485,20 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateAggregationSpillAndRecovery) {
     const std::string committed_expected = R"([[0, 1, 22, 32, "latest"]])";
     const std::string replayed_expected = R"([[0, 1, 23, 39, "tail"]])";
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
-    ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
+    ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
     ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(1));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
-    ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
+    ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
     ASSERT_OK_AND_ASSIGN(snapshot, Commit(progress, 1));
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
     ASSERT_TRUE(WaitForChannelFileCount(temp_directory, 0));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(nullptr, nullptr));
-    ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, nullptr, schema_, committed_expected));
+    ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(plan, nullptr, schema_, committed_expected));
     const std::string tail = R"([[5, 1, 23, 7, "tail"]])";
     ASSERT_OK_AND_ASSIGN(batch, MakeUnpartitionedBatchFromJson(tail));
     ASSERT_OK(writer->Write(std::move(batch)));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
-    ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, replayed_expected));
+    ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(plan, context, schema_, replayed_expected));
     ASSERT_NOK_WITH_MSG(writer->Close(),
                         "real-time writer closed with data not covered by a successful "
                         "PrepareCommitWithProgress");
@@ -4515,20 +4509,17 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateAggregationSpillAndRecovery) {
     ASSERT_OK_AND_ASSIGN(context, RealtimeContext::Create());
     ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(context, temp_directory));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
-    ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
+    ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(plan, context, schema_, committed_expected));
     // Simulate caller WAL replay with exactly the original offset and row.
     ASSERT_OK_AND_ASSIGN(batch, MakeUnpartitionedBatchFromJson(tail));
     ASSERT_OK(writer->Write(std::move(batch)));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
-    ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, context, schema_, replayed_expected));
+    ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(plan, context, schema_, replayed_expected));
     ASSERT_OK_AND_ASSIGN(progress, writer->PrepareCommitWithProgress(2));
     ASSERT_OK_AND_ASSIGN(snapshot, Commit(progress, 2));
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
     ASSERT_OK_AND_ASSIGN(plan, CreatePlan(nullptr, nullptr));
-    ASSERT_NO_FATAL_FAILURE(
-        ReadPlanWithSchemaAndCheck(plan, nullptr, schema_, replayed_expected));
+    ASSERT_NO_FATAL_FAILURE(ReadPlanWithSchemaAndCheck(plan, nullptr, schema_, replayed_expected));
     ASSERT_OK(writer->Close());
 }
 
@@ -4548,10 +4539,10 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdatePartitionedDefaultAggregationRe
     auto array_result =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(layout->InputSchema()->fields()),
                                                   R"([[0, 1, "p0", 10, 10], [1, 1, "p0", 11, 3]])");
-    ASSERT_TRUE(array_result.ok());
-    std::shared_ptr<arrow::Array> array = array_result.ValueOrDie();
+    ASSERT_OK(ToPaimonStatus(array_result.status()));
+    std::shared_ptr<arrow::Array> array = std::move(array_result).ValueUnsafe();
     ArrowArray c_array;
-    ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+    ASSERT_OK(ToPaimonStatus(arrow::ExportArray(*array, &c_array)));
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<RecordBatch> batch,
         RecordBatchBuilder(&c_array)

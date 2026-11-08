@@ -108,7 +108,8 @@ Status PrimaryKeyTableUtils::ValidateRealtimeOptions(const CoreOptions& options,
         return Status::NotImplemented(
             "PK realtime supports only the DEDUPLICATE and PARTIAL_UPDATE merge engines");
     }
-    if (options.GetMergeEngine() == MergeEngine::PARTIAL_UPDATE && options.DeletionVectorsEnabled()) {
+    if (options.GetMergeEngine() == MergeEngine::PARTIAL_UPDATE &&
+        options.DeletionVectorsEnabled()) {
         return Status::NotImplemented(
             "PK realtime partial-update does not support deletion vectors");
     }
