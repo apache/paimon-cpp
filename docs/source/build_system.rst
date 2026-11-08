@@ -48,6 +48,9 @@ for data format and file system.
 
    project(MyExample)
 
+   set(CMAKE_CXX_STANDARD 17)
+   set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
    # Arrow's static package may export LZ4 under a different target name.
    find_package(lz4 CONFIG QUIET)
    if(TARGET LZ4::lz4_static AND NOT TARGET LZ4::lz4)

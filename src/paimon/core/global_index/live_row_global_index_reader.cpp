@@ -24,6 +24,7 @@
 #include <mutex>
 #include <utility>
 
+#include "paimon/common/global_index/global_index_utils.h"
 #include "paimon/common/global_index/union_global_index_reader.h"
 
 namespace paimon {
@@ -40,7 +41,7 @@ bool MayRankRowsOf(const FullTextSearch& full_text_search, const Range& range) {
 }
 
 /// A union of LiveRowGlobalIndexReaders that loads the live rows on the visiting thread before a
-/// full-text search fans out to them.
+/// full-text or vector search fans out to them.
 class LiveRowUnionGlobalIndexReader : public UnionGlobalIndexReader {
  public:
     /// @param ranked_ranges The global row ids the shards rank in a full-text search, leaving out
@@ -67,6 +68,15 @@ class LiveRowUnionGlobalIndexReader : public UnionGlobalIndexReader {
             PAIMON_RETURN_NOT_OK(live_rows_supplier_());
         }
         return UnionGlobalIndexReader::VisitFullTextSearch(full_text_search);
+    }
+
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& vector_search) override {
+        // The union passes a vector search to every shard.
+        if (vector_search) {
+            PAIMON_RETURN_NOT_OK(live_rows_supplier_());
+        }
+        return UnionGlobalIndexReader::VisitVectorSearch(vector_search);
     }
 
  private:
@@ -197,7 +207,23 @@ Result<std::shared_ptr<GlobalIndexResult>> LiveRowGlobalIndexReader::VisitLike(
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> LiveRowGlobalIndexReader::VisitVectorSearch(
     const std::shared_ptr<VectorSearch>& vector_search) {
-    return wrapped_->VisitVectorSearch(vector_search);
+    if (!vector_search) {
+        return wrapped_->VisitVectorSearch(vector_search);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const RoaringBitmap64> live_rows, live_rows_supplier_());
+    if (!live_rows) {
+        return wrapped_->VisitVectorSearch(vector_search);
+    }
+    RoaringBitmap64 shard_live_rows = GlobalIndexUtils::RowIdsOf(shard_range_);
+    shard_live_rows &= *live_rows;
+    if (shard_live_rows.Cardinality() == shard_range_.Count()) {
+        return wrapped_->VisitVectorSearch(vector_search);
+    }
+    return wrapped_->VisitVectorSearch(vector_search->ReplacePreFilter(
+        [shard_live_rows = std::make_shared<const RoaringBitmap64>(std::move(shard_live_rows)),
+         pre_filter = vector_search->pre_filter](int64_t row_id) {
+            return shard_live_rows->Contains(row_id) && (!pre_filter || pre_filter(row_id));
+        }));
 }
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> LiveRowGlobalIndexReader::VisitFullTextSearch(

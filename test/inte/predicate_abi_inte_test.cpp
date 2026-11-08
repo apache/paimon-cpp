@@ -54,7 +54,6 @@
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_builder.h"
-#include "paimon/predicate/predicate_utils.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -90,9 +89,13 @@ TEST(PredicateAbiInteTest, FullTextMatchCastsToLeafAcrossModule) {
     ASSERT_TRUE(leaf->Literals().empty());
     ASSERT_EQ(leaf->GetFunction().GetType(), Function::Type::FULL_TEXT_MATCH);
     auto reader = std::make_shared<FileIndexReader>();
-    auto result = PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(leaf, reader);
+    auto result = reader->VisitFullTextMatch(match);
     ASSERT_NOK_WITH_MSG(result, "This file index does not support complete full-text matching");
     ASSERT_TRUE(result.status().IsNotImplemented());
+    ASSERT_FALSE(reader->SupportsSearch(FileIndexReader::SearchType::FULL_TEXT_MATCH));
+    ASSERT_FALSE(reader->EstimateSelectivity(leaf));
+    ASSERT_NOK_WITH_MSG(reader->VisitFullTextMatch(match, /*needs_scores=*/true),
+                        "This file index does not support complete full-text matching");
 }
 
 // A compound predicate built in libpaimon.so must survive dynamic_pointer_cast

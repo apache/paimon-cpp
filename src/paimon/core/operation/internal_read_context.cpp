@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "arrow/api.h"
@@ -217,7 +218,7 @@ Result<std::shared_ptr<arrow::Field>> InternalReadContext::AlignReadFieldWithTab
 }
 
 std::optional<DataField> InternalReadContext::TryResolveSpecialFieldById(
-    int32_t field_id, const CoreOptions& core_options, bool has_vector_or_full_text_search) {
+    int32_t field_id, const CoreOptions& core_options) {
     if (field_id == SpecialFields::ValueKind().Id()) {
         return SpecialFields::ValueKind();
     }
@@ -234,7 +235,7 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldById(
         return std::nullopt;
     }
     if (field_id == SpecialFields::IndexScore().Id()) {
-        if (core_options.DataEvolutionEnabled() || has_vector_or_full_text_search) {
+        if (core_options.DataEvolutionEnabled()) {
             return SpecialFields::IndexScore();
         }
         return std::nullopt;
@@ -243,8 +244,7 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldById(
 }
 
 std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
-    const std::string& name, const CoreOptions& core_options, bool has_vector_or_full_text_search,
-    int32_t output_field_idx) {
+    const std::string& name, const CoreOptions& core_options, int32_t output_field_idx) {
     if (SpecialFields::ParseIndexScoreFieldName(name)) {
         // These virtual columns have read-local negative IDs, not persistent table IDs.
         return DataField(-1 - output_field_idx, arrow::field(name, arrow::float32()));
@@ -265,7 +265,7 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
         return std::nullopt;
     }
     if (name == SpecialFields::IndexScore().Name()) {
-        if (core_options.DataEvolutionEnabled() || has_vector_or_full_text_search) {
+        if (core_options.DataEvolutionEnabled()) {
             return SpecialFields::IndexScore();
         }
         return std::nullopt;
@@ -280,23 +280,21 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(),
                                                 context->GetFileSystemSchemeToIdentifierMap()));
     core_options.WithCache(context->GetCache());
-    if (context->HasVectorOrFullTextSearch()) {
+    if (context->EnablePreciseFileIndexEvaluate()) {
         if (!core_options.FileIndexReadEnabled()) {
             return Status::Invalid(
-                "File Index read must be enabled for VectorSearch or FullTextSearch");
+                "Precise file-index evaluation requires file-index.read.enabled=true");
         }
         if (!table_schema->PrimaryKeys().empty() && !core_options.DeletionVectorsEnabled()) {
             return Status::NotImplemented(
-                "VectorSearch or FullTextSearch on primary-key tables requires deletion vectors");
+                "Precise file-index evaluation on primary-key tables requires deletion vectors");
         }
-        if (core_options.DataEvolutionEnabled()) {
+        if (core_options.DataEvolutionEnabled() || context->GetRealtimeContext()) {
             return Status::NotImplemented(
-                "VectorSearch or FullTextSearch does not support data-evolution reads yet");
+                "Precise file-index evaluation does not support data-evolution or real-time reads");
         }
-        if (context->GetRealtimeContext()) {
-            return Status::NotImplemented(
-                "VectorSearch or FullTextSearch does not support real-time reads yet");
-        }
+    }
+    if (context->HasVectorOrFullTextSearch()) {
         const std::string& search_field = context->GetVectorSearch()
                                               ? context->GetVectorSearch()->field_name
                                               : context->GetFullTextSearch()->field_name;
@@ -306,7 +304,6 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     // prepare read schema
     // Priority: projected_arrow_schema > read_field_ids > read_field_names
     const bool has_projected_read_schema = context->HasReadSchema();
-    const bool has_vector_or_full_text_search = context->HasVectorOrFullTextSearch();
     std::vector<DataField> read_data_fields;
     if (has_projected_read_schema) {
         // Nested column pruning path: user provided a read C ArrowSchema
@@ -317,9 +314,9 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
         read_data_fields.reserve(read_schema->num_fields());
         // Align special-field validation with read_field_ids/read_field_names branches.
         for (const auto& read_field : read_schema->fields()) {
-            if (auto resolved_special_field = TryResolveSpecialFieldByName(
-                    read_field->name(), core_options, has_vector_or_full_text_search,
-                    static_cast<int32_t>(read_data_fields.size()))) {
+            if (auto resolved_special_field =
+                    TryResolveSpecialFieldByName(read_field->name(), core_options,
+                                                 static_cast<int32_t>(read_data_fields.size()))) {
                 read_data_fields.push_back(*resolved_special_field);
                 continue;
             }
@@ -344,8 +341,7 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     } else if (!context->GetReadFieldIds().empty()) {
         read_data_fields.reserve(context->GetReadFieldIds().size());
         for (const auto& field_id : context->GetReadFieldIds()) {
-            if (auto resolved_special_field = TryResolveSpecialFieldById(
-                    field_id, core_options, has_vector_or_full_text_search)) {
+            if (auto resolved_special_field = TryResolveSpecialFieldById(field_id, core_options)) {
                 read_data_fields.push_back(*resolved_special_field);
                 continue;
             }
@@ -355,9 +351,8 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     } else if (!context->GetReadFieldNames().empty()) {
         read_data_fields.reserve(context->GetReadFieldNames().size());
         for (const auto& name : context->GetReadFieldNames()) {
-            if (auto resolved_special_field =
-                    TryResolveSpecialFieldByName(name, core_options, has_vector_or_full_text_search,
-                                                 static_cast<int32_t>(read_data_fields.size()))) {
+            if (auto resolved_special_field = TryResolveSpecialFieldByName(
+                    name, core_options, static_cast<int32_t>(read_data_fields.size()))) {
                 read_data_fields.push_back(*resolved_special_field);
                 continue;
             }
@@ -377,12 +372,23 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     } else {
         PAIMON_RETURN_NOT_OK(ArrowSchemaValidator::ValidateSchemaWithFieldId(*read_schema));
     }
-    if (context->GetFullTextSearch() &&
+    if (context->EnablePreciseFileIndexEvaluate() &&
         read_schema->GetFieldIndex(SpecialFields::IndexScore().Name()) >= 0) {
-        return Status::NotImplemented("File full-text search does not support score output yet");
+        return Status::Invalid(
+            "Precise file-index evaluation does not support _INDEX_SCORE; "
+            "project _<field>_INDEX_SCORE instead");
     }
     // validate predicate
     if (context->GetPredicate()) {
+        std::set<std::string> field_names;
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(context->GetPredicate(), &field_names));
+        for (const auto& field_name : field_names) {
+            if (field_name == SpecialFields::IndexScore().Name() ||
+                SpecialFields::ParseIndexScoreFieldName(field_name)) {
+                return Status::Invalid(fmt::format(
+                    "Predicates on virtual index score column '{}' are not supported", field_name));
+            }
+        }
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
             *read_schema, context->GetPredicate(), /*validate_field_idx=*/true));
     }
@@ -481,10 +487,9 @@ InternalReadContext::InternalReadContext(const std::shared_ptr<ReadContext>& rea
 Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSchema(
     const std::shared_ptr<InternalReadContext>& original,
     const std::shared_ptr<arrow::Schema>& new_read_schema) {
-    if (original->HasVectorOrFullTextSearch() ||
-        PredicateUtils::ContainsFullTextMatch(original->GetPredicate())) {
+    if (original->EnablePreciseFileIndexEvaluate()) {
         return Status::NotImplemented(
-            "CreateWithSchema does not support search requests or index score projections");
+            "CreateWithSchema does not support precise file-index evaluation");
     }
     // Create a new InternalReadContext sharing all properties except read_schema.
     // The new read_schema is the minimal column set for COUNT(*).

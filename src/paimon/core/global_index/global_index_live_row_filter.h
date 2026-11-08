@@ -31,6 +31,7 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/utils/roaring_bitmap64.h"
+#include "paimon/utils/row_range_index.h"
 
 namespace paimon {
 /// Live-row filtering shared by global index search readers, aligned with Java
@@ -50,14 +51,17 @@ class GlobalIndexLiveRowFilter {
     /// @param snapshot         The snapshot to read; pin it to the one the global index is
     ///                         read from, so row ids and live rows agree.
     /// @param partition_filter Predicate over the partition fields, or null for all partitions.
+    /// @param row_range_index  Global row ids the caller needs, or nullopt for all rows. Data files
+    ///                         whose row ids miss them may be skipped, every one of them in Data
+    ///                         Evolution tables, so live rows outside them may be left out.
     /// @param options          Options of the table.
     /// @param executor         Executor for reading manifests.
     /// @param pool             Memory pool for reading manifests and deletion vectors.
     static Result<std::optional<RoaringBitmap64>> LiveRows(
         const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
         const Snapshot& snapshot, const std::shared_ptr<PredicateFilter>& partition_filter,
-        const CoreOptions& options, const std::shared_ptr<Executor>& executor,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::optional<RowRangeIndex>& row_range_index, const CoreOptions& options,
+        const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
 };
 
 }  // namespace paimon

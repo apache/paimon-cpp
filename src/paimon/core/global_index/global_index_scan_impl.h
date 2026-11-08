@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -69,12 +70,15 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
     using IndexMetaMap =
         std::map<int32_t, std::map<std::string,
                                    std::map<Range, std::vector<std::shared_ptr<IndexFileMeta>>>>>;
+    /// Loads the rows live in the scanned snapshot among the data files whose row ids intersect the
+    /// given row ranges.
+    using LiveRowsLoader =
+        std::function<Result<std::optional<RoaringBitmap64>>(const RowRangeIndex&)>;
 
     GlobalIndexScanImpl(const std::shared_ptr<TableSchema>& table_schema,
                         const CoreOptions& options,
                         const std::shared_ptr<IndexPathFactory>& path_factory,
-                        IndexMetaMap&& index_metas,
-                        LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier,
+                        IndexMetaMap&& index_metas, LiveRowsLoader load_live_rows,
                         const std::shared_ptr<Executor>& executor,
                         const std::shared_ptr<MemoryPool>& pool);
 
@@ -96,8 +100,8 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
     CoreOptions options_;
     std::shared_ptr<GlobalIndexFileManager> index_file_manager_;
     IndexMetaMap index_metas_;
-    /// Supplies the rows live in the scanned snapshot; empty when deletion vectors are disabled.
-    LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier_;
+    /// Loads the rows live in the scanned snapshot; empty when deletion vectors are disabled.
+    LiveRowsLoader load_live_rows_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<GlobalIndexEvaluator> evaluator_;
 };

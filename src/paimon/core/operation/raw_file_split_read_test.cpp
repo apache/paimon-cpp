@@ -545,7 +545,8 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
         "f3", /*limit=*/2, std::vector<float>{1.0f}, nullptr, nullptr,
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     ReadContextBuilder context_builder(path);
-    context_builder.SetReadFieldNames({"_INDEX_SCORE", "f0"}).SetVectorSearch(vector_search);
+    context_builder.EnablePreciseFileIndexEvaluate(true);
+    context_builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0"}).SetVectorSearch(vector_search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
@@ -587,13 +588,14 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                    arrow::field("_INDEX_SCORE", arrow::float32()),
+                                    arrow::field("_f3_INDEX_SCORE", arrow::float32()),
                                     arrow::field("f0", arrow::utf8())}),
                     {R"([[0, 0.25, "Bob"], [0, 0.75, "Tony"]])"}, &expected)
                     .ok());
     ASSERT_TRUE(result->Equals(expected));
 
     ReadContextBuilder without_score_builder(path);
+    without_score_builder.EnablePreciseFileIndexEvaluate(true);
     without_score_builder.SetReadFieldNames({"f0"}).SetVectorSearch(vector_search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> without_score_context,
                          without_score_builder.Finish());
@@ -623,7 +625,8 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchFiltersDeletionVectorBeforeTopK) {
         "f3", /*limit=*/1, std::vector<float>{1.0f}, user_filter, nullptr,
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     ReadContextBuilder builder(path);
-    builder.SetReadFieldNames({"_INDEX_SCORE", "f0"}).SetVectorSearch(search);
+    builder.EnablePreciseFileIndexEvaluate(true);
+    builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0"}).SetVectorSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result,
@@ -632,7 +635,7 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchFiltersDeletionVectorBeforeTopK) {
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                    arrow::field("_INDEX_SCORE", arrow::float32()),
+                                    arrow::field("_f3_INDEX_SCORE", arrow::float32()),
                                     arrow::field("f0", arrow::utf8())}),
                     {R"([[0, 0.75, "Tony"]])"}, &expected)
                     .ok());
@@ -648,6 +651,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchFiltersDeletionVectorBeforeLimit)
     auto search = std::make_shared<FullTextSearch>("f3", R"({"match":{"query":"match"}})",
                                                    /*limit=*/1, user_filter);
     ReadContextBuilder builder(path);
+    builder.EnablePreciseFileIndexEvaluate(true);
     builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
@@ -693,12 +697,15 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchRenamedUnprojectedFieldInOldFile) {
                                                  nullptr, VectorSearch::DistanceType::EUCLIDEAN,
                                                  std::map<std::string, std::string>{});
     ReadContextBuilder builder(path);
-    builder.SetOptions(options).SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(search);
+    builder.EnablePreciseFileIndexEvaluate(true);
+    builder.SetOptions(options)
+        .SetReadFieldNames({"f0", "_renamed_f3_INDEX_SCORE"})
+        .SetVectorSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
 
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                         arrow::field("f0", arrow::utf8()),
-                                         arrow::field("_INDEX_SCORE", arrow::float32())});
+    auto expected_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("f0", arrow::utf8()),
+         arrow::field("_renamed_f3_INDEX_SCORE", arrow::float32())});
     const std::vector<std::pair<RoaringBitmap32, std::string>> cases = {
         {RoaringBitmap32(), R"([[0,"Bob",0.25],[0,"Tony",0.75]])"},
         {RoaringBitmap32::From({0}), R"([[0,"Tony",0.75]])"}};
@@ -722,6 +729,7 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchRenamedUnprojectedFieldInOldFile) {
     auto missing_search = std::make_shared<VectorSearch>(*search);
     missing_search->field_name = "f3";
     ReadContextBuilder missing_field_builder(path);
+    missing_field_builder.EnablePreciseFileIndexEvaluate(true);
     missing_field_builder.SetOptions(options).SetReadFieldNames({"f0"}).SetVectorSearch(
         missing_search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> missing_context,
@@ -760,6 +768,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
     auto search =
         std::make_shared<FullTextSearch>("renamed_f3", R"({"match":{"query":"match"}})", 2);
     ReadContextBuilder builder(path);
+    builder.EnablePreciseFileIndexEvaluate(true);
     builder.SetOptions(options).SetReadFieldNames({"f0"}).SetFullTextSearch(search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
 
@@ -788,6 +797,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
     auto missing_search = std::make_shared<FullTextSearch>(*search);
     missing_search->field_name = "f3";
     ReadContextBuilder missing_field_builder(path);
+    missing_field_builder.EnablePreciseFileIndexEvaluate(true);
     missing_field_builder.SetOptions(options).SetReadFieldNames({"f0"}).SetFullTextSearch(
         missing_search);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> missing_context,

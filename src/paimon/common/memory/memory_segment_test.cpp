@@ -675,6 +675,20 @@ TEST(MemorySegmentTest, TestEqual) {
     ASSERT_FALSE(seg2 == seg1);
 }
 
+TEST(MemorySegmentTest, TestGetOrCreateHeapMemoryForEmptySegment) {
+    auto pool = paimon::GetDefaultPool();
+    auto view = MemorySegment::WrapView("", 0);
+    auto heap = view.GetOrCreateHeapMemory(pool.get());
+    ASSERT_TRUE(heap);
+    ASSERT_EQ(0u, heap->size());
+
+    auto owning = MemorySegment::Wrap(heap);
+    ASSERT_EQ(heap, owning.GetOrCreateHeapMemory(pool.get()));
+
+    auto null_view = MemorySegment::WrapView(nullptr, 0);
+    ASSERT_EQ(nullptr, null_view.GetOrCreateHeapMemory(pool.get()));
+}
+
 TEST(MemorySegmentTest, TestNonOwningWrapView) {
     // Prepare owning data as source
     auto pool = paimon::GetDefaultPool();

@@ -89,8 +89,12 @@ whose values are ``LargeBinary``. Build the BLOB field with
 
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> c_element,
                           paimon::Blob::ArrowField("element", /*nullable=*/true));
-   PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Field> element,
-                                     arrow::ImportField(c_element.get()));
+   arrow::Result<std::shared_ptr<arrow::Field>> element_result =
+       arrow::ImportField(c_element.get());
+   if (!element_result.ok()) {
+       return paimon::Status::Invalid(element_result.status().ToString());
+   }
+   std::shared_ptr<arrow::Field> element = element_result.ValueUnsafe();
    std::shared_ptr<arrow::Schema> schema = arrow::schema(
        {arrow::field("id", arrow::int32()), arrow::field("frames", arrow::list(element)),
         arrow::field("views", arrow::map(arrow::utf8(), element))});

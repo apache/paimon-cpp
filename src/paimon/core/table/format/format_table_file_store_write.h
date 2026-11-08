@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,9 @@ class FormatTableFileStoreWrite : public FileStoreWrite {
         bool wait_compaction, int64_t commit_identifier) override;
 
     std::shared_ptr<Metrics> GetMetrics() const override;
+
+    Result<std::optional<int64_t>> GetBaseSnapshotId(
+        const std::map<std::string, std::string>& partition, int32_t bucket) const override;
 
     Status Close() override;
 

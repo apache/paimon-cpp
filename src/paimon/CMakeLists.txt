@@ -69,6 +69,7 @@ set(PAIMON_COMMON_SRCS
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
     common/file_index/bitmap/bitmap_index_result.cpp
+    common/file_index/file_indexer.cpp
     common/file_index/file_indexer_factory.cpp
     common/file_index/file_index_format.cpp
     common/file_index/file_index_format_utils.cpp
@@ -412,6 +413,7 @@ set(PAIMON_CORE_SRCS
     core/operation/orphan_files_cleaner.cpp
     core/operation/orphan_files_cleaner_impl.cpp
     core/operation/raw_file_split_read.cpp
+    core/operation/precise_file_index_read.cpp
     core/operation/read_context.cpp
     core/operation/scan_context.cpp
     core/manifest/snapshot_live_manifest_entries.cpp
@@ -448,6 +450,7 @@ set(PAIMON_CORE_SRCS
     core/stats/simple_stats_converter.cpp
     core/stats/simple_stats.cpp
     core/stats/simple_stats_evolution.cpp
+    core/table/file_store.cpp
     core/table/table.cpp
     core/table/bucket_mode.cpp
     core/table/format/format_file_listing.cpp
@@ -992,6 +995,7 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/realtime_deduplicate_dv_materializer_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp
                     core/operation/key_value_file_store_write_test.cpp
+                    core/operation/precise_file_index_read_test.cpp
                     core/operation/internal_read_context_test.cpp
                     core/operation/abstract_split_read_test.cpp
                     core/operation/append_only_file_store_write_test.cpp

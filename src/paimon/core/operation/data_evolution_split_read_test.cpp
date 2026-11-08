@@ -1497,8 +1497,7 @@ TEST_F(DataEvolutionSplitReadTest, TestFileIndexSelectionOnlyPushesDownNormalGro
             split_read.ApplyIndexAndDvReaderIfNeeded(
                 std::make_unique<MockFileBatchReader>(data, data->type(), 2), normal, index_schema,
                 index_schema, predicate, /*dv_factory=*/nullptr, row_ranges,
-                /*data_file_path_factory=*/nullptr, /*file_index_options=*/{},
-                /*index_scores=*/nullptr));
+                /*data_file_path_factory=*/nullptr, /*file_index_options=*/{}));
         if (expected_json.empty()) {
             ASSERT_FALSE(reader);
             return;
@@ -1585,7 +1584,7 @@ TEST_F(DataEvolutionSplitReadTest, TestGroupBitmapCombinesWithRowRangesAndDvInFi
             std::make_unique<MockFileBatchReader>(data, type, 2), file, schema, schema,
             /*predicate=*/nullptr, MakeSingleFileDvFactory(file->file_name, MakeBitmapDv({1})),
             std::vector<Range>{Range(101, 103)}, /*data_file_path_factory=*/nullptr,
-            /*file_index_options=*/{}, /*index_scores=*/nullptr));
+            /*file_index_options=*/{}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadResultCollector::CollectResult(std::move(reader)));
     auto expected = arrow::ipc::internal::json::ArrayFromJSON(type, R"([[3]])").ValueOrDie();

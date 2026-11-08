@@ -84,6 +84,7 @@ function setup_sanitizers() {
 
   UBSAN_OPTIONS="$UBSAN_OPTIONS print_stacktrace=1"
   UBSAN_OPTIONS="$UBSAN_OPTIONS suppressions=$ROOT/build_support/ubsan-suppressions.txt"
+  UBSAN_OPTIONS="$UBSAN_OPTIONS halt_on_error=1"
   export UBSAN_OPTIONS
 
   ASAN_OPTIONS="$ASAN_OPTIONS disable_coredump=0"

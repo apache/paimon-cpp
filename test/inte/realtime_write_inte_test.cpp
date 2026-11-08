@@ -47,6 +47,7 @@
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/predicate/equal.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/path_util.h"
@@ -75,7 +76,7 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/orphan_files_cleaner.h"
-#include "paimon/predicate/function.h"
+#include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
@@ -336,37 +337,15 @@ constexpr char kTruncateCommitUser[] = "truncate_commit_user";
 
 }  // namespace
 
-class UnsupportedFunction : public Function {
+// Pass read-context validation, but fail predicate reconstruction when creating the reader.
+class UnsupportedPredicate : public LeafPredicate {
  public:
-    Type GetType() const override {
-        return Type::EQUAL;
-    }
+    UnsupportedPredicate()
+        : LeafPredicate(Equal::Instance(), 0, "id", FieldType::BIGINT, {Literal(int64_t{0})}) {}
 
     std::string ToString() const override {
         return "unsupported";
     }
-};
-
-class UnsupportedPredicate : public Predicate {
- public:
-    bool operator==(const Predicate&) const override {
-        return false;
-    }
-
-    const Function& GetFunction() const override {
-        return function_;
-    }
-
-    std::shared_ptr<Predicate> Negate() const override {
-        return nullptr;
-    }
-
-    std::string ToString() const override {
-        return function_.ToString();
-    }
-
- private:
-    UnsupportedFunction function_;
 };
 
 class ConcurrentTestState {
@@ -1620,6 +1599,8 @@ TEST_F(RealtimeWriteInteTest, TestRefreshPreparationFailureKeepsProgressAndCanRe
     open_gate->Release(Status::IOError("injected sidecar open failure"));
     ASSERT_NOK_WITH_MSG(writer->RefreshCommittedSnapshot(snapshot),
                         "injected sidecar open failure");
+    ASSERT_OK_AND_ASSIGN(auto base_snapshot_id, writer->GetBaseSnapshotId({}, 0));
+    ASSERT_EQ(base_snapshot_id, std::nullopt);
     ASSERT_OK_AND_ASSIGN(RealtimeMetricValues failed, ReadRealtimeMetrics(writer->GetMetrics()));
     ASSERT_EQ(before.sealed_rows, failed.sealed_rows);
     ASSERT_EQ(before.total_memory, failed.total_memory);
@@ -1627,6 +1608,8 @@ TEST_F(RealtimeWriteInteTest, TestRefreshPreparationFailureKeepsProgressAndCanRe
     ASSERT_EQ(initial, visible);
 
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_OK_AND_ASSIGN(base_snapshot_id, writer->GetBaseSnapshotId({}, 0));
+    ASSERT_EQ(base_snapshot_id, snapshot);
     ASSERT_OK_AND_ASSIGN(RealtimeMetricValues after, ReadRealtimeMetrics(writer->GetMetrics()));
     ASSERT_EQ(0, after.sealed_rows);
     ASSERT_EQ(0, after.total_rows);
