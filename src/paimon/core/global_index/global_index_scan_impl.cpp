@@ -148,6 +148,27 @@ Result<std::unique_ptr<GlobalIndexScanImpl>> GlobalIndexScanImpl::Create(
                                 std::move(load_live_rows), final_executor, pool));
 }
 
+std::unique_ptr<GlobalIndexScanImpl> GlobalIndexScanImpl::CreateForScalarFilters(
+    const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& options,
+    const std::shared_ptr<IndexPathFactory>& path_factory,
+    const std::vector<std::shared_ptr<IndexFileMeta>>& index_files,
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
+    IndexMetaMap index_metas;
+    for (const auto& index_file : index_files) {
+        const auto& index_meta = index_file->GetGlobalIndexMeta();
+        assert(index_meta);
+        if (index_meta->extra_field_ids && !index_meta->extra_field_ids->empty()) {
+            continue;
+        }
+        Range range(index_meta->row_range_start, index_meta->row_range_end);
+        index_metas[index_meta->index_field_id][index_file->IndexType()][range].push_back(
+            index_file);
+    }
+    return std::unique_ptr<GlobalIndexScanImpl>(
+        new GlobalIndexScanImpl(table_schema, options, path_factory, std::move(index_metas),
+                                LiveRowsLoader(), executor, pool));
+}
+
 Result<std::shared_ptr<GlobalIndexEvaluator>> GlobalIndexScanImpl::GetOrCreateIndexEvaluator() {
     if (evaluator_) {
         return evaluator_;
@@ -303,6 +324,27 @@ Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexScanImpl::Scan(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexEvaluator> evaluator,
                            GetOrCreateIndexEvaluator());
     return evaluator->Evaluate(predicate);
+}
+
+Result<std::optional<GlobalIndexEvaluatorImpl::Evaluation>> GlobalIndexScanImpl::ScanWithCoverage(
+    const std::shared_ptr<Predicate>& predicate) const {
+    GlobalIndexEvaluatorImpl evaluator(
+        table_schema_,
+        [this](int32_t field_id) -> Result<std::vector<std::shared_ptr<GlobalIndexReader>>> {
+            PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<GlobalIndexReader>> readers,
+                                   CreateReaders(field_id, /*row_range_index=*/std::nullopt));
+            if (readers.size() <= 1) {
+                return readers;
+            }
+            // Each reader already fans out on `executor_`, so the union stays on this thread and
+            // no task of `executor_` waits for another one.
+            std::vector<std::shared_ptr<GlobalIndexReader>> union_reader = {
+                std::make_shared<UnionGlobalIndexReader>(std::move(readers), std::vector<Range>(),
+                                                         std::vector<std::optional<Range>>(),
+                                                         /*executor=*/nullptr)};
+            return union_reader;
+        });
+    return evaluator.EvaluateWithContributingFields(predicate);
 }
 
 }  // namespace paimon

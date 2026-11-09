@@ -36,7 +36,8 @@ class StaticFromTagStartingScanner : public StartingScanner {
 
     Result<std::shared_ptr<ScanResult>> Scan(
         const std::shared_ptr<SnapshotReader>& snapshot_reader) override {
-        const TagManager tag_manager(snapshot_manager_->Fs(), snapshot_manager_->RootPath());
+        const TagManager tag_manager(snapshot_manager_->Fs(), snapshot_manager_->RootPath(),
+                                     snapshot_manager_->Branch());
         PAIMON_ASSIGN_OR_RAISE(const Tag tag, tag_manager.GetOrThrow(tag_name_));
         PAIMON_ASSIGN_OR_RAISE(const Snapshot snapshot, tag.TrimToSnapshot());
         PAIMON_ASSIGN_OR_RAISE(

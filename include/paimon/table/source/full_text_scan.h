@@ -76,7 +76,9 @@ class PAIMON_EXPORT FullTextScan {
     /// without the backend of a `full-text` or `lucene-fts` index it finds. When the row ranges of
     /// index shards overlap, each row is ranked by one shard only: an index whose indexed field is
     /// the column comes before one that carries it as an extra field, and further ties are broken
-    /// by index type and fields, then by the start and end of the shard.
+    /// by index type and fields, then by the start and end of the shard. With a row filter, each
+    /// split also carries the files of single-field scalar indexes that intersect its shard and
+    /// index a field of the filter.
     /// @return The plan, or an error if more than one time-travel option is set, the option does
     ///         not agree with `scan.mode`, the selected snapshot or tag does not exist, or reading
     ///         the index manifests fails; `NotImplemented` for an index whose backend is not built.
