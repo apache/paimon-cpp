@@ -43,6 +43,9 @@ jobs:
       - name: Run CMake module tests
         shell: bash
         run: ci/scripts/test_cmake_modules.sh
+      - name: Test release asset downloads
+        shell: bash
+        run: bash ci/scripts/test_download_release_asset.sh
       - name: Run packaging argument tests
         shell: bash
         run: ci/scripts/test_packaging_args.sh
@@ -102,6 +105,8 @@ jobs:
         uses: ./.github/actions/setup-ccache
         with:
           cache-key-prefix: ccache-${{ matrix.name }}
+      - name: Prepare release assets
+        uses: ./.github/actions/setup-release-assets
       - name: Install Rust and protobuf tools
         shell: bash
         run: ci/scripts/setup_rust.sh
@@ -193,6 +198,8 @@ jobs:
         uses: ./.github/actions/setup-ccache
         with:
           cache-key-prefix: ccache-${{ matrix.name }}
+      - name: Prepare release assets
+        uses: ./.github/actions/setup-release-assets
       - name: Install Rust and protobuf tools
         shell: bash
         run: ci/scripts/setup_rust.sh
