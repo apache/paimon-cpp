@@ -68,6 +68,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
     Status Sync() override;
     Status Close() override;
     bool HasUnpreparedRealtimeData() const override;
+    void ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) override;
     std::shared_ptr<Metrics> GetMetrics() const override;
 
  private:

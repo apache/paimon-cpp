@@ -41,6 +41,9 @@ Result<arrow::ArrayVector> ReaderUtils::GenerateFilteredArrayVector(
     if (bitmap.Cardinality() == 0) {
         return Status::Invalid("selection bitmap cannot be empty in GenerateFilteredArrayVector");
     }
+    if (bitmap.Cardinality() == src_array->length()) {
+        return arrow::ArrayVector{src_array};
+    }
     arrow::ArrayVector array_vec;
     auto valid_iter = bitmap.Begin();
     int32_t pos = 0;

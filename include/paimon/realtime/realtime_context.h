@@ -88,6 +88,8 @@ class PAIMON_EXPORT RealtimeMetrics {
 /// reads. `RealtimeContext` itself is not a customization interface and must not be implemented by
 /// applications. Customize real-time storage and retrieval through `RealtimeStoreFactory` and
 /// `RealtimeStore` instead.
+/// Only one writer may actively use a partition-bucket in this context. Close that writer before
+/// creating its replacement; writers for different partition-buckets may share the context.
 ///
 /// A context is valid only for one uninterrupted committed-progress history. Overwrite, truncate,
 /// partition drop, and rollback operations do not automatically clear process-local real-time

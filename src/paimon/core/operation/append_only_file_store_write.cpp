@@ -152,11 +152,7 @@ Status AppendOnlyFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
         committed_data_files[RealtimePartitionBucket(std::move(partition), entry.Bucket())]
             .push_back(entry.File());
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                           RealtimeContextImpl::Cast(realtime_context_));
-    PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
-        snapshot_id, committed_offsets, committed_data_files));
-    return Status::OK();
+    return RefreshRealtimeCommittedProgress(snapshot_id, committed_offsets, committed_data_files);
 }
 
 Result<std::unique_ptr<FileStoreScan>> AppendOnlyFileStoreWrite::CreateFileStoreScan(
