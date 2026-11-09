@@ -145,7 +145,8 @@ if [[ "${enable_tsan}" == "true" ]]; then
 fi
 # CI always builds natively, so the host architecture is the target architecture.
 host_arch=$(uname -m)
-if [[ "$(uname -s)" != "Linux" || "${host_arch}" != "x86_64" ]]; then
+if [[ "$(uname -s)" != "Linux" ||
+      ( "${host_arch}" != "x86_64" && "${host_arch}" != "aarch64" && "${host_arch}" != "arm64" ) ]]; then
     ENABLE_LUMINA="OFF"
     echo "=== Lumina disabled: no prebuilt artifacts for $(uname -s)-${host_arch} ==="
 fi

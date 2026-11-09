@@ -1360,7 +1360,7 @@ endmacro()
 macro(build_lumina)
     # The release tarball ships one prebuilt artifact tree per platform; keep this
     # list in sync with the platforms the pinned release actually contains.
-    set(LUMINA_SUPPORTED_PLATFORMS "linux-x86_64")
+    set(LUMINA_SUPPORTED_PLATFORMS "linux-x86_64" "linux-aarch64")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND PAIMON_TARGET_CPU_FAMILY STREQUAL "x86")
         set(LUMINA_ARTIFACT_PLATFORM "linux-x86_64")
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND PAIMON_TARGET_CPU_FAMILY STREQUAL
