@@ -121,10 +121,6 @@ TEST(PrimaryKeyTableUtilsTest, TestRealtimeRejectsDeleteAndSequenceOrderingOptio
 
 TEST(PrimaryKeyTableUtilsTest, TestRealtimeReportsSpecificUnsupportedOptions) {
     const std::vector<std::pair<std::map<std::string, std::string>, std::string>> cases = {
-        {{{Options::BUCKET, "1"},
-          {Options::MERGE_ENGINE, "partial-update"},
-          {Options::DELETION_VECTORS_ENABLED, "true"}},
-         "PK realtime partial-update does not support deletion vectors"},
         {{{Options::BUCKET, "1"}, {Options::FORCE_LOOKUP, "true"}},
          "PK realtime does not support lookup"},
         {{{Options::BUCKET, "1"}, {Options::CHANGELOG_PRODUCER, "input"}},

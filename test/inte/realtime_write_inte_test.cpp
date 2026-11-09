@@ -4342,6 +4342,12 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateDeleteAcrossCommits) {
         RecordBatch::RowKind::INSERT};
     const std::vector<std::string> expected = {"[[0, 1, 10, 20]]", "[[0, 1, 30, 20]]", "[]",
                                                "[[0, 1, 50, null]]", "[[0, 1, 50, 40]]"};
+    arrow::FieldVector result_fields = {arrow::field("_VALUE_KIND", arrow::int8())};
+    result_fields.insert(result_fields.end(), fields_.begin(), fields_.end());
+    const std::shared_ptr<arrow::ChunkedArray> expected_rows =
+        std::make_shared<arrow::ChunkedArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields), expected[1])
+                .ValueOrDie());
     auto check_value_predicates = [&](const std::shared_ptr<RealtimeContext>& context) {
         for (int64_t value : {30, 10}) {
             SCOPED_TRACE(value);
@@ -4354,15 +4360,8 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateDeleteAcrossCommits) {
             if (value == 10) {
                 ASSERT_TRUE(!result || result->length() == 0);
             } else {
-                arrow::FieldVector result_fields = {arrow::field("_VALUE_KIND", arrow::int8())};
-                result_fields.insert(result_fields.end(), fields_.begin(), fields_.end());
-                std::shared_ptr<arrow::Array> expected_rows =
-                    arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields),
-                                                              expected[1])
-                        .ValueOrDie();
                 ASSERT_NE(nullptr, result);
-                ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected_rows)->Equals(*result))
-                    << result->ToString();
+                ASSERT_TRUE(expected_rows->Equals(*result)) << result->ToString();
                 ASSERT_EQ(1, plan->Splits().size());
                 std::shared_ptr<RealtimeSplit> realtime_split =
                     std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
