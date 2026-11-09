@@ -620,7 +620,7 @@ Extension Points and Current Limits
 Custom stores manage buffering, read views, and spill while following the
 ``RealtimeStore`` contracts. Paimon manages table files, indexes, merge semantics,
 and commits. Append deduplicate also keeps key indexes and DVs in the framework;
-custom delegates need ``RealtimeStoreTwoPhaseSeal`` to enable its spill.
+custom delegates need ``TwoPhaseSealableRealtimeStore`` to enable its spill.
 
 Current restrictions include:
 

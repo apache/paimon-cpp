@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/common/io/offset_output_stream.h"
+#include "paimon/io/offset_output_stream.h"
 
 #include <memory>
 #include <string>

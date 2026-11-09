@@ -34,6 +34,7 @@ namespace paimon {
 /// outlive this view.
 class PAIMON_EXPORT OffsetOutputStream : public OutputStream {
  public:
+    /// Creates a relative-position view over a non-null borrowed stream.
     static Result<std::unique_ptr<OffsetOutputStream>> Create(OutputStream* output);
     ~OffsetOutputStream() override = default;
 

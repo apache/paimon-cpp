@@ -736,16 +736,10 @@ Result<std::shared_ptr<ArrowRealtimeStore>> ArrowRealtimeStore::Create(
     int32_t spill_compression_level, const std::map<std::string, std::string>& index_options,
     const std::shared_ptr<MemoryPool>& memory_pool,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
-    if (!write_schema || !memory_pool || !arrow_pool) {
-        return Status::Invalid("real-time store requires a schema and memory pools");
-    }
     if (mode != RealtimeStoreMode::APPEND_ONLY && mode != RealtimeStoreMode::PRIMARY_KEY) {
         return Status::Invalid("invalid real-time store mode: ", static_cast<int32_t>(mode));
     }
     PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateOffsetField(write_schema));
-    if (!temp_directory.empty() && !spill_file_system) {
-        return Status::Invalid("real-time spill requires a file system");
-    }
     const bool has_index = RealtimeIndexSet::IsEnabled(index_options);
     if (has_index && mode != RealtimeStoreMode::APPEND_ONLY) {
         return Status::NotImplemented("real-time query indexes require an append-store delegate");

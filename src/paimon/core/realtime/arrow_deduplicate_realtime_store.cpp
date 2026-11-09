@@ -407,7 +407,7 @@ ArrowDeduplicateRealtimeStore::SealCurrentSegment(bool allow_spill) {
     std::lock_guard<std::mutex> seal_lock(seal_mutex_);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MutableKeyOffsetIndex> next_building_index,
                            MutableKeyOffsetIndex::Create(key_field_, memory_pool_));
-    auto* two_phase = dynamic_cast<RealtimeStoreTwoPhaseSeal*>(delegate_.get());
+    auto* two_phase = dynamic_cast<TwoPhaseSealableRealtimeStore*>(delegate_.get());
     std::optional<std::shared_ptr<RealtimeSegmentHandle>> delegate_segment;
     std::optional<OffsetRange> offset_range;
     std::shared_ptr<const RoaringBitmap64> checkpoint;
@@ -547,7 +547,7 @@ ArrowDeduplicateRealtimeStore::RetireCommittedOffsetAndLookup(
     auto retired = std::make_shared<RetiredReadView>();
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto* two_phase = dynamic_cast<RealtimeStoreTwoPhaseSeal*>(delegate_.get());
+        auto* two_phase = dynamic_cast<TwoPhaseSealableRealtimeStore*>(delegate_.get());
         if (two_phase) {
             PAIMON_ASSIGN_OR_RAISE(retired->delegate_view,
                                    two_phase->RetireCommittedSegments(committed_end_offset));

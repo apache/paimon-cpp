@@ -42,7 +42,7 @@ enum class FieldType;
 
 /// Single-writer, multiple-reader hash index: TBB map -> concurrent_vector postings.
 /// Atomic lengths publish initialized prefixes without copying.
-/// Temporary layout; will be replaced with more lock-friendly data structures.
+// TODO(xinyu.lxy): Replace the temporary layout with more lock-friendly data structures.
 class HashRealtimeIndex final : public RealtimeIndex,
                                 public std::enable_shared_from_this<HashRealtimeIndex> {
  public:

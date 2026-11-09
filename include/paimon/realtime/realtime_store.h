@@ -217,9 +217,9 @@ class PAIMON_EXPORT RealtimeStore {
 
 /// Optional capability for `RealtimeStore` implementations to separate segment freezing from spill
 /// I/O.
-class PAIMON_EXPORT RealtimeStoreTwoPhaseSeal : public RealtimeStore {
+class PAIMON_EXPORT TwoPhaseSealableRealtimeStore : public RealtimeStore {
  public:
-    ~RealtimeStoreTwoPhaseSeal() override = default;
+    ~TwoPhaseSealableRealtimeStore() override = default;
 
     /// Freezes the building segment without spill I/O.
     virtual Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>

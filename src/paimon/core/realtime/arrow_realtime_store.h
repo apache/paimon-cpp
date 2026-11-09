@@ -44,8 +44,9 @@ class PredicateFilter;
 class RealtimeIndexSet;
 
 /// Internal Arrow-backed implementation of the default `RealtimeStore`.
-class ArrowRealtimeStore final : public RealtimeStoreTwoPhaseSeal {
+class ArrowRealtimeStore final : public TwoPhaseSealableRealtimeStore {
  public:
+    /// @pre Schema and memory pools are non-null; spill requires a file system.
     static Result<std::shared_ptr<ArrowRealtimeStore>> Create(
         const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
         StatisticsMode statistics_mode, const std::string& temp_directory,
