@@ -134,8 +134,16 @@ class OrcReaderWrapper {
             if (index > std::numeric_limits<uint32_t>::max()) {
                 return Status::Invalid("ORC stripe index exceeds uint32 bound");
             }
+            uint64_t stripe_start = index == 0 ? 0 : stripe_row_ends_[index - 1];
             if (row_range) {
-                *row_range = {index == 0 ? 0 : stripe_row_ends_[index - 1], *stripe};
+                *row_range = {stripe_start, *stripe};
+            }
+            // ORC can skip stripes inside next() without going through SeekToRow(). If it
+            // already returned a batch from this stripe, let it continue using its own buffers
+            // instead of fetching the consumed payload again through late range preparation.
+            if (last_batch_start_row_ && *last_batch_start_row_ >= stripe_start &&
+                *last_batch_start_row_ < *stripe) {
+                return std::vector<std::pair<uint64_t, uint64_t>>();
             }
             std::list<uint64_t> include_types(target_column_ids.begin(), target_column_ids.end());
             return reader_->preBufferRange({static_cast<uint32_t>(index)}, include_types);
@@ -174,6 +182,7 @@ class OrcReaderWrapper {
 
     // The next absolute row index to read.
     uint64_t next_row_ = 0;
+    std::optional<uint64_t> last_batch_start_row_;
     bool has_error_ = false;
 };
 

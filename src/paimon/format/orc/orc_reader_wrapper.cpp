@@ -35,6 +35,7 @@ Status OrcReaderWrapper::SeekToRow(uint64_t row_number) {
     try {
         row_reader_->seekToRow(row_number);
         next_row_ = row_number;
+        last_batch_start_row_.reset();
     } catch (const std::exception& e) {
         return Status::Invalid(
             fmt::format("orc file batch reader seek to row {} failed for file {}, with {} error",
@@ -53,6 +54,7 @@ Status OrcReaderWrapper::SetReadSchema(const std::shared_ptr<arrow::DataType>& t
         row_reader_ = reader_->createRowReader(row_reader_options);
         target_type_ = target_type;
         next_row_ = 0;
+        last_batch_start_row_.reset();
     } catch (const std::exception& e) {
         return Status::Invalid(
             fmt::format("orc file batch reader create row reader failed for file {}, with {} error",
@@ -85,7 +87,8 @@ Result<BatchReader::ReadBatch> OrcReaderWrapper::Next() {
             OrcAdapter::AppendBatch(target_type_, orc_batch.get(), read_memory_->arrow_pool.get()));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
         PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), read_memory_));
-        next_row_ = GetRowNumber() + orc_batch->numElements;
+        last_batch_start_row_ = GetRowNumber();
+        next_row_ = *last_batch_start_row_ + orc_batch->numElements;
         guard.Release();
     } catch (const std::exception& e) {
         return Status::Invalid(

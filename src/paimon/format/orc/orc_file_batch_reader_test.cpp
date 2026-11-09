@@ -34,6 +34,7 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/defs.h"
 #include "paimon/format/orc/orc_adapter.h"
 #include "paimon/format/orc/orc_format_defs.h"
@@ -373,6 +374,101 @@ TEST_F(OrcFileBatchReaderTest, SeekPreparesTargetStripeBeforePhysicalReads) {
     context->ReleaseBuffers();
 }
 
+TEST_F(OrcFileBatchReaderTest, PredicateStripeSkippingDoesNotRefetchConsumedPayload) {
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path = dir->Str() + "/predicate.orc";
+    {
+        auto output = ::orc::writeLocalFile(path);
+        auto type = ::orc::Type::buildTypeFromString("struct<a:int>");
+        auto writer = ::orc::createWriter(*type, output.get(), ::orc::WriterOptions());
+        for (int32_t stripe = 0; stripe < 3; ++stripe) {
+            auto batch = writer->createRowBatch(4);
+            auto* root = dynamic_cast<::orc::StructVectorBatch*>(batch.get());
+            ASSERT_NE(root, nullptr);
+            root->numElements = 4;
+            auto* values = dynamic_cast<::orc::LongVectorBatch*>(root->fields[0]);
+            ASSERT_NE(values, nullptr);
+            values->numElements = 4;
+            for (int32_t row = 0; row < 4; ++row) {
+                values->data[row] = stripe * 4 + row;
+            }
+            writer->add(*batch);
+            writer->writeIntermediateFooter();
+        }
+        writer->close();
+    }
+    auto metadata = ::orc::createReader(::orc::readLocalFile(path), ::orc::ReaderOptions());
+    ASSERT_EQ(metadata->getNumberOfStripes(), 3);
+    auto stripe = metadata->getStripe(2);
+    uint64_t payload_offset = stripe->getOffset() + stripe->getIndexLength();
+    uint64_t payload_length = stripe->getDataLength();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<paimon::InputStream> raw,
+                         dir->GetFileSystem()->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<paimon::InputStream> cache_raw,
+                         dir->GetFileSystem()->Open(path));
+    auto physical_owner = std::make_unique<PhysicalProbeStream>(raw);
+    auto* physical = physical_owner.get();
+    auto cache_physical = std::make_shared<PhysicalProbeStream>(cache_raw);
+    auto pool = GetDefaultPool();
+    CacheConfig config;
+    config.SetBlockSize(0);
+    ASSERT_OK_AND_ASSIGN(int64_t file_size, raw->Length());
+    auto cache = std::make_shared<ReadAheadCache>(cache_physical, config, file_size, pool);
+    auto context = FileReadAhead::Create(cache, path);
+    auto cache_input = std::make_shared<CacheInputStream>(
+        std::move(physical_owner), cache, CacheInputStream::CacheFactory(), context);
+    ASSERT_OK_AND_ASSIGN(auto orc_input, OrcInputStreamImpl::Create(cache_input, 1));
+    ASSERT_OK_AND_ASSIGN(auto reader, OrcFileBatchReader::Create(
+                                          std::move(orc_input),
+                                          std::make_shared<OrcReadMemory>(pool), {}, 2, context));
+    auto schema = arrow::schema({arrow::field("a", arrow::int32())});
+    ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    auto predicate = PredicateBuilder::GreaterOrEqual(0, "a", FieldType::INT, Literal(8));
+    ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, std::nullopt));
+    ASSERT_OK(context->Warmup(reader.get()));
+    physical->reads.clear();
+    cache_physical->reads.clear();
+    for (uint64_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+        ASSERT_TRUE(imported.ok());
+        auto values = checked_pointer_cast<arrow::Int32Array>(
+            checked_pointer_cast<arrow::StructArray>(imported.ValueOrDie())->field(0));
+        ASSERT_EQ(values->length(), 2);
+        ASSERT_EQ(values->Value(0), 8 + i * 2);
+        ASSERT_OK_AND_ASSIGN(uint64_t file_row, reader->GetPreviousBatchFileRowId(0));
+        ASSERT_EQ(file_row, 8 + i * 2);
+        // ORC selects stripe 2 inside next(). Once it has read its payload, preparing that
+        // stripe on the following batch would fetch the same bytes a second time.
+        ASSERT_EQ(physical->Overlap(payload_offset, payload_length), payload_length);
+        ASSERT_EQ(cache_physical->Overlap(payload_offset, payload_length), 0);
+    }
+
+    // A new schema starts a fresh pass: the earlier consumed stripe must not suppress seek
+    // preparation in this generation.
+    context->Reset();
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
+    ASSERT_OK(context->Warmup(reader.get()));
+    physical->reads.clear();
+    cache_physical->reads.clear();
+    ASSERT_OK(reader->SeekToRow(9));
+    ASSERT_EQ(physical->Overlap(payload_offset, payload_length), 0);
+    ASSERT_EQ(cache_physical->Overlap(payload_offset, payload_length), payload_length);
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_OK_AND_ASSIGN(uint64_t file_row, reader->GetPreviousBatchFileRowId(0));
+    ASSERT_EQ(file_row, 9);
+    auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+    ASSERT_TRUE(imported.ok());
+    ASSERT_EQ(physical->Overlap(payload_offset, payload_length), 0);
+    ASSERT_EQ(cache_physical->Overlap(payload_offset, payload_length), payload_length);
+    reader->Close();
+    context->ReleaseBuffers();
+}
+
 TEST_F(OrcFileBatchReaderTest, DiscoverStripeRangesOnDemand) {
     using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
     class CountingStream : public ::orc::InputStream {
@@ -426,23 +522,29 @@ TEST_F(OrcFileBatchReaderTest, DiscoverStripeRangesOnDemand) {
     ASSERT_EQ(metadata->getNumberOfStripes(), 4);
     std::vector<std::pair<uint64_t, uint64_t>> stripe_bounds;
     std::vector<uint64_t> footer_offsets;
+    ByteRanges payload_ranges;
     for (uint64_t i = 0; i < 4; ++i) {
         auto stripe = metadata->getStripe(i);
         uint64_t footer = stripe->getOffset() + stripe->getIndexLength() + stripe->getDataLength();
         stripe_bounds.emplace_back(stripe->getOffset(), footer);
         footer_offsets.push_back(footer);
+        payload_ranges.emplace_back(stripe->getOffset() + stripe->getIndexLength(),
+                                    stripe->getDataLength());
     }
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> main_stream,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> main_stream,
                          dir->GetFileSystem()->Open(path));
     ASSERT_OK_AND_ASSIGN(int64_t file_size, main_stream->Length());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> cache_stream,
                          dir->GetFileSystem()->Open(path));
+    auto physical_owner = std::make_unique<PhysicalProbeStream>(main_stream);
+    auto* physical = physical_owner.get();
+    auto cache_physical = std::make_shared<PhysicalProbeStream>(cache_stream);
     CacheConfig config;
     config.SetBlockSize(0);
-    auto cache = std::make_shared<ReadAheadCache>(cache_stream, config, file_size, pool_);
+    auto cache = std::make_shared<ReadAheadCache>(cache_physical, config, file_size, pool_);
     auto context = FileReadAhead::Create(cache, path);
     auto cached_stream = std::make_shared<CacheInputStream>(
-        std::move(main_stream), cache, CacheInputStream::CacheFactory(), context);
+        std::move(physical_owner), cache, CacheInputStream::CacheFactory(), context);
     ASSERT_OK_AND_ASSIGN(auto adapter, OrcInputStreamImpl::Create(cached_stream, 1));
     auto input = std::make_unique<CountingStream>(std::move(adapter));
     auto* observed = input.get();
@@ -524,8 +626,13 @@ TEST_F(OrcFileBatchReaderTest, DiscoverStripeRangesOnDemand) {
     assert_ranges_in_stripe(projected_ranges, 0);
     assert_no_later_footers();
     ASSERT_OK(context->Warmup(reader.get()));
+    physical->reads.clear();
+    cache_physical->reads.clear();
+    uint64_t first_payload_bytes = 0;
     uint64_t projected_rows = 0;
     while (true) {
+        ASSERT_OK_AND_ASSIGN(uint64_t hits_before,
+                             context->GetMetrics()->GetCounter(ReadAheadCacheMetrics::READ_HITS));
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
         if (BatchReader::IsEofBatch(batch)) {
             break;
@@ -537,6 +644,25 @@ TEST_F(OrcFileBatchReaderTest, DiscoverStripeRangesOnDemand) {
         ASSERT_EQ(root->num_fields(), 1);
         auto values = std::dynamic_pointer_cast<arrow::Int32Array>(root->field(0));
         ASSERT_NE(values, nullptr);
+        const auto& skipped_to = payload_ranges[2];
+        uint64_t direct_bytes = physical->Overlap(skipped_to.first, skipped_to.second);
+        if (projected_rows == 0) {
+            first_payload_bytes = direct_bytes;
+            ASSERT_GT(first_payload_bytes, 0);
+        }
+        ASSERT_EQ(direct_bytes, first_payload_bytes);
+        ASSERT_EQ(cache_physical->Overlap(skipped_to.first, skipped_to.second), 0);
+        if (projected_rows >= 4) {
+            // The following sequential stripe still prepares its projected payload in time.
+            const auto& sequential = payload_ranges[3];
+            ASSERT_EQ(physical->Overlap(sequential.first, sequential.second), 0);
+            ASSERT_GT(cache_physical->Overlap(sequential.first, sequential.second), 0);
+            if (projected_rows == 4) {
+                ASSERT_OK_AND_ASSIGN(uint64_t hits, context->GetMetrics()->GetCounter(
+                                                        ReadAheadCacheMetrics::READ_HITS));
+                ASSERT_GT(hits, hits_before);
+            }
+        }
         for (int64_t i = 0; i < values->length(); ++i) {
             ASSERT_EQ(values->Value(i), 8 + projected_rows++);
         }
