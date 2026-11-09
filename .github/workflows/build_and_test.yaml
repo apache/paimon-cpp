@@ -50,6 +50,56 @@ jobs:
         shell: bash
         run: ci/scripts/test_asan_symbolize.sh
 
+  macos-build-and-test:
+    name: appleclang-release-arm64
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      CC: /usr/bin/clang
+      CXX: /usr/bin/clang++
+      PAIMON_BUILD_JOBS: '3'
+      CARGO_BUILD_JOBS: '3'
+    steps:
+      - name: Checkout paimon-cpp
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          lfs: true
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          brew install cmake ninja protobuf openssl@3 curl
+          echo "$(brew --prefix protobuf)/bin" >> "$GITHUB_PATH"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3):$(brew --prefix curl)" >> "$GITHUB_ENV"
+      - name: Setup ccache
+        uses: ./.github/actions/setup-ccache
+        with:
+          cache-key-prefix: ccache-appleclang-release-arm64
+      - name: Install Rust and protobuf tools
+        shell: bash
+        run: ci/scripts/setup_rust.sh
+      - name: Install flatc and libclang (Vortex)
+        shell: bash
+        run: ci/scripts/setup_flatc.sh
+      - name: Build, test and verify installation
+        shell: bash
+        run: |
+          ci/scripts/build_paimon.sh \
+            --source_dir "$(pwd)" \
+            --build_type Release \
+            --install_smoke
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appleclang-release-arm64-test-logs
+          path: |
+            build/build/test-logs/
+            build/Testing/Temporary/
+            build/CMakeFiles/CMakeConfigureLog.yaml
+      - name: Show ccache statistics
+        if: always()
+        run: ccache -s
+
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner || 'ubuntu-24.04' }}

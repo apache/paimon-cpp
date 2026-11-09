@@ -102,7 +102,7 @@ TEST_F(PredicateBatchReaderTest, TestSimple) {
         auto reader =
             std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
         auto predicate = PredicateBuilder::LessThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                    FieldType::BIGINT, Literal(24l));
+                                                    FieldType::BIGINT, Literal(int64_t{24}));
         auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array->Slice(0, 24));
         CheckResult(std::move(reader), predicate, expected_array);
     }
@@ -110,7 +110,7 @@ TEST_F(PredicateBatchReaderTest, TestSimple) {
         auto reader =
             std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
         auto predicate = PredicateBuilder::LessThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                    FieldType::BIGINT, Literal(1l));
+                                                    FieldType::BIGINT, Literal(int64_t{1}));
         auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array->Slice(0, 1));
         CheckResult(std::move(reader), predicate, expected_array);
     }
@@ -118,7 +118,7 @@ TEST_F(PredicateBatchReaderTest, TestSimple) {
         auto reader =
             std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
         auto predicate = PredicateBuilder::LessThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                    FieldType::BIGINT, Literal(99l));
+                                                    FieldType::BIGINT, Literal(int64_t{99}));
         auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array->Slice(0, 99));
         CheckResult(std::move(reader), predicate, expected_array);
     }
@@ -126,7 +126,7 @@ TEST_F(PredicateBatchReaderTest, TestSimple) {
         auto reader =
             std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
         auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                       FieldType::BIGINT, Literal(0l));
+                                                       FieldType::BIGINT, Literal(int64_t{0}));
         auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array->Slice(1, 99));
         CheckResult(std::move(reader), predicate, expected_array);
     }
@@ -134,7 +134,7 @@ TEST_F(PredicateBatchReaderTest, TestSimple) {
         auto reader =
             std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
         auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                       FieldType::BIGINT, Literal(98l));
+                                                       FieldType::BIGINT, Literal(int64_t{98}));
         auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array->Slice(99, 1));
         CheckResult(std::move(reader), predicate, expected_array);
     }
@@ -154,7 +154,7 @@ TEST_F(PredicateBatchReaderTest, TestVariousBatchSize) {
                           .ValueOrDie();
     auto expected_array = std::make_shared<arrow::ChunkedArray>(PrepareArray(8));
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                   FieldType::BIGINT, Literal(-1l));
+                                                   FieldType::BIGINT, Literal(int64_t{-1}));
     for (auto batch_size : {5, 10, 11, 20}) {
         auto reader = std::make_unique<MockFileBatchReader>(data_array, data_type_, batch_size);
         CheckResult(std::move(reader), predicate, expected_array);
@@ -178,7 +178,7 @@ TEST_F(PredicateBatchReaderTest, TestBindFieldIndexByName) {
     auto data_array = PrepareArray(8);
     auto reader = std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
     auto predicate = PredicateBuilder::LessThan(
-        /*field_index=*/0, /*field_name=*/"f1", FieldType::BIGINT, Literal(3l));
+        /*field_index=*/0, /*field_name=*/"f1", FieldType::BIGINT, Literal(int64_t{3}));
     auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array->Slice(0, 3));
     CheckResult(std::move(reader), predicate, expected_array);
 }
@@ -189,7 +189,7 @@ TEST_F(PredicateBatchReaderTest, TestFullAndEmptyCase) {
         auto reader =
             std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
         auto predicate = PredicateBuilder::LessThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                    FieldType::BIGINT, Literal(20l));
+                                                    FieldType::BIGINT, Literal(int64_t{20}));
         auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
         CheckResult(std::move(reader), predicate, expected_array);
     }
@@ -197,7 +197,7 @@ TEST_F(PredicateBatchReaderTest, TestFullAndEmptyCase) {
         auto reader =
             std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
         auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                       FieldType::BIGINT, Literal(20l));
+                                                       FieldType::BIGINT, Literal(int64_t{20}));
         CheckResult(std::move(reader), predicate, nullptr);
     }
 }

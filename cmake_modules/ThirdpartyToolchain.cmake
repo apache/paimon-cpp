@@ -881,12 +881,20 @@ macro(build_lucene)
         "-DZLIB_ROOT=${LUCENE_ZLIB_ROOT}"
         "-DCMAKE_INSTALL_PREFIX=${LUCENE_PREFIX}")
 
+    set(LUCENE_BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG>)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
+        # Cotire invokes CMake in script mode without forwarding the parent's policy cache.
+        set(LUCENE_BUILD_COMMAND ${CMAKE_COMMAND} -E env CMAKE_POLICY_VERSION_MINIMUM=3.5
+                                 ${LUCENE_BUILD_COMMAND})
+    endif()
+
     set(LUCENE_LIB "${LUCENE_PREFIX}/lib/liblucene++.a")
     externalproject_add(lucene_ep
                         ${EP_COMMON_OPTIONS}
                         URL ${LUCENE_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_LUCENE_BUILD_SHA256_CHECKSUM}"
                         CMAKE_ARGS ${LUCENE_CMAKE_ARGS}
+                        BUILD_COMMAND ${LUCENE_BUILD_COMMAND}
                         BUILD_BYPRODUCTS ${LUCENE_LIB}
                         DEPENDS zlib
                                 boost_date_time
@@ -1297,6 +1305,25 @@ macro(build_jindosdk_c)
     set(JINDOSDK_C_LIB_DIR "${JINDOSDK_C_PREFIX}/lib/native")
     set(JINDOSDK_C_DYNAMIC_LIB "${JINDOSDK_C_LIB_DIR}/${JINDOSDK_C_DYNAMIC_LIB_FILE}")
 
+    set(JINDOSDK_C_INSTALL_EXTRA)
+    set(JINDOSDK_C_INSTALL_PATTERN "${JINDOSDK_C_DYNAMIC_LIB_FILE}*")
+    set(JINDOSDK_C_BYPRODUCTS "${JINDOSDK_C_DYNAMIC_LIB}")
+    if(APPLE)
+        # The SDK's install name uses the major version, but its packaged symlink is broken.
+        string(REGEX MATCH "^[0-9]+" JINDOSDK_C_MAJOR_VERSION
+                     "${PAIMON_JINDOSDK_C_BUILD_VERSION}")
+        set(JINDOSDK_C_SONAME "libjindosdk_c.${JINDOSDK_C_MAJOR_VERSION}.dylib")
+        set(JINDOSDK_C_INSTALL_EXTRA
+            COMMAND
+            ${CMAKE_COMMAND}
+            -E
+            create_symlink
+            "${JINDOSDK_C_DYNAMIC_LIB_FILE}"
+            "${JINDOSDK_C_LIB_DIR}/${JINDOSDK_C_SONAME}")
+        set(JINDOSDK_C_INSTALL_PATTERN "libjindosdk_c*.dylib")
+        list(APPEND JINDOSDK_C_BYPRODUCTS "${JINDOSDK_C_LIB_DIR}/${JINDOSDK_C_SONAME}")
+    endif()
+
     # Extract and install jindosdk from precompiled package
     externalproject_add(jindosdk_ep
                         URL ${JINDOSDK_C_SOURCE_URL}
@@ -1308,7 +1335,8 @@ macro(build_jindosdk_c)
                                         "cp -r <SOURCE_DIR>/include/* ${JINDOSDK_C_INCLUDE_DIR}"
                         COMMAND bash -c
                                 "cp -r <SOURCE_DIR>/lib/native/${JINDOSDK_C_DYNAMIC_LIB_FILE}* ${JINDOSDK_C_LIB_DIR}"
-                        BUILD_BYPRODUCTS "${JINDOSDK_C_DYNAMIC_LIB}")
+                                ${JINDOSDK_C_INSTALL_EXTRA}
+                        BUILD_BYPRODUCTS ${JINDOSDK_C_BYPRODUCTS})
 
     # The include directory must exist before it is referenced by a target.
     file(MAKE_DIRECTORY "${JINDOSDK_C_INCLUDE_DIR}")
@@ -1325,7 +1353,7 @@ macro(build_jindosdk_c)
     install(DIRECTORY "${JINDOSDK_C_LIB_DIR}/"
             DESTINATION ${CMAKE_INSTALL_LIBDIR}
             FILES_MATCHING
-            PATTERN "${JINDOSDK_C_DYNAMIC_LIB_FILE}*")
+            PATTERN "${JINDOSDK_C_INSTALL_PATTERN}")
 
 endmacro()
 
@@ -1508,6 +1536,18 @@ macro(build_vortex)
     file(MAKE_DIRECTORY "${VORTEX_INCLUDE_DIR}")
     file(MAKE_DIRECTORY "${VORTEX_LIB_DIR}")
 
+    set(VORTEX_PLATFORM_ENV)
+    if(APPLE)
+        list(APPEND VORTEX_PLATFORM_ENV "CFLAGS=${EP_C_FLAGS}" "CXXFLAGS=${EP_CXX_FLAGS}")
+        if(CMAKE_OSX_SYSROOT)
+            list(APPEND VORTEX_PLATFORM_ENV "SDKROOT=${CMAKE_OSX_SYSROOT}")
+        endif()
+        if(CMAKE_OSX_DEPLOYMENT_TARGET)
+            list(APPEND VORTEX_PLATFORM_ENV
+                 "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        endif()
+    endif()
+
     # A local checkout (PAIMON_VORTEX_SOURCE_DIR) avoids re-downloading the full cargo workspace;
     # otherwise download the pinned source archive (with SHA256 when versions.txt provides one).
     if(DEFINED ENV{PAIMON_VORTEX_SOURCE_DIR})
@@ -1536,7 +1576,7 @@ macro(build_vortex)
                                       "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
                         COMMAND ${CMAKE_COMMAND} -E env "FLATC=${VORTEX_FLATC}"
                                 "RUSTUP_TOOLCHAIN=stable" "CC=${CMAKE_C_COMPILER}"
-                                "CXX=${CMAKE_CXX_COMPILER}"
+                                "CXX=${CMAKE_CXX_COMPILER}" ${VORTEX_PLATFORM_ENV}
                                 "CARGO_TARGET_DIR=${VORTEX_CARGO_TARGET_DIR}"
                                 "RUSTFLAGS=-Crelocation-model=pic"
                                 ${PAIMON_CARGO_EXECUTABLE} rustc --locked --package
@@ -1558,16 +1598,26 @@ macro(build_vortex)
                           PROPERTIES IMPORTED_LOCATION "${VORTEX_STATIC_LIB}"
                                      INTERFACE_INCLUDE_DIRECTORIES
                                      "${VORTEX_INCLUDE_DIR}")
-    # System libraries required to link the Rust static archive on Linux (per Vortex's own
-    # vortex-ffi/cmake/SystemDependencies.cmake).
-    target_link_libraries(paimon_vortex_ffi
-                          INTERFACE gcc_s
-                                    util
-                                    rt
-                                    Threads::Threads
-                                    m
-                                    ${CMAKE_DL_LIBS}
-                                    c)
+    if(APPLE)
+        target_link_libraries(paimon_vortex_ffi
+                              INTERFACE iconv
+                                        "-framework Security"
+                                        "-framework CoreFoundation"
+                                        "-framework SystemConfiguration"
+                                        Threads::Threads
+                                        m
+                                        c
+                                        ${CMAKE_DL_LIBS})
+    else()
+        target_link_libraries(paimon_vortex_ffi
+                              INTERFACE gcc_s
+                                        util
+                                        rt
+                                        Threads::Threads
+                                        m
+                                        ${CMAKE_DL_LIBS}
+                                        c)
+    endif()
     add_dependencies(paimon_vortex_ffi vortex_ep)
 
     install(FILES "${VORTEX_STATIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -2162,6 +2212,11 @@ macro(build_tbb)
 
     string(REPLACE "-Wdocumentation" "" TBB_CMAKE_CXX_FLAGS ${TBB_CMAKE_CXX_FLAGS})
     string(REPLACE "-Wdocumentation" "" TBB_CMAKE_C_FLAGS ${TBB_CMAKE_C_FLAGS})
+
+    if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        # TBB suppresses deprecated ucontext API warnings only for Clang on macOS.
+        string(APPEND TBB_CMAKE_CXX_FLAGS " -Wno-error=deprecated-declarations")
+    endif()
 
     set(TBB_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/tbb_ep-install")
 

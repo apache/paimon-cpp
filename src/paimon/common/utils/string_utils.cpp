@@ -26,6 +26,7 @@
 #include <iterator>
 #include <utility>
 
+#include "arrow/vendored/datetime.h"
 #include "fmt/format.h"
 #include "paimon/status.h"
 
@@ -228,20 +229,21 @@ Result<int32_t> StringUtils::StringToDate(const std::string& str) {
     if (int_value) {
         return int_value.value();
     }
-    std::tm timeinfo = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, nullptr};
+    std::tm timeinfo{};
     std::istringstream ss(str);
     ss >> std::get_time(&timeinfo, "%Y-%m-%d");
     if (ss.fail()) {
         return Status::Invalid(fmt::format("failed to convert string '{}' to date", str));
     }
-    int32_t orig_mon = timeinfo.tm_mon;
-    int32_t orig_mday = timeinfo.tm_mday;
-    std::time_t time = timegm(&timeinfo);
-    if (time == -1 || timeinfo.tm_mon != orig_mon || timeinfo.tm_mday != orig_mday) {
+    // Calendar arithmetic avoids platform-specific timegm limits for early years.
+    arrow_vendored::date::year_month_day date{
+        arrow_vendored::date::year{timeinfo.tm_year + 1900},
+        arrow_vendored::date::month{static_cast<uint32_t>(timeinfo.tm_mon + 1)},
+        arrow_vendored::date::day{static_cast<uint32_t>(timeinfo.tm_mday)}};
+    if (!date.ok()) {
         return Status::Invalid(fmt::format("failed to convert string '{}' to date", str));
     }
-    static const int64_t SECONDS_PER_DAY = 86400l;  // = 24 * 60 * 60
-    return time / SECONDS_PER_DAY;
+    return arrow_vendored::date::sys_days{date}.time_since_epoch().count();
 }
 
 /// Parses a timestamp string into unix milliseconds.

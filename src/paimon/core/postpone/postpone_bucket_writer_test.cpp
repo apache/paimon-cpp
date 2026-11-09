@@ -149,14 +149,15 @@ class PostponeBucketWriterTest : public ::testing::Test,
 };
 
 std::vector<std::string> GetTestValuesForPostponeBucketWriterTest() {
-    std::vector<std::string> values = {"parquet"};
+    return {
+        "parquet",
 #ifdef PAIMON_ENABLE_ORC
-    values.emplace_back("orc");
+        "orc",
 #endif
 #ifdef PAIMON_ENABLE_AVRO
-    values.emplace_back("avro");
+        "avro",
 #endif
-    return values;
+    };
 }
 
 INSTANTIATE_TEST_SUITE_P(FileFormat, PostponeBucketWriterTest,

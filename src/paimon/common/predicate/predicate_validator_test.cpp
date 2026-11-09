@@ -93,7 +93,7 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.5))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -123,9 +123,9 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
-                                        Literal(5l)),
+                                        Literal(int64_t{5})),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
                                         Literal(FieldType::STRING, str.data(), str.size())),
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
@@ -142,7 +142,7 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.5))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -161,7 +161,7 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.5))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -195,7 +195,7 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.5))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -257,7 +257,7 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.5))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -285,7 +285,7 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.5))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -336,7 +336,7 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.5))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -362,7 +362,7 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        Literal(int64_t{3})),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.5))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,

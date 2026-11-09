@@ -2233,7 +2233,7 @@ TEST_P(ScanInteTest, TestScanAppendWithBitmapAndAlterTable2) {
     // in index filter: predicate is removed as type for f1 is converted bigint->int, which is not
     // safe
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"f1",
-                                                   FieldType::BIGINT, Literal(100l));
+                                                   FieldType::BIGINT, Literal(int64_t{100}));
 
     context_builder.SetPredicate(predicate).AddOption(Options::SCAN_SNAPSHOT_ID, "2");
     ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(context_builder));
@@ -2308,7 +2308,7 @@ TEST_P(ScanInteTest, TestScanAppendWithBitmapAndAlterTableWithEmptyResult) {
 
     // child1 will remove file1 for schema1
     auto child1 = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f1", FieldType::BIGINT,
-                                          Literal(100l));
+                                          Literal(int64_t{100}));
     // child2 will remove file0 for schema 0
     auto child2 = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f4", FieldType::STRING,
                                           Literal(FieldType::STRING, "David", 5));

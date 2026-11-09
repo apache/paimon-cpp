@@ -53,6 +53,17 @@ TEST(RestHttpClientTest, BuildQueryString) {
     ASSERT_EQ("a=1&b=x+y%2Fz", RestHttpClient::BuildQueryString({{"a", "1"}, {"b", "x y/z"}}));
 }
 
+TEST(RestHttpClientTest, StopIdleServer) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,
+                         MockRestServer::Start([](const MockRestServer::Request&) {
+                             return MockRestServer::Response();
+                         }));
+    const auto start = std::chrono::steady_clock::now();
+    server->Stop();
+    server->Stop();
+    ASSERT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+}
+
 TEST(RestHttpClientTest, GetWithHeadersAndQuery) {
     // the handler runs on the mock server's accept thread, so every state it shares with
     // the test body is mutex guarded, here and in the tests below

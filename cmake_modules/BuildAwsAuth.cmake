@@ -79,6 +79,16 @@ function(paimon_add_aws_c_project
     endif()
     if(APPLE)
         list(APPEND AWS_PLATFORM_CMAKE_ARGS -DAWS_USE_SECITEM=ON)
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            # Apple's crypto and TLS backends require Clang's __builtin_available.
+            # These dependencies expose a C ABI, so Paimon can still use GCC.
+            find_program(AWS_C_CLANG_EXECUTABLE clang
+                         PATHS /usr/bin
+                         NO_DEFAULT_PATH REQUIRED)
+            list(APPEND AWS_PLATFORM_CMAKE_ARGS
+                 -DCMAKE_C_COMPILER=${AWS_C_CLANG_EXECUTABLE}
+                 -DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT})
+        endif()
     endif()
     # aws-c-io's installed package unconditionally looks for s2n on Unix even
     # when it was built with Apple's native TLS backend.

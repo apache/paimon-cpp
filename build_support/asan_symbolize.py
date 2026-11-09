@@ -158,7 +158,8 @@ class DarwinSymbolizer(Symbolizer):
     self.pipe = subprocess.Popen(cmdline,
                                  stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
+                                 stderr=subprocess.PIPE,
+                                 encoding='utf-8', errors='surrogateescape')
 
   def symbolize(self, addr, binary, offset):
     """Overrides Symbolizer.symbolize."""

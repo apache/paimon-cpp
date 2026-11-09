@@ -51,9 +51,9 @@ TEST(OptionsUtilsTest, TestGetValueFromMap) {
     ASSERT_NOK_WITH_MSG(OptionsUtils::GetValueFromMap<int8_t>(key_value_map, "key_int8"),
                         "convert key key_int8, value 500 to signed char failed");
     ASSERT_NOK_WITH_MSG(OptionsUtils::GetValueFromMap<int64_t>(key_value_map, "key_int64"),
-                        "convert key key_int64, value ab to long failed");
+                        "convert key key_int64, value ab to ");
     ASSERT_NOK_WITH_MSG(OptionsUtils::GetValueFromMap<int64_t>(key_value_map, "key_int64", 10),
-                        "convert key key_int64, value ab to long failed");
+                        "convert key key_int64, value ab to ");
 
     ASSERT_OK_AND_ASSIGN(
         auto nonexist, OptionsUtils::GetValueFromMap<int32_t>(key_value_map, "key_nonexist", 233));

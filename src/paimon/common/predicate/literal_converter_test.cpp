@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <variant>
 
 #include "arrow/api.h"
@@ -150,10 +151,10 @@ TEST_F(LiteralConverterTest, TestIntLiteral) {
 TEST_F(LiteralConverterTest, TestBigIntLiteral) {
     auto field_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), R"([4, 5, null])").ValueOrDie();
-    CheckResult(field_array,
-                std::vector<Literal>({Literal(4l), Literal(5l), Literal(FieldType::BIGINT)}));
+    CheckResult(field_array, std::vector<Literal>({Literal(int64_t{4}), Literal(int64_t{5}),
+                                                   Literal(FieldType::BIGINT)}));
     CheckLiteralsFromString(FieldType::BIGINT, {"4", "5"},
-                            std::vector<Literal>({Literal(4l), Literal(5l)}));
+                            std::vector<Literal>({Literal(int64_t{4}), Literal(int64_t{5})}));
     CheckLiteralFromRow(arrow::int64(),
                         {static_cast<int64_t>(4), static_cast<int64_t>(5), NullType()},
                         FieldType::BIGINT,
@@ -189,11 +190,11 @@ TEST_F(LiteralConverterTest, TestDoubleLiteral) {
     CheckLiteralsFromString(FieldType::DOUBLE, {"4.05", "5.17"},
                             std::vector<Literal>({Literal(4.05), Literal(5.17)}));
     CheckLiteralFromRow(arrow::float64(),
-                        {4.05, 5.17, static_cast<double> INFINITY, static_cast<double>(-INFINITY),
-                         static_cast<double> NAN, NullType()},
+                        {4.05, 5.17, static_cast<double>(INFINITY), static_cast<double>(-INFINITY),
+                         static_cast<double>(NAN), NullType()},
                         FieldType::DOUBLE,
-                        {Literal(4.05), Literal(5.17), Literal(static_cast<double> INFINITY),
-                         Literal(static_cast<double>(-INFINITY)), Literal(static_cast<double> NAN),
+                        {Literal(4.05), Literal(5.17), Literal(static_cast<double>(INFINITY)),
+                         Literal(static_cast<double>(-INFINITY)), Literal(static_cast<double>(NAN)),
                          Literal(FieldType::DOUBLE)});
 }
 
@@ -525,7 +526,7 @@ TEST_F(LiteralConverterTest, TestLiteralsToArray) {
         arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([456, null, -567])")
             .ValueOrDie());
     CheckLiteralsToArray(
-        FieldType::BIGINT, {Literal(4l), Literal(FieldType::BIGINT), Literal(-5l)},
+        FieldType::BIGINT, {Literal(int64_t{4}), Literal(FieldType::BIGINT), Literal(int64_t{-5})},
         arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), R"([4, null, -5])").ValueOrDie());
     CheckLiteralsToArray(
         FieldType::FLOAT, {Literal(4.5f), Literal(FieldType::FLOAT), Literal(-5.25f)},

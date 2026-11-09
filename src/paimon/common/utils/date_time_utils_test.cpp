@@ -19,7 +19,9 @@
 
 #include "paimon/common/utils/date_time_utils.h"
 
+#include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "gtest/gtest.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -32,71 +34,71 @@ TEST(DateTimeUtilsTest, TestTimestampConverter) {
     {
         auto ret = DateTimeUtils::TimestampConverter(
             10L, DateTimeUtils::SECOND, DateTimeUtils::MILLISECOND, DateTimeUtils::NANOSECOND);
-        ASSERT_EQ(ret, std::make_pair(10000L, 0L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{10000, 0}));
     }
     {
         auto ret = DateTimeUtils::TimestampConverter(
             10L, DateTimeUtils::SECOND, DateTimeUtils::NANOSECOND, DateTimeUtils::NANOSECOND);
-        ASSERT_EQ(ret, std::make_pair(10000000000L, 0L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{10000000000, 0}));
     }
     {
         auto ret = DateTimeUtils::TimestampConverter(
             10L, DateTimeUtils::SECOND, DateTimeUtils::NANOSECOND, DateTimeUtils::SECOND);
-        ASSERT_EQ(ret, std::make_pair(10000000000L, 0L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{10000000000, 0}));
     }
 
     {
         auto ret = DateTimeUtils::TimestampConverter(
             2567L, DateTimeUtils::MILLISECOND, DateTimeUtils::SECOND, DateTimeUtils::NANOSECOND);
-        ASSERT_EQ(ret, std::make_pair(2L, 567000000L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{2, 567000000}));
     }
     {
         auto ret = DateTimeUtils::TimestampConverter(2567L, DateTimeUtils::MILLISECOND,
                                                      DateTimeUtils::SECOND, DateTimeUtils::SECOND);
-        ASSERT_EQ(ret, std::make_pair(2L, 0L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{2, 0}));
     }
     {
         auto ret = DateTimeUtils::TimestampConverter(
             2567L, DateTimeUtils::MILLISECOND, DateTimeUtils::MICROSECOND, DateTimeUtils::SECOND);
-        ASSERT_EQ(ret, std::make_pair(2567000L, 0L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{2567000, 0}));
     }
     {
         auto ret = DateTimeUtils::TimestampConverter(2567L, DateTimeUtils::MILLISECOND,
                                                      DateTimeUtils::MICROSECOND,
                                                      DateTimeUtils::NANOSECOND);
-        ASSERT_EQ(ret, std::make_pair(2567000L, 0L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{2567000, 0}));
     }
 
     {
         auto ret = DateTimeUtils::TimestampConverter(12345678L, DateTimeUtils::NANOSECOND,
                                                      DateTimeUtils::MILLISECOND,
                                                      DateTimeUtils::NANOSECOND);
-        ASSERT_EQ(ret, std::make_pair(12L, 345678L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{12, 345678}));
     }
     {
         auto ret = DateTimeUtils::TimestampConverter(12345678L, DateTimeUtils::NANOSECOND,
                                                      DateTimeUtils::MILLISECOND,
                                                      DateTimeUtils::MICROSECOND);
-        ASSERT_EQ(ret, std::make_pair(12L, 345L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{12, 345}));
     }
     {
         auto ret =
             DateTimeUtils::TimestampConverter(12345678L, DateTimeUtils::NANOSECOND,
                                               DateTimeUtils::MILLISECOND, DateTimeUtils::SECOND);
-        ASSERT_EQ(ret, std::make_pair(12L, 0L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{12, 0}));
     }
     {
         auto ret = DateTimeUtils::TimestampConverter(
             -2240521239998998999L, DateTimeUtils::NANOSECOND, DateTimeUtils::MILLISECOND,
             DateTimeUtils::NANOSECOND);
-        ASSERT_EQ(ret, std::make_pair(-2240521239999L, 1001L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{-2240521239999, 1001}));
     }
     {
         // 9999-12-31
         auto ret = DateTimeUtils::TimestampConverter(253402252995L, DateTimeUtils::SECOND,
                                                      DateTimeUtils::MILLISECOND,
                                                      DateTimeUtils::NANOSECOND);
-        ASSERT_EQ(ret, std::make_pair(253402252995000L, 0L));
+        ASSERT_EQ(ret, (std::pair<int64_t, int64_t>{253402252995000, 0}));
     }
 }
 

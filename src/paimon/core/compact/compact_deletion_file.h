@@ -128,8 +128,8 @@ class LazyCompactDeletionFile : public CompactDeletionFile,
 
 inline Result<std::shared_ptr<CompactDeletionFile>> CompactDeletionFile::GenerateFiles(
     const std::shared_ptr<BucketedDvMaintainer>& maintainer) {
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<IndexFileMeta>> file,
-                           maintainer->WriteDeletionVectorsIndex());
+    std::optional<std::shared_ptr<IndexFileMeta>> file;
+    PAIMON_ASSIGN_OR_RAISE(file, maintainer->WriteDeletionVectorsIndex());
     return std::make_shared<GeneratedDeletionFile>(file.value_or(nullptr),
                                                    maintainer->DvIndexFile());
 }

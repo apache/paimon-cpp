@@ -461,6 +461,14 @@ TEST_F(StringUtilsTest, TestStringToDate) {
         ASSERT_EQ(date, -719528);
     }
     {
+        ASSERT_OK_AND_ASSIGN(int32_t date, StringUtils::StringToDate("0000-02-29"));
+        ASSERT_EQ(date, -719469);
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(int32_t date, StringUtils::StringToDate("0001-01-01"));
+        ASSERT_EQ(date, -719162);
+    }
+    {
         ASSERT_OK_AND_ASSIGN(auto date, StringUtils::StringToDate("9999-12-31"));
         ASSERT_EQ(date, 2932896);
     }
@@ -472,6 +480,8 @@ TEST_F(StringUtilsTest, TestStringToDate) {
     ASSERT_NOK(StringUtils::StringToDate("1970-XX-02"));
     ASSERT_NOK(StringUtils::StringToDate("2023-02-29"));
     ASSERT_NOK(StringUtils::StringToDate("2024-00-01"));
+    ASSERT_NOK(StringUtils::StringToDate("0000-02-30"));
+    ASSERT_NOK(StringUtils::StringToDate("1900-02-29"));
 }
 
 TEST_F(StringUtilsTest, TestStringToTimestampMillis) {

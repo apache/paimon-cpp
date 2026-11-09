@@ -92,4 +92,34 @@ if [[ "${output}" != *"#0"* || "${output}" != *"tail"* || "${output}" != *" in"*
     status=1
 fi
 
+echo "=== Darwin symbolizer exchanges text with atos ==="
+"${python}" - "${symbolizer}" <<'PY' || status=1
+import runpy
+import subprocess
+import sys
+from unittest import mock
+
+symbolizer_path = sys.argv[1]
+symbols = runpy.run_path(symbolizer_path)
+sys.argv = [symbolizer_path]
+real_popen = subprocess.Popen
+
+
+def fake_atos(command, **kwargs):
+    assert command[0] == 'atos', command
+    return real_popen(
+        [sys.executable, '-c',
+         "assert input() == '0x123'; "
+         "print('foo(int) (in foo.dylib) (source.cc:42)')"], **kwargs)
+
+
+symbolizer = symbols['DarwinSymbolizer']('0x123456789', '/blah/foo.dylib')
+with mock.patch.object(subprocess, 'Popen', side_effect=fake_atos):
+    result = symbolizer.symbolize('0x123456789', '/blah/foo.dylib', '0x123')
+assert result == ['0x123456789 in foo source.cc:42'], result
+assert symbolizer.pipe.wait() == 0
+symbolizer.pipe.stdout.close()
+symbolizer.pipe.stderr.close()
+PY
+
 exit "${status}"

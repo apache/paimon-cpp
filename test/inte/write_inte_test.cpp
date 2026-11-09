@@ -2746,7 +2746,7 @@ TEST_P(WriteInteTest, TestPKTableWriteAndReadWithExternalPath) {
     std::string external_path = meta->external_path.value();
     ASSERT_OK_AND_ASSIGN(bool file_exist, file_system_->Exists(external_path));
     ASSERT_TRUE(file_exist);
-    ASSERT_TRUE(external_path.find("tmp") != std::string::npos);
+    ASSERT_NE(external_path.find(external_dir->Str() + "/"), std::string::npos);
 }
 
 TEST_P(WriteInteTest, TestAppendTableStreamWriteWithExternalPath) {

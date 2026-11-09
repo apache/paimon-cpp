@@ -345,11 +345,46 @@ endif()
 
 if(PAIMON_ENABLE_LANCE)
     find_program(PAIMON_LANCE_PROTOC protoc REQUIRED)
-    corrosion_import_crate(MANIFEST_PATH crates/lance_ffi/Cargo.toml CRATES
-                           paimon_lance_ffi)
+    set(PAIMON_LANCE_CORROSION_OPTIONS)
+    if(APPLE)
+        # Rust's host tools and Apple's native crypto dependencies require Apple's toolchain.
+        list(APPEND PAIMON_LANCE_CORROSION_OPTIONS NO_LINKER_OVERRIDE)
+    endif()
+    corrosion_import_crate(MANIFEST_PATH
+                           crates/lance_ffi/Cargo.toml
+                           CRATES
+                           paimon_lance_ffi
+                           ${PAIMON_LANCE_CORROSION_OPTIONS})
     corrosion_experimental_cbindgen(TARGET paimon_lance_ffi HEADER_NAME
                                     paimon_lance_ffi.h)
     corrosion_set_env_vars(paimon_lance_ffi "PROTOC=${PAIMON_LANCE_PROTOC}")
+    if(APPLE)
+        target_link_libraries(paimon_lance_ffi INTERFACE "-framework Security"
+                                                         "-framework CoreFoundation")
+        find_program(PAIMON_LANCE_CLANG clang
+                     PATHS /usr/bin
+                     NO_DEFAULT_PATH REQUIRED)
+        find_program(PAIMON_LANCE_CLANGXX clang++
+                     PATHS /usr/bin
+                     NO_DEFAULT_PATH REQUIRED)
+        # cc-rs gives the hyphenated target variables priority over Corrosion's defaults.
+        # Preserve Apple's crypto-capable CPU baseline for these native dependencies.
+        corrosion_set_env_vars(paimon_lance_ffi
+                               "CC_${Rust_CARGO_TARGET_CACHED}=${PAIMON_LANCE_CLANG}"
+                               "CXX_${Rust_CARGO_TARGET_CACHED}=${PAIMON_LANCE_CLANGXX}"
+                               "CFLAGS="
+                               "CXXFLAGS="
+                               "CFLAGS_${Rust_CARGO_TARGET_CACHED}="
+                               "CXXFLAGS_${Rust_CARGO_TARGET_CACHED}=")
+        if(CMAKE_OSX_SYSROOT)
+            corrosion_set_env_vars(paimon_lance_ffi "SDKROOT=${CMAKE_OSX_SYSROOT}")
+        endif()
+        if(CMAKE_OSX_DEPLOYMENT_TARGET)
+            corrosion_set_env_vars(paimon_lance_ffi
+                                   "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
+            )
+        endif()
+    endif()
 endif()
 
 if(PAIMON_ENABLE_LUCENE)

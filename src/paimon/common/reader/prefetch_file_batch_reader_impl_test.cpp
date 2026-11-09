@@ -19,6 +19,7 @@
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 
 #include <atomic>
+#include <cstdint>
 #include <limits>
 #include <set>
 
@@ -1247,9 +1248,9 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestPrefetchWithPredicatePushdownWithCom
     ASSERT_OK_AND_ASSIGN(auto predicate,
                          PredicateBuilder::Or({
                              PredicateBuilder::LessThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                        FieldType::BIGINT, Literal(20l)),
+                                                        FieldType::BIGINT, Literal(int64_t{20})),
                              PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                           FieldType::BIGINT, Literal(70l)),
+                                                           FieldType::BIGINT, Literal(int64_t{70})),
                          }));
 
     auto reader = PreparePrefetchReader(file_format, schema.get(), predicate,
@@ -1293,9 +1294,9 @@ TEST_P(PrefetchFileBatchReaderImplTest,
     ASSERT_OK_AND_ASSIGN(auto predicate,
                          PredicateBuilder::Or({
                              PredicateBuilder::LessThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                        FieldType::BIGINT, Literal(20l)),
+                                                        FieldType::BIGINT, Literal(int64_t{20})),
                              PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"f1",
-                                                           FieldType::BIGINT, Literal(70l)),
+                                                           FieldType::BIGINT, Literal(int64_t{70})),
                          }));
 
     auto reader = PreparePrefetchReader(file_format, schema.get(), predicate,
@@ -1357,9 +1358,9 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestRowMapping) {
         auto predicate,
         PredicateBuilder::Or({
             PredicateBuilder::Between(/*field_index=*/1, /*field_name=*/"f1", FieldType::BIGINT,
-                                      Literal(20l), Literal(29l)),
+                                      Literal(int64_t{20}), Literal(int64_t{29})),
             PredicateBuilder::Between(/*field_index=*/1, /*field_name=*/"f1", FieldType::BIGINT,
-                                      Literal(70l), Literal(79l)),
+                                      Literal(int64_t{70}), Literal(int64_t{79})),
         }));
 
     auto reader = PreparePrefetchReader(file_format, schema.get(), predicate,
@@ -1389,7 +1390,7 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestRowMapping) {
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*schema, c_schema.get()).ok());
     predicate = PredicateBuilder::Between(/*field_index=*/1, /*field_name=*/"f1", FieldType::BIGINT,
-                                          Literal(30l), Literal(49l));
+                                          Literal(int64_t{30}), Literal(int64_t{49}));
     ASSERT_OK(reader->SetReadSchema(c_schema.get(), predicate, std::nullopt));
     std::shared_ptr<Metrics> metrics_after_schema = reader->GetReaderMetrics();
     ASSERT_OK_AND_ASSIGN(uint64_t consumed_after_schema,

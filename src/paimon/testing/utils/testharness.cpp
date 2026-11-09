@@ -58,6 +58,7 @@
 #include <random>
 #include <vector>
 
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/fs/file_system.h"
@@ -140,7 +141,7 @@ std::unique_ptr<UniqueTestDirectory> UniqueTestDirectory::Create(const std::stri
     static const size_t kMaxTries = 1000;
     std::string tmp_dir = fs_identifier == "jindo"
                               ? GetJindoTestDir()
-                              : std::filesystem::temp_directory_path().string() + "/";
+                              : std::filesystem::temp_directory_path().string();
     std::map<std::string, std::string> fs_options =
         fs_identifier == "jindo" ? GetJindoTestOptions() : std::map<std::string, std::string>();
     auto fs = FileSystemFactory::Get(fs_identifier, tmp_dir, fs_options);
@@ -152,7 +153,7 @@ std::unique_ptr<UniqueTestDirectory> UniqueTestDirectory::Create(const std::stri
         if (!UUID::Generate(&uuid)) {
             continue;
         }
-        std::string test_dir = tmp_dir + "paimon_test_" + uuid;
+        std::string test_dir = PathUtil::JoinPath(tmp_dir, "paimon_test_" + uuid);
         auto is_exist = fs.value()->Exists(test_dir);
         if (!is_exist.ok() || is_exist.value()) {
             continue;

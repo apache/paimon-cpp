@@ -352,7 +352,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenPayloadEmpty) {
                                           std::move(mock), GetArrowPool(pool_)));
     // read schema is just {k}; the predicate on k covers all columns -> payload empty
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
-                                                      FieldType::BIGINT, Literal(0l));
+                                                      FieldType::BIGINT, Literal(int64_t{0}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema({k_field_}), predicate, std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
@@ -372,7 +372,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ContiguousSubsetAcrossBatches) {
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
-                                                   FieldType::BIGINT, Literal(4l));
+                                                   FieldType::BIGINT, Literal(int64_t{4}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
@@ -397,7 +397,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ScatteredAlternatingMatch) {
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k",
-                                             FieldType::BIGINT, Literal(1l));
+                                             FieldType::BIGINT, Literal(int64_t{1}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
@@ -421,7 +421,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, MatchedIntersectsSelection) {
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k",
-                                             FieldType::BIGINT, Literal(1l));
+                                             FieldType::BIGINT, Literal(int64_t{1}));
     // predicate hits {1,3,5,7,9,11}; selection keeps only {1,5,9}
     RoaringBitmap32 selection;
     selection.Add(1);
@@ -447,7 +447,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, EmptyMatchReturnsEof) {
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
-                                                   FieldType::BIGINT, Literal(100l));
+                                                   FieldType::BIGINT, Literal(int64_t{100}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
@@ -461,7 +461,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, SeekToRowRealignsProbeCursor) {
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
-                                                      FieldType::BIGINT, Literal(5l));
+                                                      FieldType::BIGINT, Literal(int64_t{5}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
 
     // First payload batch triggers the probe scan; matched rows are 5..9.
@@ -490,7 +490,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReadRangesForwardedAcrossPhases) {
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
-                                                      FieldType::BIGINT, Literal(2l));
+                                                      FieldType::BIGINT, Literal(int64_t{2}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
 
     std::vector<std::pair<uint64_t, uint64_t>> ranges = {{0, 8}};
@@ -520,7 +520,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReentrantSetReadSchema) {
                                           std::move(mock), GetArrowPool(pool_)));
 
     auto predicate1 = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
-                                                    FieldType::BIGINT, Literal(7l));
+                                                    FieldType::BIGINT, Literal(int64_t{7}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate1, std::nullopt));
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows1, Collect(reader.get()));
     ASSERT_EQ(rows1.size(), 2u);  // k = 8,9
@@ -532,7 +532,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReentrantSetReadSchema) {
     }
 
     auto predicate2 = PredicateBuilder::LessThan(/*field_index=*/0, /*field_name=*/"k",
-                                                 FieldType::BIGINT, Literal(3l));
+                                                 FieldType::BIGINT, Literal(int64_t{3}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate2, std::nullopt));
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows2, Collect(reader.get()));
     ASSERT_EQ(rows2.size(), 3u);  // k = 0,1,2
@@ -567,10 +567,10 @@ TEST_F(LateMaterializingFileBatchReaderTest, MultiFieldPreservesColumnOrder) {
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     // probe columns = {a (idx0), c (idx2)}; payload columns = {b, d, e}
-    auto pred_a =
-        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "a", FieldType::BIGINT, Literal(3l));
-    auto pred_c =
-        PredicateBuilder::LessThan(/*field_index=*/2, "c", FieldType::BIGINT, Literal(700l));
+    auto pred_a = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "a", FieldType::BIGINT,
+                                                   Literal(int64_t{3}));
+    auto pred_c = PredicateBuilder::LessThan(/*field_index=*/2, "c", FieldType::BIGINT,
+                                             Literal(int64_t{700}));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({pred_a, pred_c}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(type->fields()), predicate, std::nullopt));
 
@@ -611,8 +611,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, NestedPayloadColumn) {
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
                                           std::move(mock), GetArrowPool(pool_)));
     // probe = {k}; payload = {arr (list<int64>), tag}
-    auto predicate =
-        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
+    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                      Literal(int64_t{5}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(type->fields()), predicate, std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result,
@@ -650,8 +650,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, DictionaryPayloadColumnKeepsEncodin
                                           std::move(mock), GetArrowPool(pool_)));
     // probe = {k}; payload = {v}. k >= 5 matches only row 5 of the batch holding rows 3..5, a run
     // at batch offset 2, and both rows of the batch holding rows 6..7, a run at batch offset 0.
-    auto predicate =
-        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
+    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                      Literal(int64_t{5}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(type->fields()), predicate, std::nullopt));
 
     std::vector<std::pair<int64_t, std::string>> rows;
@@ -708,8 +708,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, WorksAsInnerOfPrefetchReader) {
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
             /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
-    auto predicate =
-        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(4l));
+    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                      Literal(int64_t{4}));
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(full_fields_), &c_schema).ok());
     ASSERT_OK(impl->SetReadSchema(&c_schema, predicate, std::nullopt));
@@ -746,8 +746,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerReentrantSetReadSchema
             /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
 
     auto full_schema = arrow::schema(full_fields_);
-    auto predicate1 =
-        PredicateBuilder::GreaterThan(/*field_index=*/0, "k", FieldType::BIGINT, Literal(6l));
+    auto predicate1 = PredicateBuilder::GreaterThan(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                    Literal(int64_t{6}));
     ::ArrowSchema c_schema1;
     ASSERT_TRUE(arrow::ExportSchema(*full_schema, &c_schema1).ok());
     ASSERT_OK(impl->SetReadSchema(&c_schema1, predicate1, std::nullopt));
@@ -765,7 +765,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerReentrantSetReadSchema
     }
 
     auto predicate2 =
-        PredicateBuilder::LessThan(/*field_index=*/0, "k", FieldType::BIGINT, Literal(3l));
+        PredicateBuilder::LessThan(/*field_index=*/0, "k", FieldType::BIGINT, Literal(int64_t{3}));
     ::ArrowSchema c_schema2;
     ASSERT_TRUE(arrow::ExportSchema(*full_schema, &c_schema2).ok());
     ASSERT_OK(impl->SetReadSchema(&c_schema2, predicate2, std::nullopt));
@@ -807,8 +807,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerParallelReadersWithSee
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
             /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
-    auto predicate =
-        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
+    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                      Literal(int64_t{5}));
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(full_fields_), &c_schema).ok());
     ASSERT_OK(impl->SetReadSchema(&c_schema, predicate, std::nullopt));
@@ -862,8 +862,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangesReportedToCal
         reported.push_back(std::move(ranges));
         batches_when_reported.push_back(batches);
     });
-    auto predicate =
-        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(4l));
+    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                      Literal(int64_t{4}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
     // What is known up front is the probe projection's ranges, not the payload's.
     ASSERT_OK_AND_ASSIGN(ByteRanges up_front, reader->PreBufferRange());
@@ -915,8 +915,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, EmptyMatchDoesNotReportPayloadRange
     int32_t calls = 0;
     reader->SetPreBufferRangeCallback(
         [&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
-    auto predicate =
-        PredicateBuilder::GreaterThan(/*field_index=*/0, "k", FieldType::BIGINT, Literal(100l));
+    auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                   Literal(int64_t{100}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
@@ -935,8 +935,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, PayloadPreBufferRangeErrorFailsRead
     int32_t calls = 0;
     reader->SetPreBufferRangeCallback(
         [&calls](std::vector<std::pair<uint64_t, uint64_t>>&&) { calls++; });
-    auto predicate =
-        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(2l));
+    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                      Literal(int64_t{2}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
 
     ASSERT_NOK_WITH_MSG(reader->NextBatch(), "pre-buffer range unavailable");
@@ -974,7 +974,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, DisabledPrefetchCacheSkipsRangeQuer
                 /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
                 /*enable_io_metrics=*/false, level, pool_, GetArrowPool(pool_)));
         auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
-                                                          Literal(4l));
+                                                          Literal(int64_t{4}));
         ::ArrowSchema c_schema;
         ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(full_fields_), &c_schema).ok());
         ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, std::nullopt));
@@ -1016,8 +1016,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerRegistersPayloadPreBuf
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
             /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
-    auto predicate =
-        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(4l));
+    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
+                                                      Literal(int64_t{4}));
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(full_fields_), &c_schema).ok());
     ASSERT_OK(impl->SetReadSchema(&c_schema, predicate, std::nullopt));

@@ -18,7 +18,9 @@
 
 #include "paimon/rest/mock_rest_server.h"
 
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -89,6 +91,12 @@ Result<std::unique_ptr<MockRestServer>> MockRestServer::Start(Handler handler) {
         ::close(listen_fd);
         return Status::IOError("mock rest server: failed to listen: ", std::strerror(errno));
     }
+    int32_t flags = ::fcntl(listen_fd, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(listen_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        ::close(listen_fd);
+        return Status::IOError("mock rest server: failed to set nonblocking mode: ",
+                               std::strerror(errno));
+    }
     socklen_t address_len = sizeof(address);
     if (::getsockname(listen_fd, reinterpret_cast<struct sockaddr*>(&address), &address_len) < 0) {
         ::close(listen_fd);
@@ -106,9 +114,8 @@ void MockRestServer::Stop() {
     if (stopped_.exchange(true)) {
         return;
     }
-    // `shutdown` wakes the blocked `accept`; the fd is closed only after the accept
-    // thread has joined, so it cannot be recycled by another thread while the accept
-    // thread might still use it.
+    // Some platforms do not wake a listening socket on shutdown. The bounded poll
+    // in AcceptLoop also observes stopped_. Close only after joining to avoid fd reuse.
     ::shutdown(listen_fd_, SHUT_RDWR);
     if (accept_thread_.joinable()) {
         accept_thread_.join();
@@ -122,11 +129,20 @@ std::string MockRestServer::GetBaseUri() const {
 
 void MockRestServer::AcceptLoop() {
     while (!stopped_.load()) {
+        struct pollfd descriptor{listen_fd_, POLLIN, 0};
+        if (::poll(&descriptor, 1, 100) <= 0 || stopped_.load()) {
+            continue;
+        }
         int32_t connection_fd = ::accept(listen_fd_, nullptr, nullptr);
         if (connection_fd < 0) {
             if (stopped_.load()) {
                 return;
             }
+            continue;
+        }
+        int32_t flags = ::fcntl(connection_fd, F_GETFL, 0);
+        if (flags < 0 || ::fcntl(connection_fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+            ::close(connection_fd);
             continue;
         }
         // The connection is handled on the accept thread; the socket timeouts keep a
