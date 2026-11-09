@@ -63,12 +63,11 @@ if ! command -v protoc >/dev/null 2>&1 || \
             ;;
     esac
     protoc_home="${HOME}/.local/protoc-${PROTOC_VERSION}"
-    protoc_archive="/tmp/protoc-${PROTOC_VERSION}-${protoc_arch}.zip"
+    protoc_archive="${PAIMON_RELEASE_ASSET_DIR:-/tmp}/protoc-${PROTOC_VERSION}-${protoc_arch}.zip"
     if [[ ! -x "${protoc_home}/bin/protoc" ]]; then
-        curl --proto '=https' --tlsv1.2 -fL \
+        bash "$(dirname "${BASH_SOURCE[0]}")/download_release_asset.sh" \
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${protoc_arch}.zip" \
-            -o "${protoc_archive}"
-        echo "${protoc_sha256}  ${protoc_archive}" | sha256sum --check
+            "${protoc_archive}" "${protoc_sha256}"
         mkdir -p "${protoc_home}"
         unzip -oq "${protoc_archive}" -d "${protoc_home}"
     fi
