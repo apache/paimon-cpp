@@ -145,9 +145,10 @@ if [[ "${enable_tsan}" == "true" ]]; then
 fi
 # CI always builds natively, so the host architecture is the target architecture.
 host_arch=$(uname -m)
-if [[ "${host_arch}" != "x86_64" ]]; then
+if [[ "$(uname -s)" != "Linux" ||
+      ( "${host_arch}" != "x86_64" && "${host_arch}" != "aarch64" && "${host_arch}" != "arm64" ) ]]; then
     ENABLE_LUMINA="OFF"
-    echo "=== Lumina disabled: no prebuilt artifacts for ${host_arch} ==="
+    echo "=== Lumina disabled: no prebuilt artifacts for $(uname -s)-${host_arch} ==="
 fi
 if [[ "${verify_full_text_archives}" == "true" && "${ENABLE_FULL_TEXT}" != "ON" ]]; then
     echo "--verify_full_text_archives requires the full-text index, which this build disables" >&2

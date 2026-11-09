@@ -65,7 +65,7 @@ Supported platforms
      - Built and tested in CI.
    * - Linux
      - ``aarch64`` / ``arm64``
-     - Built and tested in CI.
+     - Built and tested in CI, including a GCC 13.3.0 Release job.
    * - macOS
      - ``x86_64``, ``arm64``
      - Architecture detection is wired up, but macOS as a whole is not an
@@ -89,10 +89,10 @@ x86: the baseline stays whatever the toolchain defaults to. No persisted value
 depends on it, in particular the checksum written to SST files and to the B-tree
 global index is the same however Paimon was compiled.
 
-One optional component is architecture-restricted:
-``-DPAIMON_ENABLE_LUMINA=ON`` consumes a prebuilt binary that is only
-published for Linux ``x86_64``, so configuring it on any other platform fails
-with an explicit error.
+Enable the Lumina vector index with ``-DPAIMON_ENABLE_LUMINA=ON`` on Linux
+``x86_64`` or ``aarch64``. CMake selects the prebuilt library for the
+target architecture. Linux CI enables Lumina on both architectures, including
+the ARM64 GCC 13.3.0 Release job. The GCC 8 compatibility job disables Lumina.
 
 Cross compilation is not wired up end to end: the bundled third-party builds are
 handed only the C and C++ compilers, without a toolchain file, sysroot or find
@@ -191,7 +191,7 @@ to ``ON``, while every other component below defaults to ``OFF``.
 * ``-DPAIMON_ENABLE_OSS=ON``: Support for Alibaba Cloud OSS through OSS SDK V2
 * ``-DPAIMON_ENABLE_S3=ON``: Support for Amazon S3-compatible filesystems
 * ``-DPAIMON_ENABLE_LUMINA=ON``: Support for the Lumina vector index. Requires
-  Linux ``x86_64``; see :ref:`cpp-building-platforms`.
+  Linux ``x86_64`` or ``aarch64``. See :ref:`cpp-building-platforms`.
 * ``-DPAIMON_ENABLE_LUCENE=ON``: Support for Lucene full-text search indexes
 * ``-DPAIMON_ENABLE_FULL_TEXT=ON``: Experimental full-text global index (index type
   ``full-text``) backed by the ``paimon-full-text-index`` 0.1.0 Rust engine. It uses the same index
