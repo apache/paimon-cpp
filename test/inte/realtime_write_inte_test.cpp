@@ -50,6 +50,7 @@
 #include "paimon/common/predicate/equal.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
@@ -79,6 +80,7 @@
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/count_reader.h"
 #include "paimon/realtime/arrow_realtime_store_factory.h"
@@ -1110,7 +1112,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
             arrow::ExportSchema(*schema_layout->StoreWriteSchema(), read_schema.get()));
         ScopeGuard schema_guard([schema = read_schema.get()]() { ArrowSchemaRelease(schema); });
-        RealtimeQueryContext query_context{read_schema.get(), /*predicate=*/nullptr};
+        RealtimeQueryContext query_context{
+            read_schema.get(),
+            /*predicate=*/nullptr,
+            views[0].read_view->GetOffsetRange().value_or(OffsetRange(0, 0))};
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::unique_ptr<BatchReader>> readers,
             views[0].store->CreateQueryReaders(views[0].read_view, query_context));
@@ -6239,6 +6244,402 @@ TEST_F(RealtimeWriteInteTest, TestCountReaderDoesNotSupportRealtimeSplit) {
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
+// TODO(xinyu.lxy): Refactor the real-time hash index tests.
+class RealtimeHashIndexInteTest : public RealtimeWriteInteTest {
+ protected:
+    void SetUp() override {
+        RealtimeWriteInteTest::SetUp();
+        ASSERT_FALSE(HasFatalFailure());
+        options_["realtime.index.hash.columns"] = "id,payload";
+        options_[Options::REALTIME_STORE_STATS_MODE] = "none";
+        options_[Options::READ_BATCH_SIZE] = "2";
+    }
+
+    std::shared_ptr<Predicate> EqualId(int64_t id) const {
+        return PredicateBuilder::Equal(schema_->GetFieldIndex("id"), "id", FieldType::BIGINT,
+                                       Literal(id));
+    }
+
+    std::shared_ptr<Predicate> EqualPayload(const std::string& payload) const {
+        return PredicateBuilder::Equal(schema_->GetFieldIndex("payload"), "payload",
+                                       FieldType::STRING,
+                                       Literal(FieldType::STRING, payload.data(), payload.size()));
+    }
+
+    void CheckPlanRows(const std::shared_ptr<Plan>& plan,
+                       const std::shared_ptr<RealtimeContext>& realtime_context,
+                       const std::shared_ptr<Predicate>& predicate,
+                       const std::vector<Row>& expected) const {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> read_predicate,
+                             PredicateUtils::CreatePickedFieldFilter(
+                                 predicate, {{"id", 0}, {"payload", 1}, {"pt", 2}}));
+        if (predicate) {
+            ASSERT_NE(nullptr, read_predicate);
+        }
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> actual,
+                             ReadRows(plan, realtime_context, read_predicate,
+                                      /*enable_predicate_filter=*/false));
+        ASSERT_EQ(std::multiset<Row>(expected.begin(), expected.end()),
+                  std::multiset<Row>(actual.begin(), actual.end()));
+    }
+
+    void CheckQueries(const std::shared_ptr<RealtimeContext>& realtime_context,
+                      const std::vector<std::shared_ptr<Predicate>>& predicates,
+                      const std::vector<std::vector<Row>>& expected) const {
+        ASSERT_EQ(predicates.size(), expected.size());
+        for (size_t i = 0; i < predicates.size(); ++i) {
+            SCOPED_TRACE(i);
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                                 CreatePlan(realtime_context, predicates[i]));
+            ASSERT_NO_FATAL_FAILURE(
+                CheckPlanRows(plan, realtime_context, predicates[i], expected[i]));
+        }
+    }
+
+    void CheckProjectedQuery(const std::shared_ptr<RealtimeContext>& realtime_context,
+                             const std::shared_ptr<Predicate>& predicate,
+                             const std::vector<std::string>& read_fields,
+                             bool enable_predicate_filter, const std::string& expected_json) const {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+        std::map<std::string, int32_t> field_positions;
+        for (int32_t i = 0; i < static_cast<int32_t>(read_fields.size()); ++i) {
+            field_positions.emplace(read_fields[i], i);
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> read_predicate,
+                             PredicateUtils::CreatePickedFieldFilter(predicate, field_positions));
+        ASSERT_NE(nullptr, read_predicate);
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::ChunkedArray> actual,
+            ReadPlan(plan, realtime_context, read_fields, read_predicate, enable_predicate_filter));
+        arrow::FieldVector fields = {arrow::field("_VALUE_KIND", arrow::int8())};
+        for (const std::string& name : read_fields) {
+            fields.push_back(schema_->GetFieldByName(name));
+        }
+        arrow::Result<std::shared_ptr<arrow::Array>> expected_result =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), expected_json);
+        ASSERT_TRUE(expected_result.ok()) << expected_result.status().ToString();
+        const std::shared_ptr<arrow::Array> expected = std::move(expected_result).ValueOrDie();
+        ASSERT_NE(nullptr, actual);
+        ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*actual))
+            << actual->ToString();
+    }
+};
+
+TEST_F(RealtimeHashIndexInteTest, TestKeyAndValueIndexesPruneWithoutStatisticsOrResidualFilter) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    const std::vector<Row> rows = {{1, "red", "p0"},
+                                   {2, "blue", "p0"},
+                                   {3, "red", "p0"},
+                                   {4, "green", "p0"},
+                                   {5, "blue", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    const std::vector<std::shared_ptr<Predicate>> predicates = {
+        EqualId(3),
+        PredicateBuilder::In(0, "id", FieldType::BIGINT,
+                             {Literal(int64_t{1}), Literal(int64_t{5})}),
+        EqualId(99),
+        EqualPayload("red"),
+        PredicateBuilder::In(
+            1, "payload", FieldType::STRING,
+            {Literal(FieldType::STRING, "red", 3), Literal(FieldType::STRING, "green", 5)}),
+        EqualPayload("missing")};
+    const std::vector<std::vector<Row>> expected = {
+        {rows[2]}, {rows[0], rows[4]}, {}, {rows[0], rows[2]}, {rows[0], rows[2], rows[3]}, {}};
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, expected));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    // Query the same postings after segment rotation, before any data file is committed.
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, expected));
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeHashIndexInteTest, TestIndexedFieldCombinesWithStatisticsOnAnotherField) {
+    fields_.push_back(arrow::field("score", arrow::int64()));
+    schema_ = arrow::schema(fields_);
+    options_["realtime.index.hash.columns"] = "id";
+    options_[Options::REALTIME_STORE_STATS_MODE] = "full";
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    const std::vector<std::string> batches = {
+        // The index finds id 7, but max(score) excludes the entire batch.
+        R"([[0, 7, "below", "p0", 10], [1, 8, "below-other", "p0", 20]])",
+        // Both rows pass score statistics; only the index can remove id 8.
+        R"([[2, 7, "match", "p0", 150], [3, 8, "other", "p0", 160]])",
+        // id 7 lies inside min/max, but the index has no candidate in this batch.
+        R"([[4, 6, "no-match", "p0", 170], [5, 8, "no-match", "p0", 180]])"};
+    for (const std::string& json : batches) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             MakeUnpartitionedBatchFromJson(json));
+        ASSERT_OK(writer->Write(std::move(batch)));
+    }
+    const std::shared_ptr<Predicate> indexed = EqualId(7);
+    const std::shared_ptr<Predicate> statistics = PredicateBuilder::GreaterThan(
+        schema_->GetFieldIndex("score"), "score", FieldType::BIGINT, Literal(int64_t{100}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> combined,
+                         PredicateBuilder::And({indexed, statistics}));
+    const std::vector<std::shared_ptr<Predicate>> predicates = {indexed, statistics, combined};
+    const std::vector<std::string> expected = {
+        R"([[0, 7, 10], [0, 7, 150]])", R"([[0, 7, 150], [0, 8, 160], [0, 6, 170], [0, 8, 180]])",
+        R"([[0, 7, 150]])"};
+    const auto check_candidates = [&]() {
+        for (size_t i = 0; i < predicates.size(); ++i) {
+            SCOPED_TRACE(i);
+            ASSERT_NO_FATAL_FAILURE(
+                CheckProjectedQuery(realtime_context, predicates[i], {"id", "score"},
+                                    /*enable_predicate_filter=*/false, expected[i]));
+        }
+    };
+    ASSERT_NO_FATAL_FAILURE(check_candidates());
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_NO_FATAL_FAILURE(check_candidates());
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeHashIndexInteTest, TestDeduplicateRebuildsFileIndexesAfterSkippingDeletedRows) {
+    ConfigureRealtimeDeduplicateTable();
+    options_["file-index.bitmap.columns"] = SpecialFields::RealtimeOffset().Name() + ",id,payload";
+    options_[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1MB";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        MakeBatch({{1, "old", "p0"},
+                   {2, "deleted", "p0"},
+                   {1, "new", "p0"},
+                   {3, "keep", "p0"},
+                   {2, "ignored", "p0"},
+                   {4, "tail", "p0"}},
+                  /*partitioned=*/false, /*bucket=*/0,
+                  {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::INSERT,
+                   RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::INSERT,
+                   RecordBatch::RowKind::DELETE, RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    const std::vector<std::shared_ptr<Predicate>> predicates = {
+        EqualId(1),           EqualId(2),
+        EqualId(3),           EqualId(4),
+        EqualPayload("old"),  EqualPayload("deleted"),
+        EqualPayload("new"),  EqualPayload("keep"),
+        EqualPayload("tail"), nullptr};
+    const std::vector<std::vector<Row>> expected = {
+        {{1, "new", "p0"}},
+        {},
+        {{3, "keep", "p0"}},
+        {{4, "tail", "p0"}},
+        {},
+        {},
+        {{1, "new", "p0"}},
+        {{3, "keep", "p0"}},
+        {{4, "tail", "p0"}},
+        {{1, "new", "p0"}, {3, "keep", "p0"}, {4, "tail", "p0"}}};
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, expected));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_EQ(OffsetRange(0, 6), progress[0].offset_range);
+    const std::vector<std::shared_ptr<DataFileMeta>> files = NewFiles(progress);
+    ASSERT_EQ(1, files.size());
+    // Surviving offsets 2, 3, 5 become file row positions 0, 1, 2.
+    ASSERT_EQ(3, files[0]->row_count);
+    ASSERT_NE(nullptr, files[0]->embedded_index);
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, expected));
+
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(progress, /*commit_identifier=*/0));
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, expected));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, expected));
+    ASSERT_OK(writer->Close());
+    writer.reset();
+    realtime_context.reset();
+    // No memory store or residual filter can repair an incorrect file-index row position.
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(/*realtime_context=*/nullptr, predicates, expected));
+}
+
+TEST_F(RealtimeHashIndexInteTest, TestSnapshotBoundsExcludeCommittedPrefixAndLaterPostings) {
+    options_["file-index.bitmap.columns"] = "payload";
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
+                         MakeBatch({{1, "match", "p0"}, {2, "miss", "p0"}, {3, "match", "p0"}},
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(disk_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(progress, /*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                         MakeBatch({{4, "match", "p0"}, {5, "miss", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(memory_batch)));
+    const std::shared_ptr<Predicate> predicate = EqualPayload("match");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> pinned, CreatePlan(realtime_context, predicate));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> pinned_across_refresh,
+                         CreatePlan(realtime_context, predicate));
+    ASSERT_EQ(1, pinned->Splits().size());
+    const std::shared_ptr<RealtimeSplit> split =
+        std::dynamic_pointer_cast<RealtimeSplit>(pinned->Splits()[0]);
+    ASSERT_NE(nullptr, split);
+    ASSERT_EQ(3, split->CommittedEndOffset());
+    ASSERT_EQ(5, split->MemoryEndOffset());
+    {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context,
+                             RealtimeContextImpl::Cast(realtime_context));
+        ASSERT_OK_AND_ASSIGN(RealtimeReadState state, context->AcquireReadState());
+        ASSERT_EQ(1, state.views.size());
+        ASSERT_EQ(3, state.views[0].store->GetDataUsage().sealed_row_count);
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> later_batch,
+                         MakeBatch({{6, "match", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(later_batch)));
+    const std::vector<Row> old_expected = {
+        {1, "match", "p0"}, {3, "match", "p0"}, {4, "match", "p0"}};
+    ASSERT_NO_FATAL_FAILURE(CheckPlanRows(pinned, realtime_context, predicate, old_expected));
+    const std::vector<std::vector<Row>> latest_expected = {
+        {{1, "match", "p0"}, {3, "match", "p0"}, {4, "match", "p0"}, {6, "match", "p0"}}};
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, {predicate}, latest_expected));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_NO_FATAL_FAILURE(
+        CheckPlanRows(pinned_across_refresh, realtime_context, predicate, old_expected));
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, {predicate}, latest_expected));
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimeHashIndexInteTest, TestPinnedDeduplicatePredicatesSurviveUpdateDeleteAndRefresh) {
+    ConfigureRealtimeDeduplicateTable();
+    options_["file-index.bitmap.columns"] = SpecialFields::RealtimeOffset().Name() + ",id,payload";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK(WriteCommitAndRefresh({{1, "disk-old", "p0"}, {2, "keep", "p0"}},
+                                    /*partitioned=*/false, /*bucket=*/0, /*row_kinds=*/{},
+                                    /*commit_identifier=*/0, writer.get()));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> first_update,
+                         MakeBatch({{1, "old", "p0"}, {3, "three", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(first_update)));
+    const std::vector<std::shared_ptr<Predicate>> predicates = {
+        EqualId(1), EqualPayload("old"), EqualPayload("new"), EqualPayload("disk-old")};
+    std::vector<std::shared_ptr<Plan>> old_plans;
+    for (const std::shared_ptr<Predicate>& predicate : predicates) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+        old_plans.push_back(std::move(plan));
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_update,
+                         MakeBatch({{1, "new", "p0"}}, /*partitioned=*/false, /*bucket=*/0,
+                                   {RecordBatch::RowKind::UPDATE_AFTER}));
+    ASSERT_OK(writer->Write(std::move(second_update)));
+    const std::vector<std::vector<Row>> updated_expected = {
+        {{1, "new", "p0"}}, {}, {{1, "new", "p0"}}, {}};
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, updated_expected));
+    std::vector<std::shared_ptr<Plan>> updated_plans;
+    for (const std::shared_ptr<Predicate>& predicate : predicates) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+        updated_plans.push_back(std::move(plan));
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> deletion,
+                         MakeBatch({{1, "ignored", "p0"}}, /*partitioned=*/false, /*bucket=*/0,
+                                   {RecordBatch::RowKind::DELETE}));
+    ASSERT_OK(writer->Write(std::move(deletion)));
+    const std::vector<std::vector<Row>> deleted_expected(predicates.size());
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, deleted_expected));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(progress, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    const std::vector<std::vector<Row>> old_expected = {
+        {{1, "old", "p0"}}, {{1, "old", "p0"}}, {}, {}};
+    for (size_t i = 0; i < predicates.size(); ++i) {
+        SCOPED_TRACE(i);
+        ASSERT_NO_FATAL_FAILURE(
+            CheckPlanRows(old_plans[i], realtime_context, predicates[i], old_expected[i]));
+        ASSERT_NO_FATAL_FAILURE(
+            CheckPlanRows(updated_plans[i], realtime_context, predicates[i], updated_expected[i]));
+    }
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, predicates, deleted_expected));
+    ASSERT_NO_FATAL_FAILURE(CheckQueries(realtime_context, {EqualId(2), EqualId(3)},
+                                         {{{2, "keep", "p0"}}, {{3, "three", "p0"}}}));
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeHashIndexInteTest, TestResidualFiltersComposeWithHashCandidatesAndProjection) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch, MakeUnpartitionedBatchFromJson(R"([
+                             [0, 1, "hit", "p0"], [1, 2, "hit", "p1"],
+                             [2, 3, "miss", "p0"], [3, 4, null, "p1"],
+                             [4, 5, "hit", "p0"], [5, 6, null, "p0"]
+                         ])"));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    const std::shared_ptr<Predicate> hit = EqualPayload("hit");
+    const std::shared_ptr<Predicate> range =
+        PredicateBuilder::GreaterThan(0, "id", FieldType::BIGINT, Literal(int64_t{1}));
+    const std::shared_ptr<Predicate> unindexed =
+        PredicateBuilder::Equal(2, "pt", FieldType::STRING, Literal(FieldType::STRING, "p1", 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> and_range, PredicateBuilder::And({hit, range}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_range, PredicateBuilder::Or({hit, range}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> and_unindexed,
+                         PredicateBuilder::And({hit, unindexed}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_unindexed,
+                         PredicateBuilder::Or({hit, unindexed}));
+    const std::vector<std::shared_ptr<Predicate>> predicates = {
+        and_range,
+        or_range,
+        and_unindexed,
+        or_unindexed,
+        PredicateBuilder::IsNull(1, "payload", FieldType::STRING),
+        PredicateBuilder::IsNotNull(1, "payload", FieldType::STRING)};
+    const std::string all_candidates = R"([
+        [0, "hit", 1, "p0"], [0, "hit", 2, "p1"], [0, "miss", 3, "p0"],
+        [0, null, 4, "p1"], [0, "hit", 5, "p0"], [0, null, 6, "p0"]
+    ])";
+    const std::string hit_candidates =
+        R"([[0, "hit", 1, "p0"], [0, "hit", 2, "p1"], [0, "hit", 5, "p0"]])";
+    const std::vector<std::string> expected_filtered = {
+        R"([[0, "hit", 2, "p1"], [0, "hit", 5, "p0"]])",
+        all_candidates,
+        R"([[0, "hit", 2, "p1"]])",
+        R"([[0, "hit", 1, "p0"], [0, "hit", 2, "p1"], [0, null, 4, "p1"], [0, "hit", 5, "p0"]])",
+        R"([[0, null, 4, "p1"], [0, null, 6, "p0"]])",
+        R"([[0, "hit", 1, "p0"], [0, "hit", 2, "p1"], [0, "miss", 3, "p0"], [0, "hit", 5, "p0"]])"};
+    for (size_t i = 0; i < predicates.size(); ++i) {
+        SCOPED_TRACE(i);
+        ASSERT_NO_FATAL_FAILURE(CheckProjectedQuery(
+            realtime_context, predicates[i], {"payload", "id", "pt"},
+            /*enable_predicate_filter=*/false, i == 0 || i == 2 ? hit_candidates : all_candidates));
+        ASSERT_NO_FATAL_FAILURE(
+            CheckProjectedQuery(realtime_context, predicates[i], {"payload", "id", "pt"},
+                                /*enable_predicate_filter=*/true, expected_filtered[i]));
+    }
+    ASSERT_NO_FATAL_FAILURE(CheckProjectedQuery(realtime_context, and_range, {"payload", "id"},
+                                                /*enable_predicate_filter=*/true,
+                                                R"([[0, "hit", 2], [0, "hit", 5]])"));
+    ASSERT_NO_FATAL_FAILURE(CheckProjectedQuery(realtime_context, hit, {"payload"},
+                                                /*enable_predicate_filter=*/false,
+                                                R"([[0, "hit"], [0, "hit"], [0, "hit"]])"));
+    ASSERT_NO_FATAL_FAILURE(CheckProjectedQuery(realtime_context, predicates[4], {"payload"},
+                                                /*enable_predicate_filter=*/true,
+                                                R"([[0, null], [0, null]])"));
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
 TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
@@ -6887,6 +7288,98 @@ TEST_F(RealtimeWriteInteTest, TestRefreshCommittedSnapshotReclaimsMemory) {
                          GetRealtimeMemoryUsage(realtime_context));
     ASSERT_LT(memory_usage_after_refresh, memory_usage_before_refresh);
     ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimeWriteInteTest, TestRefreshReleasesMemoryHeldByUnpreparedSealedSegments) {
+    CreateTable(/*partition_keys=*/{});
+    // Keep the Arrow allocator alive until both the writer and its context have released any
+    // input buffers, including when an assertion returns early.
+    std::shared_ptr<MemoryPool> input_pool = GetMemoryPool();
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(input_pool);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    std::vector<Row> committed_rows = MakeRows(/*first_id=*/0, /*count=*/4, /*partition=*/"p0");
+    for (Row& row : committed_rows) {
+        std::get<1>(row) = std::string(64 * 1024, 'x');
+    }
+    // Track the input buffers separately from store gauges, which stop counting a segment as
+    // soon as the store retires it even if the writer still owns its pending commit handle.
+    {
+        arrow::Int64Builder offsets(arrow_pool.get());
+        arrow::Int64Builder ids(arrow_pool.get());
+        arrow::StringBuilder payloads(arrow_pool.get());
+        arrow::StringBuilder partitions(arrow_pool.get());
+        for (const Row& row : committed_rows) {
+            const auto& [id, payload, partition] = row;
+            ASSERT_TRUE(offsets.Append(id).ok());
+            ASSERT_TRUE(ids.Append(id).ok());
+            ASSERT_TRUE(payloads.Append(payload).ok());
+            ASSERT_TRUE(partitions.Append(partition).ok());
+        }
+        arrow::ArrayVector columns;
+        const std::vector<arrow::ArrayBuilder*> builders = {&offsets, &ids, &payloads, &partitions};
+        for (arrow::ArrayBuilder* builder : builders) {
+            std::shared_ptr<arrow::Array> column;
+            ASSERT_TRUE(builder->Finish(&column).ok());
+            columns.push_back(std::move(column));
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                             RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, schema_));
+        auto data =
+            arrow::StructArray::Make(std::move(columns), schema_layout->InputSchema()->fields());
+        ASSERT_TRUE(data.ok());
+        ArrowArray c_array;
+        ASSERT_TRUE(arrow::ExportArray(*data.ValueOrDie(), &c_array).ok());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             RecordBatchBuilder(&c_array).SetBucket(0).Finish());
+        ASSERT_OK(writer->Write(std::move(batch)));
+    }
+    ASSERT_OK(writer->Seal());
+
+    ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/4);
+    std::vector<Row> tail_rows = MakeRows(/*first_id=*/4, /*count=*/2, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> tail_batch,
+                         MakeBatch(tail_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(tail_batch)));
+    ASSERT_OK(writer->Seal());
+
+    // An independent context persists the same input prefix while this writer has only sealed
+    // it. Do not prepare this writer before refresh: that would already release its handles.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> committing_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> committing_writer,
+                         CreateRealtimeWriter(committing_context));
+    ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/0);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> committed_batch,
+                         MakeBatch(committed_rows, /*partitioned=*/false));
+    ASSERT_OK(committing_writer->Write(std::move(committed_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
+                         committing_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(commits, /*commit_identifier=*/0));
+    ASSERT_OK(committing_writer->Close());
+
+    const uint64_t allocated_before_refresh = input_pool->CurrentUsage();
+    ASSERT_GT(allocated_before_refresh, 0);
+    ASSERT_OK_AND_ASSIGN(uint64_t memory_before_refresh, GetRealtimeMemoryUsage(realtime_context));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_LT(input_pool->CurrentUsage(), allocated_before_refresh);
+    ASSERT_EQ(0, input_pool->CurrentUsage());
+    ASSERT_OK_AND_ASSIGN(uint64_t memory_after_refresh, GetRealtimeMemoryUsage(realtime_context));
+    ASSERT_GT(memory_after_refresh, 0);
+    ASSERT_LT(memory_after_refresh, memory_before_refresh);
+
+    std::vector<Row> expected_rows = committed_rows;
+    expected_rows.insert(expected_rows.end(), tail_rows.begin(), tail_rows.end());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> remaining,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, remaining.size());
+    ASSERT_EQ(OffsetRange(4, 6), remaining[0].offset_range);
+    ASSERT_OK(writer->Close());
 }
 
 TEST_F(RealtimeWriteInteTest, TestPlanPinsMemoryAcrossRefresh) {

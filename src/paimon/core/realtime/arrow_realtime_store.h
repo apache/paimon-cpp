@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -40,16 +41,19 @@ class FileSystem;
 class IOManager;
 class MemoryPool;
 class PredicateFilter;
+class RealtimeIndexSet;
 
 /// Internal Arrow-backed implementation of the default `RealtimeStore`.
-class ArrowRealtimeStore final : public RealtimeStoreTwoPhaseSeal {
+class ArrowRealtimeStore final : public TwoPhaseSealableRealtimeStore {
  public:
-    ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
-                       StatisticsMode statistics_mode, const std::string& temp_directory,
-                       const std::shared_ptr<FileSystem>& spill_file_system,
-                       const std::string& spill_compression, int32_t spill_compression_level,
-                       const std::shared_ptr<MemoryPool>& memory_pool,
-                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+    /// @pre Schema and memory pools are non-null; spill requires a file system.
+    static Result<std::shared_ptr<ArrowRealtimeStore>> Create(
+        const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
+        StatisticsMode statistics_mode, const std::string& temp_directory,
+        const std::shared_ptr<FileSystem>& spill_file_system, const std::string& spill_compression,
+        int32_t spill_compression_level, const std::map<std::string, std::string>& index_options,
+        const std::shared_ptr<MemoryPool>& memory_pool,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Status Write(RealtimeWriteBatch&& write_batch) override;
 
@@ -79,6 +83,16 @@ class ArrowRealtimeStore final : public RealtimeStoreTwoPhaseSeal {
     uint64_t GetMemoryUsage() const override;
 
  private:
+    ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
+                       StatisticsMode statistics_mode,
+                       const std::shared_ptr<FileSystem>& spill_file_system,
+                       const std::string& spill_compression, int32_t spill_compression_level,
+                       const std::map<std::string, std::string>& index_options,
+                       const std::shared_ptr<IOManager>& io_manager,
+                       std::shared_ptr<RealtimeIndexSet> building_index,
+                       const std::shared_ptr<MemoryPool>& memory_pool,
+                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+
     struct BatchStatistics {
         // Arrow buffers retain a raw MemoryPool pointer. Keep their allocator alive until all
         // statistics arrays have been released.
@@ -113,6 +127,8 @@ class ArrowRealtimeStore final : public RealtimeStoreTwoPhaseSeal {
     class SpillBatchReader;
     class AppendQueryBatchReader;
 
+    Result<std::shared_ptr<RealtimeIndexSet>> CreateBuildingIndex() const;
+
     Result<std::optional<BatchStatistics>> CollectStatistics(
         const std::shared_ptr<arrow::StructArray>& data) const;
 
@@ -132,7 +148,9 @@ class ArrowRealtimeStore final : public RealtimeStoreTwoPhaseSeal {
     std::shared_ptr<FileSystem> spill_file_system_;
     std::string spill_compression_;
     int32_t spill_compression_level_;
+    std::map<std::string, std::string> index_options_;
     mutable std::mutex mutex_;
+    std::shared_ptr<RealtimeIndexSet> building_index_;
     std::vector<StoredBatch> building_batches_;
     std::vector<std::shared_ptr<Segment>> sealed_segments_;
     std::optional<OffsetRange> building_range_;

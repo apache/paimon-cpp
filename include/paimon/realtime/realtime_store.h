@@ -142,6 +142,9 @@ struct PAIMON_EXPORT RealtimeQueryContext {
     /// Optional predicate using field indexes from `read_schema`. A non-null predicate allows the
     /// plugin to prune candidate rows. Exact filtering is applied by the Paimon read framework.
     std::shared_ptr<Predicate> predicate;
+    /// Required [disk snapshot committed end, pinned memory end) bounds.
+    /// Pin memory before selecting the disk snapshot; keep these bounds for the query.
+    OffsetRange offset_range;
     /// Maximum number of rows in a returned query batch.
     int32_t read_batch_size = 1024;
 };
@@ -214,9 +217,9 @@ class PAIMON_EXPORT RealtimeStore {
 
 /// Optional capability for `RealtimeStore` implementations to separate segment freezing from spill
 /// I/O.
-class PAIMON_EXPORT RealtimeStoreTwoPhaseSeal : public RealtimeStore {
+class PAIMON_EXPORT TwoPhaseSealableRealtimeStore : public RealtimeStore {
  public:
-    ~RealtimeStoreTwoPhaseSeal() override = default;
+    ~TwoPhaseSealableRealtimeStore() override = default;
 
     /// Freezes the building segment without spill I/O.
     virtual Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>>

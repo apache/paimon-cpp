@@ -26,11 +26,15 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
+#include "arrow/compute/api.h"
 #include "arrow/compute/api_aggregate.h"
 #include "paimon/common/data/columnar/columnar_array.h"
 #include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -40,6 +44,9 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/disk/io_manager.h"
 #include "paimon/core/io/arrow_ipc_file.h"
+#include "paimon/core/realtime/index/realtime_index_evaluator.h"
+#include "paimon/core/realtime/index/realtime_index_set.h"
+#include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/macros.h"
@@ -109,28 +116,50 @@ class SlicedQueryBatchReader final : public BatchReader {
         : reader_(std::move(reader)), read_batch_size_(read_batch_size), arrow_pool_(arrow_pool) {}
 
     Result<ReadBatch> NextBatch() override {
-        while (!current_batch_ || next_row_ >= current_batch_->length()) {
-            current_batch_.reset();
-            next_row_ = 0;
-            PAIMON_ASSIGN_OR_RAISE(ReadBatch batch, reader_->NextBatch());
-            if (IsEofBatch(batch)) {
-                return batch;
-            }
-            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-                std::shared_ptr<arrow::Array> array,
-                arrow::ImportArray(batch.first.get(), batch.second.get()));
-            if (!array || array->type_id() != arrow::Type::STRUCT) {
-                return Status::Invalid("real-time query batch must be a StructArray");
-            }
-            current_batch_ = checked_pointer_cast<arrow::StructArray>(array);
-        }
+        PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, NextBatchWithBitmap());
+        return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch), arrow_pool_);
+    }
 
-        const int64_t length =
-            std::min<int64_t>(read_batch_size_, current_batch_->length() - next_row_);
-        std::shared_ptr<arrow::StructArray> slice =
-            checked_pointer_cast<arrow::StructArray>(current_batch_->Slice(next_row_, length));
-        next_row_ += length;
-        return ExportStructBatch(slice, arrow_pool_);
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        while (true) {
+            if (!current_batch_ || next_row_ >= current_batch_->length()) {
+                current_batch_.reset();
+                next_row_ = 0;
+                PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, reader_->NextBatchWithBitmap());
+                if (IsEofBatch(batch)) {
+                    return batch;
+                }
+                PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                    std::shared_ptr<arrow::Array> array,
+                    arrow::ImportArray(batch.first.first.get(), batch.first.second.get()));
+                if (!array || array->type_id() != arrow::Type::STRUCT) {
+                    return Status::Invalid("real-time query batch must be a StructArray");
+                }
+                current_batch_ = checked_pointer_cast<arrow::StructArray>(array);
+                current_bitmap_ = std::move(batch.second);
+            }
+
+            const int64_t length =
+                std::min<int64_t>(read_batch_size_, current_batch_->length() - next_row_);
+            const int64_t begin = next_row_;
+            next_row_ += length;
+            RoaringBitmap32 selection;
+            if (begin == 0 && length == current_batch_->length()) {
+                selection = std::move(current_bitmap_);
+            } else {
+                for (auto iter = current_bitmap_.EqualOrLarger(begin);
+                     iter != current_bitmap_.End() && *iter < next_row_; ++iter) {
+                    selection.Add(*iter - begin);
+                }
+            }
+            if (selection.IsEmpty()) {
+                continue;
+            }
+            std::shared_ptr<arrow::StructArray> slice =
+                checked_pointer_cast<arrow::StructArray>(current_batch_->Slice(begin, length));
+            PAIMON_ASSIGN_OR_RAISE(ReadBatch batch, ExportStructBatch(slice, arrow_pool_));
+            return ReadBatchWithBitmap(std::move(batch), std::move(selection));
+        }
     }
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
@@ -139,6 +168,7 @@ class SlicedQueryBatchReader final : public BatchReader {
 
     void Close() override {
         current_batch_.reset();
+        current_bitmap_ = RoaringBitmap32();
         arrow_pool_.reset();
         reader_->Close();
     }
@@ -148,6 +178,7 @@ class SlicedQueryBatchReader final : public BatchReader {
     int32_t read_batch_size_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<arrow::StructArray> current_batch_;
+    RoaringBitmap32 current_bitmap_;
     int64_t next_row_ = 0;
 };
 
@@ -165,8 +196,9 @@ std::vector<std::unique_ptr<BatchReader>> SliceQueryReaders(
 
 class ArrowRealtimeStore::Segment : public RealtimeSegmentHandle {
  public:
-    Segment(const OffsetRange& offset_range, int64_t row_count)
-        : offset_range_(offset_range), row_count_(row_count) {}
+    Segment(const OffsetRange& offset_range, int64_t row_count,
+            std::shared_ptr<RealtimeIndexSet> index)
+        : offset_range_(offset_range), row_count_(row_count), index_(std::move(index)) {}
 
     OffsetRange GetOffsetRange() const override {
         return offset_range_;
@@ -178,15 +210,22 @@ class ArrowRealtimeStore::Segment : public RealtimeSegmentHandle {
 
     virtual uint64_t GetMemoryUsage() const = 0;
 
+    const std::shared_ptr<RealtimeIndexSet>& GetIndex() const {
+        return index_;
+    }
+
  private:
     OffsetRange offset_range_;
     int64_t row_count_;
+    std::shared_ptr<RealtimeIndexSet> index_;
 };
 
 class ArrowRealtimeStore::MemorySegment final : public ArrowRealtimeStore::Segment {
  public:
-    MemorySegment(const OffsetRange& offset_range, std::vector<StoredBatch>&& batches)
-        : Segment(offset_range, CountRows(batches)), batches_(std::move(batches)) {
+    MemorySegment(const OffsetRange& offset_range, std::vector<StoredBatch>&& batches,
+                  std::shared_ptr<RealtimeIndexSet> index)
+        : Segment(offset_range, CountRows(batches), std::move(index)),
+          batches_(std::move(batches)) {
         for (const StoredBatch& batch : batches_) {
             memory_usage_ += batch.memory_usage;
         }
@@ -197,7 +236,7 @@ class ArrowRealtimeStore::MemorySegment final : public ArrowRealtimeStore::Segme
     }
 
     uint64_t GetMemoryUsage() const override {
-        return memory_usage_;
+        return memory_usage_ + (GetIndex() ? GetIndex()->GetMemoryUsage() : 0);
     }
 
  private:
@@ -243,8 +282,11 @@ class ArrowRealtimeStore::SpillFile {
 class ArrowRealtimeStore::SpilledSegment final : public ArrowRealtimeStore::Segment {
  public:
     SpilledSegment(const OffsetRange& offset_range, int64_t row_count,
-                   std::vector<SpilledBatch>&& batches, std::shared_ptr<SpillFile> file)
-        : Segment(offset_range, row_count), batches_(std::move(batches)), file_(std::move(file)) {
+                   std::vector<SpilledBatch>&& batches, std::shared_ptr<SpillFile> file,
+                   std::shared_ptr<RealtimeIndexSet> index)
+        : Segment(offset_range, row_count, std::move(index)),
+          batches_(std::move(batches)),
+          file_(std::move(file)) {
         for (const SpilledBatch& batch : batches_) {
             memory_usage_ += batch.memory_usage;
         }
@@ -259,7 +301,7 @@ class ArrowRealtimeStore::SpilledSegment final : public ArrowRealtimeStore::Segm
     }
 
     uint64_t GetMemoryUsage() const override {
-        return memory_usage_;
+        return memory_usage_ + (GetIndex() ? GetIndex()->GetMemoryUsage() : 0);
     }
 
  private:
@@ -441,6 +483,8 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
                            const std::shared_ptr<arrow::Schema>& read_schema,
                            const std::shared_ptr<PredicateFilter>& predicate_filter,
                            std::vector<int32_t>&& statistics_mapping,
+                           const std::shared_ptr<Predicate>& predicate,
+                           const OffsetRange& offset_range,
                            const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                            const std::shared_ptr<MemoryPool>& memory_pool)
         : view_(view),
@@ -449,73 +493,36 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
           memory_pool_(memory_pool),
           predicate_filter_(predicate_filter),
           statistics_mapping_(std::move(statistics_mapping)),
+          predicate_(predicate),
+          offset_range_(offset_range),
           metrics_(std::make_shared<MetricsImpl>()) {}
 
     Result<ReadBatch> NextBatch() override {
+        PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, NextBatchWithBitmap());
+        return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch), arrow_pool_);
+    }
+
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
         while (view_ && next_segment_ < view_->GetSegments().size()) {
             const std::shared_ptr<Segment>& segment = view_->GetSegments()[next_segment_];
-            std::shared_ptr<MemorySegment> memory_segment =
-                std::dynamic_pointer_cast<MemorySegment>(segment);
-            std::shared_ptr<SpilledSegment> spilled_segment =
-                std::dynamic_pointer_cast<SpilledSegment>(segment);
-            if (!memory_segment && !spilled_segment) {
-                return Status::Invalid("unknown Arrow real-time segment type");
-            }
-            size_t batch_count = memory_segment ? memory_segment->GetBatches().size()
-                                                : spilled_segment->GetBatches().size();
-            if (next_batch_ >= batch_count) {
-                ++next_segment_;
-                next_batch_ = 0;
-                spill_reader_.reset();
-                continue;
-            }
-            int64_t row_count;
-            const std::optional<BatchStatistics>* statistics;
-            std::shared_ptr<arrow::StructArray> source;
-            if (memory_segment) {
-                const StoredBatch& stored = memory_segment->GetBatches()[next_batch_];
-                row_count = stored.data->length();
-                statistics = &stored.statistics;
-                source = stored.data;
-            } else if (spilled_segment) {
-                const SpilledBatch& stored = spilled_segment->GetBatches()[next_batch_];
-                row_count = stored.row_count;
-                statistics = &stored.statistics;
-            } else {
-                return Status::Invalid("unknown Arrow real-time segment type");
-            }
-            PAIMON_ASSIGN_OR_RAISE(bool may_match,
-                                   ArrowRealtimeStore::MayMatchStatistics(
-                                       row_count, *statistics, read_schema_, predicate_filter_,
-                                       statistics_mapping_, memory_pool_));
+            PAIMON_ASSIGN_OR_RAISE(bool may_match, PrepareSegment(segment));
             if (!may_match) {
-                ++next_batch_;
+                NextSegment();
                 continue;
             }
-            if (spilled_segment) {
-                if (!spill_reader_) {
-                    PAIMON_ASSIGN_OR_RAISE(
-                        spill_reader_,
-                        ArrowIpcFileReader::Open(spilled_segment->GetFile()->GetFileSystem(),
-                                                 spilled_segment->GetFile()->GetPath(),
-                                                 /*use_threads=*/false, arrow_pool_));
-                    if (spill_reader_->GetRecordBatchCount() !=
-                        static_cast<int32_t>(spilled_segment->GetBatches().size())) {
-                        return Status::Invalid(
-                            "real-time spill file batch count does not match segment metadata");
-                    }
-                }
-                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::RecordBatch> record_batch,
-                                       spill_reader_->ReadRecordBatch(next_batch_));
-                PAIMON_ASSIGN_OR_RAISE(source, ToStructArray(record_batch));
+            PAIMON_ASSIGN_OR_RAISE(bool has_batch, SeekNextBatch(segment));
+            if (!has_batch) {
+                NextSegment();
+                continue;
             }
-            ++next_batch_;
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> output,
-                                   ProjectBatch(source, read_schema_, arrow_pool_.get()));
-            PAIMON_ASSIGN_OR_RAISE(ReadBatch batch, ExportStructBatch(output, arrow_pool_));
-            return batch;
+            const size_t batch_index = next_batch_++;
+            PAIMON_ASSIGN_OR_RAISE(std::optional<ReadBatchWithBitmap> batch,
+                                   TryReadBatch(segment, batch_index));
+            if (batch) {
+                return std::move(*batch);
+            }
         }
-        return MakeEofBatch();
+        return MakeEofBatchWithBitmap();
     }
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
@@ -525,27 +532,243 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
     void Close() override {
         view_ = nullptr;
         spill_reader_.reset();
+        candidates_.reset();
     }
 
  private:
+    Result<bool> PrepareSegment(const std::shared_ptr<Segment>& segment) {
+        const OffsetRange segment_range = segment->GetOffsetRange();
+        if (segment_range.end <= offset_range_.begin || segment_range.begin >= offset_range_.end) {
+            return false;
+        }
+        if (!segment_initialized_) {
+            if (segment->GetIndex()) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    candidates_, RealtimeIndexEvaluator::Evaluate(
+                                     segment->GetIndex(), predicate_,
+                                     OffsetRange(std::max(segment_range.begin, offset_range_.begin),
+                                                 std::min(segment_range.end, offset_range_.end))));
+            }
+            segment_initialized_ = true;
+        }
+        return !candidates_ || !candidates_->IsEmpty();
+    }
+
+    Result<bool> SeekNextBatch(const std::shared_ptr<Segment>& segment) {
+        const std::shared_ptr<MemorySegment> memory_segment =
+            std::dynamic_pointer_cast<MemorySegment>(segment);
+        if (memory_segment) {
+            return SeekNextBatch(memory_segment->GetBatches());
+        }
+        const std::shared_ptr<SpilledSegment> spilled_segment =
+            std::dynamic_pointer_cast<SpilledSegment>(segment);
+        if (spilled_segment) {
+            return SeekNextBatch(spilled_segment->GetBatches());
+        }
+        return Status::Invalid("unknown Arrow real-time segment type");
+    }
+
+    template <typename Batch>
+    bool SeekNextBatch(const std::vector<Batch>& batches) {
+        if (next_batch_ >= batches.size()) {
+            return false;
+        }
+        const OffsetRange current_range = batches[next_batch_].offset_range;
+        int64_t first_offset = std::max(current_range.begin, offset_range_.begin);
+        if (candidates_) {
+            const RoaringBitmap64::Iterator first = candidates_->EqualOrLarger(first_offset);
+            if (first == candidates_->End() || *first >= offset_range_.end) {
+                return false;
+            }
+            first_offset = *first;
+        }
+        const auto next = std::lower_bound(
+            batches.begin() + next_batch_, batches.end(), first_offset,
+            [](const Batch& batch, int64_t offset) { return batch.offset_range.end <= offset; });
+        next_batch_ = next - batches.begin();
+        return next_batch_ < batches.size();
+    }
+
+    Result<std::optional<ReadBatchWithBitmap>> TryReadBatch(const std::shared_ptr<Segment>& segment,
+                                                            size_t batch_index) {
+        const std::shared_ptr<MemorySegment> memory_segment =
+            std::dynamic_pointer_cast<MemorySegment>(segment);
+        const std::shared_ptr<SpilledSegment> spilled_segment =
+            std::dynamic_pointer_cast<SpilledSegment>(segment);
+        int64_t row_count;
+        OffsetRange batch_range(0, 0);
+        const std::optional<BatchStatistics>* statistics;
+        std::shared_ptr<arrow::StructArray> source;
+        if (memory_segment) {
+            const StoredBatch& stored = memory_segment->GetBatches()[batch_index];
+            row_count = stored.data->length();
+            statistics = &stored.statistics;
+            source = stored.data;
+            batch_range = stored.offset_range;
+        } else if (spilled_segment) {
+            const SpilledBatch& stored = spilled_segment->GetBatches()[batch_index];
+            row_count = stored.row_count;
+            statistics = &stored.statistics;
+            batch_range = stored.offset_range;
+        } else {
+            return Status::Invalid("unknown Arrow real-time segment type");
+        }
+        const OffsetRange visible_range(std::max(batch_range.begin, offset_range_.begin),
+                                        std::min(batch_range.end, offset_range_.end));
+        if (visible_range.begin >= visible_range.end ||
+            (candidates_ && !candidates_->ContainsAny(visible_range.begin, visible_range.end))) {
+            return std::optional<ReadBatchWithBitmap>();
+        }
+        PAIMON_ASSIGN_OR_RAISE(bool may_match,
+                               ArrowRealtimeStore::MayMatchStatistics(
+                                   row_count, *statistics, read_schema_, predicate_filter_,
+                                   statistics_mapping_, memory_pool_));
+        if (!may_match) {
+            return std::optional<ReadBatchWithBitmap>();
+        }
+        if (spilled_segment) {
+            PAIMON_ASSIGN_OR_RAISE(source, ReadSpilledBatch(spilled_segment, batch_index));
+        }
+        RoaringBitmap32 selection = SelectRows(source, visible_range);
+        if (selection.IsEmpty()) {
+            return std::optional<ReadBatchWithBitmap>();
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> output,
+                               ProjectBatch(source, read_schema_, arrow_pool_.get()));
+        PAIMON_ASSIGN_OR_RAISE(ReadBatch batch, ExportStructBatch(output, arrow_pool_));
+        return std::optional<ReadBatchWithBitmap>(
+            ReadBatchWithBitmap(std::move(batch), std::move(selection)));
+    }
+
+    Result<std::shared_ptr<arrow::StructArray>> ReadSpilledBatch(
+        const std::shared_ptr<SpilledSegment>& segment, size_t batch_index) {
+        if (!spill_reader_) {
+            PAIMON_ASSIGN_OR_RAISE(spill_reader_,
+                                   ArrowIpcFileReader::Open(segment->GetFile()->GetFileSystem(),
+                                                            segment->GetFile()->GetPath(),
+                                                            /*use_threads=*/false, arrow_pool_));
+            if (spill_reader_->GetRecordBatchCount() !=
+                static_cast<int32_t>(segment->GetBatches().size())) {
+                return Status::Invalid(
+                    "real-time spill file batch count does not match segment metadata");
+            }
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::RecordBatch> record_batch,
+                               spill_reader_->ReadRecordBatch(batch_index));
+        return ToStructArray(record_batch);
+    }
+
+    void NextSegment() {
+        ++next_segment_;
+        next_batch_ = 0;
+        spill_reader_.reset();
+        candidates_.reset();
+        segment_initialized_ = false;
+    }
+
+    RoaringBitmap32 SelectRows(const std::shared_ptr<arrow::StructArray>& source,
+                               const OffsetRange& visible_range) const {
+        // TODO(xinyu.lxy): Push down the real-time DV to avoid another offset-to-row mapping
+        // upstream.
+        RoaringBitmap32 selection;
+        if (source->length() == 0) {
+            return selection;
+        }
+        const std::shared_ptr<arrow::Int64Array> offsets = checked_pointer_cast<arrow::Int64Array>(
+            source->GetFieldByName(SpecialFields::RealtimeOffset().Name()));
+        const int64_t* values = offsets->raw_values();
+        const int64_t* begin =
+            std::lower_bound(values, values + offsets->length(), visible_range.begin);
+        const int64_t* end = std::lower_bound(begin, values + offsets->length(), visible_range.end);
+        if (!candidates_) {
+            selection.AddRange(begin - values, end - values);
+            return selection;
+        }
+        // Offsets may have gaps: sparse candidates seek by offset; dense candidates scan.
+        const RoaringBitmap64::Iterator sentinel = candidates_->End();
+        const RoaringBitmap64::Iterator first = candidates_->EqualOrLarger(visible_range.begin);
+        RoaringBitmap64::Iterator probe = first;
+        const int64_t dense_threshold = std::max<int64_t>(1, (end - begin) / 4);
+        int64_t candidate_count = 0;
+        while (candidate_count < dense_threshold && probe != sentinel &&
+               *probe < visible_range.end) {
+            ++candidate_count;
+            ++probe;
+        }
+        if (candidate_count < dense_threshold) {
+            for (RoaringBitmap64::Iterator iter = first;
+                 iter != sentinel && *iter < visible_range.end; ++iter) {
+                begin = std::lower_bound(begin, end, *iter);
+                if (begin != end && *begin == *iter) {
+                    selection.Add(begin - values);
+                }
+            }
+        } else {
+            for (const int64_t* row = begin; row != end; ++row) {
+                if (candidates_->Contains(*row)) {
+                    selection.Add(row - values);
+                }
+            }
+        }
+        return selection;
+    }
+
     std::shared_ptr<ReadView> view_;
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<PredicateFilter> predicate_filter_;
     std::vector<int32_t> statistics_mapping_;
+    std::shared_ptr<Predicate> predicate_;
+    OffsetRange offset_range_;
+    std::optional<RoaringBitmap64> candidates_;
+    bool segment_initialized_ = false;
     std::shared_ptr<Metrics> metrics_;
     std::unique_ptr<ArrowIpcFileReader> spill_reader_;
     size_t next_segment_ = 0;
     size_t next_batch_ = 0;
 };
 
+Result<std::shared_ptr<ArrowRealtimeStore>> ArrowRealtimeStore::Create(
+    const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
+    StatisticsMode statistics_mode, const std::string& temp_directory,
+    const std::shared_ptr<FileSystem>& spill_file_system, const std::string& spill_compression,
+    int32_t spill_compression_level, const std::map<std::string, std::string>& index_options,
+    const std::shared_ptr<MemoryPool>& memory_pool,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    if (mode != RealtimeStoreMode::APPEND_ONLY && mode != RealtimeStoreMode::PRIMARY_KEY) {
+        return Status::Invalid("invalid real-time store mode: ", static_cast<int32_t>(mode));
+    }
+    PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateOffsetField(write_schema));
+    const bool has_index = RealtimeIndexSet::IsEnabled(index_options);
+    if (has_index && mode != RealtimeStoreMode::APPEND_ONLY) {
+        return Status::NotImplemented("real-time query indexes require an append-store delegate");
+    }
+    std::shared_ptr<IOManager> io_manager;
+    if (!temp_directory.empty()) {
+        io_manager = std::make_shared<IOManager>(temp_directory, spill_file_system);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexSet> building_index,
+                           RealtimeIndexSet::Create(write_schema, index_options, memory_pool));
+    auto store = std::shared_ptr<ArrowRealtimeStore>(
+        new ArrowRealtimeStore(write_schema, mode, statistics_mode, spill_file_system,
+                               spill_compression, spill_compression_level, index_options,
+                               io_manager, std::move(building_index), memory_pool, arrow_pool));
+    return store;
+}
+
+Result<std::shared_ptr<RealtimeIndexSet>> ArrowRealtimeStore::CreateBuildingIndex() const {
+    return RealtimeIndexSet::Create(write_schema_, index_options_, memory_pool_);
+}
+
 ArrowRealtimeStore::ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema,
                                        RealtimeStoreMode mode, StatisticsMode statistics_mode,
-                                       const std::string& temp_directory,
                                        const std::shared_ptr<FileSystem>& spill_file_system,
                                        const std::string& spill_compression,
                                        int32_t spill_compression_level,
+                                       const std::map<std::string, std::string>& index_options,
+                                       const std::shared_ptr<IOManager>& io_manager,
+                                       std::shared_ptr<RealtimeIndexSet> building_index,
                                        const std::shared_ptr<MemoryPool>& memory_pool,
                                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : write_schema_(write_schema),
@@ -553,13 +776,12 @@ ArrowRealtimeStore::ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& wri
       arrow_pool_(arrow_pool),
       mode_(mode),
       statistics_mode_(statistics_mode),
+      io_manager_(io_manager),
       spill_file_system_(spill_file_system),
       spill_compression_(spill_compression),
-      spill_compression_level_(spill_compression_level) {
-    if (!temp_directory.empty()) {
-        io_manager_ = std::make_shared<IOManager>(temp_directory, spill_file_system_);
-    }
-}
+      spill_compression_level_(spill_compression_level),
+      index_options_(index_options),
+      building_index_(std::move(building_index)) {}
 
 Result<std::optional<ArrowRealtimeStore::BatchStatistics>> ArrowRealtimeStore::CollectStatistics(
     const std::shared_ptr<arrow::StructArray>& data) const {
@@ -671,6 +893,13 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
     if (building_range_ && write_batch.offset_range.begin < building_range_->end) {
         return Status::Invalid("real-time offset ranges must be ordered and non-overlapping");
     }
+    if (building_index_) {
+        ArrowArray index_batch;
+        ArrowArrayMarkReleased(&index_batch);
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*struct_array, &index_batch));
+        ScopeGuard index_guard([&index_batch]() { ArrowArrayRelease(&index_batch); });
+        PAIMON_RETURN_NOT_OK(building_index_->AddBatch(&index_batch, write_batch.offset_range));
+    }
     uint64_t memory_usage = ArrowUtils::GetArrayMemoryUsage(struct_array->data());
     if (statistics) {
         memory_usage += ArrowUtils::GetArrayMemoryUsage(statistics->min_values->data()) +
@@ -708,10 +937,12 @@ ArrowRealtimeStore::FreezeBuildingSegment() {
         if (building_batches_.empty()) {
             return std::optional<std::shared_ptr<RealtimeSegmentHandle>>();
         }
-        memory_segment =
-            std::make_shared<MemorySegment>(building_range_.value(), std::move(building_batches_));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexSet> next_index, CreateBuildingIndex());
+        memory_segment = std::make_shared<MemorySegment>(
+            building_range_.value(), std::move(building_batches_), std::move(building_index_));
+        building_index_ = std::move(next_index);
         sealed_segments_.push_back(memory_segment);
-        sealed_memory_usage_ += building_memory_usage_;
+        sealed_memory_usage_ += memory_segment->GetMemoryUsage();
         sealed_row_count_ += building_row_count_;
         building_batches_.clear();
         building_range_.reset();
@@ -762,9 +993,10 @@ Result<std::shared_ptr<RealtimeSegmentHandle>> ArrowRealtimeStore::SpillFrozenSe
     writer.reset();
     auto spill_file =
         std::make_shared<SpillFile>(io_manager_, spill_file_system_, std::move(channel_id));
+    // TODO(xinyu.lxy): Real-time indexes do not support spill yet.
     auto spilled_segment = std::make_shared<SpilledSegment>(
         memory_segment->GetOffsetRange(), memory_segment->GetRowCount(), std::move(spilled_batches),
-        std::move(spill_file));
+        std::move(spill_file), memory_segment->GetIndex());
     cleanup_guard.Release();
 
     {
@@ -829,7 +1061,7 @@ Result<std::shared_ptr<RealtimeReadView>> ArrowRealtimeStore::AcquireReadView() 
     std::vector<std::shared_ptr<Segment>> segments = sealed_segments_;
     if (!building_batches_.empty()) {
         segments.push_back(std::make_shared<MemorySegment>(
-            building_range_.value(), std::vector<StoredBatch>(building_batches_)));
+            building_range_.value(), std::vector<StoredBatch>(building_batches_), building_index_));
     }
     std::shared_ptr<ReadView> view = std::make_shared<ReadView>(std::move(segments));
     return std::shared_ptr<RealtimeReadView>(std::move(view));
@@ -846,6 +1078,9 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
     }
     if (context.read_batch_size <= 0) {
         return Status::Invalid("real-time query read batch size must be positive");
+    }
+    if (context.offset_range.begin < 0 || context.offset_range.begin > context.offset_range.end) {
+        return Status::Invalid("real-time query offset range is invalid");
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> read_schema,
                                       arrow::ImportSchema(context.read_schema));
@@ -916,9 +1151,15 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
         return SliceQueryReaders(std::move(readers), context.read_batch_size, arrow_pool_);
     }
 
+    OffsetRange visible_range = arrow_view->GetOffsetRange().value();
+    visible_range.begin = std::max(visible_range.begin, context.offset_range.begin);
+    visible_range.end = std::min(visible_range.end, context.offset_range.end);
+    if (visible_range.begin >= visible_range.end) {
+        return readers;
+    }
     std::unique_ptr<BatchReader> reader = std::make_unique<AppendQueryBatchReader>(
-        arrow_view, read_schema, predicate_filter, std::move(statistics_mapping), arrow_pool_,
-        memory_pool_);
+        arrow_view, read_schema, predicate_filter, std::move(statistics_mapping), context.predicate,
+        visible_range, arrow_pool_, memory_pool_);
     readers.push_back(std::move(reader));
     return SliceQueryReaders(std::move(readers), context.read_batch_size, arrow_pool_);
 }
@@ -961,13 +1202,15 @@ Result<std::shared_ptr<RealtimeReadView>> ArrowRealtimeStore::RetireCommittedSeg
 
 RealtimeStoreDataUsage ArrowRealtimeStore::GetDataUsage() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return RealtimeStoreDataUsage{building_memory_usage_, sealed_memory_usage_, building_row_count_,
-                                  sealed_row_count_};
+    const uint64_t index_memory = building_index_ ? building_index_->GetMemoryUsage() : 0;
+    return RealtimeStoreDataUsage{building_memory_usage_ + index_memory, sealed_memory_usage_,
+                                  building_row_count_, sealed_row_count_};
 }
 
 uint64_t ArrowRealtimeStore::GetMemoryUsage() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return building_memory_usage_ + sealed_memory_usage_;
+    return building_memory_usage_ + sealed_memory_usage_ +
+           (building_index_ ? building_index_->GetMemoryUsage() : 0);
 }
 
 }  // namespace paimon

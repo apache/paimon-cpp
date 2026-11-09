@@ -26,6 +26,7 @@
 #include "paimon/file_store_commit.h"            // IWYU pragma: export
 #include "paimon/file_store_write.h"             // IWYU pragma: export
 #include "paimon/fs/file_system_factory.h"       // IWYU pragma: export
+#include "paimon/io/offset_output_stream.h"      // IWYU pragma: export
 #include "paimon/memory/memory_pool.h"           // IWYU pragma: export
 #include "paimon/predicate/predicate.h"          // IWYU pragma: export
 #include "paimon/read_context.h"                 // IWYU pragma: export
@@ -42,6 +43,9 @@
 #include "paimon/write_context.h"                // IWYU pragma: export
 
 // IWYU pragma: begin_exports
+#include "paimon/realtime/index/realtime_index.h"
+#include "paimon/realtime/index/realtime_index_factory.h"
+#include "paimon/realtime/index/realtime_index_reader.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/realtime/realtime_snapshot_offsets.h"
 #include "paimon/realtime/realtime_store.h"

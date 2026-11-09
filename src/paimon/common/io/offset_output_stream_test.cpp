@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/common/io/offset_output_stream.h"
+#include "paimon/io/offset_output_stream.h"
 
 #include <memory>
 #include <string>
@@ -30,6 +30,10 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+TEST(OffsetOutputStreamTest, TestRejectsNullOutput) {
+    ASSERT_NOK_WITH_MSG(OffsetOutputStream::Create(nullptr), "output stream is null");
+}
 
 TEST(OffsetOutputStreamTest, TestRelativePositionsAndWrites) {
     auto pool = GetDefaultPool();
@@ -60,6 +64,48 @@ TEST(OffsetOutputStreamTest, TestRelativePositionsAndWrites) {
     ASSERT_EQ(6, position);
     ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> bytes, output->Finish(pool.get()));
     ASSERT_EQ("prefixfirstsecond", std::string(bytes->data(), bytes->size()));
+}
+
+TEST(OffsetOutputStreamTest, TestUnderlyingPositionThroughNestedViews) {
+    auto pool = GetDefaultPool();
+    auto output =
+        std::make_unique<ByteArrayOutputStream>(std::make_unique<MemorySegmentOutputStream>(
+            MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool));
+    ASSERT_OK_AND_ASSIGN(int64_t written, output->Write("prefix", 6));
+    ASSERT_EQ(6, written);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OffsetOutputStream> first,
+                         OffsetOutputStream::Create(output.get()));
+    ASSERT_OK_AND_ASSIGN(int64_t position, first->GetUnderlyingPos());
+    ASSERT_EQ(6, position);
+    ASSERT_OK_AND_ASSIGN(written, first->Write("first", 5));
+    ASSERT_EQ(5, written);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OffsetOutputStream> second,
+                         OffsetOutputStream::Create(first.get()));
+    ASSERT_OK_AND_ASSIGN(position, second->GetPos());
+    ASSERT_EQ(0, position);
+    ASSERT_OK_AND_ASSIGN(position, second->GetUnderlyingPos());
+    ASSERT_EQ(11, position);
+    ASSERT_OK_AND_ASSIGN(written, second->Write("second", 6));
+    ASSERT_EQ(6, written);
+    ASSERT_OK_AND_ASSIGN(position, first->GetPos());
+    ASSERT_EQ(11, position);
+    ASSERT_OK_AND_ASSIGN(position, second->GetPos());
+    ASSERT_EQ(6, position);
+    ASSERT_OK_AND_ASSIGN(position, second->GetUnderlyingPos());
+    ASSERT_EQ(17, position);
+
+    // Direct writes to the underlying stream must be reflected by every view.
+    ASSERT_OK_AND_ASSIGN(written, output->Write("suffix", 6));
+    ASSERT_EQ(6, written);
+    ASSERT_OK_AND_ASSIGN(position, first->GetUnderlyingPos());
+    ASSERT_EQ(23, position);
+    ASSERT_OK_AND_ASSIGN(position, second->GetUnderlyingPos());
+    ASSERT_EQ(23, position);
+    ASSERT_OK_AND_ASSIGN(position, second->GetPos());
+    ASSERT_EQ(12, position);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> bytes, output->Finish(pool.get()));
+    ASSERT_EQ("prefixfirstsecondsuffix", std::string(bytes->data(), bytes->size()));
 }
 
 TEST(OffsetOutputStreamTest, TestFlushAndClose) {
