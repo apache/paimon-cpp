@@ -1,0 +1,14 @@
+--- a/include/lucene++/Collection.h
++++ b/include/lucene++/Collection.h
+@@ -169,3 +169,3 @@
+     void swap(this_type& other) {
+-        container.swap(other->container);
++        container.swap(other.container);
+     }
+--- a/include/lucene++/Set.h
++++ b/include/lucene++/Set.h
+@@ -110,3 +110,3 @@
+     void swap(this_type& other) {
+-        setContainer.swap(other->setContainer);
++        setContainer.swap(other.setContainer);
+     }

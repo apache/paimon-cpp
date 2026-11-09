@@ -39,11 +39,21 @@ FLATC_INSTALL_DIR=${FLATC_INSTALL_DIR:-"${HOME}/.local/bin"}
 # Vortex's native dependencies invoke bindgen in their build scripts, which loads libclang at
 # build time. Images that only carry GCC (e.g. the gcc8 test container) may lack it.
 if [[ "$(uname -s)" == "Darwin" ]]; then
-    if ! brew --prefix llvm >/dev/null 2>&1; then
-        brew install llvm
+    # Both Xcode and Command Line Tools ship libclang alongside the selected clang.
+    clang_bin="$(xcrun --find clang)"
+    libclang_dir="$(dirname "${clang_bin}")/../lib"
+    if [[ ! -r "${libclang_dir}/libclang.dylib" ]]; then
+        libclang_dir="$(brew --prefix llvm)/lib"
+        if [[ ! -r "${libclang_dir}/libclang.dylib" ]]; then
+            brew install llvm
+        fi
     fi
-    export LIBCLANG_PATH="$(brew --prefix llvm)/lib"
-    echo "LIBCLANG_PATH=${LIBCLANG_PATH}" >>"${GITHUB_ENV:-/dev/null}" || true
+    if [[ ! -r "${libclang_dir}/libclang.dylib" ]]; then
+        echo "Cannot find a readable libclang.dylib in ${libclang_dir}" >&2
+        exit 1
+    fi
+    export LIBCLANG_PATH="${libclang_dir}"
+    echo "LIBCLANG_PATH=${LIBCLANG_PATH}" >>"${GITHUB_ENV:-/dev/null}"
 elif ! ldconfig -p 2>/dev/null | grep -q 'libclang'; then
     if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
         apt_prefix="sudo"

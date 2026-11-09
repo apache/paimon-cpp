@@ -889,10 +889,14 @@ macro(build_lucene)
     endif()
 
     set(LUCENE_LIB "${LUCENE_PREFIX}/lib/liblucene++.a")
+    set(LUCENE_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/lucene.diff")
     externalproject_add(lucene_ep
                         ${EP_COMMON_OPTIONS}
                         URL ${LUCENE_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_LUCENE_BUILD_SHA256_CHECKSUM}"
+                        LOG_PATCH ON
+                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
+                                      "test -f .patched || (patch -s -N -p1 -i '${LUCENE_PATCH_FILE}' && touch .patched)"
                         CMAKE_ARGS ${LUCENE_CMAKE_ARGS}
                         BUILD_COMMAND ${LUCENE_BUILD_COMMAND}
                         BUILD_BYPRODUCTS ${LUCENE_LIB}
