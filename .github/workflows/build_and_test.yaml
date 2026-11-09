@@ -51,12 +51,29 @@ jobs:
         run: ci/scripts/test_asan_symbolize.sh
 
   macos-build-and-test:
-    name: appleclang-release-arm64
+    name: ${{ matrix.name }}
     runs-on: macos-15
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: appleclang-release-arm64
+            cc: /usr/bin/clang
+            cxx: /usr/bin/clang++
+            build_type: Release
+          - name: appleclang-debug-arm64
+            cc: /usr/bin/clang
+            cxx: /usr/bin/clang++
+            build_type: Debug
+          - name: gcc15-release-macos-arm64
+            cc: /opt/homebrew/bin/gcc-15
+            cxx: /opt/homebrew/bin/g++-15
+            build_type: Release
+            gcc_formula: gcc@15
     env:
-      CC: /usr/bin/clang
-      CXX: /usr/bin/clang++
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
       PAIMON_BUILD_JOBS: '3'
       CARGO_BUILD_JOBS: '3'
     steps:
@@ -70,10 +87,21 @@ jobs:
           brew install cmake ninja protobuf openssl@3 curl
           echo "$(brew --prefix protobuf)/bin" >> "$GITHUB_PATH"
           echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3):$(brew --prefix curl)" >> "$GITHUB_ENV"
+      - name: Install GCC
+        if: matrix.gcc_formula
+        shell: bash
+        env:
+          GCC_FORMULA: ${{ matrix.gcc_formula }}
+        run: brew install "${GCC_FORMULA}"
+      - name: Show compiler versions
+        shell: bash
+        run: |
+          "${CC}" --version
+          "${CXX}" --version
       - name: Setup ccache
         uses: ./.github/actions/setup-ccache
         with:
-          cache-key-prefix: ccache-appleclang-release-arm64
+          cache-key-prefix: ccache-${{ matrix.name }}
       - name: Install Rust and protobuf tools
         shell: bash
         run: ci/scripts/setup_rust.sh
@@ -85,13 +113,13 @@ jobs:
         run: |
           ci/scripts/build_paimon.sh \
             --source_dir "$(pwd)" \
-            --build_type Release \
+            --build_type "${{ matrix.build_type }}" \
             --install_smoke
       - name: Upload test logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: appleclang-release-arm64-test-logs
+          name: ${{ matrix.name }}-test-logs
           path: |
             build/build/test-logs/
             build/Testing/Temporary/
@@ -138,6 +166,12 @@ jobs:
             cc: gcc-14
             cxx: g++-14
             build_args: --build_type Release
+          - name: gcc13-release-aarch64
+            runner: ubuntu-24.04-arm
+            cc: gcc-13
+            cxx: g++-13
+            gcc_version: '13.3.0'
+            build_args: --build_type Release
           - name: clang-debug-aarch64
             runner: ubuntu-24.04-arm
           - name: asan-ubsan-aarch64
@@ -166,6 +200,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gdb libcurl4-openssl-dev libssl-dev
+      - name: Install and verify regression compiler
+        if: matrix.gcc_version
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+          EXPECTED_GCC_VERSION: ${{ matrix.gcc_version }}
+        run: |
+          sudo apt-get install -y "${CC}" "${CXX}"
+          "${CC}" --version
+          "${CXX}" --version
+          test "$("${CC}" -dumpfullversion)" = "${EXPECTED_GCC_VERSION}"
+          test "$("${CXX}" -dumpfullversion)" = "${EXPECTED_GCC_VERSION}"
       - name: Install flatc and libclang (Vortex)
         shell: bash
         run: ci/scripts/setup_flatc.sh
