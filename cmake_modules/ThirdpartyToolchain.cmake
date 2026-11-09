@@ -1558,16 +1558,17 @@ macro(build_vortex)
                           PROPERTIES IMPORTED_LOCATION "${VORTEX_STATIC_LIB}"
                                      INTERFACE_INCLUDE_DIRECTORIES
                                      "${VORTEX_INCLUDE_DIR}")
-    # System libraries required to link the Rust static archive on Linux (per Vortex's own
-    # vortex-ffi/cmake/SystemDependencies.cmake).
-    target_link_libraries(paimon_vortex_ffi
-                          INTERFACE gcc_s
-                                    util
-                                    rt
-                                    Threads::Threads
-                                    m
-                                    ${CMAKE_DL_LIBS}
-                                    c)
+    # System libraries required to link the Rust static archive.
+    target_link_libraries(paimon_vortex_ffi INTERFACE Threads::Threads m ${CMAKE_DL_LIBS}
+                                                      c)
+    if(APPLE)
+        target_link_libraries(paimon_vortex_ffi
+                              INTERFACE iconv "-framework Security"
+                                        "-framework SystemConfiguration"
+                                        "-framework CoreFoundation")
+    else()
+        target_link_libraries(paimon_vortex_ffi INTERFACE gcc_s util rt)
+    endif()
     add_dependencies(paimon_vortex_ffi vortex_ep)
 
     install(FILES "${VORTEX_STATIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
