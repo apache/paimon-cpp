@@ -23,9 +23,12 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/core/index/global_index_meta.h"
 #include "paimon/core/index/index_file_meta.h"
@@ -163,6 +166,60 @@ TEST(DataEvolutionFullTextScanTest, TestIdentityOrderBreaksTies) {
     std::vector<Selection> expected = {{Range(0, 99), {"lucene"}, {Range(0, 39), Range(60, 99)}},
                                        {Range(40, 59), {"full-text"}, {Range(40, 59)}}};
     ASSERT_EQ(Choose(full_text_inside), expected);
+}
+
+TEST(DataEvolutionFullTextScanTest, TestScalarPreFilterFiles) {
+    auto is_pre_filter_file =
+        [](int32_t index_field_id, const std::optional<std::vector<int32_t>>& extra_field_ids,
+           bool supports_full_text, const std::set<int32_t>& filter_field_ids = {2, 3}) {
+            GlobalIndexMeta meta(0, 9, index_field_id, extra_field_ids, /*index_meta=*/nullptr);
+            return DataEvolutionFullTextScan::IsScalarPreFilterFile(meta, filter_field_ids,
+                                                                    supports_full_text);
+        };
+    ASSERT_TRUE(is_pre_filter_file(2, std::nullopt, /*supports_full_text=*/false));
+    ASSERT_TRUE(is_pre_filter_file(2, std::vector<int32_t>(), /*supports_full_text=*/false));
+    ASSERT_FALSE(is_pre_filter_file(1, std::nullopt, /*supports_full_text=*/false));
+    ASSERT_FALSE(is_pre_filter_file(2, std::nullopt, /*supports_full_text=*/false,
+                                    /*filter_field_ids=*/{}));
+    ASSERT_FALSE(is_pre_filter_file(1, std::vector<int32_t>({3}), /*supports_full_text=*/false));
+    ASSERT_FALSE(is_pre_filter_file(2, std::vector<int32_t>({4}), /*supports_full_text=*/false));
+    ASSERT_FALSE(is_pre_filter_file(1, std::vector<int32_t>({4}), /*supports_full_text=*/false));
+
+    ASSERT_FALSE(is_pre_filter_file(1, std::nullopt, /*supports_full_text=*/true));
+    ASSERT_FALSE(is_pre_filter_file(2, std::nullopt, /*supports_full_text=*/true));
+    ASSERT_FALSE(is_pre_filter_file(2, std::vector<int32_t>(), /*supports_full_text=*/true));
+    ASSERT_FALSE(is_pre_filter_file(1, std::vector<int32_t>({2}), /*supports_full_text=*/true));
+}
+
+TEST(DataEvolutionFullTextScanTest, TestIntersectingFiles) {
+    auto first = NewIndexFile("first.index", "btree", Range(0, 9), /*index_field_id=*/2);
+    auto second = NewIndexFile("second.index", "btree", Range(10, 19), /*index_field_id=*/2);
+    auto third = NewIndexFile("third.index", "btree", Range(20, 29), /*index_field_id=*/2);
+    std::vector<std::shared_ptr<IndexFileMeta>> files = {first, second, third};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<IndexFileMeta>> intersecting,
+                         DataEvolutionFullTextScan::IntersectingFiles(files, Range(9, 10)));
+    ASSERT_EQ(intersecting, std::vector<std::shared_ptr<IndexFileMeta>>({first, second}));
+    ASSERT_OK_AND_ASSIGN(intersecting,
+                         DataEvolutionFullTextScan::IntersectingFiles(files, Range(25, 40)));
+    ASSERT_EQ(intersecting, std::vector<std::shared_ptr<IndexFileMeta>>({third}));
+    ASSERT_OK_AND_ASSIGN(intersecting,
+                         DataEvolutionFullTextScan::IntersectingFiles(files, Range(30, 40)));
+    ASSERT_TRUE(intersecting.empty());
+
+    std::vector<std::pair<int64_t, int64_t>> invalid_ranges = {
+        {-1, 9}, {9, 0}, {0, std::numeric_limits<int64_t>::max()}};
+    for (const auto& [start, end] : invalid_ranges) {
+        GlobalIndexMeta meta(start, end, /*index_field_id=*/2, /*extra_field_ids=*/std::nullopt,
+                             /*index_meta=*/nullptr);
+        auto invalid = std::make_shared<IndexFileMeta>(
+            "btree", "invalid.index", /*file_size=*/128, /*row_count=*/10,
+            /*dv_ranges=*/std::nullopt, /*external_path=*/std::nullopt, meta);
+        std::vector<std::shared_ptr<IndexFileMeta>> with_invalid = {first, invalid};
+        ASSERT_NOK_WITH_MSG(DataEvolutionFullTextScan::IntersectingFiles(with_invalid, Range(0, 9)),
+                            fmt::format("scalar index file invalid.index covers an invalid row "
+                                        "range [{}, {}]",
+                                        start, end));
+    }
 }
 
 TEST(DataEvolutionFullTextScanTest, TestServesFullTextSearch) {

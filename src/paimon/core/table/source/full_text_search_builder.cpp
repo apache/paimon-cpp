@@ -24,7 +24,9 @@
 
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
@@ -40,6 +42,10 @@
 #include "paimon/executor.h"
 #include "paimon/format/file_format.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/compound_predicate.h"
+#include "paimon/predicate/function.h"
+#include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -53,6 +59,7 @@ class FullTextSearchBuilder::Impl {
         CoreOptions options;
         std::shared_ptr<FileStorePathFactory> path_factory;
         std::shared_ptr<PredicateFilter> partition_filter;
+        std::shared_ptr<Predicate> filter;
         DataField text_field;
     };
 
@@ -68,6 +75,7 @@ class FullTextSearchBuilder::Impl {
 
     std::string table_path_;
     std::vector<std::map<std::string, std::string>> partition_filters_;
+    std::vector<std::shared_ptr<Predicate>> filters_;
     std::optional<int32_t> limit_;
     std::optional<std::string> field_name_;
     std::string query_;
@@ -102,6 +110,89 @@ Status CheckNoPrimaryKeyFullTextIndex(const TableSchema& table_schema, const Cor
         }
     }
     return Status::OK();
+}
+
+/// Returns a predicate over the partition fields that every row satisfying `predicate` satisfies,
+/// projected as Java `PredicateProjectionConverter` does: an AND keeps the children that can be
+/// projected, and an OR needs all of them. So `(p = 1 AND a > 0) OR (p = 2 AND a > 0)` implies
+/// `p = 1 OR p = 2`, while `p = 1 OR a > 0` implies nothing and yields null.
+Result<std::shared_ptr<Predicate>> ImpliedPartitionPredicate(
+    const std::shared_ptr<Predicate>& predicate,
+    const std::map<std::string, int32_t>& partition_key_to_idx) {
+    auto compound = std::dynamic_pointer_cast<CompoundPredicate>(predicate);
+    if (!compound) {
+        return PredicateUtils::CreatePickedFieldFilter(predicate, partition_key_to_idx);
+    }
+    bool is_and = compound->GetFunction().GetType() == Function::Type::AND;
+    std::vector<std::shared_ptr<Predicate>> implied_children;
+    for (const auto& child : compound->Children()) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> implied,
+                               ImpliedPartitionPredicate(child, partition_key_to_idx));
+        if (implied) {
+            implied_children.push_back(std::move(implied));
+        } else if (!is_and) {
+            return std::shared_ptr<Predicate>();
+        }
+    }
+    if (implied_children.empty()) {
+        return std::shared_ptr<Predicate>();
+    }
+    return is_and ? PredicateBuilder::And(implied_children)
+                  : PredicateBuilder::Or(implied_children);
+}
+
+/// The parts of the filters of a search, split as Java
+/// `PartitionPredicate#splitPartitionPredicatesAndDataPredicates` does.
+struct SearchFilters {
+    /// The conjuncts over partition fields alone and the partition predicates that the other
+    /// conjuncts imply, with field indexes into the partition keys; null if there are none.
+    std::shared_ptr<Predicate> partition_predicate;
+    /// The other conjuncts; null if there are none.
+    std::shared_ptr<Predicate> data_filter;
+};
+
+/// Validates `filters` and splits their conjunction.
+Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate>>& filters,
+                                     const arrow::Schema& schema,
+                                     const std::vector<std::string>& partition_keys) {
+    if (filters.empty()) {
+        return SearchFilters();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> filter, PredicateBuilder::And(filters));
+    if (PredicateUtils::ContainsFullTextMatch(filter)) {
+        return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
+    }
+    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+        schema, filter, /*validate_field_idx=*/false));
+
+    std::map<std::string, int32_t> partition_key_to_idx =
+        ObjectUtils::CreateIdentifierToIndexMap(partition_keys);
+    std::vector<std::shared_ptr<Predicate>> partition_conjuncts;
+    std::vector<std::shared_ptr<Predicate>> data_conjuncts;
+    for (const auto& conjunct : PredicateUtils::SplitAnd(filter)) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<Predicate> partition_conjunct,
+            PredicateUtils::CreatePickedFieldFilter(conjunct, partition_key_to_idx));
+        if (partition_conjunct) {
+            partition_conjuncts.push_back(std::move(partition_conjunct));
+            continue;
+        }
+        data_conjuncts.push_back(conjunct);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> implied_partitions,
+                               ImpliedPartitionPredicate(conjunct, partition_key_to_idx));
+        if (implied_partitions) {
+            partition_conjuncts.push_back(std::move(implied_partitions));
+        }
+    }
+    SearchFilters search_filters;
+    if (!partition_conjuncts.empty()) {
+        PAIMON_ASSIGN_OR_RAISE(search_filters.partition_predicate,
+                               PredicateBuilder::And(partition_conjuncts));
+    }
+    if (!data_conjuncts.empty()) {
+        PAIMON_ASSIGN_OR_RAISE(search_filters.data_filter, PredicateBuilder::And(data_conjuncts));
+    }
+    return search_filters;
 }
 }  // namespace
 
@@ -147,6 +238,16 @@ Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl:
         CheckNoPrimaryKeyFullTextIndex(*table_schema, options, text_field.value()));
 
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+    PAIMON_ASSIGN_OR_RAISE(SearchFilters search_filters,
+                           ResolveFilters(filters_, *arrow_schema, table_schema->PartitionKeys()));
+    if (search_filters.data_filter &&
+        options.GetScalarIndexSearchMode() != GlobalIndexSearchMode::FAST) {
+        return Status::NotImplemented(fmt::format(
+            "a full-text search with a row filter only supports the fast {} (or {}), which "
+            "evaluates only the rows that a scalar index covers; full and detail are not "
+            "supported yet",
+            Options::SCALAR_INDEX_SEARCH_MODE, Options::GLOBAL_INDEX_SEARCH_MODE));
+    }
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
                            options.CreateGlobalIndexExternalPath());
@@ -164,8 +265,24 @@ Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl:
                                    table_schema->PartitionKeys(), options.GetPartitionDefaultName(),
                                    arrow_schema, partition_filters_));
     }
-    return ResolvedSearch{root_path,    table_schema,     std::move(options),
-                          path_factory, partition_filter, std::move(text_field).value()};
+    if (search_filters.partition_predicate) {
+        std::shared_ptr<Predicate> partition_predicate = search_filters.partition_predicate;
+        if (partition_filter) {
+            PAIMON_ASSIGN_OR_RAISE(partition_predicate,
+                                   PredicateBuilder::And({partition_filter, partition_predicate}));
+        }
+        partition_filter = std::dynamic_pointer_cast<PredicateFilter>(partition_predicate);
+        if (!partition_filter) {
+            return Status::Invalid("invalid partition predicate, cannot cast to predicate filter");
+        }
+    }
+    return ResolvedSearch{root_path,
+                          table_schema,
+                          std::move(options),
+                          path_factory,
+                          partition_filter,
+                          search_filters.data_filter,
+                          std::move(text_field).value()};
 }
 
 Status FullTextSearchBuilder::Impl::CheckLimit() const {
@@ -179,7 +296,7 @@ std::unique_ptr<FullTextScan> FullTextSearchBuilder::Impl::CreateScan(
     const ResolvedSearch& search) const {
     return std::make_unique<DataEvolutionFullTextScan>(
         search.root_path, search.table_schema, search.options, search.path_factory,
-        search.partition_filter, search.text_field, memory_pool_);
+        search.partition_filter, search.filter, search.text_field, memory_pool_);
 }
 
 Result<std::unique_ptr<FullTextRead>> FullTextSearchBuilder::Impl::CreateRead(
@@ -187,8 +304,8 @@ Result<std::unique_ptr<FullTextRead>> FullTextSearchBuilder::Impl::CreateRead(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataEvolutionFullTextRead> read,
                            DataEvolutionFullTextRead::Create(
                                search.root_path, search.table_schema, search.options,
-                               search.path_factory, search.partition_filter, search.text_field,
-                               query_, limit_.value(), executor_, memory_pool_));
+                               search.path_factory, search.partition_filter, search.filter,
+                               search.text_field, query_, limit_.value(), executor_, memory_pool_));
     return std::unique_ptr<FullTextRead>(std::move(read));
 }
 
@@ -202,6 +319,14 @@ FullTextSearchBuilder::~FullTextSearchBuilder() = default;
 FullTextSearchBuilder& FullTextSearchBuilder::SetPartitionFilter(
     const std::vector<std::map<std::string, std::string>>& partition_filters) {
     impl_->partition_filters_ = partition_filters;
+    return *this;
+}
+
+FullTextSearchBuilder& FullTextSearchBuilder::WithFilter(
+    const std::shared_ptr<Predicate>& predicate) {
+    if (predicate) {
+        impl_->filters_.push_back(predicate);
+    }
     return *this;
 }
 

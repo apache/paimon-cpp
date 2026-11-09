@@ -493,6 +493,7 @@ set(PAIMON_CORE_SRCS
     core/table/source/data_evolution_batch_scan.cpp
     core/table/source/data_evolution_full_text_read.cpp
     core/table/source/data_evolution_full_text_scan.cpp
+    core/table/source/filtered_row_id_reader.cpp
     core/table/source/full_text_search_builder.cpp
     core/table/source/full_text_search_split.cpp
     core/table/source/primary_key_sorted_index_scan.cpp
@@ -1051,6 +1052,7 @@ if(PAIMON_BUILD_TESTS)
                     core/table/source/data_evolution_batch_scan_test.cpp
                     core/table/source/data_evolution_full_text_read_test.cpp
                     core/table/source/data_evolution_full_text_scan_test.cpp
+                    core/table/source/filtered_row_id_reader_test.cpp
                     core/table/source/full_text_search_split_test.cpp
                     core/table/source/data_split_test.cpp
                     core/table/source/deletion_file_test.cpp

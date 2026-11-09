@@ -32,14 +32,14 @@
 
 namespace paimon {
 /// The implementation of `IndexFullTextSearchSplit`, which also holds the full-text index files of
-/// the shard.
+/// the shard and the scalar index files that can pre-filter its rows.
 class IndexFullTextSearchSplitImpl : public IndexFullTextSearchSplit {
  public:
     /// "PFTSPLT1" in ASCII.
     static constexpr int64_t MAGIC = 0x50465453504C5431L;
-    /// TODO: once row filters (#405) are supported, add the scalar index files that pre-filter rows
-    /// in a new version, as version 2 of Java `IndexFullTextSearchSplit` does.
-    static constexpr int32_t VERSION = 1;
+    /// Version 2 appends the scalar index files that pre-filter rows, as version 2 of Java
+    /// `IndexFullTextSearchSplit` does.
+    static constexpr int32_t VERSION = 2;
 
     /// Creates a split.
     /// @param snapshot_id       The snapshot the split is planned from.
@@ -52,11 +52,18 @@ class IndexFullTextSearchSplitImpl : public IndexFullTextSearchSplit {
     ///                          global index meta of the shard range.
     /// @param search_row_ranges The sorted, disjoint and non-adjacent row id ranges to rank, at
     ///                          least one and all within the shard range.
+    /// @param scalar_index_files The global index files that intersect the shard range and can
+    ///                          pre-filter its rows, each accepted by `CheckScalarIndexFile()`.
     /// @return The split, or `Invalid` if an argument breaks these rules.
     static Result<std::shared_ptr<IndexFullTextSearchSplitImpl>> Create(
         int64_t snapshot_id, const std::string& column_name, int64_t row_range_start,
         int64_t row_range_end, std::vector<std::shared_ptr<IndexFileMeta>> full_text_index_files,
-        std::vector<Range> search_row_ranges);
+        std::vector<Range> search_row_ranges,
+        std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files = {});
+
+    /// Checks that `file` has a global index meta whose row range is not negative, is ordered, and
+    /// has a row count that fits in int64, as a split requires of its scalar index files.
+    static Status CheckScalarIndexFile(const std::shared_ptr<IndexFileMeta>& file);
 
     int64_t SnapshotId() const override {
         return snapshot_id_;
@@ -82,6 +89,10 @@ class IndexFullTextSearchSplitImpl : public IndexFullTextSearchSplit {
         return full_text_index_files_;
     }
 
+    const std::vector<std::shared_ptr<IndexFileMeta>>& ScalarIndexFiles() const {
+        return scalar_index_files_;
+    }
+
     bool operator==(const IndexFullTextSearchSplitImpl& other) const;
 
     std::string ToString() const;
@@ -90,13 +101,15 @@ class IndexFullTextSearchSplitImpl : public IndexFullTextSearchSplit {
     IndexFullTextSearchSplitImpl(int64_t snapshot_id, const std::string& column_name,
                                  int64_t row_range_start, int64_t row_range_end,
                                  std::vector<std::shared_ptr<IndexFileMeta>> full_text_index_files,
-                                 std::vector<Range> search_row_ranges)
+                                 std::vector<Range> search_row_ranges,
+                                 std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files)
         : snapshot_id_(snapshot_id),
           column_name_(column_name),
           row_range_start_(row_range_start),
           row_range_end_(row_range_end),
           full_text_index_files_(std::move(full_text_index_files)),
-          search_row_ranges_(std::move(search_row_ranges)) {}
+          search_row_ranges_(std::move(search_row_ranges)),
+          scalar_index_files_(std::move(scalar_index_files)) {}
 
     int64_t snapshot_id_;
     std::string column_name_;
@@ -104,6 +117,7 @@ class IndexFullTextSearchSplitImpl : public IndexFullTextSearchSplit {
     int64_t row_range_end_;
     std::vector<std::shared_ptr<IndexFileMeta>> full_text_index_files_;
     std::vector<Range> search_row_ranges_;
+    std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files_;
 };
 
 }  // namespace paimon
