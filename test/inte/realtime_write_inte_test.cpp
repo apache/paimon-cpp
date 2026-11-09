@@ -4342,6 +4342,40 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateDeleteAcrossCommits) {
         RecordBatch::RowKind::INSERT};
     const std::vector<std::string> expected = {"[[0, 1, 10, 20]]", "[[0, 1, 30, 20]]", "[]",
                                                "[[0, 1, 50, null]]", "[[0, 1, 50, 40]]"};
+    auto check_value_predicates = [&](const std::shared_ptr<RealtimeContext>& context) {
+        for (int64_t value : {30, 10}) {
+            SCOPED_TRACE(value);
+            std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+                /*field_index=*/1, /*field_name=*/"a", FieldType::BIGINT, Literal(value));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, predicate));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                                 ReadPlan(plan, context, {"id", "a", "b"}, predicate,
+                                          /*enable_predicate_filter=*/true));
+            if (value == 10) {
+                ASSERT_TRUE(!result || result->length() == 0);
+            } else {
+                arrow::FieldVector result_fields = {arrow::field("_VALUE_KIND", arrow::int8())};
+                result_fields.insert(result_fields.end(), fields_.begin(), fields_.end());
+                std::shared_ptr<arrow::Array> expected_rows =
+                    arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields),
+                                                              expected[1])
+                        .ValueOrDie();
+                ASSERT_NE(nullptr, result);
+                ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected_rows)->Equals(*result))
+                    << result->ToString();
+                ASSERT_EQ(1, plan->Splits().size());
+                std::shared_ptr<RealtimeSplit> realtime_split =
+                    std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+                if (realtime_split) {
+                    ASSERT_EQ(1, realtime_split->DiskSplits().size());
+                    std::shared_ptr<DataSplitImpl> disk_split =
+                        std::dynamic_pointer_cast<DataSplitImpl>(realtime_split->DiskSplits()[0]);
+                    ASSERT_NE(nullptr, disk_split);
+                    ASSERT_EQ(1, disk_split->DataFiles().size());
+                }
+            }
+        }
+    };
     for (int64_t commit = 0; commit < static_cast<int64_t>(inputs.size()); ++commit) {
         SCOPED_TRACE(commit);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
@@ -4350,6 +4384,9 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateDeleteAcrossCommits) {
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, nullptr));
             ASSERT_NO_FATAL_FAILURE(
                 ReadPlanWithSchemaAndCheck(plan, context, schema_, expected[commit - 1]));
+            if (commit == 2) {
+                ASSERT_NO_FATAL_FAILURE(check_value_predicates(context));
+            }
         }
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
                              MakeUnpartitionedBatchFromJson(inputs[commit], {kinds[commit]}));
@@ -4357,6 +4394,9 @@ TEST_F(RealtimeWriteInteTest, TestPkPartialUpdateDeleteAcrossCommits) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, nullptr));
         ASSERT_NO_FATAL_FAILURE(
             ReadPlanWithSchemaAndCheck(plan, context, schema_, expected[commit]));
+        if (commit == 1) {
+            ASSERT_NO_FATAL_FAILURE(check_value_predicates(context));
+        }
         ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
                              writer->PrepareCommitWithProgress(commit));
         ASSERT_OK_AND_ASSIGN(plan, CreatePlan(context, nullptr));
