@@ -48,6 +48,8 @@ Paimon C++ currently provides:
 
 Building requires a C++17-compatible compiler and CMake 3.22 or newer.
 Linux `x86_64` and `aarch64` builds are supported and verified in CI.
+CI also includes macOS 15 ARM64 builds with AppleClang in Debug and Release,
+and Homebrew GCC 15 in Release.
 See the [build guide](docs/source/building.rst) for platform support, system requirements,
 dependency configuration, optional components, and instructions for building and running tests.
 

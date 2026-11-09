@@ -67,9 +67,12 @@ Supported platforms
      - ``aarch64`` / ``arm64``
      - Built and tested in CI.
    * - macOS
-     - ``x86_64``, ``arm64``
-     - Architecture detection is wired up, but macOS as a whole is not an
-       officially supported platform and is not covered by CI.
+     - ``arm64``
+     - CI includes macOS 15 builds with AppleClang in Debug and Release,
+       and Homebrew GCC 15 in Release. Lumina is unavailable on macOS.
+   * - macOS
+     - ``x86_64``
+     - Architecture detection is available; no CI coverage.
    * - Windows
      - any
      - Not supported.
@@ -91,17 +94,57 @@ global index is the same however Paimon was compiled.
 
 One optional component is architecture-restricted:
 ``-DPAIMON_ENABLE_LUMINA=ON`` consumes a prebuilt binary that is only
-published for Linux ``x86_64``, so configuring it on any other platform fails
-with an explicit error.
+published for Linux ``x86_64`` and ``aarch64``, so configuring it on any other
+platform fails with an explicit error.
 
-Cross compilation is not wired up end to end: the bundled third-party builds are
-handed only the C and C++ compilers, without a toolchain file, sysroot or find
-root, so they can still pick up host libraries. Build natively on each target.
+Cross compilation is not wired up end to end: not all bundled third-party builds
+receive a complete toolchain, sysroot and find-root configuration, so they can
+still pick up host libraries. Build natively on each target.
 
 ``build_and_package.sh`` therefore names its output after the host platform, for
 example ``output/paimon-cpp-linux-aarch64.tar.gz``, so artifacts built on several
 machines can be collected side by side. ``--platform <label>`` overrides that
 label alone; it does not configure a cross build.
+
+CI build and test coverage
+--------------------------
+
+The build-and-test workflow uses ``ci/scripts/build_paimon.sh`` to configure,
+build and run all registered CTest targets. The script defaults to Debug;
+Release jobs pass ``--build_type Release`` explicitly. The matrix includes:
+
+* Linux ``x86_64`` and ``aarch64``: GCC 14 and Clang in Debug and Release,
+  plus separate ASAN/UBSAN and TSAN jobs.
+* Linux ``aarch64``: an additional GCC 13.3 Release regression job. It checks
+  that both the C and C++ compilers report version ``13.3.0`` before building.
+* Linux ``x86_64``: a separate GCC 8 Debug compatibility job.
+* macOS 15 ``arm64``: AppleClang in Debug and Release, and Homebrew GCC 15
+  in Release. Each job also installs Paimon and builds and runs an external
+  CMake consumer linked against ``Paimon::paimon_shared``. See
+  :doc:`build_system` for installed-consumer limitations.
+
+The script explicitly enables Avro, ORC, Mosaic, Lance, Vortex, Jindo, OSS,
+S3, Lumina, Lucene, full-text and REST, subject to these exclusions:
+
+* Lumina is disabled outside Linux ``x86_64``/``aarch64`` and with GCC 8.
+* The full-text engine is disabled with GCC 8 and in TSAN jobs.
+* Lance is disabled in TSAN jobs because its Rust library is not
+  TSAN-instrumented.
+
+Both static and shared libraries are built by default, and project compilation
+retains ``-Wall -Werror``. External network tests
+(``PAIMON_ENABLE_NETWORK_TESTS``), performance benchmarks
+(``PAIMON_BUILD_BENCHMARKS``), coverage instrumentation
+(``PAIMON_GENERATE_COVERAGE``) and extra error context
+(``PAIMON_EXTRA_ERROR_CONTEXT``) remain disabled in this workflow.
+Building a filesystem module therefore does not imply that CI accesses its
+real remote service.
+
+The Linux GCC Debug ``x86_64`` job additionally checks full-text archives
+with the Python reader (``--verify_full_text_archives``). The Linux Clang
+Debug ``x86_64`` job runs clang-tidy (``--check_clang_tidy``).
+The workflow definition in ``.github/workflows/build_and_test.yaml`` is the
+source of truth for runners and compiler selections.
 
 .. _cpp-building-building:
 
@@ -191,7 +234,7 @@ to ``ON``, while every other component below defaults to ``OFF``.
 * ``-DPAIMON_ENABLE_OSS=ON``: Support for Alibaba Cloud OSS through OSS SDK V2
 * ``-DPAIMON_ENABLE_S3=ON``: Support for Amazon S3-compatible filesystems
 * ``-DPAIMON_ENABLE_LUMINA=ON``: Support for the Lumina vector index. Requires
-  Linux ``x86_64``; see :ref:`cpp-building-platforms`.
+  Linux ``x86_64`` or ``aarch64``; see :ref:`cpp-building-platforms`.
 * ``-DPAIMON_ENABLE_LUCENE=ON``: Support for Lucene full-text search indexes
 * ``-DPAIMON_ENABLE_FULL_TEXT=ON``: Experimental full-text global index (index type
   ``full-text``) backed by the ``paimon-full-text-index`` 0.1.0 Rust engine. It uses the same index

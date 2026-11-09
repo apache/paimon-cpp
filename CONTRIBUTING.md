@@ -83,6 +83,12 @@ Before submitting, please verify:
 - **CMake** ≥ 3.22
 - **Python 3** (for linting scripts and pre-commit)
 
+See the [build guide](docs/source/building.rst) for platform requirements and
+the CI compiler matrix, feature flags, and platform-specific exclusions.
+The CI entry point is `ci/scripts/build_paimon.sh`; it enables the available
+optional modules and runs CTest. It defaults to Debug; use
+`--build_type Release` to reproduce a Release configuration.
+
 ---
 
 ## Code Style
