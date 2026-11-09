@@ -303,8 +303,7 @@ an index shard covers are searched, as in the default ``fast`` ``full-text-index
 Java Paimon, so rows written since the index was last built are not found until it is built for
 them. A search whose ``full-text-index.search-mode``, or else ``global-index.search-mode``, is
 ``full`` or ``detail``, which also search the rows that no index covers, fails with
-``NotImplemented``. Row filters, which Java Paimon evaluates with scalar indexes before ranking, are
-not supported yet.
+``NotImplemented``.
 
 .. code-block:: cpp
 
@@ -338,6 +337,8 @@ candidates only: which of the rows tied at the ``limit``-th score of a shard bec
 to its index.
 
 - ``SetPartitionFilter()`` restricts the search to some partitions, as in ``ScanContextBuilder``.
+- ``WithFilter()`` restricts the search to the rows matching a predicate; see
+  `Row Filters`_ below.
 - The search reads the snapshot that the time-travel options select, as Java Paimon does: snapshot
   ``scan.snapshot-id``, the snapshot of tag ``scan.tag-name``, the latest snapshot at or before
   ``scan.timestamp`` or ``scan.timestamp-millis``, or else the latest snapshot. At most one of these
@@ -358,6 +359,45 @@ to its index.
   search fails instead of skipping the index and leaving its rows out of the result.
 - A column with a primary-key full-text index (``pk-full-text.index.columns``) cannot be searched
   yet.
+
+Row Filters
+~~~~~~~~~~~
+
+``WithFilter()`` adds a row filter, as Java Paimon's ``withFilter`` does. Only the matching rows are
+ranked, so the result is the top ``limit`` rows among them, not a filtered subset of the unfiltered
+top ``limit``. The matching rows are handed to the existing index as include row ids, so BM25
+statistics stay those of the whole index shard. Repeated calls are ANDed. Conjuncts over partition
+fields alone restrict the partitions instead, ANDed with ``SetPartitionFilter()``. As in Java
+Paimon, any other conjunct still filters rows but also restricts the partitions to those it
+implies: ``(p = 1 AND a > 0) OR (p = 2 AND a > 0)`` searches only partitions ``p = 1`` and
+``p = 2``.
+
+.. code-block:: cpp
+
+   auto filter = paimon::PredicateBuilder::Equal(/*field_index=*/1, "category",
+                                                 paimon::FieldType::INT, paimon::Literal(7));
+   search_builder.WithFilter(filter);
+
+The scan keeps the scalar global index files that index a field of the filter, and the read
+resolves the filter with them before ranking:
+
+- If the indexes decide the whole filter, the rows they return are searched.
+- If they can only narrow the filter down to candidates, because a conjunct has no index or the
+  filter has a ``Contains``, ``EndsWith`` or ``Like`` predicate, the candidates are excluded and a
+  warning is logged. The search then never returns a non-matching row, but may return fewer rows
+  than ``limit``. With ``global-index.filter.refine-from-data=true``, the read instead verifies the
+  candidates by reading their filter columns and ``_ROW_ID`` in the planned snapshot, on the caller
+  and possibly for every candidate.
+- Rows that no scalar index covers are excluded. If no index can evaluate the filter at all, no row
+  is searched and a warning is logged. This is the default ``fast`` ``scalar-index.search-mode``,
+  which falls back on ``global-index.search-mode``. A row filter in ``full`` or ``detail`` mode,
+  which decide such rows by reading their filter columns, fails with ``NotImplemented``.
+
+Only single-field indexes that do not support full-text search evaluate a filter. A filter with a
+``PredicateBuilder::FullTextMatch`` predicate fails with ``NotImplemented``.
+
+Pinning the Data Read
+~~~~~~~~~~~~~~~~~~~~~
 
 The row ids of the result refer to the snapshot the search was planned from. If the table may
 change before the rows are read, plan with ``NewFullTextScan()`` and pin the data scan to the
@@ -386,12 +426,13 @@ outlive the snapshot.
 ``ExecuteLocal()`` plans and searches in one process. To plan in one process and search in others,
 plan with ``NewFullTextScan()``, ship the splits with ``FullTextSearchSplit::Serialize()`` and
 ``FullTextSearchSplit::Deserialize()``, and search them with the ``NewFullTextRead()`` of a builder
-for the same table, column and query. The serialized form is versioned and specific to Paimon C++:
-Java Paimon serializes its splits with Java serialization, so splits cannot be exchanged with it.
-Each split records the snapshot it was planned from, and the read ranks the rows live in that
-snapshot. The read rejects a split whose index files do not index the column of the latest schema,
-such as after the column was replaced. A read returns the top rows of the splits it is given, so
-keep the ``limit`` highest-scoring rows of all reads if the splits are searched by several of them.
+for the same table, column, query and filter. The serialized form is versioned and specific to
+Paimon C++: Java Paimon serializes its splits with Java serialization, so splits cannot be exchanged
+with it. Each split records the snapshot it was planned from, and the read ranks the rows live in
+that snapshot. The read rejects a split whose index files do not index the column of the latest
+schema, such as after the column was replaced. A read returns the top rows of the splits it is
+given, so keep the ``limit`` highest-scoring rows of all reads if the splits are searched by several
+of them.
 
 .. code-block:: cpp
 

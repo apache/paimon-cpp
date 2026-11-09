@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,7 @@
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/predicate.h"
 #include "paimon/table/source/full_text_scan.h"
 #include "paimon/utils/range.h"
 
@@ -59,6 +61,7 @@ class DataEvolutionFullTextScan : public FullTextScan {
     /// @param options          Options of the table, merged with those of the search.
     /// @param path_factory     Path factory of the table.
     /// @param partition_filter Predicate over the partition fields, or null for all partitions.
+    /// @param filter           Row filter beyond the partition filter, or null for all rows.
     /// @param text_field       The searched column.
     /// @param pool             Memory pool for reading index manifests.
     DataEvolutionFullTextScan(const std::string& root_path,
@@ -66,13 +69,30 @@ class DataEvolutionFullTextScan : public FullTextScan {
                               const CoreOptions& options,
                               const std::shared_ptr<FileStorePathFactory>& path_factory,
                               const std::shared_ptr<PredicateFilter>& partition_filter,
-                              const DataField& text_field, const std::shared_ptr<MemoryPool>& pool);
+                              const std::shared_ptr<Predicate>& filter, const DataField& text_field,
+                              const std::shared_ptr<MemoryPool>& pool);
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
 
     /// Returns whether `meta` indexes the field `field_id`, as its indexed field or as one of its
     /// extra fields.
     static bool IndexesField(const GlobalIndexMeta& meta, int32_t field_id);
+
+    /// Returns whether a file of `meta` can pre-filter the rows of a search with a row filter over
+    /// `filter_field_ids`: it must belong to a single-field index on one of those fields whose
+    /// indexer does not support full-text search. Unlike in Java, this leaves out the full-text
+    /// indexes of every column, as `lucene-fts` answers every scalar predicate with all of its
+    /// rows, and multi-field indexes, which `GlobalIndexScanImpl::CreateForScalarFilters()` leaves
+    /// out of the evaluation anyway.
+    static bool IsScalarPreFilterFile(const GlobalIndexMeta& meta,
+                                      const std::set<int32_t>& filter_field_ids,
+                                      bool supports_full_text);
+
+    /// Returns the files of `index_files` whose row range intersects `row_range`, or `Invalid` if
+    /// a split cannot carry one of them; see
+    /// `IndexFullTextSearchSplitImpl::CheckScalarIndexFile()`.
+    static Result<std::vector<std::shared_ptr<IndexFileMeta>>> IntersectingFiles(
+        const std::vector<std::shared_ptr<IndexFileMeta>>& index_files, const Range& row_range);
 
     /// Returns the identity of the index that `file` belongs to: its index type, indexed field id
     /// and extra field ids, as `type|index_field_id|[extra_field_ids]`. Files of one identity
@@ -108,6 +128,7 @@ class DataEvolutionFullTextScan : public FullTextScan {
     CoreOptions options_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<PredicateFilter> partition_filter_;
+    std::shared_ptr<Predicate> filter_;
     DataField text_field_;
     std::shared_ptr<MemoryPool> pool_;
 };
