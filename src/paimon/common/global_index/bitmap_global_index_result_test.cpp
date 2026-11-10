@@ -155,6 +155,22 @@ TEST_F(BitmapGlobalIndexResultTest, TestOr) {
                      "{1,2,3,9223372036854775807}");
 }
 
+TEST_F(BitmapGlobalIndexResultTest, TestOrPropagatesSupplierErrorsImmediately) {
+    for (bool fail_left : {true, false}) {
+        auto left =
+            std::make_shared<BitmapGlobalIndexResult>([fail_left]() -> Result<RoaringBitmap64> {
+                if (fail_left) {
+                    return Status::Invalid("left supplier failed");
+                }
+                return RoaringBitmap64::From({1});
+            });
+        auto right = std::make_shared<BitmapGlobalIndexResult>(
+            []() -> Result<RoaringBitmap64> { return Status::Invalid("right supplier failed"); });
+        const char* expected_error = fail_left ? "left supplier failed" : "right supplier failed";
+        ASSERT_NOK_WITH_MSG(left->Or(right), expected_error);
+    }
+}
+
 TEST_F(BitmapGlobalIndexResultTest, TestBitmapResultOrOtherResult) {
     auto bitmap_supplier1 = [&]() -> Result<RoaringBitmap64> {
         return RoaringBitmap64::From({1, 2, 3});
@@ -192,9 +208,18 @@ TEST_F(BitmapGlobalIndexResultTest, TestFromRanges) {
 
 TEST_F(BitmapGlobalIndexResultTest, TestAddOffset) {
     {
-        auto result = BitmapGlobalIndexResult::FromRanges({Range(0, 5)});
-        ASSERT_OK_AND_ASSIGN(auto result_with_offset, result->AddOffset(0));
+        int32_t supplier_calls = 0;
+        auto result = std::make_shared<BitmapGlobalIndexResult>(
+            [&supplier_calls]() -> Result<RoaringBitmap64> {
+                ++supplier_calls;
+                return RoaringBitmap64::From({0, 1, 2, 3, 4, 5});
+            });
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> result_with_offset,
+                             result->AddOffset(0));
+        ASSERT_EQ(result_with_offset.get(), result.get());
+        ASSERT_EQ(supplier_calls, 0);
         ASSERT_EQ(result_with_offset->ToString(), "{0,1,2,3,4,5}");
+        ASSERT_EQ(supplier_calls, 1);
 
         ASSERT_OK_AND_ASSIGN(result_with_offset, result->AddOffset(10));
         ASSERT_EQ(result_with_offset->ToString(), "{10,11,12,13,14,15}");

@@ -45,18 +45,24 @@ Result<std::shared_ptr<GlobalIndexResult>> BitmapGlobalIndexResult::Or(
     const std::shared_ptr<GlobalIndexResult>& other) {
     auto typed_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(other);
     if (typed_result) {
-        auto supplier = [typed_result, result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(
-                                           shared_from_this())]() -> Result<RoaringBitmap64> {
-            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r1, result->GetBitmap());
-            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r2, typed_result->GetBitmap());
-            return RoaringBitmap64::Or(*r1, *r2);
-        };
-        return std::make_shared<BitmapGlobalIndexResult>(supplier);
+        // Repeated lazy ORs build deep supplier chains that retain operands and materialized
+        // intermediate unions. Merge eagerly to avoid deep recursion and let previous results
+        // be released when callers drop them. AND remains lazy so callers that short-circuit
+        // can avoid materializing unused intersections.
+        PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r1, GetBitmap());
+        PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r2, typed_result->GetBitmap());
+        auto result = std::make_shared<BitmapGlobalIndexResult>(BitmapSupplier{});
+        result->bitmap_ = RoaringBitmap64::Or(*r1, *r2);
+        result->initialized_ = true;
+        return result;
     }
     return GlobalIndexResult::Or(other);
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> BitmapGlobalIndexResult::AddOffset(int64_t offset) {
+    if (offset == 0) {
+        return shared_from_this();
+    }
     auto supplier = [offset, result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(
                                  shared_from_this())]() -> Result<RoaringBitmap64> {
         PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* bitmap, result->GetBitmap());
@@ -64,6 +70,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BitmapGlobalIndexResult::AddOffset(in
         for (auto iter = bitmap->Begin(); iter != bitmap->End(); ++iter) {
             bitmap64.Add(offset + (*iter));
         }
+        bitmap64.RunOptimize();
         return bitmap64;
     };
     return std::make_shared<BitmapGlobalIndexResult>(supplier);
