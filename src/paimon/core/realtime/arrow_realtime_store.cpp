@@ -66,6 +66,7 @@ bool SupportsMinMax(const std::shared_ptr<arrow::DataType>& type) {
         case arrow::Type::STRING:
         case arrow::Type::BINARY:
         case arrow::Type::DATE32:
+        case arrow::Type::TIME32:
         case arrow::Type::TIMESTAMP:
         case arrow::Type::DECIMAL128:
             return true;

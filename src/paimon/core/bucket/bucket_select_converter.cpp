@@ -178,6 +178,7 @@ Status BucketSelectConverter::WriteLiteralToRow(int32_t pos, const Literal& lite
             break;
         case FieldType::INT:
         case FieldType::DATE:
+        case FieldType::TIME:
             writer->WriteInt(pos, literal.GetValue<int32_t>());
             break;
         case FieldType::BIGINT:

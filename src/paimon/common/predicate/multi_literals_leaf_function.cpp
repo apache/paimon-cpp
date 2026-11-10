@@ -58,6 +58,7 @@ bool CanProbeWithIsIn(FieldType field_type) {
         case FieldType::FLOAT:
         case FieldType::DOUBLE:
         case FieldType::DATE:
+        case FieldType::TIME:
         case FieldType::STRING:
         case FieldType::BINARY:
         case FieldType::DECIMAL:
@@ -144,6 +145,12 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
     if (field_type == FieldType::TIMESTAMP &&
         (typed_literal->IsNull() ||
          !IsTimestampOfUnit(data_type, LiteralConverter::MinRequiredTimeUnit(literals)))) {
+        return nullptr;
+    }
+    // A TIME value set is written in milliseconds, so only a millisecond column is probed without
+    // a cast.
+    if (field_type == FieldType::TIME &&
+        !data_type.Equals(*arrow::time32(arrow::TimeUnit::MILLI))) {
         return nullptr;
     }
     for (const auto& literal : literals) {

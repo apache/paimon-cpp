@@ -31,7 +31,7 @@ namespace paimon {
 /// Literal represents a constant value used in predicate expressions.
 ///
 /// Literal support BOOLEAN, TINYINT, SMALLINT, INT, BIGINT, FLOAT, DOUBLE, STRING, BINARY,
-/// TIMESTAMP, DECIMAL, DATE.
+/// TIMESTAMP, DECIMAL, DATE, TIME.
 class PAIMON_EXPORT Literal {
  public:
     /// Creates a null literal of the specified type.
@@ -62,10 +62,11 @@ class PAIMON_EXPORT Literal {
     ///                 if false, the caller must ensure the data remains valid.
     Literal(FieldType binary_type, const char* str, size_t size, bool own_data);
 
-    /// Creates a date literal from an integer value.
-    /// @param date_type Must be `DATE` field type.
-    /// @param date_value Date value as days since epoch (1970-01-01).
-    Literal(FieldType date_type, int32_t date_value);
+    /// Creates a date or time literal from an integer value.
+    /// @param field_type Must be `DATE` or `TIME` field type.
+    /// @param value For `DATE`, days since epoch (1970-01-01); for `TIME`, milliseconds of the
+    ///              day (0 to 86399999).
+    Literal(FieldType field_type, int32_t value);
 
     Literal(const Literal& other);
     ~Literal();

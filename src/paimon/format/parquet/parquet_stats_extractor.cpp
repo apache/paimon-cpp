@@ -143,6 +143,12 @@ Result<std::unique_ptr<ColumnStats>> ConvertStatsToColumnStats(
             auto [min, max] = CollectMinMaxStats<::parquet::Int32Statistics>(typed_stats);
             return ColumnStats::CreateDateColumnStats(min, max, null_count);
         }
+        case arrow::Type::TIME32: {
+            // Like Java, TIME statistics are int statistics.
+            auto typed_stats = checked_pointer_cast<::parquet::Int32Statistics>(stats);
+            auto [min, max] = CollectMinMaxStats<::parquet::Int32Statistics>(typed_stats);
+            return ColumnStats::CreateIntColumnStats(min, max, null_count);
+        }
         case arrow::Type::TIMESTAMP: {
             auto timestamp_type = checked_pointer_cast<::arrow::TimestampType>(data_type);
             if (timestamp_type->unit() == arrow::TimeUnit::type::NANO) {

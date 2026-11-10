@@ -81,6 +81,7 @@ bool CanCompareWithKernel(FieldType field_type) {
         case FieldType::INT:
         case FieldType::BIGINT:
         case FieldType::DATE:
+        case FieldType::TIME:
         case FieldType::STRING:
         case FieldType::BINARY:
         case FieldType::DECIMAL:
@@ -142,6 +143,10 @@ bool AgreesWithScalar(const arrow::DataType& column_type, const arrow::DataType&
                    checked_cast<const arrow::TimestampType&>(column_type).unit() ==
                        checked_cast<const arrow::TimestampType&>(scalar_type).unit() &&
                    checked_cast<const arrow::TimestampType&>(column_type).timezone().empty();
+        case arrow::Type::TIME32:
+            // A TIME literal is written in milliseconds, so only a millisecond column compares
+            // without a cast.
+            return column_type.Equals(scalar_type);
         default:
             return true;
     }

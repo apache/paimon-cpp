@@ -114,6 +114,7 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
                 });
 
         case arrow::Type::type::INT32:
+        case arrow::Type::type::TIME32:
             return FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     int32_t lvalue = lhs.GetInt(field_idx);

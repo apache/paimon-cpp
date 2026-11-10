@@ -86,6 +86,9 @@ TEST(FieldTypeUtilsTest, ConvertToFieldType) {
     ASSERT_OK_AND_ASSIGN(result, FieldTypeUtils::ConvertToFieldType(arrow::Type::type::TIMESTAMP));
     ASSERT_EQ(result, FieldType::TIMESTAMP);
 
+    ASSERT_OK_AND_ASSIGN(result, FieldTypeUtils::ConvertToFieldType(arrow::Type::type::TIME32));
+    ASSERT_EQ(result, FieldType::TIME);
+
     ASSERT_OK_AND_ASSIGN(result, FieldTypeUtils::ConvertToFieldType(arrow::Type::type::DECIMAL128));
     ASSERT_EQ(result, FieldType::DECIMAL);
 
@@ -125,6 +128,7 @@ TEST(FieldTypeUtilsTest, FieldTypeToString) {
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::TIMESTAMP), "TIMESTAMP");
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::DECIMAL), "DECIMAL");
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::DATE), "DATE");
+    ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::TIME), "TIME");
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::ARRAY), "ARRAY");
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::MAP), "MAP");
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::STRUCT), "STRUCT");

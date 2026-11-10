@@ -104,7 +104,7 @@ class ColumnarRow : public InternalRow {
     }
 
     int32_t GetInt(int32_t pos) const override {
-        return ColumnarUtils::GetGenericValue<arrow::Int32Type, int32_t>(array_vec_[pos], row_id_);
+        return ColumnarUtils::GetInt32Value(array_vec_[pos], row_id_);
     }
 
     int32_t GetDate(int32_t pos) const override {

@@ -43,7 +43,8 @@ Literal BigIntLiteral(int64_t value) {
 }  // namespace
 
 TEST(PredicateConverterTest, TestSimple) {
-    // "struct<f0:bigint,f1:double,f2:string,f3:int,f4:tinyint,f5:decimal(6,2),f6:date,f7:timestamp>";
+    // "struct<f0:bigint,f1:double,f2:string,f3:int,f4:tinyint,f5:decimal(6,2),f6:date,f7:timestamp,
+    // f8:time>";
     {
         auto predicate =
             PredicateBuilder::IsNull(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT);
@@ -78,6 +79,14 @@ TEST(PredicateConverterTest, TestSimple) {
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(f6 == 1970-01-11)", expression.ToString());
+    }
+    {
+        auto predicate =
+            PredicateBuilder::Equal(/*field_index=*/8, /*field_name=*/"f8", FieldType::TIME,
+                                    Literal(FieldType::TIME, 45296123));
+        ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
+                                                  predicate, /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f8 == 12:34:56.123)", expression.ToString());
     }
     {
         auto predicate = PredicateBuilder::NotEqual(/*field_index=*/0, /*field_name=*/"f0",

@@ -98,4 +98,33 @@ TEST(RowToArrowArrayConverterTest, AppendBinaryWithoutView) {
     ASSERT_EQ(binaries->GetString(3), binary_value);
 }
 
+TEST(RowToArrowArrayConverterTest, AppendTime) {
+    auto pool = GetDefaultPool();
+    auto arrow_pool = GetArrowPool(pool);
+    arrow::Time32Builder builder(arrow::time32(arrow::TimeUnit::MILLI), arrow_pool.get());
+    int32_t reserve_count = 0;
+    ASSERT_OK_AND_ASSIGN(auto append, RowToArrowArrayConverterTestAccess::AppendField(
+                                          /*use_view=*/true, &builder, &reserve_count));
+
+    auto row =
+        BinaryRowGenerator::GenerateRow({static_cast<int32_t>(0), static_cast<int32_t>(45296123),
+                                         NullType(), static_cast<int32_t>(86399999)},
+                                        pool.get());
+    for (int32_t i = 0; i < row.GetFieldCount(); ++i) {
+        ASSERT_TRUE(append(row, i).ok());
+    }
+
+    std::shared_ptr<arrow::Array> result;
+    ASSERT_TRUE(builder.Finish(&result).ok());
+    auto times = std::dynamic_pointer_cast<arrow::Time32Array>(result);
+    ASSERT_TRUE(times);
+    ASSERT_TRUE(times->type()->Equals(arrow::time32(arrow::TimeUnit::MILLI)));
+    ASSERT_EQ(times->length(), 4);
+    ASSERT_EQ(times->null_count(), 1);
+    ASSERT_EQ(times->Value(0), 0);
+    ASSERT_EQ(times->Value(1), 45296123);
+    ASSERT_TRUE(times->IsNull(2));
+    ASSERT_EQ(times->Value(3), 86399999);
+}
+
 }  // namespace paimon::test

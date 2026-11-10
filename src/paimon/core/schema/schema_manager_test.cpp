@@ -82,17 +82,18 @@ TEST(SchemaManagerTest, TimePrecisionRoundTrip) {
     }
 }
 
-TEST(SchemaManagerTest, RejectTimePartitionKey) {
+TEST(SchemaManagerTest, CreateTimePartitionKey) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     SchemaManager manager(std::make_shared<LocalFileSystem>(), dir->Str());
     auto schema = arrow::schema({arrow::field("id", arrow::int32()),
                                  arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI))});
-    ASSERT_NOK_WITH_MSG(
-        manager.CreateTable(schema, {"time"}, {}, {{"file.format", "parquet"}, {"bucket", "-1"}}),
-        "partition field time cannot be TIME");
+    ASSERT_OK_AND_ASSIGN(
+        auto created,
+        manager.CreateTable(schema, {"time"}, {}, {{"file.format", "parquet"}, {"bucket", "-1"}}));
+    ASSERT_EQ(created->PartitionKeys(), std::vector<std::string>({"time"}));
     ASSERT_OK_AND_ASSIGN(auto latest, manager.Latest());
-    ASSERT_FALSE(latest.has_value());
+    ASSERT_TRUE(latest.has_value());
 }
 
 TEST(SchemaManagerTest, ConcurrentHistoricalSchemaReads) {

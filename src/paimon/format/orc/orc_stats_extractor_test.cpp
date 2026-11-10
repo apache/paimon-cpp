@@ -520,4 +520,10 @@ TEST_F(OrcStatsExtractorTest, TestExtractStatsTimestampType) {
     }
 }
 
+TEST_F(OrcStatsExtractorTest, TestExtractStatsTimeType) {
+    arrow::FieldVector fields = {arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI))};
+    CheckStats(fields, R"([[0], [123], [86399999], [null]])", {"min 0, max 86399999, null count 1"},
+               /*expect_row_count=*/4);
+}
+
 }  // namespace paimon::orc::test

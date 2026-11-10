@@ -525,6 +525,33 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     ASSERT_EQ(std::vector<int64_t>({0, 1, 10, 11}), ReadIds(unfiltered));
 }
 
+TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingTimeBatch) {
+    schema_ = arrow::schema({
+        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
+        arrow::field("id", arrow::int64()),
+        arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI)),
+    });
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(StatisticsMode::FULL));
+    ASSERT_OK(store->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[0, 0, 0], [1, 1, 123]])"), OffsetRange(0, 2)}));
+    ASSERT_OK(store->Write(RealtimeWriteBatch{
+        MakeBatch(R"([[2, 10, 45296123], [3, 11, 86399999]])"), OffsetRange(2, 4)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
+
+    std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/2, /*field_name=*/"t", FieldType::TIME, Literal(FieldType::TIME, 1000));
+    RealtimeQueryContext context{read_schema.get(), predicate,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                         store->CreateQueryReaders(view, context));
+    ASSERT_EQ(1, readers.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> filtered,
+                         ReadResultCollector::CollectResult(std::move(readers[0])));
+    ASSERT_EQ(std::vector<int64_t>({10, 11}), ReadIds(filtered));
+}
+
 TEST_F(ArrowRealtimeStoreTest, TestMissingStatisticsRetainsNonMatchingBatch) {
     ASSERT_OK(store_->Write(
         RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"), OffsetRange(0, 2)}));

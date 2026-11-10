@@ -140,6 +140,25 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestDate) {
     ASSERT_EQ(Eval(GreaterOrEqual::Instance(), second, array), std::vector<char>({0, 1, 1, 0}));
 }
 
+TEST_F(NullFalseLeafBinaryFunctionTest, TestTime) {
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::time32(arrow::TimeUnit::MILLI),
+                                                           R"([0, 123, 86399999, null])")
+                     .ValueOrDie();
+    const Literal value{FieldType::TIME, 123};
+    ASSERT_EQ(Eval(Equal::Instance(), value, array), std::vector<char>({0, 1, 0, 0}));
+    ASSERT_EQ(Eval(NotEqual::Instance(), value, array), std::vector<char>({1, 0, 1, 0}));
+    ASSERT_EQ(Eval(LessThan::Instance(), value, array), std::vector<char>({1, 0, 0, 0}));
+    ASSERT_EQ(Eval(LessOrEqual::Instance(), value, array), std::vector<char>({1, 1, 0, 0}));
+    ASSERT_EQ(Eval(GreaterThan::Instance(), value, array), std::vector<char>({0, 0, 1, 0}));
+    ASSERT_EQ(Eval(GreaterOrEqual::Instance(), value, array), std::vector<char>({0, 1, 1, 0}));
+
+    auto seconds_array = arrow::ipc::internal::json::ArrayFromJSON(
+                             arrow::time32(arrow::TimeUnit::SECOND), R"([0, 1, null])")
+                             .ValueOrDie();
+    AssertEvalFails(Equal::Instance(), {Literal(FieldType::TIME, 1)}, seconds_array);
+    AssertEvalFails(LessThan::Instance(), {Literal(FieldType::TIME, 1000)}, seconds_array);
+}
+
 TEST_F(NullFalseLeafBinaryFunctionTest, TestString) {
     // `Literal::CompareTo` orders two strings by `std::string_view::compare`, which is the byte by
     // byte order a kernel compares them in, a prefix included.

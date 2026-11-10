@@ -153,6 +153,8 @@ TEST(FieldMinMaxAggTest, TestVariantType) {
     CheckResult(arrow::int16(), static_cast<int16_t>(100), static_cast<int16_t>(15));
     CheckResult(arrow::int32(), static_cast<int32_t>(100), static_cast<int32_t>(15));
     CheckResult(arrow::date32(), static_cast<int32_t>(100), static_cast<int32_t>(15));
+    CheckResult(arrow::time32(arrow::TimeUnit::MILLI), static_cast<int32_t>(86399999),
+                static_cast<int32_t>(123));
     CheckResult(arrow::int64(), static_cast<int64_t>(100), static_cast<int64_t>(15));
     CheckResult(arrow::float32(), static_cast<float>(100.2), static_cast<float>(15.1));
     CheckResult(arrow::float64(), 100.23, 15.11);

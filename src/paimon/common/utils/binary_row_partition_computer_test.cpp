@@ -25,9 +25,11 @@
 #include <variant>
 
 #include "arrow/type.h"
+#include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_string.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/binary_row_generator.h"
@@ -341,6 +343,97 @@ TEST(BinaryRowPartitionComputerTest, TestToPartialBinaryRow) {
     ASSERT_NOK_WITH_MSG(computer->ToPartialBinaryRow({{"unknown", "value"}}),
                         "field unknown does not exist in partition keys");
     ASSERT_NOK(computer->ToPartialBinaryRow({{"pt", "abc"}}));
+}
+
+TEST(BinaryRowPartitionComputerTest, TestTimePartition) {
+    auto pool = GetDefaultPool();
+    auto time_field = [](const std::string& name, const std::string& precision) {
+        return arrow::field(name, arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/true,
+                            arrow::key_value_metadata({DataType::kTimePrecision}, {precision}));
+    };
+    auto schema =
+        arrow::schema({arrow::field("t_default", arrow::time32(arrow::TimeUnit::MILLI)),
+                       time_field("t3", "3"), time_field("t6", "6"), time_field("t9", "9")});
+    std::vector<std::string> partition_keys = {"t_default", "t3", "t6", "t9"};
+    {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<BinaryRowPartitionComputer> computer,
+            BinaryRowPartitionComputer::Create(partition_keys, schema, "__DEFAULT_PARTITION__",
+                                               /*legacy_partition_name_enabled=*/false, pool));
+        std::map<std::string, std::string> partition_map = {{"t_default", "00:00:00"},
+                                                            {"t3", "00:00:00.123"},
+                                                            {"t6", "12:34:56.12"},
+                                                            {"t9", "23:59:59.999"}};
+        ASSERT_OK_AND_ASSIGN(BinaryRow row, computer->ToBinaryRow(partition_map));
+        ASSERT_EQ(0, row.GetInt(0));
+        ASSERT_EQ(123, row.GetInt(1));
+        ASSERT_EQ(45296120, row.GetInt(2));
+        ASSERT_EQ(86399999, row.GetInt(3));
+        ASSERT_OK_AND_ASSIGN(auto part_values, computer->GeneratePartitionVector(row));
+        std::map<std::string, std::string> actual(part_values.begin(), part_values.end());
+        ASSERT_EQ(actual, partition_map);
+
+        ASSERT_OK_AND_ASSIGN(row, computer->ToBinaryRow({{"t_default", "12:34:56.789"},
+                                                         {"t3", "01:02:03"},
+                                                         {"t6", "01:02:03.000456"},
+                                                         {"t9", "00:00:00.5"}}));
+        ASSERT_OK_AND_ASSIGN(part_values, computer->GeneratePartitionVector(row));
+        actual = std::map<std::string, std::string>(part_values.begin(), part_values.end());
+        std::map<std::string, std::string> expected = {{"t_default", "12:34:56"},
+                                                       {"t3", "01:02:03.0"},
+                                                       {"t6", "01:02:03.0"},
+                                                       {"t9", "00:00:00.5"}};
+        ASSERT_EQ(actual, expected);
+
+        ASSERT_OK_AND_ASSIGN(row, computer->ToBinaryRow({{"t_default", "__DEFAULT_PARTITION__"},
+                                                         {"t3", "00:00:00"},
+                                                         {"t6", "00:00:00"},
+                                                         {"t9", "00:00:00"}}));
+        ASSERT_TRUE(row.IsNullAt(0));
+        ASSERT_NOK_WITH_MSG(computer->ToBinaryRow({{"t_default", "24:00:00"},
+                                                   {"t3", "00:00:00"},
+                                                   {"t6", "00:00:00"},
+                                                   {"t9", "00:00:00"}}),
+                            "invalid value of partition key 't_default': failed to convert string "
+                            "'24:00:00' to time");
+
+        ASSERT_OK_AND_ASSIGN(row, computer->ToBinaryRow({{"t_default", "01:02:03"},
+                                                         {"t3", "00:00:00.123"},
+                                                         {"t6", "12:00:00"},
+                                                         {"t9", "00:00:00"}}));
+        ASSERT_OK_AND_ASSIGN(std::string ret,
+                             BinaryRowPartitionComputer::PartToSimpleString(
+                                 schema, row, "-", 100, /*legacy_partition_name_enabled=*/false));
+        ASSERT_EQ(ret, "01:02:03-00:00:00.123-12:00:00.0-00:00:00.0");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<BinaryRowPartitionComputer> computer,
+            BinaryRowPartitionComputer::Create(partition_keys, schema, "__DEFAULT_PARTITION__",
+                                               /*legacy_partition_name_enabled=*/true, pool));
+        std::map<std::string, std::string> partition_map = {
+            {"t_default", "0"}, {"t3", "123"}, {"t6", "45296120"}, {"t9", "86399999"}};
+        ASSERT_OK_AND_ASSIGN(BinaryRow row, computer->ToBinaryRow(partition_map));
+        ASSERT_OK_AND_ASSIGN(auto part_values, computer->GeneratePartitionVector(row));
+        std::map<std::string, std::string> actual(part_values.begin(), part_values.end());
+        ASSERT_EQ(actual, partition_map);
+        ASSERT_OK_AND_ASSIGN(std::string ret,
+                             BinaryRowPartitionComputer::PartToSimpleString(
+                                 schema, row, "-", 100, /*legacy_partition_name_enabled=*/true));
+        ASSERT_EQ(ret, "0-123-45296120-86399999");
+    }
+    {
+        auto invalid_schema = arrow::schema({time_field("t", "x")});
+        ASSERT_NOK(
+            BinaryRowPartitionComputer::Create({"t"}, invalid_schema, "__DEFAULT_PARTITION__",
+                                               /*legacy_partition_name_enabled=*/false, pool));
+        auto second_schema =
+            arrow::schema({arrow::field("t", arrow::time32(arrow::TimeUnit::SECOND))});
+        ASSERT_NOK_WITH_MSG(
+            BinaryRowPartitionComputer::Create({"t"}, second_schema, "__DEFAULT_PARTITION__",
+                                               /*legacy_partition_name_enabled=*/false, pool),
+            "Only millisecond TIME is supported");
+    }
 }
 
 TEST(BinaryRowPartitionComputerTest, TestPartToSimpleString) {

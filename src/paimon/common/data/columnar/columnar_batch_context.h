@@ -50,7 +50,8 @@ struct CachedColumnMeta {
                !arrow::bit_util::GetBit(null_bitmap, array_offset + row_id);
     }
 
-    /// Fast fixed-width value access (INT8/INT16/INT32/INT64/FLOAT/DOUBLE/DATE32/TIMESTAMP).
+    /// Fast fixed-width value access
+    /// (INT8/INT16/INT32/INT64/FLOAT/DOUBLE/DATE32/TIME32/TIMESTAMP).
     template <typename T>
     inline T GetFixed(int64_t row_id) const {
         return reinterpret_cast<const T*>(values_data)[array_offset + row_id];
@@ -103,6 +104,7 @@ struct ColumnarBatchContext {
                 case arrow::Type::INT16:
                 case arrow::Type::INT32:
                 case arrow::Type::DATE32:
+                case arrow::Type::TIME32:
                 case arrow::Type::INT64:
                 case arrow::Type::FLOAT:
                 case arrow::Type::DOUBLE: {

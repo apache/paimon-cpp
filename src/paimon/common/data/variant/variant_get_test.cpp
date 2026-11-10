@@ -21,6 +21,8 @@
 
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
@@ -31,6 +33,7 @@
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/testing/utils/timezone_guard.h"
 
 namespace paimon::test {
 
@@ -456,6 +459,12 @@ TEST_F(VariantGetTest, ScalarArrowBuilders) {
     std::shared_ptr<arrow::Array> date = build_array(d, "$", arrow::date32());
     ASSERT_EQ(static_cast<const arrow::Date32Array&>(*date).Value(0), 19000);
 
+    std::shared_ptr<GenericVariant> time_string =
+        BuildScalar([](VariantBuilder& b) { return b.AppendString("12:34:56.123"); });
+    std::shared_ptr<arrow::Array> time =
+        build_array(time_string, "$", arrow::time32(arrow::TimeUnit::MILLI));
+    ASSERT_EQ(static_cast<const arrow::Time32Array&>(*time).Value(0), 45296123);
+
     // Only the microsecond unit matches the variant's internal timestamp representation; other
     // units require a timestamp->timestamp literal cast that is intentionally unsupported.
     std::shared_ptr<GenericVariant> ts =
@@ -463,6 +472,53 @@ TEST_F(VariantGetTest, ScalarArrowBuilders) {
     std::shared_ptr<arrow::Array> timestamp =
         build_array(ts, "$", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"));
     ASSERT_EQ(static_cast<const arrow::TimestampArray&>(*timestamp).Value(0), 1700000000123456);
+}
+
+TEST_F(VariantGetTest, NonMillisecondTimeTargetIsRejected) {
+    std::shared_ptr<GenericVariant> time_string =
+        BuildScalar([](VariantBuilder& b) { return b.AppendString("00:00:01"); });
+    auto time_s = arrow::time32(arrow::TimeUnit::SECOND);
+    ASSERT_NOK_WITH_MSG(VariantGetExecutor::Get(time_string, "$", time_s, cast_args_),
+                        "Only millisecond TIME is supported: time32[s]");
+    ASSERT_NOK_WITH_MSG(VariantGetExecutor::GetAsArrow(time_string, "$", arrow::field("t", time_s),
+                                                       cast_args_, pool_, arrow_pool_),
+                        "Only millisecond TIME is supported: time32[s]");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> object,
+                         GenericVariant::FromJson(R"({"t": "00:00:01"})", pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> array,
+                         GenericVariant::FromJson(R"(["00:00:01"])", pool_));
+    std::vector<std::pair<std::shared_ptr<GenericVariant>, std::shared_ptr<arrow::DataType>>>
+        nested_cases = {{object, arrow::struct_({arrow::field("t", time_s)})},
+                        {array, arrow::list(time_s)},
+                        {object, arrow::map(arrow::utf8(), time_s)}};
+    for (const auto& [variant, type] : nested_cases) {
+        ASSERT_NOK_WITH_MSG(VariantGetExecutor::GetAsArrow(variant, "$", arrow::field("x", type),
+                                                           cast_args_, pool_, arrow_pool_),
+                            "Only millisecond TIME is supported: time32[s]");
+    }
+}
+
+TEST_F(VariantGetTest, TimestampToTime) {
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    std::shared_ptr<GenericVariant> ntz =
+        BuildScalar([](VariantBuilder& b) { return b.AppendTimestampNtz(1686227696123456); });
+    ASSERT_OK_AND_ASSIGN(std::optional<Literal> ntz_time,
+                         VariantGetExecutor::Get(ntz, "$", time_type, cast_args_));
+    ASSERT_TRUE(ntz_time.has_value());
+    ASSERT_EQ(*ntz_time, Literal(FieldType::TIME, 45296123));
+
+    TimezoneGuard tz_guard("Asia/Shanghai");
+    std::shared_ptr<GenericVariant> ltz =
+        BuildScalar([](VariantBuilder& b) { return b.AppendTimestamp(0); });
+    ASSERT_OK_AND_ASSIGN(std::optional<Literal> ltz_time,
+                         VariantGetExecutor::Get(ltz, "$", time_type, cast_args_));
+    ASSERT_TRUE(ltz_time.has_value());
+    ASSERT_EQ(*ltz_time, Literal(FieldType::TIME, 28800000));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> ltz_array,
+                         VariantGetExecutor::GetAsArrow(ltz, "$", arrow::field("t", time_type),
+                                                        cast_args_, pool_, arrow_pool_));
+    ASSERT_EQ(static_cast<const arrow::Time32Array&>(*ltz_array).Value(0), 28800000);
 }
 
 TEST_F(VariantGetTest, ListFromNonArrayIsNull) {

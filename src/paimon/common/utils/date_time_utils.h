@@ -212,6 +212,36 @@ class DateTimeUtils {
         return "UNKNOWN";
     }
 
+    /// Formats a TIME value, given as milliseconds of the day, as `HH:mm:ss[.fff]` like Java
+    /// `DateTimeUtils#formatTimestampMillis`: at most `precision` fractional digits are written,
+    /// trailing zeros are dropped, and a negative value wraps around midnight.
+    static std::string FormatTimeMillis(int32_t time, int32_t precision) {
+        constexpr int64_t kMillisPerHour = 3600000;
+        constexpr int64_t kMillisPerMinute = 60000;
+        constexpr int64_t kMillisPerSecond = 1000;
+        int64_t value = time;
+        while (value < 0) {
+            value += MILLIS_PER_DAY;
+        }
+        int64_t hour = value / kMillisPerHour;
+        int64_t minute = value % kMillisPerHour / kMillisPerMinute;
+        int64_t second = value % kMillisPerMinute / kMillisPerSecond;
+        int64_t milli = value % kMillisPerSecond;
+        std::string result = fmt::format("{:02d}:{:02d}:{:02d}", hour, minute, second);
+        if (precision > 0) {
+            result.push_back('.');
+            while (precision > 0) {
+                result.push_back(static_cast<char>('0' + milli / 100));
+                milli = (milli % 100) * 10;
+                if (milli == 0) {
+                    break;
+                }
+                --precision;
+            }
+        }
+        return result;
+    }
+
     // there may be a precision loss for nano
     static Result<Timestamp> ToUTCTimestamp(const Timestamp& timestamp) {
         int64_t micro_second = timestamp.ToMicrosecond();

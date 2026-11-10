@@ -135,6 +135,7 @@ Result<int64_t> InMemorySortBuffer::EstimateMemoryUse(const std::shared_ptr<arro
         case arrow::Type::type::INT32:
             return null_bits_size_in_bytes + array->length() * sizeof(int32_t);
         case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32:
             return null_bits_size_in_bytes + array->length() * sizeof(int32_t);
         case arrow::Type::type::INT64:
             return null_bits_size_in_bytes + array->length() * sizeof(int64_t);

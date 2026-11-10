@@ -23,12 +23,18 @@
 #include <functional>
 #include <string>
 #include <variant>
+#include <vector>
 
+#include "arrow/type.h"
+#include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_array.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/data_define.h"
 #include "paimon/common/data/internal_array.h"
+#include "paimon/common/data/internal_row.h"
+#include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/internal_row_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
@@ -341,6 +347,48 @@ TEST_F(SimpleStatsEvolutionTest, TestSchemaChangeWithDenseFields) {
     CheckResultRow(*(result_stats.max_values), expected_max, new_schema_->Fields());
     CheckResultArray(*(result_stats.null_counts),
                      {1l, NullType(), NullType(), NullType(), NullType(), NullType(), 0l, 4l});
+}
+
+TEST_F(SimpleStatsEvolutionTest, TestTimeSchemaChange) {
+    auto time_field = [](int32_t id, const std::string& name) {
+        return DataField(
+            id, arrow::field(name, arrow::time32(arrow::TimeUnit::MILLI),
+                             /*nullable=*/true,
+                             arrow::key_value_metadata({DataType::kTimePrecision}, {"3"})));
+    };
+    auto ts_type = arrow::timestamp(arrow::TimeUnit::MILLI);
+    std::vector<DataField> data_fields = {
+        DataField(0, arrow::field("string_to_time", arrow::utf8())),
+        time_field(1, "time_to_string"), DataField(2, arrow::field("timestamp_to_time", ts_type)),
+        time_field(3, "time_to_timestamp")};
+    std::vector<DataField> table_fields = {
+        time_field(0, "string_to_time"),
+        DataField(1, arrow::field("time_to_string", arrow::utf8())),
+        time_field(2, "timestamp_to_time"),
+        DataField(3, arrow::field("time_to_timestamp", ts_type))};
+    SimpleStatsEvolution evo(data_fields, table_fields, /*need_mapping=*/true, pool_);
+
+    auto min = BinaryRowGenerator::GenerateRow(
+        {std::string("01:02:03"), 3723000, TimestampType(Timestamp(1686227696123l, 0), 3), 0},
+        pool_.get());
+    auto max =
+        BinaryRowGenerator::GenerateRow({std::string("12:34:56.123"), 86399999,
+                                         TimestampType(Timestamp(1686268799999l, 0), 3), 45296123},
+                                        pool_.get());
+    SimpleStats stats(min, max, BinaryArray::FromLongArray({0, 0, 0, 0}, pool_.get()));
+    ASSERT_OK_AND_ASSIGN(SimpleStatsEvolution::EvolutionStats result_stats,
+                         evo.Evolution(stats, /*row_count=*/4, /*dense_fields=*/std::nullopt));
+
+    const InternalRow& result_min = *result_stats.min_values;
+    ASSERT_EQ(result_min.GetInt(0), 3723000);
+    ASSERT_EQ(result_min.GetString(1).ToString(), "01:02:03.0");
+    ASSERT_EQ(result_min.GetInt(2), 45296123);
+    ASSERT_EQ(result_min.GetTimestamp(3, /*precision=*/3), Timestamp(0, 0));
+    const InternalRow& result_max = *result_stats.max_values;
+    ASSERT_EQ(result_max.GetInt(0), 45296123);
+    ASSERT_EQ(result_max.GetString(1).ToString(), "23:59:59.999");
+    ASSERT_EQ(result_max.GetInt(2), 86399999);
+    ASSERT_EQ(result_max.GetTimestamp(3, /*precision=*/3), Timestamp(45296123, 0));
 }
 
 TEST_F(SimpleStatsEvolutionTest, TestNoSchemaChangeWithDenseFieldsWithMap) {

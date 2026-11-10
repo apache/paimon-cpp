@@ -24,6 +24,9 @@
 #include <ctime>
 #include <iomanip>
 #include <iterator>
+#include <limits>
+#include <optional>
+#include <string_view>
 #include <utility>
 
 #include "fmt/format.h"
@@ -242,6 +245,143 @@ Result<int32_t> StringUtils::StringToDate(const std::string& str) {
     }
     static const int64_t SECONDS_PER_DAY = 86400l;  // = 24 * 60 * 60
     return time / SECONDS_PER_DAY;
+}
+
+namespace {
+constexpr int32_t kMillisPerSecond = 1000;
+constexpr int32_t kMillisPerMinute = 60 * kMillisPerSecond;
+constexpr int32_t kMillisPerHour = 60 * kMillisPerMinute;
+constexpr int32_t kMillisPerDay = 24 * kMillisPerHour;
+
+// Removes the characters Java `String#trim` removes from both ends.
+std::string_view TrimView(std::string_view str) {
+    while (!str.empty() && IsTrimCharacter(static_cast<unsigned char>(str.front()))) {
+        str.remove_prefix(1);
+    }
+    while (!str.empty() && IsTrimCharacter(static_cast<unsigned char>(str.back()))) {
+        str.remove_suffix(1);
+    }
+    return str;
+}
+
+bool IsDigit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+// Parses a non-negative decimal component of a TIME string, surrounding whitespace allowed, like
+// Java `DateTimeUtils#isInteger` followed by `Integer#parseInt`.
+std::optional<int32_t> ParseTimeComponent(std::string_view component) {
+    component = TrimView(component);
+    if (component.empty()) {
+        return std::nullopt;
+    }
+    int64_t value = 0;
+    for (char c : component) {
+        if (!IsDigit(c)) {
+            return std::nullopt;
+        }
+        value = value * 10 + (c - '0');
+        if (value > std::numeric_limits<int32_t>::max()) {
+            return std::nullopt;
+        }
+    }
+    return static_cast<int32_t>(value);
+}
+
+// Rounds the fractional digits of a second half up to milliseconds, surrounding whitespace
+// allowed, like Java `DateTimeUtils#parseFraction`. An empty fraction is 0.
+std::optional<int32_t> ParseTimeFraction(std::string_view fraction) {
+    fraction = TrimView(fraction);
+    if (!std::all_of(fraction.begin(), fraction.end(), IsDigit)) {
+        return std::nullopt;
+    }
+    int32_t result = 0;
+    int32_t multiplier = 100;
+    for (size_t i = 0; i < fraction.size() && multiplier > 0; ++i, multiplier /= 10) {
+        result += multiplier * (fraction[i] - '0');
+    }
+    if (fraction.size() > 3 && fraction[3] >= '5') {
+        ++result;
+    }
+    return result;
+}
+
+// Parses the `hh[:mm]` of a TIME zone offset into milliseconds, like the offset part of Java
+// `DateTimeUtils#parseTime`, but requiring hh <= 23 and mm <= 59.
+std::optional<int32_t> ParseTimeOffset(std::string_view offset) {
+    size_t colon = offset.find(':');
+    std::optional<int32_t> hour;
+    std::optional<int32_t> minute = 0;
+    if (colon == std::string_view::npos) {
+        hour = ParseTimeComponent(offset);
+    } else {
+        hour = ParseTimeComponent(offset.substr(0, colon));
+        minute = ParseTimeComponent(offset.substr(colon + 1));
+    }
+    if (!hour || !minute || hour.value() > 23 || minute.value() > 59) {
+        return std::nullopt;
+    }
+    return hour.value() * kMillisPerHour + minute.value() * kMillisPerMinute;
+}
+}  // namespace
+
+Result<int32_t> StringUtils::StringToTime(const std::string& str) {
+    auto invalid = [&str]() {
+        return Status::Invalid(
+            fmt::format("failed to convert string '{}' to time, expected milliseconds of the day "
+                        "or H[H][:m[m][:s[s][.f...]]] with an optional [+|-]hh[:mm] offset, "
+                        "within [00:00:00, 24:00:00)",
+                        str));
+    };
+    std::optional<int32_t> millis = StringToValue<int32_t>(str);
+    if (!millis) {
+        std::string_view view(str);
+        // Like Java `DateTimeUtils#parseTime`, a '-' offset is searched before a '+' one.
+        int32_t offset_sign = -1;
+        size_t sign_pos = view.find('-');
+        if (sign_pos == std::string_view::npos) {
+            offset_sign = 1;
+            sign_pos = view.find('+');
+        }
+        std::optional<int32_t> offset = 0;
+        if (sign_pos != std::string_view::npos) {
+            offset = ParseTimeOffset(view.substr(sign_pos + 1));
+            view = view.substr(0, sign_pos);
+        }
+        size_t colon1 = view.find(':');
+        std::optional<int32_t> hour;
+        std::optional<int32_t> minute = 0;
+        std::optional<int32_t> second = 0;
+        std::optional<int32_t> milli = 0;
+        if (colon1 == std::string_view::npos) {
+            hour = ParseTimeComponent(view);
+        } else {
+            hour = ParseTimeComponent(view.substr(0, colon1));
+            size_t colon2 = view.find(':', colon1 + 1);
+            if (colon2 == std::string_view::npos) {
+                minute = ParseTimeComponent(view.substr(colon1 + 1));
+            } else {
+                minute = ParseTimeComponent(view.substr(colon1 + 1, colon2 - colon1 - 1));
+                size_t dot = view.find('.', colon2 + 1);
+                if (dot == std::string_view::npos) {
+                    second = ParseTimeComponent(view.substr(colon2 + 1));
+                } else {
+                    second = ParseTimeComponent(view.substr(colon2 + 1, dot - colon2 - 1));
+                    milli = ParseTimeFraction(view.substr(dot + 1));
+                }
+            }
+        }
+        if (!offset || !hour || !minute || !second || !milli || hour.value() > 23 ||
+            minute.value() > 59 || second.value() > 59) {
+            return invalid();
+        }
+        millis = hour.value() * kMillisPerHour + minute.value() * kMillisPerMinute +
+                 second.value() * kMillisPerSecond + milli.value() + offset_sign * offset.value();
+    }
+    if (millis.value() < 0 || millis.value() >= kMillisPerDay) {
+        return invalid();
+    }
+    return millis.value();
 }
 
 /// Parses a timestamp string into unix milliseconds.

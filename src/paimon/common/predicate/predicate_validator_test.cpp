@@ -460,4 +460,53 @@ TEST(PredicateValidatorTest, TestValidateDecimalLiteral) {
             "2)");
     }
 }
+
+TEST(PredicateValidatorTest, TestValidateTime) {
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(arrow::FieldVector({
+        arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI)),
+        arrow::field("i", arrow::int32()),
+    }));
+    {
+        ASSERT_OK_AND_ASSIGN(
+            auto predicate,
+            PredicateBuilder::And({
+                PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"t",
+                                                 FieldType::TIME, Literal(FieldType::TIME, 0)),
+                PredicateBuilder::LessThan(/*field_index=*/0, /*field_name=*/"t", FieldType::TIME,
+                                           Literal(FieldType::TIME, 86399999)),
+                PredicateBuilder::IsNotNull(/*field_index=*/0, /*field_name=*/"t", FieldType::TIME),
+            }));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                                  /*validate_field_idx=*/true));
+    }
+    for (int32_t value : {-1, 86400000}) {
+        auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"t",
+                                                 FieldType::TIME, Literal(FieldType::TIME, value));
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                            /*validate_field_idx=*/true),
+            "time literal " + std::to_string(value) + " for field t is out of range");
+    }
+    {
+        auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"t",
+                                                 FieldType::INT, Literal(1));
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(
+                                *schema, predicate, /*validate_field_idx=*/true),
+                            "mismatches predicate field type INT");
+        predicate = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"i", FieldType::TIME,
+                                            Literal(FieldType::TIME, 1));
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(
+                                *schema, predicate, /*validate_field_idx=*/true),
+                            "mismatches predicate field type TIME");
+    }
+    {
+        std::shared_ptr<arrow::Schema> seconds_schema = arrow::schema(
+            arrow::FieldVector({arrow::field("t", arrow::time32(arrow::TimeUnit::SECOND))}));
+        auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"t",
+                                                 FieldType::TIME, Literal(FieldType::TIME, 1));
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(
+                                *seconds_schema, predicate, /*validate_field_idx=*/true),
+                            "TIME requires time32[ms]");
+    }
+}
 }  // namespace paimon::test

@@ -645,6 +645,37 @@ TEST_P(OrcAdapterTest, TestDecimalAndTimestamp) {
     ASSERT_TRUE(src_array->Equals(target_array));
 }
 
+TEST_P(OrcAdapterTest, TestTime) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::time32(arrow::TimeUnit::MILLI))};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<::orc::Type> orc_type,
+                         OrcAdapter::GetOrcType(arrow::Schema(fields)));
+    ASSERT_EQ("struct<f0:int>", orc_type->toString());
+
+    auto arrow_type = arrow::struct_(fields);
+    auto src_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow_type, R"([[0], [123], [86399999], [null]])")
+            .ValueOrDie();
+    auto read_batch = GenerateOrcReadBatch(src_array);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::Array> target_array,
+        OrcAdapter::AppendBatch(arrow_type, read_batch.get(), arrow::default_memory_pool()));
+    ASSERT_TRUE(target_array->Equals(src_array)) << target_array->ToString();
+
+    arrow::FieldVector second_fields = {arrow::field("f0", arrow::time32(arrow::TimeUnit::SECOND))};
+    ASSERT_NOK_WITH_MSG(OrcAdapter::GetOrcType(arrow::Schema(second_fields)),
+                        "Only millisecond TIME is supported");
+    auto second_type = arrow::struct_(second_fields);
+    ASSERT_NOK_WITH_MSG(
+        OrcAdapter::AppendBatch(second_type, read_batch.get(), arrow::default_memory_pool()),
+        "Only millisecond TIME is supported");
+    auto second_array =
+        arrow::ipc::internal::json::ArrayFromJSON(second_type, R"([[1]])").ValueOrDie();
+    std::unique_ptr<::orc::ColumnVectorBatch> write_batch = orc_type->createRowBatch(
+        /*size=*/1, *::orc::getDefaultPool(), /*encoded=*/false, /*useTightNumericVector=*/true);
+    ASSERT_NOK_WITH_MSG(OrcAdapter::WriteBatch(second_array, write_batch.get()),
+                        "Only millisecond TIME is supported");
+}
+
 TEST_F(OrcAdapterTest, TestBridgeForMapType) {
     // map type will lose meta of key and value field after c <-> c++ bridge
     auto key_field = DataField::ConvertDataFieldToArrowField(

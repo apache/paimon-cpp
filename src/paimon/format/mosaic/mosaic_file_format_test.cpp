@@ -373,6 +373,38 @@ TEST_F(MosaicFileFormatTest, ExtractStatistics) {
     }
 }
 
+TEST_F(MosaicFileFormatTest, WriteThenReadAndExtractTimeStatistics) {
+    std::map<std::string, std::string> options = {
+        {"file.format", "mosaic"},
+        {Options::FILE_BLOCK_SIZE, "1 B"},
+        {MOSAIC_STATS_COLUMNS, "t"},
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> configured_format,
+                         FileFormatFactory::Get("mosaic", options));
+    std::string path = PathUtil::JoinPath(directory_->Str(), "time.mosaic");
+    arrow::FieldVector fields = {
+        arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI)),
+    };
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+          [45296123], [0], [null], [86399999], [123]
+        ])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2, configured_format));
+    AssertReadWithBatchSizes(path, schema, data, {1, 2, 5});
+
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FormatStatsExtractor> extractor,
+                         configured_format->CreateStatsExtractor(&ffi_schema));
+    ASSERT_OK_AND_ASSIGN(auto result, extractor->ExtractWithFileInfo(file_system_, path, pool_));
+    ASSERT_EQ(result.second.GetRowCount(), 5);
+    ASSERT_EQ(result.first.size(), 1);
+    ASSERT_EQ(result.first[0]->GetFieldType(), FieldType::INT);
+    ASSERT_EQ(result.first[0]->ToString(), "min 0, max 86399999, null count 1");
+}
+
 TEST_F(MosaicFileFormatTest, RowGroupPredicateFiltering) {
     std::map<std::string, std::string> options = {
         {"file.format", "mosaic"},

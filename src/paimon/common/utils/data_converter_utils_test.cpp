@@ -44,7 +44,8 @@ TEST(DataConverterUtilsTest, TestDataToBinaryRowConverterWithLegacyPartitionName
         {"1234567", arrow::Type::INT64},
         {"abcde", arrow::Type::STRING},
         {"这是一个很长很长的中文", arrow::Type::STRING},
-        {"10440", arrow::Type::DATE32}};
+        {"10440", arrow::Type::DATE32},
+        {"45296123", arrow::Type::TIME32}};
 
     std::vector<DataConverterUtils::StrToBinaryRowConverter> converters;
     std::vector<DataConverterUtils::BinaryRowFieldToStrConverter> reconverters;
@@ -84,6 +85,7 @@ TEST(DataConverterUtilsTest, TestDataToBinaryRowConverterWithLegacyPartitionName
     ASSERT_EQ("abcde", row.GetString(9).ToString());
     ASSERT_EQ("这是一个很长很长的中文", row.GetString(10).ToString());
     ASSERT_EQ(10440, row.GetDate(11));
+    ASSERT_EQ(45296123, row.GetInt(12));
 
     for (size_t idx = 0; idx < data.size(); idx++) {
         ASSERT_OK_AND_ASSIGN(auto partition_field_str, reconverters[idx](row, idx));
@@ -105,7 +107,8 @@ TEST(DataConverterUtilsTest, TestDataToBinaryRowConverterWithNoLegacyPartitionNa
         {"1234567", arrow::Type::INT64},
         {"abcde", arrow::Type::STRING},
         {"这是一个很长很长的中文", arrow::Type::STRING},
-        {"1998-08-02", arrow::Type::DATE32}};
+        {"1998-08-02", arrow::Type::DATE32},
+        {"12:34:56", arrow::Type::TIME32}};
 
     std::vector<DataConverterUtils::StrToBinaryRowConverter> converters;
     std::vector<DataConverterUtils::BinaryRowFieldToStrConverter> reconverters;
@@ -140,6 +143,7 @@ TEST(DataConverterUtilsTest, TestDataToBinaryRowConverterWithNoLegacyPartitionNa
     ASSERT_EQ("abcde", row.GetString(9).ToString());
     ASSERT_EQ("这是一个很长很长的中文", row.GetString(10).ToString());
     ASSERT_EQ(10440, row.GetDate(11));
+    ASSERT_EQ(45296000, row.GetInt(12));
 
     for (size_t idx = 0; idx < data.size(); idx++) {
         ASSERT_OK_AND_ASSIGN(auto partition_field_str, reconverters[idx](row, idx));

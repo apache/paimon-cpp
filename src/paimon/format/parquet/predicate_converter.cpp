@@ -342,6 +342,9 @@ Result<arrow::compute::Expression> PredicateConverter::ConvertToArrowLiteral(
         case FieldType::DATE:
             return arrow::compute::literal(std::make_shared<arrow::Date32Scalar>(
                 static_cast<int32_t>(literal.GetValue<int32_t>())));
+        case FieldType::TIME:
+            return arrow::compute::literal(std::make_shared<arrow::Time32Scalar>(
+                literal.GetValue<int32_t>(), arrow::TimeUnit::MILLI));
         case FieldType::BIGINT:
             return arrow::compute::literal(std::make_shared<arrow::Int64Scalar>(
                 static_cast<int64_t>(literal.GetValue<int64_t>())));

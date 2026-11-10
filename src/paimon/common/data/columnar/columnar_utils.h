@@ -47,6 +47,14 @@ class ColumnarUtils {
         return typed_array->Value(pos);
     }
 
+    /// Reads an int32 value from an INT32 or a TIME32 array.
+    static int32_t GetInt32Value(const arrow::Array* array, int32_t pos) {
+        if (array->type_id() == arrow::Type::TIME32) {
+            return GetGenericValue<arrow::Time32Type, int32_t>(array, pos);
+        }
+        return GetGenericValue<arrow::Int32Type, int32_t>(array, pos);
+    }
+
     static std::string_view GetView(const arrow::Array* array, int32_t pos) {
         auto type_id = array->type_id();
         bool is_dict = (type_id == arrow::Type::type::DICTIONARY);

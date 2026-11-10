@@ -78,7 +78,7 @@ struct FieldRef {
     int32_t index = 0;
     std::string name;
     std::shared_ptr<arrow::DataType> type;
-    /// `UNKNOWN` for a type a predicate cannot compare, such as TIME, which a mask still copies.
+    /// `UNKNOWN` for a type a predicate cannot compare, which a mask still copies.
     FieldType field_type = FieldType::UNKNOWN;
 };
 
@@ -240,6 +240,18 @@ Result<int32_t> ParseDateLiteral(std::string_view text, const FieldRef& ref) {
     return static_cast<int32_t>(epoch_day);
 }
 
+Result<int32_t> ParseTimeLiteral(std::string_view text, const FieldRef& ref) {
+    size_t pos = 0;
+    int64_t second_of_day = 0;
+    int64_t nanos = 0;
+    if (!ReadIsoTime(text, &pos, /*seconds_required=*/false, &second_of_day, &nanos) ||
+        pos != text.size()) {
+        return Status::Invalid(
+            fmt::format("Cannot parse '{}' as a time literal of column '{}'.", text, ref.name));
+    }
+    return static_cast<int32_t>(second_of_day * 1000 + nanos / 1000000);
+}
+
 /// Parses the ISO text Java `LocalDateTime.toString()` writes for a TIMESTAMP column, or the
 /// text `Instant.toString()` writes with a `Z` for a TIMESTAMP_LTZ one. Expanded years are
 /// supported; the instant must lie within the range of epoch milliseconds.
@@ -377,6 +389,15 @@ Result<Literal> ParseLiteral(const rapidjson::Value& value, const rapidjson::Val
                     ParseDateLiteral(std::string_view(value.GetString(), value.GetStringLength()),
                                      ref));
                 return Literal(FieldType::DATE, days);
+            }
+            break;
+        case FieldType::TIME:
+            if (value.IsString()) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    int32_t millis,
+                    ParseTimeLiteral(std::string_view(value.GetString(), value.GetStringLength()),
+                                     ref));
+                return Literal(FieldType::TIME, millis);
             }
             break;
         case FieldType::TIMESTAMP:

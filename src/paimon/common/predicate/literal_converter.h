@@ -59,12 +59,12 @@ class PAIMON_EXPORT LiteralConverter {
     /// @param pool The pool every buffer of the result is allocated from, it must not be null.
     /// @return `Status::Invalid` for a field type this does not write, which is every one outside
     ///         `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DATE`,
-    ///         `STRING`, `BINARY`, `DECIMAL` and `TIMESTAMP`. `DECIMAL` is written with the
-    ///         precision and the scale its literals carry, so at least one literal has to be non
-    ///         null and every non null one has to carry the same pair. `TIMESTAMP` is written with
-    ///         the finest time unit that keeps every value, so at least one literal has to be non
-    ///         null to settle the unit, and a literal whose value in that unit does not fit int64
-    ///         fails.
+    ///         `TIME`, `STRING`, `BINARY`, `DECIMAL` and `TIMESTAMP`. `TIME` is written as a
+    ///         millisecond `time32`. `DECIMAL` is written with the precision and the scale its
+    ///         literals carry, so at least one literal has to be non null and every non null one
+    ///         has to carry the same pair. `TIMESTAMP` is written with the finest time unit that
+    ///         keeps every value, so at least one literal has to be non null to settle the unit,
+    ///         and a literal whose value in that unit does not fit int64 fails.
     static Result<std::shared_ptr<arrow::Array>> ConvertLiteralsToArray(
         const FieldType& field_type, const std::vector<Literal>& literals, arrow::MemoryPool* pool);
 
@@ -145,6 +145,8 @@ class PAIMON_EXPORT LiteralConverter {
     static std::vector<Literal> GetLiteralFromDecimalArray(const arrow::Array& array);
 
     static std::vector<Literal> GetLiteralFromDateArray(const arrow::Array& array);
+
+    static Result<std::vector<Literal>> GetLiteralFromTimeArray(const arrow::Array& array);
 
     static std::vector<Literal> GetLiteralFromTimestampArray(const arrow::Array& array);
 };

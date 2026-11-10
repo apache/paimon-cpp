@@ -238,6 +238,12 @@ TEST_F(ParquetStatsExtractorTest, TestExtractStatsSimpleType) {
     CheckStats(fields, data_str, expected_stats_str, /*expect_row_count=*/4);
 }
 
+TEST_F(ParquetStatsExtractorTest, TestExtractStatsTimeType) {
+    arrow::FieldVector fields = {arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI))};
+    CheckStats(fields, R"([[0], [123], [86399999], [null]])", {"min 0, max 86399999, null count 1"},
+               /*expect_row_count=*/4, {FieldType::INT});
+}
+
 TEST_F(ParquetStatsExtractorTest, TestExtractStatsComplexType) {
     arrow::FieldVector fields = {
         arrow::field("f1", arrow::map(arrow::int8(), arrow::int16())),
