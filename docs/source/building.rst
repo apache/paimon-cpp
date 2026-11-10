@@ -65,7 +65,7 @@ Supported platforms
      - Built and tested in CI.
    * - Linux
      - ``aarch64`` / ``arm64``
-     - Built and tested in CI, including a GCC 13.3.0 Release job.
+     - Built and tested in CI.
    * - macOS
      - ``x86_64``, ``arm64``
      - Architecture detection is wired up, but macOS as a whole is not an
@@ -89,10 +89,9 @@ x86: the baseline stays whatever the toolchain defaults to. No persisted value
 depends on it, in particular the checksum written to SST files and to the B-tree
 global index is the same however Paimon was compiled.
 
-Enable the Lumina vector index with ``-DPAIMON_ENABLE_LUMINA=ON`` on Linux
-``x86_64`` or ``aarch64``. CMake selects the prebuilt library for the
-target architecture. Linux CI enables Lumina on both architectures, including
-the ARM64 GCC 13.3.0 Release job. The GCC 8 compatibility job disables Lumina.
+The bundled Lumina package supports Linux ``x86_64`` and ``aarch64``.
+Enable it with ``-DPAIMON_ENABLE_LUMINA=ON``. CMake selects the library
+for the target architecture.
 
 Cross compilation is not wired up end to end: the bundled third-party builds are
 handed only the C and C++ compilers, without a toolchain file, sysroot or find
