@@ -310,8 +310,7 @@ TEST(TableReadTest, TestPreciseScalarEvaluationRejectsUnsupportedTableModes) {
         const std::string expected_error =
             primary_key ? "Precise file-index evaluation on primary-key tables requires "
                           "deletion vectors"
-                        : "Precise file-index evaluation does not support data-evolution or "
-                          "real-time reads";
+                        : "Precise file-index evaluation does not support data-evolution";
         ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(context)), expected_error);
     }
 }

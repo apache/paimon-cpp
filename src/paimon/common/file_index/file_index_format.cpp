@@ -34,7 +34,6 @@
 #include "paimon/core/io/file_index_options.h"
 #include "paimon/file_index/file_indexer.h"
 #include "paimon/file_index/file_indexer_factory.h"
-#include "paimon/io/data_input_stream.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/status.h"
 
@@ -49,21 +48,8 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
         const std::map<std::string, std::string>& options) {
         PAIMON_ASSIGN_OR_RAISE(FileIndexOptions file_index_options,
                                FileIndexOptions::FromMap(options));
-        DataInputStream data_input_stream(input_stream);
-        PAIMON_ASSIGN_OR_RAISE(int64_t magic, data_input_stream.ReadValue<int64_t>());
-        if (magic != FileIndexFormat::MAGIC) {
-            return Status::Invalid("This file is not file index file.");
-        }
-        PAIMON_ASSIGN_OR_RAISE(int32_t version, data_input_stream.ReadValue<int32_t>());
-        if (version != FileIndexFormat::V_1 && version != FileIndexFormat::V_2) {
-            return Status::Invalid(fmt::format("Unsupported file index version {}", version));
-        }
-        PAIMON_ASSIGN_OR_RAISE(int64_t file_length, input_stream->Length());
-        PAIMON_ASSIGN_OR_RAISE(
-            FileIndexFormatUtils::FileIndexEntries header,
-            version == FileIndexFormat::V_1
-                ? FileIndexFormatV1::ReadIndexEntries(input_stream, pool, file_length)
-                : FileIndexFormatV2::ReadIndexEntries(input_stream, pool, file_length));
+        PAIMON_ASSIGN_OR_RAISE(FileIndexFormatUtils::FileIndexEntries header,
+                               FileIndexFormatUtils::ReadIndexEntries(input_stream, pool));
         return std::unique_ptr<FileIndexFormatReaderImpl>(new FileIndexFormatReaderImpl(
             input_stream, std::move(header), pool, std::move(file_index_options)));
     }

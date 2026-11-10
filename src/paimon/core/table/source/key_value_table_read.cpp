@@ -121,9 +121,13 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
                            PredicateUtils::CreatePickedFieldFilter(context->GetPredicate(),
                                                                    primary_key_name_to_index));
     RealtimeQueryContext query_context{
-        c_schema.get(), std::move(primary_key_predicate),
+        c_schema.get(),
+        std::move(primary_key_predicate),
         OffsetRange(split->CommittedEndOffset(), split->MemoryEndOffset()),
-        context->GetCoreOptions().GetReadBatchSize()};
+        context->GetCoreOptions().GetReadBatchSize(),
+        /*selection=*/nullptr,
+        /*offset_deletions=*/nullptr,
+        /*enable_index_pruning=*/true};
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> batch_readers,
                            memory.store->CreateQueryReaders(memory.read_view, query_context));
     PAIMON_ASSIGN_OR_RAISE(
@@ -321,6 +325,8 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateRealtimeReader(
     if (!memory_range || memory_range->end != realtime_split->MemoryEndOffset()) {
         return Status::Invalid("real-time read-view ticket does not match the split offset range");
     }
+    PAIMON_RETURN_NOT_OK(memory.ValidateTableSchema(
+        DataField::ConvertDataFieldsToArrowSchema(context_->GetTableSchema()->Fields())));
     for (const std::unique_ptr<SplitRead>& read : split_reads_) {
         auto* merge_read = dynamic_cast<MergeFileSplitRead*>(read.get());
         if (merge_read) {

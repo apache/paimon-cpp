@@ -121,6 +121,7 @@ class ArrowRealtimeStore final : public TwoPhaseSealableRealtimeStore {
     class SpilledSegment;
     class SpillFile;
     class ReadView;
+    class IndexReadSource;
     class AppendCommitBatchReader;
     class StoredBatchReader;
     class SharedSpillFileReader;

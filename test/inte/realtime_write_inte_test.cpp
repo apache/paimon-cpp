@@ -57,6 +57,8 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
+#include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/operation/commit/manifest_entry_changes.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/commit/realtime_deduplicate_compaction_changes_provider.h"
@@ -72,16 +74,20 @@
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/data/variant.h"
 #include "paimon/defs.h"
+#include "paimon/factories/factory.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/orphan_files_cleaner.h"
+#include "paimon/predicate/full_text_match.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/predicate_utils.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/count_reader.h"
 #include "paimon/realtime/arrow_realtime_store_factory.h"
@@ -93,6 +99,8 @@
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_index_path_factory.h"
+#include "paimon/testing/mock/mock_search_file_index.h"
+#include "paimon/testing/mock/mock_search_realtime_index.h"
 #include "paimon/testing/utils/blocking_file_system.h"
 #include "paimon/testing/utils/dict_array_converter.h"
 #include "paimon/testing/utils/read_result_collector.h"
@@ -1120,7 +1128,11 @@ class RealtimeWriteInteTest : public ::testing::Test {
         RealtimeQueryContext query_context{
             read_schema.get(),
             /*predicate=*/nullptr,
-            views[0].read_view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+            views[0].read_view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+            1024,
+            /*selection=*/nullptr,
+            /*offset_deletions=*/nullptr,
+            /*enable_index_pruning=*/true};
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::unique_ptr<BatchReader>> readers,
             views[0].store->CreateQueryReaders(views[0].read_view, query_context));
@@ -6551,6 +6563,468 @@ TEST_F(RealtimeWriteInteTest, TestCountReaderDoesNotSupportRealtimeSplit) {
     ASSERT_NOK_WITH_MSG(CountRows(plan, realtime_context),
                         "does not support process-local real-time splits");
     ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+class RealtimePreciseIndexInteTest : public RealtimeWriteInteTest {
+ protected:
+    struct SearchQuery {
+        std::vector<std::string> fields;
+        std::shared_ptr<Predicate> predicate;
+        std::shared_ptr<VectorSearch> vector;
+        std::shared_ptr<FullTextSearch> text;
+    };
+
+    void SetUp() override {
+        RealtimeWriteInteTest::SetUp();
+        ASSERT_FALSE(HasFatalFailure());
+        fields_[0] = arrow::field("id", arrow::int64(), /*nullable=*/false);
+        fields_.push_back(arrow::field("embedding", arrow::list(arrow::float32())));
+        schema_ = arrow::schema(fields_);
+        options_[Options::FILE_FORMAT] = "parquet";
+        options_[Options::REALTIME_STORE_STATS_MODE] = "none";
+        options_[Options::READ_BATCH_SIZE] = "2";
+        options_["realtime.index.hash.columns"] = "id";
+        vector_state_ = std::make_shared<MockSearchState>();
+        text_state_ = std::make_shared<MockSearchState>();
+        using SearchType = IndexReaderCapabilities::SearchType;
+        const std::vector<std::tuple<std::string, SearchType, std::shared_ptr<MockSearchState>>>
+            indexes{{"inte-mock-vector", SearchType::VECTOR_SEARCH, vector_state_},
+                    {"inte-mock-text", SearchType::FULL_TEXT_SEARCH, text_state_}};
+        for (const auto& [identifier, type, state] : indexes) {
+            auto factory = std::make_unique<MockRealtimeIndexFactory>(identifier, type, state);
+            FactoryCreator::GetInstance()->Register(
+                identifier + RealtimeIndexFactory::REALTIME_INDEX_IDENTIFIER_SUFFIX,
+                factory.release());
+        }
+        options_["realtime.index.inte-mock-vector.columns"] = "embedding";
+        options_["realtime.index.inte-mock-text.columns"] = "payload";
+    }
+
+    void TearDown() override {
+        for (const std::string identifier : {"inte-mock-vector", "inte-mock-text"}) {
+            FactoryCreator::GetInstance()->TEST_Unregister(
+                identifier + RealtimeIndexFactory::REALTIME_INDEX_IDENTIFIER_SUFFIX);
+        }
+        RealtimeWriteInteTest::TearDown();
+    }
+
+    void CreateSearchTable(bool deduplicate) {
+        if (deduplicate) {
+            fields_.insert(fields_.begin(),
+                           arrow::field(SpecialFields::RealtimeOffset().Name(), arrow::int64(),
+                                        /*nullable=*/false));
+            schema_ = arrow::schema(fields_);
+            options_[Options::DELETION_VECTORS_ENABLED] = "true";
+            options_[Options::REALTIME_DEDUPLICATE_KEY_FIELDS] = "id";
+            options_["file-index.bitmap.columns"] = SpecialFields::RealtimeOffset().Name();
+        }
+        CreateTable(/*partition_keys=*/{});
+    }
+
+    Status WriteSearchBatch(const std::string& json,
+                            const std::vector<RecordBatch::RowKind>& row_kinds,
+                            FileStoreWrite* writer) const {
+        const RealtimeStoreMode mode = options_.count(Options::REALTIME_DEDUPLICATE_KEY_FIELDS) > 0
+                                           ? RealtimeStoreMode::DEDUPLICATE
+                                           : RealtimeStoreMode::APPEND_ONLY;
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeSchemaLayout> layout,
+                               RealtimeSchemaLayout::Create(mode, schema_));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> array,
+            arrow::ipc::internal::json::ArrayFromJSON(
+                arrow::struct_(layout->InputSchema()->fields()), json));
+        ArrowArray c_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<RecordBatch> batch,
+            RecordBatchBuilder(&c_array).SetRowKinds(row_kinds).SetBucket(0).Finish());
+        return writer->Write(std::move(batch));
+    }
+
+    std::shared_ptr<VectorSearch> Vector(int32_t limit) const {
+        return std::make_shared<VectorSearch>("embedding", limit, std::vector<float>{1.0f}, nullptr,
+                                              nullptr, VectorSearch::DistanceType::COSINE,
+                                              std::map<std::string, std::string>{});
+    }
+
+    std::shared_ptr<Predicate> EqualString(const std::string& field,
+                                           const std::string& value) const {
+        return PredicateBuilder::Equal(schema_->GetFieldIndex(field), field, FieldType::STRING,
+                                       Literal(FieldType::STRING, value.data(), value.size()));
+    }
+
+    void SetDiskRanking(const std::vector<RealtimeCommitProgress>& progress,
+                        const MockSearchFileIndex::ScoredRows& ranking) {
+        const std::vector<std::shared_ptr<DataFileMeta>> files = NewFiles(progress);
+        ASSERT_EQ(1, files.size());
+        ASSERT_EQ(static_cast<int64_t>(ranking.size()), files[0]->row_count);
+        disk_rankings_[files[0]->file_name] = ranking;
+    }
+
+    Result<std::shared_ptr<Split>> WithSearchIndexes(const std::shared_ptr<Split>& split) const {
+        if (auto realtime = std::dynamic_pointer_cast<RealtimeSplit>(split)) {
+            std::vector<std::shared_ptr<Split>> disk;
+            for (const auto& child : realtime->DiskSplits()) {
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Split> indexed, WithSearchIndexes(child));
+                disk.push_back(std::move(indexed));
+            }
+            return std::make_shared<RealtimeSplit>(
+                realtime->Version(), realtime->SnapshotId(), realtime->Partition(),
+                realtime->Bucket(), std::move(disk), realtime->CommittedEndOffset(),
+                realtime->MemoryEndOffset(), realtime->OpaqueTicket());
+        }
+        auto data = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        if (!data) {
+            return Status::Invalid("Expected a data split for mock search indexes");
+        }
+        auto paths = std::make_shared<DataFilePathFactory>();
+        PAIMON_RETURN_NOT_OK(
+            paths->Init(data->BucketPath(), options_.at(Options::FILE_FORMAT), "data-", nullptr));
+        std::vector<std::shared_ptr<DataFileMeta>> files;
+        for (const auto& original : data->DataFiles()) {
+            auto ranking = disk_rankings_.find(original->file_name);
+            if (ranking == disk_rankings_.end()) {
+                return Status::Invalid("Missing mock ranking for file ", original->file_name);
+            }
+            // Preserve the original payloads, including offset bitmap indexes, in the query copy.
+            auto file = std::make_shared<DataFileMeta>(*original);
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input,
+                                   FileIndexEvaluator::ExtractIndexInputStream(
+                                       paths, original, dir_->GetFileSystem()));
+            ScopeGuard close([&input]() {
+                if (input) {
+                    [[maybe_unused]] Status ignored = input->Close();
+                }
+            });
+            PAIMON_ASSIGN_OR_RAISE(FileIndexFormat::ColumnIndexes indexes,
+                                   MockSearchFileIndex::ReadIndexes(input, pool_));
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> payload,
+                                   MockSearchFileIndex::MakePayload(ranking->second, pool_));
+            indexes["embedding"][MockSearchFileIndex::VECTOR_IDENTIFIER] = payload;
+            indexes["payload"][MockSearchFileIndex::FULL_TEXT_IDENTIFIER] = payload;
+            PAIMON_ASSIGN_OR_RAISE(file->embedded_index,
+                                   MockSearchFileIndex::Serialize(indexes, pool_));
+            files.push_back(std::move(file));
+        }
+        DataSplitImpl::Builder builder(data->Partition(), data->Bucket(), data->BucketPath(),
+                                       std::move(files));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Split> indexed,
+                               builder.WithSnapshot(data->SnapshotId())
+                                   .WithTotalBuckets(data->TotalBuckets())
+                                   .WithDataDeletionFiles(data->DeletionFiles())
+                                   .IsStreaming(data->IsStreaming())
+                                   .RawConvertible(data->RawConvertible())
+                                   .Build());
+        return indexed;
+    }
+
+    Result<std::unique_ptr<BatchReader>> CreateSearchReader(
+        const std::shared_ptr<Plan>& plan, const std::shared_ptr<RealtimeContext>& realtime_context,
+        const SearchQuery& query) const {
+        std::map<std::string, int32_t> positions;
+        for (int32_t i = 0; i < static_cast<int32_t>(query.fields.size()); ++i) {
+            positions.emplace(query.fields[i], i);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> predicate,
+                               PredicateUtils::CreatePickedFieldFilter(query.predicate, positions));
+        ReadContextBuilder builder(table_path_);
+        builder.SetOptions(options_)
+            .SetReadFieldNames(query.fields)
+            .SetPredicate(predicate)
+            .SetVectorSearch(query.vector)
+            .SetFullTextSearch(query.text)
+            .EnablePreciseFileIndexEvaluate(true)
+            .EnablePredicateFilter(false)
+            .WithRealtimeContext(realtime_context)
+            .WithMemoryPool(pool_);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
+                               TableRead::Create(std::move(context)));
+        std::vector<std::shared_ptr<Split>> splits;
+        for (const auto& split : plan->Splits()) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Split> indexed, WithSearchIndexes(split));
+            splits.push_back(std::move(indexed));
+        }
+        return read->CreateReader(splits);
+    }
+
+    void CheckSearchResult(std::unique_ptr<BatchReader> reader, const SearchQuery& query,
+                           const std::string& expected_json) const {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_NE(nullptr, actual);
+        arrow::FieldVector fields{arrow::field(SpecialFields::ValueKind().Name(), arrow::int8())};
+        for (const auto& name : query.fields) {
+            fields.push_back(SpecialFields::ParseIndexScoreFieldName(name)
+                                 ? arrow::field(name, arrow::float32())
+                                 : arrow::field(name, schema_->GetFieldByName(name)->type()));
+        }
+        std::shared_ptr<arrow::ChunkedArray> expected;
+        ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(fields),
+                                                                     {expected_json}, &expected)
+                        .ok());
+        ASSERT_TRUE(actual->Equals(expected))
+            << "expected: " << expected->ToString() << "\nactual: " << actual->ToString();
+    }
+
+    void CheckSearch(const std::shared_ptr<Plan>& plan,
+                     const std::shared_ptr<RealtimeContext>& realtime_context,
+                     const SearchQuery& query, const std::string& expected_json) const {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                             CreateSearchReader(plan, realtime_context, query));
+        ASSERT_NO_FATAL_FAILURE(CheckSearchResult(std::move(reader), query, expected_json));
+    }
+
+    std::shared_ptr<MockSearchState> vector_state_;
+    std::shared_ptr<MockSearchState> text_state_;
+    std::map<std::string, MockSearchFileIndex::ScoredRows> disk_rankings_;
+};
+
+TEST_F(RealtimePreciseIndexInteTest, TestAppendScalarFilteringBeforeVectorTopK) {
+    CreateSearchTable(/*deduplicate=*/false);
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    vector_state_->ranked = {{0, 0.99f}, {1, 0.875f}, {2, 0.5f}};
+    ASSERT_OK(WriteSearchBatch(R"([
+        [0,1,"miss","miss",[1]], [1,2,"hit","keep",[2]], [2,3,"hit","keep",[3]]
+    ])",
+                               {}, writer.get()));
+    // Hash equality, an unsupported hash range operation, and an unindexed field all require
+    // the same exact result before ranking, even with residual filtering disabled.
+    const std::vector<std::shared_ptr<Predicate>> predicates{
+        PredicateBuilder::Equal(0, "id", FieldType::BIGINT, Literal(int64_t{2})),
+        PredicateBuilder::GreaterThan(0, "id", FieldType::BIGINT, Literal(int64_t{1})),
+        EqualString("pt", "keep")};
+    for (const auto& predicate : predicates) {
+        SCOPED_TRACE(predicate->ToString());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, predicate));
+        SearchQuery query{
+            {"_embedding_INDEX_SCORE", "payload", "id", "pt"}, predicate, Vector(1), nullptr};
+        ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, R"([[0,0.875,"hit",2,"keep"]])"));
+    }
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimePreciseIndexInteTest, TestFullTextSearchAndMixedPredicateScores) {
+    CreateSearchTable(/*deduplicate=*/false);
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    vector_state_->ranked = {{0, 0.99f}, {1, 0.875f}, {2, 0.5f}};
+    text_state_->ranked = {{0, 0.99f}, {2, 0.625f}, {1, 0.25f}};
+    const std::string text_query = R"({"match":{"query":"lake"}})";
+    text_state_->text_matches[text_query] = RoaringBitmap64::From({0, 2});
+    ASSERT_OK(WriteSearchBatch(R"([
+        [0,1,"lake","miss",[1]], [1,2,"other","keep",[2]], [2,3,"lake","keep",[3]]
+    ])",
+                               {}, writer.get()));
+
+    auto scalar = EqualString("pt", "keep");
+    auto text = std::make_shared<FullTextSearch>("payload", R"({"match":{"query":"lake other"}})",
+                                                 1, RoaringBitmap64::From({0, 1}));
+    SearchQuery root{{"_payload_INDEX_SCORE", "id", "pt"}, scalar, nullptr, text};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> root_plan, CreatePlan(context, scalar));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(root_plan, context, root, R"([[0,0.25,2,"keep"]])"));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> match,
+                         PredicateBuilder::FullTextMatch(
+                             schema_->GetFieldIndex("payload"),
+                             std::make_shared<FullTextMatch>("payload", text_query, std::nullopt)));
+    auto range = PredicateBuilder::GreaterThan(0, "id", FieldType::BIGINT, Literal(int64_t{1}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({match, range}));
+    SearchQuery mixed{{"id", "payload", "_payload_INDEX_SCORE", "_embedding_INDEX_SCORE"},
+                      predicate,
+                      Vector(1),
+                      nullptr};
+    // Split planning accepts scalar predicates; FullTextMatch is evaluated by the precise reader.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> mixed_plan, CreatePlan(context, range));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(mixed_plan, context, mixed, R"([[0,3,"lake",0.625,0.5]])"));
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimePreciseIndexInteTest, TestVectorSearchAcrossDiskSealedAndBuildingSources) {
+    CreateSearchTable(/*deduplicate=*/false);
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    vector_state_->ranked = {{0, 0.99f}, {1, 0.875f}, {2, 0.98f}, {3, 0.75f},
+                             {4, 0.97f}, {5, 0.625f}, {6, 0.96f}, {7, 0.5f}};
+    const std::vector<std::string> disk_batches{R"([[0,1,"miss","p0",[1]],[1,2,"hit","p0",[2]]])",
+                                                R"([[2,3,"miss","p0",[3]],[3,4,"hit","p0",[4]]])"};
+    for (int64_t i = 0; i < 2; ++i) {
+        ASSERT_OK(WriteSearchBatch(disk_batches[i], {}, writer.get()));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                             writer->PrepareCommitWithProgress(i));
+        ASSERT_NO_FATAL_FAILURE(
+            SetDiskRanking(progress, {{0, 0.99f}, {1, i == 0 ? 0.875f : 0.75f}}));
+        ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(progress, i));
+        ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    }
+    ASSERT_OK(
+        WriteSearchBatch(R"([[4,5,"miss","p0",[5]],[5,6,"hit","p0",[6]]])", {}, writer.get()));
+    ASSERT_OK(writer->Seal());
+    ASSERT_OK(
+        WriteSearchBatch(R"([[6,7,"miss","p0",[7]],[7,8,"hit","p0",[8]]])", {}, writer.get()));
+    ASSERT_OK_AND_ASSIGN(std::vector<FileState> files, InspectFiles());
+    ASSERT_EQ(2, files.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> impl,
+                         RealtimeContextImpl::Cast(context));
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState state, impl->AcquireReadState());
+    ASSERT_EQ(1, state.views.size());
+    ASSERT_EQ(2, state.views[0].store->GetDataUsage().sealed_row_count);
+    ASSERT_EQ(2, state.views[0].store->GetDataUsage().building_row_count);
+    auto predicate = EqualString("payload", "hit");
+    SearchQuery query{{"id", "payload", "_embedding_INDEX_SCORE"}, predicate, Vector(1), nullptr};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, predicate));
+    // Each file or segment contributes its own Top1; the public reader concatenates all four.
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, R"([
+        [0,2,"hit",0.875], [0,4,"hit",0.75], [0,6,"hit",0.625], [0,8,"hit",0.5]
+    ])"));
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimePreciseIndexInteTest, TestDeduplicateMemoryDvBeforeVectorTopK) {
+    CreateSearchTable(/*deduplicate=*/true);
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    vector_state_->ranked = {{0, 0.99f}, {1, 0.98f}, {2, 0.75f}, {3, 0.875f}, {4, 0.97f}};
+    ASSERT_OK(WriteSearchBatch(R"([
+        [0,1,"old","p0",[1]], [1,2,"deleted","p0",[2]], [2,3,"keep","p0",[3]]
+    ])",
+                               {}, writer.get()));
+    ASSERT_OK(writer->Seal());
+    ASSERT_OK(WriteSearchBatch(R"([[3,1,"new","p0",[4]],[4,2,"ignored","p0",[5]]])",
+                               {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::DELETE},
+                               writer.get()));
+    SearchQuery query{{"id", "payload", "_embedding_INDEX_SCORE"}, nullptr, Vector(1), nullptr};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, nullptr));
+    // Both higher-ranked offsets in the sealed segment are invisible. The surviving row must
+    // fill its Top1, and the replacement is returned separately by the building segment.
+    ASSERT_NO_FATAL_FAILURE(
+        CheckSearch(plan, context, query, R"([[0,3,"keep",0.75],[0,1,"new",0.875]])"));
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimePreciseIndexInteTest, TestCommittedAndRealtimeDiskDvBeforeVectorTopK) {
+    CreateSearchTable(/*deduplicate=*/true);
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    vector_state_->ranked = {{0, 0.99f}, {1, 0.98f}, {2, 0.75f}, {3, 0.97f}, {4, 0.875f}};
+    ASSERT_OK(WriteSearchBatch(R"([
+        [0,1,"committed-delete","p0",[1]], [1,2,"old","p0",[2]], [2,3,"keep","p0",[3]]
+    ])",
+                               {}, writer.get()));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> initial,
+                         writer->PrepareCommitWithProgress(0));
+    ASSERT_NO_FATAL_FAILURE(SetDiskRanking(initial, {{0, 0.99f}, {1, 0.98f}, {2, 0.75f}}));
+    ASSERT_OK_AND_ASSIGN(int64_t initial_snapshot, Commit(initial, 0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(initial_snapshot));
+    ASSERT_OK(WriteSearchBatch(R"([[3,1,"ignored","p0",[4]]])", {RecordBatch::RowKind::DELETE},
+                               writer.get()));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> deletion,
+                         writer->PrepareCommitWithProgress(1));
+    ASSERT_OK_AND_ASSIGN(int64_t deleted_snapshot, Commit(deletion, 1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(deleted_snapshot));
+    ASSERT_OK_AND_ASSIGN(std::vector<FileState> files, InspectFiles());
+    ASSERT_EQ(1, files.size());
+    ASSERT_EQ(std::set<int64_t>({0}), files[0].deleted_positions);
+
+    ASSERT_OK(WriteSearchBatch(R"([[4,2,"new","p0",[5]]])", {RecordBatch::RowKind::UPDATE_AFTER},
+                               writer.get()));
+    SearchQuery query{{"id", "payload", "_embedding_INDEX_SCORE"}, nullptr, Vector(1), nullptr};
+    const std::string expected = R"([[0,3,"keep",0.75],[0,2,"new",0.875]])";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> building, CreatePlan(context, nullptr));
+    ASSERT_EQ(1, building->Splits().size());
+    auto realtime = std::dynamic_pointer_cast<RealtimeSplit>(building->Splits()[0]);
+    ASSERT_NE(nullptr, realtime);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> impl,
+                         RealtimeContextImpl::Cast(context));
+    ASSERT_OK_AND_ASSIGN(RealtimePartitionBucketView view,
+                         impl->ResolveReadView(realtime->OpaqueTicket()));
+    ASSERT_NE(nullptr, view.offset_deletions);
+    ASSERT_TRUE(view.offset_deletions->Contains(1));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(building, context, query, expected));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> update,
+                         writer->PrepareCommitWithProgress(2));
+    ASSERT_NO_FATAL_FAILURE(SetDiskRanking(update, {{0, 0.875f}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> prepared, CreatePlan(context, nullptr));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(prepared, context, query, expected));
+    ASSERT_OK_AND_ASSIGN(int64_t updated_snapshot, Commit(update, 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> committed, CreatePlan(context, nullptr));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(committed, context, query, expected));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(updated_snapshot));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> refreshed, CreatePlan(context, nullptr));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(refreshed, context, query, expected));
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimePreciseIndexInteTest, TestPinnedSearchBoundsAndDvSurviveCommitAndRefresh) {
+    CreateSearchTable(/*deduplicate=*/true);
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    vector_state_->ranked = {{0, 0.99f},  {6, 0.96875f}, {5, 0.96f}, {4, 0.9375f},
+                             {2, 0.875f}, {1, 0.75f},    {3, 0.625f}};
+    ASSERT_OK(WriteSearchBatch(R"([[0,1,"disk-old","p0",[1]],[1,2,"disk-keep","p0",[2]]])", {},
+                               writer.get()));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> initial,
+                         writer->PrepareCommitWithProgress(0));
+    ASSERT_NO_FATAL_FAILURE(SetDiskRanking(initial, {{0, 0.99f}, {1, 0.75f}}));
+    ASSERT_OK_AND_ASSIGN(int64_t initial_snapshot, Commit(initial, 0));
+    // Keep the committed prefix in memory, so the scan must clip it out of index sources.
+    ASSERT_OK(WriteSearchBatch(R"([[2,1,"memory-old","p0",[3]],[3,3,"memory-keep","p0",[4]]])", {},
+                               writer.get()));
+    SearchQuery query{{"id", "payload", "_embedding_INDEX_SCORE"}, nullptr, Vector(10), nullptr};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> old_plan, CreatePlan(context, nullptr));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> reader_plan, CreatePlan(context, nullptr));
+    ASSERT_EQ(1, old_plan->Splits().size());
+    auto realtime = std::dynamic_pointer_cast<RealtimeSplit>(old_plan->Splits()[0]);
+    ASSERT_NE(nullptr, realtime);
+    ASSERT_EQ(2, realtime->CommittedEndOffset());
+    ASSERT_EQ(4, realtime->MemoryEndOffset());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> impl,
+                         RealtimeContextImpl::Cast(context));
+    ASSERT_OK_AND_ASSIGN(RealtimePartitionBucketView pinned,
+                         impl->ResolveReadView(realtime->OpaqueTicket()));
+    ASSERT_TRUE(pinned.read_view->GetOffsetRange());
+    ASSERT_EQ(0, pinned.read_view->GetOffsetRange()->begin);
+    ASSERT_NE(nullptr, pinned.offset_deletions);
+    ASSERT_TRUE(pinned.offset_deletions->Contains(0));
+    ASSERT_FALSE(pinned.offset_deletions->Contains(2));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> old_reader,
+                         CreateSearchReader(reader_plan, context, query));
+
+    ASSERT_OK(WriteSearchBatch(R"([
+        [4,1,"memory-new","p0",[5]], [5,3,"ignored","p0",[6]], [6,4,"later","p0",[7]]
+    ])",
+                               {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::DELETE,
+                                RecordBatch::RowKind::INSERT},
+                               writer.get()));
+    const std::string latest = R"([
+        [0,2,"disk-keep",0.75], [0,1,"memory-new",0.9375], [0,4,"later",0.96875]
+    ])";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> latest_plan, CreatePlan(context, nullptr));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(latest_plan, context, query, latest));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> update,
+                         writer->PrepareCommitWithProgress(1));
+    // Deleted offsets 2, 3, 5 are omitted; surviving offsets 4, 6 become file positions 0, 1.
+    ASSERT_NO_FATAL_FAILURE(SetDiskRanking(update, {{1, 0.96875f}, {0, 0.9375f}}));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(update, 1));
+    ASSERT_GT(snapshot, initial_snapshot);
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    const std::string old = R"([
+        [0,2,"disk-keep",0.75], [0,1,"memory-old",0.875], [0,3,"memory-keep",0.625]
+    ])";
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(old_plan, context, query, old));
+    ASSERT_NO_FATAL_FAILURE(CheckSearchResult(std::move(old_reader), query, old));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> refreshed, CreatePlan(context, nullptr));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(refreshed, context, query, latest));
+    ASSERT_OK(writer->Close());
 }
 
 // TODO(xinyu.lxy): Refactor the real-time hash index tests.

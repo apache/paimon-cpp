@@ -25,6 +25,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "arrow/api.h"
@@ -37,6 +38,7 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/realtime/index/realtime_index_evaluator.h"
 #include "paimon/core/realtime/index/realtime_index_set.h"
+#include "paimon/file_index/file_index_reader.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/realtime/index/realtime_index_factory.h"
@@ -45,6 +47,9 @@
 
 namespace paimon::test {
 namespace {
+
+static_assert(std::is_same_v<FileIndexReader::SearchType, RealtimeIndexReader::SearchType>,
+              "File and real-time readers must share the same search capability type");
 
 class RealtimeIndexTest : public testing::Test {
  public:

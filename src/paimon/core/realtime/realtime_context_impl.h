@@ -35,6 +35,7 @@
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/realtime/realtime_store.h"
 #include "paimon/result.h"
+#include "paimon/status.h"
 #include "paimon/visibility.h"
 
 struct ArrowSchema;
@@ -67,6 +68,12 @@ struct RealtimePartitionBucketView {
     std::shared_ptr<RealtimeReadView> read_view;
     RealtimeStoreMode mode = RealtimeStoreMode::APPEND_ONLY;
     std::shared_ptr<const RoaringBitmap64> offset_deletions;
+    /// Full physical write schema fixed when the store was created.
+    std::shared_ptr<arrow::Schema> write_schema;
+
+    /// Checks the full table schema before opening readers or evaluating indexes. Query
+    /// projections are validated separately and do not change the expected store schema.
+    Status ValidateTableSchema(const std::shared_ptr<arrow::Schema>& table_schema) const;
 };
 
 struct RealtimeReadState {

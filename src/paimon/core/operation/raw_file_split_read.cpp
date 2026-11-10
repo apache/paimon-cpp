@@ -214,14 +214,15 @@ Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,
 
 Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::CreatePreciseFileIndexReader(
     const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+    const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
     const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::map<std::string, std::string>& extra_format_options) const {
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<PreciseFileIndexRead> precise_read,
-        PreciseFileIndexRead::Create(*this, partition, file, field_mapping_builder, path_factory,
-                                     extra_format_options));
+        PreciseFileIndexRead::Create(*this, partition, file, read_schema, predicate,
+                                     field_mapping_builder, path_factory, extra_format_options));
     return precise_read->CreateReader(dv_factory, row_ranges);
 }
 

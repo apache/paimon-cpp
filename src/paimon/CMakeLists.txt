@@ -93,6 +93,7 @@ set(PAIMON_COMMON_SRCS
     common/global_index/global_index_result.cpp
     common/global_index/global_indexer_factory.cpp
     common/global_index/key_serializer.cpp
+    common/index/index_reader_capabilities.cpp
     common/io/buffered_input_stream.cpp
     common/io/byte_array_input_stream.cpp
     common/io/byte_array_output_stream.cpp
@@ -150,6 +151,7 @@ set(PAIMON_COMMON_SRCS
     common/reader/batch_reader.cpp
     common/reader/complete_index_score_batch_reader.cpp
     common/reader/complete_index_score_file_batch_reader.cpp
+    common/reader/index_score_batch_utils.cpp
     common/reader/concat_batch_reader.cpp
     common/reader/late_materializing_file_batch_reader.cpp
     common/reader/data_file_reader_factory.cpp
@@ -419,6 +421,7 @@ set(PAIMON_CORE_SRCS
     core/manifest/snapshot_live_manifest_entries.cpp
     core/operation/write_context.cpp
     core/operation/write_restore.cpp
+    core/realtime/precise_realtime_index_read.cpp
     core/realtime/arrow_realtime_store.cpp
     core/realtime/arrow_deduplicate_realtime_store.cpp
     core/realtime/arrow_realtime_store_factory.cpp
@@ -1002,6 +1005,7 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/realtime_deduplicate_dv_materializer_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp
                     core/operation/key_value_file_store_write_test.cpp
+                    core/realtime/precise_realtime_index_read_test.cpp
                     core/operation/precise_file_index_read_test.cpp
                     core/operation/internal_read_context_test.cpp
                     core/operation/abstract_split_read_test.cpp

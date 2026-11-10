@@ -68,6 +68,8 @@ class FileIndexEvaluator {
     Result<std::shared_ptr<FileIndexReader>> GetSearchReader(
         const std::string& field_name, FileIndexReader::SearchType search_type);
 
+    Result<std::vector<std::shared_ptr<FileIndexReader>>> GetReaders(const std::string& field_name);
+
     Result<std::shared_ptr<FileIndexResult>> EvaluateLeaf(
         const std::shared_ptr<LeafPredicate>& predicate, bool needs_scores);
 
@@ -84,8 +86,6 @@ class FileIndexEvaluator {
     FileIndexEvaluator(std::shared_ptr<arrow::Schema> data_schema,
                        std::shared_ptr<DataFileMeta> file_meta,
                        std::unique_ptr<FileIndexFormat::Reader> format_reader);
-
-    Result<std::vector<std::shared_ptr<FileIndexReader>>> GetReaders(const std::string& field_name);
 
     static Result<std::shared_ptr<InputStream>> ExtractIndexInputStream(
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,

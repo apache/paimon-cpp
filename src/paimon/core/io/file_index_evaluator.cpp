@@ -19,7 +19,6 @@
 #include "paimon/core/io/file_index_evaluator.h"
 
 #include <cassert>
-#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <set>
@@ -31,6 +30,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
+#include "paimon/common/index/index_reader_utils.h"
 #include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/string_utils.h"
@@ -128,24 +128,12 @@ Result<std::shared_ptr<FileIndexReader>> FileIndexEvaluator::GetSearchReader(
     }
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
                            GetReaders(field_name));
-    std::shared_ptr<FileIndexReader> selected;
-    for (const auto& reader : readers) {
-        if (!reader->SupportsSearch(search_type)) {
-            continue;
-        }
-        if (selected) {
-            return Status::Invalid(fmt::format(
-                "Multiple File Index readers support {} for field '{}' in data file '{}'",
-                SearchTypeToString(search_type), field_name, file_meta_->file_name));
-        }
-        selected = reader;
-    }
-    if (!selected) {
-        return Status::NotImplemented(
-            fmt::format("No File Index reader supports {} for field '{}' in data file '{}'",
-                        SearchTypeToString(search_type), field_name, file_meta_->file_name));
-    }
-    return selected;
+    return IndexReaderUtils::GetSearchReader(
+        readers, search_type,
+        fmt::format("Multiple File Index readers support {} for field '{}' in data file '{}'",
+                    SearchTypeToString(search_type), field_name, file_meta_->file_name),
+        fmt::format("No File Index reader supports {} for field '{}' in data file '{}'",
+                    SearchTypeToString(search_type), field_name, file_meta_->file_name));
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateLeaf(
@@ -178,23 +166,7 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateLeaf(
 
 Result<std::optional<double>> FileIndexEvaluator::EstimateSelectivity(
     const std::shared_ptr<LeafPredicate>& predicate) {
-    if (predicate->GetFunction().GetType() == Function::Type::FULL_TEXT_MATCH) {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FileIndexReader> reader,
-            GetSearchReader(predicate->FieldName(), FileIndexReader::SearchType::FULL_TEXT_MATCH));
-        return reader->EstimateSelectivity(predicate);
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
-                           GetReaders(predicate->FieldName()));
-    std::optional<double> estimate;
-    for (const auto& reader : readers) {
-        auto value = reader->EstimateSelectivity(predicate);
-        if (value && std::isfinite(*value) && *value >= 0.0 && *value <= 1.0 &&
-            (!estimate || *value < *estimate)) {
-            estimate = value;
-        }
-    }
-    return estimate;
+    return IndexReaderUtils::EstimateSelectivity<FileIndexReader>(predicate, this);
 }
 
 Result<std::shared_ptr<ScoredFileIndexResult>> FileIndexEvaluator::SearchVector(

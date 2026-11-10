@@ -171,6 +171,14 @@ AbstractSplitRead::CreateRawFileReadersWithMetaImpl(
             FieldMappingBuilder::Create(
                 read_schema, context_->GetPartitionKeys(),
                 context_->EnablePreciseFileIndexEvaluate() ? nullptr : predicate));
+        if (context_->EnablePreciseFileIndexEvaluate()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<FileBatchReader> reader,
+                CreatePreciseFileIndexReader(partition, file, read_schema, predicate,
+                                             field_mapping_builder.get(), dv_factory, row_ranges,
+                                             data_file_path_factory, extra_format_options));
+            return RawFileReaderWithMeta{file, std::move(reader)};
+        }
         return CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
                                    row_ranges, data_file_path_factory, extra_format_options,
                                    attach_blob_context);
@@ -323,13 +331,6 @@ Result<AbstractSplitRead::RawFileReaderWithMeta> AbstractSplitRead::CreateRawFil
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::map<std::string, std::string>& extra_format_options,
     bool attach_blob_context) const {
-    if (context_->EnablePreciseFileIndexEvaluate()) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
-                               CreatePreciseFileIndexReader(
-                                   partition, file, field_mapping_builder, std::move(dv_factory),
-                                   row_ranges, data_file_path_factory, extra_format_options));
-        return RawFileReaderWithMeta{file, std::move(reader)};
-    }
     auto data_file_path = data_file_path_factory->ToPath(file);
     PAIMON_ASSIGN_OR_RAISE(std::string data_file_identifier, file->FileFormat());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> reader_builder,
@@ -354,6 +355,7 @@ Result<AbstractSplitRead::RawFileReaderWithMeta> AbstractSplitRead::CreateRawFil
 
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreatePreciseFileIndexReader(
     const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+    const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
     const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& path_factory,

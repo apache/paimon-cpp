@@ -41,6 +41,7 @@
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon::test {
 namespace {
@@ -226,8 +227,10 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
     });
     {
         std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
-        RealtimeQueryContext context{c_schema.get(),
-                                     /*predicate=*/nullptr, OffsetRange(12, 15)};
+        RealtimeQueryContext context{
+            c_schema.get(),
+            /*predicate=*/nullptr, OffsetRange(12, 15),          /*read_batch_size=*/1024,
+            /*selection=*/nullptr, /*offset_deletions=*/nullptr, /*enable_index_pruning=*/true};
         ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                              store_->CreateQueryReaders(view, context));
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, readers[0]->NextBatch());
@@ -240,8 +243,10 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
     }
     {
         std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
-        RealtimeQueryContext context{c_schema.get(),
-                                     /*predicate=*/nullptr, OffsetRange(12, 15)};
+        RealtimeQueryContext context{
+            c_schema.get(),
+            /*predicate=*/nullptr, OffsetRange(12, 15),          /*read_batch_size=*/1024,
+            /*selection=*/nullptr, /*offset_deletions=*/nullptr, /*enable_index_pruning=*/true};
         ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                              store_->CreateQueryReaders(view, context));
         ASSERT_EQ(1, readers.size());
@@ -276,7 +281,11 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
     std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
     RealtimeQueryContext context{c_schema.get(),
                                  /*predicate=*/nullptr,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store_->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
@@ -353,7 +362,10 @@ TEST_F(ArrowRealtimeStoreTest, TestSealSpillsAndKeepsPinnedMemoryViewReadable) {
     RealtimeQueryContext context{read_schema.get(),
                                  /*predicate=*/nullptr,
                                  pinned_view->GetOffsetRange().value_or(OffsetRange(0, 0)),
-                                 /*read_batch_size=*/1};
+                                 /*read_batch_size=*/1,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> query_readers,
                          store->CreateQueryReaders(pinned_view, context));
     ASSERT_EQ(1, query_readers.size());
@@ -367,10 +379,11 @@ TEST_F(ArrowRealtimeStoreTest, TestSealSpillsAndKeepsPinnedMemoryViewReadable) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> spilled_view, store->AcquireReadView());
     std::unique_ptr<ArrowSchema> spilled_read_schema = MakeReadSchema(schema_);
-    RealtimeQueryContext spilled_context{spilled_read_schema.get(),
-                                         /*predicate=*/nullptr,
-                                         spilled_view->GetOffsetRange().value_or(OffsetRange(0, 0)),
-                                         /*read_batch_size=*/1};
+    RealtimeQueryContext spilled_context{
+        spilled_read_schema.get(),
+        /*predicate=*/nullptr,        spilled_view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+        /*read_batch_size=*/1,        /*selection=*/nullptr,
+        /*offset_deletions=*/nullptr, /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> spilled_readers,
                          store->CreateQueryReaders(spilled_view, spilled_context));
     ASSERT_EQ(1, spilled_readers.size());
@@ -480,6 +493,99 @@ TEST_F(ArrowRealtimeStoreTest, TestFactoryRejectsFrameworkOwnedMode) {
     ASSERT_NOK_WITH_MSG(factory.Create(std::move(request)), "invalid real-time store mode");
 }
 
+TEST_F(ArrowRealtimeStoreTest, TestQuerySelectionUsesStatisticsWithProjectedSchema) {
+    for (StatisticsMode mode : {StatisticsMode::FULL, StatisticsMode::NONE}) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store, CreateStore(mode));
+        ASSERT_OK(store->Write(
+            RealtimeWriteBatch{MakeBatch(R"([[0,0,"a"],[1,1,"b"]])"), OffsetRange(0, 2)}));
+        ASSERT_OK(store->Write(
+            RealtimeWriteBatch{MakeBatch(R"([[2,5,"c"],[3,10,"d"]])"), OffsetRange(2, 4)}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
+        // Read field positions differ from those in the stored statistics.
+        auto projected = arrow::schema({schema_->field(1), schema_->field(0)});
+        auto read_schema = MakeReadSchema(projected);
+        auto predicate =
+            PredicateBuilder::GreaterThan(0, "id", FieldType::BIGINT, Literal(int64_t{7}));
+        auto selection = std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({0, 2, 3}));
+        RealtimeQueryContext context{read_schema.get(),
+                                     predicate,
+                                     OffsetRange(0, 4),
+                                     1024,
+                                     selection,
+                                     /*offset_deletions=*/nullptr,
+                                     /*enable_index_pruning=*/false};
+        ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                             store->CreateQueryReaders(view, context));
+        ASSERT_EQ(readers.size(), 1);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(readers[0])));
+        // Statistics prune whole batches; exact row filtering remains with the caller.
+        ASSERT_EQ(ReadIds(result), mode == StatisticsMode::FULL ? (std::vector<int64_t>{5, 10})
+                                                                : (std::vector<int64_t>{0, 5, 10}));
+    }
+}
+
+TEST_F(ArrowRealtimeStoreTest, TestQuerySelectionAndDeletionsRemainIndependent) {
+    for (bool spill : {false, true}) {
+        std::unique_ptr<UniqueTestDirectory> directory = UniqueTestDirectory::Create();
+        ASSERT_NE(nullptr, directory);
+        ArrowRealtimeStoreFactory factory;
+        RealtimeStoreCreateRequest request{
+            MakeReadSchema(schema_),
+            {{Options::REALTIME_SPILL_ENABLED, spill ? "true" : "false"}},
+            pool_,
+            RealtimeStoreMode::APPEND_ONLY,
+            StatisticsMode::NONE};
+        request.temp_directory = directory->Str();
+        request.file_system = directory->GetFileSystem();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeStore> store,
+                             factory.Create(std::move(request)));
+        ASSERT_OK(store->Write(
+            RealtimeWriteBatch{MakeBatch(R"([[10,10,"a"],[20,20,"b"],[30,30,"c"],[40,40,"d"],
+                         [50,50,"e"],[60,60,"f"],[70,70,"g"],[80,80,"h"]])"),
+                               OffsetRange(10, 81)}));
+        ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                             store->SealForCommit());
+        ASSERT_TRUE(segment.has_value());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
+        auto deletions = std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({20, 60, 99}));
+        struct TestCase {
+            std::shared_ptr<const RoaringBitmap64> selection;
+            std::vector<int64_t> expected;
+        };
+        const std::vector<TestCase> cases{
+            {nullptr, {10, 30, 40, 50, 70, 80}},
+            {std::make_shared<RoaringBitmap64>(), {}},
+            {std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({30, 999})), {30}},
+            {std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({35, 999})), {}},
+            {std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({20})), {}},
+            {std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({10, 20, 30, 50, 60, 70})),
+             {10, 30, 50, 70}}};
+        for (const auto& test_case : cases) {
+            auto read_schema = MakeReadSchema(schema_);
+            RealtimeQueryContext context{read_schema.get(),
+                                         /*predicate=*/nullptr,
+                                         OffsetRange(0, 90),
+                                         1024,
+                                         test_case.selection,
+                                         deletions,
+                                         /*enable_index_pruning=*/false};
+            ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                                 store->CreateQueryReaders(view, context));
+            ASSERT_EQ(1, readers.size());
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                                 ReadResultCollector::CollectResult(std::move(readers[0])));
+            if (test_case.expected.empty()) {
+                ASSERT_EQ(nullptr, result);
+            } else {
+                ASSERT_NE(nullptr, result);
+                ASSERT_EQ(ReadIds(result), test_case.expected);
+            }
+        }
+        ASSERT_EQ(*deletions, RoaringBitmap64::From({20, 60, 99}));
+    }
+}
+
 TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     ArrowRealtimeStoreFactory factory;
     std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
@@ -500,8 +606,13 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
     std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
         /*field_index=*/1, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{5}));
-    RealtimeQueryContext context{read_schema.get(), predicate,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+    RealtimeQueryContext context{read_schema.get(),
+                                 predicate,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
@@ -514,9 +625,12 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     ASSERT_EQ(std::vector<int64_t>({11}), ReadIds(filtered));
 
     std::unique_ptr<ArrowSchema> unfiltered_read_schema = MakeReadSchema(schema_);
-    RealtimeQueryContext unfiltered_context{unfiltered_read_schema.get(),
-                                            /*predicate=*/nullptr,
-                                            view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+    RealtimeQueryContext unfiltered_context{
+        unfiltered_read_schema.get(),
+        /*predicate=*/nullptr,        view->GetOffsetRange().value_or(OffsetRange(0, 0)), 1024,
+        /*selection=*/nullptr,
+        /*offset_deletions=*/nullptr,
+        /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> unfiltered_readers,
                          store->CreateQueryReaders(view, unfiltered_context));
     ASSERT_EQ(1, unfiltered_readers.size());
@@ -535,8 +649,13 @@ TEST_F(ArrowRealtimeStoreTest, TestMissingStatisticsRetainsNonMatchingBatch) {
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
     std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
         /*field_index=*/1, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{5}));
-    RealtimeQueryContext context{read_schema.get(), predicate,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+    RealtimeQueryContext context{read_schema.get(),
+                                 predicate,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store_->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
@@ -569,7 +688,13 @@ TEST_F(ArrowRealtimeStoreTest, TestHashIndexPinsHistoryAndUsesBothOffsetBounds) 
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
     const std::shared_ptr<Predicate> key =
         PredicateBuilder::Equal(1, "id", FieldType::BIGINT, Literal(int64_t{1}));
-    RealtimeQueryContext old_context{read_schema.get(), key, OffsetRange(0, 100), 1024};
+    RealtimeQueryContext old_context{read_schema.get(),
+                                     key,
+                                     OffsetRange(0, 100),
+                                     1024,
+                                     /*selection=*/nullptr,
+                                     /*offset_deletions=*/nullptr,
+                                     /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> old_readers,
                          store->CreateQueryReaders(old_view, old_context));
     ASSERT_EQ(1, old_readers.size());
@@ -580,7 +705,13 @@ TEST_F(ArrowRealtimeStoreTest, TestHashIndexPinsHistoryAndUsesBothOffsetBounds) 
     read_schema = MakeReadSchema(schema_);
     const std::shared_ptr<Predicate> value =
         PredicateBuilder::Equal(2, "value", FieldType::STRING, Literal(FieldType::STRING, "a", 1));
-    RealtimeQueryContext context{read_schema.get(), value, OffsetRange(11, 30), 1};
+    RealtimeQueryContext context{read_schema.get(),
+                                 value,
+                                 OffsetRange(11, 30),
+                                 1,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(current_view, context));
     ASSERT_EQ(1, readers.size());
@@ -618,7 +749,13 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryResultsWithOffsetBounds) {
                 .ValueOrDie();
         for (int32_t batch_size : {2, 1024}) {
             std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
-            RealtimeQueryContext context{c_schema.get(), key, OffsetRange(11, 31), batch_size};
+            RealtimeQueryContext context{c_schema.get(),
+                                         key,
+                                         OffsetRange(11, 31),
+                                         batch_size,
+                                         /*selection=*/nullptr,
+                                         /*offset_deletions=*/nullptr,
+                                         /*enable_index_pruning=*/true};
             ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                                  store->CreateQueryReaders(view, context));
             ASSERT_EQ(1, readers.size());
@@ -657,7 +794,13 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryBoundsExcludeUnreclaimedPrefixAndLaterWr
         std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
         const std::shared_ptr<Predicate> key =
             PredicateBuilder::Equal(1, "id", FieldType::BIGINT, Literal(int64_t{1}));
-        RealtimeQueryContext context{read_schema.get(), key, OffsetRange(14, 21)};
+        RealtimeQueryContext context{read_schema.get(),
+                                     key,
+                                     OffsetRange(14, 21),
+                                     1024,
+                                     /*selection=*/nullptr,
+                                     /*offset_deletions=*/nullptr,
+                                     /*enable_index_pruning=*/true};
         ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                              store->CreateQueryReaders(view, context));
         ASSERT_EQ(1, readers.size());
@@ -703,7 +846,13 @@ TEST_F(ArrowRealtimeStoreTest, TestHashIndexRemainsInMemoryAcrossSpill) {
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
     const std::shared_ptr<Predicate> key =
         PredicateBuilder::Equal(1, "id", FieldType::BIGINT, Literal(int64_t{1}));
-    RealtimeQueryContext context{read_schema.get(), key, OffsetRange(11, 21), 1024};
+    RealtimeQueryContext context{read_schema.get(),
+                                 key,
+                                 OffsetRange(11, 21),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
@@ -718,7 +867,12 @@ TEST_F(ArrowRealtimeStoreTest, TestRejectsHandlesFromAnotherStoreImplementation)
 
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
     RealtimeQueryContext context{read_schema.get(),
-                                 /*predicate=*/nullptr, OffsetRange(0, 0)};
+                                 /*predicate=*/nullptr,
+                                 OffsetRange(0, 0),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_NOK_WITH_MSG(store_->CreateQueryReaders(std::make_shared<ForeignReadView>(), context),
                         "read view was not created by the Arrow real-time store");
 
