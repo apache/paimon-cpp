@@ -38,6 +38,8 @@
 #include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/defs.h"
 #include "paimon/macros.h"
+#include "paimon/predicate/function.h"
+#include "paimon/predicate/leaf_predicate.h"
 #include "tbb/concurrent_vector.h"
 
 namespace paimon {
@@ -50,6 +52,29 @@ struct HashRealtimeIndex::Posting {
 HashRealtimeIndex::Reader::Reader(std::shared_ptr<const HashRealtimeIndex> index,
                                   const OffsetRange& offset_range)
     : index_(std::move(index)), offset_range_(offset_range) {}
+
+std::optional<double> HashRealtimeIndex::Reader::EstimateSelectivity(
+    const std::shared_ptr<LeafPredicate>& predicate) const {
+    const Function::Type type = predicate->GetFunction().GetType();
+    if ((type != Function::Type::EQUAL && type != Function::Type::IN) || offset_range_.Empty()) {
+        return std::nullopt;
+    }
+    // Offsets can have gaps. The envelope is a scheduling hint, not an exact row count.
+    double count = 0.0;
+    for (const Literal& literal : predicate->Literals()) {
+        const auto posting = index_->postings_.Find(literal.HashCode());
+        if (!posting) {
+            continue;
+        }
+        const Posting& entry = *posting.value();
+        const auto end =
+            entry.offsets.cbegin() + entry.published_size.load(std::memory_order_acquire);
+        const auto first = std::lower_bound(entry.offsets.cbegin(), end, offset_range_.begin);
+        const auto last = std::lower_bound(first, end, offset_range_.end);
+        count += last - first;
+    }
+    return std::min(1.0, count / static_cast<double>(offset_range_.end - offset_range_.begin));
+}
 
 Result<std::optional<RoaringBitmap64>> HashRealtimeIndex::Reader::VisitEqual(
     const Literal& literal) {

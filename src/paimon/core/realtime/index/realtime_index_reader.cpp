@@ -25,6 +25,21 @@
 
 namespace paimon {
 
+Result<std::shared_ptr<ScoredRealtimeIndexResult>> RealtimeIndexReader::VisitVectorSearch(
+    const std::shared_ptr<VectorSearch>&) {
+    return Status::NotImplemented("Real-time index does not support vector search");
+}
+
+Result<std::shared_ptr<ScoredRealtimeIndexResult>> RealtimeIndexReader::VisitFullTextSearch(
+    const std::shared_ptr<FullTextSearch>&) {
+    return Status::NotImplemented("Real-time index does not support full-text search");
+}
+
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitFullTextMatch(
+    const std::shared_ptr<FullTextMatch>&, bool) {
+    return Status::NotImplemented("Real-time index does not support full-text match");
+}
+
 Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitIsNotNull() {
     return std::optional<RoaringBitmap64>();
 }

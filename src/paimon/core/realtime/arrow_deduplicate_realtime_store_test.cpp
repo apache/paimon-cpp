@@ -31,6 +31,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
+#include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -99,14 +100,21 @@ class BitmapSelectingRealtimeStore final : public RealtimeStore {
             : inner_(std::move(inner)), bitmap_(std::move(bitmap)) {}
 
         Result<ReadBatch> NextBatch() override {
-            return Status::Invalid("bitmap input must not be materialized");
+            PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, NextBatchWithBitmap());
+            return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch),
+                                                       GetArrowPool(GetDefaultPool()));
         }
         Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
-            PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, inner_->NextBatchWithBitmap());
-            if (!IsEofBatch(batch)) {
-                batch.second = bitmap_;
+            while (true) {
+                PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, inner_->NextBatchWithBitmap());
+                if (IsEofBatch(batch)) {
+                    return batch;
+                }
+                batch.second &= bitmap_;
+                if (!batch.second.IsEmpty()) {
+                    return batch;
+                }
             }
-            return batch;
         }
         std::shared_ptr<Metrics> GetReaderMetrics() const override {
             return inner_->GetReaderMetrics();
@@ -197,9 +205,13 @@ class ArrowDeduplicateRealtimeStoreTest : public testing::Test {
         int32_t batch_size) const {
         auto c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, c_schema.get()));
-        RealtimeQueryContext context{
-            c_schema.get(),
-            /*predicate=*/nullptr, view->GetOffsetRange().value_or(OffsetRange(0, 0)), batch_size};
+        RealtimeQueryContext context{c_schema.get(),
+                                     /*predicate=*/nullptr,
+                                     view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                     batch_size,
+                                     /*selection=*/nullptr,
+                                     /*offset_deletions=*/nullptr,
+                                     /*enable_index_pruning=*/true};
         return store_->CreateQueryReaders(view, context);
     }
 
@@ -217,9 +229,29 @@ class ArrowDeduplicateRealtimeStoreTest : public testing::Test {
     Result<std::vector<int64_t>> ReadOffsets(const std::shared_ptr<RealtimeReadView>& view,
                                              const std::shared_ptr<Predicate>& predicate,
                                              const OffsetRange& offset_range) const {
+        return ReadOffsets(view, predicate, offset_range, nullptr);
+    }
+
+    Result<std::vector<int64_t>> ReadOffsets(
+        const std::shared_ptr<RealtimeReadView>& view, const std::shared_ptr<Predicate>& predicate,
+        const OffsetRange& offset_range,
+        const std::shared_ptr<const RoaringBitmap64>& selection) const {
+        return ReadOffsets(view, predicate, offset_range, selection, nullptr);
+    }
+
+    Result<std::vector<int64_t>> ReadOffsets(
+        const std::shared_ptr<RealtimeReadView>& view, const std::shared_ptr<Predicate>& predicate,
+        const OffsetRange& offset_range, const std::shared_ptr<const RoaringBitmap64>& selection,
+        const std::shared_ptr<const RoaringBitmap64>& offset_deletions) const {
         auto c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, c_schema.get()));
-        RealtimeQueryContext context{c_schema.get(), predicate, offset_range, 1024};
+        RealtimeQueryContext context{c_schema.get(),
+                                     predicate,
+                                     offset_range,
+                                     1024,
+                                     selection,
+                                     offset_deletions,
+                                     /*enable_index_pruning=*/true};
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> readers,
                                store_->CreateQueryReaders(view, context));
         std::vector<int64_t> result;
@@ -254,6 +286,77 @@ class ArrowDeduplicateRealtimeStoreTest : public testing::Test {
     std::shared_ptr<ArrowDeduplicateRealtimeStore> store_;
     std::shared_ptr<const KeyOffsetLookup> empty_lookup_;
 };
+
+TEST_F(ArrowDeduplicateRealtimeStoreTest, TestQueryPreservesStatisticsPredicate) {
+    ASSERT_OK_AND_ASSIGN(
+        delegate_,
+        ArrowRealtimeStore::Create(schema_, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::FULL,
+                                   "", nullptr, "zstd", 1, {}, pool_, arrow_pool_));
+    ASSERT_OK_AND_ASSIGN(store_, ArrowDeduplicateRealtimeStore::Create(schema_, {"id"}, delegate_,
+                                                                       pool_, arrow_pool_));
+    ASSERT_OK(store_->WriteAndLookup(MakeBatch(R"([[0,1,"a"],[1,2,"b"]])"),
+                                     {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::INSERT},
+                                     OffsetRange(0, 2), RoaringBitmap64()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store_->AcquireReadView());
+    ArrowSchema read_schema;
+    ArrowSchemaMarkReleased(&read_schema);
+    ASSERT_TRUE(arrow::ExportSchema(*schema_, &read_schema).ok());
+    ScopeGuard schema_guard([&]() { ArrowSchemaRelease(&read_schema); });
+    auto predicate =
+        PredicateBuilder::GreaterThan(1, "id", FieldType::BIGINT, Literal(int64_t{100}));
+    RealtimeQueryContext context{&read_schema,
+                                 predicate,
+                                 OffsetRange(0, 2),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                         store_->CreateQueryReaders(view, context));
+    ASSERT_EQ(readers.size(), 1);
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, readers[0]->NextBatchWithBitmap());
+    ASSERT_TRUE(BatchReader::IsEofBatch(batch));
+    readers[0]->Close();
+}
+
+TEST_F(ArrowDeduplicateRealtimeStoreTest, TestQuerySelectionCombinesPinnedDeletions) {
+    ASSERT_OK(store_->WriteAndLookup(MakeBatch(R"([[10,1,"old"],[20,2,"other"]])"),
+                                     {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::INSERT},
+                                     OffsetRange(10, 21), RoaringBitmap64()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> old_view, store_->AcquireReadView());
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> sealed,
+                         store_->SealForCommit());
+    ASSERT_TRUE(sealed.has_value());
+    ASSERT_OK(store_->WriteAndLookup(MakeBatch(R"([[30,1,"new"]])"), {RecordBatch::RowKind::INSERT},
+                                     OffsetRange(30, 31), RoaringBitmap64::From({10})));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> new_view, store_->AcquireReadView());
+    auto selection = std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({10, 20}));
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> old_offsets,
+                         ReadOffsets(old_view, nullptr, OffsetRange(0, 31), selection));
+    ASSERT_EQ(old_offsets, (std::vector<int64_t>{10, 20}));
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> selected_offsets,
+                         ReadOffsets(new_view, nullptr, OffsetRange(0, 31), selection));
+    ASSERT_EQ(selected_offsets, (std::vector<int64_t>{20}));
+    ASSERT_EQ(*selection, RoaringBitmap64::From({10, 20}));
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> all_offsets, ReadOffsets(new_view));
+    ASSERT_EQ(all_offsets, (std::vector<int64_t>{20, 30}));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<int64_t> empty_offsets,
+        ReadOffsets(new_view, nullptr, OffsetRange(0, 31), std::make_shared<RoaringBitmap64>()));
+    ASSERT_TRUE(empty_offsets.empty());
+
+    auto deletions = std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({20}));
+    auto all_selected = std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({10, 20, 30}));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<int64_t> remaining_offsets,
+        ReadOffsets(new_view, nullptr, OffsetRange(0, 31), all_selected, deletions));
+    ASSERT_EQ(remaining_offsets, (std::vector<int64_t>{30}));
+    ASSERT_OK_AND_ASSIGN(remaining_offsets,
+                         ReadOffsets(old_view, nullptr, OffsetRange(0, 31), nullptr, deletions));
+    ASSERT_EQ(remaining_offsets, (std::vector<int64_t>{10}));
+    ASSERT_EQ(*deletions, RoaringBitmap64::From({20}));
+    ASSERT_EQ(*all_selected, RoaringBitmap64::From({10, 20, 30}));
+}
 
 TEST_F(ArrowDeduplicateRealtimeStoreTest, TestReclaimsOnlyCompleteSegmentPrefix) {
     WriteAndSeal(R"([[2, 1, "old"]])", OffsetRange(0, 10), RoaringBitmap64());

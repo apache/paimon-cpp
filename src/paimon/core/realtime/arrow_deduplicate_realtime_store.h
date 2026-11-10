@@ -113,6 +113,7 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
 
     class SegmentHandle;
     class ReadView;
+    class IndexReadSource;
     class RetiredReadView;
     class OffsetFilteringBatchReader;
 

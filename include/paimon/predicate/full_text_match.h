@@ -44,6 +44,7 @@ struct PAIMON_EXPORT FullTextMatch {
     /// JSON DSL query with the same syntax and analyzer semantics as `FullTextSearch::query`.
     std::string query;
     /// Optional eligible row ids. File readers use file-local physical row positions;
+    /// real-time index readers use real-time offsets.
     /// An empty set matches no rows. If not set, all rows are searched.
     std::optional<RoaringBitmap64> include_row_ids;
 };

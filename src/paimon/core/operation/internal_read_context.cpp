@@ -297,9 +297,13 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromCore
             return Status::NotImplemented(
                 "Precise file-index evaluation on primary-key tables requires deletion vectors");
         }
-        if (core_options.DataEvolutionEnabled() || context->GetRealtimeContext()) {
+        if (core_options.DataEvolutionEnabled()) {
             return Status::NotImplemented(
-                "Precise file-index evaluation does not support data-evolution or real-time reads");
+                "Precise file-index evaluation does not support data-evolution");
+        }
+        if (context->GetRealtimeContext() && !table_schema->PrimaryKeys().empty()) {
+            return Status::NotImplemented(
+                "Precise real-time evaluation does not support primary-key tables");
         }
     }
     if (context->HasVectorOrFullTextSearch()) {

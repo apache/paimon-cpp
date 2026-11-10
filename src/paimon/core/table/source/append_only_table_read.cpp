@@ -42,6 +42,7 @@
 #include "paimon/core/operation/data_evolution_split_read.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/raw_file_split_read.h"
+#include "paimon/core/realtime/precise_realtime_index_read.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_file_schema.h"
 #include "paimon/core/realtime/realtime_reader.h"
@@ -120,7 +121,7 @@ AppendOnlyTableRead::AppendOnlyTableRead(const std::shared_ptr<FileStorePathFact
                                          const std::shared_ptr<InternalReadContext>& context,
                                          const std::shared_ptr<MemoryPool>& memory_pool,
                                          const std::shared_ptr<Executor>& executor)
-    : context_(context) {
+    : context_(context), path_factory_(path_factory) {
     const auto& core_options = context->GetCoreOptions();
     if (!core_options.GetRealtimeDeduplicateKeyFields().empty()) {
         realtime_file_schema_ = std::make_shared<RealtimeFileSchema>(
@@ -221,6 +222,8 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
     if (!memory_range || memory_range->end != realtime_split->MemoryEndOffset()) {
         return Status::Invalid("real-time read-view ticket does not match the split offset range");
     }
+    PAIMON_RETURN_NOT_OK(memory.ValidateTableSchema(
+        DataField::ConvertDataFieldsToArrowSchema(context_->GetTableSchema()->Fields())));
 
     for (const std::shared_ptr<Split>& disk_split : realtime_split->DiskSplits()) {
         std::unique_ptr<BatchReader> disk_reader;
@@ -231,6 +234,23 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
             PAIMON_ASSIGN_OR_RAISE(disk_reader, CreateDiskReader(disk_split));
         }
         readers.push_back(std::move(disk_reader));
+    }
+
+    if (context_->EnablePreciseFileIndexEvaluate()) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> memory_reader,
+                               PreciseRealtimeIndexRead::CreateReader(
+                                   context_, memory.mode, memory.store, memory.read_view,
+                                   OffsetRange(realtime_split->CommittedEndOffset(),
+                                               realtime_split->MemoryEndOffset())));
+        readers.push_back(std::move(memory_reader));
+        if (release_ticket) {
+            PAIMON_RETURN_NOT_OK(
+                realtime_context_impl->ReleaseReadView(realtime_split->OpaqueTicket()));
+        }
+        std::unique_ptr<BatchReader> result =
+            std::make_unique<ConcatBatchReader>(std::move(readers), context_->GetArrowMemoryPool());
+        readers_guard.Release();
+        return result;
     }
 
     std::shared_ptr<arrow::Schema> table_schema =
@@ -253,9 +273,13 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
                            PredicateUtils::CreatePickedFieldFilter(context_->GetPredicate(),
                                                                    realtime_field_name_to_index));
     RealtimeQueryContext query_context{
-        c_read_schema.get(), std::move(realtime_predicate),
+        c_read_schema.get(),
+        std::move(realtime_predicate),
         OffsetRange(realtime_split->CommittedEndOffset(), realtime_split->MemoryEndOffset()),
-        context_->GetCoreOptions().GetReadBatchSize()};
+        context_->GetCoreOptions().GetReadBatchSize(),
+        /*selection=*/nullptr,
+        /*offset_deletions=*/nullptr,
+        /*enable_index_pruning=*/true};
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> memory_readers,
                            memory.store->CreateQueryReaders(memory.read_view, query_context));
     const size_t first_memory_reader = readers.size();

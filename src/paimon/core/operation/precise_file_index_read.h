@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "paimon/core/deletionvectors/deletion_vector.h"
+#include "paimon/core/operation/precise_index_evaluator.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -50,9 +51,14 @@ struct VectorSearch;
 /// Evaluates a file predicate and root search before opening the selected output rows.
 class PreciseFileIndexRead {
  public:
+    /// Uses the file-specific predicate and schema supplied by the caller, including any fields
+    /// added for visibility filtering. The predicate is evaluated before root search.
     static Result<std::unique_ptr<PreciseFileIndexRead>> Create(
         const RawFileSplitRead& split_read, const BinaryRow& partition,
-        const std::shared_ptr<DataFileMeta>& file, const FieldMappingBuilder* field_mapping_builder,
+        const std::shared_ptr<DataFileMeta>& file,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const std::shared_ptr<Predicate>& predicate,
+        const FieldMappingBuilder* field_mapping_builder,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::map<std::string, std::string>& extra_format_options);
 
@@ -62,14 +68,13 @@ class PreciseFileIndexRead {
         const std::optional<std::vector<Range>>& row_ranges) const;
 
  private:
-    struct Evaluation {
-        RoaringBitmap32 rows;
-        // Sources retain physical row positions until all filtering and root TopK are complete.
-        std::map<std::string, std::shared_ptr<ScoredFileIndexResult>> scores;
-    };
+    using Evaluator = PreciseIndexEvaluator<RoaringBitmap32, ScoredFileIndexResult>;
+    using Evaluation = Evaluator::Evaluation;
 
     PreciseFileIndexRead(const RawFileSplitRead& split_read, const BinaryRow& partition,
                          const std::shared_ptr<DataFileMeta>& file,
+                         const std::shared_ptr<arrow::Schema>& read_schema,
+                         const std::shared_ptr<Predicate>& predicate,
                          const FieldMappingBuilder* field_mapping_builder,
                          const std::shared_ptr<DataFilePathFactory>& path_factory,
                          const std::map<std::string, std::string>& extra_format_options,
@@ -82,14 +87,8 @@ class PreciseFileIndexRead {
     Result<RoaringBitmap32> CreateCandidates(
         const DeletionVector::Factory& dv_factory,
         const std::optional<std::vector<Range>>& row_ranges) const;
-    Result<Evaluation> Evaluate(const std::shared_ptr<Predicate>& predicate,
-                                const RoaringBitmap32& candidates) const;
-    Result<Evaluation> EvaluateCompound(const std::shared_ptr<CompoundPredicate>& predicate,
-                                        const RoaringBitmap32& candidates) const;
     Result<Evaluation> EvaluateLeaf(const std::shared_ptr<LeafPredicate>& predicate,
                                     const RoaringBitmap32& candidates) const;
-    Result<std::optional<double>> EstimateSelectivity(
-        const std::shared_ptr<Predicate>& predicate) const;
     Result<std::optional<double>> EstimateLeafSelectivity(
         const std::shared_ptr<LeafPredicate>& predicate) const;
     /// Opens a fresh mapped reader for selected physical rows without re-evaluating indexes,
@@ -99,15 +98,13 @@ class PreciseFileIndexRead {
     Result<RoaringBitmap32> ScanScalar(const std::shared_ptr<LeafPredicate>& predicate,
                                        const RoaringBitmap32& candidates) const;
     Status ApplyRootSearch(Evaluation* evaluated) const;
-    Result<std::map<std::string, std::vector<float>>> CreateOutputScores(
-        const Evaluation& evaluated) const;
-    static Result<std::vector<float>> AlignScores(
-        const std::shared_ptr<ScoredFileIndexResult>& source, const RoaringBitmap32& rows);
 
  private:
     const RawFileSplitRead& split_read_;
     const BinaryRow& partition_;
     std::shared_ptr<DataFileMeta> file_;
+    std::shared_ptr<arrow::Schema> read_schema_;
+    std::shared_ptr<Predicate> predicate_;
     const FieldMappingBuilder* field_mapping_builder_;
     std::shared_ptr<DataFilePathFactory> path_factory_;
     std::map<std::string, std::string> extra_format_options_;
