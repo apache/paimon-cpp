@@ -1765,26 +1765,30 @@ TEST_F(PredicateTest, TestLikeUtf8MultibyteUnderscore) {
     ASSERT_FALSE(predicate->Test(arrow_schema, CreateStringRow({"helloworld"})).value());
 }
 
-TEST_F(PredicateTest, TestLikeJavaRegexLineTerminatorSemantics) {
+TEST_F(PredicateTest, TestLikeWildcardsMatchLineTerminators) {
     auto arrow_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
-
-    // Java regex '.' does not match line terminators, so '_' should not match them either.
-    ASSERT_OK_AND_ASSIGN(auto predicate_base,
-                         PredicateBuilder::Like(
-                             /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
-                             Literal(FieldType::STRING, "_", 1)));
-    auto predicate = std::dynamic_pointer_cast<PredicateFilter>(predicate_base);
-    ASSERT_FALSE(predicate->Test(arrow_schema, CreateStringRow({"\n"})).value());
-    ASSERT_FALSE(predicate->Test(arrow_schema, CreateStringRow({"\r"})).value());
-
-    // Java LIKE '%' uses (?s:.*), so it should still match line terminators.
-    ASSERT_OK_AND_ASSIGN(predicate_base,
-                         PredicateBuilder::Like(
-                             /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
-                             Literal(FieldType::STRING, "%", 1)));
-    predicate = std::dynamic_pointer_cast<PredicateFilter>(predicate_base);
-    ASSERT_TRUE(predicate->Test(arrow_schema, CreateStringRow({"\n"})).value());
-    ASSERT_TRUE(predicate->Test(arrow_schema, CreateStringRow({"\r"})).value());
+    auto like = [&](const std::string& pattern, const std::string& value) -> Result<bool> {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> predicate,
+                               PredicateBuilder::Like(
+                                   /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                   Literal(FieldType::STRING, pattern.data(), pattern.size())));
+        auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+        if (filter == nullptr) {
+            return Status::Invalid("the LIKE predicate is not a filter");
+        }
+        return filter->Test(arrow_schema, CreateStringRow({value}));
+    };
+    for (const std::string line_terminator :
+         {"\n", "\r", "\xC2\x85", "\xE2\x80\xA8", "\xE2\x80\xA9"}) {
+        ASSERT_OK_AND_ASSIGN(bool matched, like("a_b", "a" + line_terminator + "b"));
+        ASSERT_TRUE(matched) << line_terminator;
+        ASSERT_OK_AND_ASSIGN(matched, like("%", line_terminator));
+        ASSERT_TRUE(matched) << line_terminator;
+    }
+    ASSERT_OK_AND_ASSIGN(bool matched, like("a_b", "a\r\nb"));
+    ASSERT_FALSE(matched);
+    ASSERT_OK_AND_ASSIGN(matched, like("a__b", "a\r\nb"));
+    ASSERT_TRUE(matched);
 }
 
 TEST_F(PredicateTest, TestCompound) {

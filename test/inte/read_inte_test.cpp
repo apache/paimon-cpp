@@ -4548,6 +4548,26 @@ TEST(SystemTableReadInteTest, TestReadGlobalPartitions) {
                                      /*expected_commit_messages=*/std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(warehouse, options));
+    std::map<std::string, std::string> query_auth_options = options;
+    query_auth_options[Options::QUERY_AUTH_ENABLED] = "true";
+    const Identifier query_auth_table("foo", "query_auth");
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    ASSERT_OK(catalog->CreateTable(query_auth_table, &c_schema, /*partition_keys=*/{"dt", "region"},
+                                   /*primary_keys=*/{}, query_auth_options,
+                                   /*ignore_if_exists=*/false));
+    ArrowSchemaRelease(&c_schema);
+    ASSERT_OK_AND_ASSIGN(std::string query_auth_path, catalog->GetTableLocation(query_auth_table));
+    ASSERT_OK_AND_ASSIGN(auto query_auth_helper,
+                         TestHelper::Create(query_auth_path, query_auth_options,
+                                            /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(batch, TestHelper::MakeRecordBatch(
+                                    arrow::struct_(fields), R"([["2026-07-13", "secret", 2]])",
+                                    /*partition_map=*/{{"dt", "2026-07-13"}, {"region", "secret"}},
+                                    /*bucket=*/0, {}));
+    ASSERT_OK(query_auth_helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                                /*expected_commit_messages=*/std::nullopt));
+
     auto fs = catalog->GetFileSystem();
     ASSERT_OK_AND_ASSIGN(auto part_result, ReadGlobalSystemTable("partitions", catalog.get(), fs,
                                                                  warehouse, options));

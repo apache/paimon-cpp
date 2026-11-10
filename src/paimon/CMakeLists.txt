@@ -269,6 +269,7 @@ set(PAIMON_CORE_SRCS
     core/catalog/catalog_utils.cpp
     core/catalog/file_system_catalog.cpp
     core/catalog/identifier.cpp
+    core/catalog/table_query_auth_result.cpp
     core/core_options.cpp
     core/deletionvectors/deletion_vector.cpp
     core/deletionvectors/deletion_file_writer.cpp
@@ -485,6 +486,8 @@ set(PAIMON_CORE_SRCS
     core/table/source/merge_tree_split_generator.cpp
     core/table/source/data_evolution_split_generator.cpp
     core/table/source/plan_impl.cpp
+    core/table/source/query_auth_table_read.cpp
+    core/table/source/query_auth_table_scan.cpp
     core/table/source/realtime_table_scan.cpp
     core/table/source/snapshot/snapshot_reader.cpp
     core/table/source/startup_mode.cpp
@@ -852,6 +855,7 @@ if(PAIMON_BUILD_TESTS)
                     core/catalog/file_system_catalog_test.cpp
                     core/catalog/catalog_test.cpp
                     core/catalog/identifier_test.cpp
+                    core/catalog/table_query_auth_result_test.cpp
                     core/compact/compact_deletion_file_test.cpp
                     core/compact/compact_future_manager_test.cpp
                     core/compact/noop_compact_manager_test.cpp
@@ -1046,6 +1050,8 @@ if(PAIMON_BUILD_TESTS)
                     core/table/sink/commit_message_impl_test.cpp
                     core/table/source/fallback_data_split_test.cpp
                     core/table/source/primary_key_sorted_index_scan_test.cpp
+                    core/table/source/query_auth_split_test.cpp
+                    core/table/source/query_auth_table_read_test.cpp
                     core/table/source/table_read_test.cpp
                     core/table/source/append_count_reader_test.cpp
                     core/table/source/pk_count_reader_test.cpp

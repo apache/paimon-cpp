@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "paimon/catalog/catalog.h"
+#include "paimon/core/catalog/query_auth_catalog.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/logging.h"
 #include "paimon/rest/rest_api.h"
@@ -41,7 +42,7 @@ class TableSchema;
 /// A catalog backed by a REST catalog server. Metadata operations are delegated to
 /// `RestApi`; table data is accessed through the file system configured by the
 /// server-merged options.
-class RestCatalog : public Catalog, public VersionManagedCatalog {
+class RestCatalog : public Catalog, public VersionManagedCatalog, public QueryAuthCatalog {
  public:
     /// Creates the catalog: fetches and merges "/v1/config" from the server configured
     /// by `CatalogOptions::URI`, then builds the file system from the merged options.
@@ -113,6 +114,18 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     Result<std::unique_ptr<CommitLock>> CreateCommitLock(
         const Identifier& identifier, const std::optional<std::string>& table_uuid,
         const std::string& commit_user, const CoreOptions& options) override;
+
+    /// Loads the row filters and column masks of one query of a table from the server, mirroring
+    /// Java `RESTCatalog.authTableQuery`. A 404 is `NotExist`, a 403 an `IOError` carrying a
+    /// `RestErrorDetail` with the code, and a 501 `NotImplemented`. An external table, which Java
+    /// reads without asking for rules, has none: the server is not asked for them.
+    Result<std::shared_ptr<TableQueryAuthResult>> AuthTableQuery(
+        const Identifier& identifier,
+        const std::optional<std::vector<std::string>>& select) const override;
+
+    /// Loads both from one `GetTable` response.
+    Result<std::shared_ptr<Schema>> LoadTableSchemaAndLocation(
+        const Identifier& identifier, std::string* location) const override;
 
     /// Options merged with the server side config.
     const std::map<std::string, std::string>& GetOptions() const override;

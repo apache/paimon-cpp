@@ -33,6 +33,7 @@
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/decimal.h"
+#include "arrow/util/int_util_overflow.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/data/internal_row.h"
@@ -379,6 +380,48 @@ Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Litera
     return array;
 }
 
+// The number of `unit`s since the epoch `timestamp` names, or an error when that number does not
+// fit int64. Epoch nanoseconds only reach the years 1677 to 2262, so a timestamp outside them
+// still has milliseconds but no nanoseconds to write.
+Result<int64_t> TimestampToCheckedInteger(const Timestamp& timestamp, arrow::TimeUnit::type unit) {
+    int64_t millis = timestamp.GetMillisecond();
+    const int64_t nanos = timestamp.GetNanoOfMillisecond();
+    int64_t factor = 1;
+    int64_t remainder = 0;
+    switch (unit) {
+        case arrow::TimeUnit::MILLI:
+            return millis;
+        case arrow::TimeUnit::MICRO:
+            factor = 1000;
+            remainder = nanos / 1000;
+            break;
+        case arrow::TimeUnit::NANO:
+            factor = 1000000;
+            remainder = nanos;
+            break;
+        default:
+            return Status::Invalid(fmt::format("Not support writing a timestamp literal in {}",
+                                               arrow::timestamp(unit)->ToString()));
+    }
+    // The earliest values that fit have a negative millisecond whose product alone does not, so a
+    // negative millisecond lends one `factor` to the remainder first.
+    if (millis < 0 && remainder > 0) {
+        ++millis;
+        remainder -= factor;
+    }
+    int64_t scaled = 0;
+    int64_t value = 0;
+    if (arrow::internal::MultiplyWithOverflow(millis, factor, &scaled) ||
+        arrow::internal::AddWithOverflow(scaled, remainder, &value)) {
+        // `Timestamp::ToString` cannot format an instant this far from the epoch.
+        return Status::Invalid(fmt::format(
+            "Timestamp literal of {} milliseconds and {} nanoseconds since the epoch does not fit "
+            "int64 in {}",
+            timestamp.GetMillisecond(), nanos, arrow::timestamp(unit)->ToString()));
+    }
+    return value;
+}
+
 // Writes the literals to a timestamp array of the finest time unit that keeps every value, one
 // `is_in` can only compare against a column of that very unit. One array holds one arrow type, so
 // a non null literal is needed to settle the unit.
@@ -396,18 +439,17 @@ Result<std::shared_ptr<arrow::Array>> BuildTimestampArray(const std::vector<Lite
             "Not support converting literals of TIMESTAMP type to an arrow array without a non "
             "null literal to take the time unit from");
     }
-    arrow::TimestampBuilder builder(
-        arrow::timestamp(LiteralConverter::MinRequiredTimeUnit(literals)), pool);
-    const DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(
-        checked_pointer_cast<arrow::TimestampType>(builder.type()));
+    const arrow::TimeUnit::type unit = LiteralConverter::MinRequiredTimeUnit(literals);
+    arrow::TimestampBuilder builder(arrow::timestamp(unit), pool);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
     for (const auto& literal : literals) {
         if (literal.IsNull()) {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
             continue;
         }
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(
-            DateTimeUtils::TimestampToInteger(literal.GetValue<Timestamp>(), time_type)));
+        PAIMON_ASSIGN_OR_RAISE(int64_t value,
+                               TimestampToCheckedInteger(literal.GetValue<Timestamp>(), unit));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(value));
     }
     std::shared_ptr<arrow::Array> array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&array));

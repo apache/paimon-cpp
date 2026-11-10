@@ -63,7 +63,8 @@ class PAIMON_EXPORT LiteralConverter {
     ///         precision and the scale its literals carry, so at least one literal has to be non
     ///         null and every non null one has to carry the same pair. `TIMESTAMP` is written with
     ///         the finest time unit that keeps every value, so at least one literal has to be non
-    ///         null to settle the unit.
+    ///         null to settle the unit, and a literal whose value in that unit does not fit int64
+    ///         fails.
     static Result<std::shared_ptr<arrow::Array>> ConvertLiteralsToArray(
         const FieldType& field_type, const std::vector<Literal>& literals, arrow::MemoryPool* pool);
 

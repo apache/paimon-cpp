@@ -58,6 +58,25 @@ class CatalogUtils {
     static Result<Identifier> BranchIdentifier(const Identifier& identifier,
                                                const std::string& branch);
 
+    /// Returns `identifier` naming `branch`, the branch resolved for an operation on it, so that
+    /// every catalog request of the operation goes to that branch: an identifier of the system
+    /// database or one already naming a branch is returned as it is, and any other keeps its
+    /// system table suffix, as `tbl$branch_dev$files`.
+    static Result<Identifier> ResolvedBranchIdentifier(const Identifier& identifier,
+                                                       const std::string& branch);
+
+    /// Compares scheme, authority and normalized path, treating a missing scheme as "file".
+    static Result<bool> SameTableLocation(const std::string& left, const std::string& right);
+
+    /// Fails unless `path` is `location`, where the catalog keeps `identifier`, so the query auth
+    /// settings the catalog serves for one table are never applied to the files of another.
+    /// @param location The location the catalog returned for `identifier`, or the error it failed
+    ///        with.
+    /// @param operation The operation reading `path`, as "scan", named in the error message.
+    static Status CheckPathIsTableLocation(const Identifier& identifier,
+                                           const Result<std::string>& location,
+                                           const std::string& path, const std::string& operation);
+
     /// Fails when `db_name` cannot be used as a single path component, which is required to
     /// keep the database path under the warehouse.
     static Status CheckValidDatabaseName(const std::string& db_name);

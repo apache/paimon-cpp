@@ -324,6 +324,12 @@ struct PAIMON_EXPORT Options {
     /// "rest.commit.lock-enabled" on the table. Default value is "false".
     static const char REST_COMMIT_ACQUIRE_LOCK[];
 
+    /// "query-auth.enabled" - Whether the catalog enforces row filters and column masks on reads
+    /// of the table. A scan of such a table asks the catalog built into its context for the rules
+    /// and attaches them to its splits, and a read applies them; a read path that would not apply
+    /// them is refused. The options of a read cannot disable it. Default value is "false".
+    static const char QUERY_AUTH_ENABLED[];
+
     /// "compaction.max-size-amplification-percent" - The size amplification is defined as the
     /// amount (in percentage) of additional storage needed to store a single byte of data in the
     /// merge tree for changelog mode table. Default value is 200.

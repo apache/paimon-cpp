@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <variant>
 
 #include "arrow/api.h"
@@ -595,6 +596,38 @@ TEST_F(LiteralConverterTest, TestLiteralsToArrayWithoutValue) {
     CheckLiteralsToArray(
         FieldType::STRING, {Literal(FieldType::STRING), Literal(FieldType::STRING)},
         arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"([null, null])").ValueOrDie());
+}
+
+TEST_F(LiteralConverterTest, TestLiteralsToArrayRejectsTimestampsOutOfRange) {
+    // INT64_MAX and INT64_MIN epoch nanoseconds
+    CheckLiteralsToArray(
+        FieldType::TIMESTAMP,
+        {Literal(Timestamp(9223372036854l, 775807)), Literal(Timestamp(-9223372036855l, 224192))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::NANO),
+                                                  R"([9223372036854775807, -9223372036854775808])")
+            .ValueOrDie());
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(
+                            FieldType::TIMESTAMP, {Literal(Timestamp(9223372036854l, 775808))},
+                            arrow::default_memory_pool()),
+                        "does not fit int64");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(
+                            FieldType::TIMESTAMP, {Literal(Timestamp(-9223372036855l, 224191))},
+                            arrow::default_memory_pool()),
+                        "does not fit int64");
+    // 2500-01-01T00:00:00.000000001, beyond epoch nanoseconds
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(
+                            FieldType::TIMESTAMP, {Literal(Timestamp(16725225600000l, 1))},
+                            arrow::default_memory_pool()),
+                        "does not fit int64");
+    CheckLiteralsToArray(FieldType::TIMESTAMP, {Literal(Timestamp(16725225600000l, 1000))},
+                         arrow::ipc::internal::json::ArrayFromJSON(
+                             arrow::timestamp(arrow::TimeUnit::MICRO), R"([16725225600000001])")
+                             .ValueOrDie());
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(
+            FieldType::TIMESTAMP, {Literal(Timestamp(std::numeric_limits<int64_t>::max(), 1000))},
+            arrow::default_memory_pool()),
+        "does not fit int64");
 }
 
 TEST_F(LiteralConverterTest, TestLiteralsToArrayUnsupportedType) {

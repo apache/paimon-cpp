@@ -416,6 +416,10 @@ class TestHelper {
         return channel_file_count;
     }
 
+    const std::string& TablePath() const {
+        return table_path_;
+    }
+
  private:
     void CheckExternalPath(const std::vector<std::shared_ptr<CommitMessage>>& actuals) {
         for (const auto& actual : actuals) {

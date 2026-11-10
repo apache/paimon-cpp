@@ -37,6 +37,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/sensitive_config_utils.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/catalog/query_auth_catalog.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_entry.h"
@@ -45,6 +46,7 @@
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/branch_manager.h"
@@ -130,12 +132,14 @@ struct CatalogTableInfo {
     std::string database_name;
     std::string table_name;
     std::shared_ptr<DataSchema> schema;
+    std::optional<std::string> location;
 };
 
 // Match Java CatalogUtils::listAllTables: tolerate databases or tables removed concurrently, but
 // propagate all other catalog and schema errors instead of returning incomplete system-table rows.
 Result<std::vector<CatalogTableInfo>> LoadAllDataTables(const Catalog& catalog) {
     std::vector<CatalogTableInfo> result;
+    const auto* auth_catalog = dynamic_cast<const QueryAuthCatalog*>(&catalog);
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> databases, catalog.ListDatabases());
     for (const std::string& database : databases) {
         Result<std::vector<std::string>> tables_result = catalog.ListTables(database);
@@ -147,7 +151,13 @@ Result<std::vector<CatalogTableInfo>> LoadAllDataTables(const Catalog& catalog) 
         }
         for (const std::string& table : tables_result.value()) {
             Identifier identifier(database, table);
-            Result<std::shared_ptr<Schema>> schema_result = catalog.LoadTableSchema(identifier);
+            // Keep the query auth setting and location from one response, so sys.partitions
+            // cannot apply an old table's disabled setting to a recreated table's files.
+            std::optional<std::string> location;
+            Result<std::shared_ptr<Schema>> schema_result =
+                auth_catalog != nullptr
+                    ? auth_catalog->LoadTableSchemaAndLocation(identifier, &location.emplace())
+                    : catalog.LoadTableSchema(identifier);
             if (!schema_result.ok()) {
                 if (schema_result.status().IsNotExist()) {
                     continue;
@@ -160,7 +170,7 @@ Result<std::vector<CatalogTableInfo>> LoadAllDataTables(const Catalog& catalog) 
                 return Status::Invalid("catalog returned a non-data schema for ",
                                        identifier.ToString());
             }
-            result.push_back({database, table, std::move(data_schema)});
+            result.push_back({database, table, std::move(data_schema), std::move(location)});
         }
     }
     return result;
@@ -178,6 +188,20 @@ struct AggregatedFileStats {
     bool has_snapshot = false;
     std::map<std::string, FileStats> by_partition;
 };
+
+// As for a data read, the latest published schema can enable query auth before the catalog's
+// schema does.
+Result<bool> LatestSchemaEnablesQueryAuth(const std::shared_ptr<FileSystem>& fs,
+                                          const std::string& table_path) {
+    SchemaManager schema_manager(fs, table_path);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                           schema_manager.Latest());
+    if (!latest_schema) {
+        return false;
+    }
+    return OptionsUtils::GetValueFromMap<bool>(latest_schema.value()->Options(),
+                                               Options::QUERY_AUTH_ENABLED, false);
+}
 
 // Read the latest snapshot's data files and aggregate statistics.
 Result<AggregatedFileStats> AggregateFileStats(const std::shared_ptr<FileSystem>& fs,
@@ -504,10 +528,19 @@ Result<std::vector<GenericRow>> PartitionsSystemTable::BuildRows() const {
         if (data_schema->PartitionKeys().empty()) {
             continue;
         }
+        // The partition values of a query-auth table are what its masks and row filter may hide.
+        PAIMON_ASSIGN_OR_RAISE(bool query_auth,
+                               OptionsUtils::GetValueFromMap<bool>(
+                                   data_schema->Options(), Options::QUERY_AUTH_ENABLED, false));
+        if (query_auth) {
+            continue;
+        }
 
         // Match Java's toAllPartitions by ignoring only concurrent table deletion. All other
         // metadata and I/O errors must fail the query.
-        Result<std::string> table_path_result = context_.catalog->GetTableLocation(id);
+        Result<std::string> table_path_result = table.location
+                                                    ? Result<std::string>(table.location.value())
+                                                    : context_.catalog->GetTableLocation(id);
         if (!table_path_result.ok()) {
             if (table_path_result.status().IsNotExist()) {
                 continue;
@@ -524,6 +557,18 @@ Result<std::vector<GenericRow>> PartitionsSystemTable::BuildRows() const {
                 continue;
             }
             return table_fs_result.status();
+        }
+
+        Result<bool> latest_query_auth_result =
+            LatestSchemaEnablesQueryAuth(table_fs_result.value(), table_path_result.value());
+        if (!latest_query_auth_result.ok()) {
+            if (latest_query_auth_result.status().IsNotExist()) {
+                continue;
+            }
+            return latest_query_auth_result.status();
+        }
+        if (latest_query_auth_result.value()) {
+            continue;
         }
 
         Result<AggregatedFileStats> file_stats_result =
