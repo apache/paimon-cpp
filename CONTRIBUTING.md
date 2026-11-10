@@ -27,6 +27,8 @@ Thank you for your interest in contributing to Paimon C++! This document explain
 
 If you find a bug or want to request a feature, please open an [issue](https://github.com/apache/paimon-cpp/issues/new). Include as much detail as possible — steps to reproduce, expected vs. actual behavior, environment info, etc.
 
+Use the appropriate [issue template](.github/ISSUE_TEMPLATE/) and complete all required fields.
+
 ---
 
 ## Commit Messages and Pull Request Titles
@@ -36,6 +38,10 @@ Use the [Conventional Commits](https://www.conventionalcommits.org/) format for 
 ```text
 <type>(<optional-scope>): <description>
 ```
+
+Use one of these lowercase types: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`,
+`refactor`, `revert`, `style`, or `test`. The scope is optional. For a breaking change,
+add `!` immediately before the colon, for example `feat(api)!: remove a deprecated interface`.
 
 Examples:
 

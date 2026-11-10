@@ -9,7 +9,10 @@ Linked issue: close #xxx
 
 ### Tests
 
-<!-- List UT and IT cases to verify this change -->
+<!--
+Describe tests added or updated and what they cover; explain if no test changes are needed.
+Omit execution commands, results, and reasons tests were not run locally.
+-->
 
 ### API and Format
 
