@@ -58,7 +58,8 @@ The table schema and options select the mode; there is no separate
      - Batches sorted by primary key and sequence number
      - Merge disk runs, sealed batches, and building batches by primary key
    * - PK DV
-     - Primary key; ``deletion-vectors.enabled=true``
+     - Primary key; ``merge-engine=deduplicate``;
+       ``deletion-vectors.enabled=true``
      - The same sorted PK store as PK MOR
      - Apply committed DVs, then merge disk and memory by primary key
    * - Append deduplicate
@@ -78,10 +79,12 @@ and exact residual filtering follow the mode-specific rules below.
 
 Append accepts ``INSERT`` only. PK and append deduplicate also accept
 ``UPDATE_AFTER``, ``DELETE``, and ``UPDATE_BEFORE``. PK supports composite
-primary keys, but its real-time merge engine is currently limited to
-``merge-engine=deduplicate``. Append deduplicate currently accepts exactly one
-non-null, non-nested key field and is experimental: its persisted index format
-may change.
+primary keys with ``merge-engine=deduplicate`` or ``merge-engine=partial-update``.
+PK realtime partial-update requires deletion vectors disabled
+(``deletion-vectors.enabled=false``). Partial update uses the existing merge
+function and its sequence-group, field-aggregation, and delete options. Append deduplicate currently
+accepts exactly one non-null, non-nested key field and is experimental: its
+persisted index format may change.
 
 PK DV and append deduplicate are different designs. PK DV retains primary-key
 merge semantics; append deduplicate uses a persisted stable row offset and
@@ -459,10 +462,14 @@ number, row kind, and offset. Each sorted batch is an independent merge input;
 multiple stored batches do not form a single globally sorted stream.
 
 Query construction merges sorted disk sections and the memory readers, applies
-deduplicate merge semantics, and drops final delete records. It collects all
+the configured merge engine, and drops final delete records. It collects all
 disk splits belonging to the active partition-bucket, rather than merging
 memory against only one disk split. Preparing similarly merges the sealed
 streams before handing them to ``MergeTreeWriter`` to write normal PK files.
+
+Partial update reuses the existing framework merge logic and options. The store
+continues to hold sorted batches and spill them without merging. Real-time
+compaction remains disabled.
 
 Only primary-key predicates are safe to push into unresolved versions. A
 predicate on a value column must be evaluated after version merge: filtering
@@ -629,8 +636,9 @@ Current restrictions include:
 * Process-local batch union scans only. Streaming scans, limit pushdown,
   global-index result splits, vector/full-text search, and count-only real-time
   readers are unsupported.
-* PK mode supports the deduplicate merge engine with default delete handling,
-  ascending sequence order, and ``changelog-producer=none``. Custom
+* PK mode supports deduplicate with default delete handling, or partial update
+  with deletion vectors disabled and its existing delete and sequence-group
+  options. Both require ascending sequence order and ``changelog-producer=none``. Custom
   ``sequence.field``, floating-point keys, PK global indexes, lookup without DVs,
   and read-optimized union scans are unsupported.
 * Append deduplicate requires a single non-null scalar key, a persisted offset
