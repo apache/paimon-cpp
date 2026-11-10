@@ -464,8 +464,8 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
                          CreateFileStorePathFactory(test_root));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_path_factory,
                          path_factory->CreateGlobalIndexFileFactory());
-    auto file_manager = std::make_shared<GlobalIndexFileManager>(
-        fs_, std::move(index_path_factory), std::move(checkpoint_path_factory));
+    GlobalIndexFileManager file_manager(fs_, std::move(index_path_factory),
+                                        std::move(checkpoint_path_factory));
 
     ASSERT_OK_AND_ASSIGN(bool checkpoint_exists, file_manager.CheckpointExists());
     ASSERT_FALSE(checkpoint_exists);
@@ -503,8 +503,8 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
                          CreateCheckpointPathFactory(test_root, "lumina", "f0", Range(10, 20)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> restarted_index_path_factory,
                          path_factory->CreateGlobalIndexFileFactory());
-    reopened_manager = std::make_shared<GlobalIndexFileManager>(
-        fs_, std::move(restarted_index_path_factory), std::move(checkpoint_path_factory));
+    GlobalIndexFileManager reopened_manager(fs_, std::move(restarted_index_path_factory),
+                                            std::move(checkpoint_path_factory));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> latest_input,
                          reopened_manager.OpenCheckpointInputStream());
