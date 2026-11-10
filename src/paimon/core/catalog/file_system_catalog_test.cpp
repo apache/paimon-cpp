@@ -26,6 +26,7 @@
 #include "arrow/c/helpers.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -349,7 +350,7 @@ TEST(FileSystemCatalogTest, TestBranchTableLoadsBranchSchema) {
     ASSERT_TRUE(exists);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(branch_identifier));
-    data_schema = std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
+    data_schema = std::dynamic_pointer_cast<DataSchema>(table->GetSchema());
     ASSERT_NE(nullptr, data_schema);
     ASSERT_EQ((std::vector<std::string>{"b1_c0"}), data_schema->FieldNames());
     ASSERT_EQ(3, data_schema->Id());
@@ -679,7 +680,7 @@ TEST(FileSystemCatalogTest, TestCreateTableWithBlob) {
     ASSERT_TRUE(typed_schema.Equals(loaded_schema));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(Identifier("db1", "tbl1")));
-    ASSERT_OK_AND_ASSIGN(auto arrow_schema_from_get_table, table->LatestSchema()->GetArrowSchema());
+    ASSERT_OK_AND_ASSIGN(auto arrow_schema_from_get_table, table->GetSchema()->GetArrowSchema());
     auto schema_from_get_table =
         arrow::ImportSchema(arrow_schema_from_get_table.get()).ValueOrDie();
     ASSERT_TRUE(typed_schema.Equals(schema_from_get_table));
@@ -693,7 +694,7 @@ TEST(FileSystemCatalogTest, TestCreateTableWithBlob) {
     ArrowSchemaRelease(&schema);
 }
 
-TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
+TEST(FileSystemCatalogTest, TestGetTableLoadsFormatTable) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
     options[Options::FILE_FORMAT] = "orc";
@@ -714,9 +715,8 @@ TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
                                   /*ignore_if_exists=*/false));
     ArrowSchemaRelease(&schema);
 
-    // A format table has no snapshots and no manifests, so handing it back as a Table would
-    // describe it as something it is not.
-    ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier("db1", "fmt")), "Cannot open format table");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> opened, catalog.GetTable(Identifier("db1", "fmt")));
+    ASSERT_NE(nullptr, std::dynamic_pointer_cast<FormatTable>(opened));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> format_table,
                          catalog.GetFormatTable(Identifier("db1", "fmt")));
     ASSERT_EQ(format_table->GetFormat(), FormatTable::Format::PARQUET);
@@ -1480,13 +1480,18 @@ TEST(FileSystemCatalogTest, TestClaimingVersionManagementWithoutImplementingItIs
     ASSERT_NOK_WITH_MSG(CheckVersionManagementImplemented(claiming),
                         "does not implement VersionManagedCatalog");
 
-    CommitContextBuilder claiming_builder(dir->Str(), "commit_user_1");
+    TableLoadOptions claiming_builder_load_options{dir->Str()};
+    std::map<std::string, std::string> claiming_builder_options;
+    CommitContextBuilder claiming_builder("commit_user_1");
+    claiming_builder_options = options;
+    claiming_builder_load_options.catalog = claiming;
+    claiming_builder_load_options.identifier.emplace(Identifier("db", "tbl"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> claiming_context,
-                         claiming_builder.SetOptions(options)
-                             .WithCatalog(claiming, Identifier("db", "tbl"))
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(claiming_context)),
-                        "does not implement VersionManagedCatalog");
+                         claiming_builder.Finish());
+    ASSERT_NOK_WITH_MSG(
+        FileStoreCommit::Create(claiming_builder_load_options, std::move(claiming_context),
+                                claiming_builder_options),
+        "does not implement VersionManagedCatalog");
 
     std::shared_ptr<Catalog> plain =
         std::make_shared<FileSystemCatalog>(core_options.GetFileSystem(), dir->Str(), options);

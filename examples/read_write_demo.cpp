@@ -27,6 +27,7 @@
 #include "paimon/api.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/table.h"
+#include "paimon/catalog/table_load_options.h"
 
 arrow::Result<std::shared_ptr<arrow::StructArray>> PrepareData(const arrow::FieldVector& fields) {
     arrow::StringBuilder f0_builder;
@@ -91,11 +92,13 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
 
     std::string commit_user = "some_commit_user";
     // write
-    paimon::WriteContextBuilder context_builder(table_path, commit_user);
+    std::map<std::string, std::string> context_builder_options;
+    paimon::WriteContextBuilder context_builder(commit_user);
+    context_builder_options = options;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
-                           context_builder.SetOptions(options).Finish());
+                           context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
-                           table->NewWrite(std::move(write_context)));
+                           table->NewWrite(std::move(write_context), context_builder_options));
 
     // prepare data
     auto struct_array = PrepareData(fields);
@@ -115,27 +118,34 @@ paimon::Status Run(const std::string& root_path, const std::string& db_name,
                            writer->PrepareCommit());
 
     // commit
-    paimon::CommitContextBuilder commit_context_builder(table_path, commit_user);
+    std::map<std::string, std::string> commit_context_builder_options;
+    paimon::CommitContextBuilder commit_context_builder(commit_user);
+    commit_context_builder_options = options;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> commit_context,
-                           commit_context_builder.SetOptions(options).Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> committer,
-                           table->NewCommit(std::move(commit_context)));
+                           commit_context_builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<paimon::FileStoreCommit> committer,
+        table->NewCommit(std::move(commit_context), commit_context_builder_options));
     PAIMON_RETURN_NOT_OK(committer->Commit(commit_message));
 
     // scan
-    paimon::ScanContextBuilder scan_context_builder(table_path);
+    std::map<std::string, std::string> scan_context_builder_options;
+    paimon::ScanContextBuilder scan_context_builder;
+    scan_context_builder_options = options;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
-                           scan_context_builder.SetOptions(options).Finish());
+                           scan_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scanner,
-                           table->NewScan(std::move(scan_context)));
+                           table->NewScan(std::move(scan_context), scan_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Plan> plan, scanner->CreatePlan());
 
     // read
-    paimon::ReadContextBuilder read_context_builder(table_path);
+    std::map<std::string, std::string> read_context_builder_options;
+    paimon::ReadContextBuilder read_context_builder;
+    read_context_builder_options = options;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
-                           read_context_builder.SetOptions(options).Finish());
+                           read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> table_read,
-                           table->NewRead(std::move(read_context)));
+                           table->NewRead(std::move(read_context), read_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     arrow::ArrayVector result_array_vector;

@@ -19,6 +19,7 @@
 #include "paimon/scan_context.h"
 
 #include "gtest/gtest.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -31,55 +32,10 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
-TEST(ScanContextTest, TestWithCatalogResolvesTableFileSystem) {
-    // WithCatalog is a shorthand for WithFileSystem(catalog->GetTableFileSystem(identifier)); it
-    // resolves the per-table file system when Finish() builds the context, which also keeps the
-    // catalog and identifier for the operators to resolve the table through.
-    auto table_fs = std::make_shared<MockFileSystem>();
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(table_fs);
-
-    ScanContextBuilder builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
-    ASSERT_EQ(ctx->GetSpecificFileSystem(), table_fs);
-    ASSERT_EQ(ctx->GetCatalog(), catalog);
-    ASSERT_EQ(ctx->GetIdentifier(), std::optional<Identifier>(Identifier("db1", "t1")));
-    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
-    ASSERT_EQ(catalog->TableFileSystemRequests().front(), Identifier("db1", "t1"));
-
-    // Finish() resets the builder, so the next context scans without the catalog.
-    ASSERT_OK_AND_ASSIGN(auto next_ctx, builder.Finish());
-    ASSERT_FALSE(next_ctx->GetSpecificFileSystem());
-    ASSERT_FALSE(next_ctx->GetCatalog());
-    ASSERT_FALSE(next_ctx->GetIdentifier());
-    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
-}
-
-TEST(ScanContextTest, TestWithFileSystemOverridesCatalog) {
-    // A file system the caller gave is the one that is used, and the catalog is not asked for one.
-    auto table_fs = std::make_shared<MockFileSystem>();
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(table_fs);
-    auto given_fs = std::make_shared<MockFileSystem>();
-
-    ScanContextBuilder builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(
-        auto ctx,
-        builder.WithCatalog(catalog, Identifier("db1", "t1")).WithFileSystem(given_fs).Finish());
-    ASSERT_EQ(ctx->GetSpecificFileSystem(), given_fs);
-    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
-}
-
-TEST(ScanContextTest, TestWithCatalogNullRejected) {
-    ScanContextBuilder builder("table_root_path");
-    ASSERT_NOK_WITH_MSG(builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),
-                        "cannot scan through a null catalog");
-}
 
 TEST(ScanContextTest, TestDefaultValue) {
-    ScanContextBuilder builder("table_root_path");
+    ScanContextBuilder builder;
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
-    ASSERT_EQ(ctx->GetPath(), "table_root_path");
     ASSERT_FALSE(ctx->IsStreamingMode());
     ASSERT_FALSE(ctx->GetLimit());
     ASSERT_TRUE(ctx->GetMemoryPool());
@@ -88,13 +44,11 @@ TEST(ScanContextTest, TestDefaultValue) {
     ASSERT_FALSE(ctx->GetScanFilters()->GetBucketFilter());
     ASSERT_FALSE(ctx->GetScanFilters()->GetPredicate());
     ASSERT_TRUE(ctx->GetScanFilters()->GetPartitionFilters().empty());
-    ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetGlobalIndexResult());
-    ASSERT_FALSE(ctx->GetSpecificFileSystem());
 }
 
 TEST(ScanContextTest, TestSetContent) {
-    ScanContextBuilder builder("table_root_path");
+    ScanContextBuilder builder;
     std::shared_ptr<MemoryPool> memory_pool = GetDefaultPool();
     std::shared_ptr<Executor> executor = CreateDefaultExecutor();
 
@@ -108,17 +62,15 @@ TEST(ScanContextTest, TestSetContent) {
     auto global_index_result = BitmapGlobalIndexResult::FromRanges(row_ranges);
     builder.SetGlobalIndexResult(global_index_result);
     builder.SetLimit(1000);
-    builder.AddOption("key", "value");
+
     builder.WithStreamingMode(true);
     builder.WithMemoryPool(memory_pool);
     builder.WithExecutor(executor);
     auto fs = std::make_shared<MockFileSystem>();
-    builder.WithFileSystem(fs);
-    builder.SetTableSchema("table-schema-json");
+
     auto manifest_cache = std::make_shared<LruCache>(1024);
     builder.WithCache(manifest_cache);
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
-    ASSERT_EQ(ctx->GetPath(), "table_root_path");
     ASSERT_TRUE(ctx->IsStreamingMode());
     ASSERT_EQ(1000, ctx->GetLimit());
     ASSERT_TRUE(ctx->GetScanFilters());
@@ -128,31 +80,15 @@ TEST(ScanContextTest, TestSetContent) {
     ASSERT_EQ("{1,2,4,5}", ctx->GetGlobalIndexResult()->ToString());
     ASSERT_EQ(memory_pool, ctx->GetMemoryPool());
     ASSERT_EQ(executor, ctx->GetExecutor());
-    ASSERT_TRUE(ctx->GetSpecificTableSchema().has_value());
-    ASSERT_EQ("table-schema-json", ctx->GetSpecificTableSchema().value());
-    std::map<std::string, std::string> expected_options = {{"key", "value"}};
-    ASSERT_EQ(expected_options, ctx->GetOptions());
-    ASSERT_EQ(fs, ctx->GetSpecificFileSystem());
     ASSERT_TRUE(ctx->GetCache());
-}
-
-TEST(ScanContextTest, TestSetOptionsOverridesAddedOptions) {
-    ScanContextBuilder builder("table_root_path");
-    builder.AddOption("old", "value");
-    builder.SetOptions({{"key1", "value1"}, {"key2", "value2"}});
-
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
-
-    std::map<std::string, std::string> expected_options = {{"key1", "value1"}, {"key2", "value2"}};
-    ASSERT_EQ(expected_options, ctx->GetOptions());
 }
 
 TEST(ScanContextTest, TestDefaultExecutorIsCreatedPerContext) {
     // A builder without WithExecutor() gives every context a default executor
     // of its own; nothing is shared across contexts.
-    ScanContextBuilder first_builder("table_root_path");
+    ScanContextBuilder first_builder;
     ASSERT_OK_AND_ASSIGN(auto first_ctx, first_builder.Finish());
-    ScanContextBuilder second_builder("table_root_path");
+    ScanContextBuilder second_builder;
     ASSERT_OK_AND_ASSIGN(auto second_ctx, second_builder.Finish());
     ASSERT_TRUE(first_ctx->GetExecutor());
     ASSERT_TRUE(second_ctx->GetExecutor());

@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
@@ -46,16 +47,20 @@ class CommitMessage;
 /// dropping partitions, and retrieving commit metrics.
 ///
 /// @note Direct file-system commits support append-only and primary-key tables on non-object-store
-/// paths. `CommitContextBuilder::WithCatalog()` also supports object stores when the catalog
+/// paths. `TableLoadOptions::catalog` also supports object stores when the catalog
 /// manages versions. `UseRESTCatalogCommit()` only prepares a request for the caller to send.
 class PAIMON_EXPORT FileStoreCommit {
  public:
     /// Create an instance of `FileStoreCommit`.
     ///
+    /// @param load_options Table identity, metadata and file-system loading parameters.
+    /// @param dynamic_options Overrides merged on top of the table options.
     /// @param context A unique pointer to the `CommitContext` used for commit operations.
     ///
     /// @return A Result containing a unique pointer to the `FileStoreCommit` instance.
-    static Result<std::unique_ptr<FileStoreCommit>> Create(std::unique_ptr<CommitContext> context);
+    static Result<std::unique_ptr<FileStoreCommit>> Create(
+        const TableLoadOptions& load_options, std::unique_ptr<CommitContext> context,
+        const std::map<std::string, std::string>& dynamic_options = {});
 
     virtual ~FileStoreCommit() = default;
 
@@ -93,7 +98,7 @@ class PAIMON_EXPORT FileStoreCommit {
     /// An error is terminal for the writer state which produced `realtime_commits`. The caller must
     /// discard its `RealtimeContext` and `FileStoreWrite`, load the current latest snapshot's
     /// durable offsets, recreate both objects, and replay input from those exclusive offsets.
-    /// Conflicts from `CommitContextBuilder::WithCatalog()` are retried internally. With
+    /// Conflicts from `TableLoadOptions::catalog` are retried internally. With
     /// `UseRESTCatalogCommit()`, the caller sends the request and handles server conflicts.
     /// Concurrent rollback or partition deletion must be fenced by the upstream coordinator.
     /// Configure catalog writers with `WriteContextBuilder::WithCatalog()` too.

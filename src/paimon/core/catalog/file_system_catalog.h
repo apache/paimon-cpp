@@ -33,6 +33,7 @@
 struct ArrowSchema;
 
 namespace paimon {
+class SystemTable;
 class TableSchema;
 class FileSystem;
 class Identifier;
@@ -41,7 +42,8 @@ class Logger;
 class FileSystemCatalog : public Catalog {
  public:
     FileSystemCatalog(const std::shared_ptr<FileSystem>& fs, const std::string& warehouse,
-                      const std::map<std::string, std::string>& catalog_options);
+                      const std::map<std::string, std::string>& catalog_options,
+                      const std::map<std::string, std::string>& fs_scheme_map = {});
 
     Status CreateDatabase(const std::string& db_name,
                           const std::map<std::string, std::string>& options,
@@ -79,6 +81,7 @@ class FileSystemCatalog : public Catalog {
         const Identifier& identifier) const override;
 
  private:
+    Result<std::shared_ptr<SystemTable>> LoadSystemTable(const Identifier& identifier) const;
     /// Fails when `db_name` cannot be used as a single path component, so that the returned
     /// path always stays under `warehouse`.
     static Result<std::string> NewDatabasePath(const std::string& warehouse,
@@ -108,6 +111,7 @@ class FileSystemCatalog : public Catalog {
                          const std::vector<std::string>& external_paths);
 
     std::shared_ptr<FileSystem> fs_;
+    std::map<std::string, std::string> fs_scheme_map_;
     std::string warehouse_;
     std::map<std::string, std::string> catalog_options_;
 

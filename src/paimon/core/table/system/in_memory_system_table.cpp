@@ -29,8 +29,10 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/generic_row_to_arrow_array_converter.h"
 #include "paimon/core/table/system/system_table_scan.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/read_context.h"
+#include "paimon/scan_context.h"
 #include "paimon/status.h"
 #include "paimon/table/source/table_read.h"
 
@@ -104,19 +106,30 @@ class InMemorySystemTableRead : public TableRead {
 
 }  // namespace
 
-InMemorySystemTable::InMemorySystemTable(std::string table_path)
-    : table_path_(std::move(table_path)) {}
+InMemorySystemTable::InMemorySystemTable(const std::shared_ptr<FileSystem>& fs,
+                                         std::string table_path, std::string name)
+    : SystemTable(fs, table_path, std::move(name)) {}
 
 Result<std::unique_ptr<TableScan>> InMemorySystemTable::NewScan(
-    const std::shared_ptr<ScanContext>& /*context*/) const {
-    return std::make_unique<SystemTableScan>(table_path_);
+    std::unique_ptr<ScanContext> /*context*/,
+    const std::map<std::string, std::string>& dynamic_options) const {
+    return std::make_unique<SystemTableScan>(GetRootPath());
 }
 
 Result<std::unique_ptr<TableRead>> InMemorySystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
-    return std::make_unique<InMemorySystemTableRead>(
-        checked_pointer_cast<const InMemorySystemTable>(shared_from_this()),
-        context->GetMemoryPool());
+    std::unique_ptr<ReadContext> ctx,
+    const std::map<std::string, std::string>& dynamic_options) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
+    PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const InMemorySystemTable> table,
+                           ForRead(dynamic_options));
+    return std::make_unique<InMemorySystemTableRead>(std::move(table), context->GetMemoryPool());
+}
+
+Result<std::shared_ptr<const InMemorySystemTable>> InMemorySystemTable::ForRead(
+    const std::map<std::string, std::string>& /*options*/) const {
+    return checked_pointer_cast<const InMemorySystemTable>(shared_from_this());
 }
 
 }  // namespace paimon

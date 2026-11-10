@@ -101,6 +101,35 @@ TEST(BranchManagerTest, TestResolveBranch) {
         "branch name cannot contain control characters");
 }
 
+TEST(BranchManagerTest, TestResolveMainBranchAliases) {
+    for (const std::string alias : {"main", "MAIN", "Main", "mAiN"}) {
+        SCOPED_TRACE(alias);
+        const Identifier identifier("db", "tbl$branch_" + alias);
+        ASSERT_OK_AND_ASSIGN(std::string branch,
+                             BranchManager::ResolveBranch(identifier, {}, std::nullopt, "scan"));
+        ASSERT_EQ("main", branch);
+        ASSERT_OK_AND_ASSIGN(
+            std::string agreed,
+            BranchManager::ResolveBranch(identifier, {{Options::BRANCH, "main"}}, "main", "scan"));
+        ASSERT_EQ("main", agreed);
+        ASSERT_NOK_WITH_MSG(BranchManager::ResolveBranch(identifier, {{Options::BRANCH, "dev"}},
+                                                         std::nullopt, "scan"),
+                            "a scan is aimed at one branch, but both 'main' and 'dev' were named");
+    }
+    ASSERT_OK_AND_ASSIGN(std::string option_branch,
+                         BranchManager::ResolveBranch(std::nullopt, {{Options::BRANCH, "MAIN"}},
+                                                      std::nullopt, "scan"));
+    ASSERT_EQ("MAIN", option_branch);
+    ASSERT_OK_AND_ASSIGN(std::string explicit_branch,
+                         BranchManager::ResolveBranch(std::nullopt, {}, "MAIN", "scan"));
+    ASSERT_EQ("MAIN", explicit_branch);
+    ASSERT_OK_AND_ASSIGN(
+        std::string unnamed,
+        BranchManager::ResolveBranch(Identifier("db", "tbl"), {{Options::BRANCH, "dev"}},
+                                     std::nullopt, "scan"));
+    ASSERT_EQ("dev", unnamed);
+}
+
 TEST(BranchManagerTest, TestCheckCatalogAddressableBranch) {
     ASSERT_OK(BranchManager::CheckCatalogAddressableBranch(BranchManager::DEFAULT_MAIN_BRANCH));
     ASSERT_OK(BranchManager::CheckCatalogAddressableBranch(""));

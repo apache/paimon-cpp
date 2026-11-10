@@ -455,6 +455,10 @@ set(PAIMON_CORE_SRCS
     core/stats/simple_stats_converter.cpp
     core/stats/simple_stats.cpp
     core/stats/simple_stats_evolution.cpp
+    core/table/append_only_file_store_table.cpp
+    core/table/primary_key_file_store_table.cpp
+    core/table/file_store_table.cpp
+    core/table/table_factory.cpp
     core/table/file_store.cpp
     core/table/table.cpp
     core/table/bucket_mode.cpp

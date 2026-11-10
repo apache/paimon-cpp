@@ -34,7 +34,9 @@
 #include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/partition/partition_statistics.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/result.h"
 #include "paimon/schema/schema.h"
 #include "paimon/status.h"
@@ -112,16 +114,36 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override {
         ++get_table_calls_;
+        if (table_ != nullptr) {
+            return table_;
+        }
         // Serves the per-table file system when one was set, matching `GetTableFileSystem`
         // without recording the request, so a test can still tell the two apart. No location:
         // this mock's `GetTableLocation` is the unsupported stub.
-        return std::make_shared<Table>(
-            table_file_system_ != nullptr ? table_file_system_ : file_system_,
-            /*root_path=*/"", table_schema_, identifier, table_uuid_);
+        if (!table_schema_) {
+            return Status::NotExist("table schema not set");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::string json, table_schema_->GetJsonSchema());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> schema,
+                               TableSchema::CreateFromJson(json));
+        PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileStoreTable> table,
+            FileStoreTable::Create(
+                table_file_system_ != nullptr ? table_file_system_ : file_system_, "",
+                std::shared_ptr<TableSchema>(std::move(schema)), identifier, table_uuid_, branch));
+        return std::shared_ptr<Table>(std::move(table));
     }
 
     void SetTableSchema(const std::shared_ptr<Schema>& table_schema) {
         table_schema_ = table_schema;
+    }
+
+    void SetTable(const std::shared_ptr<Table>& table) {
+        table_ = table;
+        table_uuid_ = table->CatalogUuid().value_or("");
+        table_schema_ = table->GetSchema();
+        table_file_system_ = table->GetFileSystem();
     }
 
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier) const override {
@@ -165,6 +187,10 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     size_t LoadSnapshotCalls() const {
         return load_snapshot_identifiers_.size();
+    }
+
+    void SetTableUuid(const std::string& table_uuid) {
+        table_uuid_ = table_uuid;
     }
 
     void CheckTableUuid() {
@@ -293,6 +319,7 @@ class MockVersionManagedCatalog : public Catalog, public VersionManagedCatalog {
 
     Result<bool> answer_;
     std::string table_uuid_;
+    std::shared_ptr<Table> table_;
     std::shared_ptr<Schema> table_schema_;
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<FileSystem> table_file_system_;

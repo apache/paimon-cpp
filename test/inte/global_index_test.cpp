@@ -26,6 +26,7 @@
 #include "fmt/format.h"
 #include "fmt/ranges.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/global_index/bitmap/bitmap_global_index_factory.h"
 #include "paimon/common/global_index/bitmap/bitmap_global_index_options.h"
@@ -224,12 +225,17 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         const std::vector<std::string>& write_cols,
         const std::shared_ptr<arrow::Array>& write_array) const {
         // write
-        WriteContextBuilder write_builder(table_path, "commit_user_1");
+        TableLoadOptions write_builder_load_options{table_path};
+        std::map<std::string, std::string> write_builder_options;
+        WriteContextBuilder write_builder("commit_user_1");
         write_builder.WithWriteSchema(write_cols);
-        write_builder.WithFileSystem(fs_);
+        write_builder_load_options.file_system = fs_;
+
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            auto file_store_write,
+            FileStoreWrite::Create(write_builder_load_options, std::move(write_context),
+                                   write_builder_options));
         ArrowArray c_array;
         EXPECT_TRUE(arrow::ExportArray(*write_array, &c_array).ok());
         auto record_batch = std::make_unique<RecordBatch>(
@@ -252,23 +258,33 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
     Status Commit(const std::string& table_path,
                   const std::vector<std::shared_ptr<CommitMessage>>& commit_msgs) const {
         // commit
-        CommitContextBuilder commit_builder(table_path, "commit_user_1");
-        commit_builder.WithFileSystem(fs_);
+        TableLoadOptions commit_builder_load_options{table_path};
+        std::map<std::string, std::string> commit_builder_options;
+        CommitContextBuilder commit_builder("commit_user_1");
+        commit_builder_load_options.file_system = fs_;
+
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                                commit_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileStoreCommit> file_store_commit,
+            FileStoreCommit::Create(commit_builder_load_options, std::move(commit_context),
+                                    commit_builder_options));
         return file_store_commit->Commit(commit_msgs);
     }
 
     Result<std::shared_ptr<DataSplitImpl>> ScanData(
         const std::string& table_path,
         const std::vector<std::map<std::string, std::string>>& partition_filters) const {
-        ScanContextBuilder scan_context_builder(table_path);
+        TableLoadOptions scan_context_builder_load_options{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
         scan_context_builder.SetPartitionFilter(partition_filters);
-        scan_context_builder.WithFileSystem(fs_);
+        scan_context_builder_load_options.file_system = fs_;
+
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+                                                                  std::move(scan_context),
+                                                                  scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
         EXPECT_EQ(result_plan->Splits().size(), 1);
         return std::dynamic_pointer_cast<DataSplitImpl>(result_plan->Splits()[0]);
@@ -1169,16 +1185,19 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         const std::map<std::string, std::string>& options = {},
         const std::shared_ptr<GlobalIndexResult>& index_result = nullptr,
         const std::shared_ptr<Cache>& cache = nullptr) const {
-        ScanContextBuilder scan_context_builder(table_path);
-        scan_context_builder.SetPredicate(predicate)
-            .SetOptions(options)
-            .SetGlobalIndexResult(index_result)
-            .WithFileSystem(fs_);
+        TableLoadOptions scan_context_builder_load_options{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
+        scan_context_builder_options = options;
+        scan_context_builder_load_options.file_system = fs_;
+        scan_context_builder.SetPredicate(predicate).SetGlobalIndexResult(index_result);
         if (cache) {
             scan_context_builder.WithCache(cache);
         }
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+                                                                  std::move(scan_context),
+                                                                  scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
         return result_plan;
     }
@@ -1210,14 +1229,18 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
                     const std::shared_ptr<Predicate>& predicate,
                     const std::shared_ptr<Plan>& result_plan) const {
         auto splits = result_plan->Splits();
-        ReadContextBuilder read_context_builder(table_path);
+        TableLoadOptions read_context_builder_load_options{table_path};
+        std::map<std::string, std::string> read_context_builder_options;
+        ReadContextBuilder read_context_builder;
+        read_context_builder_load_options.file_system = fs_;
         read_context_builder.SetReadFieldNames(read_schema)
             .SetPredicate(predicate)
-            .WithFileSystem(fs_)
             .EnableLateMaterializing(false);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(read_context_builder_load_options,
+                                                                  std::move(read_context),
+                                                                  read_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
                                ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -1601,13 +1624,17 @@ TEST_P(GlobalIndexTest, TestWriteIndexDecodesNestedOrcDictionaries) {
                          ScanData(table_path, /*partition_filters=*/{}));
     std::shared_ptr<IndexedSplitImpl> indexed_split =
         std::make_shared<IndexedSplitImpl>(split, std::vector<Range>{Range(0, 3)});
-    ReadContextBuilder read_builder(table_path);
-    read_builder.SetOptions(options).WithFileSystem(fs_).SetReadFieldNames(
-        {"key", "details", "attributes", "plain_details", "plain_attributes",
-         SpecialFields::RowId().Name()});
+    TableLoadOptions read_builder_load_options{table_path};
+    std::map<std::string, std::string> read_builder_options;
+    ReadContextBuilder read_builder;
+    read_builder_options = options;
+    read_builder_load_options.file_system = fs_;
+    read_builder.SetReadFieldNames({"key", "details", "attributes", "plain_details",
+                                    "plain_attributes", SpecialFields::RowId().Name()});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(read_builder_load_options, std::move(read_context),
+                                           read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                          table_read->CreateReader(indexed_split));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());

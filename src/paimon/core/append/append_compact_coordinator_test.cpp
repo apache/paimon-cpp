@@ -29,6 +29,7 @@
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -79,11 +80,15 @@ class AppendCompactCoordinatorTest : public ::testing::Test {
                           const std::map<std::string, std::string>& partition, int32_t bucket,
                           const std::shared_ptr<arrow::Array>& write_array,
                           int64_t commit_identifier) {
-        WriteContextBuilder write_builder(table_path, "commit_user_1");
+        TableLoadOptions write_builder_load_options{table_path};
+        std::map<std::string, std::string> write_builder_options;
+        WriteContextBuilder write_builder("commit_user_1");
         write_builder.WithStreamingMode(false);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            auto file_store_write,
+            FileStoreWrite::Create(write_builder_load_options, std::move(write_context),
+                                   write_builder_options));
         ArrowArray c_array;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*write_array, &c_array));
         auto record_batch = std::make_unique<RecordBatch>(
@@ -97,11 +102,15 @@ class AppendCompactCoordinatorTest : public ::testing::Test {
 
     Status Commit(const std::string& table_path,
                   const std::vector<std::shared_ptr<CommitMessage>>& commit_msgs) const {
-        CommitContextBuilder commit_builder(table_path, "commit_user_1");
+        TableLoadOptions commit_builder_load_options{table_path};
+        std::map<std::string, std::string> commit_builder_options;
+        CommitContextBuilder commit_builder("commit_user_1");
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                                commit_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileStoreCommit> file_store_commit,
+            FileStoreCommit::Create(commit_builder_load_options, std::move(commit_context),
+                                    commit_builder_options));
         return file_store_commit->Commit(commit_msgs);
     }
 
