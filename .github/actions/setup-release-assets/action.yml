@@ -1,0 +1,41 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Prepare release assets
+description: Cache and verify pinned GitHub release archives before building
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/paimon-release-assets
+        key: release-assets-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('third_party/versions.txt', 'ci/scripts/setup_rust.sh') }}
+    - shell: bash
+      run: |
+        set -eu
+        source third_party/versions.txt
+        cache_dir="${RUNNER_TEMP}/paimon-release-assets"
+        for entry in "${DEPENDENCIES[@]}"; do
+          read -r var archive url <<< "${entry}"
+          case "${var}" in
+            PAIMON_ZLIB_URL|PAIMON_ZSTD_URL|PAIMON_PROTOBUF_URL|PAIMON_ARROW_URL)
+              checksum_var="${var%_URL}_BUILD_SHA256_CHECKSUM"
+              bash ci/scripts/download_release_asset.sh "${url}" "${cache_dir}/${archive}" "${!checksum_var}"
+              echo "${var}=${cache_dir}/${archive}" >> "${GITHUB_ENV}"
+              ;;
+          esac
+        done
+        echo "PAIMON_RELEASE_ASSET_DIR=${cache_dir}" >> "${GITHUB_ENV}"

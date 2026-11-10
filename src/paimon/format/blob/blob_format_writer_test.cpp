@@ -1365,11 +1365,10 @@ class BlobFormatWriterArrayBlobTest : public BlobFormatWriterTestBase {
 
     Result<std::shared_ptr<arrow::Array>> MakeArrayBlobRow(
         const std::optional<BlobElements>& elements) const {
-        auto list_type = checked_pointer_cast<arrow::ListType>(struct_type_->field(0)->type());
-        auto list_builder = std::make_shared<arrow::ListBuilder>(
-            arrow::default_memory_pool(), std::make_shared<arrow::LargeBinaryBuilder>(), list_type);
-        arrow::StructBuilder struct_builder(struct_type_, arrow::default_memory_pool(),
-                                            {list_builder});
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> builder,
+                                          arrow::MakeBuilder(struct_type_));
+        auto& struct_builder = checked_cast<arrow::StructBuilder&>(*builder);
+        auto* list_builder = checked_cast<arrow::ListBuilder*>(struct_builder.field_builder(0));
         auto blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(list_builder->value_builder());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Append());
         if (!elements) {

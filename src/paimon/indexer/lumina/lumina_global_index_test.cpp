@@ -28,6 +28,7 @@
 #include "lumina/core/Constants.h"
 #include "lumina/extensions/experimental/BuildCombinedExtensionV0.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
@@ -235,8 +236,9 @@ class LuminaGlobalIndexTest : public ::testing::Test {
     std::shared_ptr<arrow::Array> CreateRandomVector(int32_t element_size,
                                                      int32_t dimension) const {
         int64_t total_values = element_size * dimension;
-        auto float_builder = std::make_shared<arrow::FloatBuilder>();
-        arrow::ListBuilder list_builder(arrow::default_memory_pool(), float_builder);
+        arrow::ListBuilder list_builder(arrow::default_memory_pool(),
+                                        std::make_shared<arrow::FloatBuilder>());
+        auto* float_builder = checked_cast<arrow::FloatBuilder*>(list_builder.value_builder());
 
         std::random_device rd;
         std::mt19937 gen(rd());
@@ -454,13 +456,13 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
                          CreateCheckpointPathFactory(test_root, "lumina", "f0", Range(10, 20)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
                          CreateFileStorePathFactory(test_root));
-    auto file_manager = std::make_shared<GlobalIndexFileManager>(
-        fs_, path_factory->CreateGlobalIndexFileFactory(), std::move(checkpoint_path_factory));
+    GlobalIndexFileManager file_manager(fs_, path_factory->CreateGlobalIndexFileFactory(),
+                                        std::move(checkpoint_path_factory));
 
-    ASSERT_OK_AND_ASSIGN(bool checkpoint_exists, file_manager->CheckpointExists());
+    ASSERT_OK_AND_ASSIGN(bool checkpoint_exists, file_manager.CheckpointExists());
     ASSERT_FALSE(checkpoint_exists);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> first_output,
-                         file_manager->CreateCheckpointOutputStream());
+                         file_manager.CreateCheckpointOutputStream());
     ASSERT_OK_AND_ASSIGN(std::string first_path, first_output->GetUri());
     ASSERT_TRUE(StringUtils::StartsWith(PathUtil::GetName(first_path), prefix));
     ASSERT_TRUE(StringUtils::EndsWith(first_path, "-0.index.ckpt"));
@@ -469,7 +471,7 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
     ASSERT_OK(first_output->Close());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> second_output,
-                         file_manager->CreateCheckpointOutputStream());
+                         file_manager.CreateCheckpointOutputStream());
     ASSERT_OK_AND_ASSIGN(std::string second_path, second_output->GetUri());
     ASSERT_TRUE(StringUtils::StartsWith(PathUtil::GetName(second_path), prefix));
     ASSERT_TRUE(StringUtils::EndsWith(second_path, "-1.index.ckpt"));
@@ -491,24 +493,24 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
 
     ASSERT_OK_AND_ASSIGN(checkpoint_path_factory,
                          CreateCheckpointPathFactory(test_root, "lumina", "f0", Range(10, 20)));
-    file_manager = std::make_shared<GlobalIndexFileManager>(
-        fs_, path_factory->CreateGlobalIndexFileFactory(), std::move(checkpoint_path_factory));
+    GlobalIndexFileManager reopened_manager(fs_, path_factory->CreateGlobalIndexFileFactory(),
+                                            std::move(checkpoint_path_factory));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> latest_input,
-                         file_manager->OpenCheckpointInputStream());
+                         reopened_manager.OpenCheckpointInputStream());
     char buffer[6];
     ASSERT_OK_AND_ASSIGN(int64_t read_bytes, latest_input->Read(buffer, sizeof(buffer)));
     ASSERT_EQ(read_bytes, 6);
     ASSERT_EQ(std::string(buffer, sizeof(buffer)), "id-ten");
     ASSERT_OK(latest_input->Close());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> next_output,
-                         file_manager->CreateCheckpointOutputStream());
+                         reopened_manager.CreateCheckpointOutputStream());
     ASSERT_OK_AND_ASSIGN(std::string next_path, next_output->GetUri());
     ASSERT_TRUE(StringUtils::EndsWith(next_path, "-11.index.ckpt"));
     ASSERT_OK(next_output->Close());
 
-    ASSERT_OK(file_manager->DeleteCheckpoint());
-    ASSERT_OK_AND_ASSIGN(checkpoint_exists, file_manager->CheckpointExists());
+    ASSERT_OK(reopened_manager.DeleteCheckpoint());
+    ASSERT_OK_AND_ASSIGN(checkpoint_exists, reopened_manager.CheckpointExists());
     ASSERT_FALSE(checkpoint_exists);
     ASSERT_OK_AND_ASSIGN(bool unrelated_exists, fs_->Exists(unrelated_file));
     ASSERT_TRUE(unrelated_exists);
