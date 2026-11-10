@@ -19,6 +19,7 @@
 
 #include "paimon/core/global_index/global_index_file_manager.h"
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <set>
@@ -283,6 +284,36 @@ TEST_F(GlobalIndexFileManagerTest, TestExternalCheckpointIOAndRestart) {
     for (const std::string& path : retained_paths) {
         ASSERT_OK_AND_ASSIGN(exists, fs_->Exists(path));
         ASSERT_TRUE(exists) << path;
+    }
+}
+
+TEST_F(GlobalIndexFileManagerTest, CheckpointFilesRoundRobin) {
+    std::vector<std::string> roots = {PathUtil::JoinPath(dir_->Str(), "a"),
+                                      PathUtil::JoinPath(dir_->Str(), "b"),
+                                      PathUtil::JoinPath(dir_->Str(), "c")};
+    ASSERT_OK(SetExternalPaths(roots));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
+    std::vector<std::string> directories;
+    for (const auto& root : roots) {
+        directories.push_back(PathUtil::JoinPath(root, "checkpoint/task-1"));
+    }
+
+    size_t first_directory = 0;
+    for (size_t i = 0; i < directories.size() * 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output,
+                             manager->CreateCheckpointOutputStream());
+        ASSERT_OK_AND_ASSIGN(std::string path, output->GetUri());
+        ASSERT_OK(output->Close());
+        if (i == 0) {
+            // The first directory is random; subsequent files follow the configured order.
+            auto iter =
+                std::find(directories.begin(), directories.end(), PathUtil::GetParentDirPath(path));
+            ASSERT_NE(iter, directories.end());
+            first_directory = iter - directories.begin();
+        }
+        ASSERT_EQ(path, PathUtil::JoinPath(
+                            directories[(first_directory + i) % directories.size()],
+                            fmt::format("lumina-global-index-vector-10-20-{}.index.ckpt", i)));
     }
 }
 

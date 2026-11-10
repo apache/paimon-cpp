@@ -65,7 +65,8 @@ class ExternalPathProvider {
     std::string GetNextExternalDataPath(const std::string& file_name) {
         size_t position = (++position_) % external_table_paths_.size();
         if (!cumulative_weights_.empty()) {
-            thread_local std::mt19937_64 generator(std::random_device{}());
+            thread_local std::mt19937_64 generator(
+                std::random_device{}());  // NOLINT(whitespace/braces)
             std::uniform_int_distribution<uint64_t> distribution(0, cumulative_weights_.back() - 1);
             position = std::upper_bound(cumulative_weights_.begin(), cumulative_weights_.end(),
                                         distribution(generator)) -
