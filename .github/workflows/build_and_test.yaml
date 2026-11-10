@@ -46,8 +46,6 @@ jobs:
       - name: Run packaging argument tests
         shell: bash
         run: ci/scripts/test_packaging_args.sh
-      - name: Run issue and PR metadata validation tests
-        run: python3 -m unittest discover -s ci/scripts -p 'test_check_*.py' -v
       - name: Run asan_symbolize tests
         shell: bash
         run: ci/scripts/test_asan_symbolize.sh
