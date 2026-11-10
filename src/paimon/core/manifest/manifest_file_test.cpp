@@ -134,14 +134,15 @@ class ManifestFileTest : public testing::Test {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> file_format,
                                FileFormatFactory::Get(file_format_str, {}));
         auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
-                               FileStorePathFactory::Create(
-                                   root_path, unused_schema, /*partition_keys=*/{},
-                                   /*default_part_value=*/"", file_format->Identifier(),
-                                   /*data_file_prefix=*/"data-",
-                                   /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                   /*global_index_external_path=*/std::nullopt,
-                                   /*index_file_in_data_file_dir=*/false, pool));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileStorePathFactory> path_factory,
+            FileStorePathFactory::Create(
+                root_path, unused_schema, /*partition_keys=*/{},
+                /*default_part_value=*/"", file_format->Identifier(),
+                /*data_file_prefix=*/"data-",
+                /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                /*global_index_external_path=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
                                CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
         if (cache_enabled) {
@@ -288,8 +289,9 @@ TEST_F(ManifestFileTest, TestManifestCacheIsDisabledWithoutInjectedCache) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, pool));
+                                     /*global_index_external_path=*/{},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
                          CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     ASSERT_OK_AND_ASSIGN(
@@ -329,8 +331,9 @@ TEST_F(ManifestFileTest, TestManifestCacheReusesDecodedBatches) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, pool));
+                                     /*global_index_external_path=*/{},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
                          CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     options.WithCache(manifest_cache);
@@ -369,8 +372,9 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, pool));
+                                     /*global_index_external_path=*/{},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
                          CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     options.WithCache(manifest_cache);
@@ -422,8 +426,9 @@ TEST_F(ManifestFileTest, TestReadPassesKnownSizeToOpen) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, pool));
+                                     /*global_index_external_path=*/{},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
                          CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     ASSERT_OK_AND_ASSIGN(
@@ -467,14 +472,15 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
                              FileFormatFactory::Get("avro", {}));
         auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
-                             FileStorePathFactory::Create(
-                                 test_dir->Str(), unused_schema, /*partition_keys=*/{},
-                                 /*default_part_value=*/"", file_format->Identifier(),
-                                 /*data_file_prefix=*/"data-",
-                                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                 /*global_index_external_path=*/std::nullopt,
-                                 /*index_file_in_data_file_dir=*/false, pool));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<FileStorePathFactory> path_factory,
+            FileStorePathFactory::Create(
+                test_dir->Str(), unused_schema, /*partition_keys=*/{},
+                /*default_part_value=*/"", file_format->Identifier(),
+                /*data_file_prefix=*/"data-",
+                /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                /*global_index_external_path=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool));
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
         auto cache = std::make_shared<CountingRoutingCache>(
@@ -541,14 +547,15 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
                              FileFormatFactory::Get("avro", {}));
         auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
-                             FileStorePathFactory::Create(
-                                 test_dir->Str(), unused_schema, /*partition_keys=*/{},
-                                 /*default_part_value=*/"", file_format->Identifier(),
-                                 /*data_file_prefix=*/"data-",
-                                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                 /*global_index_external_path=*/std::nullopt,
-                                 /*index_file_in_data_file_dir=*/false, pool));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<FileStorePathFactory> path_factory,
+            FileStorePathFactory::Create(
+                test_dir->Str(), unused_schema, /*partition_keys=*/{},
+                /*default_part_value=*/"", file_format->Identifier(),
+                /*data_file_prefix=*/"data-",
+                /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                /*global_index_external_path=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool));
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
         if (cache_mode != 0) {
@@ -739,8 +746,9 @@ TEST_F(ManifestFileTest, TestLegacyManifestFormatIsReadOnly) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, pool));
+                                     /*global_index_external_path=*/{},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<ManifestFile> manifest_file,

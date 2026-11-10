@@ -27,6 +27,8 @@ enum class ExternalPathStrategy {
     // Select a specific file system as the external path. Currently supported are S3 and OSS.
     SPECIFIC_FS = 2,
     // When writing a new file, a path is chosen from data-file.external-paths in turn.
-    ROUND_ROBIN = 3
+    ROUND_ROBIN = 3,
+    // Select a path randomly with probability proportional to its configured weight.
+    WEIGHTED = 4
 };
 }  // namespace paimon

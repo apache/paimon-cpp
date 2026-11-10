@@ -29,19 +29,16 @@ class PAIMON_EXPORT GlobalIndexFileWriter {
  public:
     virtual ~GlobalIndexFileWriter() = default;
 
-    /// Generates a unique file name for a new index file using the given prefix.
+    /// Generates a unique full path for a new index file using the given prefix.
     /// @note This function may be called multiple times if the index consists of multiple files.
-    virtual Result<std::string> NewFileName(const std::string& prefix) const = 0;
+    virtual Result<std::string> NewPath(const std::string& prefix) const = 0;
 
-    /// Opens a new output stream for writing index data to the specified file.
+    /// Opens a new output stream at the supplied full path, without selecting a directory.
     virtual Result<std::unique_ptr<OutputStream>> NewOutputStream(
-        const std::string& file_name) const = 0;
+        const std::string& file_path) const = 0;
 
-    /// Get the file size of input file name.
-    virtual Result<int64_t> GetFileSize(const std::string& file_name) const = 0;
-
-    /// Get the index file path of input file name.
-    virtual std::string ToPath(const std::string& file_name) const = 0;
+    /// Gets the size of the file at the supplied full path.
+    virtual Result<int64_t> GetFileSize(const std::string& file_path) const = 0;
 };
 
 }  // namespace paimon

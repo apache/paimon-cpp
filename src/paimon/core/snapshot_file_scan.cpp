@@ -360,7 +360,9 @@ Result<std::set<std::string>> SnapshotFileScan::ListFiles(
         DataField::ConvertDataFieldsToArrowSchema(latest_schema.value()->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                            core_options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
+                           core_options.GetExternalPathWeights());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
                            core_options.CreateGlobalIndexExternalPath());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
@@ -369,7 +371,7 @@ Result<std::set<std::string>> SnapshotFileScan::ListFiles(
             core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
             external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            pool));
+            /*external_path_weights=*/external_path_weights, pool));
 
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestList> manifest_list,

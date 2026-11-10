@@ -68,9 +68,9 @@ TEST_F(DataFilePathFactoryTest, TestNewChangelogPath) {
 
 TEST_F(DataFilePathFactoryTest, TestNewPathWithDataFilePrefixAndExternalPath) {
     DataFilePathFactory factory;
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<ExternalPathProvider> external_path_provider,
-        ExternalPathProvider::Create({"/tmp/external_path/"}, "p0=1/p1=0/bucket-0"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ExternalPathProvider> external_path_provider,
+                         ExternalPathProvider::Create({"/tmp/external_path/"}, "p0=1/p1=0/bucket-0",
+                                                      /*weights=*/{}));
 
     ASSERT_OK(factory_.Init(/*parent=*/"/tmp/p0=1/p1=0/bucket-0/", /*format_identifier=*/"txt",
                             /*data_file_prefix=*/"test-data-", std::move(external_path_provider)));

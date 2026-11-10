@@ -57,7 +57,7 @@ Result<std::unique_ptr<FileSystemWriteRestore>> CreateRestore(
     std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
                            options.CreateGlobalIndexExternalPath());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
@@ -65,7 +65,8 @@ Result<std::unique_ptr<FileSystemWriteRestore>> CreateRestore(
             table_path, arrow_schema, table_schema->PartitionKeys(),
             options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
             options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
-            global_index_external_path, options.IndexFileInDataFileDir(), pool));
+            global_index_external_path, options.IndexFileInDataFileDir(),
+            /*external_path_weights=*/{}, pool));
     auto snapshot_manager = std::make_shared<SnapshotManager>(fs, table_path);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestList> manifest_list,

@@ -33,7 +33,8 @@ TEST(ExternalPathProviderTest, TestInvalidExternalDataPath) {
     std::vector<std::string> external_table_paths;
     std::string relative_bucket_path = "p0=1/p1=0/bucket-0";
 
-    auto provider = ExternalPathProvider::Create(external_table_paths, relative_bucket_path);
+    auto provider =
+        ExternalPathProvider::Create(external_table_paths, relative_bucket_path, /*weights=*/{});
     ASSERT_NOK_WITH_MSG(provider.status(), "external table paths cannot be empty");
 }
 
@@ -43,7 +44,8 @@ TEST(ExternalPathProviderTest, TestGetNextExternalDataPath) {
     std::string relative_bucket_path = "p0=1/p1=0/bucket-0";
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ExternalPathProvider> provider,
-                         ExternalPathProvider::Create(external_table_paths, relative_bucket_path));
+                         ExternalPathProvider::Create(external_table_paths, relative_bucket_path,
+                                                      /*weights=*/{}));
     ASSERT_EQ(provider->GetNextExternalDataPath("file.orc"),
               "/tmp/external_path/p0=1/p1=0/bucket-0/file.orc");
 }
@@ -56,7 +58,8 @@ TEST(ExternalPathProviderTest, TestGetNextExternalDataPath2) {
     std::string relative_bucket_path = "p0=1/p1=0/bucket-0";
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ExternalPathProvider> provider,
-                         ExternalPathProvider::Create(external_table_paths, relative_bucket_path));
+                         ExternalPathProvider::Create(external_table_paths, relative_bucket_path,
+                                                      /*weights=*/{}));
 
     std::set<std::string> result_data_paths;
     result_data_paths.insert(provider->GetNextExternalDataPath("file.orc"));
@@ -78,7 +81,8 @@ TEST(ExternalPathProviderTest, TestGetNextExternalDataPathConcurrently) {
     std::string relative_bucket_path = "p0=1/p1=0/bucket-0";
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ExternalPathProvider> provider,
-                         ExternalPathProvider::Create(external_table_paths, relative_bucket_path));
+                         ExternalPathProvider::Create(external_table_paths, relative_bucket_path,
+                                                      /*weights=*/{}));
 
     const std::set<std::string> expected_data_paths = {
         "/tmp/external_path_a/p0=1/p1=0/bucket-0/file.orc",

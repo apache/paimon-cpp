@@ -53,10 +53,11 @@ class RealtimeDeduplicateDvMaterializerTest : public testing::Test {
         const auto schema = arrow::schema({arrow::field("id", arrow::int64())});
         ASSERT_OK_AND_ASSIGN(table_schema_, TableSchema::Create(0, schema, {}, {}, options));
         ASSERT_OK_AND_ASSIGN(
-            paths_, FileStorePathFactory::Create(
-                        dir_->Str(), schema, {}, "__DEFAULT_PARTITION__", "parquet", "data-",
-                        /*legacy_partition_name_enabled=*/true, {}, std::nullopt,
-                        /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+            paths_, FileStorePathFactory::Create(dir_->Str(), schema, {}, "__DEFAULT_PARTITION__",
+                                                 "parquet", "data-",
+                                                 /*legacy_partition_name_enabled=*/true, {}, {},
+                                                 /*index_file_in_data_file_dir=*/false,
+                                                 /*external_path_weights=*/{}, GetDefaultPool()));
         materializer_ = std::make_unique<Materializer>(table_schema_, paths_, /*scanner=*/nullptr,
                                                        options_, GetDefaultPool());
     }

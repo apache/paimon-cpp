@@ -222,7 +222,8 @@ class ConfigParser {
         return ParseEnum(Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY,
                          {{"none", ExternalPathStrategy::NONE},
                           {"specific-fs", ExternalPathStrategy::SPECIFIC_FS},
-                          {"round-robin", ExternalPathStrategy::ROUND_ROBIN}},
+                          {"round-robin", ExternalPathStrategy::ROUND_ROBIN},
+                          {"weighted", ExternalPathStrategy::WEIGHTED}},
                          "external path strategy", external_path_strategy);
     }
 
@@ -403,6 +404,7 @@ struct CoreOptions::Impl {
     std::optional<std::string> field_default_func;
     std::optional<std::string> scan_fallback_branch;
     std::optional<std::string> data_file_external_paths;
+    std::optional<std::string> data_file_external_paths_weights;
     std::optional<std::string> changelog_file_compression;
     std::optional<std::string> global_index_external_path;
     std::optional<std::string> scan_tag_name;
@@ -566,6 +568,8 @@ struct CoreOptions::Impl {
         // Parse data-file.external-paths - external paths for data files, comma separated
         PAIMON_RETURN_NOT_OK(
             parser.Parse(Options::DATA_FILE_EXTERNAL_PATHS, &data_file_external_paths));
+        PAIMON_RETURN_NOT_OK(parser.Parse(Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS,
+                                          &data_file_external_paths_weights));
         // Parse data-file.external-paths.strategy - strategy for selecting external path
         PAIMON_RETURN_NOT_OK(parser.ParseExternalPathStrategy(&external_path_strategy));
         // Parse data-file.prefix - file name prefix of data files, default "data-"
@@ -1862,6 +1866,27 @@ Result<std::vector<std::string>> CoreOptions::CreateExternalPaths() const {
     return external_paths;
 }
 
+Result<std::vector<int32_t>> CoreOptions::GetExternalPathWeights() const {
+    std::vector<int32_t> weights;
+    if (GetExternalPathStrategy() != ExternalPathStrategy::WEIGHTED ||
+        !impl_->data_file_external_paths_weights) {
+        return weights;
+    }
+    for (const auto& w : StringUtils::Split(impl_->data_file_external_paths_weights.value(), ",")) {
+        std::string tmp_weight = w;
+        StringUtils::Trim(&tmp_weight);
+        if (!tmp_weight.empty() && tmp_weight.front() == '+') {
+            tmp_weight.erase(0, 1);
+        }
+        auto weight = StringUtils::StringToValue<int32_t>(tmp_weight);
+        if (!weight || weight.value() <= 0) {
+            return Status::Invalid("External path weight must be a positive integer: ", tmp_weight);
+        }
+        weights.push_back(weight.value());
+    }
+    return weights;
+}
+
 std::string CoreOptions::DataFilePrefix() const {
     return impl_->data_file_prefix;
 }
@@ -1940,18 +1965,24 @@ std::optional<std::string> CoreOptions::GetGlobalIndexExternalPath() const {
     return impl_->global_index_external_path;
 }
 
-Result<std::optional<std::string>> CoreOptions::CreateGlobalIndexExternalPath() const {
+Result<std::vector<std::string>> CoreOptions::CreateGlobalIndexExternalPath() const {
+    std::vector<std::string> external_paths;
     std::optional<std::string> global_index_external_path = GetGlobalIndexExternalPath();
-    if (global_index_external_path == std::nullopt || global_index_external_path->empty()) {
-        return std::optional<std::string>();
+    if (!global_index_external_path || global_index_external_path->empty()) {
+        return external_paths;
     }
-    std::string tmp_path = global_index_external_path.value();
-    StringUtils::Trim(&tmp_path);
-    PAIMON_ASSIGN_OR_RAISE(Path path, PathUtil::ToPath(tmp_path));
-    if (path.scheme.empty()) {
-        return Status::Invalid(fmt::format("scheme is null, path is {}", tmp_path));
+    for (auto tmp_path : StringUtils::Split(global_index_external_path.value(), ",")) {
+        StringUtils::Trim(&tmp_path);
+        PAIMON_ASSIGN_OR_RAISE(Path path, PathUtil::ToPath(tmp_path));
+        if (path.scheme.empty()) {
+            return Status::Invalid(fmt::format("scheme is null, path is {}", tmp_path));
+        }
+        external_paths.push_back(path.ToString());
     }
-    return std::optional<std::string>(path.ToString());
+    if (external_paths.empty()) {
+        return Status::Invalid("external paths is empty");
+    }
+    return external_paths;
 }
 
 std::optional<std::string> CoreOptions::GetScanTagName() const {

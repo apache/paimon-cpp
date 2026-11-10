@@ -166,7 +166,7 @@ class RawFileSplitReadTest : public ::testing::Test {
             DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                options.CreateExternalPaths());
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_path,
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_path,
                                options.CreateGlobalIndexExternalPath());
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
@@ -174,7 +174,8 @@ class RawFileSplitReadTest : public ::testing::Test {
                 read_context->GetPath(), schema, table_schema->PartitionKeys(),
                 options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
                 options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
-                global_index_path, options.IndexFileInDataFileDir(), pool_));
+                global_index_path, options.IndexFileInDataFileDir(), /*external_path_weights=*/{},
+                pool_));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor,
                                CreateDefaultExecutor(/*thread_count=*/2));
         std::shared_ptr<InternalReadContext> shared_context(std::move(internal_context));
@@ -215,7 +216,7 @@ class RawFileSplitReadTest : public ::testing::Test {
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
                              core_options.CreateExternalPaths());
-        ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_external_path,
+        ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_path,
                              core_options.CreateGlobalIndexExternalPath());
 
         ASSERT_OK_AND_ASSIGN(
@@ -225,7 +226,7 @@ class RawFileSplitReadTest : public ::testing::Test {
                 core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
                 core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
                 external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-                pool_));
+                /*external_path_weights=*/{}, pool_));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                              CreateDefaultExecutor(/*thread_count=*/2));
         auto split_read = std::make_unique<RawFileSplitRead>(
@@ -302,7 +303,7 @@ TEST_F(RawFileSplitReadTest, TestCreateReaderUsesExplicitPredicate) {
     const CoreOptions& options = context->GetCoreOptions();
     const auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_path,
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_path,
                          options.CreateGlobalIndexExternalPath());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> paths,
@@ -310,7 +311,7 @@ TEST_F(RawFileSplitReadTest, TestCreateReaderUsesExplicitPredicate) {
             path, schema, table_schema->PartitionKeys(), options.GetPartitionDefaultName(),
             options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
             options.LegacyPartitionNameEnabled(), external_paths, global_index_path,
-            options.IndexFileInDataFileDir(), pool_));
+            options.IndexFileInDataFileDir(), /*external_path_weights=*/{}, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
     RawFileSplitRead read(paths, context, pool_, executor);
     auto split = std::dynamic_pointer_cast<DataSplitImpl>(PrepareDataSplits().front());
@@ -567,7 +568,7 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
         DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
                          core_options.CreateExternalPaths());
-    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_external_path,
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_path,
                          core_options.CreateGlobalIndexExternalPath());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> path_factory,
@@ -576,7 +577,7 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
             core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
             external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            pool_));
+            /*external_path_weights=*/{}, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                          CreateDefaultExecutor(/*thread_count=*/2));
     auto split_read = std::make_unique<RawFileSplitRead>(path_factory, std::move(internal_context),
@@ -823,7 +824,7 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
                          core_options.CreateExternalPaths());
-    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_external_path,
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_path,
                          core_options.CreateGlobalIndexExternalPath());
 
     ASSERT_OK_AND_ASSIGN(
@@ -833,7 +834,7 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
             core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
             external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            pool_));
+            /*external_path_weights=*/{}, pool_));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                          CreateDefaultExecutor(/*thread_count=*/2));

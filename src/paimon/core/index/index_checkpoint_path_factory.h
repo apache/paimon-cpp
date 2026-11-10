@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "paimon/common/utils/path_util.h"
 #include "paimon/result.h"
@@ -35,22 +36,28 @@ class IndexCheckpointPathFactory {
 
     /// Creates the path for the specified checkpoint id, without storage I/O.
     virtual std::string NewPath(int64_t checkpoint_id) const = 0;
-    virtual std::string ToPath(const std::string& file_name) const = 0;
 
-    /// Returns the directory containing the checkpoint files.
-    virtual const std::string& GetDirectoryPath() const = 0;
+    /// Returns the directories containing the checkpoint files.
+    virtual const std::vector<std::string>& GetDirectoryPaths() const = 0;
 
     /// Returns the checkpoint id when the file name belongs to this factory.
     virtual std::optional<int64_t> GetCheckpointId(const std::string& file_name) const = 0;
 
-    /// Returns the task's checkpoint directory under the configured global index directory.
-    static Result<std::string> GetTaskDirectory(
+    /// Returns the task's checkpoint directories under the configured global index directories.
+    static Result<std::vector<std::string>> GetTaskDirectories(
         const std::string& table_path, const std::string& task_id,
-        const std::optional<std::string>& global_index_external_path) {
+        const std::vector<std::string>& global_index_external_path) {
         PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint task id", task_id));
-        std::string index_directory =
-            global_index_external_path.value_or(PathUtil::JoinPath(table_path, "index"));
-        return PathUtil::JoinPath(PathUtil::JoinPath(index_directory, "checkpoint"), task_id);
+        std::vector<std::string> roots = {PathUtil::JoinPath(table_path, "index")};
+        if (!global_index_external_path.empty()) {
+            roots = global_index_external_path;
+        }
+        std::vector<std::string> directories;
+        for (const auto& root : roots) {
+            directories.push_back(
+                PathUtil::JoinPath(PathUtil::JoinPath(root, "checkpoint"), task_id));
+        }
+        return directories;
     }
 };
 

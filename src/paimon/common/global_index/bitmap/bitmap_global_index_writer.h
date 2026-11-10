@@ -82,7 +82,7 @@ class BitmapGlobalIndexWriter : public GlobalIndexWriter {
     std::shared_ptr<BlockCompressionFactory> compression_factory_;
     std::shared_ptr<MemoryPool> pool_;
 
-    std::string file_name_;
+    std::string file_path_;
     std::shared_ptr<OutputStream> output_stream_;
     std::unique_ptr<BitmapGlobalIndexFormat::StreamingWriter> streaming_writer_;
     int64_t row_count_ = 0;

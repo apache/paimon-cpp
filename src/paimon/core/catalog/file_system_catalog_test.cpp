@@ -1246,11 +1246,16 @@ TEST(FileSystemCatalogTest, TestDropTableWithGlobalIndexExternalPathOnMainBranch
     ASSERT_TRUE(global_index_dir);
     std::string global_index_path = global_index_dir->Str();
     global_index_path = "FILE://" + global_index_path;
+    auto second_index_dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(second_index_dir);
+    std::string second_index_path = "FILE://" + second_index_dir->Str();
 
     // Create a file in external path to simulate global index data
     ASSERT_OK_AND_ASSIGN(auto fs, FileSystemFactory::Get("local", dir->Str(), {}));
     std::string index_file = PathUtil::JoinPath(global_index_path, "index-file.bin");
     ASSERT_OK(fs->WriteFile(index_file, "index data", /*overwrite=*/true));
+    std::string second_index_file = PathUtil::JoinPath(second_index_path, "index-file.bin");
+    ASSERT_OK(fs->WriteFile(second_index_file, "index data", /*overwrite=*/true));
 
     // Verify index file exists
     ASSERT_OK_AND_ASSIGN(bool index_file_exists, fs->Exists(index_file));
@@ -1266,7 +1271,8 @@ TEST(FileSystemCatalogTest, TestDropTableWithGlobalIndexExternalPathOnMainBranch
     ASSERT_TRUE(arrow::ExportSchema(typed_schema, &schema).ok());
 
     std::map<std::string, std::string> table_options = options;
-    table_options[Options::GLOBAL_INDEX_EXTERNAL_PATH] = global_index_path;
+    table_options[Options::GLOBAL_INDEX_EXTERNAL_PATH] =
+        global_index_path + "," + second_index_path;
 
     ASSERT_OK(catalog.CreateTable(Identifier("test_db", "tbl_global_index"), &schema, {}, {},
                                   table_options, false));
@@ -1287,6 +1293,8 @@ TEST(FileSystemCatalogTest, TestDropTableWithGlobalIndexExternalPathOnMainBranch
 
     // Verify global index external path is also cleaned up
     ASSERT_OK_AND_ASSIGN(bool global_index_exists, fs->Exists(global_index_path));
+    ASSERT_FALSE(global_index_exists);
+    ASSERT_OK_AND_ASSIGN(global_index_exists, fs->Exists(second_index_path));
     ASSERT_FALSE(global_index_exists);
 
     ArrowSchemaRelease(&schema);

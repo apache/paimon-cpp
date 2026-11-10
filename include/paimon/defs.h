@@ -495,8 +495,15 @@ struct PAIMON_EXPORT Options {
     /// written, multiple elements separated by commas.
     static const char DATA_FILE_EXTERNAL_PATHS[];
     /// "data-file.external-paths.strategy" - The strategy of selecting an external path when
-    /// writing data. Values can be: "none", "specific-fs", "round-robin". Default value is "none".
+    /// writing data. Values: "none", "specific-fs", "round-robin", "weighted". Default is "none".
     static const char DATA_FILE_EXTERNAL_PATHS_STRATEGY[];
+    /// "data-file.external-paths.weights" - The weights for external paths when
+    /// data-file.external-paths.strategy is set to weighted.
+    /// Format: 'weight1,weight2,...' with weights corresponding to paths in
+    /// data-file.external-paths by order.
+    /// Example: '10,5,15' means first path has weight 10, second 5, third 15.
+    /// Weights must be positive integers.
+    static const char DATA_FILE_EXTERNAL_PATHS_WEIGHTS[];
     /// "data-file.prefix" - Specify the file name prefix of data files. Default value is "data-".
     static const char DATA_FILE_PREFIX[];
     /// "index-file-in-data-file-dir" - Whether index file in data file directory. Default value is
@@ -611,7 +618,8 @@ struct PAIMON_EXPORT Options {
     /// "global-index.thread-num" - The maximum number of concurrent scanner for global index. No
     /// default value. By default is the number of processors available to the machine.
     static const char GLOBAL_INDEX_THREAD_NUM[];
-    /// "global-index.external-path" - Global index root directory, if not set, the global index
+    /// "global-index.external-path" - Comma-separated global index root directories. New files
+    /// and checkpoints use independent round robin. If not set, the global index
     /// files will be stored under the index directory.
     static const char GLOBAL_INDEX_EXTERNAL_PATH[];
     /// "global-index.search-mode" - Fallback search mode for global index queries, used when the

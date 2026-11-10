@@ -18,6 +18,7 @@
 
 #include "paimon/core/utils/file_store_path_factory.h"
 
+#include <algorithm>
 #include <atomic>
 #include <limits>
 #include <mutex>
@@ -55,7 +56,7 @@ class FileStorePathFactoryTest : public ::testing::Test {
 
     std::shared_ptr<FileStorePathFactory> CreateFactory(
         const std::string& root,
-        const std::optional<std::string>& global_index_external_path = std::nullopt) const {
+        const std::vector<std::string>& global_index_external_path = {}) const {
         arrow::FieldVector fields = {arrow::field("f0", arrow::boolean()),
                                      arrow::field("f1", arrow::int8()),
                                      arrow::field("f2", arrow::int8()),
@@ -84,7 +85,7 @@ class FileStorePathFactoryTest : public ::testing::Test {
                 root, schema, {"f0", "f3"}, options.GetPartitionDefaultName(),
                 options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
                 options.LegacyPartitionNameEnabled(), external_paths, global_index_external_path,
-                options.IndexFileInDataFileDir(), mem_pool_));
+                options.IndexFileInDataFileDir(), /*external_path_weights=*/{}, mem_pool_));
         return path_factory;
     }
 
@@ -160,13 +161,14 @@ TEST_F(FileStorePathFactoryTest, TestCreateFactoryWithNoPartition) {
         arrow::field("f10", arrow::float64()), arrow::field("f11", arrow::utf8()),
         arrow::field("f12", arrow::binary()),  arrow::field("non-partition-field", arrow::int32())};
     auto schema = arrow::schema(fields);
-    ASSERT_OK_AND_ASSIGN(auto path_factory,
-                         FileStorePathFactory::Create(
-                             dir->Str(), schema, {}, "default", /*identifier=*/"mock_format",
-                             /*data_file_prefix=*/"data-", /*legacy_partition_name_enabled=*/true,
-                             /*external_paths=*/std::vector<std::string>(),
-                             /*global_index_external_path=*/std::nullopt,
-                             /*index_file_in_data_file_dir=*/false, mem_pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto path_factory,
+        FileStorePathFactory::Create(
+            dir->Str(), schema, {}, "default", /*identifier=*/"mock_format",
+            /*data_file_prefix=*/"data-", /*legacy_partition_name_enabled=*/true,
+            /*external_paths=*/std::vector<std::string>(),
+            /*global_index_external_path=*/{},
+            /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, mem_pool_));
     ASSERT_OK_AND_ASSIGN(auto data_file_path_factory,
                          path_factory->CreateDataFilePathFactory(BinaryRow::EmptyRow(), 123));
     ASSERT_EQ(data_file_path_factory->ToPath("my-data-file-name"),
@@ -193,8 +195,10 @@ TEST_F(FileStorePathFactoryTest, TestIndexManifestAndStatsPaths) {
         ASSERT_EQ(stats_file_path,
                   dir->Str() + "/statistics/stats-" + uuid + "-" + std::to_string(i));
     }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_factory,
+                         path_factory->CreateGlobalIndexFileFactory());
     for (int32_t i = 0; i < 20; i++) {
-        std::string index_file_path = path_factory->NewIndexFile();
+        std::string index_file_path = index_factory->NewPath();
         ASSERT_EQ(index_file_path, dir->Str() + "/index/index-" + uuid + "-" + std::to_string(i));
     }
     std::string index_file_path = path_factory->ToIndexFilePath("my-index-file-name");
@@ -217,14 +221,15 @@ TEST_F(FileStorePathFactoryTest, TestCreateDataFilePathFactoryWithPartition) {
         arrow::field("f12", arrow::binary()),  arrow::field("non-partition-field", arrow::int32())};
     auto schema = arrow::schema(fields);
 
-    ASSERT_OK_AND_ASSIGN(auto path_factory, FileStorePathFactory::Create(
-                                                dir->Str(), schema, {"dt", "hr"}, "default",
-                                                /*identifier=*/"mock_format",
-                                                /*data_file_prefix=*/"data-",
-                                                /*legacy_partition_name_enabled=*/true,
-                                                /*external_paths=*/std::vector<std::string>(),
-                                                /*global_index_external_path=*/std::nullopt,
-                                                /*index_file_in_data_file_dir=*/false, mem_pool_));
+    ASSERT_OK_AND_ASSIGN(auto path_factory,
+                         FileStorePathFactory::Create(dir->Str(), schema, {"dt", "hr"}, "default",
+                                                      /*identifier=*/"mock_format",
+                                                      /*data_file_prefix=*/"data-",
+                                                      /*legacy_partition_name_enabled=*/true,
+                                                      /*external_paths=*/std::vector<std::string>(),
+                                                      /*global_index_external_path=*/{},
+                                                      /*index_file_in_data_file_dir=*/false,
+                                                      /*external_path_weights=*/{}, mem_pool_));
     CheckPartition(20211224, 18, *path_factory, "/dt=20211224/hr=18");
     CheckPartition(20211224, std::nullopt, *path_factory, "/dt=20211224/hr=default");
     CheckPartition(std::nullopt, 16, *path_factory, "/dt=default/hr=16");
@@ -251,8 +256,9 @@ TEST_F(FileStorePathFactoryTest, TestGetHierarchicalPartitionPath) {
                                      /*identifier=*/"mock_format", /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true,
                                      /*external_paths=*/std::vector<std::string>(),
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, mem_pool_));
+                                     /*global_index_external_path=*/{},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, mem_pool_));
 
     {
         BinaryRow row = BinaryRowGenerator::GenerateRow({10l, 5}, mem_pool_.get());
@@ -283,14 +289,15 @@ TEST_F(FileStorePathFactoryTest, TestToBinaryRowAndToPartitionString) {
         arrow::field("f10", arrow::float64()), arrow::field("f11", arrow::utf8()),
         arrow::field("f12", arrow::binary()),  arrow::field("non-partition-field", arrow::int32())};
     auto schema = arrow::schema(fields);
-    ASSERT_OK_AND_ASSIGN(auto path_factory, FileStorePathFactory::Create(
-                                                dir->Str(), schema, {"dt", "hr"}, "default",
-                                                /*identifier=*/"mock_format",
-                                                /*data_file_prefix=*/"data-",
-                                                /*legacy_partition_name_enabled=*/true,
-                                                /*external_paths=*/std::vector<std::string>(),
-                                                /*global_index_external_path=*/std::nullopt,
-                                                /*index_file_in_data_file_dir=*/false, mem_pool_));
+    ASSERT_OK_AND_ASSIGN(auto path_factory,
+                         FileStorePathFactory::Create(dir->Str(), schema, {"dt", "hr"}, "default",
+                                                      /*identifier=*/"mock_format",
+                                                      /*data_file_prefix=*/"data-",
+                                                      /*legacy_partition_name_enabled=*/true,
+                                                      /*external_paths=*/std::vector<std::string>(),
+                                                      /*global_index_external_path=*/{},
+                                                      /*index_file_in_data_file_dir=*/false,
+                                                      /*external_path_weights=*/{}, mem_pool_));
     {
         std::map<std::string, std::string> partition_map;
         partition_map["dt"] = "20211224";
@@ -391,8 +398,9 @@ TEST_F(FileStorePathFactoryTest, TestConcurrentToBinaryRowAndGetPartitionString)
                                      /*identifier=*/"mock_format", /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true,
                                      /*external_paths=*/std::vector<std::string>(),
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, mem_pool_));
+                                     /*global_index_external_path=*/{},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, mem_pool_));
 
     const std::vector<std::pair<std::map<std::string, std::string>, std::string>> test_cases = {
         {{{"dt", "20211224"}, {"hr", "23"}}, "dt=20211224/hr=23/"},
@@ -473,8 +481,9 @@ TEST_F(FileStorePathFactoryTest, TestCreateIndexFileFactory) {
                                          /*data_file_prefix=*/"data-",
                                          /*legacy_partition_name_enabled=*/true,
                                          /*external_paths=*/{},
-                                         /*global_index_external_path=*/std::nullopt,
-                                         /*index_file_in_data_file_dir=*/false, mem_pool_));
+                                         /*global_index_external_path=*/{},
+                                         /*index_file_in_data_file_dir=*/false,
+                                         /*external_path_weights=*/{}, mem_pool_));
         auto partition = BinaryRowGenerator::GenerateRow({true, 10}, mem_pool_.get());
         ASSERT_OK_AND_ASSIGN(
             auto index_path_factory,
@@ -499,8 +508,9 @@ TEST_F(FileStorePathFactoryTest, TestCreateIndexFileFactory) {
                                          /*data_file_prefix=*/"data-",
                                          /*legacy_partition_name_enabled=*/true,
                                          /*external_paths=*/{"/tmp/external-path"},
-                                         /*global_index_external_path=*/std::nullopt,
-                                         /*index_file_in_data_file_dir=*/false, mem_pool_));
+                                         /*global_index_external_path=*/{},
+                                         /*index_file_in_data_file_dir=*/false,
+                                         /*external_path_weights=*/{}, mem_pool_));
         auto partition = BinaryRowGenerator::GenerateRow({true, 10}, mem_pool_.get());
         ASSERT_OK_AND_ASSIGN(
             auto index_path_factory,
@@ -525,8 +535,9 @@ TEST_F(FileStorePathFactoryTest, TestCreateIndexFileFactory) {
                                          /*data_file_prefix=*/"data-",
                                          /*legacy_partition_name_enabled=*/true,
                                          /*external_paths=*/{},
-                                         /*global_index_external_path=*/std::nullopt,
-                                         /*index_file_in_data_file_dir=*/true, mem_pool_));
+                                         /*global_index_external_path=*/{},
+                                         /*index_file_in_data_file_dir=*/true,
+                                         /*external_path_weights=*/{}, mem_pool_));
         auto partition = BinaryRowGenerator::GenerateRow({true, 10}, mem_pool_.get());
         ASSERT_OK_AND_ASSIGN(
             auto index_path_factory,
@@ -549,8 +560,9 @@ TEST_F(FileStorePathFactoryTest, TestCreateIndexFileFactory) {
                                          /*data_file_prefix=*/"data-",
                                          /*legacy_partition_name_enabled=*/true,
                                          /*external_paths=*/{"/tmp/external-path"},
-                                         /*global_index_external_path=*/std::nullopt,
-                                         /*index_file_in_data_file_dir=*/true, mem_pool_));
+                                         /*global_index_external_path=*/{},
+                                         /*index_file_in_data_file_dir=*/true,
+                                         /*external_path_weights=*/{}, mem_pool_));
         auto partition = BinaryRowGenerator::GenerateRow({true, 10}, mem_pool_.get());
         ASSERT_OK_AND_ASSIGN(
             auto index_path_factory,
@@ -558,6 +570,10 @@ TEST_F(FileStorePathFactoryTest, TestCreateIndexFileFactory) {
         ASSERT_EQ(index_path_factory->NewPath(),
                   "/tmp/external-path/f0=true/f1=10/bucket-2/index-" +
                       file_store_path_factory->uuid_ + "-0");
+        ASSERT_EQ(index_path_factory->NewPathFromName("named.index"),
+                  "/tmp/external-path/f0=true/f1=10/bucket-2/named.index");
+        ASSERT_EQ(index_path_factory->ToPath("named.index"),
+                  dir->Str() + "/f0=true/f1=10/bucket-2/named.index");
     }
     {
         // test with global index external path
@@ -575,12 +591,15 @@ TEST_F(FileStorePathFactoryTest, TestCreateIndexFileFactory) {
                                          /*legacy_partition_name_enabled=*/true,
                                          /*external_paths=*/std::vector<std::string>(),
                                          /*global_index_external_path=*/{"/tmp/external-path"},
-                                         /*index_file_in_data_file_dir=*/false, mem_pool_));
+                                         /*index_file_in_data_file_dir=*/false,
+                                         /*external_path_weights=*/{}, mem_pool_));
         auto partition = BinaryRowGenerator::GenerateRow({true, 10}, mem_pool_.get());
         ASSERT_OK_AND_ASSIGN(
             auto index_path_factory,
             file_store_path_factory->CreateIndexFileFactory(partition, /*bucket=*/2));
-        ASSERT_EQ(index_path_factory->ToPath("bitmap.index"), "/tmp/external-path/bitmap.index");
+        ASSERT_EQ(index_path_factory->NewPathFromName("bitmap.index"),
+                  "/tmp/external-path/bitmap.index");
+        ASSERT_EQ(index_path_factory->ToPath("bitmap.index"), dir->Str() + "/index/bitmap.index");
         ASSERT_TRUE(index_path_factory->IsExternalPath());
 
         auto index_file_meta = std::make_shared<IndexFileMeta>(
@@ -589,6 +608,12 @@ TEST_F(FileStorePathFactoryTest, TestCreateIndexFileFactory) {
             /*external_path=*/"/tmp/external-path/bitmap.index",
             /*global_index_meta=*/std::nullopt);
         ASSERT_EQ(index_path_factory->ToPath(index_file_meta), "/tmp/external-path/bitmap.index");
+        auto local_meta = std::make_shared<IndexFileMeta>("bitmap", "old.index", 0, 0, std::nullopt,
+                                                          std::nullopt);
+        ASSERT_EQ(index_path_factory->ToPath(local_meta), dir->Str() + "/index/old.index");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> local_factory,
+                             CreateFactory(dir->Str())->CreateGlobalIndexFileFactory());
+        ASSERT_EQ(local_factory->ToPath(index_file_meta), "/tmp/external-path/bitmap.index");
     }
 }
 
@@ -603,16 +628,15 @@ TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactory) {
                          file_store_path_factory->CreateGlobalIndexCheckpointPathFactory(
                              "lumina", "vector", Range(10, 20), "task-1"));
     std::string checkpoint_dir = PathUtil::JoinPath(dir->Str(), "index/checkpoint/task-1");
-    ASSERT_OK_AND_ASSIGN(std::string task_directory, IndexCheckpointPathFactory::GetTaskDirectory(
-                                                         dir->Str(), "task-1", std::nullopt));
-    ASSERT_EQ(task_directory, checkpoint_dir);
-    ASSERT_EQ(checkpoint_path_factory->GetDirectoryPath(), checkpoint_dir);
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> task_directories,
+                         IndexCheckpointPathFactory::GetTaskDirectories(dir->Str(), "task-1", {}));
+    ASSERT_EQ(task_directories, std::vector<std::string>{checkpoint_dir});
+    ASSERT_EQ(checkpoint_path_factory->GetDirectoryPaths(),
+              std::vector<std::string>{checkpoint_dir});
     std::string first_path = checkpoint_path_factory->NewPath(0);
     ASSERT_EQ(first_path, PathUtil::JoinPath(checkpoint_dir, prefix + "0.index.ckpt"));
     std::string second_path = checkpoint_path_factory->NewPath(1);
     ASSERT_EQ(second_path, PathUtil::JoinPath(checkpoint_dir, prefix + "1.index.ckpt"));
-    ASSERT_EQ(checkpoint_path_factory->ToPath("checkpoint"),
-              PathUtil::JoinPath(checkpoint_dir, "checkpoint"));
     ASSERT_EQ(checkpoint_path_factory->GetCheckpointId(prefix + "9.index.ckpt"), 9);
     ASSERT_EQ(
         checkpoint_path_factory->GetCheckpointId("lumina-global-index-other-10-20-9.index.ckpt"),
@@ -641,19 +665,19 @@ TEST_F(FileStorePathFactoryTest, TestCreateGlobalIndexCheckpointPathFactoryWithE
     ASSERT_TRUE(dir);
     for (const std::string& external_path :
          {"file://" + dir->Str() + "/external-index/", std::string("s3://bucket/external-index")}) {
-        auto factory = CreateFactory(dir->Str(), external_path);
+        auto factory = CreateFactory(dir->Str(), {external_path});
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_factory,
                              factory->CreateGlobalIndexCheckpointPathFactory(
                                  "lumina", "vector", Range(10, 20), "task-1"));
         std::string checkpoint_dir = PathUtil::JoinPath(external_path, "checkpoint/task-1");
         ASSERT_OK_AND_ASSIGN(
-            std::string task_directory,
-            IndexCheckpointPathFactory::GetTaskDirectory(dir->Str(), "task-1", external_path));
-        ASSERT_EQ(task_directory, checkpoint_dir);
-        ASSERT_EQ(checkpoint_factory->GetDirectoryPath(), checkpoint_dir);
+            std::vector<std::string> task_directories,
+            IndexCheckpointPathFactory::GetTaskDirectories(dir->Str(), "task-1", {external_path}));
+        ASSERT_EQ(task_directories, std::vector<std::string>{checkpoint_dir});
+        ASSERT_EQ(checkpoint_factory->GetDirectoryPaths(),
+                  std::vector<std::string>{checkpoint_dir});
         std::string file_name = "lumina-global-index-vector-10-20-9.index.ckpt";
         ASSERT_EQ(checkpoint_factory->NewPath(9), PathUtil::JoinPath(checkpoint_dir, file_name));
-        ASSERT_EQ(checkpoint_factory->ToPath(file_name), checkpoint_factory->NewPath(9));
     }
     ASSERT_OK_AND_ASSIGN(bool exists, dir->GetFileSystem()->Exists(
                                           PathUtil::JoinPath(dir->Str(), "external-index")));
@@ -671,9 +695,10 @@ TEST_F(FileStorePathFactoryTest, TestCheckpointFileIdPath) {
                                  "lumina", "vector", Range(10, 20), "task-1"));
         std::string path = checkpoint_factory->NewPath(file_id);
         ASSERT_EQ(checkpoint_factory->GetCheckpointId(PathUtil::GetName(path)), file_id);
-        ASSERT_OK_AND_ASSIGN(bool exists,
-                             dir->GetFileSystem()->Exists(checkpoint_factory->GetDirectoryPath()));
-        ASSERT_FALSE(exists);
+        for (const auto& directory : checkpoint_factory->GetDirectoryPaths()) {
+            ASSERT_OK_AND_ASSIGN(bool exists, dir->GetFileSystem()->Exists(directory));
+            ASSERT_FALSE(exists);
+        }
     }
 }
 
@@ -688,9 +713,13 @@ TEST_F(FileStorePathFactoryTest, TestCheckpointTaskIsolation) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> other_factory,
                          factory->CreateGlobalIndexCheckpointPathFactory("lumina", "vector",
                                                                          Range(10, 20), "task-2"));
-    ASSERT_NE(own_factory->GetDirectoryPath(), other_factory->GetDirectoryPath());
-    ASSERT_OK(fs->Mkdirs(own_factory->GetDirectoryPath()));
-    ASSERT_OK(fs->Mkdirs(other_factory->GetDirectoryPath()));
+    ASSERT_NE(own_factory->GetDirectoryPaths(), other_factory->GetDirectoryPaths());
+    for (const auto& directory : own_factory->GetDirectoryPaths()) {
+        ASSERT_OK(fs->Mkdirs(directory));
+    }
+    for (const auto& directory : other_factory->GetDirectoryPaths()) {
+        ASSERT_OK(fs->Mkdirs(directory));
+    }
     std::string own_path = own_factory->NewPath(0);
     ASSERT_OK(fs->WriteFile(own_path, "checkpoint", /*overwrite=*/false));
     std::string same_name_other_path = other_factory->NewPath(0);
@@ -701,8 +730,9 @@ TEST_F(FileStorePathFactoryTest, TestCheckpointTaskIsolation) {
     ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(own_path)), 0);
     ASSERT_EQ(own_factory->GetCheckpointId(PathUtil::GetName(other_path)), 100);
 
-    GlobalIndexFileManager manager(fs, factory->CreateGlobalIndexFileFactory(),
-                                   std::move(own_factory));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_path_factory,
+                         factory->CreateGlobalIndexFileFactory());
+    GlobalIndexFileManager manager(fs, std::move(index_path_factory), std::move(own_factory));
     ASSERT_OK_AND_ASSIGN(bool exists, manager.CheckpointExists());
     ASSERT_TRUE(exists);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, manager.OpenCheckpointInputStream());
@@ -733,7 +763,7 @@ TEST_F(FileStorePathFactoryTest, TestCheckpointRejectsInvalidPathComponents) {
     auto factory = CreateFactory(dir->Str());
     for (const std::string& invalid : std::vector<std::string>{"", ".", "..", " ", "a/b", "a\\b",
                                                                "a\nb", std::string("a\0b", 3)}) {
-        ASSERT_NOK(IndexCheckpointPathFactory::GetTaskDirectory(dir->Str(), invalid, std::nullopt));
+        ASSERT_NOK(IndexCheckpointPathFactory::GetTaskDirectories(dir->Str(), invalid, {}));
         ASSERT_NOK(factory->CreateGlobalIndexCheckpointPathFactory(invalid, "vector", Range(10, 20),
                                                                    "task"));
         ASSERT_NOK(factory->CreateGlobalIndexCheckpointPathFactory("lumina", invalid, Range(10, 20),

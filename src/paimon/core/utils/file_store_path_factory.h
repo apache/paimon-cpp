@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -59,8 +58,9 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
         const std::vector<std::string>& partition_keys, const std::string& default_part_value,
         const std::string& identifier, const std::string& data_file_prefix,
         bool legacy_partition_name_enabled, const std::vector<std::string>& external_paths,
-        const std::optional<std::string>& global_index_external_path,
-        bool index_file_in_data_file_dir, const std::shared_ptr<MemoryPool>& memory_pool);
+        const std::vector<std::string>& global_index_external_path,
+        bool index_file_in_data_file_dir, const std::vector<int32_t>& external_path_weights,
+        const std::shared_ptr<MemoryPool>& memory_pool);
 
     static std::string ManifestPath(const std::string& root) {
         return PathUtil::JoinPath(root, "/manifest");
@@ -77,7 +77,7 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
     std::unique_ptr<PathFactory> CreateIndexManifestFileFactory();
     Result<std::unique_ptr<IndexPathFactory>> CreateIndexFileFactory(const BinaryRow& partition,
                                                                      int32_t bucket);
-    std::unique_ptr<IndexPathFactory> CreateGlobalIndexFileFactory();
+    Result<std::unique_ptr<IndexPathFactory>> CreateGlobalIndexFileFactory();
     Result<std::unique_ptr<IndexCheckpointPathFactory>> CreateGlobalIndexCheckpointPathFactory(
         const std::string& index_type, const std::string& field_name, const Range& range,
         const std::string& task_id);
@@ -102,8 +102,8 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
         return external_paths_;
     }
 
-    const std::optional<std::string>& GetGlobalIndexExternalPath() const {
-        return global_index_external_path_;
+    const std::vector<std::string>& GetGlobalIndexExternalPath() const {
+        return global_index_external_paths_;
     }
 
     /// Thread-safe for concurrent calls. Cache accesses are protected by internal locks.
@@ -122,11 +122,6 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
         return PathUtil::JoinPath(
             ManifestPath(root_),
             "index-manifest-" + uuid_ + "-" + std::to_string(index_manifest_count_.fetch_add(1)));
-    }
-    std::string NewIndexFile() const {
-        return PathUtil::JoinPath(IndexPath(root_),
-                                  IndexPathFactory::INDEX_PREFIX + uuid_ + "-" +
-                                      std::to_string(index_file_count_->fetch_add(1)));
     }
     std::string NewStatsFile() const {
         return PathUtil::JoinPath(
@@ -151,11 +146,13 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
                          const std::string& data_file_prefix, const std::string& uuid,
                          std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
                          const std::vector<std::string>& external_paths,
-                         const std::optional<std::string>& global_index_external_path,
-                         bool index_file_in_data_file_dir);
+                         const std::vector<std::string>& global_index_external_path,
+                         bool index_file_in_data_file_dir,
+                         const std::vector<int32_t>& external_path_weights);
 
     Result<std::unique_ptr<ExternalPathProvider>> CreateExternalPathProvider(
         const BinaryRow& partition, int32_t bucket) const;
+    Result<std::unique_ptr<ExternalPathProvider>> CreateExternalIndexPathProvider() const;
 
  private:
     std::string root_;
@@ -164,7 +161,8 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
     std::string uuid_;
     std::unique_ptr<BinaryRowPartitionComputer> partition_computer_;
     std::vector<std::string> external_paths_;
-    std::optional<std::string> global_index_external_path_;
+    std::vector<int32_t> external_path_weights_;
+    std::vector<std::string> global_index_external_paths_;
     bool index_file_in_data_file_dir_;
 
     mutable std::atomic<int32_t> manifest_file_count_ = 0;

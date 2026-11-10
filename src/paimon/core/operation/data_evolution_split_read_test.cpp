@@ -456,8 +456,9 @@ TEST_F(DataEvolutionSplitReadTest, TestEmptyBlobReaders) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(dir->Str(), schema, {}, "default", "parquet", "data-",
-                                     /*legacy_partition_name_enabled=*/true, {}, std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+                                     /*legacy_partition_name_enabled=*/true, {}, {},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, GetDefaultPool()));
     DataEvolutionSplitRead split_read(path_factory, context, GetDefaultPool(),
                                       /*executor=*/nullptr);
     auto blob = CreateBlobFile("payload", 100, 10, 1, {{"b0"}});
@@ -1036,8 +1037,9 @@ TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadReusesMainReader) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(dir->Str(), schema, {}, "default", "parquet", "data-",
-                                     /*legacy_partition_name_enabled=*/true, {}, std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+                                     /*legacy_partition_name_enabled=*/true, {}, {},
+                                     /*index_file_in_data_file_dir=*/false,
+                                     /*external_path_weights=*/{}, GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::string bucket_path,
                          path_factory->BucketPath(BinaryRow::EmptyRow(), 0));
     ASSERT_OK(fs->Mkdirs(bucket_path));

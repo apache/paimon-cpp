@@ -59,34 +59,30 @@ class TrackingGlobalIndexFileWriter : public GlobalIndexFileWriter {
     explicit TrackingGlobalIndexFileWriter(const std::shared_ptr<GlobalIndexFileManager>& delegate)
         : delegate_(delegate) {}
 
-    Result<std::string> NewFileName(const std::string& prefix) const override {
-        PAIMON_ASSIGN_OR_RAISE(std::string file_name, delegate_->NewFileName(prefix));
-        created_file_names_.push_back(file_name);
-        return file_name;
+    Result<std::string> NewPath(const std::string& prefix) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::string file_path, delegate_->NewPath(prefix));
+        created_file_paths_.push_back(file_path);
+        return file_path;
     }
 
     Result<std::unique_ptr<OutputStream>> NewOutputStream(
-        const std::string& file_name) const override {
-        return delegate_->NewOutputStream(file_name);
+        const std::string& file_path) const override {
+        return delegate_->NewOutputStream(file_path);
     }
 
-    Result<int64_t> GetFileSize(const std::string& file_name) const override {
-        return delegate_->GetFileSize(file_name);
-    }
-
-    std::string ToPath(const std::string& file_name) const override {
-        return delegate_->ToPath(file_name);
+    Result<int64_t> GetFileSize(const std::string& file_path) const override {
+        return delegate_->GetFileSize(file_path);
     }
 
     void Cleanup(const std::shared_ptr<FileSystem>& fs) const {
-        for (const std::string& file_name : created_file_names_) {
-            [[maybe_unused]] Status status = fs->Delete(delegate_->ToPath(file_name));
+        for (const std::string& file_path : created_file_paths_) {
+            [[maybe_unused]] Status status = fs->Delete(file_path);
         }
     }
 
  private:
     std::shared_ptr<GlobalIndexFileManager> delegate_;
-    mutable std::vector<std::string> created_file_names_;
+    mutable std::vector<std::string> created_file_paths_;
 };
 
 }  // namespace

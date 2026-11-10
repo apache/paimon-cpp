@@ -65,7 +65,7 @@ class IndexFileHandlerTest : public testing::Test {
         auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                core_options.CreateExternalPaths());
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
                                core_options.CreateGlobalIndexExternalPath());
 
         PAIMON_ASSIGN_OR_RAISE(
@@ -77,7 +77,7 @@ class IndexFileHandlerTest : public testing::Test {
                 core_options.LegacyPartitionNameEnabled(), external_paths,
                 global_index_external_path,
                 /*index_file_in_data_file_dir=*/core_options.IndexFileInDataFileDir(),
-                memory_pool_));
+                /*external_path_weights=*/{}, memory_pool_));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
                                IndexManifestFile::Create(
                                    core_options.GetFileSystem(), core_options.GetManifestFormat(),

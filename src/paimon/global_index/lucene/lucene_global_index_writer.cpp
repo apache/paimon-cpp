@@ -180,10 +180,10 @@ Result<std::string> LuceneGlobalIndexWriter::FlushIndexToFinal() {
 
         // list tmp dir
         auto tmp_file_names = write_context_.lucene_dir->listAll();
-        PAIMON_ASSIGN_OR_RAISE(std::string index_file_name, file_writer_->NewFileName(kIdentifier));
+        PAIMON_ASSIGN_OR_RAISE(std::string index_file_path, file_writer_->NewPath(kIdentifier));
         // prepare output from file_writer
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out,
-                               file_writer_->NewOutputStream(index_file_name));
+                               file_writer_->NewOutputStream(index_file_path));
         DataOutputStream data_output_stream(out);
         PAIMON_RETURN_NOT_OK(data_output_stream.WriteValue<int32_t>(kVersion));
         PAIMON_RETURN_NOT_OK(
@@ -220,7 +220,7 @@ Result<std::string> LuceneGlobalIndexWriter::FlushIndexToFinal() {
         PAIMON_RETURN_NOT_OK(out->Flush());
         PAIMON_RETURN_NOT_OK(out->Close());
         write_context_.lucene_dir->close();
-        return index_file_name;
+        return index_file_path;
     } catch (const std::exception& e) {
         return Status::Invalid(
             fmt::format("finish for lucene global index writer failed, with {} error.", e.what()));
@@ -231,13 +231,13 @@ Result<std::string> LuceneGlobalIndexWriter::FlushIndexToFinal() {
 }
 
 Result<std::vector<GlobalIndexIOMeta>> LuceneGlobalIndexWriter::Finish() {
-    PAIMON_ASSIGN_OR_RAISE(std::string index_file_name, FlushIndexToFinal());
+    PAIMON_ASSIGN_OR_RAISE(std::string index_file_path, FlushIndexToFinal());
     // prepare global index meta
-    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(index_file_name));
+    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(index_file_path));
     std::string options_json;
     PAIMON_RETURN_NOT_OK(RapidJsonUtil::ToJsonString(options_, &options_json));
     auto meta_bytes = std::make_shared<Bytes>(options_json, pool_.get());
-    GlobalIndexIOMeta meta(file_writer_->ToPath(index_file_name), file_size,
+    GlobalIndexIOMeta meta(index_file_path, file_size,
                            /*row_count=*/row_id_,
                            /*metadata=*/meta_bytes);
     return std::vector<GlobalIndexIOMeta>({meta});

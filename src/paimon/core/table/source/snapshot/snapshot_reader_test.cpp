@@ -76,8 +76,8 @@ class SnapshotReaderTest : public testing::Test {
             FileStorePathFactory::Create(
                 dir_->Str(), schema, /*partition_keys=*/{}, /*default_part_value=*/"", "orc",
                 /*data_file_prefix=*/"data-", /*legacy_partition_name_enabled=*/true,
-                /*external_paths=*/{}, /*global_index_external_path=*/std::nullopt,
-                /*index_file_in_data_file_dir=*/false, pool_));
+                /*external_paths=*/{}, /*global_index_external_path=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool_));
         auto path_factories = std::make_shared<IndexFilePathFactories>(path_factory);
         return std::make_unique<IndexFileHandler>(std::make_shared<LocalFileSystem>(),
                                                   std::unique_ptr<IndexManifestFile>(),

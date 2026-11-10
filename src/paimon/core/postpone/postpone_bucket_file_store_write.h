@@ -69,18 +69,20 @@ class PostponeBucketFileStoreWrite : public AbstractFileStoreWrite {
         // prepare FileStorePathFactory
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                new_options.CreateExternalPaths());
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
+        PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
+                               new_options.GetExternalPathWeights());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
                                new_options.CreateGlobalIndexExternalPath());
 
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> file_store_path_factory,
-            FileStorePathFactory::Create(root_path, schema, table_schema->PartitionKeys(),
-                                         new_options.GetPartitionDefaultName(),
-                                         new_options.GetWriteFileFormat(/*level=*/0)->Identifier(),
-                                         new_options.DataFilePrefix(),
-                                         new_options.LegacyPartitionNameEnabled(), external_paths,
-                                         global_index_external_path,
-                                         new_options.IndexFileInDataFileDir(), pool));
+            FileStorePathFactory::Create(
+                root_path, schema, table_schema->PartitionKeys(),
+                new_options.GetPartitionDefaultName(),
+                new_options.GetWriteFileFormat(/*level=*/0)->Identifier(),
+                new_options.DataFilePrefix(), new_options.LegacyPartitionNameEnabled(),
+                external_paths, global_index_external_path, new_options.IndexFileInDataFileDir(),
+                /*external_path_weights=*/external_path_weights, pool));
 
         // Ignoring previous files saves scanning time.
         // For postpone bucket tables, we only append new files to bucket = -2 directories.

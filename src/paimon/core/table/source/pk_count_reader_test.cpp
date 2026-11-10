@@ -90,7 +90,7 @@ class PKCountReaderTest : public testing::Test {
 
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                core_options.CreateExternalPaths());
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
                                core_options.CreateGlobalIndexExternalPath());
 
         PAIMON_ASSIGN_OR_RAISE(
@@ -101,7 +101,7 @@ class PKCountReaderTest : public testing::Test {
                 core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
                 core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
                 external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-                pool_));
+                /*external_path_weights=*/{}, pool_));
 
         return std::shared_ptr<FileStorePathFactory>(std::move(path_factory));
     }

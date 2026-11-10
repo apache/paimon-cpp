@@ -141,8 +141,8 @@ class LuminaGlobalIndexTest : public ::testing::Test {
             table_path, arrow::schema({}), /*partition_keys=*/{}, /*default_part_value=*/"",
             /*identifier=*/"mock", /*data_file_prefix=*/"data-",
             /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-            /*global_index_external_path=*/std::nullopt,
-            /*index_file_in_data_file_dir=*/false, pool_);
+            /*global_index_external_path=*/{},
+            /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool_);
     }
 
     Result<std::unique_ptr<IndexCheckpointPathFactory>> CreateCheckpointPathFactory(
@@ -159,8 +159,10 @@ class LuminaGlobalIndexTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory,
             path_factory->CreateGlobalIndexCheckpointPathFactory("lumina", "f0", range, "task-1"));
-        return std::make_shared<CountingCheckpointFileManager>(
-            fs_, path_factory->CreateGlobalIndexFileFactory(), std::move(checkpoint_path_factory));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexPathFactory> index_path_factory,
+                               path_factory->CreateGlobalIndexFileFactory());
+        return std::make_shared<CountingCheckpointFileManager>(fs_, std::move(index_path_factory),
+                                                               std::move(checkpoint_path_factory));
     }
 
     Result<GlobalIndexIOMeta> WriteGlobalIndex(const std::string& index_root,
@@ -174,8 +176,10 @@ class LuminaGlobalIndexTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory,
                                path_factory->CreateGlobalIndexCheckpointPathFactory(
                                    "lumina", "f0", expected_range, "task-1"));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexPathFactory> index_path_factory,
+                               path_factory->CreateGlobalIndexFileFactory());
         auto file_writer = std::make_shared<GlobalIndexFileManager>(
-            fs_, path_factory->CreateGlobalIndexFileFactory(), std::move(checkpoint_path_factory));
+            fs_, std::move(index_path_factory), std::move(checkpoint_path_factory));
 
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexWriter> global_writer,
                                global_index->CreateWriter("f0", CreateArrowSchema(data_type).get(),
@@ -380,8 +384,10 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointCapabilityOnlyRequiredWhenEnabled) {
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
                          CreateFileStorePathFactory(dir->Str()));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_path_factory,
+                         path_factory->CreateGlobalIndexFileFactory());
     auto plain_manager =
-        std::make_shared<GlobalIndexFileManager>(fs_, path_factory->CreateGlobalIndexFileFactory(),
+        std::make_shared<GlobalIndexFileManager>(fs_, std::move(index_path_factory),
                                                  /*checkpoint_path_factory=*/nullptr);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<CountingCheckpointFileManager> checkpoint_manager,
                          CreateCountingCheckpointFileManager(path_factory, Range(0, 3)));
@@ -456,8 +462,10 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
                          CreateCheckpointPathFactory(test_root, "lumina", "f0", Range(10, 20)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
                          CreateFileStorePathFactory(test_root));
-    GlobalIndexFileManager file_manager(fs_, path_factory->CreateGlobalIndexFileFactory(),
-                                        std::move(checkpoint_path_factory));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_path_factory,
+                         path_factory->CreateGlobalIndexFileFactory());
+    auto file_manager = std::make_shared<GlobalIndexFileManager>(
+        fs_, std::move(index_path_factory), std::move(checkpoint_path_factory));
 
     ASSERT_OK_AND_ASSIGN(bool checkpoint_exists, file_manager.CheckpointExists());
     ASSERT_FALSE(checkpoint_exists);
@@ -493,8 +501,10 @@ TEST_F(LuminaGlobalIndexTest, TestCheckpointFileManagement) {
 
     ASSERT_OK_AND_ASSIGN(checkpoint_path_factory,
                          CreateCheckpointPathFactory(test_root, "lumina", "f0", Range(10, 20)));
-    GlobalIndexFileManager reopened_manager(fs_, path_factory->CreateGlobalIndexFileFactory(),
-                                            std::move(checkpoint_path_factory));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> restarted_index_path_factory,
+                         path_factory->CreateGlobalIndexFileFactory());
+    reopened_manager = std::make_shared<GlobalIndexFileManager>(
+        fs_, std::move(restarted_index_path_factory), std::move(checkpoint_path_factory));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> latest_input,
                          reopened_manager.OpenCheckpointInputStream());
@@ -650,8 +660,10 @@ TEST_F(LuminaGlobalIndexTest, TestBuildFailureDiscardsCheckpointAndRetries) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory,
                          path_factory->CreateGlobalIndexCheckpointPathFactory(
                              "lumina", "f0", Range(0, 3), "task-1"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_path_factory,
+                         path_factory->CreateGlobalIndexFileFactory());
     auto file_manager = std::make_shared<DeletionCountingCheckpointFileManager>(
-        fs_, path_factory->CreateGlobalIndexFileFactory(), std::move(checkpoint_path_factory));
+        fs_, std::move(index_path_factory), std::move(checkpoint_path_factory));
 
     ::lumina::api::BuilderOptions builder_options;
     builder_options.Set(::lumina::core::kIndexType, ::lumina::core::kIndexTypeBruteforce)
