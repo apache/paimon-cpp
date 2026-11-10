@@ -945,7 +945,6 @@ TEST(CoreOptionsTest, ExternalPathWeightsIgnoredForOtherStrategies) {
     }
 }
 
-
 TEST(CoreOptionsTest, TestInvalidCreateGlobalIndexExternalPath) {
     std::map<std::string, std::string> options = {
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, "/tmp/index1"},
