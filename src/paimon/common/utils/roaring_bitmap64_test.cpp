@@ -32,6 +32,31 @@
 #include "paimon/utils/range.h"
 
 namespace paimon::test {
+TEST(RoaringBitmap64Test, TestRunOptimize) {
+    RoaringBitmap64 bitmap;
+    constexpr int64_t kBoundary = int64_t{1} << 32;
+    for (int64_t i = kBoundary - 5000; i < kBoundary + 5000; ++i) {
+        bitmap.Add(i);
+    }
+    bitmap.Add(RoaringBitmap64::MAX_VALUE);
+    RoaringBitmap64 expected = bitmap;
+    size_t original_size = bitmap.GetSizeInBytes();
+
+    bitmap.RunOptimize();
+    ASSERT_EQ(bitmap, expected);
+    ASSERT_EQ(bitmap.Cardinality(), 10001);
+    ASSERT_LT(bitmap.GetSizeInBytes(), original_size);
+
+    size_t optimized_size = bitmap.GetSizeInBytes();
+    bitmap.RunOptimize();
+    ASSERT_EQ(bitmap, expected);
+    ASSERT_EQ(bitmap.GetSizeInBytes(), optimized_size);
+
+    RoaringBitmap64 empty;
+    empty.RunOptimize();
+    ASSERT_TRUE(empty.IsEmpty());
+}
+
 TEST(RoaringBitmap64Test, TestSimple) {
     RoaringBitmap64 roaring;
     ASSERT_TRUE(roaring.IsEmpty());
