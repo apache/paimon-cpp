@@ -895,9 +895,11 @@ class NestedProjectionUtilsMapArrayTest : public ::testing::Test {
     static std::shared_ptr<arrow::Array> BuildStringInt32MapArray(
         const std::vector<std::vector<std::pair<std::string, int32_t>>>& maps,
         const std::vector<bool>& null_mask = {}) {
-        auto key_builder = std::make_shared<arrow::StringBuilder>();
-        auto value_builder = std::make_shared<arrow::Int32Builder>();
-        arrow::MapBuilder map_builder(arrow::default_memory_pool(), key_builder, value_builder);
+        arrow::MapBuilder map_builder(arrow::default_memory_pool(),
+                                      std::make_shared<arrow::StringBuilder>(),
+                                      std::make_shared<arrow::Int32Builder>());
+        auto* key_builder = checked_cast<arrow::StringBuilder*>(map_builder.key_builder());
+        auto* value_builder = checked_cast<arrow::Int32Builder*>(map_builder.item_builder());
         for (size_t i = 0; i < maps.size(); ++i) {
             if (!null_mask.empty() && !null_mask[i]) {
                 EXPECT_TRUE(map_builder.AppendNull().ok());

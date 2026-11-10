@@ -57,12 +57,12 @@ class RangeBitmapIoTest : public ::testing::Test {
         const std::shared_ptr<arrow::DataType>& arrow_type,
         const std::vector<ValueType>& test_data) {
         // Create Arrow array from test data
-        auto builder = std::make_shared<ArrowBuilder>();
+        ArrowBuilder builder;
         for (const auto& value : test_data) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(value));
         }
         std::shared_ptr<arrow::Array> arrow_array;
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Finish(&arrow_array));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&arrow_array));
 
         // Wrap in StructArray
         const std::shared_ptr<arrow::Field> field = arrow::field("test_field", arrow_type);
