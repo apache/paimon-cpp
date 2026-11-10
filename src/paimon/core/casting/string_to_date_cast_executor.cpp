@@ -57,18 +57,18 @@ Result<std::shared_ptr<arrow::Array>> StringToDateCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
     auto* string_array = checked_cast<arrow::StringArray*>(array.get());
-    auto date_builder = std::make_shared<arrow::Date32Builder>(pool);
+    arrow::Date32Builder date_builder(pool);
     for (int64_t i = 0; i < string_array->length(); ++i) {
         if (string_array->IsNull(i)) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(date_builder->AppendNull());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(date_builder.AppendNull());
         } else {
             PAIMON_ASSIGN_OR_RAISE(int32_t date_value,
                                    StringUtils::StringToDate(string_array->GetString(i)));
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(date_builder->Append(date_value));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(date_builder.Append(date_value));
         }
     }
     std::shared_ptr<arrow::Array> casted_array;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(date_builder->Finish(&casted_array));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(date_builder.Finish(&casted_array));
     return casted_array;
 }
 

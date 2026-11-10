@@ -483,13 +483,15 @@ TEST_F(ParquetFormatBenchmarkTest, DecimalPrecisionRoundTrip) {
 // trip with the shape the read schema asks for.
 TEST_F(ParquetFormatBenchmarkTest, NestedRoundTrip) {
     constexpr int32_t kEntries = 4;
-    auto list_values = std::make_shared<arrow::Int64Builder>();
-    arrow::ListBuilder list_builder(arrow::default_memory_pool(), list_values,
+    arrow::ListBuilder list_builder(arrow::default_memory_pool(),
+                                    std::make_shared<arrow::Int64Builder>(),
                                     arrow::list(arrow::int64()));
-    auto key_builder = std::make_shared<arrow::StringBuilder>();
-    auto item_builder = std::make_shared<arrow::Int64Builder>();
-    arrow::MapBuilder map_builder(arrow::default_memory_pool(), key_builder, item_builder,
-                                  arrow::map(arrow::utf8(), arrow::int64()));
+    auto* list_values = checked_cast<arrow::Int64Builder*>(list_builder.value_builder());
+    arrow::MapBuilder map_builder(
+        arrow::default_memory_pool(), std::make_shared<arrow::StringBuilder>(),
+        std::make_shared<arrow::Int64Builder>(), arrow::map(arrow::utf8(), arrow::int64()));
+    auto* key_builder = checked_cast<arrow::StringBuilder*>(map_builder.key_builder());
+    auto* item_builder = checked_cast<arrow::Int64Builder*>(map_builder.item_builder());
     for (int64_t i = 0; i < kRows; ++i) {
         ASSERT_TRUE(list_builder.Append().ok());
         ASSERT_TRUE(map_builder.Append().ok());

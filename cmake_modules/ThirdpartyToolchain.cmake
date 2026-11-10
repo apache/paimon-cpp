@@ -1089,8 +1089,10 @@ macro(build_boost)
                                       -sZLIB_LIBRARY_PATH=${ZLIB_PREFIX}/lib
                                       runtime-link=shared threading=multi variant=release
                                       --user-config=${BOOST_USER_CONFIG}
-                                      toolset=${BOOST_TOOLSET} cxxflags=${EP_CXX_FLAGS}
-                                      linkflags=${EP_CXX_FLAGS} install
+                                      toolset=${BOOST_TOOLSET}
+                                      cxxstd=${CMAKE_CXX_STANDARD}
+                                      cxxflags=${EP_CXX_FLAGS} linkflags=${EP_CXX_FLAGS}
+                                      install
                         INSTALL_COMMAND ""
                         DEPENDS zlib
                         BUILD_BYPRODUCTS ${BOOST_BYPRODUCTS}
