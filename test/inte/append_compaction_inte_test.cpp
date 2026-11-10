@@ -139,7 +139,10 @@ class AppendCompactionInteTest : public testing::Test,
             for (const auto& data_file : restore_files->DataFiles()) {
                 ASSERT_OK(dv_maintainer->NotifyNewDeletion(data_file->file_name, 0));
             }
-            ASSERT_OK_AND_ASSIGN(auto index_file_meta, dv_maintainer->WriteDeletionVectorsIndex());
+            auto index_file_meta_result = dv_maintainer->WriteDeletionVectorsIndex();
+            ASSERT_OK(index_file_meta_result);
+            const auto& index_file_meta = index_file_meta_result.value();
+            ASSERT_TRUE(index_file_meta.has_value());
 
             auto commit_message = std::make_shared<CommitMessageImpl>(
                 partition, bucket, 2, DataIncrement({}, {}, {}, {index_file_meta.value()}, {}),

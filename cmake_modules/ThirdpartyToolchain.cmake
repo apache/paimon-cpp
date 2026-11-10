@@ -1681,10 +1681,16 @@ macro(build_oss_sdk_v2)
              "-DCURL_LIBRARY_RELEASE=${OSS_SDK_V2_CURL_LIBRARY}")
     endif()
 
+    # Avoid copying the metadata variant, which triggers GCC 12's
+    # -Wmaybe-uninitialized warning in optimized builds.
+    set(OSS_SDK_V2_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/oss_sdk_v2.diff")
     externalproject_add(oss_sdk_v2_ep
                         ${EP_COMMON_OPTIONS}
                         URL ${OSS_SDK_V2_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_OSS_SDK_V2_BUILD_SHA256_CHECKSUM}"
+                        LOG_PATCH ON
+                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
+                                      "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${OSS_SDK_V2_PATCH_FILE}' && touch .patched"
                         CMAKE_ARGS ${OSS_SDK_V2_CMAKE_ARGS} ${THIRDPARTY_LOG_OPTIONS}
                         BUILD_BYPRODUCTS "${OSS_SDK_V2_STATIC_LIB}")
 
