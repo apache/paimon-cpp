@@ -42,6 +42,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/stream_utils.h"
 #include "paimon/defs.h"
 #include "paimon/format/parquet/parquet_file_batch_reader.h"
@@ -1216,8 +1217,9 @@ TEST_F(PageFilteredRowGroupReaderTest, NestedStructColumnOnlyReadIdField) {
 /// Helper: build a list<item: int32> array (without id column).
 /// tags[i] = [i*10, i*10+1], for i in [0, N).
 static std::shared_ptr<arrow::Array> MakeListColumnData(int32_t num_rows) {
-    auto value_builder = std::make_shared<arrow::Int32Builder>();
-    arrow::ListBuilder list_builder(arrow::default_memory_pool(), value_builder);
+    arrow::ListBuilder list_builder(arrow::default_memory_pool(),
+                                    std::make_shared<arrow::Int32Builder>());
+    auto* value_builder = checked_cast<arrow::Int32Builder*>(list_builder.value_builder());
     for (int32_t i = 0; i < num_rows; ++i) {
         EXPECT_TRUE(list_builder.Append().ok());
         EXPECT_TRUE(value_builder->Append(i * 10).ok());
@@ -1229,9 +1231,11 @@ static std::shared_ptr<arrow::Array> MakeListColumnData(int32_t num_rows) {
 /// Helper: build a map<utf8, int32> array (without id column).
 /// props[i] = {"k_i": i * 100}, for i in [0, N).
 static std::shared_ptr<arrow::Array> MakeMapColumnData(int32_t num_rows) {
-    auto key_builder = std::make_shared<arrow::StringBuilder>();
-    auto value_builder = std::make_shared<arrow::Int32Builder>();
-    arrow::MapBuilder map_builder(arrow::default_memory_pool(), key_builder, value_builder);
+    arrow::MapBuilder map_builder(arrow::default_memory_pool(),
+                                  std::make_shared<arrow::StringBuilder>(),
+                                  std::make_shared<arrow::Int32Builder>());
+    auto* key_builder = checked_cast<arrow::StringBuilder*>(map_builder.key_builder());
+    auto* value_builder = checked_cast<arrow::Int32Builder*>(map_builder.item_builder());
     for (int32_t i = 0; i < num_rows; ++i) {
         EXPECT_TRUE(map_builder.Append().ok());
         std::string key = "k_" + std::to_string(i);
@@ -2567,10 +2571,11 @@ static std::shared_ptr<arrow::StructArray> MakeMisalignedNestedDataWithNulls(int
     // s: struct<x:int32, y:int64> with nulls at both leaf and struct level.
     auto field_x = arrow::field("x", arrow::int32());
     auto field_y = arrow::field("y", arrow::int64());
-    auto x_builder = std::make_shared<arrow::Int32Builder>();
-    auto y_builder = std::make_shared<arrow::Int64Builder>();
-    arrow::StructBuilder s_builder(arrow::struct_({field_x, field_y}), arrow::default_memory_pool(),
-                                   {x_builder, y_builder});
+    arrow::StructBuilder s_builder(
+        arrow::struct_({field_x, field_y}), arrow::default_memory_pool(),
+        {std::make_shared<arrow::Int32Builder>(), std::make_shared<arrow::Int64Builder>()});
+    auto* x_builder = checked_cast<arrow::Int32Builder*>(s_builder.field_builder(0));
+    auto* y_builder = checked_cast<arrow::Int64Builder*>(s_builder.field_builder(1));
     for (int32_t i = 0; i < num_rows; ++i) {
         if (i % 11 == 0) {
             // AppendNull() also appends nulls to the child builders, keeping lengths in sync.
@@ -2592,8 +2597,9 @@ static std::shared_ptr<arrow::StructArray> MakeMisalignedNestedDataWithNulls(int
     auto s_array = s_builder.Finish().ValueOrDie();
 
     // tags: list<int32> with null lists.
-    auto item_builder = std::make_shared<arrow::Int32Builder>();
-    arrow::ListBuilder tags_builder(arrow::default_memory_pool(), item_builder);
+    arrow::ListBuilder tags_builder(arrow::default_memory_pool(),
+                                    std::make_shared<arrow::Int32Builder>());
+    auto* item_builder = checked_cast<arrow::Int32Builder*>(tags_builder.value_builder());
     for (int32_t i = 0; i < num_rows; ++i) {
         if (i % 6 == 0) {
             EXPECT_TRUE(tags_builder.AppendNull().ok());
@@ -2606,9 +2612,11 @@ static std::shared_ptr<arrow::StructArray> MakeMisalignedNestedDataWithNulls(int
     auto tags_array = tags_builder.Finish().ValueOrDie();
 
     // props: map<utf8,int32> with null maps.
-    auto map_key_builder = std::make_shared<arrow::StringBuilder>();
-    auto map_val_builder = std::make_shared<arrow::Int32Builder>();
-    arrow::MapBuilder props_builder(arrow::default_memory_pool(), map_key_builder, map_val_builder);
+    arrow::MapBuilder props_builder(arrow::default_memory_pool(),
+                                    std::make_shared<arrow::StringBuilder>(),
+                                    std::make_shared<arrow::Int32Builder>());
+    auto* map_key_builder = checked_cast<arrow::StringBuilder*>(props_builder.key_builder());
+    auto* map_val_builder = checked_cast<arrow::Int32Builder*>(props_builder.item_builder());
     for (int32_t i = 0; i < num_rows; ++i) {
         if (i % 8 == 0) {
             EXPECT_TRUE(props_builder.AppendNull().ok());

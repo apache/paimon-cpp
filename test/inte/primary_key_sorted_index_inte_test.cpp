@@ -556,11 +556,11 @@ TEST_P(PrimaryKeySortedIndexInteTest, ScoredSplitFailsBeforeForceKeepDeleteFallb
 }
 
 std::vector<std::string> PrimaryKeySortedIndexFormats() {
-    std::vector<std::string> formats = {"parquet"};
 #ifdef PAIMON_ENABLE_ORC
-    formats.emplace_back("orc");
+    return {"parquet", "orc"};
+#else
+    return {"parquet"};
 #endif
-    return formats;
 }
 
 INSTANTIATE_TEST_SUITE_P(FileFormat, PrimaryKeySortedIndexInteTest,

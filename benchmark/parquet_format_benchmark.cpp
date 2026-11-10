@@ -386,10 +386,11 @@ Result<std::shared_ptr<arrow::Array>> MakeVectorColumn(int64_t num_rows, int64_t
 // A Parquet MAP is a LIST of a two-field STRUCT, so against LIST the difference is the key leaf.
 Result<std::shared_ptr<arrow::Array>> MakeMapColumn(int64_t num_rows, int64_t offset,
                                                     int32_t entries) {
-    auto key_builder = std::make_shared<arrow::StringBuilder>();
-    auto item_builder = std::make_shared<arrow::Int64Builder>();
-    arrow::MapBuilder builder(arrow::default_memory_pool(), key_builder, item_builder,
-                              MapColumnType());
+    arrow::MapBuilder builder(arrow::default_memory_pool(),
+                              std::make_shared<arrow::StringBuilder>(),
+                              std::make_shared<arrow::Int64Builder>(), MapColumnType());
+    auto* key_builder = paimon::checked_cast<arrow::StringBuilder*>(builder.key_builder());
+    auto* item_builder = paimon::checked_cast<arrow::Int64Builder*>(builder.item_builder());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(num_rows));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder->Reserve(num_rows * entries));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(item_builder->Reserve(num_rows * entries));

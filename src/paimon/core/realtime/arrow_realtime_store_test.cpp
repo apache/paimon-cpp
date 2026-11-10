@@ -135,8 +135,8 @@ class ArrowRealtimeStoreTest : public testing::Test {
 }  // namespace
 
 TEST_F(ArrowRealtimeStoreTest, TestWriteValidationAndSeal) {
-    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> empty_segment,
-                         store_->SealForCommit());
+    std::optional<std::shared_ptr<RealtimeSegmentHandle>> empty_segment;
+    ASSERT_OK_AND_ASSIGN(empty_segment, store_->SealForCommit());
     ASSERT_FALSE(empty_segment.has_value());
 
     ASSERT_NOK_WITH_MSG(store_->Write(RealtimeWriteBatch{nullptr, OffsetRange(0, 1)}),
@@ -181,8 +181,8 @@ TEST_F(ArrowRealtimeStoreTest, TestDataUsageTracksBuildingSealedAndReclaimedData
     ASSERT_EQ(usage.building_memory_bytes, store_->GetMemoryUsage());
     const uint64_t first_segment_memory = usage.building_memory_bytes;
 
-    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
-                         store_->SealForCommit());
+    std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment;
+    ASSERT_OK_AND_ASSIGN(segment, store_->SealForCommit());
     ASSERT_TRUE(segment.has_value());
     usage = store_->GetDataUsage();
     ASSERT_EQ(0, usage.building_memory_bytes);
