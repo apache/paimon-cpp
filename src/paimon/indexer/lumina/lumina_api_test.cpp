@@ -41,7 +41,7 @@ class LuminaInterfaceTest : public ::testing::Test {
         {  // create writer
             ::lumina::api::BuilderOptions builder_options;
             builder_options.Set(::lumina::core::kIndexType, ::lumina::core::kIndexTypeBruteforce)
-                .Set(::lumina::core::kDimension, 4)
+                .Set(::lumina::core::kDimension, static_cast<int64_t>(4))
                 .Set(::lumina::core::kDistanceMetric, ::lumina::core::kDistanceL2)
                 .Set(::lumina::core::kEncodingType, ::lumina::core::kEncodingRawf32);
             auto builder_result =
@@ -80,7 +80,7 @@ class LuminaInterfaceTest : public ::testing::Test {
             // create reader
             ::lumina::api::SearcherOptions searcher_options;
             searcher_options.Set(::lumina::core::kIndexType, ::lumina::core::kIndexTypeBruteforce)
-                .Set(::lumina::core::kDimension, 4);
+                .Set(::lumina::core::kDimension, static_cast<int64_t>(4));
             auto reader_result =
                 ::lumina::api::LuminaSearcher::Create(searcher_options, memory_resource);
             ASSERT_TRUE(reader_result.IsOk());
@@ -100,9 +100,10 @@ class LuminaInterfaceTest : public ::testing::Test {
             auto search = [&](int32_t parallel_number) {
                 ::lumina::api::Query query(query_.data(), query_.size());
                 ::lumina::api::SearchOptions search_options;
-                search_options.Set(::lumina::core::kTopK, topk);
+                search_options.Set(::lumina::core::kTopK, static_cast<int64_t>(topk));
                 if (parallel_number > 0) {
-                    search_options.Set(::lumina::core::kSearchParallelNumber, parallel_number);
+                    search_options.Set(::lumina::core::kSearchParallelNumber,
+                                       static_cast<int64_t>(parallel_number));
                 }
 
                 if (!filter) {

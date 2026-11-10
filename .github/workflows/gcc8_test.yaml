@@ -38,12 +38,19 @@ jobs:
     container:
       image: ubuntu:20.04
       options: --privileged
+      volumes:
+        # The minimal image has no CA bundle until apt installs ca-certificates.
+        - /etc/ssl/certs/ca-certificates.crt:/etc/apt/runner-ca-certificates.crt:ro
     timeout-minutes: 120
     strategy:
       fail-fast: false
     steps:
       - name: Install dependencies
         run: |
+          sed -i -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+                 -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' /etc/apt/sources.list
+          printf '%s\n' 'Acquire::https::CaInfo "/etc/apt/runner-ca-certificates.crt";' \
+              'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-ci-downloads
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-8 g++-8 ninja-build git tar curl libcurl4-openssl-dev libssl-dev tzdata zip unzip pkg-config build-essential python3-dev gdb sudo
           curl -L -O https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz
@@ -60,10 +67,13 @@ jobs:
           ls -la
       - name: Checkout paimon-cpp
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: Prepare release assets
+        uses: ./.github/actions/setup-release-assets
       - name: Install Rust and protobuf tools
         shell: bash
         run: ci/scripts/setup_rust.sh
       - name: Setup ccache
+        id: setup-ccache
         uses: ./.github/actions/setup-ccache
         with:
           cache-key-prefix: ccache-gcc8-test
@@ -77,5 +87,5 @@ jobs:
           CXX: g++-8
         run: ci/scripts/build_paimon.sh --source_dir "$(pwd)"
       - name: Show ccache statistics
-        if: always()
+        if: always() && steps.setup-ccache.outcome == 'success'
         run: ccache -s

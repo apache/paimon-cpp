@@ -82,14 +82,14 @@ TEST(FieldIgnoreRetractAggTest, ReversedAggBypassesWrappedOverride) {
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<FieldCollectAgg> collect_agg,
         FieldCollectAgg::Create(arrow::list(arrow::int32()), options, "f0", GetDefaultPool()));
-    auto agg = std::make_unique<FieldIgnoreRetractAgg>(std::move(collect_agg));
+    FieldIgnoreRetractAgg agg(std::move(collect_agg));
 
     VariantType accumulator = VariantType(checked_pointer_cast<InternalArray>(
         std::make_shared<GenericArray>(std::vector<VariantType>{int32_t{1}, int32_t{2}})));
     VariantType input = VariantType(checked_pointer_cast<InternalArray>(
         std::make_shared<GenericArray>(std::vector<VariantType>{int32_t{3}, int32_t{4}})));
 
-    ASSERT_OK_AND_ASSIGN(VariantType result, agg->AggReversed(accumulator, input));
+    ASSERT_OK_AND_ASSIGN(VariantType result, agg.AggReversed(accumulator, input));
     auto values = DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(result);
     ASSERT_EQ(4, values->Size());
     ASSERT_EQ(3, values->GetInt(0));

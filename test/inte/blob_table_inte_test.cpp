@@ -584,16 +584,16 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
     static Result<std::shared_ptr<arrow::Array>> MakeArrayBlobArray(
         const std::shared_ptr<arrow::DataType>& list_type,
         const std::vector<std::optional<BlobElements>>& rows) {
-        auto list_builder = std::make_shared<arrow::ListBuilder>(
-            arrow::default_memory_pool(), std::make_shared<arrow::LargeBinaryBuilder>(), list_type);
-        auto element_builder =
-            checked_cast<arrow::LargeBinaryBuilder*>(list_builder->value_builder());
+        arrow::ListBuilder list_builder(arrow::default_memory_pool(),
+                                        std::make_shared<arrow::LargeBinaryBuilder>(), list_type);
+        auto* element_builder =
+            checked_cast<arrow::LargeBinaryBuilder*>(list_builder.value_builder());
         for (const std::optional<BlobElements>& row : rows) {
             if (!row) {
-                PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->AppendNull());
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder.AppendNull());
                 continue;
             }
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Append());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder.Append());
             for (const std::optional<std::string>& element : *row) {
                 if (element) {
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(element_builder->Append(*element));
@@ -603,7 +603,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
             }
         }
         std::shared_ptr<arrow::Array> array;
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Finish(&array));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder.Finish(&array));
         return array;
     }
 
@@ -612,10 +612,11 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
     static Result<std::shared_ptr<arrow::Array>> MakeMapBlobArray(
         const std::shared_ptr<arrow::DataType>& map_type,
         const std::vector<std::optional<MapBlobEntries>>& rows) {
-        auto key_builder = std::make_shared<arrow::StringBuilder>();
-        auto item_builder = std::make_shared<arrow::LargeBinaryBuilder>();
-        arrow::MapBuilder map_builder(arrow::default_memory_pool(), key_builder, item_builder,
-                                      map_type);
+        arrow::MapBuilder map_builder(arrow::default_memory_pool(),
+                                      std::make_shared<arrow::StringBuilder>(),
+                                      std::make_shared<arrow::LargeBinaryBuilder>(), map_type);
+        auto* key_builder = checked_cast<arrow::StringBuilder*>(map_builder.key_builder());
+        auto* item_builder = checked_cast<arrow::LargeBinaryBuilder*>(map_builder.item_builder());
         for (const std::optional<MapBlobEntries>& row : rows) {
             if (!row) {
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.AppendNull());

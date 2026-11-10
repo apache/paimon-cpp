@@ -635,10 +635,8 @@ TEST_F(RestTokenFileSystemTest, DefaultCacheEvictsAndRebuildsBackendWithoutReloa
     std::string path = WriteFile("data", "paimon");
     ASSERT_OK(fs->Exists(path).status());
     ASSERT_OK_AND_ASSIGN(RestToken token, fs->ValidToken());
-    std::optional<std::shared_ptr<FileSystem>> cached = cache->GetIfPresent(token);
-    ASSERT_TRUE(cached.has_value());
-    std::weak_ptr<FileSystem> old_backend = cached.value();
-    cached.reset();
+    std::weak_ptr<FileSystem> old_backend = cache->GetIfPresent(token).value_or(nullptr);
+    ASSERT_FALSE(old_backend.expired());
 
     // fill the cache with other credentials to reach its real default capacity; the file
     // system asked for the credentials stays in use, only the delegate it built is evicted
