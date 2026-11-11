@@ -21,6 +21,8 @@ set(PAIMON_GLOBAL_INDEX_SRC
     bitmap/bitmap_index_reader.cpp
     bitmap/lazy_filtered_bitmap_reader.cpp
     bitmap/bitmap_global_index_factory.cpp
+    bitmap_legacy/bitmap_legacy_global_index.cpp
+    bitmap_legacy/bitmap_legacy_global_index_factory.cpp
     btree/btree_file_footer.cpp
     btree/btree_global_index_factory.cpp
     btree/btree_global_indexer.cpp

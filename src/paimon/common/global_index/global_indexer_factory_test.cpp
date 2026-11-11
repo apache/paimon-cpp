@@ -23,6 +23,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/global_index/bitmap/bitmap_global_indexer.h"
+#include "paimon/common/global_index/bitmap_legacy/bitmap_legacy_global_index.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -32,6 +33,16 @@ TEST(GlobalIndexerFactoryTest, TestBitmap) {
                          GlobalIndexerFactory::Get("bitmap", options));
     ASSERT_TRUE(dynamic_cast<BitmapGlobalIndexer*>(indexer.get()));
     ASSERT_FALSE(indexer->SupportsFullTextSearch());
+}
+
+TEST(GlobalIndexerFactoryTest, TestBitmapLegacy) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<GlobalIndexer> indexer,
+                         GlobalIndexerFactory::Get("bitmap-legacy", {}));
+    ASSERT_TRUE(dynamic_cast<BitmapLegacyGlobalIndex*>(indexer.get()));
+    ASSERT_FALSE(indexer->SupportsFullTextSearch());
+    ASSERT_OK_AND_ASSIGN(std::optional<std::vector<std::string>> extra_fields,
+                         indexer->GetExtraFieldNames());
+    ASSERT_FALSE(extra_fields.has_value());
 }
 
 TEST(GlobalIndexerFactoryTest, TestNonExist) {
