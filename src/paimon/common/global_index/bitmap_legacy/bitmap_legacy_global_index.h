@@ -32,6 +32,16 @@
 
 namespace paimon {
 /// Exposes the bitmap file index as a global index with one file per shard.
+// TODO(xinyu.lxy): Address the following limitations:
+// 1. Define dedicated option forwarding for bitmap-legacy. The factory currently passes the full
+//    global index options map unchanged to BitmapFileIndex, which reads unprefixed "version" and
+//    "index-block-size" keys.
+// 2. Add cache limits or eviction. Queried bitmaps, including empty results, are retained for the
+//    reader's lifetime.
+// 3. Support concurrent reads. Lazy metadata initialization, bitmap caches and shared seek/read
+//    state are currently unsynchronized.
+// 4. Support spilling or streaming writes. All keys and bitmaps for a shard are accumulated in
+//    memory, and the complete serialized index is also buffered in memory before being written.
 class BitmapLegacyGlobalIndex : public GlobalIndexer {
  public:
     explicit BitmapLegacyGlobalIndex(const std::shared_ptr<BitmapFileIndex>& index)
