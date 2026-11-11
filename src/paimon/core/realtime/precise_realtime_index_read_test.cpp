@@ -345,7 +345,7 @@ TEST_F(PreciseRealtimeIndexReadTest, OrBranchesSeeTheSameCandidatesAndMissingInd
     ASSERT_OK_AND_ASSIGN(auto b,
                          PredicateBuilder::FullTextMatch(
                              1, std::make_shared<FullTextMatch>("text", "b", std::nullopt)));
-    auto scalar = PredicateBuilder::GreaterThan(0, "id", FieldType::BIGINT, Literal(int64_t(2)));
+    auto scalar = PredicateBuilder::GreaterThan(0, "id", FieldType::BIGINT, Literal(int64_t{2}));
     ASSERT_OK_AND_ASSIGN(auto left, PredicateBuilder::And({a, scalar}));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::Or({left, b}));
     ASSERT_OK_AND_ASSIGN(auto context, Context({"id", "text"}, predicate, nullptr, nullptr,
@@ -370,14 +370,14 @@ TEST_F(PreciseRealtimeIndexReadTest, FullTextTopKRespectsScalarAndIncludeOffsets
 }
 
 TEST_F(PreciseRealtimeIndexReadTest, LargeSparseOffsetsAndUserFilterRespectBothPinnedBounds) {
-    const int64_t base = int64_t(1) << 40;
+    constexpr int64_t base = int64_t{1} << 40;
     state_->ranked = {{base + 1, 0.9f}, {base + 100, 0.8f}, {base + 1000, 0.7f}};
     ASSERT_OK(Write(R"([[1099511627777,1,1,"a",[1]],[1099511627876,2,1,"b",[2]]])",
                     OffsetRange(base + 1, base + 101)));
     ASSERT_OK_AND_ASSIGN(auto view, store_->AcquireReadView());
     ASSERT_OK(Write(R"([[1099511628776,3,1,"c",[3]]])", OffsetRange(base + 1000, base + 1001)));
     auto search = Vector(1);
-    search->pre_filter = [base](int64_t offset) { return offset != base + 1; };
+    search->pre_filter = [](int64_t offset) { return offset != base + 1; };
     ASSERT_OK_AND_ASSIGN(auto context, Context({"id", "category"}, Category(1), search, nullptr,
                                                RealtimeStoreMode::APPEND_ONLY));
     ASSERT_OK_AND_ASSIGN(auto result, Read(context, view, OffsetRange(base + 1, base + 101),

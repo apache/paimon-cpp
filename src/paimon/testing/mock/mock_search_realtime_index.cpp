@@ -22,10 +22,8 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
-#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/core/realtime/realtime_utils.h"
 
 namespace paimon::test {
 
@@ -86,11 +84,14 @@ Result<std::shared_ptr<RealtimeIndex>> MockRealtimeIndexFactory::Create(
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(write_schema));
-    PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateOffsetField(schema));
-    if (schema->num_fields() != 2 ||
-        schema->field(0)->name() != SpecialFields::RealtimeOffset().Name() ||
-        schema->field(1)->name() == SpecialFields::RealtimeOffset().Name()) {
+    // Validate the plugin input without depending on internal DataField symbols in libpaimon.
+    constexpr char kOffsetName[] = "_REALTIME_OFFSET";
+    if (schema->num_fields() != 2 || schema->field(0)->name() != kOffsetName ||
+        schema->field(1)->name() == kOffsetName) {
         return Status::Invalid("Mock real-time index requires offset and one indexed field");
+    }
+    if (schema->field(0)->type()->id() != arrow::Type::INT64 || schema->field(0)->nullable()) {
+        return Status::Invalid("Mock real-time index requires non-null int64 _REALTIME_OFFSET");
     }
     if (search_type_ != IndexReaderCapabilities::SearchType::VECTOR_SEARCH &&
         search_type_ != IndexReaderCapabilities::SearchType::FULL_TEXT_SEARCH) {
