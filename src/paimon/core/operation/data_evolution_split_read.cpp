@@ -586,7 +586,7 @@ Result<std::optional<RoaringBitmap32>> DataEvolutionSplitRead::SelectByFileIndex
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileIndexEvaluator> evaluator,
             FileIndexEvaluator::Create(written_schema, file_index_options, data_file_path_factory,
-                                       file, options_.GetFileSystem(), pool_));
+                                       file, options_.GetFileSystem(), /*cache=*/nullptr, pool_));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
                                evaluator->Evaluate(data_predicate));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, index_result->IsRemain());
@@ -627,7 +627,7 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileIndexEvaluator> evaluator,
             FileIndexEvaluator::Create(data_schema, file_index_options, data_file_path_factory,
-                                       file, options_.GetFileSystem(), pool_));
+                                       file, options_.GetFileSystem(), /*cache=*/nullptr, pool_));
         PAIMON_ASSIGN_OR_RAISE(file_index_result, evaluator->Evaluate(predicate));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {

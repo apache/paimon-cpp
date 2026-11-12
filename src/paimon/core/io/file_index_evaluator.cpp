@@ -31,6 +31,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
+#include "paimon/cache/cache.h"
 #include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/string_utils.h"
@@ -71,28 +72,39 @@ std::string SearchTypeToString(const FileIndexReader::SearchType& search_type) {
 
 FileIndexEvaluator::FileIndexEvaluator(std::shared_ptr<arrow::Schema> data_schema,
                                        std::shared_ptr<DataFileMeta> file_meta,
-                                       std::unique_ptr<FileIndexFormat::Reader> format_reader)
+                                       std::unique_ptr<FileIndexFormat::Reader> format_reader,
+                                       std::shared_ptr<Cache> cache, std::string uri)
     : data_schema_(std::move(data_schema)),
       file_meta_(std::move(file_meta)),
-      format_reader_(std::move(format_reader)) {}
+      format_reader_(std::move(format_reader)),
+      cache_(std::move(cache)),
+      uri_(std::move(uri)) {}
 
 Result<std::unique_ptr<FileIndexEvaluator>> FileIndexEvaluator::Create(
     const std::shared_ptr<arrow::Schema>& data_schema,
     const std::map<std::string, std::string>& options,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<Cache>& cache, const std::shared_ptr<MemoryPool>& pool) {
+    std::shared_ptr<InputStream> input_stream;
     std::unique_ptr<FileIndexFormat::Reader> format_reader;
     if (file_meta->row_count >= 0 && file_meta->row_count <= RoaringBitmap32::MAX_VALUE) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
+        PAIMON_ASSIGN_OR_RAISE(input_stream,
                                ExtractIndexInputStream(path_factory, file_meta, file_system));
         if (input_stream) {
             PAIMON_ASSIGN_OR_RAISE(format_reader,
                                    FileIndexFormat::CreateReader(input_stream, pool, options));
         }
     }
-    return std::unique_ptr<FileIndexEvaluator>(
-        new FileIndexEvaluator(data_schema, file_meta, std::move(format_reader)));
+    std::string uri;
+    if (cache && input_stream) {
+        auto result = input_stream->GetUri();
+        if (result.ok()) {
+            uri = std::move(result).value();
+        }
+    }
+    return std::unique_ptr<FileIndexEvaluator>(new FileIndexEvaluator(
+        data_schema, file_meta, std::move(format_reader), cache, std::move(uri)));
 }
 
 Result<std::vector<std::shared_ptr<FileIndexReader>>> FileIndexEvaluator::GetReaders(
@@ -126,6 +138,37 @@ Result<std::shared_ptr<FileIndexReader>> FileIndexEvaluator::GetSearchReader(
         return Status::Invalid(fmt::format("Data file '{}' has no File Index for search field '{}'",
                                            file_meta_->file_name, field_name));
     }
+    auto unsupported = [&]() {
+        return Status::NotImplemented(
+            fmt::format("No File Index reader supports {} for field '{}' in data file '{}'",
+                        SearchTypeToString(search_type), field_name, file_meta_->file_name));
+    };
+    std::vector<std::string> index_types;
+    if (cache_ && !uri_.empty() && search_type == FileIndexReader::SearchType::VECTOR_SEARCH) {
+        index_types = format_reader_->GetIndexTypes(field_name);
+    }
+    // Multiple index types must go through the normal reader selection and validation.
+    if (index_types.size() == 1) {
+        auto key = CacheKey::ForIndexReader(uri_, field_name, index_types.front());
+        // An error from the supplier prevents insertion, including a null cache entry.
+        auto value = cache_->Get(
+            key, [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                return Status::NotExist("Vector index reader is not cached");
+            });
+        if (!value.ok() && !value.status().IsNotExist()) {
+            return value.status();
+        }
+        if (value.ok() && value.value()) {
+            auto reader = CacheValue::Get<FileIndexReader>(value.value());
+            if (!reader) {
+                return Status::Invalid("Vector index reader cache returned an invalid value");
+            }
+            if (!reader->SupportsSearch(search_type)) {
+                return unsupported();
+            }
+            return reader;
+        }
+    }
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
                            GetReaders(field_name));
     std::shared_ptr<FileIndexReader> selected;
@@ -141,9 +184,7 @@ Result<std::shared_ptr<FileIndexReader>> FileIndexEvaluator::GetSearchReader(
         selected = reader;
     }
     if (!selected) {
-        return Status::NotImplemented(
-            fmt::format("No File Index reader supports {} for field '{}' in data file '{}'",
-                        SearchTypeToString(search_type), field_name, file_meta_->file_name));
+        return unsupported();
     }
     return selected;
 }

@@ -36,6 +36,7 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon {
+class Cache;
 class LeafPredicate;
 class CompoundPredicate;
 class DataFilePathFactory;
@@ -59,7 +60,8 @@ class FileIndexEvaluator {
         const std::map<std::string, std::string>& options,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::shared_ptr<DataFileMeta>& file_meta,
-        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<Cache>& cache,
+        const std::shared_ptr<MemoryPool>& pool);
 
     /// Evaluates a predicate tree for index pruning, reusing the cached field readers.
     /// This does not perform exact scalar filtering or reorder children by selectivity.
@@ -83,7 +85,8 @@ class FileIndexEvaluator {
  private:
     FileIndexEvaluator(std::shared_ptr<arrow::Schema> data_schema,
                        std::shared_ptr<DataFileMeta> file_meta,
-                       std::unique_ptr<FileIndexFormat::Reader> format_reader);
+                       std::unique_ptr<FileIndexFormat::Reader> format_reader,
+                       std::shared_ptr<Cache> cache, std::string uri);
 
     Result<std::vector<std::shared_ptr<FileIndexReader>>> GetReaders(const std::string& field_name);
 
@@ -102,6 +105,8 @@ class FileIndexEvaluator {
     std::shared_ptr<arrow::Schema> data_schema_;
     std::shared_ptr<DataFileMeta> file_meta_;
     std::unique_ptr<FileIndexFormat::Reader> format_reader_;
+    std::shared_ptr<Cache> cache_;
+    std::string uri_;
     std::map<std::string, std::vector<std::shared_ptr<FileIndexReader>>> field_readers_;
 };
 

@@ -242,7 +242,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileIndexEvaluator> evaluator,
             FileIndexEvaluator::Create(data_schema, file_index_options, data_file_path_factory,
-                                       file, options_.GetFileSystem(), pool_));
+                                       file, options_.GetFileSystem(), /*cache=*/nullptr, pool_));
         PAIMON_ASSIGN_OR_RAISE(file_index_result, evaluator->Evaluate(predicate));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {

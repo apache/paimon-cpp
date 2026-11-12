@@ -108,6 +108,13 @@ class PAIMON_EXPORT FileIndexFormat::Writer {
 class PAIMON_EXPORT FileIndexFormat::Reader {
  public:
     virtual ~Reader() = default;
+    /// Returns index types for a specific column from the parsed file metadata without opening
+    /// index readers.
+    /// @param column_name Name of the column to retrieve index types for.
+    /// @return A vector of index types, including empty and unregistered indexes; or an empty
+    ///         vector if the column has no indexes.
+    virtual std::vector<std::string> GetIndexTypes(const std::string& column_name) const = 0;
+
     /// Reads index data for a specific column from the index file.
     /// @param column_name Name of the column to retrieve index data for.
     /// @param arrow_schema Arrow schema that must contain a field corresponding to `column_name`.

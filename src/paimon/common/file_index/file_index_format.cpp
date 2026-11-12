@@ -68,6 +68,18 @@ class FileIndexFormatReaderImpl : public FileIndexFormat::Reader {
             input_stream, std::move(header), pool, std::move(file_index_options)));
     }
 
+    std::vector<std::string> GetIndexTypes(const std::string& column_name) const override {
+        std::vector<std::string> types;
+        auto iter = header_.find(column_name);
+        if (iter != header_.end()) {
+            types.reserve(iter->second.size());
+            for (const auto& entry : iter->second) {
+                types.push_back(entry.first);
+            }
+        }
+        return types;
+    }
+
     Result<std::vector<std::shared_ptr<FileIndexReader>>> ReadColumnIndex(
         const std::string& column_name, ::ArrowSchema* c_arrow_schema) const override {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,

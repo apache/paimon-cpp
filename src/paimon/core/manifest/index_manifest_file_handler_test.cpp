@@ -128,9 +128,10 @@ TEST_F(IndexManifestFileHandlerTest, DecodedCacheReusesIpcAcrossReaders) {
                        return Status::Invalid("index manifest was not cached");
                    }));
     ASSERT_TRUE(cached);
-    const auto& segment = cached->GetSegment();
-    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
-                                                  segment.Size());
+    auto segment = CacheValue::Get<const MemorySegment>(cached);
+    ASSERT_TRUE(segment);
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment->Data()),
+                                                  segment->Size());
     auto ipc = arrow::ipc::RecordBatchStreamReader::Open(
         std::make_shared<arrow::io::BufferReader>(buffer));
     ASSERT_TRUE(ipc.ok()) << ipc.status().ToString();
