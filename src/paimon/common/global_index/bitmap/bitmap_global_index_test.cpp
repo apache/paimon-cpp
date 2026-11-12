@@ -114,6 +114,8 @@ TEST_F(BitmapGlobalIndexTest, WriteAndReadStringPredicates) {
                          CreateReader(field->type(), metas[0]));
     ASSERT_FALSE(reader->IsThreadSafe());
     ASSERT_EQ(reader->GetIndexType(), "bitmap");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> saved_result,
+                         reader->VisitEqual(StringLiteral("apple")));
     CheckResult(reader->VisitIsNull(), {2, 6});
     CheckResult(reader->VisitIsNotNull(), {0, 1, 3, 4, 5});
     CheckResult(reader->VisitEqual(StringLiteral("apple")), {0, 1});
@@ -184,6 +186,11 @@ TEST_F(BitmapGlobalIndexTest, WriteAndReadStringPredicates) {
     ASSERT_NOK_WITH_MSG(reader->VisitFullTextSearch(nullptr),
                         "Full text search is not supported in BitmapIndexReader");
     ASSERT_OK(reader->Close());
+    ASSERT_NOK_WITH_MSG(reader->VisitEqual(StringLiteral("apple")), "closed BitmapIndexReader");
+    std::weak_ptr<BitmapIndexReader> weak_reader = reader;
+    reader.reset();
+    ASSERT_TRUE(weak_reader.expired());
+    CheckResult(saved_result, {0, 1});
 }
 
 TEST_F(BitmapGlobalIndexTest, WriteAndReadLogicalIntegerOrder) {

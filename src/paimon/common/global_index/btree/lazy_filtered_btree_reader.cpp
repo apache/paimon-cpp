@@ -217,9 +217,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitGreater
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::FullResult() const {
     assert(total_row_count_ > 0);
     if (row_id_filter_) {
-        RoaringBitmap64 filter = row_id_filter_.value();
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [filter = std::move(filter)]() -> Result<RoaringBitmap64> { return filter; });
+        return std::make_shared<BitmapGlobalIndexResult>(row_id_filter_.value());
     }
     return BitmapGlobalIndexResult::FromRanges({Range(0, total_row_count_ - 1)});
 }

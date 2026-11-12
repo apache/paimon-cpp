@@ -52,8 +52,7 @@ class PAIMON_EXPORT GlobalIndexResult : public std::enable_shared_from_this<Glob
     /// @return A `Result<bool>` where:
     ///         - `true` indicates the result is empty (no matching rows),
     ///         - `false` indicates at least one matching row exists,
-    ///         - An error is returned only if internal state is corrupted or I/O fails
-    ///           (e.g., during lazy loading of index data).
+    ///         - An error is returned if the implementation cannot inspect its state.
     virtual Result<bool> IsEmpty() const = 0;
 
     /// Creates a new iterator over the selected row ids.

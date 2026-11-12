@@ -21,12 +21,14 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <vector>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
+#include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/range.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -48,6 +50,54 @@ class GlobalIndexUtilsTest : public ::testing::Test {
         return c_array;
     }
 };
+
+TEST_F(GlobalIndexUtilsTest, TestUnionResults) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> unavailable,
+                         GlobalIndexUtils::UnionResults({}));
+    ASSERT_EQ(unavailable, nullptr);
+    ASSERT_NOK_WITH_MSG(GlobalIndexUtils::UnionResults({nullptr}), "null global index result");
+
+    const int64_t high_row_id = int64_t{1} << 32;
+    auto left = std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64::From({1, high_row_id}));
+    auto right = std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64::From({2, high_row_id}));
+    auto empty = std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> single,
+                         GlobalIndexUtils::UnionResults({left}));
+    ASSERT_EQ(single, left);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> merged,
+                         GlobalIndexUtils::UnionResults({left, empty, right}));
+    auto bitmap_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(merged);
+    ASSERT_TRUE(bitmap_result);
+    ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* bitmap, bitmap_result->GetBitmap());
+    ASSERT_EQ(*bitmap, RoaringBitmap64::From({1, 2, high_row_id}));
+    ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* left_bitmap, left->GetBitmap());
+    ASSERT_EQ(*left_bitmap, RoaringBitmap64::From({1, high_row_id}));
+    ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* right_bitmap, right->GetBitmap());
+    ASSERT_EQ(*right_bitmap, RoaringBitmap64::From({2, high_row_id}));
+}
+
+TEST_F(GlobalIndexUtilsTest, TestUnionResultsPreservesScoredSemantics) {
+    auto left = std::make_shared<BitmapScoredGlobalIndexResult>(RoaringBitmap64::From({1}),
+                                                                std::vector<float>{0.5f});
+    auto right = std::make_shared<BitmapScoredGlobalIndexResult>(RoaringBitmap64::From({2}),
+                                                                 std::vector<float>{1.5f});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> merged,
+                         GlobalIndexUtils::UnionResults({left, right}));
+    auto scored_result = std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(merged);
+    ASSERT_TRUE(scored_result);
+    ASSERT_EQ(scored_result->GetScores(), (std::vector<float>{0.5f, 1.5f}));
+    ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* bitmap, scored_result->GetBitmap());
+    ASSERT_EQ(*bitmap, RoaringBitmap64::From({1, 2}));
+
+    ASSERT_NOK_WITH_MSG(GlobalIndexUtils::UnionResults({left, right, left}), "same row id");
+
+    auto unscored = std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64::From({3}));
+    ASSERT_OK_AND_ASSIGN(merged, GlobalIndexUtils::UnionResults({left, unscored}));
+    auto bitmap_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(merged);
+    ASSERT_TRUE(bitmap_result);
+    ASSERT_OK_AND_ASSIGN(bitmap, bitmap_result->GetBitmap());
+    ASSERT_EQ(*bitmap, RoaringBitmap64::From({1, 3}));
+}
 
 TEST_F(GlobalIndexUtilsTest, TestNullArrowArray) {
     std::vector<int64_t> row_ids = {0, 1, 2};

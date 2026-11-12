@@ -18,12 +18,15 @@
  */
 
 #pragma once
+#include <memory>
 #include <optional>
+#include <vector>
 
 #include "arrow/c/abi.h"
 #include "arrow/c/helpers.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/status.h"
 #include "paimon/utils/range.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -32,6 +35,38 @@ class GlobalIndexUtils {
  public:
     GlobalIndexUtils() = delete;
     ~GlobalIndexUtils() = delete;
+
+    /// Unions non-null results, returning nullptr for an empty input.
+    /// Bitmap results are merged in one batch; other results use their virtual Or methods.
+    static Result<std::shared_ptr<GlobalIndexResult>> UnionResults(
+        const std::vector<std::shared_ptr<GlobalIndexResult>>& results) {
+        if (results.empty()) {
+            return std::shared_ptr<GlobalIndexResult>();
+        }
+        std::vector<const RoaringBitmap64*> bitmaps;
+        bitmaps.reserve(results.size());
+        for (const std::shared_ptr<GlobalIndexResult>& result : results) {
+            if (result == nullptr) {
+                return Status::Invalid("Cannot union a null global index result.");
+            }
+            auto bitmap_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(result);
+            if (bitmap_result != nullptr) {
+                PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* bitmap, bitmap_result->GetBitmap());
+                bitmaps.push_back(bitmap);
+            }
+        }
+        if (results.size() == 1) {
+            return results.front();
+        }
+        if (bitmaps.size() == results.size()) {
+            return std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64::FastUnion(bitmaps));
+        }
+        std::shared_ptr<GlobalIndexResult> merged_result = results.front();
+        for (size_t i = 1; i < results.size(); ++i) {
+            PAIMON_ASSIGN_OR_RAISE(merged_result, merged_result->Or(results[i]));
+        }
+        return merged_result;
+    }
 
     static Status CheckRelativeRowIds(::ArrowArray* c_arrow_array,
                                       const std::vector<int64_t>& relative_row_ids,

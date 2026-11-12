@@ -175,9 +175,7 @@ class SharedGroupReader {
         std::vector<std::shared_ptr<GlobalIndexResult>> localized;
         localized.reserve(source_count);
         for (RoaringBitmap64& partition : partitions) {
-            auto bitmap = std::make_shared<RoaringBitmap64>(std::move(partition));
-            localized.push_back(std::make_shared<BitmapGlobalIndexResult>(
-                [bitmap]() -> Result<RoaringBitmap64> { return *bitmap; }));
+            localized.push_back(std::make_shared<BitmapGlobalIndexResult>(std::move(partition)));
         }
         return localized;
     }

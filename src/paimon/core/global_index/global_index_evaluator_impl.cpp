@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/global_index/global_index_utils.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/predicate_builder.h"
@@ -242,21 +243,18 @@ GlobalIndexEvaluatorImpl::EvaluateCompoundPredicate(
                                   evaluation.declined_field_ids.end());
     };
     if (compound_predicate->GetFunction().GetType() == Function::Type::OR) {
+        std::vector<std::shared_ptr<GlobalIndexResult>> results;
+        results.reserve(compound_predicate->Children().size());
         for (const auto& child : compound_predicate->Children()) {
             PAIMON_ASSIGN_OR_RAISE(std::optional<Evaluation> sub_evaluation,
                                    EvaluatePredicate(child));
             if (!sub_evaluation) {
                 return std::optional<Evaluation>();
             }
-            if (!compound_result) {
-                compound_result = sub_evaluation->result;
-            } else {
-                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> or_result,
-                                       compound_result->Or(sub_evaluation->result));
-                compound_result = or_result;
-            }
+            results.push_back(std::move(sub_evaluation->result));
             merge_fields(*sub_evaluation);
         }
+        PAIMON_ASSIGN_OR_RAISE(compound_result, GlobalIndexUtils::UnionResults(results));
     } else if (compound_predicate->GetFunction().GetType() == Function::Type::AND) {
         for (const auto& child : compound_predicate->Children()) {
             PAIMON_ASSIGN_OR_RAISE(std::optional<Evaluation> sub_evaluation,

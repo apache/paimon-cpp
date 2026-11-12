@@ -168,8 +168,7 @@ Result<RoaringBitmap64> FilteredRowIdReader::MatchingRowIds(const RoaringBitmap6
     ScanContextBuilder scan_builder(root_path_);
     scan_builder.SetOptions(pinned_options)
         .SetPredicate(partition_filter_)
-        .SetGlobalIndexResult(std::make_shared<BitmapGlobalIndexResult>(
-            [rows]() -> Result<RoaringBitmap64> { return rows; }))
+        .SetGlobalIndexResult(std::make_shared<BitmapGlobalIndexResult>(rows))
         .WithFileSystem(options_.GetFileSystem())
         .WithMemoryPool(pool_)
         .WithExecutor(executor_);

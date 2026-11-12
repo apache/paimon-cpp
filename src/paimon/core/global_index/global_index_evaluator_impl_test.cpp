@@ -132,8 +132,7 @@ class RecordingGlobalIndexReader : public MockGlobalIndexReader {
         for (int64_t position : positions) {
             bitmap.Add(position);
         }
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [bitmap = std::move(bitmap)]() -> Result<RoaringBitmap64> { return bitmap; });
+        return std::make_shared<BitmapGlobalIndexResult>(std::move(bitmap));
     }
 
     static std::shared_ptr<GlobalIndexResult> NotEvaluable() {

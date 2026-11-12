@@ -77,7 +77,8 @@ TEST_F(BitmapGlobalIndexResultTest, TestIterator) {
         auto bitmap_supplier = [&]() -> Result<RoaringBitmap64> {
             return RoaringBitmap64::From(expected_ids);
         };
-        auto index_result = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result,
+                             BitmapGlobalIndexResult::Create(bitmap_supplier));
         if (expected_ids.empty()) {
             ASSERT_TRUE(index_result->IsEmpty().value());
         }
@@ -101,11 +102,13 @@ TEST_F(BitmapGlobalIndexResultTest, TestAnd) {
         auto bitmap_supplier1 = [&]() -> Result<RoaringBitmap64> {
             return RoaringBitmap64::From(left);
         };
-        auto index_result1 = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier1);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result1,
+                             BitmapGlobalIndexResult::Create(bitmap_supplier1));
         auto bitmap_supplier2 = [&]() -> Result<RoaringBitmap64> {
             return RoaringBitmap64::From(right);
         };
-        auto index_result2 = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier2);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result2,
+                             BitmapGlobalIndexResult::Create(bitmap_supplier2));
 
         ASSERT_OK_AND_ASSIGN(auto result, index_result1->And(index_result2));
         ASSERT_EQ(result->ToString(), expected_str);
@@ -123,7 +126,8 @@ TEST_F(BitmapGlobalIndexResultTest, TestBitmapResultAndOtherResult) {
     auto bitmap_supplier1 = [&]() -> Result<RoaringBitmap64> {
         return RoaringBitmap64::From({1, 2, 3});
     };
-    auto index_result1 = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier1);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result1,
+                         BitmapGlobalIndexResult::Create(bitmap_supplier1));
 
     auto fake_result = std::make_shared<FakeGlobalIndexResult>(std::vector<int64_t>({1l, 2l, 7l}));
 
@@ -137,11 +141,13 @@ TEST_F(BitmapGlobalIndexResultTest, TestOr) {
         auto bitmap_supplier1 = [&]() -> Result<RoaringBitmap64> {
             return RoaringBitmap64::From(left);
         };
-        auto index_result1 = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier1);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result1,
+                             BitmapGlobalIndexResult::Create(bitmap_supplier1));
         auto bitmap_supplier2 = [&]() -> Result<RoaringBitmap64> {
             return RoaringBitmap64::From(right);
         };
-        auto index_result2 = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier2);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result2,
+                             BitmapGlobalIndexResult::Create(bitmap_supplier2));
 
         ASSERT_OK_AND_ASSIGN(auto result, index_result1->Or(index_result2));
         ASSERT_EQ(result->ToString(), expected_str);
@@ -155,27 +161,29 @@ TEST_F(BitmapGlobalIndexResultTest, TestOr) {
                      "{1,2,3,9223372036854775807}");
 }
 
-TEST_F(BitmapGlobalIndexResultTest, TestOrPropagatesSupplierErrorsImmediately) {
-    for (bool fail_left : {true, false}) {
-        auto left =
-            std::make_shared<BitmapGlobalIndexResult>([fail_left]() -> Result<RoaringBitmap64> {
-                if (fail_left) {
-                    return Status::Invalid("left supplier failed");
-                }
-                return RoaringBitmap64::From({1});
-            });
-        auto right = std::make_shared<BitmapGlobalIndexResult>(
-            []() -> Result<RoaringBitmap64> { return Status::Invalid("right supplier failed"); });
-        const char* expected_error = fail_left ? "left supplier failed" : "right supplier failed";
-        ASSERT_NOK_WITH_MSG(left->Or(right), expected_error);
-    }
+TEST_F(BitmapGlobalIndexResultTest, TestOperationsDoNotRetainOperands) {
+    auto left = std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64::From({1, 2}));
+    auto right = std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64::From({2, 3}));
+    std::weak_ptr<GlobalIndexResult> weak_left = left;
+    std::weak_ptr<GlobalIndexResult> weak_right = right;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> intersection, left->And(right));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> union_result, left->Or(right));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> offset_result, left->AddOffset(10));
+    left.reset();
+    right.reset();
+    ASSERT_TRUE(weak_left.expired());
+    ASSERT_TRUE(weak_right.expired());
+    ASSERT_EQ(intersection->ToString(), "{2}");
+    ASSERT_EQ(union_result->ToString(), "{1,2,3}");
+    ASSERT_EQ(offset_result->ToString(), "{11,12}");
 }
 
 TEST_F(BitmapGlobalIndexResultTest, TestBitmapResultOrOtherResult) {
     auto bitmap_supplier1 = [&]() -> Result<RoaringBitmap64> {
         return RoaringBitmap64::From({1, 2, 3});
     };
-    auto index_result1 = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier1);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result1,
+                         BitmapGlobalIndexResult::Create(bitmap_supplier1));
 
     auto fake_result = std::make_shared<FakeGlobalIndexResult>(std::vector<int64_t>({1l, 2l, 7l}));
 
@@ -187,8 +195,33 @@ TEST_F(BitmapGlobalIndexResultTest, TestInvalidBitmapResult) {
     auto bitmap_supplier = [&]() -> Result<RoaringBitmap64> {
         return Status::Invalid("invalid supplier");
     };
-    auto result = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier);
-    ASSERT_TRUE(result->ToString().find("Invalid: invalid supplier") != std::string::npos);
+    ASSERT_NOK_WITH_MSG(BitmapGlobalIndexResult::Create(bitmap_supplier), "invalid supplier");
+}
+
+TEST_F(BitmapGlobalIndexResultTest, TestCreateMaterializesAndReleasesSupplier) {
+    auto source = std::make_shared<RoaringBitmap64>(RoaringBitmap64::From({1, 4, 7}));
+    std::weak_ptr<RoaringBitmap64> weak_source = source;
+    int32_t supplier_calls = 0;
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BitmapGlobalIndexResult> result,
+        BitmapGlobalIndexResult::Create(
+            [source = std::move(source), &supplier_calls]() -> Result<RoaringBitmap64> {
+                ++supplier_calls;
+                return *source;
+            }));
+    ASSERT_EQ(supplier_calls, 1);
+    ASSERT_TRUE(weak_source.expired());
+    ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* first, result->GetBitmap());
+    ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* second, result->GetBitmap());
+    ASSERT_EQ(first, second);
+    ASSERT_EQ(result->ToString(), "{1,4,7}");
+    ASSERT_OK_AND_ASSIGN(bool empty, result->IsEmpty());
+    ASSERT_FALSE(empty);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<GlobalIndexResult::Iterator> iterator,
+                         result->CreateIterator());
+    ASSERT_TRUE(iterator->HasNext());
+    ASSERT_EQ(iterator->Next(), 1);
+    ASSERT_EQ(supplier_calls, 1);
 }
 
 TEST_F(BitmapGlobalIndexResultTest, TestFromRanges) {
@@ -209,15 +242,16 @@ TEST_F(BitmapGlobalIndexResultTest, TestFromRanges) {
 TEST_F(BitmapGlobalIndexResultTest, TestAddOffset) {
     {
         int32_t supplier_calls = 0;
-        auto result = std::make_shared<BitmapGlobalIndexResult>(
-            [&supplier_calls]() -> Result<RoaringBitmap64> {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<BitmapGlobalIndexResult> result,
+            BitmapGlobalIndexResult::Create([&supplier_calls]() -> Result<RoaringBitmap64> {
                 ++supplier_calls;
                 return RoaringBitmap64::From({0, 1, 2, 3, 4, 5});
-            });
+            }));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> result_with_offset,
                              result->AddOffset(0));
         ASSERT_EQ(result_with_offset.get(), result.get());
-        ASSERT_EQ(supplier_calls, 0);
+        ASSERT_EQ(supplier_calls, 1);
         ASSERT_EQ(result_with_offset->ToString(), "{0,1,2,3,4,5}");
         ASSERT_EQ(supplier_calls, 1);
 

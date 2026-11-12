@@ -114,8 +114,7 @@ TEST_F(GlobalIndexResultTest, TestSerializeAndDeserializeSimple) {
 
     auto bitmap = RoaringBitmap64::From(
         {1l, 2l, 3l, 4l, 5l, 10l, 2247483647l, 2147483647l, 2147483648l, 2147483649l, 2147483650l});
-    auto expected_result = std::make_shared<BitmapGlobalIndexResult>(
-        [bitmap]() -> Result<RoaringBitmap64> { return bitmap; });
+    auto expected_result = std::make_shared<BitmapGlobalIndexResult>(std::move(bitmap));
     ASSERT_EQ(expected_result->ToString(), typed_result->ToString());
     ASSERT_OK_AND_ASSIGN(auto serialize_bytes, GlobalIndexResult::Serialize(index_result, pool));
     ASSERT_EQ(byte_buffer, std::vector<uint8_t>(serialize_bytes->data(),

@@ -26,6 +26,7 @@
 #include <utility>
 
 #include "paimon/common/executor/future.h"
+#include "paimon/common/global_index/global_index_utils.h"
 #include "paimon/common/predicate/like_optimization.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -34,7 +35,7 @@ namespace paimon {
 namespace {
 
 std::shared_ptr<GlobalIndexResult> EmptyResult() {
-    return std::make_shared<BitmapGlobalIndexResult>([]() { return RoaringBitmap64(); });
+    return std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64());
 }
 
 }  // namespace
@@ -268,20 +269,17 @@ Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::VisitSel
         results = CollectAll(futures);
     }
 
-    std::shared_ptr<GlobalIndexResult> merged_result = nullptr;
+    std::vector<std::shared_ptr<GlobalIndexResult>> index_results;
+    index_results.reserve(results.size());
     for (ReaderResult& result_or_status : results) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result,
                                std::move(result_or_status));
         if (result == nullptr) {
             continue;
         }
-        if (merged_result == nullptr) {
-            merged_result = std::move(result);
-        } else {
-            PAIMON_ASSIGN_OR_RAISE(merged_result, merged_result->Or(result));
-        }
+        index_results.push_back(std::move(result));
     }
-    return merged_result;
+    return GlobalIndexUtils::UnionResults(index_results);
 }
 
 Result<std::shared_ptr<GlobalIndexReader>> SortedFileGlobalIndexReader::GetOrCreateReader(
@@ -312,7 +310,7 @@ Result<std::shared_ptr<GlobalIndexResult>> SortedFileGlobalIndexReader::Compleme
         }
         return result;
     };
-    return std::make_shared<BitmapGlobalIndexResult>(std::move(supplier));
+    return BitmapGlobalIndexResult::Create(std::move(supplier));
 }
 
 bool SortedFileGlobalIndexReader::FallbackScanEnabled(
